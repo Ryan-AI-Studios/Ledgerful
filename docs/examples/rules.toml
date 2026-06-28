@@ -1,0 +1,13 @@
+protected_paths = ["Cargo.toml", ".github/workflows/**", "migrations/**"]
+
+[global]
+mode = "analyze"
+required_verifications = ["cargo test -j 1 -- --test-threads=1"]
+
+[[overrides]]
+pattern = "src/**/*.rs"
+required_verifications = ["cargo clippy --all-targets --all-features"]
+
+[[overrides]]
+pattern = "tests/**/*.rs"
+required_verifications = ["cargo test --test cli_scan"]

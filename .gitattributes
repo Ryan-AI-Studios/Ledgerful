@@ -1,0 +1,9 @@
+# Normalize all text files to LF in the repo and on checkout.
+# Overrides core.autocrlf for this repo so cargo fmt and git agree.
+* text=auto eol=lf
+
+# Binaries — no conversion
+*.png binary
+*.jpg binary
+*.ico binary
+*.wasm binary

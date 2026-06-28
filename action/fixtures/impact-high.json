@@ -1,0 +1,36 @@
+{
+  "schemaVersion": "v1",
+  "timestampUtc": "2026-06-16T00:00:00Z",
+  "headHash": "abc123def456",
+  "branchName": "feature/auth-refactor",
+  "treeClean": false,
+  "riskLevel": "high",
+  "riskReasons": ["security-critical path modified", "3 temporal couplings detected"],
+  "changes": [
+    { "path": "src/auth/validator.rs", "status": "Modified", "isStaged": true },
+    { "path": "src/ledger/db.rs", "status": "Modified", "isStaged": true },
+    { "path": "Cargo.toml", "status": "Modified", "isStaged": true }
+  ],
+  "temporalCouplings": [
+    { "fileA": "src/auth/validator.rs", "fileB": "src/ledger/transaction.rs", "score": 0.87 },
+    { "fileA": "src/ledger/db.rs", "fileB": "src/ledger/transaction.rs", "score": 0.71 }
+  ],
+  "hotspots": [
+    { "path": "src/auth/validator.rs", "score": 0.92, "displayScore": 0.92, "complexity": 15, "frequency": 1.0 }
+  ],
+  "ciPredictions": [
+    { "jobName": "auth_test::login", "platform": "github", "failureProbability": 0.92, "explanation": "touches auth validation path" }
+  ],
+  "structuralCouplings": [],
+  "centralityRisks": [],
+  "loggingCoverageDelta": [],
+  "errorHandlingDelta": [],
+  "telemetryCoverageDelta": [],
+  "infrastructureDirs": [],
+  "envVarDeps": [],
+  "testCoverage": [],
+  "runtimeUsageDelta": [],
+  "verificationResults": [],
+  "dataFlowMatches": [],
+  "knowledgeGraph": []
+}

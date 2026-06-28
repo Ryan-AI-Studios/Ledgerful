@@ -1,0 +1,11 @@
+[core]
+strict = false
+
+[watch]
+debounce_ms = 500
+ignore_patterns = ["dist/**"]
+
+[gemini]
+fast_model = "gemini-3.1-flash-lite"
+deep_model = "gemini-3.1-pro"
+timeout_secs = 120

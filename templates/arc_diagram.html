@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Ledgerful Arc Diagram</title>
+    <script src="https://d3js.org/d3.v7.min.js"></script>
+    <style>
+        body {
+            background: #0f0f1a;
+            color: #e0e0e0;
+            font-family: sans-serif;
+            margin: 0;
+            overflow: hidden;
+            display: flex;
+            height: 100vh;
+        }
+        #chart {
+            flex: 1;
+            position: relative;
+        }
+        #sidebar {
+            width: 320px;
+            background: #1a1a2e;
+            border-left: 1px solid #2a2a4e;
+            padding: 15px;
+            overflow-y: auto;
+            display: flex;
+            flex-direction: column;
+        }
+        h2 { font-size: 1.2em; margin-top: 0; color: #4E79A7; }
+        .node-info { margin-bottom: 10px; padding: 10px; background: #0f0f1a; border-radius: 4px; }
+        .risk-high { color: #ff5555; font-weight: bold; }
+        .search-section { margin-top: 20px; }
+        input[type="text"] {
+            width: 100%;
+            padding: 8px;
+            margin-top: 5px;
+            background: #2a2a4e;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            box-sizing: border-box;
+        }
+        button {
+            width: 100%;
+            padding: 8px;
+            margin-top: 5px;
+            background: #2a2a4e;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+        }
+        button:hover { background: #3a3a5e; }
+        .arc { fill: none; stroke-opacity: 0.4; }
+        .node-circle { cursor: pointer; stroke: #0f0f1a; stroke-width: 1.5px; }
+        .node-label { font-size: 10px; fill: #e0e0e0; pointer-events: none; }
+        .dimmed { opacity: 0.1; }
+        #status { position: absolute; top: 10px; left: 10px; font-size: 12px; color: #888; }
+    </style>
+</head>
+<body>
+    <div id="chart">
+        <div id="status">Connecting...</div>
+        <svg id="svg"></svg>
+    </div>
+    <div id="sidebar">
+        <h2>Arc Diagram</h2>
+        <div id="selection">Click a node to see details</div>
+        <div class="search-section">
+            <label for="searchInput">Search Node:</label>
+            <input type="text" id="searchInput" placeholder="Type node label...">
+            <button onclick="applySearch()">Search</button>
+            <button onclick="clearSearch()">Clear</button>
+        </div>
+        <div class="search-section">
+            <p>Nodes: <span id="nodeCount">0</span></p>
+            <p>Edges: <span id="edgeCount">0</span></p>
+        </div>
+    </div>
+
+    <script>
+        const colorPalette = [
+            '#4E79A7', '#F28E2B', '#E15759', '#76B7B2', '#59A14F', 
+            '#EDC948', '#B07AA1', '#FF9DA7', '#9C755F', '#BAB0AC'
+        ];
+
+        let allNodes = [];
+        let allEdges = [];
+        let nodeMap = new Map();
+        let selectedNodeId = null;
+
+        const margin = { top: 40, right: 40, bottom: 120, left: 40 };
+        const svg = d3.select("#svg");
+        let width, height, innerWidth, innerHeight;
+
+        const g = svg.append("g")
+            .attr("transform", `translate(${margin.left},${margin.top})`);
+
+        const arcsG = g.append("g").attr("class", "arcs");
+        const nodesG = g.append("g").attr("class", "nodes");
+        const labelsG = g.append("g").attr("class", "labels");
+
+        function updateDimensions() {
+            const container = document.getElementById('chart');
+            width = container.clientWidth;
+            height = container.clientHeight;
+            innerWidth = width - margin.left - margin.right;
+            innerHeight = height - margin.top - margin.bottom;
+            svg.attr("width", width).attr("height", height);
+        }
+        updateDimensions();
+        window.addEventListener('resize', () => {
+            updateDimensions();
+            render();
+        });
+
+        function processData(nodes, edges) {
+            allNodes = nodes.map((d, i) => ({ ...d, index: i }));
+            allEdges = edges.map(d => ({ ...d }));
+            nodeMap = new Map(allNodes.map(d => [d.id, d]));
+
+            // Sort by community, then label
+            allNodes.sort((a, b) => {
+                if (a.community !== b.community) return a.community - b.community;
+                return a.label.localeCompare(b.label);
+            });
+            allNodes.forEach((d, i) => { d.index = i; });
+        }
+
+        function getNodeColor(d) {
+            if (d.risk_score > 0.7) return '#ff5555';
+            return colorPalette[Math.abs(d.community) % colorPalette.length];
+        }
+
+        function getNodeRadius(d) {
+            return 3 + d.risk_score * 8;
+        }
+
+        function render() {
+            if (allNodes.length === 0) return;
+
+            const xScale = d3.scalePoint()
+                .domain(allNodes.map(d => d.id))
+                .range([0, innerWidth])
+                .padding(0.1);
+
+            const yBase = innerHeight / 2;
+
+            // Draw arcs
+            const arcData = allEdges.filter(e => nodeMap.has(e.from) && nodeMap.has(e.to));
+            const arcs = arcsG.selectAll(".arc")
+                .data(arcData, d => d.from + '-' + d.to + '-' + d.label);
+
+            arcs.exit()
+                .transition().duration(500)
+                .style("opacity", 0)
+                .remove();
+
+            const arcsEnter = arcs.enter().append("path")
+                .attr("class", "arc")
+                .style("stroke", "#4E79A7")
+                .style("opacity", 0);
+
+            arcsEnter.merge(arcs)
+                .transition().duration(750)
+                .style("opacity", 0.4)
+                .attr("d", d => {
+                    const x1 = xScale(d.from);
+                    const x2 = xScale(d.to);
+                    const r = Math.abs(x2 - x1) / 2;
+                    if (r === 0) return "";
+                    const arcGen = d3.arc()
+                        .innerRadius(r - 1)
+                        .outerRadius(r)
+                        .startAngle(-Math.PI)
+                        .endAngle(0);
+                    const mid = (x1 + x2) / 2;
+                    return `translate(${mid},${yBase})` + arcGen();
+                });
+
+            // Draw nodes
+            const nodes = nodesG.selectAll(".node-circle")
+                .data(allNodes, d => d.id);
+
+            nodes.exit()
+                .transition().duration(500)
+                .attr("r", 0)
+                .style("opacity", 0)
+                .remove();
+
+            const nodesEnter = nodes.enter().append("circle")
+                .attr("class", "node-circle")
+                .attr("r", 0)
+                .style("fill", d => getNodeColor(d))
+                .style("opacity", 0);
+
+            nodesEnter.merge(nodes)
+                .on("click", (event, d) => showMetadata(d))
+                .transition().duration(750)
+                .attr("cx", d => xScale(d.id))
+                .attr("cy", yBase)
+                .attr("r", d => getNodeRadius(d))
+                .style("fill", d => getNodeColor(d))
+                .style("opacity", 1);
+
+            // Draw labels
+            const labels = labelsG.selectAll(".node-label")
+                .data(allNodes, d => d.id);
+
+            labels.exit().remove();
+
+            const labelsEnter = labels.enter().append("text")
+                .attr("class", "node-label")
+                .attr("text-anchor", "end")
+                .style("opacity", 0);
+
+            labelsEnter.merge(labels)
+                .transition().duration(750)
+                .attr("transform", d => `translate(${xScale(d.id)},${yBase + 15}) rotate(-45)`)
+                .text(d => d.label)
+                .style("opacity", 1);
+        }
+
+        function showMetadata(d) {
+            selectedNodeId = d.id;
+            document.getElementById('selection').innerHTML = `
+                <div class="node-info">
+                    <b>ID:</b> ${d.id}<br/>
+                    <b>Label:</b> ${d.label}<br/>
+                    <b>Category:</b> ${d.category}<br/>
+                    <b>Community:</b> ${d.community}<br/>
+                    <b>Risk Score:</b> <span class="${d.risk_score > 0.7 ? 'risk-high' : ''}">${d.risk_score.toFixed(2)}</span>
+                </div>
+            `;
+            d3.selectAll(".node-circle")
+                .style("stroke", n => n.id === d.id ? '#fff' : '#0f0f1a')
+                .style("stroke-width", n => n.id === d.id ? 3 : 1.5);
+        }
+
+        function applySearch() {
+            const query = document.getElementById('searchInput').value.toLowerCase();
+            if (!query) {
+                clearSearch();
+                return;
+            }
+            d3.selectAll(".node-circle")
+                .classed("dimmed", d => !d.label.toLowerCase().includes(query) && !d.id.toLowerCase().includes(query));
+            d3.selectAll(".node-label")
+                .classed("dimmed", d => !d.label.toLowerCase().includes(query) && !d.id.toLowerCase().includes(query));
+            d3.selectAll(".arc")
+                .classed("dimmed", d => {
+                    const src = nodeMap.get(d.from);
+                    const tgt = nodeMap.get(d.to);
+                    if (!src || !tgt) return true;
+                    const match = src.label.toLowerCase().includes(query) || src.id.toLowerCase().includes(query) ||
+                                  tgt.label.toLowerCase().includes(query) || tgt.id.toLowerCase().includes(query);
+                    return !match;
+                });
+        }
+
+        function clearSearch() {
+            document.getElementById('searchInput').value = '';
+            d3.selectAll(".dimmed").classed("dimmed", false);
+        }
+
+        document.getElementById('searchInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') applySearch();
+        });
+
+        // WebSocket connection
+        let ws;
+        let reconnectDelay = 1000;
+        const maxReconnectDelay = 30000;
+
+        function connect() {
+            const wsUrl = `ws://${window.location.host}/ws`;
+            document.getElementById('status').textContent = 'Connecting...';
+            ws = new WebSocket(wsUrl);
+
+            ws.onopen = () => {
+                document.getElementById('status').textContent = 'Connected';
+                reconnectDelay = 1000;
+            };
+
+            ws.onmessage = (event) => {
+                const msg = JSON.parse(event.data);
+                if (msg.type === 'snapshot') {
+                    processData(msg.nodes || [], msg.edges || []);
+                    render();
+                    updateCounts();
+                } else if (msg.type === 'delta') {
+                    applyDelta(msg);
+                    render();
+                    updateCounts();
+                } else if (msg.type === 'heartbeat') {
+                    // keep-alive
+                }
+            };
+
+            ws.onclose = () => {
+                document.getElementById('status').textContent = 'Disconnected. Reconnecting...';
+                setTimeout(connect, reconnectDelay);
+                reconnectDelay = Math.min(reconnectDelay * 2, maxReconnectDelay);
+            };
+
+            ws.onerror = (err) => {
+                console.error('WebSocket error:', err);
+                ws.close();
+            };
+        }
+
+        function applyDelta(msg) {
+            const nodesAdded = msg.nodes && msg.nodes.added ? msg.nodes.added : [];
+            const nodesRemoved = msg.nodes && msg.nodes.removed ? msg.nodes.removed : [];
+            const nodesUpdated = msg.nodes && msg.nodes.updated ? msg.nodes.updated : [];
+            const edgesAdded = msg.edges && msg.edges.added ? msg.edges.added : [];
+            const edgesRemoved = msg.edges && msg.edges.removed ? msg.edges.removed : [];
+
+            // Remove nodes
+            allNodes = allNodes.filter(n => !nodesRemoved.includes(n.id));
+            // Update nodes
+            for (const upd of nodesUpdated) {
+                const idx = allNodes.findIndex(n => n.id === upd.id);
+                if (idx >= 0) {
+                    allNodes[idx] = { ...allNodes[idx], ...upd };
+                }
+            }
+            // Add nodes
+            for (const n of nodesAdded) {
+                if (!allNodes.find(x => x.id === n.id)) {
+                    allNodes.push(n);
+                }
+            }
+
+            // Remove edges
+            allEdges = allEdges.filter(e => {
+                return !edgesRemoved.some(r => r.from === e.from && r.to === e.to && r.label === e.label);
+            });
+            // Add edges
+            for (const e of edgesAdded) {
+                if (!allEdges.find(x => x.from === e.from && x.to === e.to && x.label === e.label)) {
+                    allEdges.push(e);
+                }
+            }
+
+            processData(allNodes, allEdges);
+        }
+
+        function updateCounts() {
+            document.getElementById('nodeCount').textContent = allNodes.length;
+            document.getElementById('edgeCount').textContent = allEdges.length;
+        }
+
+        connect();
+    </script>
+</body>
+</html>

@@ -1,0 +1,228 @@
+# Installing Ledgerful
+
+Ledgerful is meant to be available as a normal CLI command, similar to `gh`.
+The backward-compatible `ledgerful` command remains supported, and installs also provide `ledgerful` and `ldg`.
+Once installed, AI agents and developers can run:
+
+```bash
+ledgerful doctor
+ledgerful scan
+ledgerful impact
+ledgerful verify
+```
+
+## One-Line Install
+
+Windows PowerShell:
+
+```powershell
+iwr https://raw.githubusercontent.com/Ryan-AI-Studios/Ledgerful/main/install/install.ps1 -UseB | iex
+```
+
+macOS or Linux:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Ryan-AI-Studios/Ledgerful/main/install/install.sh | sh
+```
+
+The installer tries to download a prebuilt GitHub release binary first. If no release asset exists for the platform, it falls back to `cargo install --git`.
+
+## Requirements
+
+For release binaries:
+
+- `git` should be installed for normal Ledgerful operation.
+- `gemini` is optional and only needed for `ledgerful ask`.
+
+For source fallback:
+
+- Rust/Cargo must be installed from <https://rustup.rs>.
+
+## Install Location
+
+Windows default:
+
+```text
+%USERPROFILE%\.ledgerful\bin
+```
+
+macOS/Linux default:
+
+```text
+~/.local/bin
+```
+
+The installer updates the user PATH when possible. Open a new terminal after installation if `ledgerful` is not immediately found.
+
+## Verifying your install
+
+After installation, verify it works and the telemetry identifies your platform correctly:
+
+**Windows**:
+```powershell
+> ledgerful --version
+ledgerful 0.1.5
+
+> ledgerful doctor
+Ledgerful Doctor - Environment Health Check
+==================================================
+Environment:         Windows
+Active Shell:        Powershell
+LEDGERFUL_PLATFORM: os=windows, arch=x86_64, family=windows, target_triple=x86_64-pc-windows-msvc
+...
+```
+
+**macOS**:
+```bash
+$ ledgerful --version
+ledgerful 0.1.5
+
+$ ledgerful doctor
+Ledgerful Doctor - Environment Health Check
+==================================================
+Environment:         MacOS
+Active Shell:        Zsh
+LEDGERFUL_PLATFORM: os=macos, arch=aarch64, family=unix, target_triple=aarch64-apple-darwin
+...
+```
+
+**Linux**:
+```bash
+$ ledgerful --version
+ledgerful 0.1.5
+
+$ ledgerful doctor
+Ledgerful Doctor - Environment Health Check
+==================================================
+Environment:         Linux
+Active Shell:        Bash
+LEDGERFUL_PLATFORM: os=linux, arch=x86_64, family=unix, target_triple=x86_64-unknown-linux-gnu
+...
+```
+
+## Options
+
+Windows:
+
+```powershell
+.\install\install.ps1 -BuildFromSource
+.\install\install.ps1 -InstallDir "$HOME\.local"
+.\install\install.ps1 -Daemon
+.\install\install.ps1 -NoPathUpdate
+```
+
+macOS/Linux:
+
+```bash
+LEDGERFUL_BUILD_FROM_SOURCE=1 ./install/install.sh
+LEDGERFUL_INSTALL_DIR="$HOME/.ledgerful" ./install/install.sh
+LEDGERFUL_DAEMON=1 ./install/install.sh
+LEDGERFUL_NO_PATH_UPDATE=1 ./install/install.sh
+```
+
+## Agent Bootstrap
+
+If an AI agent is asked to use Ledgerful in a repository, it should:
+
+1. Check availability:
+
+   ```bash
+   ledgerful doctor
+   ```
+
+2. If unavailable and installation is allowed, run the platform installer above.
+3. Re-run:
+
+   ```bash
+   ledgerful doctor
+   ```
+
+4. Initialize the repository only when the user wants Ledgerful state in that repo:
+
+   ```bash
+   ledgerful init
+   ```
+
+5. Run the normal workflow:
+
+   ```bash
+   ledgerful scan
+   ledgerful impact
+   ledgerful verify
+   ```
+
+## Default Init Template
+
+The installers seed a user-level default config template at:
+
+```text
+~/.ledgerful/default-config.toml
+```
+
+When `ledgerful init` creates a new repository config, it uses that template if
+present. Set `LEDGERFUL_DEFAULT_CONFIG` to point at another template for
+one-off initialization.
+
+Template precedence is the explicit environment path, then the user-level
+template, then the built-in template. Init parses the selected TOML before
+publication and omits secret-bearing assignments and credentialed connection
+URLs. A malformed custom template fails closed and does not create a partial
+repo config. Existing repo configs are never replaced.
+
+Store credentials in the process environment or an ignored repo-local `.env`.
+Supported names include `GEMINI_API_KEY`, `OLLAMA_CLOUD_API_KEY`, and the
+legacy `OLLAMA_API_KEY`. Ledgerful does not expand `${VAR}` syntax in TOML.
+
+## Compatibility alias repair
+
+`ledgerful` is the canonical installed executable; `ledgerful` is a
+same-directory compatibility alias. Alias refresh stages and verifies a new
+copy before atomically publishing it. It does not modify similarly named
+binaries in other `PATH` directories.
+
+If Windows has `ledgerful.exe` open without compatible sharing permissions,
+close the process and retry:
+
+```powershell
+ledgerful update --binary
+```
+
+`ledgerful init` treats alias repair as best-effort. An explicit
+`ledgerful update --binary` returns a failure if canonical installation
+succeeds but the alias still cannot be repaired.
+
+## Release Assets
+
+Tagged releases publish these binary assets:
+
+- `ledgerful-x86_64-pc-windows-msvc.zip`
+- `ledgerful-x86_64-unknown-linux-gnu.tar.gz`
+- `ledgerful-x86_64-apple-darwin.tar.gz`
+- `ledgerful-aarch64-apple-darwin.tar.gz`
+
+Create a release by pushing a tag:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
+If `LEDGERFUL_DEFAULT_CONFIG` names a file that does not exist, initialization
+preserves the historical contract and uses the built-in starter template. It
+does not fall through to the home template. A readable explicit template that
+is malformed or invalid fails closed.
+
+Alias repair serializes mutations in each installation directory and never
+overwrites an alias that appeared concurrently. If publication and rollback
+both fail, the error identifies the operation-owned backup and prints the
+PowerShell `Move-Item` recovery command; do not delete that backup.
+Serialization uses a held OS advisory lock. The marker path is intentionally
+persistent: process termination releases the lock, so stale or malformed marker
+contents do not block a later repair. Windows publishes with no-replace
+`MoveFileExW`; Linux/glibc uses `renameat2(RENAME_NOREPLACE)`. Other Unix
+targets use same-directory hard-link create-if-absent semantics. If that
+filesystem does not support hard links, Ledgerful fails closed with an
+`atomic no-clobber` diagnostic instead of risking replacement of a concurrent
+file. The same limitation applies to starter-config creation on those targets.
+Operation-owned old executables are retried only when a regular working alias
+exists. A still-running old executable remains deferred and its exact quoted
+path is reported; a later repair retries cleanup after the process exits.

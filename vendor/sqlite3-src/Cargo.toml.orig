@@ -1,0 +1,26 @@
+[package]
+name = "sqlite3-src"
+version = "0.6.1"
+edition = "2021"
+license = "Apache-2.0 OR MIT"
+authors = [
+    "Chip Collier <ccollier@machinezone.com>",
+    "Daniel Mueller <deso@posteo.net>",
+    "Ivan Ukhov <ivan.ukhov@gmail.com>",
+    "Jean-Daniel Michaud <jean.daniel.michaud@gmail.com>",
+]
+description = "The package provides SQLite."
+homepage = "https://github.com/stainless-steel/sqlite3-src"
+repository = "https://github.com/stainless-steel/sqlite3-src"
+readme = "README.md"
+categories = ["database"]
+keywords = ["database"]
+build = "build.rs"
+links = "sqlite3"
+
+[features]
+bundled = []
+
+[build-dependencies]
+cc = "1.0"
+pkg-config = "0.3"

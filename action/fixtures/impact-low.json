@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "v1",
+  "timestampUtc": "2026-06-16T00:00:00Z",
+  "headHash": "def456abc123",
+  "branchName": "feature/docs-update",
+  "treeClean": false,
+  "riskLevel": "low",
+  "riskReasons": ["documentation update only"],
+  "changes": [
+    { "path": "README.md", "status": "Modified", "isStaged": true }
+  ],
+  "temporalCouplings": [],
+  "hotspots": [],
+  "ciPredictions": [],
+  "structuralCouplings": [],
+  "centralityRisks": [],
+  "loggingCoverageDelta": [],
+  "errorHandlingDelta": [],
+  "telemetryCoverageDelta": [],
+  "infrastructureDirs": [],
+  "envVarDeps": [],
+  "testCoverage": [],
+  "runtimeUsageDelta": [],
+  "verificationResults": [],
+  "dataFlowMatches": [],
+  "knowledgeGraph": []
+}

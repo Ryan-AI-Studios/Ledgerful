@@ -1,0 +1,36 @@
+{
+  "name": "@ledgerful/mcp-server",
+  "version": "0.1.6",
+  "description": "Ledgerful MCP stdio server wrapper for AI coding agents",
+  "license": "SEE LICENSE IN LICENSE",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Ryan-AI-Studios/Ledgerful.git",
+    "directory": "mcp-server"
+  },
+  "homepage": "https://github.com/Ryan-AI-Studios/Ledgerful#readme",
+  "bugs": {
+    "url": "https://github.com/Ryan-AI-Studios/Ledgerful/issues"
+  },
+  "bin": {
+    "ledgerful-mcp": "bin/ledgerful-mcp.js"
+  },
+  "files": [
+    "bin/",
+    "lib/",
+    "scripts/",
+    "README.md",
+    "LICENSE",
+    "COMMERCIAL-EXCEPTION.md",
+    "BINARY-LICENSE-NOTICE.md"
+  ],
+  "scripts": {
+    "postinstall": "node scripts/postinstall.js",
+    "test": "node --test test/*.test.js",
+    "smoke:local": "node test/smoke-local.js",
+    "pack:dry": "npm pack --dry-run"
+  },
+  "engines": {
+    "node": ">=18.18"
+  }
+}

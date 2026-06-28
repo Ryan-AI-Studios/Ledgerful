@@ -1,0 +1,5 @@
+protected_paths = ["Cargo.toml"]
+
+[global]
+mode = "analyze"
+required_verifications = ["cargo test -j 1 -- --test-threads=1"]

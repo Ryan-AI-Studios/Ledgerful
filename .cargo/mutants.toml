@@ -1,0 +1,4 @@
+test_tool = "nextest"
+all_features = true
+exclude_re = ["^(tests|build|vendor)/"]
+profile = "mutants"

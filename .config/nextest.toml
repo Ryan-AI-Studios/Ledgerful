@@ -1,0 +1,39 @@
+# Test-tier profiles for Ledgerful / Ledgerful.
+# Reference: https://nexte.st/docs/configuration/ (2026-06-21)
+#
+# Naming convention for slow tests:
+#   - Any test whose name ends in `__slow` belongs to the slow tier.
+#   - Rename tracks (e.g. TA7) MUST preserve an existing `__slow` suffix.
+#
+# Tiers:
+#   default      fast unit + integration tests, PR loop
+#   ci           default + retries, CI/PR gate
+#   slow         heavy integration tests, nightly / on-demand
+#   compile-fail trybuild compile_fail crate, separate CI job
+#   doctests     `cargo test --doc` (nextest doesn't run doctests on stable)
+
+[profile.default]
+# Fast local/PR loop — excludes slow and trybuild tests.
+fail-fast = false
+slow-timeout = "30s"
+status-level = "skip"
+# Default filter expression: exclude the compile_fail binary and any test
+# whose name ends in `__slow`. Filter expressions are combined with AND.
+default-filter = 'not (binary(compile_fail)) and not (test(/__slow$/))'
+
+[profile.ci]
+inherits = "default"
+fail-fast = false
+slow-timeout = "60s"
+retries = { count = 2, backoff = "fixed", delay = "1s" }
+
+[profile.slow]
+inherits = "ci"
+slow-timeout = "300s"
+# Only tests whose name ends in `__slow`.
+default-filter = 'test(/__slow$/)'
+
+[profile.compile-fail]
+inherits = "ci"
+# Only runs the compile_fail trybuild crate.
+default-filter = 'binary(compile_fail)'

@@ -1,0 +1,72 @@
+[core]
+strict = false
+auto_fix = false
+
+[watch]
+debounce_ms = 1000
+ignore_patterns = ["dist/**", "coverage/**"]
+
+[gemini]
+# Prefer GEMINI_API_KEY in the environment or local .env.
+# model = "gemini-3.1-pro" # optional override for every ask mode
+fast_model = "gemini-3.1-flash-lite"
+deep_model = "gemini-3.1-pro"
+timeout_secs = 120
+context_window = 128000
+
+[temporal]
+max_commits = 1000
+max_files_per_commit = 50
+coupling_threshold = 0.75
+all_parents = false
+
+[hotspots]
+max_commits = 500
+limit = 10
+
+[local_model]
+base_url = "http://localhost:8080" # Example for llama-server
+chat_model = "llama-3"
+embedding_model = "nomic-embed-text"
+embedding_dimensions = 384
+api_key = "optional"
+
+[docs]
+include = ["docs", "architecture"]
+exclude = ["archive"]
+
+[contracts]
+spec_paths = ["openapi.yaml", "docs/swagger.json"]
+
+[verify]
+semantic_weight = 0.3
+default_timeout_secs = 120
+
+[coverage]
+enabled = true
+
+[coverage.traces]
+enabled = true
+config_patterns = ["**/otel*.yaml", "**/jaeger*.yaml", "**/datadog*.yaml"]
+env_var_patterns = ["OTEL_*", "JAEGER_*", "DD_*", "OTLP_*"]
+
+[coverage.sdk]
+enabled = true
+patterns = ["stripe", "auth0", "twilio", "aws-sdk"]
+
+[coverage.services]
+enabled = true
+
+[coverage.data_flow]
+enabled = true
+
+[coverage.deploy]
+enabled = true
+patterns = ["**/Dockerfile*", "**/docker-compose*.yml", "**/*.tf", "**/k8s/**/*.yaml"]
+
+[coverage.ci_self_awareness]
+enabled = true
+
+[coverage.adr_staleness]
+enabled = true
+threshold_days = 365

@@ -1,0 +1,11 @@
+error[E0603]: module `changed_file` is private
+ --> tests/compile_fail/private_submodule_path.rs:1:32
+  |
+1 | use ledgerful::impact::packet::changed_file::ChangedFile;
+  |                                ^^^^^^^^^^^^ private module
+  |
+note: the module `changed_file` is defined here
+ --> src/impact/packet.rs
+  |
+  | mod changed_file;
+  | ^^^^^^^^^^^^^^^^

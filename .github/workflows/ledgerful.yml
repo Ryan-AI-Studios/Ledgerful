@@ -1,0 +1,32 @@
+name: Ledgerful Risk Analysis
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  risk:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: ${{ runner.os }}-cargo-ledgerful-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-cargo-ledgerful-
+
+      - name: Ledgerful Risk Report
+        uses: ./action
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          base-ref: ${{ github.event.pull_request.base.sha }}
+          risk-threshold: TRIVIAL
+          fail-on-risk: ''

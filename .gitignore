@@ -1,0 +1,34 @@
+.ledgerful/
+.claude/
+.codex/
+.agents/
+.opencode/
+
+.env
+.env.*
+!.env.example
+
+.project-ledger/
+target/
+graphify-out/
+
+/scratch/
+
+# Agent worktrees create embedded git repos; ignore them
+.agents/worktrees/
+.codex/worktrees/
+
+# Temp review artifacts and locks — never in git
+.agents/review_*.md
+.codex/review_*.md
+.agents/*.lock
+.codex/*.lock
+
+# Generated output dir (graphs, reports, etc.)
+/output/
+
+# Ledgerful web dashboard build output (when built inside Rust repo for CI)
+/web/
+/out/
+/dist/
+

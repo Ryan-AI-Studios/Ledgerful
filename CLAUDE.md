@@ -1,0 +1,1 @@
+C:/dev/changeguard/AGENTS.md

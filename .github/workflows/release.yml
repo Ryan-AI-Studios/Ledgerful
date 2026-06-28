@@ -1,0 +1,167 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
+jobs:
+  web-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: Ryan-AI-Studios/ledgerful-frontend
+          token: ${{ secrets.LEDGERFUL_FRONTEND_PAT }}
+          path: ledgerful-frontend
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+        working-directory: ledgerful-frontend
+      - run: npm run build
+        working-directory: ledgerful-frontend
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ledgerful-web-spa
+          path: ledgerful-frontend/out
+
+  build:
+    name: Build ${{ matrix.asset }}
+    needs: web-build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: ledgerful-x86_64-unknown-linux-gnu
+            archive: tar
+            binary: ledgerful
+          - os: windows-latest
+            asset: ledgerful-x86_64-pc-windows-msvc
+            archive: zip
+            binary: ledgerful.exe
+          - os: macos-13
+            asset: ledgerful-x86_64-apple-darwin
+            archive: tar
+            binary: ledgerful
+          - os: macos-14
+            asset: ledgerful-aarch64-apple-darwin
+            archive: tar
+            binary: ledgerful
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ledgerful-web-spa
+          path: ../ledgerful-frontend/out
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --release --locked --all-features
+      - name: Package Unix
+        if: matrix.archive == 'tar'
+        shell: bash
+        run: |
+          mkdir -p dist/${{ matrix.asset }}
+          cp target/release/${{ matrix.binary }} dist/${{ matrix.asset }}/
+          cp -r ../ledgerful-frontend/out dist/${{ matrix.asset }}/web
+          cp README.md LICENSE dist/${{ matrix.asset }}/
+          tar -czf dist/${{ matrix.asset }}.tar.gz -C dist ${{ matrix.asset }}
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum dist/${{ matrix.asset }}.tar.gz > dist/${{ matrix.asset }}.tar.gz.sha256
+          else
+            shasum -a 256 dist/${{ matrix.asset }}.tar.gz > dist/${{ matrix.asset }}.tar.gz.sha256
+          fi
+      - name: Package Windows
+        if: matrix.archive == 'zip'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force -Path "dist/${{ matrix.asset }}" | Out-Null
+          Copy-Item "target/release/${{ matrix.binary }}" "dist/${{ matrix.asset }}/"
+          Copy-Item "../ledgerful-frontend/out" "dist/${{ matrix.asset }}/web" -Recurse -Force
+          Copy-Item README.md,LICENSE "dist/${{ matrix.asset }}/"
+          Compress-Archive -Path "dist/${{ matrix.asset }}/*" -DestinationPath "dist/${{ matrix.asset }}.zip" -Force
+          $archiveName = "${{ matrix.asset }}.zip"
+          $archivePath = "dist/$archiveName"
+          $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+          "$hash  $archiveName" | Set-Content -Path "$archivePath.sha256" -Encoding ascii
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
+
+  mcp-package:
+    name: Pack MCP npm package
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo build --bin ledgerful --locked --no-default-features --features mcp
+      - run: npm ci
+        working-directory: mcp-server
+      - run: npm test
+        working-directory: mcp-server
+        env:
+          LEDGERFUL_MCP_BIN_OVERRIDE: ${{ github.workspace }}/target/debug/ledgerful
+      - run: mkdir -p dist
+        working-directory: mcp-server
+      - run: npm pack --pack-destination dist
+        working-directory: mcp-server
+        env:
+          LEDGERFUL_MCP_SKIP_DOWNLOAD: "1"
+      - name: Smoke packed MCP package
+        working-directory: mcp-server
+        shell: bash
+        env:
+          LEDGERFUL_MCP_BIN_OVERRIDE: ${{ github.workspace }}/target/debug/ledgerful
+        run: |
+          set -euo pipefail
+          scratch="$(mktemp -d)"
+          package="$(find "$PWD/dist" -name '*.tgz' -print -quit)"
+          pushd "$scratch"
+          npm init -y
+          npm install "$package"
+          popd
+          LEDGERFUL_MCP_COMMAND="$scratch/node_modules/.bin/ledgerful-mcp" node test/smoke-local.js
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ledgerful-mcp-server-npm
+          path: mcp-server/dist/*.tgz
+
+  publish:
+    name: Publish GitHub Release
+    needs:
+      - build
+      - mcp-package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.tar.gz
+            dist/*.zip
+            dist/*.sha256
