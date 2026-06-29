@@ -37,6 +37,7 @@ jobs:
     name: Build ${{ matrix.asset }}
     needs: web-build
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
     strategy:
       fail-fast: false
       matrix:
@@ -45,18 +46,22 @@ jobs:
             asset: ledgerful-x86_64-unknown-linux-gnu
             archive: tar
             binary: ledgerful
+            target: ""
           - os: windows-latest
             asset: ledgerful-x86_64-pc-windows-msvc
             archive: zip
             binary: ledgerful.exe
-          - os: macos-13
+            target: ""
+          - os: macos-15
             asset: ledgerful-x86_64-apple-darwin
             archive: tar
             binary: ledgerful
+            target: x86_64-apple-darwin
           - os: macos-14
             asset: ledgerful-aarch64-apple-darwin
             archive: tar
             binary: ledgerful
+            target: ""
 
     steps:
       - uses: actions/checkout@v4
@@ -65,14 +70,26 @@ jobs:
           name: ledgerful-web-spa
           path: ../ledgerful-frontend/out
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@v2
-      - run: cargo build --release --locked --all-features
+      - shell: bash
+        run: |
+          if [ -n "${{ matrix.target }}" ]; then
+            cargo build --release --locked --all-features --target ${{ matrix.target }}
+          else
+            cargo build --release --locked --all-features
+          fi
       - name: Package Unix
         if: matrix.archive == 'tar'
         shell: bash
         run: |
           mkdir -p dist/${{ matrix.asset }}
-          cp target/release/${{ matrix.binary }} dist/${{ matrix.asset }}/
+          if [ -n "${{ matrix.target }}" ]; then
+            cp target/${{ matrix.target }}/release/${{ matrix.binary }} dist/${{ matrix.asset }}/
+          else
+            cp target/release/${{ matrix.binary }} dist/${{ matrix.asset }}/
+          fi
           cp -r ../ledgerful-frontend/out dist/${{ matrix.asset }}/web
           cp README.md LICENSE dist/${{ matrix.asset }}/
           tar -czf dist/${{ matrix.asset }}.tar.gz -C dist ${{ matrix.asset }}
