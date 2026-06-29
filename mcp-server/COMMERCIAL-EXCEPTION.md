@@ -1,10 +1,7 @@
-# Ledgerful Small-Entity Commercial Exception (v0.3 DRAFT)
+# Ledgerful Small-Entity Commercial Exception (v1.0)
 
-> **DRAFT — NOT LEGAL ADVICE / NOT IN FORCE.** Pending (1) Ledgerful, LLC formation, (2) the
-> individual→Ledgerful, LLC IP assignment, and (3) counsel review. This file is the additional
-> permission referenced by the `Required Notice:` line in `LICENSE`. Keep the PolyForm base text
-> verbatim; this Exception only *adds* permissions. Counsel must confirm it composes cleanly with
-> PolyForm's "Your company" / "No Other Rights" / "Violations" provisions.
+> This file is the additional permission referenced by the `Required Notice:` line in `LICENSE`. 
+> Keep the PolyForm base text verbatim; this Exception only *adds* permissions.
 
 Licensor: **Ledgerful, LLC**. "Software" refers to the software identified by the repository's
 PolyForm `Required Notice:` (Ledgerful, as distributed under the PolyForm Noncommercial License).
@@ -21,10 +18,6 @@ the definitions and conditions below.
 > versions or derivative works, (c) provide hosted access to the Software to third parties, or (d)
 > distribute products incorporating substantial portions of it. Commercializing the Software requires
 > a separate written OEM/redistribution agreement.
->
-> **MIT note:** versions previously distributed under MIT remain governed by MIT and may still be
-> commercially used, forked, hosted, and resold under those historical terms. Trademark protects the
-> "Ledgerful" name; it does not retract MIT rights.
 
 ## Definitions
 
@@ -114,7 +107,7 @@ the definitions and conditions below.
 The Licensor grants an Entity that is not otherwise eligible (a commercial Entity at or above the
 threshold) a non-exclusive license for Evaluation Use of the Software for 30 days, once per Entity
 and its Affiliate group. The period begins on the Entity's first use of a version distributed under
-this license (prior use of an MIT version does not start or consume it), does not reset upon
+this license, does not reset upon
 upgrades, new versions, or Affiliate transfers, and permits internal, non-Production Use only. It
 ends after 30 days unless Written Authorization is obtained. Qualified Small Entities and permitted
 noncommercial users do not need this — they are already licensed.
@@ -124,5 +117,4 @@ noncommercial users do not need this — they are already licensed.
 Commercial use at or above the threshold requires a separate written Commercial License. Reselling,
 hosting the Software as a service for third parties, OEM embedding, or distributing products
 incorporating substantial portions of the Software requires a separate written OEM/redistribution
-agreement, regardless of size. Contact: __________ (to be published before commercial use is stated
-as restricted).
+agreement, regardless of size. Contact: legal@ledgerful.dev

@@ -1,10 +1,7 @@
-# Ledgerful Small-Entity Commercial Exception (v0.3 DRAFT)
+# Ledgerful Small-Entity Commercial Exception (v1.0)
 
-> **DRAFT — NOT LEGAL ADVICE / NOT IN FORCE.** Pending (1) Ledgerful, LLC formation, (2) the
-> individual→Ledgerful, LLC IP assignment, and (3) counsel review. This file is the additional
-> permission referenced by the `Required Notice:` line in `LICENSE`. Keep the PolyForm base text
-> verbatim; this Exception only *adds* permissions. Counsel must confirm it composes cleanly with
-> PolyForm's "Your company" / "No Other Rights" / "Violations" provisions.
+> This file is the additional permission referenced by the `Required Notice:` line in `LICENSE`. 
+> Keep the PolyForm base text verbatim; this Exception only *adds* permissions.
 
 Licensor: **Ledgerful, LLC**. "Software" refers to the software identified by the repository's
 PolyForm `Required Notice:` (Ledgerful, as distributed under the PolyForm Noncommercial License).
@@ -120,5 +117,4 @@ noncommercial users do not need this — they are already licensed.
 Commercial use at or above the threshold requires a separate written Commercial License. Reselling,
 hosting the Software as a service for third parties, OEM embedding, or distributing products
 incorporating substantial portions of the Software requires a separate written OEM/redistribution
-agreement, regardless of size. Contact: __________ (to be published before commercial use is stated
-as restricted).
+agreement, regardless of size. Contact: legal@ledgerful.dev
