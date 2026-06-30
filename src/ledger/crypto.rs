@@ -54,6 +54,12 @@ pub fn get_or_create_keys() -> Result<(SigningKey, VerifyingKey)> {
         let pub_hex = hex::encode(verifying_key.to_bytes());
 
         fs::write(&priv_path, priv_hex).into_diagnostic()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let perms = std::fs::Permissions::from_mode(0o600);
+            fs::set_permissions(&priv_path, perms).into_diagnostic()?;
+        }
         fs::write(&pub_path, pub_hex).into_diagnostic()?;
 
         Ok((signing_key, verifying_key))

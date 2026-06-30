@@ -662,6 +662,7 @@ fn manual_step(command: String, timeout_secs: u64) -> VerificationStep {
         description: "Manually requested verification command".to_string(),
         command,
         timeout_secs,
+        shell: true,
     }
 }
 

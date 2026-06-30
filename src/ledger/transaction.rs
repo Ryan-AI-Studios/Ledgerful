@@ -211,10 +211,17 @@ impl<'a> TransactionManager<'a> {
                 let absolute_path = self.repo_root.join(&tx.entity_normalized);
                 let entity_path_str = absolute_path.to_string_lossy();
 
+                if let Err(e) =
+                    crate::util::path::ensure_path_within_root(&self.repo_root, &absolute_path)
+                {
+                    return Err(LedgerError::Validation(e));
+                }
+
                 let result = ValidatorRunner::run(
                     v.name.clone(),
                     &v.executable,
                     &v.args,
+                    &self.repo_root,
                     &entity_path_str,
                     v.timeout_ms as u64,
                     v.validation_level,

@@ -1,6 +1,7 @@
 use crate::index::symbols::SymbolKind;
 use crate::ledger::types::{Category, ChangeType, EntryType};
 use serde::{Deserialize, Serialize};
+use std::path::{Component, Path};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct PublicInterface {
@@ -112,14 +113,16 @@ impl FederatedSchema {
                 if entry.entity.trim().is_empty() {
                     warnings.push("Invalid schema: ledger entity must not be empty".to_string());
                 }
-                if entry.entity.contains("..") {
+                let entity_path = Path::new(&entry.entity);
+                let is_traversal = entity_path.components().any(|c| c == Component::ParentDir);
+                let is_absolute = entity_path.is_absolute();
+                if is_traversal {
                     hard_errors.push(format!(
                         "Security violation: ledger entity '{}' contains path traversal",
                         entry.entity
                     ));
                 }
-                if entry.entity.starts_with('/') || entry.entity.contains(':') {
-                    // Basic check for absolute paths (Unix and Windows-ish)
+                if is_absolute {
                     hard_errors.push(format!(
                         "Security violation: ledger entity '{}' is an absolute path",
                         entry.entity

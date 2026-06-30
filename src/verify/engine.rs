@@ -80,7 +80,7 @@ impl VerifyEngine {
             let prepared = if manual_requested {
                 prepare_manual_step(step)
             } else {
-                prepare_rule_step(step)
+                prepare_rule_step(step)?
             };
             info!(
                 "Running verification command via {:?}: {}",

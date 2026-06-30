@@ -14,6 +14,8 @@ use miette::{IntoDiagnostic, Result, miette};
 use owo_colors::OwoColorize;
 use std::sync::Arc;
 
+const TOKEN_ENV_VAR: &str = "LEDGERFUL_WEB_TOKEN";
+
 /// Dispatch a `ledgerful web` subcommand.
 pub fn execute_web(command: WebCommands) -> Result<()> {
     match command {
@@ -50,22 +52,26 @@ fn start_web(args: WebStartArgs) -> Result<()> {
 
     validate_bind(&args.bind, args.allow_public)?;
 
-    let token = args.token.clone().unwrap_or_else(generate_token);
-    let url = format!("http://{}:{}/?token={}", args.bind, args.port, token);
+    let token = args
+        .token
+        .clone()
+        .or_else(|| std::env::var(TOKEN_ENV_VAR).ok())
+        .unwrap_or_else(generate_token);
+    let base_url = format!("http://{}:{}/", args.bind, args.port);
+    let token_url = format!("{}?token={}", base_url, token);
 
     if args.background {
-        let mut args = args;
-        args.token = Some(token.clone());
-        return spawn_background_server(args, layout, &url);
+        return spawn_background_server(args, layout, &base_url, &token);
     }
 
     let _pid_guard = PidFile::create(pid_path)?;
     let state = Arc::new(AppState::new(layout, token.clone(), args.spa_dir));
 
-    println!("Starting ledgerful web at {}", url);
+    println!("Starting ledgerful web at {}", base_url);
+    println!("Auth token: {}", token);
 
     if args.open
-        && let Err(e) = webbrowser::open(&url)
+        && let Err(e) = webbrowser::open(&token_url)
     {
         tracing::warn!("Failed to open browser: {}", e);
     }
@@ -85,8 +91,10 @@ fn spawn_background_server(
     args: WebStartArgs,
     layout: crate::state::layout::Layout,
     url: &str,
+    token: &str,
 ) -> Result<()> {
     println!("Starting ledgerful web in the background at {}", url);
+    println!("Auth token: {}", token);
 
     let pid_path = layout.web_pid_file();
     // Remove stale PID file so the child can create a fresh one.
@@ -108,8 +116,9 @@ fn spawn_background_server(
                     std::process::exit(0);
                 }
                 Ok(nix::unistd::ForkResult::Child) => {
+                    std::env::set_var(TOKEN_ENV_VAR, token);
                     let _ = std::fs::write(pid_path.as_std_path(), std::process::id().to_string());
-                    run_server_blocking(args, layout, url);
+                    run_server_blocking(args, layout);
                     std::process::exit(0);
                 }
                 Err(e) => {
@@ -123,8 +132,11 @@ fn spawn_background_server(
 }
 
 #[cfg(unix)]
-fn run_server_blocking(args: WebStartArgs, layout: crate::state::layout::Layout, _url: &str) {
-    let token = args.token.unwrap_or_else(generate_token);
+fn run_server_blocking(args: WebStartArgs, layout: crate::state::layout::Layout) {
+    let token = std::env::var(TOKEN_ENV_VAR)
+        .ok()
+        .or(args.token)
+        .unwrap_or_else(generate_token);
     let state = Arc::new(AppState::new(layout, token, args.spa_dir));
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -144,12 +156,14 @@ fn spawn_background_server(
     args: WebStartArgs,
     layout: crate::state::layout::Layout,
     url: &str,
+    token: &str,
 ) -> Result<()> {
     use std::os::windows::process::CommandExt;
     use windows_sys::Win32::System::Threading::CREATE_NO_WINDOW;
     use windows_sys::Win32::System::Threading::DETACHED_PROCESS;
 
     println!("Starting ledgerful web in the background at {}", url);
+    println!("Auth token: {}", token);
 
     let pid_path = layout.web_pid_file();
     PidFile::remove(&pid_path);
@@ -167,9 +181,7 @@ fn spawn_background_server(
     if args.allow_public {
         command.arg("--allow-public");
     }
-    if let Some(token) = &args.token {
-        command.arg("--token").arg(token);
-    }
+    command.env(TOKEN_ENV_VAR, token);
     command.creation_flags(DETACHED_PROCESS | CREATE_NO_WINDOW);
 
     let _child = command
@@ -187,6 +199,7 @@ fn spawn_background_server(
     _args: WebStartArgs,
     _layout: crate::state::layout::Layout,
     _url: &str,
+    _token: &str,
 ) -> Result<()> {
     Err(miette!("Background mode is not supported on this platform"))
 }

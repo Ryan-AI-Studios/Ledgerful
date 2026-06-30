@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::io::{BufRead, Read, Write};
 
+const MAX_MCP_MESSAGE_SIZE: usize = 16 * 1024 * 1024;
+
 #[derive(Debug, Deserialize, Serialize)]
 pub struct JsonRpcRequest {
     pub jsonrpc: String,
@@ -67,13 +69,29 @@ pub fn run_server() -> miette::Result<()> {
             None => return Err(miette::miette!("Missing Content-Length header")),
         };
 
+        if len > MAX_MCP_MESSAGE_SIZE {
+            return Err(miette::miette!(
+                "Content-Length {} exceeds maximum {}",
+                len,
+                MAX_MCP_MESSAGE_SIZE
+            ));
+        }
+
         let mut buf = vec![0; len];
         reader
             .read_exact(&mut buf)
             .map_err(|e| miette::miette!(e))?;
 
         let msg_str = String::from_utf8_lossy(&buf);
+        if msg_str.len() > MAX_MCP_MESSAGE_SIZE {
+            return Err(miette::miette!(
+                "MCP message body {} exceeds maximum {}",
+                msg_str.len(),
+                MAX_MCP_MESSAGE_SIZE
+            ));
+        }
 
+        // serde_json default recursion limit of 128 provides depth protection for params.
         let req: JsonRpcRequest = match serde_json::from_str(&msg_str) {
             Ok(req) => req,
             Err(e) => {

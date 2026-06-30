@@ -16,6 +16,12 @@ pub fn classify_path<P: AsRef<Path>>(path: P) -> PathKind {
         let path = path.as_ref();
         if path.is_absolute() {
             let path_str = path.to_string_lossy();
+            if path_str.starts_with("\\\\?\\") {
+                return PathKind::Native;
+            }
+            if path_str.starts_with("\\\\.\\") {
+                return PathKind::Unknown;
+            }
             if path_str.starts_with("\\\\") {
                 return PathKind::Network;
             }
@@ -58,6 +64,8 @@ mod tests {
         {
             assert_eq!(classify_path("C:\\Users\\Admin"), PathKind::Native);
             assert_eq!(classify_path("\\\\server\\share"), PathKind::Network);
+            assert_eq!(classify_path("\\\\?\\C:\\Users\\Admin"), PathKind::Native);
+            assert_eq!(classify_path("\\\\.\\COM1"), PathKind::Unknown);
         }
     }
 

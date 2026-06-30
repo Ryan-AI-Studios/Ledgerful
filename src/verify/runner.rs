@@ -27,21 +27,34 @@ pub fn prepare_manual_step(step: &VerificationStep) -> PreparedStep {
     shell_step(step)
 }
 
-pub fn prepare_rule_step(step: &VerificationStep) -> PreparedStep {
+pub fn prepare_rule_step(step: &VerificationStep) -> Result<PreparedStep> {
+    if step.shell {
+        return Ok(shell_step(step));
+    }
+
     if contains_shell_metacharacters(&step.command) {
-        return shell_step(step);
+        return Err(CommandError::Verify(format!(
+            "Command contains shell metacharacters but 'shell' is false. \
+             Set shell: true in the step configuration if shell features are required: {}",
+            step.command
+        ))
+        .into());
     }
 
     match split_command_string(&step.command) {
-        Some(tokens) if !tokens.is_empty() => PreparedStep {
+        Some(tokens) if !tokens.is_empty() => Ok(PreparedStep {
             display_command: step.command.clone(),
             executable: tokens[0].clone(),
             args: tokens[1..].to_vec(),
             timeout_secs: step.timeout_secs,
             description: step.description.clone(),
             execution_mode: ExecutionMode::Direct,
-        },
-        _ => shell_step(step),
+        }),
+        _ => Err(CommandError::Verify(format!(
+            "Unable to parse command into argv tokens: {}",
+            step.command
+        ))
+        .into()),
     }
 }
 
@@ -195,13 +208,14 @@ mod tests {
             description: "test".to_string(),
             command: command.to_string(),
             timeout_secs,
+            shell: false,
         }
     }
 
     #[test]
     fn prepare_rule_step_uses_direct_execution_for_simple_commands() {
         let step = base_step("cargo test -j 1 --all-features -- --test-threads=1", 5);
-        let prepared = prepare_rule_step(&step);
+        let prepared = prepare_rule_step(&step).unwrap();
 
         assert_eq!(prepared.execution_mode, ExecutionMode::Direct);
         assert_eq!(prepared.executable, "cargo");
@@ -219,11 +233,34 @@ mod tests {
     }
 
     #[test]
-    fn prepare_rule_step_uses_shell_fallback_for_shell_syntax() {
+    fn prepare_rule_step_rejects_shell_syntax_when_shell_false() {
         let step = base_step("echo hello | sort", 5);
-        let prepared = prepare_rule_step(&step);
+        let err = prepare_rule_step(&step).unwrap_err();
+        let err_text = format!("{err:?}");
+        assert!(
+            err_text.contains("shell"),
+            "expected shell error, got {err_text}"
+        );
+    }
+
+    #[test]
+    fn prepare_rule_step_uses_shell_when_shell_true() {
+        let step = VerificationStep {
+            description: "test".to_string(),
+            command: "echo hello | sort".to_string(),
+            timeout_secs: 5,
+            shell: true,
+        };
+        let prepared = prepare_rule_step(&step).unwrap();
 
         assert_eq!(prepared.execution_mode, ExecutionMode::Shell);
+        if cfg!(target_os = "windows") {
+            assert_eq!(prepared.executable, "cmd");
+            assert_eq!(prepared.args, vec!["/C", "echo hello | sort"]);
+        } else {
+            assert_eq!(prepared.executable, "sh");
+            assert_eq!(prepared.args, vec!["-c", "echo hello | sort"]);
+        }
     }
 
     #[test]
@@ -274,7 +311,9 @@ mod tests {
 
     #[test]
     fn execute_step_manual_shell_succeeds() {
-        let prepared = prepare_manual_step(&base_step("echo hello", 5));
+        let mut step = base_step("echo hello", 5);
+        step.shell = true;
+        let prepared = prepare_manual_step(&step);
         let result = execute_step(&prepared, &ProcessPolicy::default()).unwrap();
         assert_eq!(result.exit_code, 0);
         assert!(result.stdout.to_ascii_lowercase().contains("hello"));

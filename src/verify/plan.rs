@@ -208,11 +208,13 @@ pub fn build_plan_scoped(
             command: "cargo fmt --all -- --check".to_string(),
             timeout_secs: 60,
             description: "Scoped: format check".to_string(),
+            shell: false,
         });
         steps.push(VerificationStep {
             command: "cargo clippy --all-targets --all-features -- -D warnings".to_string(),
             timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
             description: "Scoped: lints".to_string(),
+            shell: false,
         });
         steps.push(VerificationStep {
             command: scoped_cmd,
@@ -221,6 +223,7 @@ pub fn build_plan_scoped(
                 "Scoped: tests covering {} changed file(s) via test_mapping",
                 packet.changes.len()
             ),
+            shell: false,
         });
 
         return VerificationPlan {
@@ -239,6 +242,12 @@ pub struct VerificationStep {
     pub command: String,
     pub timeout_secs: u64,
     pub description: String,
+    /// When false (default), the command is parsed into argv tokens and
+    /// executed directly. When true, the command is executed through a
+    /// system shell (cmd /C on Windows, sh -c on Unix). Shell execution is
+    /// an explicit opt-in because it exposes shell-injection risk.
+    #[serde(default)]
+    pub shell: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -390,6 +399,7 @@ fn build_plan_with_scope(
                             p_file.reason,
                             p_file.path.display()
                         ),
+                        shell: false,
                     });
                 }
             }
@@ -410,6 +420,7 @@ fn build_plan_with_scope(
                 command: step.command,
                 timeout_secs: step.timeout_secs.unwrap_or(DEFAULT_AUTO_TIMEOUT_SECS),
                 description: step.description,
+                shell: false,
             })
             .collect()
     } else {
@@ -419,6 +430,7 @@ fn build_plan_with_scope(
                 command: cmd.clone(),
                 timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
                 description: format!("From rules: {}", cmd),
+                shell: false,
             })
             .collect()
     };
@@ -513,6 +525,7 @@ fn append_full_tier_commands(
                     command: cmd.to_string(),
                     timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
                     description: "Tier: slow tests".to_string(),
+                    shell: false,
                 });
             }
         }
@@ -524,6 +537,7 @@ fn append_full_tier_commands(
                     command: cmd.to_string(),
                     timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
                     description: "Tier: compile-fail tests".to_string(),
+                    shell: false,
                 });
             }
         }
@@ -533,6 +547,7 @@ fn append_full_tier_commands(
                 command: doctest.to_string(),
                 timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
                 description: "Tier: doctests".to_string(),
+                shell: false,
             });
         }
     } else {
@@ -542,6 +557,7 @@ fn append_full_tier_commands(
                 command: fallback.to_string(),
                 timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
                 description: "Fallback: full cargo test".to_string(),
+                shell: false,
             });
         }
     }
@@ -572,6 +588,7 @@ pub fn build_plan_from_config(config: &VerifyConfig) -> Option<VerificationPlan>
             } else {
                 step.description.clone()
             },
+            shell: false,
         })
         .collect();
 

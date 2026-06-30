@@ -1,7 +1,7 @@
 use argon2::{Argon2, Params};
 use chacha20poly1305::{
-    ChaCha20Poly1305, Nonce,
-    aead::{Aead, KeyInit},
+    XChaCha20Poly1305, XNonce,
+    aead::{Aead, KeyInit, Payload},
 };
 use ed25519_dalek::{Signature, SigningKey, VerifyingKey};
 use subtle::ConstantTimeEq;
@@ -9,29 +9,37 @@ use zeroize::Zeroizing;
 
 /// Derives a 32-byte bundle key from a secret and salt using Argon2id.
 /// The result is wrapped in Zeroizing to ensure it's wiped on drop.
-pub fn derive_bundle_key(secret: &[u8], salt: &[u8]) -> Zeroizing<[u8; 32]> {
+pub fn derive_bundle_key(secret: &[u8], salt: &[u8]) -> Result<Zeroizing<[u8; 32]>, String> {
     let mut key = [0u8; 32];
-    let params = Params::new(64 * 1024, 3, 1, Some(32)).expect("Invalid Argon2 params");
+    let params = Params::new(64 * 1024, 3, 1, Some(32))
+        .map_err(|e| format!("Invalid Argon2 params: {}", e))?;
     let argon2 = Argon2::new(argon2::Algorithm::Argon2id, argon2::Version::V0x13, params);
 
     argon2
         .hash_password_into(secret, salt, &mut key)
-        .expect("Argon2 hashing failed");
+        .map_err(|e| format!("Argon2 hashing failed: {}", e))?;
 
-    Zeroizing::new(key)
+    Ok(Zeroizing::new(key))
 }
 
-/// Seals plaintext using ChaCha20-Poly1305 with the given key and nonce.
+/// Seals plaintext using XChaCha20-Poly1305 with the given key, nonce, and optional AAD.
 pub fn seal(
     plaintext: &[u8],
     key: &[u8; 32],
-    nonce: &[u8; 12],
+    nonce: &[u8; 24],
+    aad: &[u8],
 ) -> Result<(Vec<u8>, [u8; 16]), String> {
-    let cipher = ChaCha20Poly1305::new(key.into());
-    let nonce = Nonce::from_slice(nonce);
+    let cipher = XChaCha20Poly1305::new(key.into());
+    let nonce = XNonce::from_slice(nonce);
 
     let ciphertext_with_tag = cipher
-        .encrypt(nonce, plaintext)
+        .encrypt(
+            nonce,
+            Payload {
+                msg: plaintext,
+                aad,
+            },
+        )
         .map_err(|e| format!("Encryption failed: {}", e))?;
 
     if ciphertext_with_tag.len() < 16 {
@@ -47,21 +55,28 @@ pub fn seal(
     Ok((ct.to_vec(), tag_bytes))
 }
 
-/// Opens ciphertext using ChaCha20-Poly1305 with the given key, nonce, and tag.
+/// Opens ciphertext using XChaCha20-Poly1305 with the given key, nonce, tag, and optional AAD.
 pub fn open(
     ciphertext: &[u8],
     tag: &[u8; 16],
     key: &[u8; 32],
-    nonce: &[u8; 12],
+    nonce: &[u8; 24],
+    aad: &[u8],
 ) -> Result<Zeroizing<Vec<u8>>, String> {
-    let cipher = ChaCha20Poly1305::new(key.into());
-    let nonce = Nonce::from_slice(nonce);
+    let cipher = XChaCha20Poly1305::new(key.into());
+    let nonce = XNonce::from_slice(nonce);
 
     let mut full_ciphertext = ciphertext.to_vec();
     full_ciphertext.extend_from_slice(tag);
 
     let decrypted = cipher
-        .decrypt(nonce, full_ciphertext.as_ref())
+        .decrypt(
+            nonce,
+            Payload {
+                msg: &full_ciphertext,
+                aad,
+            },
+        )
         .map_err(|e| format!("Decryption failed: {}", e))?;
 
     Ok(Zeroizing::new(decrypted))

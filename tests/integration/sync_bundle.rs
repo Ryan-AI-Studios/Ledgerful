@@ -194,3 +194,101 @@ fn test_bundle_rejects_wrong_team_secret() {
 
     assert!(result.is_err());
 }
+
+#[test]
+fn test_bundle_encrypt_rejects_short_ciphertext() {
+    let key = [0u8; 32];
+
+    // Minimum valid length is salt(16) + nonce(24) + tag(16) = 56 bytes.
+    let short = vec![0u8; 55];
+    let result = Bundle::decrypt(&short, &key);
+
+    assert!(result.is_err());
+}
+
+#[test]
+fn test_bundle_rejects_oversized_zip_input() {
+    let device_id = "test-device".to_string();
+    let mut verify_keys = HashMap::new();
+    verify_keys.insert(device_id, [0u8; 32]);
+
+    let oversized = vec![0u8; 256 * 1024 * 1024 + 1];
+    let result = Bundle::parse(&oversized, &verify_keys);
+
+    assert!(result.is_err());
+    assert!(
+        result.unwrap_err().contains("Bundle exceeds maximum size"),
+        "expected bundle size cap error"
+    );
+}
+
+#[test]
+fn test_bundle_invalid_signature_is_rejected_before_full_deserialization() {
+    use ed25519_dalek::SigningKey;
+
+    let mut csprng = rand::thread_rng();
+    let signing_key_a = SigningKey::generate(&mut csprng);
+    let signing_key_b = SigningKey::generate(&mut csprng);
+
+    // Build a manifest with a crafted "entries" array that would be expensive to deserialize
+    // (many large strings) and sign it with key A.  Keep the serialized manifest under the
+    // 64 MiB cap so the test exercises signature rejection, not the size cap.
+    let device_id = "test-device".to_string();
+    let expensive_entries: Vec<Entry> = (0..1_000)
+        .map(|i| Entry {
+            tx_id: format!("{}{}", "x".repeat(128), i),
+            category: "FEATURE".to_string(),
+            entry_type: "IMPLEMENTATION".to_string(),
+            entity: "src/lib.rs".to_string(),
+            entity_normalized: "src/lib.rs".to_string(),
+            change_type: "MODIFY".to_string(),
+            summary: "a".repeat(512),
+            reason: "b".repeat(512),
+            is_breaking: false,
+            committed_at: chrono::Utc::now(),
+            origin: "LOCAL".to_string(),
+            trace_id: None,
+            signature: None,
+            public_key: None,
+            risk: None,
+            verification_status: None,
+            verification_basis: None,
+            outcome_notes: None,
+            related_tickets: None,
+            entry_hlc: HLC {
+                physical_ms: 1,
+                logical: 0,
+                node_id: device_id.clone(),
+            },
+        })
+        .collect();
+
+    let manifest = Manifest {
+        version: 1,
+        device_id: device_id.clone(),
+        bundle_hlc: HLC {
+            physical_ms: 1,
+            logical: 0,
+            node_id: device_id.clone(),
+        },
+        manifest_sha256: "fake-sha".to_string(),
+        entry_count: expensive_entries.len(),
+        entries: expensive_entries,
+        tombstones: vec![],
+    };
+
+    let (zip_bytes, _signature) = Bundle::build(manifest, &signing_key_a).unwrap();
+
+    // Verify with key B (same device_id, wrong key) — signature must fail.
+    let mut verify_keys = HashMap::new();
+    verify_keys.insert(device_id, signing_key_b.verifying_key().to_bytes());
+
+    let result = Bundle::parse(&zip_bytes, &verify_keys);
+    assert!(result.is_err());
+    let err = result.unwrap_err();
+    assert!(
+        err.contains("Signature verification failed"),
+        "expected signature failure before full manifest deserialization, got: {}",
+        err
+    );
+}

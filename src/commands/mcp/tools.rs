@@ -1,8 +1,60 @@
 use serde_json::Value;
-use std::process::Command;
+use std::process::{Command, Stdio};
+use std::time::Duration;
+
+const MCP_TOOL_TIMEOUT_SECS: u64 = 120;
 
 fn get_ledgerful_exe() -> std::path::PathBuf {
     std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("ledgerful"))
+}
+
+fn run_ledgerful_tool<I, S>(args: I) -> Result<std::process::Output, String>
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let exe = get_ledgerful_exe();
+    let exe_str = exe.to_string_lossy().to_string();
+
+    crate::platform::process_policy::check_policy(
+        &exe_str,
+        &crate::platform::process_policy::ProcessPolicy {
+            allowed_commands: vec![exe_str.clone()],
+            denied_commands: Vec::new(),
+            default_timeout_secs: MCP_TOOL_TIMEOUT_SECS,
+            strict: true,
+        },
+    )
+    .map_err(|e| format!("Process policy denied ledgerful self-spawn: {}", e))?;
+
+    let mut child = Command::new(&exe)
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("Failed to spawn ledgerful tool: {}", e))?;
+
+    let timeout = Duration::from_secs(MCP_TOOL_TIMEOUT_SECS);
+    let status = match wait_timeout::ChildExt::wait_timeout(&mut child, timeout)
+        .map_err(|e| format!("Error waiting for ledgerful tool: {}", e))?
+    {
+        Some(status) => status,
+        None => {
+            let _ = child.kill();
+            return Err(format!(
+                "ledgerful tool timed out after {} seconds",
+                MCP_TOOL_TIMEOUT_SECS
+            ));
+        }
+    };
+
+    child
+        .wait_with_output()
+        .map(|mut output| {
+            output.status = status;
+            output
+        })
+        .map_err(|e| format!("Failed to read ledgerful tool output: {}", e))
 }
 
 pub fn dispatch_tool(name: &str, params: Value) -> Value {
@@ -92,16 +144,9 @@ fn handle_hotspots(params: Value) -> Value {
 }
 
 fn handle_scan(_params: Value) -> Value {
-    let exe = get_ledgerful_exe();
-    let output = std::process::Command::new(exe)
-        .arg("scan")
-        .arg("--impact")
-        .arg("--json")
-        .output();
-
-    let out = match output {
+    let out = match run_ledgerful_tool(["scan", "--impact", "--json"]) {
         Ok(o) => o,
-        Err(e) => return error_response(&format!("Failed to execute scan: {}", e)),
+        Err(e) => return error_response(&e),
     };
 
     if !out.status.success() {
@@ -115,26 +160,18 @@ fn handle_scan(_params: Value) -> Value {
 fn handle_search(params: Value) -> Value {
     let query = params["query"].as_str().unwrap_or_default();
     let limit = params["limit"].as_u64().unwrap_or(50).to_string();
-    let exe = get_ledgerful_exe();
-    let output = Command::new(exe)
-        .arg("search")
-        .arg("--json")
-        .arg("--limit")
-        .arg(&limit)
-        .arg(query)
-        .output();
 
-    match output {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-            if !out.status.success() {
-                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                return error_response(&format!("Search failed: {}\n{}", stdout, stderr));
-            }
-            text_response(&stdout)
-        }
-        Err(e) => error_response(&format!("Failed to run search process: {}", e)),
+    let out = match run_ledgerful_tool(["search", "--json", "--limit", &limit, query]) {
+        Ok(o) => o,
+        Err(e) => return error_response(&e),
+    };
+
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        return error_response(&format!("Search failed: {}\n{}", stdout, stderr));
     }
+    text_response(&stdout)
 }
 
 fn handle_ledger_search(params: Value) -> Value {
@@ -159,66 +196,50 @@ fn handle_ledger_search(params: Value) -> Value {
 
 fn handle_ask(params: Value) -> Value {
     let query = params["query"].as_str().unwrap_or_default();
-    let exe = get_ledgerful_exe();
-    let output = Command::new(exe).arg("ask").arg(query).output();
 
-    match output {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-            if !out.status.success() {
-                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                return error_response(&format!("Ask failed: {}\n{}", stdout, stderr));
-            }
-            // Remove ansi codes if present, but for now just return text
-            text_response(&stdout)
-        }
-        Err(e) => error_response(&format!("Failed to run ask process: {}", e)),
+    let out = match run_ledgerful_tool(["ask", query]) {
+        Ok(o) => o,
+        Err(e) => return error_response(&e),
+    };
+
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        return error_response(&format!("Ask failed: {}\n{}", stdout, stderr));
     }
+    // Remove ansi codes if present, but for now just return text
+    text_response(&stdout)
 }
 
 fn handle_endpoints_changed(_params: Value) -> Value {
-    let exe = get_ledgerful_exe();
-    let output = Command::new(exe)
-        .arg("endpoints")
-        .arg("--changed")
-        .arg("--json")
-        .output();
+    let out = match run_ledgerful_tool(["endpoints", "--changed", "--json"]) {
+        Ok(o) => o,
+        Err(e) => return error_response(&e),
+    };
 
-    match output {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-            if !out.status.success() {
-                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                return error_response(&format!("Endpoints failed: {}\n{}", stdout, stderr));
-            }
-            text_response(&stdout)
-        }
-        Err(e) => error_response(&format!("Failed to run endpoints process: {}", e)),
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        return error_response(&format!("Endpoints failed: {}\n{}", stdout, stderr));
     }
+    text_response(&stdout)
 }
 
 fn handle_security_boundaries(_params: Value) -> Value {
-    let exe = get_ledgerful_exe();
-    let output = Command::new(exe)
-        .arg("security")
-        .arg("boundaries")
-        .arg("--json")
-        .output();
+    let out = match run_ledgerful_tool(["security", "boundaries", "--json"]) {
+        Ok(o) => o,
+        Err(e) => return error_response(&e),
+    };
 
-    match output {
-        Ok(out) => {
-            let stdout = String::from_utf8_lossy(&out.stdout).to_string();
-            if !out.status.success() {
-                let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-                return error_response(&format!(
-                    "Security boundaries failed: {}\n{}",
-                    stdout, stderr
-                ));
-            }
-            text_response(&stdout)
-        }
-        Err(e) => error_response(&format!("Failed to run security process: {}", e)),
+    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    if !out.status.success() {
+        let stderr = String::from_utf8_lossy(&out.stderr).to_string();
+        return error_response(&format!(
+            "Security boundaries failed: {}\n{}",
+            stdout, stderr
+        ));
     }
+    text_response(&stdout)
 }
 
 fn handle_dead_code(params: Value) -> Value {
@@ -256,16 +277,9 @@ fn handle_verify_plan(_params: Value) -> Value {
     let config = crate::config::load_config(&layout).unwrap_or_default();
     let rules = crate::policy::load::load_rules(&layout).unwrap_or_default();
 
-    let exe = get_ledgerful_exe();
-    let output = std::process::Command::new(exe)
-        .arg("scan")
-        .arg("--impact")
-        .arg("--json")
-        .output();
-
-    let out = match output {
+    let out = match run_ledgerful_tool(["scan", "--impact", "--json"]) {
         Ok(o) => o,
-        Err(e) => return error_response(&format!("Failed to execute scan: {}", e)),
+        Err(e) => return error_response(&e),
     };
 
     if !out.status.success() {

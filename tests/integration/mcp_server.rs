@@ -377,6 +377,62 @@ mod tests {
     }
 
     #[test]
+    fn test_rejects_oversized_content_length() {
+        let bin_path = get_mcp_binary();
+
+        let mut child = Command::new(bin_path)
+            .arg("mcp")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("Failed to spawn ledgerful mcp");
+
+        let stdin = child.stdin.as_mut().expect("Failed to open stdin");
+
+        // Content-Length one byte above the 16 MiB cap; body is intentionally short.
+        let payload = format!("Content-Length: {}\r\n\r\n{{}}", 16 * 1024 * 1024 + 1);
+        stdin
+            .write_all(payload.as_bytes())
+            .expect("Failed to write to stdin");
+
+        let stdout = child.stdout.take().expect("Failed to open stdout");
+        let mut reader = BufReader::new(stdout);
+
+        // The server should emit no valid JSON-RPC frame because it rejects the length before
+        // allocating. It should exit with an error since the message cannot be parsed.
+        let response: serde_json::Value = loop {
+            let mut line = String::new();
+            match reader.read_line(&mut line) {
+                Ok(0) => break serde_json::Value::Null,
+                Ok(_) => {
+                    if line.trim().starts_with("Content-Length: ") {
+                        let len: usize = line
+                            .trim()
+                            .strip_prefix("Content-Length: ")
+                            .unwrap()
+                            .parse()
+                            .unwrap();
+                        let mut buf = vec![0u8; len];
+                        reader.read_exact(&mut buf).unwrap();
+                        break serde_json::from_str(&String::from_utf8_lossy(&buf)).unwrap();
+                    }
+                }
+                Err(_) => break serde_json::Value::Null,
+            }
+        };
+
+        let _ = child.kill();
+        let _ = child.wait();
+
+        // If the server processed anything, it should be an error response (-32700 or similar).
+        assert!(
+            response.get("error").is_some() || response == serde_json::Value::Null,
+            "server should reject oversized Content-Length before normal processing"
+        );
+    }
+
+    #[test]
     fn test_exits_cleanly_after_trailing_newline_at_eof() {
         let bin_path = get_mcp_binary();
 

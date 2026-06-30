@@ -84,6 +84,7 @@ mod milestone_j_remediation;
 mod narrative_golden;
 mod narrative_prompt;
 mod observability_cedar_graph_test;
+mod path_security;
 mod persistence;
 mod platform_windows;
 mod platform_wsl;

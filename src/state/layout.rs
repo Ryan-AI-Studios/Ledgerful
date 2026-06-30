@@ -1,6 +1,7 @@
 use crate::state::StateError;
 use camino::{Utf8Path, Utf8PathBuf};
 use miette::Result;
+use path_clean::PathClean;
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
@@ -149,7 +150,8 @@ fn normalize_root(root: &Utf8Path) -> Utf8PathBuf {
             .map(|cwd| cwd.join(path))
             .unwrap_or_else(|_| path.to_path_buf())
     };
-    let normalized = correct_component_case(&absolute);
+    let cleaned = absolute.clean();
+    let normalized = correct_component_case(&cleaned);
 
     Utf8PathBuf::from_path_buf(normalized).unwrap_or_else(|_| root.to_path_buf())
 }
