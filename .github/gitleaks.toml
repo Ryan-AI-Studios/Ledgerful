@@ -1,0 +1,16 @@
+title = 'Ledgerful gitleaks allowlist'
+
+# Inherit the default rule set.
+[extend]
+useDefault = true
+
+# Known false positives — test fixtures and vendored sources that match
+# secret-like patterns but do not contain real credentials.
+[allowlist]
+paths = [
+  'tests/integration/sync_init.rs',
+  'vendor/sqlite3-src/.*',
+  'src/config/redact.rs',
+  'src/impact/redact.rs',
+  '\.ledgerful\/',
+]

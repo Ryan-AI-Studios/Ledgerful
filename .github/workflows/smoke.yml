@@ -7,24 +7,27 @@ on:
       - feat/**
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   web-build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           repository: Ryan-AI-Studios/ledgerful-frontend
           token: ${{ secrets.LEDGERFUL_FRONTEND_PAT }}
           path: ledgerful-frontend
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
         with:
           node-version: 22
       - run: npm ci
         working-directory: ledgerful-frontend
       - run: npm run build
         working-directory: ledgerful-frontend
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ledgerful-web-spa
           path: ledgerful-frontend/out
@@ -40,13 +43,13 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-14, macos-15, windows-latest]
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           name: ledgerful-web-spa
           path: ../ledgerful-frontend/out
-      - uses: dtolnay/rust-toolchain@stable
-      - uses: Swatinem/rust-cache@v2
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - run: cargo install --path . --features mcp,web --locked --force
       - run: ledgerful --version
       - name: Run MCP Smoke Test (Bash)

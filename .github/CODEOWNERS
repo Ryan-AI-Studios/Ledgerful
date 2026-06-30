@@ -1,0 +1,20 @@
+# Default owners for everything in the repo.
+*                           @RyanB
+
+# Cryptographic sync implementation.
+/src/sync/crypto.rs         @RyanB
+
+# Web server / auth / API surface.
+/src/commands/web/          @RyanB
+
+# CI/CD and automation.
+/.github/workflows/         @RyanB
+
+# Supply-chain / dependency policy.
+/deny.toml                  @RyanB
+
+# Project manifest and workspace config.
+/Cargo.toml                 @RyanB
+
+# Release packaging metadata.
+/release.yml                @RyanB

@@ -1,0 +1,31 @@
+name: AI Review Gate
+
+# Enforces the AI-code adversarial review protocol (conductor track 0004, DoD-7).
+# On PR open, creates a `pending` status check for `ai-reviewed`.
+# The orchestrator pushes `success` via `gh api` after the review subagent passes.
+# Branch protection requires this check before merge (when available).
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  statuses: write
+  contents: read
+
+jobs:
+  pending-status:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Create pending ai-reviewed status
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          REPO: ${{ github.repository }}
+        run: |
+          curl -X POST \
+            -H "Authorization: token $GH_TOKEN" \
+            -H "Accept: application/vnd.github+json" \
+            "https://api.github.com/repos/$REPO/statuses/$PR_HEAD_SHA" \
+            -d '{"state":"pending","context":"ai-reviewed","description":"AI-code adversarial review pending — orchestrator sets success after cross-model review passes","target_url":"https://github.com/Ryan-AI-Studios/Ledgerful/blob/main/docs/AI-CODE-REVIEW-PROTOCOL.md"}'
