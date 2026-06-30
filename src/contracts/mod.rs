@@ -4,7 +4,11 @@ pub mod parser;
 
 use serde::{Deserialize, Serialize};
 
+#[cfg(any(test, feature = "openapi", feature = "web"))]
+use utoipa::ToSchema;
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
 pub struct AffectedContract {
     pub endpoint_id: String,
     pub path: String,

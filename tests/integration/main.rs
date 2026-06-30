@@ -137,6 +137,8 @@ mod mcp_server;
 
 mod cli_tests_command;
 #[cfg(feature = "web")]
+mod openapi_contract;
+#[cfg(feature = "web")]
 mod web_api;
 #[cfg(feature = "web")]
 mod web_security;

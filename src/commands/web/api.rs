@@ -28,6 +28,115 @@ use miette::{IntoDiagnostic, Result, miette};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
+
+#[cfg(any(test, feature = "openapi", feature = "web"))]
+use utoipa::{IntoParams, OpenApi, ToSchema};
+
+#[cfg(any(test, feature = "openapi", feature = "web"))]
+use super::server::{
+    __path_changes_handler, __path_config_handler, __path_health_handler, __path_hotspots_handler,
+    __path_ledger_handler, __path_ledger_search_handler, __path_ledger_tx_handler,
+    __path_projects_handler, __path_session_handler, __path_snapshot_handler,
+    __path_status_handler, ChangeResponse, ChangedFileResponse, ChangesQuery, ConfigResponse,
+    HotspotsQueryParams, LedgerDetailResponse, LedgerEntryResponse, LedgerListQuery,
+    LedgerSearchQuery, ProjectResponse, SnapshotResponse, StatusResponse, UserSession,
+};
+
+#[cfg(any(test, feature = "openapi", feature = "web"))]
+#[derive(OpenApi)]
+#[openapi(
+    info(
+        title = "Ledgerful Daemon API",
+        version = "0.1.6",
+        description = "Machine-readable OpenAPI contract for the Ledgerful daemon `/api/*` endpoints. Generated from the Rust DTOs via utoipa."
+    ),
+    paths(
+        health_handler,
+        session_handler,
+        snapshot_handler,
+        status_handler,
+        projects_handler,
+        ledger_handler,
+        ledger_search_handler,
+        ledger_tx_handler,
+        changes_handler,
+        hotspots_handler,
+        config_handler,
+        hotspots_trend_handler,
+        latest_impact_handler,
+        latest_verify_handler,
+        verify_health_handler,
+        verify_history_handler,
+        verify_steps_handler,
+        compliance_summary_handler,
+        compliance_signatures_handler,
+        compliance_export_handler,
+        endpoints_changed_handler,
+        security_boundaries_handler,
+        knowledge_graph_handler
+    ),
+    components(schemas(
+        UserSession,
+        SnapshotResponse,
+        StatusResponse,
+        ProjectResponse,
+        LedgerEntryResponse,
+        LedgerDetailResponse,
+        ChangedFileResponse,
+        LedgerListQuery,
+        LedgerSearchQuery,
+        ChangesQuery,
+        ChangeResponse,
+        HotspotsQueryParams,
+        ConfigResponse,
+        HotspotResponse,
+        HotspotTrendQuery,
+        HotspotTrendResponse,
+        HotspotTrendSeries,
+        VerificationHealthResponse,
+        VerifyHistoryQuery,
+        VerificationTrendPoint,
+        VerificationStepResponse,
+        ComplianceSummaryResponse,
+        ComplianceSignatureEntry,
+        AffectedContract,
+        SecurityBoundariesResponse,
+        KnowledgeGraphQuery,
+        KnowledgeGraphResponse,
+        KgNode,
+        KgEdge
+    )),
+    tags(
+        (name = "health", description = "Daemon liveness"),
+        (name = "session", description = "Current user session"),
+        (name = "snapshot", description = "Summary metrics"),
+        (name = "status", description = "Daemon health status"),
+        (name = "projects", description = "Project list"),
+        (name = "ledger", description = "Ledger transactions"),
+        (name = "changes", description = "Recent changes"),
+        (name = "hotspots", description = "Hotspot rankings and trends"),
+        (name = "reports", description = "Latest impact/verify report JSON"),
+        (name = "verify", description = "Verification health/history/steps"),
+        (name = "compliance", description = "Compliance summary/signatures/export"),
+        (name = "endpoints", description = "Affected API contracts"),
+        (name = "security", description = "Security boundaries"),
+        (name = "knowledge-graph", description = "CozoDB knowledge-graph subgraph"),
+        (name = "config", description = "Daemon configuration"),
+        (name = "sync", description = "Local M0 sync state")
+    )
+)]
+pub struct ApiDoc;
+
+/// Generate the canonical OpenAPI JSON string for this build.
+#[cfg(any(test, feature = "openapi", feature = "web"))]
+pub fn generate_openapi_json() -> String {
+    use utoipa::OpenApi;
+    ApiDoc::openapi().to_pretty_json().unwrap_or_else(|e| {
+        tracing::error!("OpenAPI serialization failed: {e}");
+        String::from("{}")
+    })
+}
+
 use std::sync::Arc;
 use std::time::{Duration, Instant, UNIX_EPOCH};
 
@@ -47,6 +156,7 @@ const KG_MAX_LIMIT: usize = 1000;
 /// `centrality`) are included temporarily until the frontend PR merges. They
 /// will be removed once the frontend consumes the new fields directly.
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct HotspotResponse {
     // Frontend-facing fields (the contract):
@@ -132,12 +242,38 @@ pub fn map_hotspots_to_responses(
 // Report endpoints
 // ---------------------------------------------------------------------------
 
+/// `GET /api/reports/latest-impact.json` — passthrough of the latest impact
+/// report JSON. Returns `application/json` with an opaque object schema when
+/// a report exists; 404 otherwise.
+#[utoipa::path(
+    get,
+    path = "/api/reports/latest-impact.json",
+    operation_id = "getLatestImpactReport",
+    tag = "reports",
+    responses(
+        (status = 200, description = "Latest impact report JSON", body = Object, content_type = "application/json"),
+        (status = 404, description = "Report not found")
+    )
+)]
 pub async fn latest_impact_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, WebError> {
     serve_report(state.layout.clone(), "latest-impact.json").await
 }
 
+/// `GET /api/reports/latest-verify.json` — passthrough of the latest verify
+/// report JSON. Returns `application/json` with an opaque object schema when
+/// a report exists; 404 otherwise.
+#[utoipa::path(
+    get,
+    path = "/api/reports/latest-verify.json",
+    operation_id = "getLatestVerifyReport",
+    tag = "reports",
+    responses(
+        (status = 200, description = "Latest verify report JSON", body = Object, content_type = "application/json"),
+        (status = 404, description = "Report not found")
+    )
+)]
 pub async fn latest_verify_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, WebError> {
@@ -162,6 +298,7 @@ pub async fn latest_verify_handler(
 ///   staleness.)
 /// - Otherwise → `HEALTHY`.
 #[derive(Debug, Serialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct VerificationHealthResponse {
     pub status: String,
@@ -174,6 +311,16 @@ pub struct VerificationHealthResponse {
     pub message: Option<String>,
 }
 
+/// `GET /api/verify/health` — overall verification health.
+#[utoipa::path(
+    get,
+    path = "/api/verify/health",
+    operation_id = "getVerifyHealth",
+    tag = "verify",
+    responses(
+        (status = 200, description = "Verification health", body = VerificationHealthResponse)
+    )
+)]
 pub async fn verify_health_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, WebError> {
@@ -236,11 +383,16 @@ fn fetch_verify_health(layout: &Layout) -> Result<VerificationHealthResponse> {
 /// `{ date, passed, failed }` sorted ascending by date. Dates with no runs
 /// are omitted (deterministic: only dates that have at least one run appear).
 #[derive(Debug, Deserialize, Default)]
+#[cfg_attr(
+    any(test, feature = "openapi", feature = "web"),
+    derive(IntoParams, ToSchema)
+)]
 pub struct VerifyHistoryQuery {
     days: Option<u64>,
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct VerificationTrendPoint {
     pub date: String,
@@ -248,6 +400,17 @@ pub struct VerificationTrendPoint {
     pub failed: u64,
 }
 
+/// `GET /api/verify/history` — pass/fail trend over time.
+#[utoipa::path(
+    get,
+    path = "/api/verify/history",
+    operation_id = "getVerifyHistory",
+    tag = "verify",
+    params(VerifyHistoryQuery),
+    responses(
+        (status = 200, description = "Verification history points", body = [VerificationTrendPoint])
+    )
+)]
 pub async fn verify_history_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<VerifyHistoryQuery>,
@@ -298,6 +461,7 @@ fn fetch_verify_history(layout: &Layout, days: u64) -> Result<Vec<VerificationTr
 /// `recentFailures` counts failures within the last 10 verification runs
 /// (by `verification_runs.id DESC`). Flagged as an assumption.
 #[derive(Debug, Serialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct VerificationStepResponse {
     pub id: String,
@@ -308,6 +472,16 @@ pub struct VerificationStepResponse {
     pub recent_failures: u64,
 }
 
+/// `GET /api/verify/steps` — per-step verification aggregates.
+#[utoipa::path(
+    get,
+    path = "/api/verify/steps",
+    operation_id = "getVerifySteps",
+    tag = "verify",
+    responses(
+        (status = 200, description = "Verification step metrics", body = [VerificationStepResponse])
+    )
+)]
 pub async fn verify_steps_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, WebError> {
@@ -446,12 +620,17 @@ fn read_report_json(layout: &Layout, filename: &str) -> Result<Option<serde_json
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize, Default)]
+#[cfg_attr(
+    any(test, feature = "openapi", feature = "web"),
+    derive(IntoParams, ToSchema)
+)]
 pub struct HotspotTrendQuery {
     days: Option<u64>,
     limit: Option<usize>,
 }
 
 #[derive(Serialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
 pub struct HotspotTrendResponse {
     pub labels: Vec<String>,
     pub series: Vec<HotspotTrendSeries>,
@@ -459,11 +638,23 @@ pub struct HotspotTrendResponse {
 }
 
 #[derive(Serialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
 pub struct HotspotTrendSeries {
     pub path: String,
     pub scores: Vec<f32>,
 }
 
+/// `GET /api/hotspots/trend` — rolling hotspot trend series.
+#[utoipa::path(
+    get,
+    path = "/api/hotspots/trend",
+    operation_id = "getHotspotTrend",
+    tag = "hotspots",
+    params(HotspotTrendQuery),
+    responses(
+        (status = 200, description = "Hotspot trend data", body = HotspotTrendResponse)
+    )
+)]
 pub async fn hotspots_trend_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HotspotTrendQuery>,
@@ -748,6 +939,16 @@ fn collect_recent_commits(
 // Affected API endpoints endpoint
 // ---------------------------------------------------------------------------
 
+/// `GET /api/endpoints/changed` — API contracts affected by changed files.
+#[utoipa::path(
+    get,
+    path = "/api/endpoints/changed",
+    operation_id = "getEndpointsChanged",
+    tag = "endpoints",
+    responses(
+        (status = 200, description = "Affected API contracts", body = [AffectedContract])
+    )
+)]
 pub async fn endpoints_changed_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, WebError> {
@@ -803,11 +1004,22 @@ fn fetch_endpoints_changed(layout: &Layout) -> Result<Vec<AffectedContract>> {
 // ---------------------------------------------------------------------------
 
 #[derive(Serialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
 pub struct SecurityBoundariesResponse {
     pub meta: serde_json::Value,
     pub boundaries: serde_json::Value,
 }
 
+/// `GET /api/security/boundaries` — security boundary counts and edges.
+#[utoipa::path(
+    get,
+    path = "/api/security/boundaries",
+    operation_id = "getSecurityBoundaries",
+    tag = "security",
+    responses(
+        (status = 200, description = "Security boundaries", body = SecurityBoundariesResponse)
+    )
+)]
 pub async fn security_boundaries_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, WebError> {
@@ -922,12 +1134,17 @@ fn empty_boundaries_response() -> SecurityBoundariesResponse {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Deserialize, Default)]
+#[cfg_attr(
+    any(test, feature = "openapi", feature = "web"),
+    derive(IntoParams, ToSchema)
+)]
 pub struct KnowledgeGraphQuery {
     limit: Option<usize>,
     focus: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
 pub struct KnowledgeGraphResponse {
     pub nodes: Vec<KgNode>,
     pub edges: Vec<KgEdge>,
@@ -935,6 +1152,7 @@ pub struct KnowledgeGraphResponse {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
 pub struct KgNode {
     pub id: String,
     pub label: String,
@@ -947,6 +1165,7 @@ pub struct KgNode {
 }
 
 #[derive(Debug, Clone, Serialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
 pub struct KgEdge {
     pub source: String,
     pub target: String,
@@ -957,6 +1176,17 @@ pub struct KgEdge {
     pub provenance_id: Option<String>,
 }
 
+/// `GET /api/knowledge-graph` — CozoDB knowledge-graph subgraph.
+#[utoipa::path(
+    get,
+    path = "/api/knowledge-graph",
+    operation_id = "getKnowledgeGraph",
+    tag = "knowledge-graph",
+    params(KnowledgeGraphQuery),
+    responses(
+        (status = 200, description = "Knowledge graph nodes and edges", body = KnowledgeGraphResponse)
+    )
+)]
 pub async fn knowledge_graph_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<KnowledgeGraphQuery>,
@@ -1409,6 +1639,7 @@ const COMPLIANCE_SIGNATURES_LIMIT: usize = 100;
 /// hotspotDeltaPercent: 0.0 }` with HTTP 200 — the dashboard empty state,
 /// NOT an error.
 #[derive(Debug, Serialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct ComplianceSummaryResponse {
     pub total_signed: u64,
@@ -1420,6 +1651,16 @@ pub struct ComplianceSummaryResponse {
     pub hotspot_delta_percent: f64,
 }
 
+/// `GET /api/compliance/summary` — aggregate compliance summary.
+#[utoipa::path(
+    get,
+    path = "/api/compliance/summary",
+    operation_id = "getComplianceSummary",
+    tag = "compliance",
+    responses(
+        (status = 200, description = "Compliance summary", body = ComplianceSummaryResponse)
+    )
+)]
 pub async fn compliance_summary_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, WebError> {
@@ -1518,6 +1759,7 @@ fn fetch_compliance_summary(layout: &Layout) -> Result<ComplianceSummaryResponse
 ///
 /// No-DB path → empty array `[]` (200, not an error).
 #[derive(Debug, Serialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
 #[serde(rename_all = "camelCase")]
 pub struct ComplianceSignatureEntry {
     pub tx_id: String,
@@ -1528,6 +1770,16 @@ pub struct ComplianceSignatureEntry {
     pub category: String,
 }
 
+/// `GET /api/compliance/signatures` — recent signature status entries.
+#[utoipa::path(
+    get,
+    path = "/api/compliance/signatures",
+    operation_id = "getComplianceSignatures",
+    tag = "compliance",
+    responses(
+        (status = 200, description = "Compliance signature entries", body = [ComplianceSignatureEntry])
+    )
+)]
 pub async fn compliance_signatures_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, WebError> {
@@ -1697,6 +1949,17 @@ fn round_2dp(value: f64) -> f64 {
 /// returned `Response`. Empty / no-DB state still yields a valid zip
 /// (header-only CSVs, no `adr/` files, a manifest over the files that
 /// exist, and a signature over that manifest) — 200, not an error.
+/// `GET /api/compliance/export` — download a tamper-evident SOC2 evidence
+/// `.zip`. Returns `application/zip` with `Content-Disposition: attachment`.
+#[utoipa::path(
+    get,
+    path = "/api/compliance/export",
+    operation_id = "exportComplianceEvidence",
+    tag = "compliance",
+    responses(
+        (status = 200, description = "SOC2 evidence ZIP", content_type = "application/zip")
+    )
+)]
 pub async fn compliance_export_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<axum::response::Response, WebError> {

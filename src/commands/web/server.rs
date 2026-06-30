@@ -28,6 +28,10 @@ use miette::{IntoDiagnostic, Result, miette};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
+
+#[cfg(any(test, feature = "openapi", feature = "web"))]
+use utoipa::{IntoParams, ToSchema};
+
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
@@ -193,12 +197,54 @@ async fn csp_header_middleware(request: Request, next: Next) -> Response {
     response
 }
 
-async fn health_handler() -> impl IntoResponse {
+/// `GET /health` — daemon liveness check. Does **not** require auth.
+#[utoipa::path(
+    get,
+    path = "/health",
+    operation_id = "getHealth",
+    tag = "health",
+    responses(
+        (status = 200, description = "Daemon is live", body = Object, content_type = "application/json")
+    )
+)]
+pub(crate) async fn health_handler() -> impl IntoResponse {
     Json(json!({ "status": "ok" }))
 }
 
+#[derive(Debug, serde::Serialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct UserSession {
+    id: String,
+    name: String,
+    email: String,
+    role: String,
+}
+
+/// `GET /api/session` — current user session.
+#[utoipa::path(
+    get,
+    path = "/api/session",
+    operation_id = "getSession",
+    tag = "session",
+    responses(
+        (status = 200, description = "Current session", body = UserSession)
+    )
+)]
+pub(crate) async fn session_handler() -> Result<impl IntoResponse, WebError> {
+    let user = current_user();
+    let session = UserSession {
+        id: user.clone(),
+        name: user,
+        email: String::new(),
+        role: "admin".to_string(),
+    };
+    Ok(Json(session))
+}
+
 #[derive(Serialize)]
-struct SnapshotResponse {
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+pub(crate) struct SnapshotResponse {
     project_id: String,
     overall_risk: String,
     pending_transactions: usize,
@@ -211,7 +257,17 @@ struct SnapshotResponse {
     recent_changes: Vec<serde_json::Value>,
 }
 
-async fn snapshot_handler(
+/// `GET /api/snapshot` — summary metrics + recent change feed.
+#[utoipa::path(
+    get,
+    path = "/api/snapshot",
+    operation_id = "getSnapshot",
+    tag = "snapshot",
+    responses(
+        (status = 200, description = "Project snapshot", body = SnapshotResponse)
+    )
+)]
+pub(crate) async fn snapshot_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, WebError> {
     let layout = state.layout.clone();
@@ -307,7 +363,8 @@ fn count_indexed_documents(layout: &Layout) -> usize {
 }
 
 #[derive(Serialize)]
-struct StatusResponse {
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+pub(crate) struct StatusResponse {
     index_ready: bool,
     graph_ready: bool,
     pending_transactions: usize,
@@ -316,7 +373,25 @@ struct StatusResponse {
     completion_model_reachable: bool,
 }
 
-async fn status_handler(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse, WebError> {
+/// `GET /api/status` — overall daemon / project health.
+///
+/// **Intentional divergence:** this endpoint returns a bare `StatusResponse`
+/// rather than the standard `WithSource<T>` wrapper used by dashboard data
+/// surfaces. Status is a health surface; surfacing daemon failures directly is
+/// more useful than substituting mock data. This is deferred item #30, now
+/// documented in `coordination.md` §4.8.
+#[utoipa::path(
+    get,
+    path = "/api/status",
+    operation_id = "getStatus",
+    tag = "status",
+    responses(
+        (status = 200, description = "Daemon status", body = StatusResponse)
+    )
+)]
+pub(crate) async fn status_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, WebError> {
     let layout = state.layout.clone();
     let status = tokio::task::spawn_blocking(move || compute_status(&layout))
         .await
@@ -401,7 +476,8 @@ fn drift_status(layout: &Layout) -> Result<(usize, usize)> {
 }
 
 #[derive(Serialize)]
-struct ProjectResponse {
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+pub(crate) struct ProjectResponse {
     id: String,
     name: String,
     path: String,
@@ -564,7 +640,17 @@ fn project_status_from_score(score: u8) -> &'static str {
     }
 }
 
-async fn projects_handler(
+/// `GET /api/projects` — project list (local + discovered siblings).
+#[utoipa::path(
+    get,
+    path = "/api/projects",
+    operation_id = "getProjects",
+    tag = "projects",
+    responses(
+        (status = 200, description = "Project list", body = [ProjectResponse])
+    )
+)]
+pub(crate) async fn projects_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, WebError> {
     let layout = state.layout.clone();
@@ -624,15 +710,29 @@ async fn projects_handler(
 
 #[cfg(feature = "sync")]
 #[derive(Serialize)]
-struct SyncStatusResponse {
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+pub(crate) struct SyncStatusResponse {
     device_id: Option<String>,
     last_extract_at: Option<String>,
     last_apply_at: Option<String>,
     last_run_at: Option<String>,
 }
 
+/// `GET /api/sync/status` — local M0 sync state.
+///
+/// **Feature gate:** this endpoint is only registered when the `sync` feature
+/// is enabled at compile time.
 #[cfg(feature = "sync")]
-async fn sync_status_handler(
+#[utoipa::path(
+    get,
+    path = "/api/sync/status",
+    operation_id = "getSyncStatus",
+    tag = "sync",
+    responses(
+        (status = 200, description = "Local sync state", body = SyncStatusResponse)
+    )
+)]
+pub(crate) async fn sync_status_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, WebError> {
     let layout = state.layout.clone();
@@ -738,7 +838,8 @@ pub(crate) fn display_entity(entity: &str) -> String {
 }
 
 #[derive(Serialize)]
-struct LedgerEntryResponse {
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+pub(crate) struct LedgerEntryResponse {
     id: i64,
     tx_id: String,
     category: String,
@@ -792,7 +893,8 @@ impl From<LedgerEntry> for LedgerEntryResponse {
 
 /// Detail response for a single ledger transaction, including enriched fields.
 #[derive(Serialize)]
-struct LedgerDetailResponse {
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+pub(crate) struct LedgerDetailResponse {
     #[serde(flatten)]
     base: LedgerEntryResponse,
     files: Vec<ChangedFileResponse>,
@@ -802,20 +904,36 @@ struct LedgerDetailResponse {
 }
 
 #[derive(Serialize)]
-struct ChangedFileResponse {
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+pub(crate) struct ChangedFileResponse {
     path: String,
     additions: i64,
     deletions: i64,
 }
 
 #[derive(Debug, Deserialize, Default)]
-struct LedgerListQuery {
+#[cfg_attr(
+    any(test, feature = "openapi", feature = "web"),
+    derive(IntoParams, ToSchema)
+)]
+pub(crate) struct LedgerListQuery {
     category: Option<String>,
     limit: Option<usize>,
     offset: Option<usize>,
 }
 
-async fn ledger_handler(
+/// `GET /api/ledger` — transaction table, paginated.
+#[utoipa::path(
+    get,
+    path = "/api/ledger",
+    operation_id = "listLedger",
+    tag = "ledger",
+    params(LedgerListQuery),
+    responses(
+        (status = 200, description = "Ledger entries", body = [LedgerEntryResponse])
+    )
+)]
+pub(crate) async fn ledger_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<LedgerListQuery>,
 ) -> Result<impl IntoResponse, WebError> {
@@ -852,7 +970,21 @@ fn fetch_ledger_entries(
     Ok(entries.into_iter().map(LedgerEntryResponse::from).collect())
 }
 
-async fn ledger_tx_handler(
+/// `GET /api/ledger/{tx_id}` — single transaction detail.
+#[utoipa::path(
+    get,
+    path = "/api/ledger/{tx_id}",
+    operation_id = "getLedgerDetail",
+    tag = "ledger",
+    params(
+        ("tx_id" = String, Path, description = "Transaction ID")
+    ),
+    responses(
+        (status = 200, description = "Ledger entry detail", body = LedgerDetailResponse),
+        (status = 404, description = "Transaction not found")
+    )
+)]
+pub(crate) async fn ledger_tx_handler(
     State(state): State<Arc<AppState>>,
     Path(tx_id): Path<String>,
 ) -> Result<impl IntoResponse, WebError> {
@@ -1049,14 +1181,30 @@ fn fetch_verification_stats(
 }
 
 #[derive(Debug, Deserialize, Default)]
-struct LedgerSearchQuery {
+#[cfg_attr(
+    any(test, feature = "openapi", feature = "web"),
+    derive(IntoParams, ToSchema)
+)]
+pub(crate) struct LedgerSearchQuery {
     q: Option<String>,
     days: Option<u64>,
     limit: Option<usize>,
     offset: Option<usize>,
 }
 
-async fn ledger_search_handler(
+/// `GET /api/ledger/search` — full-text search over ledger entries.
+#[utoipa::path(
+    get,
+    path = "/api/ledger/search",
+    operation_id = "searchLedger",
+    tag = "ledger",
+    params(LedgerSearchQuery),
+    responses(
+        (status = 200, description = "Matching ledger entries", body = [LedgerEntryResponse]),
+        (status = 400, description = "Missing search query")
+    )
+)]
+pub(crate) async fn ledger_search_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<LedgerSearchQuery>,
 ) -> Result<impl IntoResponse, WebError> {
@@ -1106,14 +1254,19 @@ fn search_ledger_entries(
 }
 
 #[derive(Debug, Deserialize, Default)]
-struct ChangesQuery {
+#[cfg_attr(
+    any(test, feature = "openapi", feature = "web"),
+    derive(IntoParams, ToSchema)
+)]
+pub(crate) struct ChangesQuery {
     days: Option<u64>,
     working_tree: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
 #[serde(rename_all = "camelCase")]
-struct ChangeResponse {
+pub(crate) struct ChangeResponse {
     id: String,
     path: String,
     status: String,
@@ -1126,7 +1279,18 @@ struct ChangeResponse {
     risk: String,
 }
 
-async fn changes_handler(
+/// `GET /api/changes` — recent changes (working tree + commits).
+#[utoipa::path(
+    get,
+    path = "/api/changes",
+    operation_id = "listChanges",
+    tag = "changes",
+    params(ChangesQuery),
+    responses(
+        (status = 200, description = "Recent changes", body = [ChangeResponse])
+    )
+)]
+pub(crate) async fn changes_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<ChangesQuery>,
 ) -> Result<impl IntoResponse, WebError> {
@@ -1222,26 +1386,6 @@ fn current_user() -> String {
     std::env::var("USER")
         .or_else(|_| std::env::var("USERNAME"))
         .unwrap_or_else(|_| "unknown".to_string())
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-struct UserSession {
-    id: String,
-    name: String,
-    email: String,
-    role: String,
-}
-
-async fn session_handler() -> Result<impl IntoResponse, WebError> {
-    let user = current_user();
-    let session = UserSession {
-        id: user.clone(),
-        name: user,
-        email: String::new(),
-        role: "admin".to_string(),
-    };
-    Ok(Json(session))
 }
 
 fn count_worktree_diff_stats(repo: &gix::Repository, _paths: &[String]) -> (usize, usize) {
@@ -1531,12 +1675,27 @@ fn format_time_ago(commit_time: u64) -> String {
 }
 
 #[derive(Debug, Deserialize, Default)]
-struct HotspotsQueryParams {
+#[cfg_attr(
+    any(test, feature = "openapi", feature = "web"),
+    derive(IntoParams, ToSchema)
+)]
+pub(crate) struct HotspotsQueryParams {
     limit: Option<usize>,
     days: Option<u64>,
 }
 
-async fn hotspots_handler(
+/// `GET /api/hotspots` — hotspot rankings.
+#[utoipa::path(
+    get,
+    path = "/api/hotspots",
+    operation_id = "listHotspots",
+    tag = "hotspots",
+    params(HotspotsQueryParams),
+    responses(
+        (status = 200, description = "Hotspot rankings", body = [HotspotResponse])
+    )
+)]
+pub(crate) async fn hotspots_handler(
     State(state): State<Arc<AppState>>,
     Query(params): Query<HotspotsQueryParams>,
 ) -> Result<impl IntoResponse, WebError> {
@@ -1727,8 +1886,9 @@ async fn rate_limit_layer(
     Ok(next.run(request).await)
 }
 
-#[derive(Serialize)]
-struct ConfigResponse {
+#[derive(Serialize, Debug, Clone)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+pub(crate) struct ConfigResponse {
     project: String,
     repo_path: String,
     ledger_path: String,
@@ -1740,7 +1900,19 @@ struct ConfigResponse {
     version: String,
 }
 
-async fn config_handler(State(state): State<Arc<AppState>>) -> Result<impl IntoResponse, WebError> {
+/// `GET /api/config` — daemon configuration (secrets redacted).
+#[utoipa::path(
+    get,
+    path = "/api/config",
+    operation_id = "getConfig",
+    tag = "config",
+    responses(
+        (status = 200, description = "Daemon configuration", body = ConfigResponse)
+    )
+)]
+pub(crate) async fn config_handler(
+    State(state): State<Arc<AppState>>,
+) -> Result<impl IntoResponse, WebError> {
     let layout = state.layout.clone();
     let config =
         tokio::task::spawn_blocking(move || load_ledger_config(&layout).unwrap_or_default())

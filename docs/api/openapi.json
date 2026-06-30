@@ -1,0 +1,1782 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Ledgerful Daemon API",
+    "description": "Machine-readable OpenAPI contract for the Ledgerful daemon `/api/*` endpoints. Generated from the Rust DTOs via utoipa.",
+    "license": {
+      "name": ""
+    },
+    "version": "0.1.6"
+  },
+  "paths": {
+    "/api/changes": {
+      "get": {
+        "tags": [
+          "changes"
+        ],
+        "summary": "`GET /api/changes` — recent changes (working tree + commits).",
+        "operationId": "listChanges",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "working_tree",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Recent changes",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ChangeResponse"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/compliance/export": {
+      "get": {
+        "tags": [
+          "compliance"
+        ],
+        "summary": "`GET /api/compliance/export` — generate a tamper-evident `.zip` of SOC2\nevidence on the fly and return it as a binary download.",
+        "description": "The zip contains `manifest.json` (SHA-256 + size of every other file),\n`manifest.sig` + `manifest.pub` (Ed25519 signature over the manifest\nbytes and the verifying key, reusing the repo's keypair so the existing\noffline verifier can validate the export), `ledger.csv` (all committed\nprovenance records), `verification_history.csv` (CI gate pass/fail\nrecords), and `adr/*.md` (generated MADR-format ADRs tied to the ledger).\n\nAll SQLite + zip + SHA-256 + Ed25519 work runs inside\n`tokio::task::spawn_blocking`; the handler only attaches the\n`application/zip` + `Content-Disposition: attachment` headers to the\nreturned `Response`. Empty / no-DB state still yields a valid zip\n(header-only CSVs, no `adr/` files, a manifest over the files that\nexist, and a signature over that manifest) — 200, not an error.\n`GET /api/compliance/export` — download a tamper-evident SOC2 evidence\n`.zip`. Returns `application/zip` with `Content-Disposition: attachment`.",
+        "operationId": "exportComplianceEvidence",
+        "responses": {
+          "200": {
+            "description": "SOC2 evidence ZIP",
+            "content": {
+              "application/zip": {}
+            }
+          }
+        }
+      }
+    },
+    "/api/compliance/signatures": {
+      "get": {
+        "tags": [
+          "compliance"
+        ],
+        "summary": "`GET /api/compliance/signatures` — recent signature status entries.",
+        "operationId": "getComplianceSignatures",
+        "responses": {
+          "200": {
+            "description": "Compliance signature entries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ComplianceSignatureEntry"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/compliance/summary": {
+      "get": {
+        "tags": [
+          "compliance"
+        ],
+        "summary": "`GET /api/compliance/summary` — aggregate compliance summary.",
+        "operationId": "getComplianceSummary",
+        "responses": {
+          "200": {
+            "description": "Compliance summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ComplianceSummaryResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/config": {
+      "get": {
+        "tags": [
+          "config"
+        ],
+        "summary": "`GET /api/config` — daemon configuration (secrets redacted).",
+        "operationId": "getConfig",
+        "responses": {
+          "200": {
+            "description": "Daemon configuration",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConfigResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/endpoints/changed": {
+      "get": {
+        "tags": [
+          "endpoints"
+        ],
+        "summary": "`GET /api/endpoints/changed` — API contracts affected by changed files.",
+        "operationId": "getEndpointsChanged",
+        "responses": {
+          "200": {
+            "description": "Affected API contracts",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/AffectedContract"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hotspots": {
+      "get": {
+        "tags": [
+          "hotspots"
+        ],
+        "summary": "`GET /api/hotspots` — hotspot rankings.",
+        "operationId": "listHotspots",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Hotspot rankings",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/HotspotResponse"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/hotspots/trend": {
+      "get": {
+        "tags": [
+          "hotspots"
+        ],
+        "summary": "`GET /api/hotspots/trend` — rolling hotspot trend series.",
+        "operationId": "getHotspotTrend",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Hotspot trend data",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HotspotTrendResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/knowledge-graph": {
+      "get": {
+        "tags": [
+          "knowledge-graph"
+        ],
+        "summary": "`GET /api/knowledge-graph` — CozoDB knowledge-graph subgraph.",
+        "operationId": "getKnowledgeGraph",
+        "parameters": [
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          },
+          {
+            "name": "focus",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Knowledge graph nodes and edges",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/KnowledgeGraphResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ledger": {
+      "get": {
+        "tags": [
+          "ledger"
+        ],
+        "summary": "`GET /api/ledger` — transaction table, paginated.",
+        "operationId": "listLedger",
+        "parameters": [
+          {
+            "name": "category",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ledger entries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LedgerEntryResponse"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/ledger/search": {
+      "get": {
+        "tags": [
+          "ledger"
+        ],
+        "summary": "`GET /api/ledger/search` — full-text search over ledger entries.",
+        "operationId": "searchLedger",
+        "parameters": [
+          {
+            "name": "q",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          },
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          },
+          {
+            "name": "limit",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          },
+          {
+            "name": "offset",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Matching ledger entries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/LedgerEntryResponse"
+                  }
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Missing search query"
+          }
+        }
+      }
+    },
+    "/api/ledger/{tx_id}": {
+      "get": {
+        "tags": [
+          "ledger"
+        ],
+        "summary": "`GET /api/ledger/{tx_id}` — single transaction detail.",
+        "operationId": "getLedgerDetail",
+        "parameters": [
+          {
+            "name": "tx_id",
+            "in": "path",
+            "description": "Transaction ID",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Ledger entry detail",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LedgerDetailResponse"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Transaction not found"
+          }
+        }
+      }
+    },
+    "/api/projects": {
+      "get": {
+        "tags": [
+          "projects"
+        ],
+        "summary": "`GET /api/projects` — project list (local + discovered siblings).",
+        "operationId": "getProjects",
+        "responses": {
+          "200": {
+            "description": "Project list",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectResponse"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/reports/latest-impact.json": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "`GET /api/reports/latest-impact.json` — passthrough of the latest impact\nreport JSON. Returns `application/json` with an opaque object schema when\na report exists; 404 otherwise.",
+        "operationId": "getLatestImpactReport",
+        "responses": {
+          "200": {
+            "description": "Latest impact report JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Report not found"
+          }
+        }
+      }
+    },
+    "/api/reports/latest-verify.json": {
+      "get": {
+        "tags": [
+          "reports"
+        ],
+        "summary": "`GET /api/reports/latest-verify.json` — passthrough of the latest verify\nreport JSON. Returns `application/json` with an opaque object schema when\na report exists; 404 otherwise.",
+        "operationId": "getLatestVerifyReport",
+        "responses": {
+          "200": {
+            "description": "Latest verify report JSON",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Report not found"
+          }
+        }
+      }
+    },
+    "/api/security/boundaries": {
+      "get": {
+        "tags": [
+          "security"
+        ],
+        "summary": "`GET /api/security/boundaries` — security boundary counts and edges.",
+        "operationId": "getSecurityBoundaries",
+        "responses": {
+          "200": {
+            "description": "Security boundaries",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SecurityBoundariesResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/session": {
+      "get": {
+        "tags": [
+          "session"
+        ],
+        "summary": "`GET /api/session` — current user session.",
+        "operationId": "getSession",
+        "responses": {
+          "200": {
+            "description": "Current session",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/UserSession"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/snapshot": {
+      "get": {
+        "tags": [
+          "snapshot"
+        ],
+        "summary": "`GET /api/snapshot` — summary metrics + recent change feed.",
+        "operationId": "getSnapshot",
+        "responses": {
+          "200": {
+            "description": "Project snapshot",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SnapshotResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/status": {
+      "get": {
+        "tags": [
+          "status"
+        ],
+        "summary": "`GET /api/status` — overall daemon / project health.",
+        "description": "**Intentional divergence:** this endpoint returns a bare `StatusResponse`\nrather than the standard `WithSource<T>` wrapper used by dashboard data\nsurfaces. Status is a health surface; surfacing daemon failures directly is\nmore useful than substituting mock data. This is deferred item #30, now\ndocumented in `coordination.md` §4.8.",
+        "operationId": "getStatus",
+        "responses": {
+          "200": {
+            "description": "Daemon status",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StatusResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/verify/health": {
+      "get": {
+        "tags": [
+          "verify"
+        ],
+        "summary": "`GET /api/verify/health` — overall verification health.",
+        "operationId": "getVerifyHealth",
+        "responses": {
+          "200": {
+            "description": "Verification health",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/VerificationHealthResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/verify/history": {
+      "get": {
+        "tags": [
+          "verify"
+        ],
+        "summary": "`GET /api/verify/history` — pass/fail trend over time.",
+        "operationId": "getVerifyHistory",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Verification history points",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VerificationTrendPoint"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/api/verify/steps": {
+      "get": {
+        "tags": [
+          "verify"
+        ],
+        "summary": "`GET /api/verify/steps` — per-step verification aggregates.",
+        "operationId": "getVerifySteps",
+        "responses": {
+          "200": {
+            "description": "Verification step metrics",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "array",
+                  "items": {
+                    "$ref": "#/components/schemas/VerificationStepResponse"
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "/health": {
+      "get": {
+        "tags": [
+          "health"
+        ],
+        "summary": "`GET /health` — daemon liveness check. Does **not** require auth.",
+        "operationId": "getHealth",
+        "responses": {
+          "200": {
+            "description": "Daemon is live",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "components": {
+    "schemas": {
+      "AffectedContract": {
+        "type": "object",
+        "required": [
+          "endpoint_id",
+          "path",
+          "method",
+          "summary",
+          "similarity",
+          "spec_file"
+        ],
+        "properties": {
+          "endpoint_id": {
+            "type": "string"
+          },
+          "method": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "similarity": {
+            "type": "number",
+            "format": "float"
+          },
+          "spec_file": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          }
+        }
+      },
+      "ChangeResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "path",
+          "status",
+          "summary",
+          "author",
+          "timeAgo",
+          "fileCount",
+          "additions",
+          "deletions",
+          "risk"
+        ],
+        "properties": {
+          "additions": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "author": {
+            "type": "string"
+          },
+          "deletions": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "fileCount": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "risk": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "timeAgo": {
+            "type": "string"
+          }
+        }
+      },
+      "ChangedFileResponse": {
+        "type": "object",
+        "required": [
+          "path",
+          "additions",
+          "deletions"
+        ],
+        "properties": {
+          "additions": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "deletions": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "path": {
+            "type": "string"
+          }
+        }
+      },
+      "ChangesQuery": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "working_tree": {
+            "type": [
+              "boolean",
+              "null"
+            ]
+          }
+        }
+      },
+      "ComplianceSignatureEntry": {
+        "type": "object",
+        "description": "`GET /api/compliance/signatures` — per-entry signature status for the\nrecent ledger.\n\nReturns a bare JSON array of `{ txId, entity, summary, committedAt,\nstatus, category }` (camelCase) sorted by `committed_at` DESC, bounded to\nthe most recent `COMPLIANCE_SIGNATURES_LIMIT` (100) entries.\n\n`status` is the string `VALID` | `INVALID` | `SKIPPED`:\n- `(Some(sig), Some(pub))` → `verify_signature(...)` → `VALID` if true,\n  else `INVALID`.\n- otherwise (no signature) → `INVALID` when `intent.require_signing` is\n  true (the CLI labels this `UNSIGNED`; the dashboard status set is\n  `{VALID,INVALID,SKIPPED}` per the E2 spec, so `UNSIGNED` maps to\n  `INVALID`), else `SKIPPED`.\n\n`category` is the `Category` enum's `Display` form (e.g. `\"FEATURE\"`).\n\nNo-DB path → empty array `[]` (200, not an error).",
+        "required": [
+          "txId",
+          "entity",
+          "summary",
+          "committedAt",
+          "status",
+          "category"
+        ],
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "committedAt": {
+            "type": "string"
+          },
+          "entity": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "txId": {
+            "type": "string"
+          }
+        }
+      },
+      "ComplianceSummaryResponse": {
+        "type": "object",
+        "description": "`GET /api/compliance/summary` — aggregate cryptographic validity and audit\ncompletion rates over the ledger, plus the recent hotspot delta.\n\nResponse (camelCase):\n- `totalSigned`: count of ledger entries with BOTH `signature` and\n  `public_key` present (i.e. signed rows, regardless of whether the\n  signature currently verifies).\n- `validityPercent`: `valid_count / total_entries * 100.0` rounded to 2dp,\n  where `valid_count` is the number of entries whose signature verifies\n  against the stored public key (or, for unsigned rows when\n  `intent.require_signing` is false, the row is NOT counted as valid —\n  only cryptographically VALID rows contribute). `0.0` when there are no\n  entries.\n- `lastAuditAt`: the most recent `committed_at` among entries classified\n  VALID (the last verifiably-signed event). `null` when there are no\n  VALID entries / no entries. This field is intentionally NOT\n  `skip_serializing_if`-gated — the frontend contract is\n  `lastAuditAt: string | null`, so it MUST serialize as `null` in the\n  empty state (matches E1's `lastRunAt` contract).\n- `hotspotDeltaPercent`: see `fetch_hotspot_delta_percent`.\n\nNo-DB path (ledger.db absent): returns\n`{ totalSigned: 0, validityPercent: 0.0, lastAuditAt: null,\nhotspotDeltaPercent: 0.0 }` with HTTP 200 — the dashboard empty state,\nNOT an error.",
+        "required": [
+          "totalSigned",
+          "validityPercent",
+          "hotspotDeltaPercent"
+        ],
+        "properties": {
+          "hotspotDeltaPercent": {
+            "type": "number",
+            "format": "double"
+          },
+          "lastAuditAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "totalSigned": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "validityPercent": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "ConfigResponse": {
+        "type": "object",
+        "required": [
+          "project",
+          "repo_path",
+          "ledger_path",
+          "graph_path",
+          "signing_key",
+          "llm_backend",
+          "polling_interval",
+          "telemetry",
+          "version"
+        ],
+        "properties": {
+          "graph_path": {
+            "type": "string"
+          },
+          "ledger_path": {
+            "type": "string"
+          },
+          "llm_backend": {
+            "type": "string"
+          },
+          "polling_interval": {
+            "type": "string"
+          },
+          "project": {
+            "type": "string"
+          },
+          "repo_path": {
+            "type": "string"
+          },
+          "signing_key": {
+            "type": "string"
+          },
+          "telemetry": {
+            "type": "string"
+          },
+          "version": {
+            "type": "string"
+          }
+        }
+      },
+      "HotspotResponse": {
+        "type": "object",
+        "description": "Frontend-facing hotspot DTO decoupled from the internal `Hotspot` domain\nstruct. The internal struct (`intelligence::Hotspot`) is coupled to the\nimpact math module; this DTO gives the API a stable contract that the\nfrontend can rely on even if the internal struct changes.\n\nBackward-compat fields (`displayScore`, `score`, `complexity`, `frequency`,\n`centrality`) are included temporarily until the frontend PR merges. They\nwill be removed once the frontend consumes the new fields directly.",
+        "required": [
+          "id",
+          "filePath",
+          "riskLevel",
+          "riskScore",
+          "changeCount",
+          "rank",
+          "displayScore",
+          "score",
+          "complexity",
+          "frequency"
+        ],
+        "properties": {
+          "centrality": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "changeCount": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "complexity": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "contributor": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "displayScore": {
+            "type": "number",
+            "format": "float"
+          },
+          "filePath": {
+            "type": "string"
+          },
+          "frequency": {
+            "type": "number",
+            "format": "double"
+          },
+          "id": {
+            "type": "string"
+          },
+          "lastTouchedAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "rank": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "riskLevel": {
+            "type": "string"
+          },
+          "riskScore": {
+            "type": "number",
+            "format": "float"
+          },
+          "score": {
+            "type": "number",
+            "format": "float"
+          }
+        }
+      },
+      "HotspotTrendQuery": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          }
+        }
+      },
+      "HotspotTrendResponse": {
+        "type": "object",
+        "required": [
+          "labels",
+          "series",
+          "truncated"
+        ],
+        "properties": {
+          "labels": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "series": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/HotspotTrendSeries"
+            }
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        }
+      },
+      "HotspotTrendSeries": {
+        "type": "object",
+        "required": [
+          "path",
+          "scores"
+        ],
+        "properties": {
+          "path": {
+            "type": "string"
+          },
+          "scores": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "float"
+            }
+          }
+        }
+      },
+      "HotspotsQueryParams": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          }
+        }
+      },
+      "KgEdge": {
+        "type": "object",
+        "required": [
+          "source",
+          "target",
+          "relation"
+        ],
+        "properties": {
+          "confidence": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "provenance_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "relation": {
+            "type": "string"
+          },
+          "source": {
+            "type": "string"
+          },
+          "target": {
+            "type": "string"
+          }
+        }
+      },
+      "KgNode": {
+        "type": "object",
+        "required": [
+          "id",
+          "label",
+          "category",
+          "risk_score",
+          "file_path",
+          "complexity"
+        ],
+        "properties": {
+          "category": {
+            "type": "string"
+          },
+          "complexity": {
+            "type": "integer",
+            "format": "int32"
+          },
+          "file_path": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "label": {
+            "type": "string"
+          },
+          "metadata": {},
+          "risk_score": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "KnowledgeGraphQuery": {
+        "type": "object",
+        "properties": {
+          "focus": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          }
+        }
+      },
+      "KnowledgeGraphResponse": {
+        "type": "object",
+        "required": [
+          "nodes",
+          "edges",
+          "truncated"
+        ],
+        "properties": {
+          "edges": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KgEdge"
+            }
+          },
+          "nodes": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/KgNode"
+            }
+          },
+          "truncated": {
+            "type": "boolean"
+          }
+        }
+      },
+      "LedgerDetailResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/LedgerEntryResponse"
+          },
+          {
+            "type": "object",
+            "required": [
+              "files",
+              "hotspots_crossed",
+              "tests_run",
+              "flakes"
+            ],
+            "properties": {
+              "files": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/ChangedFileResponse"
+                }
+              },
+              "flakes": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "hotspots_crossed": {
+                "type": "integer",
+                "minimum": 0
+              },
+              "tests_run": {
+                "type": "integer",
+                "minimum": 0
+              }
+            }
+          }
+        ],
+        "description": "Detail response for a single ledger transaction, including enriched fields."
+      },
+      "LedgerEntryResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "tx_id",
+          "category",
+          "entry_type",
+          "entity",
+          "entity_normalized",
+          "change_type",
+          "summary",
+          "reason",
+          "is_breaking",
+          "committed_at",
+          "origin",
+          "author"
+        ],
+        "properties": {
+          "author": {
+            "type": "string"
+          },
+          "category": {
+            "type": "string"
+          },
+          "change_type": {
+            "type": "string"
+          },
+          "committed_at": {
+            "type": "string"
+          },
+          "entity": {
+            "type": "string"
+          },
+          "entity_normalized": {
+            "type": "string"
+          },
+          "entry_type": {
+            "type": "string"
+          },
+          "id": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "is_breaking": {
+            "type": "boolean"
+          },
+          "origin": {
+            "type": "string"
+          },
+          "outcome_notes": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "public_key": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "reason": {
+            "type": "string"
+          },
+          "related_tickets": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "risk": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "signature": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "summary": {
+            "type": "string"
+          },
+          "trace_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "tx_id": {
+            "type": "string"
+          },
+          "verification_basis": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "verification_status": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "LedgerListQuery": {
+        "type": "object",
+        "properties": {
+          "category": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "offset": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          }
+        }
+      },
+      "LedgerSearchQuery": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "offset": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "q": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "ProjectResponse": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "path",
+          "status",
+          "health_score",
+          "validation_warnings"
+        ],
+        "properties": {
+          "health_score": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "id": {
+            "type": "string"
+          },
+          "last_scan_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "name": {
+            "type": "string"
+          },
+          "path": {
+            "type": "string"
+          },
+          "status": {
+            "type": "string"
+          },
+          "validation_warnings": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "TA31 R1: per-sibling validation warnings (e.g. an empty ledger\n`entity`). Always present (empty for the local/root project and\nfor fully-valid siblings) so the frontend can render a \"needs\nattention\" badge without an `Option` round-trip. This is\nadditive/non-breaking relative to the pre-TA31 DTO shape."
+          }
+        }
+      },
+      "SecurityBoundariesResponse": {
+        "type": "object",
+        "required": [
+          "meta",
+          "boundaries"
+        ],
+        "properties": {
+          "boundaries": {},
+          "meta": {}
+        }
+      },
+      "SnapshotResponse": {
+        "type": "object",
+        "required": [
+          "project_id",
+          "overall_risk",
+          "pending_transactions",
+          "unaudited_drift",
+          "indexed_documents",
+          "graph_nodes",
+          "graph_edges",
+          "top_hotspots",
+          "recent_changes"
+        ],
+        "properties": {
+          "graph_edges": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "graph_nodes": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "indexed_documents": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "last_audit": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "overall_risk": {
+            "type": "string"
+          },
+          "pending_transactions": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "project_id": {
+            "type": "string"
+          },
+          "recent_changes": {
+            "type": "array",
+            "items": {}
+          },
+          "top_hotspots": {
+            "type": "array",
+            "items": {}
+          },
+          "unaudited_drift": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "StatusResponse": {
+        "type": "object",
+        "required": [
+          "index_ready",
+          "graph_ready",
+          "pending_transactions",
+          "unaudited_drift",
+          "embedding_model_reachable",
+          "completion_model_reachable"
+        ],
+        "properties": {
+          "completion_model_reachable": {
+            "type": "boolean"
+          },
+          "embedding_model_reachable": {
+            "type": "boolean"
+          },
+          "graph_ready": {
+            "type": "boolean"
+          },
+          "index_ready": {
+            "type": "boolean"
+          },
+          "pending_transactions": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unaudited_drift": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
+      "UserSession": {
+        "type": "object",
+        "required": [
+          "id",
+          "name",
+          "email",
+          "role"
+        ],
+        "properties": {
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "role": {
+            "type": "string"
+          }
+        }
+      },
+      "VerificationHealthResponse": {
+        "type": "object",
+        "description": "`GET /api/verify/health` — overall verification health derived from the\nlatest `verification_runs` row.\n\nStatus mapping (documented for the reviewer):\n- No runs recorded → `DEGRADED` with `message = \"No verification runs\n  recorded\"` and `lastRunAt = null`. This is NOT an error (200, not 404)\n  so the dashboard can render its empty state.\n- Latest run `overall_pass = false` → `FAILING`.\n- Latest run `overall_pass = true` but older than 7 days → `DEGRADED`\n  with `message = \"Last verification run is stale (older than 7 days)\"`.\n  (A stale failing run stays `FAILING` — failure takes precedence over\n  staleness.)\n- Otherwise → `HEALTHY`.",
+        "required": [
+          "status"
+        ],
+        "properties": {
+          "lastRunAt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "message": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "status": {
+            "type": "string"
+          }
+        }
+      },
+      "VerificationStepResponse": {
+        "type": "object",
+        "description": "`GET /api/verify/steps` — per-step aggregates across all history.\n\nReturns a bare JSON array of `{ id, name, lastRunAt, averageDurationMs,\npassRatePercent, recentFailures }` sorted ascending by step command.\n\n`id` is the step's stable identifier (its `command` — the verify plan step\n`src/verify/plan.rs::VerificationStep` has no separate id field, and\n`verification_results` only stores `command`). `name` is the friendly\nlabel: the step's `description` from the most recent `verification_runs.\nplan_json` that contains a step with that command, falling back to\n`command` when no plan_json is available, fails to parse, or has no\nmatching step. `plan_json` is a serialized `VerificationPlan` (see\n`verify::engine::persist_verify_report`); parse errors on any single row\nare skipped so one malformed run cannot fail the whole endpoint.\n\n`recentFailures` counts failures within the last 10 verification runs\n(by `verification_runs.id DESC`). Flagged as an assumption.",
+        "required": [
+          "id",
+          "name",
+          "lastRunAt",
+          "averageDurationMs",
+          "passRatePercent",
+          "recentFailures"
+        ],
+        "properties": {
+          "averageDurationMs": {
+            "type": "number",
+            "format": "double"
+          },
+          "id": {
+            "type": "string"
+          },
+          "lastRunAt": {
+            "type": "string"
+          },
+          "name": {
+            "type": "string"
+          },
+          "passRatePercent": {
+            "type": "number",
+            "format": "double"
+          },
+          "recentFailures": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "VerificationTrendPoint": {
+        "type": "object",
+        "required": [
+          "date",
+          "passed",
+          "failed"
+        ],
+        "properties": {
+          "date": {
+            "type": "string"
+          },
+          "failed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "passed": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "VerifyHistoryQuery": {
+        "type": "object",
+        "description": "`GET /api/verify/history?days=30` — per-date pass/fail counts over the\nlast `days` days (default 30, accepts 90). Returns a bare JSON array of\n`{ date, passed, failed }` sorted ascending by date. Dates with no runs\nare omitted (deterministic: only dates that have at least one run appear).",
+        "properties": {
+          "days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      }
+    }
+  },
+  "tags": [
+    {
+      "name": "health",
+      "description": "Daemon liveness"
+    },
+    {
+      "name": "session",
+      "description": "Current user session"
+    },
+    {
+      "name": "snapshot",
+      "description": "Summary metrics"
+    },
+    {
+      "name": "status",
+      "description": "Daemon health status"
+    },
+    {
+      "name": "projects",
+      "description": "Project list"
+    },
+    {
+      "name": "ledger",
+      "description": "Ledger transactions"
+    },
+    {
+      "name": "changes",
+      "description": "Recent changes"
+    },
+    {
+      "name": "hotspots",
+      "description": "Hotspot rankings and trends"
+    },
+    {
+      "name": "reports",
+      "description": "Latest impact/verify report JSON"
+    },
+    {
+      "name": "verify",
+      "description": "Verification health/history/steps"
+    },
+    {
+      "name": "compliance",
+      "description": "Compliance summary/signatures/export"
+    },
+    {
+      "name": "endpoints",
+      "description": "Affected API contracts"
+    },
+    {
+      "name": "security",
+      "description": "Security boundaries"
+    },
+    {
+      "name": "knowledge-graph",
+      "description": "CozoDB knowledge-graph subgraph"
+    },
+    {
+      "name": "config",
+      "description": "Daemon configuration"
+    },
+    {
+      "name": "sync",
+      "description": "Local M0 sync state"
+    }
+  ]
+}

@@ -95,6 +95,7 @@ base64 = "0.22"
 dirs = "6.0.0"
 which = "8.0.3"
 jsonc-parser = { version = "0.32.4", features = ["serde", "serde_json"] }
+utoipa = { version = "5.5.0", features = ["axum_extras"], optional = true }
 
 
 [target.'cfg(unix)'.dependencies]
@@ -108,7 +109,8 @@ windows-sys = { version = "0.61", features = ["Win32_System_Pipes", "Win32_Found
 default = ["viz-server", "mcp", "web"]
 daemon = ["dep:tower-lsp-server", "dep:tokio"]
 viz-server = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util", "dep:webbrowser"]
-web = ["dep:axum", "dep:tower", "dep:tower-http", "dep:rust-embed", "dep:mime_guess", "dep:webbrowser", "dep:serde_urlencoded", "dep:zip", "dep:tokio"]
+web = ["dep:axum", "dep:tower", "dep:tower-http", "dep:rust-embed", "dep:mime_guess", "dep:webbrowser", "dep:serde_urlencoded", "dep:zip", "dep:tokio", "dep:utoipa"]
+openapi = ["dep:utoipa"]
 sync = ["dep:chacha20poly1305", "dep:argon2", "dep:zeroize", "dep:rpassword", "dep:zip", "dep:tempfile"]
 mcp = []
 usage-metrics = []
