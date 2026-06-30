@@ -58,7 +58,6 @@ fn start_web(args: WebStartArgs) -> Result<()> {
         .or_else(|| std::env::var(TOKEN_ENV_VAR).ok())
         .unwrap_or_else(generate_token);
     let base_url = format!("http://{}:{}/", args.bind, args.port);
-    let token_url = format!("{}?token={}", base_url, token);
 
     if args.background {
         return spawn_background_server(args, layout, &base_url, &token);
@@ -71,10 +70,14 @@ fn start_web(args: WebStartArgs) -> Result<()> {
     println!("Auth token: {}", token);
 
     if args.open
-        && let Err(e) = webbrowser::open(&token_url)
+        && let Err(e) = webbrowser::open(&base_url)
     {
         tracing::warn!("Failed to open browser: {}", e);
     }
+    println!(
+        "Open {} in your browser and paste the auth token to sign in.",
+        base_url
+    );
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()

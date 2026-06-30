@@ -3,7 +3,7 @@
 use crate::commands::helpers::load_ledger_config;
 use crate::commands::web::api;
 use crate::commands::web::api::{HotspotResponse, map_hotspots_to_responses};
-use crate::commands::web::auth::{extract_token_header, extract_token_query, validate_token};
+use crate::commands::web::auth::{extract_token_header, validate_token};
 use crate::commands::web::error::WebError;
 use crate::commands::web::git_meta::{build_git_metadata_map, git_meta_cache_needs_refresh};
 use crate::commands::web::state::AppState;
@@ -90,7 +90,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         app = app.fallback(get(embedded_spa_handler));
     }
 
-    app.layer(middleware::from_fn(server_header_middleware))
+    app.layer(middleware::from_fn(csp_header_middleware))
+        .layer(middleware::from_fn(server_header_middleware))
         .layer(middleware::from_fn_with_state(
             state.clone(),
             rate_limit_layer,
@@ -109,6 +110,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                 ),
         )
         .layer(local_cors())
+        .layer(middleware::from_fn(host_validation_layer))
         .with_state(state)
 }
 
@@ -118,11 +120,16 @@ pub fn router(state: Arc<AppState>) -> Router {
 fn local_cors() -> CorsLayer {
     CorsLayer::new().allow_origin(AllowOrigin::predicate(
         |origin: &HeaderValue, _parts: &axum::http::request::Parts| {
-            let bytes = origin.as_bytes();
-            bytes.starts_with(b"http://localhost:")
-                || bytes.starts_with(b"http://127.0.0.1:")
-                || bytes.starts_with(b"https://localhost:")
-                || bytes.starts_with(b"https://127.0.0.1:")
+            let Ok(text) = origin.to_str() else {
+                return false;
+            };
+            let Ok(uri) = text.parse::<axum::http::Uri>() else {
+                return false;
+            };
+            let Some(authority) = uri.authority() else {
+                return false;
+            };
+            is_loopback_host(authority.host())
         },
     ))
 }
@@ -134,11 +141,56 @@ async fn token_layer(
     next: Next,
 ) -> Result<Response, WebError> {
     let parts = request.into_parts();
-    let provided = extract_token_query(&parts.0).or_else(|| extract_token_header(&parts.0));
+    let provided = extract_token_header(&parts.0);
     validate_token(provided, &state.token)?;
 
     let request = Request::from_parts(parts.0, parts.1);
     Ok(next.run(request).await)
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    if host == "localhost" {
+        return true;
+    }
+    // `http::uri::Authority::host()` keeps brackets for IPv6 (e.g., "[::1]").
+    // Strip them before parsing as `IpAddr`.
+    let stripped = host.strip_prefix('[').and_then(|h| h.strip_suffix(']'));
+    let candidate = stripped.unwrap_or(host);
+    candidate
+        .parse::<IpAddr>()
+        .is_ok_and(|addr| addr.is_loopback())
+}
+
+/// Validate the `Host` header and reject non-loopback authorities with 403.
+/// Runs before routing and before the token layer.
+async fn host_validation_layer(request: Request, next: Next) -> Result<Response, WebError> {
+    let host = request
+        .headers()
+        .get(header::HOST)
+        .and_then(|h| h.to_str().ok())
+        .ok_or(WebError::Forbidden)?;
+
+    let authority = host
+        .parse::<axum::http::uri::Authority>()
+        .map_err(|_| WebError::Forbidden)?;
+
+    if !is_loopback_host(authority.host()) {
+        return Err(WebError::Forbidden);
+    }
+
+    Ok(next.run(request).await)
+}
+
+async fn csp_header_middleware(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    let value = HeaderValue::from_static(
+        "default-src 'self'; connect-src 'self'; img-src 'self' data:; \
+         style-src 'self' 'unsafe-inline'; script-src 'self'",
+    );
+    response
+        .headers_mut()
+        .insert(header::CONTENT_SECURITY_POLICY, value);
+    response
 }
 
 async fn health_handler() -> impl IntoResponse {
@@ -1893,6 +1945,23 @@ mod tests {
         assert_eq!(value["additions"].as_u64(), Some(2));
         assert_eq!(value["deletions"].as_u64(), Some(3));
         assert!(value.get("time_ago").is_none());
+    }
+
+    #[test]
+    fn loopback_authority_parsing_accepts_ipv6_forms() {
+        for host in [
+            "127.0.0.1:52001",
+            "localhost:52001",
+            "[::1]:52001",
+            "[0:0:0:0:0:0:0:1]:52001",
+        ] {
+            let authority = host.parse::<axum::http::uri::Authority>().unwrap();
+            assert!(
+                is_loopback_host(authority.host()),
+                "expected loopback for {}",
+                host
+            );
+        }
     }
 
     #[cfg(not(debug_assertions))]

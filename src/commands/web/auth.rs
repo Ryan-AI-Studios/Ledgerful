@@ -4,14 +4,7 @@ use crate::commands::web::error::WebError;
 use axum::http::header;
 use axum::http::request::Parts;
 use rand::RngCore;
-use serde::Deserialize;
 use subtle::ConstantTimeEq;
-
-/// Query parameter used to pass the session token.
-#[derive(Debug, Deserialize)]
-pub struct TokenQuery {
-    token: String,
-}
 
 /// Validate a provided token string against the expected session token using
 /// constant-time comparison.
@@ -25,15 +18,6 @@ pub fn validate_token(provided: Option<String>, expected: &str) -> Result<(), We
     } else {
         Err(WebError::Forbidden)
     }
-}
-
-/// Extract the token from the request query string, if present.
-pub fn extract_token_query(parts: &Parts) -> Option<String> {
-    parts.uri.query().and_then(|q| {
-        serde_urlencoded::from_str::<TokenQuery>(q)
-            .ok()
-            .map(|t| t.token)
-    })
 }
 
 /// Extract the token from the `Authorization: Bearer ...` header, if present.

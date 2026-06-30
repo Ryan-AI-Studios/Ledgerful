@@ -10,6 +10,10 @@ use serial_test::serial;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
+fn authed_get(url: &str, token: &str, path: &str) -> ureq::Request {
+    ureq::get(&format!("{}{}", url, path)).set("Authorization", &format!("Bearer {}", token))
+}
+
 /// Owns the temporary directory so it stays alive for the lifetime of a test.
 struct LayoutGuard {
     _tmp: tempfile::TempDir,
@@ -258,7 +262,7 @@ async fn test_snapshot_with_token_returns_json() {
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/snapshot?token={}", url, token))
+        authed_get(&url, &token, "/api/snapshot")
             .call()
             .unwrap()
             .into_string()
@@ -281,7 +285,7 @@ async fn test_status_returns_json() {
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/status?token={}", url, token))
+        authed_get(&url, &token, "/api/status")
             .call()
             .unwrap()
             .into_string()
@@ -301,7 +305,7 @@ async fn test_projects_returns_self() {
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/projects?token={}", url, token))
+        authed_get(&url, &token, "/api/projects")
             .call()
             .unwrap()
             .into_string()
@@ -351,7 +355,7 @@ async fn test_api_projects_returns_sibling_with_warning() {
     let (url, token, handle) = spawn_server(primary_layout).await;
 
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/projects?token={}", url, token))
+        authed_get(&url, &token, "/api/projects")
             .call()
             .unwrap()
             .into_string()
@@ -404,7 +408,7 @@ async fn test_api_ledger_empty_entity_fallback() {
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/ledger?token={}", url, token))
+        authed_get(&url, &token, "/api/ledger")
             .call()
             .unwrap()
             .into_string()
@@ -426,7 +430,7 @@ async fn test_ledger_empty_returns_array() {
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/ledger?token={}", url, token))
+        authed_get(&url, &token, "/api/ledger")
             .call()
             .unwrap()
             .into_string()
@@ -446,7 +450,7 @@ async fn test_ledger_missing_tx_returns_404() {
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let status = tokio::task::spawn_blocking(move || {
-        match ureq::get(&format!("{}/api/ledger/no-such-tx?token={}", url, token)).call() {
+        match authed_get(&url, &token, "/api/ledger/no-such-tx").call() {
             Ok(resp) => resp.status(),
             Err(ureq::Error::Status(code, _)) => code,
             Err(_) => 0,
@@ -465,7 +469,7 @@ async fn test_ledger_search_missing_query_returns_400() {
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let status = tokio::task::spawn_blocking(move || {
-        match ureq::get(&format!("{}/api/ledger/search?token={}", url, token)).call() {
+        match authed_get(&url, &token, "/api/ledger/search").call() {
             Ok(resp) => resp.status(),
             Err(ureq::Error::Status(code, _)) => code,
             Err(_) => 0,
@@ -484,7 +488,7 @@ async fn test_ledger_search_returns_array() {
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/ledger/search?q=test&token={}", url, token))
+        authed_get(&url, &token, "/api/ledger/search?q=test")
             .call()
             .unwrap()
             .into_string()
@@ -504,7 +508,7 @@ async fn test_changes_returns_array() {
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let status = tokio::task::spawn_blocking(move || {
-        match ureq::get(&format!("{}/api/changes?token={}", url, token)).call() {
+        match authed_get(&url, &token, "/api/changes").call() {
             Ok(resp) => resp.status(),
             Err(ureq::Error::Status(code, _)) => code,
             Err(_) => 0,
@@ -523,7 +527,7 @@ async fn test_hotspots_returns_array() {
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/hotspots?token={}&limit=5", url, token))
+        authed_get(&url, &token, "/api/hotspots?limit=5")
             .call()
             .unwrap()
             .into_string()
@@ -630,7 +634,7 @@ async fn test_hotspots_dto_reads_git_metadata_from_project_files() {
     let (url, token, handle) = spawn_server(layout).await;
 
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/hotspots?token={}&limit=5", url, token))
+        authed_get(&url, &token, "/api/hotspots?limit=5")
             .call()
             .unwrap()
             .into_string()
@@ -686,14 +690,11 @@ async fn test_latest_impact_report_returns_json() {
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!(
-            "{}/api/reports/latest-impact.json?token={}",
-            url, token
-        ))
-        .call()
-        .unwrap()
-        .into_string()
-        .unwrap()
+        authed_get(&url, &token, "/api/reports/latest-impact.json")
+            .call()
+            .unwrap()
+            .into_string()
+            .unwrap()
     })
     .await
     .unwrap();
@@ -716,14 +717,11 @@ async fn test_latest_verify_report_returns_json() {
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!(
-            "{}/api/reports/latest-verify.json?token={}",
-            url, token
-        ))
-        .call()
-        .unwrap()
-        .into_string()
-        .unwrap()
+        authed_get(&url, &token, "/api/reports/latest-verify.json")
+            .call()
+            .unwrap()
+            .into_string()
+            .unwrap()
     })
     .await
     .unwrap();
@@ -739,14 +737,11 @@ async fn test_hotspots_trend_returns_json() {
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!(
-            "{}/api/hotspots/trend?token={}&days=7&limit=5",
-            url, token
-        ))
-        .call()
-        .unwrap()
-        .into_string()
-        .unwrap()
+        authed_get(&url, &token, "/api/hotspots/trend?days=7&limit=5")
+            .call()
+            .unwrap()
+            .into_string()
+            .unwrap()
     })
     .await
     .unwrap();
@@ -763,7 +758,7 @@ async fn test_endpoints_changed_returns_json() {
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let status = tokio::task::spawn_blocking(move || {
-        match ureq::get(&format!("{}/api/endpoints/changed?token={}", url, token)).call() {
+        match authed_get(&url, &token, "/api/endpoints/changed").call() {
             Ok(resp) => resp.status(),
             Err(ureq::Error::Status(code, _)) => code,
             Err(_) => 0,
@@ -782,7 +777,7 @@ async fn test_security_boundaries_returns_json() {
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/security/boundaries?token={}", url, token))
+        authed_get(&url, &token, "/api/security/boundaries")
             .call()
             .unwrap()
             .into_string()
@@ -803,14 +798,11 @@ async fn test_knowledge_graph_returns_json() {
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!(
-            "{}/api/knowledge-graph?token={}&limit=10&focus=changed",
-            url, token
-        ))
-        .call()
-        .unwrap()
-        .into_string()
-        .unwrap()
+        authed_get(&url, &token, "/api/knowledge-graph?limit=10&focus=changed")
+            .call()
+            .unwrap()
+            .into_string()
+            .unwrap()
     })
     .await
     .unwrap();
@@ -869,7 +861,7 @@ async fn test_ledger_detail_returns_entry_shape() {
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/ledger/{}?token={}", url, tx_id, token))
+        authed_get(&url, &token, &format!("/api/ledger/{}", tx_id))
             .call()
             .unwrap()
             .into_string()
@@ -891,10 +883,10 @@ async fn test_ledger_detail_returns_entry_shape() {
 #[tokio::test]
 async fn test_rate_limit_returns_429_after_burst() {
     let guard = temp_layout();
-    let (url, token, handle) = spawn_server(guard.layout()).await;
+    let (url, _token, handle) = spawn_server(guard.layout()).await;
 
     let limited = tokio::task::spawn_blocking(move || {
-        let path = format!("{}/health?token={}", url, token);
+        let path = format!("{}/health", url);
         for i in 0..=65 {
             let status = match ureq::get(&path).call() {
                 Ok(resp) => resp.status(),
@@ -1063,7 +1055,7 @@ async fn test_api_ledger_includes_author_from_git_config() {
     // Now start the server and fetch /api/ledger.
     let (url, token, handle) = spawn_server(layout.clone()).await;
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/ledger?token={}", url, token))
+        authed_get(&url, &token, "/api/ledger")
             .call()
             .unwrap()
             .into_string()
@@ -1221,7 +1213,7 @@ async fn test_api_ledger_detail_reads_verification_enrichment() {
 
     let (url, token, handle) = spawn_server(layout.clone()).await;
     let body = tokio::task::spawn_blocking(move || {
-        match ureq::get(&format!("{}/api/ledger/{}?token={}", url, tx_id, token)).call() {
+        match authed_get(&url, &token, &format!("/api/ledger/{}", tx_id)).call() {
             Ok(resp) => resp.into_string().unwrap(),
             Err(ureq::Error::Status(_, resp)) => {
                 panic!(
@@ -1326,7 +1318,7 @@ async fn test_api_projects_reflect_impact_report() {
 
     let (url, token, handle) = spawn_server(layout.clone()).await;
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/projects?token={}", url, token))
+        authed_get(&url, &token, "/api/projects")
             .call()
             .unwrap()
             .into_string()
@@ -1382,7 +1374,7 @@ async fn test_api_sync_status_when_never_synced() {
     // No sync_state row in the DB → "never synced" case.
     let (url, token, handle) = spawn_server(layout.clone()).await;
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/sync/status?token={}", url, token))
+        authed_get(&url, &token, "/api/sync/status")
             .call()
             .unwrap()
             .into_string()
@@ -1443,7 +1435,7 @@ async fn test_api_sync_status_after_init() {
 
     let (url, token, handle) = spawn_server(layout.clone()).await;
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/sync/status?token={}", url, token))
+        authed_get(&url, &token, "/api/sync/status")
             .call()
             .unwrap()
             .into_string()
@@ -1556,7 +1548,7 @@ async fn test_api_projects_health_score_reflects_doctor_results() {
 
     let (url, token, handle) = spawn_server(layout.clone()).await;
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/projects?token={}", url, token))
+        authed_get(&url, &token, "/api/projects")
             .call()
             .unwrap()
             .into_string()
@@ -1627,7 +1619,7 @@ async fn test_api_projects_health_score_no_doctor_file_is_clean() {
 
     let (url, token, handle) = spawn_server(layout.clone()).await;
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/projects?token={}", url, token))
+        authed_get(&url, &token, "/api/projects")
             .call()
             .unwrap()
             .into_string()
@@ -1678,7 +1670,7 @@ async fn test_api_projects_health_score_clean_tree_tombstone_not_penalized() {
 
     let (url, token, handle) = spawn_server(layout.clone()).await;
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/projects?token={}", url, token))
+        authed_get(&url, &token, "/api/projects")
             .call()
             .unwrap()
             .into_string()
@@ -1723,7 +1715,7 @@ async fn test_api_projects_health_score_corrupt_report_penalized() {
 
     let (url, token, handle) = spawn_server(layout.clone()).await;
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/projects?token={}", url, token))
+        authed_get(&url, &token, "/api/projects")
             .call()
             .unwrap()
             .into_string()
@@ -1954,7 +1946,7 @@ async fn test_verify_health_no_runs_is_degraded() {
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/verify/health?token={}", url, token))
+        authed_get(&url, &token, "/api/verify/health")
             .call()
             .unwrap()
             .into_string()
@@ -2007,7 +1999,7 @@ async fn test_verify_health_failing_when_latest_run_failed() {
 
     let (url, token, handle) = spawn_server(guard.layout()).await;
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/verify/health?token={}", url, token))
+        authed_get(&url, &token, "/api/verify/health")
             .call()
             .unwrap()
             .into_string()
@@ -2044,7 +2036,7 @@ async fn test_verify_health_healthy_when_latest_run_passed_recently() {
 
     let (url, token, handle) = spawn_server(guard.layout()).await;
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/verify/health?token={}", url, token))
+        authed_get(&url, &token, "/api/verify/health")
             .call()
             .unwrap()
             .into_string()
@@ -2068,14 +2060,11 @@ async fn test_verify_history_aggregates_by_date() {
     // Use a large window so the seeded 2026-06-17/18 dates are included
     // regardless of the test run date.
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!(
-            "{}/api/verify/history?token={}&days=3650",
-            url, token
-        ))
-        .call()
-        .unwrap()
-        .into_string()
-        .unwrap()
+        authed_get(&url, &token, "/api/verify/history?days=3650")
+            .call()
+            .unwrap()
+            .into_string()
+            .unwrap()
     })
     .await
     .unwrap();
@@ -2112,7 +2101,7 @@ async fn test_verify_steps_aggregates_per_command() {
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/verify/steps?token={}", url, token))
+        authed_get(&url, &token, "/api/verify/steps")
             .call()
             .unwrap()
             .into_string()
@@ -2154,7 +2143,7 @@ async fn test_verify_steps_empty_when_no_db() {
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/verify/steps?token={}", url, token))
+        authed_get(&url, &token, "/api/verify/steps")
             .call()
             .unwrap()
             .into_string()
@@ -2211,7 +2200,7 @@ async fn test_verify_steps_name_falls_back_to_command_without_plan_json() {
 
     let (url, token, handle) = spawn_server(guard.layout()).await;
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/verify/steps?token={}", url, token))
+        authed_get(&url, &token, "/api/verify/steps")
             .call()
             .unwrap()
             .into_string()
@@ -2274,7 +2263,7 @@ async fn test_verify_steps_name_strips_predicted_impact_traceability() {
 
     let (url, token, handle) = spawn_server(guard.layout()).await;
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/verify/steps?token={}", url, token))
+        authed_get(&url, &token, "/api/verify/steps")
             .call()
             .unwrap()
             .into_string()
@@ -2316,7 +2305,7 @@ async fn fetch_compliance_summary(url: &str, token: &str) -> serde_json::Value {
     let url = url.to_string();
     let token = token.to_string();
     tokio::task::spawn_blocking(move || {
-        match ureq::get(&format!("{}/api/compliance/summary?token={}", url, token)).call() {
+        match authed_get(&url, &token, "/api/compliance/summary").call() {
             Ok(resp) => resp.into_string().unwrap(),
             Err(ureq::Error::Status(code, resp)) => {
                 panic!(
@@ -2338,14 +2327,11 @@ async fn fetch_compliance_signatures(url: &str, token: &str) -> serde_json::Valu
     let url = url.to_string();
     let token = token.to_string();
     tokio::task::spawn_blocking(move || {
-        ureq::get(&format!(
-            "{}/api/compliance/signatures?token={}",
-            url, token
-        ))
-        .call()
-        .unwrap()
-        .into_string()
-        .unwrap()
+        authed_get(&url, &token, "/api/compliance/signatures")
+            .call()
+            .unwrap()
+            .into_string()
+            .unwrap()
     })
     .await
     .unwrap()
@@ -2551,7 +2537,7 @@ async fn test_compliance_summary_last_audit_at_serializes_as_null_in_empty_state
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
     let body = tokio::task::spawn_blocking(move || {
-        ureq::get(&format!("{}/api/compliance/summary?token={}", url, token))
+        authed_get(&url, &token, "/api/compliance/summary")
             .call()
             .unwrap()
             .into_string()
@@ -2711,7 +2697,7 @@ async fn fetch_soc2_export(url: &str, token: &str) -> (Vec<u8>, String, String) 
     let url = url.to_string();
     let token = token.to_string();
     tokio::task::spawn_blocking(move || {
-        let resp = ureq::get(&format!("{}/api/compliance/export?token={}", url, token))
+        let resp = authed_get(&url, &token, "/api/compliance/export")
             .call()
             .unwrap_or_else(|e| panic!("export request failed: {e}"));
         let status = resp.status();
