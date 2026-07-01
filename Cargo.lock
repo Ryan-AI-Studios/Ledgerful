@@ -2445,7 +2445,7 @@ dependencies = [
  "gix-chunk",
  "gix-error",
  "gix-hash",
- "memmap2 0.9.10",
+ "memmap2 0.9.11",
  "nonempty",
 ]
 
@@ -2715,7 +2715,7 @@ dependencies = [
  "hashbrown 0.17.1",
  "itoa",
  "libc",
- "memmap2 0.9.10",
+ "memmap2 0.9.11",
  "rustix",
  "smallvec",
  "thiserror 2.0.18",
@@ -2792,7 +2792,7 @@ dependencies = [
  "gix-pack",
  "gix-path",
  "gix-quote",
- "memmap2 0.9.10",
+ "memmap2 0.9.11",
  "parking_lot",
  "tempfile",
  "thiserror 2.0.18",
@@ -2812,7 +2812,7 @@ dependencies = [
  "gix-hashtable",
  "gix-object",
  "gix-path",
- "memmap2 0.9.10",
+ "memmap2 0.9.11",
  "smallvec",
  "thiserror 2.0.18",
  "uluru",
@@ -2916,7 +2916,7 @@ dependencies = [
  "gix-tempfile",
  "gix-utils",
  "gix-validate",
- "memmap2 0.9.10",
+ "memmap2 0.9.11",
  "thiserror 2.0.18",
 ]
 
@@ -4572,9 +4572,9 @@ dependencies = [
 
 [[package]]
 name = "memmap2"
-version = "0.9.10"
+version = "0.9.11"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "714098028fe011992e1c3962653c96b2d578c4b4bce9036e15ff220319b1e0e3"
+checksum = "d1219ed1b7f229ee7104d281dd01d6802fe28bb6e95d292942c4daacdeb798c0"
 dependencies = [
  "libc",
 ]
@@ -7086,7 +7086,7 @@ dependencies = [
  "lru 0.16.4",
  "lz4_flex 0.13.1",
  "measure_time",
- "memmap2 0.9.10",
+ "memmap2 0.9.11",
  "once_cell",
  "oneshot",
  "rayon",

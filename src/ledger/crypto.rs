@@ -2,7 +2,7 @@ use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use miette::{IntoDiagnostic, Result};
 use rand::rngs::OsRng;
 use std::fs;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 pub fn get_keys_dir() -> Result<PathBuf> {
     let home = std::env::var("USERPROFILE")
@@ -18,31 +18,79 @@ pub fn get_keys_dir() -> Result<PathBuf> {
 
 pub fn get_or_create_keys() -> Result<(SigningKey, VerifyingKey)> {
     let keys_dir = get_keys_dir()?;
-    let priv_path = keys_dir.join("private.pem");
+    get_or_create_keys_in(&keys_dir)
+}
+
+fn get_or_create_keys_in(keys_dir: &Path) -> Result<(SigningKey, VerifyingKey)> {
+    if !keys_dir.exists() {
+        fs::create_dir_all(keys_dir).into_diagnostic()?;
+    }
+
+    let priv_path = keys_dir.join("private.key");
+    let legacy_priv_path = keys_dir.join("private.pem");
     let pub_path = keys_dir.join("public.pem");
 
-    if priv_path.exists() && pub_path.exists() {
-        let priv_bytes = fs::read(&priv_path).into_diagnostic()?;
-        let pub_bytes = fs::read(&pub_path).into_diagnostic()?;
+    // Active one-time migration: rename the misnamed legacy private key file
+    // to the canonical name. We only rename when the target does not already
+    // exist, so an existing `private.key` is never clobbered. If the rename
+    // fails, we fall back to reading from the legacy path for this call so
+    // the user's existing key is never lost.
+    if legacy_priv_path.exists()
+        && !priv_path.exists()
+        && let Err(e) = fs::rename(&legacy_priv_path, &priv_path)
+    {
+        tracing::warn!(
+            "Failed to rename legacy private key {:?} to {:?}: {e}. Reading from legacy path.",
+            legacy_priv_path,
+            priv_path
+        );
+    }
 
-        let priv_str = String::from_utf8(priv_bytes).into_diagnostic()?;
-        let pub_str = String::from_utf8(pub_bytes).into_diagnostic()?;
+    // Resolve which private-key file to use. Prefer the canonical
+    // `private.key`; fall back to the legacy `private.pem` only if the
+    // rename failed (i.e. `private.key` still doesn't exist but the
+    // legacy file does).
+    let priv_file: Option<&Path> = if priv_path.exists() {
+        Some(&priv_path)
+    } else if legacy_priv_path.exists() {
+        Some(&legacy_priv_path)
+    } else {
+        None
+    };
 
-        let priv_decoded = hex::decode(priv_str.trim()).into_diagnostic()?;
-        let pub_decoded = hex::decode(pub_str.trim()).into_diagnostic()?;
+    if let Some(priv_file) = priv_file {
+        let signing_key = read_private_key(priv_file)?;
 
-        let priv_array: [u8; 32] = priv_decoded
-            .try_into()
-            .map_err(|_| miette::miette!("Invalid private key size"))?;
-        let pub_array: [u8; 32] = pub_decoded
-            .try_into()
-            .map_err(|_| miette::miette!("Invalid public key size"))?;
-
-        let signing_key = SigningKey::from_bytes(&priv_array);
-        let verifying_key = VerifyingKey::from_bytes(&pub_array).into_diagnostic()?;
+        // If the public key file is missing, derive it from the private
+        // seed rather than minting a brand-new identity. This preserves
+        // the user's existing signing identity even if `public.pem` was
+        // lost or never written.
+        let verifying_key = if pub_path.exists() {
+            // Verify the stored public key matches the private seed.
+            // If they disagree, trust the private seed (authoritative)
+            // and rewrite the public key.
+            let stored = read_public_key(&pub_path)?;
+            if stored.to_bytes() == signing_key.verifying_key().to_bytes() {
+                stored
+            } else {
+                tracing::warn!(
+                    "Public key at {:?} does not match the private seed; regenerating.",
+                    pub_path
+                );
+                let vk = signing_key.verifying_key();
+                fs::write(&pub_path, hex::encode(vk.to_bytes())).into_diagnostic()?;
+                vk
+            }
+        } else {
+            let vk = signing_key.verifying_key();
+            fs::write(&pub_path, hex::encode(vk.to_bytes())).into_diagnostic()?;
+            vk
+        };
 
         Ok((signing_key, verifying_key))
     } else {
+        // No private key exists at all — fresh install. Generate a new
+        // keypair and write both files.
         let mut csprng = OsRng;
         let mut bytes = [0u8; 32];
         use rand::RngCore;
@@ -64,6 +112,26 @@ pub fn get_or_create_keys() -> Result<(SigningKey, VerifyingKey)> {
 
         Ok((signing_key, verifying_key))
     }
+}
+
+fn read_private_key(path: &Path) -> Result<SigningKey> {
+    let priv_bytes = fs::read(path).into_diagnostic()?;
+    let priv_str = String::from_utf8(priv_bytes).into_diagnostic()?;
+    let priv_decoded = hex::decode(priv_str.trim()).into_diagnostic()?;
+    let priv_array: [u8; 32] = priv_decoded
+        .try_into()
+        .map_err(|_| miette::miette!("Invalid private key size"))?;
+    Ok(SigningKey::from_bytes(&priv_array))
+}
+
+fn read_public_key(path: &Path) -> Result<VerifyingKey> {
+    let pub_bytes = fs::read(path).into_diagnostic()?;
+    let pub_str = String::from_utf8(pub_bytes).into_diagnostic()?;
+    let pub_decoded = hex::decode(pub_str.trim()).into_diagnostic()?;
+    let pub_array: [u8; 32] = pub_decoded
+        .try_into()
+        .map_err(|_| miette::miette!("Invalid public key size"))?;
+    VerifyingKey::from_bytes(&pub_array).into_diagnostic()
 }
 
 pub fn sign_ledger_entry(
@@ -126,4 +194,108 @@ pub fn verify_signature(
     );
 
     verifying_key.verify(payload.as_bytes(), &signature).is_ok()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn read_private_key_roundtrip() {
+        let tmp = tempfile::tempdir().unwrap();
+        let seed = [1u8; 32];
+        let path = tmp.path().join("private.key");
+        fs::write(&path, hex::encode(seed)).unwrap();
+        let key = read_private_key(&path).unwrap();
+        assert_eq!(key.to_bytes(), seed);
+    }
+
+    fn temp_keys_dir() -> (tempfile::TempDir, PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let keys_dir = temp.path().join(".ledgerful").join("keys");
+        fs::create_dir_all(&keys_dir).unwrap();
+        (temp, keys_dir)
+    }
+
+    #[test]
+    fn legacy_private_pem_is_migrated_to_private_key() {
+        let (_temp, keys_dir) = temp_keys_dir();
+
+        let seed = [2u8; 32];
+        let signing_key = SigningKey::from_bytes(&seed);
+        let verifying_key = signing_key.verifying_key();
+
+        fs::write(keys_dir.join("private.pem"), hex::encode(seed)).unwrap();
+        fs::write(
+            keys_dir.join("public.pem"),
+            hex::encode(verifying_key.to_bytes()),
+        )
+        .unwrap();
+
+        let (loaded_signing, loaded_verifying) = get_or_create_keys_in(&keys_dir).unwrap();
+
+        assert_eq!(loaded_signing.to_bytes(), seed);
+        assert_eq!(loaded_verifying.to_bytes(), verifying_key.to_bytes());
+
+        assert!(
+            keys_dir.join("private.key").exists(),
+            "private.key should exist after migration"
+        );
+        assert!(
+            !keys_dir.join("private.pem").exists(),
+            "private.pem should be removed after migration"
+        );
+        assert!(keys_dir.join("public.pem").exists());
+    }
+
+    #[test]
+    fn fresh_install_creates_private_key_only() {
+        let (_temp, keys_dir) = temp_keys_dir();
+
+        assert!(!keys_dir.join("private.pem").exists());
+        assert!(!keys_dir.join("private.key").exists());
+
+        let (signing_key, verifying_key) = get_or_create_keys_in(&keys_dir).unwrap();
+
+        assert!(keys_dir.join("private.key").exists());
+        assert!(!keys_dir.join("private.pem").exists());
+        assert!(keys_dir.join("public.pem").exists());
+
+        assert_eq!(
+            verifying_key.to_bytes(),
+            signing_key.verifying_key().to_bytes()
+        );
+    }
+
+    #[test]
+    fn existing_private_key_is_not_clobbered_by_legacy_file() {
+        let (_temp, keys_dir) = temp_keys_dir();
+
+        let new_seed = [3u8; 32];
+        let new_signing = SigningKey::from_bytes(&new_seed);
+        let new_verifying = new_signing.verifying_key();
+
+        let legacy_seed = [4u8; 32];
+
+        fs::write(keys_dir.join("private.key"), hex::encode(new_seed)).unwrap();
+        fs::write(
+            keys_dir.join("public.pem"),
+            hex::encode(new_verifying.to_bytes()),
+        )
+        .unwrap();
+        fs::write(keys_dir.join("private.pem"), hex::encode(legacy_seed)).unwrap();
+
+        let (loaded_signing, loaded_verifying) = get_or_create_keys_in(&keys_dir).unwrap();
+
+        assert_eq!(
+            loaded_signing.to_bytes(),
+            new_seed,
+            "private.key must not be clobbered"
+        );
+        assert_eq!(loaded_verifying.to_bytes(), new_verifying.to_bytes());
+
+        if keys_dir.join("private.pem").exists() {
+            assert!(keys_dir.join("private.key").exists());
+        }
+    }
 }

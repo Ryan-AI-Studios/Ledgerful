@@ -1501,7 +1501,11 @@ async fn test_api_sync_status_returns_501_without_sync_feature() {
 
     let (url, token, handle) = spawn_server(layout.clone()).await;
     let response = tokio::task::spawn_blocking(move || {
-        authed_get(&url, &token, "/api/sync/status").call().unwrap()
+        match authed_get(&url, &token, "/api/sync/status").call() {
+            Ok(r) => r,
+            Err(ureq::Error::Status(_, r)) => r,
+            Err(e) => panic!("unexpected error: {e}"),
+        }
     })
     .await
     .unwrap();

@@ -55,6 +55,7 @@ mod cozo_schema_migration;
 mod cozo_vector_ops;
 mod cozodb_integrity;
 mod cross_platform_doctor;
+mod crypto_key_migrate;
 mod daemon_lifecycle;
 mod doc_generation;
 mod dump_rust_tree;
