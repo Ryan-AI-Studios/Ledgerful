@@ -29,7 +29,6 @@ pub mod util;
 pub mod verify;
 pub mod watch;
 
-#[cfg(feature = "sync")]
 pub mod sync;
 
 pub const BINARY_NAME: &str = "ledgerful";

@@ -642,6 +642,38 @@
         }
       }
     },
+    "/api/sync/status": {
+      "get": {
+        "tags": [
+          "sync"
+        ],
+        "summary": "`GET /api/sync/status` — local M0 sync state.",
+        "description": "**Feature gate:** the route is **always registered** (track 0013 DoD-1).\nWhen built **with** `sync`, the handler reads `SyncState` from the ledger\nDB and returns real sync metadata. When built **without** `sync`, it\nreturns a `501 Not Implemented` — the schema documents the route, and the\nruntime honors it: no documented-but-unserved route, no dangling handler.",
+        "operationId": "getSyncStatus",
+        "responses": {
+          "200": {
+            "description": "Local sync state",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SyncStatusResponse"
+                }
+              }
+            }
+          },
+          "501": {
+            "description": "Sync feature not enabled in this build — rebuild with --features sync",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProblemDetail"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/verify/health": {
       "get": {
         "tags": [
@@ -1448,6 +1480,32 @@
           }
         }
       },
+      "ProblemDetail": {
+        "type": "object",
+        "description": "RFC 7807 problem-detail object. Additional members are allowed; this shape\nsupplies the core fields required by the track contract.\n\nTrack 0013: `ToSchema` + `pub(crate)` so the OpenAPI can document error\nresponse bodies (e.g. the 501 from `/api/sync/status` when built without\nthe `sync` feature).",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "detail"
+        ],
+        "properties": {
+          "detail": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "format": "int32",
+            "minimum": 0
+          },
+          "title": {
+            "type": "string"
+          },
+          "type": {
+            "type": "string"
+          }
+        }
+      },
       "ProjectResponse": {
         "type": "object",
         "required": [
@@ -1546,11 +1604,15 @@
           },
           "recent_changes": {
             "type": "array",
-            "items": {}
+            "items": {
+              "$ref": "#/components/schemas/ChangeResponse"
+            }
           },
           "top_hotspots": {
             "type": "array",
-            "items": {}
+            "items": {
+              "$ref": "#/components/schemas/HotspotResponse"
+            }
           },
           "unaudited_drift": {
             "type": "integer",
@@ -1588,6 +1650,36 @@
           "unaudited_drift": {
             "type": "integer",
             "minimum": 0
+          }
+        }
+      },
+      "SyncStatusResponse": {
+        "type": "object",
+        "description": "`SyncStatusResponse` DTO — local M0 sync state.\n\nDeliberately **not** gated on `#[cfg(feature = \"sync\")]` so the OpenAPI\nschema can document the route in all builds (schema/runtime consistency,\ntrack 0013 DoD-1). Only the sync-specific *logic* (reading `SyncState`\nfrom the ledger DB) is feature-gated; the DTO and the route are always\npresent. When built without `sync`, the handler returns a clean\n`501 Not Implemented` (see `sync_status_handler`).",
+        "properties": {
+          "device_id": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_apply_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_extract_at": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "last_run_at": {
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       },

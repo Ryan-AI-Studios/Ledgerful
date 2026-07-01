@@ -1,21 +1,42 @@
-pub mod apply;
-pub mod bundle;
-pub mod crypto;
+// `hlc`, `state`, `error` are always available — they have no `sync`-feature
+// deps (only `serde`, `rusqlite`, `miette`, `thiserror`, `std`). Track 0013:
+// the web handler's `SyncStatusResponse` DTO + `hlc_to_iso8601` helper
+// reference these without the `sync` feature so the OpenAPI schema can
+// document `/api/sync/status` in all builds. The crypto/transport/extract/
+// apply/bundle modules stay gated.
 pub mod error;
-pub mod extract;
 pub mod hlc;
 pub mod state;
+
+#[cfg(feature = "sync")]
+pub mod apply;
+#[cfg(feature = "sync")]
+pub mod bundle;
+#[cfg(feature = "sync")]
+pub mod crypto;
+#[cfg(feature = "sync")]
+pub mod extract;
+#[cfg(feature = "sync")]
 pub mod transport;
 
+#[cfg(feature = "sync")]
 use crate::config::model::Config;
+#[cfg(feature = "sync")]
 use crate::sync::bundle::Bundle;
+#[cfg(feature = "sync")]
 use crate::sync::error::SyncError;
+#[cfg(feature = "sync")]
 use crate::sync::transport::SyncTarget;
+#[cfg(feature = "sync")]
 use ed25519_dalek::SigningKey;
+#[cfg(feature = "sync")]
 use rusqlite::Connection;
+#[cfg(feature = "sync")]
 use std::collections::HashMap;
+#[cfg(feature = "sync")]
 use std::path::Path;
 
+#[cfg(feature = "sync")]
 pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Result<()> {
     use miette::IntoDiagnostic;
 

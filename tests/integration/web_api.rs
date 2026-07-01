@@ -1485,6 +1485,35 @@ async fn test_api_sync_status_after_init() {
     handle.abort();
 }
 
+/// Track 0013 DoD-1: when built **without** `sync`, `/api/sync/status`
+/// returns a clean `501 Not Implemented` (schema/runtime consistency — the
+/// route is always registered, but the handler returns 501 when the
+/// feature is off).
+///
+/// This test is `#[cfg(not(feature = "sync"))]` — it only compiles/runs
+/// in a no-sync build. In the default CI run (which uses `--features sync`),
+/// it is skipped.
+#[cfg(not(feature = "sync"))]
+#[tokio::test]
+async fn test_api_sync_status_returns_501_without_sync_feature() {
+    let guard = temp_layout();
+    let layout = guard.layout();
+
+    let (url, token, handle) = spawn_server(layout.clone()).await;
+    let response = tokio::task::spawn_blocking(move || {
+        authed_get(&url, &token, "/api/sync/status").call().unwrap()
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        response.status(),
+        501,
+        "no-sync build should return 501 Not Implemented for /api/sync/status"
+    );
+    handle.abort();
+}
+
 /// Per M8 opencode-review H1: assert the `doctor_failures` term in
 /// the `health_score` formula is derived from a real
 /// `doctor-results.json` written by `execute_doctor`, not a hardcoded

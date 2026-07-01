@@ -78,10 +78,8 @@ pub fn router(state: Arc<AppState>) -> Router {
         )
         .route("/knowledge-graph", get(api::knowledge_graph_handler))
         .route("/config", get(config_handler))
+        .route("/sync/status", get(sync_status_handler))
         .route_layer(middleware::from_fn_with_state(state.clone(), token_layer));
-
-    #[cfg(feature = "sync")]
-    let api_router = api_router.route("/sync/status", get(sync_status_handler));
 
     let mut app = Router::new()
         .route("/health", get(health_handler))
@@ -253,8 +251,8 @@ pub(crate) struct SnapshotResponse {
     graph_nodes: usize,
     graph_edges: usize,
     last_audit: Option<String>,
-    top_hotspots: Vec<serde_json::Value>,
-    recent_changes: Vec<serde_json::Value>,
+    top_hotspots: Vec<HotspotResponse>,
+    recent_changes: Vec<ChangeResponse>,
 }
 
 /// `GET /api/snapshot` — summary metrics + recent change feed.
@@ -271,7 +269,8 @@ pub(crate) async fn snapshot_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, WebError> {
     let layout = state.layout.clone();
-    let snapshot = tokio::task::spawn_blocking(move || compute_snapshot(&layout))
+    let git_meta_cache = state.git_meta_cache.clone();
+    let snapshot = tokio::task::spawn_blocking(move || compute_snapshot(&layout, &git_meta_cache))
         .await
         .map_err(|e| WebError::Internal(format!("Background task failed: {}", e)))?
         .unwrap_or_else(|e| {
@@ -297,40 +296,28 @@ fn empty_snapshot(layout: &Layout) -> SnapshotResponse {
     }
 }
 
-fn compute_snapshot(layout: &Layout) -> Result<SnapshotResponse> {
+fn compute_snapshot(
+    layout: &Layout,
+    git_meta_cache: &tokio::sync::Mutex<crate::commands::web::git_meta::GitMetaCacheEntry>,
+) -> Result<SnapshotResponse> {
     let pending_transactions = count_pending_transactions(layout).unwrap_or(0);
     let unaudited_drift = count_unaudited_transactions(layout).unwrap_or(0);
     let indexed_documents = count_indexed_documents(layout);
 
-    let recent_changes: Vec<serde_json::Value> = fetch_changes(layout, 7, false)
+    let recent_changes: Vec<ChangeResponse> = fetch_changes(layout, 7, false)
         .unwrap_or_default()
         .into_iter()
         .take(10)
-        .map(|c| {
-            serde_json::json!({
-                "path": c.path,
-                "status": c.status,
-                "summary": c.summary,
-                "author": c.author,
-                "timeAgo": c.time_ago,
-                "fileCount": c.file_count,
-                "risk": c.risk,
-            })
-        })
         .collect();
 
-    let top_hotspots: Vec<serde_json::Value> = fetch_hotspots(layout, Some(10), None)
-        .unwrap_or_default()
-        .into_iter()
-        .map(|h| {
-            serde_json::json!({
-                "filePath": h.path.to_string_lossy(),
-                "score": h.display_score,
-                "complexity": h.complexity,
-                "frequency": h.frequency,
-            })
-        })
-        .collect();
+    let top_hotspots: Vec<HotspotResponse> =
+        match fetch_hotspots_response(layout, Some(10), None, git_meta_cache) {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::warn!("Failed to fetch hotspots for /api/snapshot: {}", e);
+                Vec::new()
+            }
+        };
 
     let overall_risk = if unaudited_drift > 0 || pending_transactions > 5 {
         "high"
@@ -708,7 +695,14 @@ pub(crate) async fn projects_handler(
     Ok(Json(projects))
 }
 
-#[cfg(feature = "sync")]
+/// `SyncStatusResponse` DTO — local M0 sync state.
+///
+/// Deliberately **not** gated on `#[cfg(feature = "sync")]` so the OpenAPI
+/// schema can document the route in all builds (schema/runtime consistency,
+/// track 0013 DoD-1). Only the sync-specific *logic* (reading `SyncState`
+/// from the ledger DB) is feature-gated; the DTO and the route are always
+/// present. When built without `sync`, the handler returns a clean
+/// `501 Not Implemented` (see `sync_status_handler`).
 #[derive(Serialize)]
 #[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
 pub(crate) struct SyncStatusResponse {
@@ -720,21 +714,38 @@ pub(crate) struct SyncStatusResponse {
 
 /// `GET /api/sync/status` — local M0 sync state.
 ///
-/// **Feature gate:** this endpoint is only registered when the `sync` feature
-/// is enabled at compile time.
-#[cfg(feature = "sync")]
+/// **Feature gate:** the route is **always registered** (track 0013 DoD-1).
+/// When built **with** `sync`, the handler reads `SyncState` from the ledger
+/// DB and returns real sync metadata. When built **without** `sync`, it
+/// returns a `501 Not Implemented` — the schema documents the route, and the
+/// runtime honors it: no documented-but-unserved route, no dangling handler.
 #[utoipa::path(
     get,
     path = "/api/sync/status",
     operation_id = "getSyncStatus",
     tag = "sync",
     responses(
-        (status = 200, description = "Local sync state", body = SyncStatusResponse)
+        (status = 200, description = "Local sync state", body = SyncStatusResponse),
+        (status = 501, description = "Sync feature not enabled in this build — rebuild with --features sync", body = crate::commands::web::error::ProblemDetail, content_type = "application/problem+json")
     )
 )]
 pub(crate) async fn sync_status_handler(
     State(state): State<Arc<AppState>>,
-) -> Result<impl IntoResponse, WebError> {
+) -> Result<axum::response::Response, WebError> {
+    #[cfg(feature = "sync")]
+    {
+        sync_status_impl(state).await.map(|r| r.into_response())
+    }
+    #[cfg(not(feature = "sync"))]
+    {
+        let _ = state;
+        Err(WebError::NotImplemented("The sync feature is not enabled in this build. Rebuild with --features sync to use /api/sync/status.".to_string()))
+    }
+}
+
+/// Sync-enabled implementation: reads `SyncState` from the ledger DB.
+#[cfg(feature = "sync")]
+async fn sync_status_impl(state: Arc<AppState>) -> Result<Json<SyncStatusResponse>, WebError> {
     let layout = state.layout.clone();
     let status = tokio::task::spawn_blocking(move || {
         let db_path = layout.state_subdir().join("ledger.db");
@@ -812,6 +823,12 @@ fn empty_sync_status() -> SyncStatusResponse {
 /// field is expected to be a clean ISO 8601 date — emitting a raw
 /// `u64` ms integer in a date field would be a worse contract than
 /// omitting the field entirely.
+///
+/// Not feature-gated on `sync` (track 0013): `HLC` lives in the
+/// unconditionally-compiled `crate::sync::hlc` module, so this helper
+/// is available in all builds. It is only *called* from the `sync`
+/// feature path, so `#[cfg(feature = "sync")]` on the call site keeps
+/// it live; gate it here to avoid dead-code warnings in no-sync builds.
 #[cfg(feature = "sync")]
 fn hlc_to_iso8601(hlc: Option<&crate::sync::hlc::HLC>) -> Option<String> {
     let hlc = hlc?;
@@ -2171,5 +2188,137 @@ mod tests {
             has_dashboard_route,
             "Expected dashboard route files in embedded bundle (e.g. dashboard.html, ledger.html)"
         );
+    }
+
+    /// Track 0013: `compute_snapshot` returns typed DTOs, not opaque JSON.
+    /// `recent_changes` must be `Vec<ChangeResponse>` with `id` populated,
+    /// and `top_hotspots` must be `Vec<HotspotResponse>` with the full DTO.
+    #[test]
+    fn snapshot_returns_typed_dto_collections() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        init_git_repo_with_commit(layout.root.as_std_path());
+
+        let cache = tokio::sync::Mutex::new(None);
+        let snapshot = compute_snapshot(&layout, &cache).unwrap();
+
+        // recent_changes: should have at least 1 entry (the initial commit),
+        // and it must be a ChangeResponse with id populated.
+        assert!(
+            !snapshot.recent_changes.is_empty(),
+            "recent_changes should have at least one entry"
+        );
+        for change in &snapshot.recent_changes {
+            assert!(!change.id.is_empty(), "ChangeResponse.id must be populated");
+            assert!(!change.path.is_empty());
+            assert!(!change.status.is_empty());
+        }
+
+        // top_hotspots: may be empty (single commit, no hotspot history),
+        // but if non-empty, each must be a full HotspotResponse with id + rank.
+        for hotspot in &snapshot.top_hotspots {
+            assert!(
+                !hotspot.id.is_empty(),
+                "HotspotResponse.id must be populated"
+            );
+            assert!(!hotspot.file_path.is_empty());
+            assert!(hotspot.rank >= 1, "HotspotResponse.rank must be 1-based");
+        }
+    }
+
+    /// Track 0013: `SnapshotResponse` serializes `recent_changes` and
+    /// `top_hotspots` as arrays of typed objects (with camelCase keys for
+    /// ChangeResponse), not opaque `Value` wrappers.
+    #[test]
+    fn snapshot_serializes_typed_arrays() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        init_git_repo_with_commit(layout.root.as_std_path());
+
+        let cache = tokio::sync::Mutex::new(None);
+        let snapshot = compute_snapshot(&layout, &cache).unwrap();
+        let value = serde_json::to_value(&snapshot).unwrap();
+
+        // recent_changes: array of objects with camelCase ChangeResponse fields
+        let recent = value["recent_changes"].as_array().unwrap();
+        if !recent.is_empty() {
+            let first = &recent[0];
+            // ChangeResponse uses #[serde(rename_all = "camelCase")]
+            assert!(
+                first.get("timeAgo").is_some(),
+                "camelCase timeAgo must be present"
+            );
+            assert!(
+                first.get("fileCount").is_some(),
+                "camelCase fileCount must be present"
+            );
+            assert!(first.get("id").is_some(), "id must be present");
+            assert!(first.get("time_ago").is_none(), "snake_case must not leak");
+        }
+
+        // top_hotspots: array of objects with camelCase HotspotResponse fields
+        let hotspots = value["top_hotspots"].as_array().unwrap();
+        for h in hotspots {
+            assert!(
+                h.get("filePath").is_some(),
+                "camelCase filePath must be present"
+            );
+            assert!(
+                h.get("riskLevel").is_some(),
+                "camelCase riskLevel must be present"
+            );
+            assert!(h.get("rank").is_some(), "rank must be present");
+        }
+    }
+
+    /// Track 0013: `empty_snapshot` returns typed empty collections,
+    /// not `Vec<Value>`. Ensures the wire shape is an empty typed array.
+    #[test]
+    fn empty_snapshot_has_typed_empty_arrays() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+
+        let snapshot = empty_snapshot(&layout);
+        assert!(snapshot.recent_changes.is_empty());
+        assert!(snapshot.top_hotspots.is_empty());
+
+        let value = serde_json::to_value(&snapshot).unwrap();
+        assert!(value["recent_changes"].is_array());
+        assert!(value["top_hotspots"].is_array());
+    }
+
+    /// Track 0013: `SyncStatusResponse` serializes with snake_case wire keys
+    /// (no `#[serde(rename_all)]` on this DTO — snake_case is the Rust default).
+    #[test]
+    fn sync_status_response_serializes_snake_case() {
+        let response = SyncStatusResponse {
+            device_id: Some("device-123".to_string()),
+            last_extract_at: Some("2026-06-30T12:00:00Z".to_string()),
+            last_apply_at: None,
+            last_run_at: None,
+        };
+        let value = serde_json::to_value(&response).unwrap();
+        assert!(
+            value.get("device_id").is_some(),
+            "snake_case device_id must be present"
+        );
+        assert!(value.get("last_extract_at").is_some());
+        assert!(value.get("last_apply_at").is_some());
+        assert!(value.get("last_run_at").is_some());
+        assert!(value.get("deviceId").is_none(), "camelCase must not leak");
+    }
+
+    /// Track 0013: `WebError::NotImplemented` maps to HTTP 501.
+    #[test]
+    fn web_error_not_implemented_returns_501() {
+        use axum::http::StatusCode;
+        use axum::response::IntoResponse;
+
+        let err = WebError::NotImplemented("test".to_string());
+        let response = err.into_response();
+        assert_eq!(response.status(), StatusCode::NOT_IMPLEMENTED);
     }
 }

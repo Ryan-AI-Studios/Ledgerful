@@ -5,6 +5,9 @@ use axum::http::{HeaderValue, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use serde::Serialize;
 
+#[cfg(any(test, feature = "openapi", feature = "web"))]
+use utoipa::ToSchema;
+
 /// Errors returned by the Ledgerful web dashboard HTTP layer.
 #[derive(Debug)]
 pub enum WebError {
@@ -13,12 +16,18 @@ pub enum WebError {
     Internal(String),
     Forbidden,
     TooManyRequests,
+    NotImplemented(String),
 }
 
 /// RFC 7807 problem-detail object. Additional members are allowed; this shape
 /// supplies the core fields required by the track contract.
+///
+/// Track 0013: `ToSchema` + `pub(crate)` so the OpenAPI can document error
+/// response bodies (e.g. the 501 from `/api/sync/status` when built without
+/// the `sync` feature).
 #[derive(Debug, Serialize)]
-struct ProblemDetail {
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+pub(crate) struct ProblemDetail {
     #[serde(rename = "type")]
     type_uri: &'static str,
     title: &'static str,
@@ -58,6 +67,12 @@ impl IntoResponse for WebError {
                 "urn:ledgerful:problem:too-many-requests",
                 "Too Many Requests",
                 "Rate limit exceeded; retry after a short cooldown.".to_string(),
+            ),
+            WebError::NotImplemented(msg) => (
+                StatusCode::NOT_IMPLEMENTED,
+                "urn:ledgerful:problem:not-implemented",
+                "Not Implemented",
+                msg,
             ),
         };
 

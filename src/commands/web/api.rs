@@ -37,9 +37,10 @@ use super::server::{
     __path_changes_handler, __path_config_handler, __path_health_handler, __path_hotspots_handler,
     __path_ledger_handler, __path_ledger_search_handler, __path_ledger_tx_handler,
     __path_projects_handler, __path_session_handler, __path_snapshot_handler,
-    __path_status_handler, ChangeResponse, ChangedFileResponse, ChangesQuery, ConfigResponse,
-    HotspotsQueryParams, LedgerDetailResponse, LedgerEntryResponse, LedgerListQuery,
-    LedgerSearchQuery, ProjectResponse, SnapshotResponse, StatusResponse, UserSession,
+    __path_status_handler, __path_sync_status_handler, ChangeResponse, ChangedFileResponse,
+    ChangesQuery, ConfigResponse, HotspotsQueryParams, LedgerDetailResponse, LedgerEntryResponse,
+    LedgerListQuery, LedgerSearchQuery, ProjectResponse, SnapshotResponse, StatusResponse,
+    SyncStatusResponse, UserSession,
 };
 
 #[cfg(any(test, feature = "openapi", feature = "web"))]
@@ -73,7 +74,8 @@ use super::server::{
         compliance_export_handler,
         endpoints_changed_handler,
         security_boundaries_handler,
-        knowledge_graph_handler
+        knowledge_graph_handler,
+        sync_status_handler
     ),
     components(schemas(
         UserSession,
@@ -104,7 +106,9 @@ use super::server::{
         KnowledgeGraphQuery,
         KnowledgeGraphResponse,
         KgNode,
-        KgEdge
+        KgEdge,
+        SyncStatusResponse,
+        crate::commands::web::error::ProblemDetail
     )),
     tags(
         (name = "health", description = "Daemon liveness"),
