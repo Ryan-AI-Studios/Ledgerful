@@ -1,13 +1,13 @@
 use ledgerful::commands::init::execute_init;
 use ledgerful::commands::ledger::execute_ledger_status;
 use ledgerful::config::model::Config;
-use ledgerful::ledger::crypto::{sign_ledger_entry, verify_signature};
+use ledgerful::ledger::crypto::{sign_ledger_entry_in, verify_signature};
 use ledgerful::ledger::*;
 use ledgerful::state::storage::StorageManager;
 use serial_test::serial;
 use tempfile::{TempDir, tempdir};
 
-use crate::common::{DirGuard, TempEnv, non_interactive, setup_git_repo};
+use crate::common::{DirGuard, non_interactive, setup_git_repo};
 
 fn setup_storage() -> (TempDir, StorageManager) {
     let dir = tempdir().unwrap();
@@ -16,17 +16,17 @@ fn setup_storage() -> (TempDir, StorageManager) {
     (dir, storage)
 }
 
+fn keys_dir(dir: &std::path::Path) -> std::path::PathBuf {
+    dir.join(".ledgerful").join("keys")
+}
+
 #[test]
-#[serial(env)]
 fn test_timestamp_preservation_and_signature_validity() {
     let (dir, mut storage) = setup_storage();
     let repo_root = dir.path().to_path_buf();
 
-    // Override HOME to use temp dir for keys
-    let keys_dir = dir.path().join(".ledgerful");
+    let keys_dir = keys_dir(dir.path());
     std::fs::create_dir_all(&keys_dir).unwrap();
-    let _env_home = TempEnv::set("HOME", dir.path().to_str().unwrap());
-    let _env_userprofile = TempEnv::set("USERPROFILE", dir.path().to_str().unwrap());
 
     // Create the file so canonicalize works
     let entity_path = repo_root.join("src/main.rs");
@@ -50,9 +50,15 @@ fn test_timestamp_preservation_and_signature_validity() {
     let reason = "TDD signature fix";
     let committed_at = "2024-06-01T10:00:00Z";
 
-    let (sig, pub_key) =
-        sign_ledger_entry(&tx_id, &category.to_string(), summary, reason, committed_at)
-            .expect("Signing failed");
+    let (sig, pub_key) = sign_ledger_entry_in(
+        &keys_dir,
+        &tx_id,
+        &category.to_string(),
+        summary,
+        reason,
+        committed_at,
+    )
+    .expect("Signing failed");
 
     let sig_str = sig.expect("No signature");
     let pub_str = pub_key.expect("No public key");
@@ -103,7 +109,7 @@ fn test_timestamp_preservation_and_signature_validity() {
 }
 
 #[test]
-#[serial(env, cwd)]
+#[serial(cwd)]
 fn ledger_status_verify_signatures_rejects_corrupted_signature() {
     let _env_non_interactive = non_interactive();
     let dir = tempdir().unwrap();
@@ -113,8 +119,8 @@ fn ledger_status_verify_signatures_rejects_corrupted_signature() {
         .to_path_buf();
     let _guard = DirGuard::from_utf8(&root);
 
-    let _env_home = TempEnv::set("HOME", dir.path().to_str().unwrap());
-    let _env_userprofile = TempEnv::set("USERPROFILE", dir.path().to_str().unwrap());
+    let keys_dir = keys_dir(dir.path());
+    std::fs::create_dir_all(&keys_dir).unwrap();
 
     execute_init(false).unwrap();
 
@@ -137,8 +143,15 @@ fn ledger_status_verify_signatures_rejects_corrupted_signature() {
     let summary = "Signed commit";
     let reason = "Exercise ledger status signature verification";
     let committed_at = "2026-06-03T00:00:00Z";
-    let (sig, public_key) =
-        sign_ledger_entry(&tx_id, &category.to_string(), summary, reason, committed_at).unwrap();
+    let (sig, public_key) = sign_ledger_entry_in(
+        &keys_dir,
+        &tx_id,
+        &category.to_string(),
+        summary,
+        reason,
+        committed_at,
+    )
+    .unwrap();
 
     tx_mgr
         .commit_change(
@@ -174,7 +187,7 @@ fn ledger_status_verify_signatures_rejects_corrupted_signature() {
 /// truncating to the most recent 10 entries, both for an entity-scoped query
 /// and for the repo-wide view.
 #[test]
-#[serial(env, cwd)]
+#[serial(cwd)]
 fn test_ledger_status_all_flag_succeeds_with_more_than_ten_entries() {
     let _env_non_interactive = non_interactive();
     let dir = tempdir().unwrap();
@@ -184,8 +197,8 @@ fn test_ledger_status_all_flag_succeeds_with_more_than_ten_entries() {
         .to_path_buf();
     let _guard = DirGuard::from_utf8(&root);
 
-    let _env_home = TempEnv::set("HOME", dir.path().to_str().unwrap());
-    let _env_userprofile = TempEnv::set("USERPROFILE", dir.path().to_str().unwrap());
+    let keys_dir = keys_dir(dir.path());
+    std::fs::create_dir_all(&keys_dir).unwrap();
 
     execute_init(false).unwrap();
 

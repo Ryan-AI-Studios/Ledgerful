@@ -1,14 +1,17 @@
-use crate::common::{DirGuard, git_add_and_commit_no_verify, setup_git_repo};
+use crate::common::{DirGuard, TempEnv, git_add_and_commit_no_verify, setup_git_repo};
 use camino::Utf8Path;
 use ledgerful::commands::hook_post_commit::{
     execute_hook_post_commit, execute_hook_post_commit_for_layout,
 };
 use ledgerful::commands::index::{IndexArgs, execute_index};
 use ledgerful::commands::init::execute_init;
+use ledgerful::ledger::crypto::get_or_create_keys_in;
 use ledgerful::state::layout::Layout;
 use ledgerful::state::storage::StorageManager;
+use serial_test::serial;
 
 use std::fs;
+use std::path::Path;
 use std::process::Command;
 use std::time::Duration;
 use tempfile::tempdir;
@@ -28,6 +31,10 @@ fn wait_for_condition<F: Fn() -> bool>(
         std::thread::sleep(interval);
     }
     Err(())
+}
+
+fn keys_dir(root: &Path) -> std::path::PathBuf {
+    root.join(".ledgerful").join("keys")
 }
 
 /// Builds a minimal git repo with an indexed `.ledgerful` state directory,
@@ -58,11 +65,18 @@ fn setup_indexed_repo() -> tempfile::TempDir {
         git_add_and_commit_no_verify(root, &format!("touch {i}"));
     }
 
-    // Set HOME/USERPROFILE to the temp dir so crypto key operations write
-    // into the temp dir instead of the real user home. Required because
-    // nextest runs each test in its own process and tests may race on the
-    // key store.
-    let _home_guard = crate::common::crypto_home_guard(root);
+    // Pre-generate keys directly in the temp repo's key dir so the
+    // commit hook path uses the injected keys dir instead of real home.
+    let kdir = keys_dir(root);
+    fs::create_dir_all(&kdir).unwrap();
+    let _ = get_or_create_keys_in(&kdir);
+
+    // Point HOME/USERPROFILE at the temp repo root so that the production
+    // env-resolving path finds the same keys we just generated. The guard
+    // is needed because the hook code (and CLI subprocesses) still resolve
+    // the keys dir from env, not from DI.
+    let _home_guard_home = TempEnv::set("HOME", root.to_str().unwrap());
+    let _home_guard_profile = TempEnv::set("USERPROFILE", root.to_str().unwrap());
 
     let _guard = DirGuard::new(root);
     execute_init(false).unwrap();
@@ -105,6 +119,7 @@ fn hotspot_trends_for_commit(root: &std::path::Path, commit_hash: &str) -> i64 {
 }
 
 #[test]
+#[serial(env)]
 fn test_post_commit_hook_records_hotspot_trends() {
     let tmp = setup_indexed_repo();
     let root = tmp.path();
@@ -155,6 +170,7 @@ fn test_post_commit_hook_is_non_blocking_and_exits_ok() {
 }
 
 #[test]
+#[serial(env)]
 fn test_hotspots_trend_shows_multiple_timestamps_after_three_commits() {
     let tmp = setup_indexed_repo();
     let root = tmp.path();
@@ -203,6 +219,7 @@ fn test_hotspots_trend_shows_multiple_timestamps_after_three_commits() {
 }
 
 #[test]
+#[serial(env)]
 fn test_hotspots_trend_shows_staleness_hint_when_head_differs() {
     let tmp = setup_indexed_repo();
     let root = tmp.path();

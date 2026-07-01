@@ -1,9 +1,9 @@
-use crate::common::crypto_home_guard;
 use ed25519_dalek::SigningKey;
-use ledgerful::ledger::crypto::get_or_create_keys;
+use ledgerful::ledger::crypto::get_or_create_keys_in;
 use std::fs;
+use std::path::Path;
 
-fn keys_dir(tmp: &std::path::Path) -> std::path::PathBuf {
+fn keys_dir(tmp: &Path) -> std::path::PathBuf {
     tmp.join(".ledgerful").join("keys")
 }
 
@@ -11,10 +11,37 @@ fn seed_hex(seed: [u8; 32]) -> String {
     hex::encode(seed)
 }
 
+fn sentinel_hash(keys_dir: &Path) -> String {
+    let mut entries: Vec<(std::path::PathBuf, Vec<u8>)> = Vec::new();
+    if keys_dir.exists() {
+        for entry in fs::read_dir(keys_dir).unwrap() {
+            let entry = entry.unwrap();
+            let path = entry.path();
+            if path.is_file() {
+                entries.push((path.file_name().unwrap().into(), fs::read(&path).unwrap()));
+            }
+        }
+    }
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut hasher = blake3::Hasher::new();
+    for (name, contents) in entries {
+        hasher.update(name.to_string_lossy().as_bytes());
+        hasher.update(&contents);
+    }
+    hasher.finalize().to_hex().to_string()
+}
+
+fn get_keys_dir_for_real_home() -> std::path::PathBuf {
+    let home = std::env::var("USERPROFILE")
+        .or_else(|_| std::env::var("HOME"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_default();
+    home.join(".ledgerful").join("keys")
+}
+
 #[test]
 fn migrates_existing_private_pem_to_private_key() {
     let tmp = tempfile::tempdir().unwrap();
-    let (_home, _userprofile) = crypto_home_guard(tmp.path());
     let dir = keys_dir(tmp.path());
     fs::create_dir_all(&dir).unwrap();
 
@@ -23,7 +50,7 @@ fn migrates_existing_private_pem_to_private_key() {
     fs::write(dir.join("private.pem"), seed_hex(seed)).unwrap();
     fs::write(dir.join("public.pem"), hex::encode(expected_public)).unwrap();
 
-    let (_, verifying_key) = get_or_create_keys().expect("get_or_create_keys failed");
+    let (_, verifying_key) = get_or_create_keys_in(&dir).expect("get_or_create_keys_in failed");
 
     assert!(
         !dir.join("private.pem").exists(),
@@ -43,7 +70,6 @@ fn migrates_existing_private_pem_to_private_key() {
 #[test]
 fn does_not_clobber_existing_private_key() {
     let tmp = tempfile::tempdir().unwrap();
-    let (_home, _userprofile) = crypto_home_guard(tmp.path());
     let dir = keys_dir(tmp.path());
     fs::create_dir_all(&dir).unwrap();
 
@@ -55,7 +81,8 @@ fn does_not_clobber_existing_private_key() {
     fs::write(dir.join("private.key"), seed_hex(seed_b)).unwrap();
     fs::write(dir.join("public.pem"), hex::encode(expected_public_b)).unwrap();
 
-    let (signing_key, verifying_key) = get_or_create_keys().expect("get_or_create_keys failed");
+    let (signing_key, verifying_key) =
+        get_or_create_keys_in(&dir).expect("get_or_create_keys_in failed");
 
     assert!(
         dir.join("private.pem").exists(),
@@ -81,11 +108,11 @@ fn does_not_clobber_existing_private_key() {
 #[test]
 fn fresh_install_writes_private_key_directly() {
     let tmp = tempfile::tempdir().unwrap();
-    let (_home, _userprofile) = crypto_home_guard(tmp.path());
-
-    let (_, _) = get_or_create_keys().expect("get_or_create_keys failed");
-
     let dir = keys_dir(tmp.path());
+    fs::create_dir_all(&dir).unwrap();
+
+    let (_, _) = get_or_create_keys_in(&dir).expect("get_or_create_keys_in failed");
+
     assert!(
         !dir.join("private.pem").exists(),
         "legacy private.pem should not appear on fresh install"
@@ -99,7 +126,6 @@ fn fresh_install_writes_private_key_directly() {
 #[test]
 fn missing_public_pem_is_derived_from_private_seed_not_replaced() {
     let tmp = tempfile::tempdir().unwrap();
-    let (_home, _userprofile) = crypto_home_guard(tmp.path());
     let dir = keys_dir(tmp.path());
     fs::create_dir_all(&dir).unwrap();
 
@@ -108,7 +134,8 @@ fn missing_public_pem_is_derived_from_private_seed_not_replaced() {
 
     fs::write(dir.join("private.pem"), seed_hex(seed)).unwrap();
 
-    let (signing_key, verifying_key) = get_or_create_keys().expect("get_or_create_keys failed");
+    let (signing_key, verifying_key) =
+        get_or_create_keys_in(&dir).expect("get_or_create_keys_in failed");
 
     assert_eq!(
         signing_key.to_bytes(),
@@ -137,7 +164,6 @@ fn missing_public_pem_is_derived_from_private_seed_not_replaced() {
 #[test]
 fn missing_public_pem_with_existing_private_key_derives_not_replaces() {
     let tmp = tempfile::tempdir().unwrap();
-    let (_home, _userprofile) = crypto_home_guard(tmp.path());
     let dir = keys_dir(tmp.path());
     fs::create_dir_all(&dir).unwrap();
 
@@ -146,7 +172,8 @@ fn missing_public_pem_with_existing_private_key_derives_not_replaces() {
 
     fs::write(dir.join("private.key"), seed_hex(seed)).unwrap();
 
-    let (signing_key, verifying_key) = get_or_create_keys().expect("get_or_create_keys failed");
+    let (signing_key, verifying_key) =
+        get_or_create_keys_in(&dir).expect("get_or_create_keys_in failed");
 
     assert_eq!(
         signing_key.to_bytes(),
@@ -167,7 +194,6 @@ fn missing_public_pem_with_existing_private_key_derives_not_replaces() {
 #[test]
 fn mismatched_public_pem_is_regenerated_from_private_seed() {
     let tmp = tempfile::tempdir().unwrap();
-    let (_home, _userprofile) = crypto_home_guard(tmp.path());
     let dir = keys_dir(tmp.path());
     fs::create_dir_all(&dir).unwrap();
 
@@ -181,7 +207,8 @@ fn mismatched_public_pem_is_regenerated_from_private_seed() {
     fs::write(dir.join("private.key"), seed_hex(seed)).unwrap();
     fs::write(dir.join("public.pem"), hex::encode(wrong_public)).unwrap();
 
-    let (signing_key, verifying_key) = get_or_create_keys().expect("get_or_create_keys failed");
+    let (signing_key, verifying_key) =
+        get_or_create_keys_in(&dir).expect("get_or_create_keys_in failed");
 
     assert_eq!(
         signing_key.to_bytes(),
@@ -197,5 +224,22 @@ fn mismatched_public_pem_is_regenerated_from_private_seed() {
         fs::read_to_string(dir.join("public.pem")).unwrap().trim(),
         hex::encode(expected_public),
         "public.pem should have been rewritten"
+    );
+}
+
+#[test]
+fn integration_test_does_not_touch_real_keys_dir() {
+    let real_keys_dir = get_keys_dir_for_real_home();
+    let sentinel_before = sentinel_hash(&real_keys_dir);
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = keys_dir(tmp.path());
+    fs::create_dir_all(&dir).unwrap();
+    let _ = get_or_create_keys_in(&dir).expect("get_or_create_keys_in failed");
+
+    let sentinel_after = sentinel_hash(&real_keys_dir);
+    assert_eq!(
+        sentinel_before, sentinel_after,
+        "real keys dir must be untouched"
     );
 }

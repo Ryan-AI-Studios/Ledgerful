@@ -2372,17 +2372,17 @@ async fn fetch_compliance_signatures(url: &str, token: &str) -> serde_json::Valu
     .unwrap()
 }
 
-/// VALID: mint a real signature via `sign_ledger_entry` and seed the row with
+/// VALID: mint a real signature via `sign_ledger_entry_in` and seed the row with
 /// the returned (sig, pub). The signed payload's `committed_at` and
 /// `category` match the seeded row, so `verify_signature` must succeed.
 #[serial]
 #[tokio::test]
 async fn test_compliance_valid_signature() {
-    use crate::common::crypto_home_guard;
-    use ledgerful::ledger::crypto::sign_ledger_entry;
+    use ledgerful::ledger::crypto::sign_ledger_entry_in;
 
     let home = tempfile::tempdir().unwrap();
-    let (_home, _userprofile) = crypto_home_guard(home.path());
+    let keys_dir = home.path().join(".ledgerful").join("keys");
+    std::fs::create_dir_all(&keys_dir).unwrap();
     let guard = temp_layout();
     let layout = guard.layout();
     let tx_id = "tx-compliance-valid-001";
@@ -2391,8 +2391,9 @@ async fn test_compliance_valid_signature() {
     let reason = "Track E2 requires real signature verification";
     // `seed_ledger_entry_with_ts` stores `Category::Feature` whose `Display`
     // impl yields `"FEATURE"`, so the signed category must match.
-    let (sig, pub_key) = sign_ledger_entry(tx_id, "FEATURE", summary, reason, committed_at)
-        .expect("sign_ledger_entry should succeed");
+    let (sig, pub_key) =
+        sign_ledger_entry_in(&keys_dir, tx_id, "FEATURE", summary, reason, committed_at)
+            .expect("sign_ledger_entry_in should succeed");
     let sig = sig.expect("signature should be Some");
     let pub_key = pub_key.expect("public key should be Some");
 
@@ -2433,11 +2434,11 @@ async fn test_compliance_valid_signature() {
 #[serial]
 #[tokio::test]
 async fn test_compliance_tampered_signature_is_invalid() {
-    use crate::common::crypto_home_guard;
-    use ledgerful::ledger::crypto::sign_ledger_entry;
+    use ledgerful::ledger::crypto::sign_ledger_entry_in;
 
     let home = tempfile::tempdir().unwrap();
-    let (_home, _userprofile) = crypto_home_guard(home.path());
+    let keys_dir = home.path().join(".ledgerful").join("keys");
+    std::fs::create_dir_all(&keys_dir).unwrap();
     let guard = temp_layout();
     let layout = guard.layout();
     let tx_id = "tx-compliance-tampered-001";
@@ -2445,8 +2446,15 @@ async fn test_compliance_tampered_signature_is_invalid() {
     let signed_summary = "Original signed summary";
     let stored_summary = "Tampered summary";
     let reason = "reason";
-    let (sig, pub_key) =
-        sign_ledger_entry(tx_id, "FEATURE", signed_summary, reason, committed_at).unwrap();
+    let (sig, pub_key) = sign_ledger_entry_in(
+        &keys_dir,
+        tx_id,
+        "FEATURE",
+        signed_summary,
+        reason,
+        committed_at,
+    )
+    .unwrap();
     let sig = sig.unwrap();
     let pub_key = pub_key.unwrap();
 
@@ -2855,19 +2863,20 @@ fn hash_zip_file(body: &[u8], name: &str) -> String {
 #[serial]
 #[tokio::test]
 async fn test_soc2_export_seeded() {
-    use crate::common::crypto_home_guard;
-    use ledgerful::ledger::crypto::sign_ledger_entry;
+    use ledgerful::ledger::crypto::sign_ledger_entry_in;
 
     let home = tempfile::tempdir().unwrap();
-    let (_home, _userprofile) = crypto_home_guard(home.path());
+    let keys_dir = home.path().join(".ledgerful").join("keys");
+    std::fs::create_dir_all(&keys_dir).unwrap();
     let guard = temp_layout();
     let layout = guard.layout();
     let tx_id = "tx-soc2-seeded-001";
     let committed_at = "2026-06-20T10:00:00Z";
     let summary = "Add SOC2 export endpoint";
     let reason = "Track E3 requires a tamper-evident export";
-    let (sig, pub_key) = sign_ledger_entry(tx_id, "FEATURE", summary, reason, committed_at)
-        .expect("sign_ledger_entry should succeed");
+    let (sig, pub_key) =
+        sign_ledger_entry_in(&keys_dir, tx_id, "FEATURE", summary, reason, committed_at)
+            .expect("sign_ledger_entry_in should succeed");
     seed_ledger_entry_with_ts(
         &layout,
         tx_id,
@@ -2963,13 +2972,14 @@ async fn test_soc2_export_seeded() {
 /// Empty state (no DB): export still returns 200 + a valid zip with
 /// header-only CSVs, no `adr/` files, and a signature that verifies over
 /// the manifest.
-#[serial]
+#[serial(env)]
 #[tokio::test]
 async fn test_soc2_export_empty_state_no_db() {
-    use crate::common::crypto_home_guard;
+    use crate::common::TempEnv;
 
     let home = tempfile::tempdir().unwrap();
-    let (_home, _userprofile) = crypto_home_guard(home.path());
+    let _home_guard_home = TempEnv::set("HOME", home.path().to_str().unwrap());
+    let _home_guard_profile = TempEnv::set("USERPROFILE", home.path().to_str().unwrap());
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
@@ -3023,20 +3033,21 @@ async fn test_soc2_export_empty_state_no_db() {
 #[serial]
 #[tokio::test]
 async fn test_soc2_export_tamper_detection() {
-    use crate::common::crypto_home_guard;
-    use ledgerful::ledger::crypto::sign_ledger_entry;
+    use ledgerful::ledger::crypto::sign_ledger_entry_in;
     use std::io::Read;
 
     let home = tempfile::tempdir().unwrap();
-    let (_home, _userprofile) = crypto_home_guard(home.path());
+    let keys_dir = home.path().join(".ledgerful").join("keys");
+    std::fs::create_dir_all(&keys_dir).unwrap();
     let guard = temp_layout();
     let layout = guard.layout();
     let tx_id = "tx-soc2-tamper-001";
     let committed_at = "2026-06-20T11:00:00Z";
     let summary = "Tamper detection fixture";
     let reason = "reason";
-    let (sig, pub_key) = sign_ledger_entry(tx_id, "FEATURE", summary, reason, committed_at)
-        .expect("sign_ledger_entry should succeed");
+    let (sig, pub_key) =
+        sign_ledger_entry_in(&keys_dir, tx_id, "FEATURE", summary, reason, committed_at)
+            .expect("sign_ledger_entry_in should succeed");
     seed_ledger_entry_with_ts(
         &layout,
         tx_id,
@@ -3119,12 +3130,12 @@ async fn test_soc2_export_tamper_detection() {
 #[serial]
 #[tokio::test]
 async fn test_soc2_export_tampered_manifest_fails_signature_verification() {
-    use crate::common::crypto_home_guard;
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
-    use ledgerful::ledger::crypto::sign_ledger_entry;
+    use ledgerful::ledger::crypto::sign_ledger_entry_in;
 
     let home = tempfile::tempdir().unwrap();
-    let (_home, _userprofile) = crypto_home_guard(home.path());
+    let keys_dir = home.path().join(".ledgerful").join("keys");
+    std::fs::create_dir_all(&keys_dir).unwrap();
 
     let guard = temp_layout();
     let layout = guard.layout();
@@ -3134,8 +3145,9 @@ async fn test_soc2_export_tampered_manifest_fails_signature_verification() {
     let committed_at = "2026-06-20T12:00:00Z";
     let summary = "Signature tamper detection fixture";
     let reason = "reason";
-    let (sig, pub_key) = sign_ledger_entry(tx_id, "FEATURE", summary, reason, committed_at)
-        .expect("sign_ledger_entry should succeed");
+    let (sig, pub_key) =
+        sign_ledger_entry_in(&keys_dir, tx_id, "FEATURE", summary, reason, committed_at)
+            .expect("sign_ledger_entry_in should succeed");
     seed_ledger_entry_with_ts(
         &layout,
         tx_id,

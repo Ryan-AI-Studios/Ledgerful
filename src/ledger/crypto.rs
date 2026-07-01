@@ -21,7 +21,7 @@ pub fn get_or_create_keys() -> Result<(SigningKey, VerifyingKey)> {
     get_or_create_keys_in(&keys_dir)
 }
 
-fn get_or_create_keys_in(keys_dir: &Path) -> Result<(SigningKey, VerifyingKey)> {
+pub fn get_or_create_keys_in(keys_dir: &Path) -> Result<(SigningKey, VerifyingKey)> {
     if !keys_dir.exists() {
         fs::create_dir_all(keys_dir).into_diagnostic()?;
     }
@@ -78,11 +78,13 @@ fn get_or_create_keys_in(keys_dir: &Path) -> Result<(SigningKey, VerifyingKey)> 
                     pub_path
                 );
                 let vk = signing_key.verifying_key();
+                assert_within_state_root(&pub_path, keys_dir)?;
                 fs::write(&pub_path, hex::encode(vk.to_bytes())).into_diagnostic()?;
                 vk
             }
         } else {
             let vk = signing_key.verifying_key();
+            assert_within_state_root(&pub_path, keys_dir)?;
             fs::write(&pub_path, hex::encode(vk.to_bytes())).into_diagnostic()?;
             vk
         };
@@ -101,6 +103,7 @@ fn get_or_create_keys_in(keys_dir: &Path) -> Result<(SigningKey, VerifyingKey)> 
         let priv_hex = hex::encode(signing_key.to_bytes());
         let pub_hex = hex::encode(verifying_key.to_bytes());
 
+        assert_within_state_root(&priv_path, keys_dir)?;
         fs::write(&priv_path, priv_hex).into_diagnostic()?;
         #[cfg(unix)]
         {
@@ -108,9 +111,45 @@ fn get_or_create_keys_in(keys_dir: &Path) -> Result<(SigningKey, VerifyingKey)> 
             let perms = std::fs::Permissions::from_mode(0o600);
             fs::set_permissions(&priv_path, perms).into_diagnostic()?;
         }
+        assert_within_state_root(&pub_path, keys_dir)?;
         fs::write(&pub_path, pub_hex).into_diagnostic()?;
 
         Ok((signing_key, verifying_key))
+    }
+}
+
+pub(crate) fn assert_within_state_root(path: &Path, root: &Path) -> Result<()> {
+    let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
+    // If the target already exists, canonicalize the full path to resolve
+    // any symlink. A symlink pointing outside the root would canonicalize
+    // to an external path and be rejected.
+    let canonical_path = if path.exists() {
+        path.canonicalize()
+            .unwrap_or_else(|_| parent_plus_name(path))
+    } else {
+        parent_plus_name(path)
+    };
+    if !canonical_path.starts_with(&canonical_root) {
+        return Err(miette::miette!(
+            "Refusing to write key file {:?} outside state root {:?}",
+            path,
+            root
+        ));
+    }
+    Ok(())
+}
+
+fn parent_plus_name(path: &Path) -> PathBuf {
+    if let Some(parent) = path.parent() {
+        let mut canon = parent
+            .canonicalize()
+            .unwrap_or_else(|_| parent.to_path_buf());
+        if let Some(name) = path.file_name() {
+            canon.push(name);
+        }
+        canon
+    } else {
+        path.canonicalize().unwrap_or_else(|_| path.to_path_buf())
     }
 }
 
@@ -134,6 +173,10 @@ fn read_public_key(path: &Path) -> Result<VerifyingKey> {
     VerifyingKey::from_bytes(&pub_array).into_diagnostic()
 }
 
+pub fn verify_keypair_consistency(signing_key: &SigningKey, verifying_key: &VerifyingKey) -> bool {
+    signing_key.verifying_key().to_bytes() == verifying_key.to_bytes()
+}
+
 pub fn sign_ledger_entry(
     tx_id: &str,
     category: &str,
@@ -141,7 +184,25 @@ pub fn sign_ledger_entry(
     reason: &str,
     committed_at: &str,
 ) -> Result<(Option<String>, Option<String>)> {
-    let (signing_key, verifying_key) = get_or_create_keys()?;
+    let keys_dir = get_keys_dir()?;
+    sign_ledger_entry_in(&keys_dir, tx_id, category, summary, reason, committed_at)
+}
+
+pub fn sign_ledger_entry_in(
+    keys_dir: &Path,
+    tx_id: &str,
+    category: &str,
+    summary: &str,
+    reason: &str,
+    committed_at: &str,
+) -> Result<(Option<String>, Option<String>)> {
+    let (signing_key, verifying_key) = get_or_create_keys_in(keys_dir)?;
+
+    if !verify_keypair_consistency(&signing_key, &verifying_key) {
+        return Err(miette::miette!(
+            "Keypair consistency check failed: public key does not match private seed. Refusing to sign."
+        ));
+    }
 
     let payload = format!(
         "tx_id:{}\ncategory:{}\nsummary:{}\nreason:{}\ncommitted_at:{}",
@@ -215,6 +276,47 @@ mod tests {
         let keys_dir = temp.path().join(".ledgerful").join("keys");
         fs::create_dir_all(&keys_dir).unwrap();
         (temp, keys_dir)
+    }
+
+    #[test]
+    fn assert_within_state_root_rejects_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".ledgerful").join("keys");
+        fs::create_dir_all(&root).unwrap();
+        let escaped = tmp.path().join(".ledgerful").join("evil.key");
+        let result = assert_within_state_root(&escaped, &root);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn assert_within_state_root_rejects_symlink_escape() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(".ledgerful").join("keys");
+        fs::create_dir_all(&root).unwrap();
+
+        // Create a symlink inside root pointing outside
+        let outside = tmp.path().join("outside.txt");
+        fs::write(&outside, "escaped").unwrap();
+        let symlink_path = root.join("public.pem");
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&outside, &symlink_path).unwrap();
+            let result = assert_within_state_root(&symlink_path, &root);
+            assert!(
+                result.is_err(),
+                "symlink pointing outside root must be rejected"
+            );
+        }
+        // On Windows, symlinks require admin privileges — skip the symlink
+        // assertion. The canonicalize-on-exists logic still protects on
+        // Windows; we just can't test it without admin.
+        #[cfg(not(unix))]
+        {
+            fs::write(&symlink_path, "ok").unwrap();
+            let result = assert_within_state_root(&symlink_path, &root);
+            assert!(result.is_ok(), "existing file inside root must pass");
+        }
     }
 
     #[test]
@@ -297,5 +399,20 @@ mod tests {
         if keys_dir.join("private.pem").exists() {
             assert!(keys_dir.join("private.key").exists());
         }
+    }
+
+    #[test]
+    fn verify_keypair_consistency_true_for_matching_pair() {
+        let signing_key = SigningKey::from_bytes(&[21u8; 32]);
+        let verifying_key = signing_key.verifying_key();
+        assert!(verify_keypair_consistency(&signing_key, &verifying_key));
+    }
+
+    #[test]
+    fn verify_keypair_consistency_false_for_mismatched_pair() {
+        let signing_key = SigningKey::from_bytes(&[21u8; 32]);
+        let other_signing_key = SigningKey::from_bytes(&[22u8; 32]);
+        let verifying_key = other_signing_key.verifying_key();
+        assert!(!verify_keypair_consistency(&signing_key, &verifying_key));
     }
 }

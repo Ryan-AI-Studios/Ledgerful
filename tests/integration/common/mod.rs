@@ -13,22 +13,6 @@ pub fn non_interactive() -> TempEnv {
     TempEnv::set("LEDGERFUL_NON_INTERACTIVE", "1")
 }
 
-/// Set both `HOME` and `USERPROFILE` to a tempdir so crypto key operations
-/// (`get_or_create_keys`, which checks `USERPROFILE` first, then `HOME`)
-/// write to the tempdir instead of the real user home. Returns both guards;
-/// drop them to restore the original env.
-///
-/// Required because `serial_test`'s mutex is process-local and does NOT work
-/// across nextest's process-per-test model. Each test must isolate its own
-/// key store to prevent races.
-pub fn crypto_home_guard(tmp: &Path) -> (TempEnv, TempEnv) {
-    let path = tmp.to_str().unwrap();
-    (
-        TempEnv::set("HOME", path),
-        TempEnv::set("USERPROFILE", path),
-    )
-}
-
 pub struct DirGuard {
     original: PathBuf,
 }
