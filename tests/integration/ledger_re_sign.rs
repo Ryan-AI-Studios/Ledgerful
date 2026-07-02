@@ -1,6 +1,6 @@
 use ledgerful::commands::init::execute_init;
 use ledgerful::commands::ledger::execute_ledger_status;
-use ledgerful::commands::ledger_re_sign::execute_ledger_re_sign;
+use ledgerful::commands::ledger_re_sign::execute_ledger_re_sign_with_keys_dir;
 use ledgerful::config::model::Config;
 use ledgerful::ledger::crypto::{sign_ledger_entry_in, verify_signature};
 use ledgerful::ledger::*;
@@ -116,7 +116,7 @@ fn corrupted_ledger_re_sign_all_invalid_repairs_to_valid() {
     assert!(format!("{err}").contains("Ledger signature verification failed"));
 
     // Re-sign all invalid entries.
-    execute_ledger_re_sign(None, true, false, true).unwrap();
+    execute_ledger_re_sign_with_keys_dir(None, true, false, true, Some(keys.clone())).unwrap();
 
     // All repaired rows now verify as valid.
     let verify_storage = StorageManager::open_read_only_sqlite_only(&root).unwrap();
@@ -207,7 +207,14 @@ fn dry_run_does_not_mutate_db() {
     );
 
     let before = hash_file(db_path.as_std_path());
-    execute_ledger_re_sign(Some(tx_id.clone()), false, true, false).unwrap();
+    execute_ledger_re_sign_with_keys_dir(
+        Some(tx_id.clone()),
+        false,
+        true,
+        false,
+        Some(keys.clone()),
+    )
+    .unwrap();
     let after = hash_file(db_path.as_std_path());
 
     assert_eq!(before, after, "dry-run must not mutate the ledger DB");
@@ -276,7 +283,7 @@ fn batch_re_sign_emits_one_maintenance_entry() {
         );
     }
 
-    execute_ledger_re_sign(None, true, false, true).unwrap();
+    execute_ledger_re_sign_with_keys_dir(None, true, false, true, Some(keys.clone())).unwrap();
 
     let verify_storage = StorageManager::open_read_only_sqlite_only(&root).unwrap();
     let db = ledgerful::ledger::db::LedgerDb::new(verify_storage.get_connection());
@@ -360,7 +367,14 @@ fn re_sign_creates_backup_and_aborts_if_backup_fails() {
         "0000000000000000000000000000000000000000000000000000000000000000",
     );
 
-    execute_ledger_re_sign(Some(tx_id.clone()), false, false, true).unwrap();
+    execute_ledger_re_sign_with_keys_dir(
+        Some(tx_id.clone()),
+        false,
+        false,
+        true,
+        Some(keys.clone()),
+    )
+    .unwrap();
 
     let backups: Vec<_> = db_path
         .parent()
@@ -446,7 +460,14 @@ fn dry_run_does_not_create_key_store() {
         "0000000000000000000000000000000000000000000000000000000000000000",
     );
 
-    execute_ledger_re_sign(Some(tx_id.clone()), false, true, false).unwrap();
+    execute_ledger_re_sign_with_keys_dir(
+        Some(tx_id.clone()),
+        false,
+        true,
+        false,
+        Some(keys.clone()),
+    )
+    .unwrap();
     assert!(
         !keys.exists(),
         "dry-run must not create key files on a machine without an existing key store"
@@ -525,7 +546,14 @@ fn maintenance_entry_is_signed_when_signing_required() {
         "0000000000000000000000000000000000000000000000000000000000000000",
     );
 
-    execute_ledger_re_sign(Some(tx_id.clone()), false, false, true).unwrap();
+    execute_ledger_re_sign_with_keys_dir(
+        Some(tx_id.clone()),
+        false,
+        false,
+        true,
+        Some(keys.clone()),
+    )
+    .unwrap();
 
     let verify_storage = StorageManager::open_read_only_sqlite_only(&root).unwrap();
     let db = ledgerful::ledger::db::LedgerDb::new(verify_storage.get_connection());

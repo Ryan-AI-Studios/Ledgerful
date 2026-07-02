@@ -115,6 +115,16 @@ pub fn complete(
     options: &CompletionOptions,
     timeout_secs_override: Option<u64>,
 ) -> Result<String, String> {
+    complete_with_options(config, messages, options, timeout_secs_override, None)
+}
+
+fn complete_with_options(
+    config: &LocalModelConfig,
+    messages: &[ChatMessage],
+    options: &CompletionOptions,
+    timeout_secs_override: Option<u64>,
+    first_byte_secs: Option<u64>,
+) -> Result<String, String> {
     if config.base_url.is_empty() && config.generation_url.is_none() && !has_cloud_fallback(config)
     {
         return Err(
@@ -134,7 +144,13 @@ pub fn complete(
                 authorization: None,
             };
             let effective_timeout = timeout_secs_override.unwrap_or(config.timeout_secs);
-            match complete_with_endpoint(&endpoint, effective_timeout, messages, options) {
+            match complete_with_endpoint(
+                &endpoint,
+                effective_timeout,
+                messages,
+                options,
+                first_byte_secs,
+            ) {
                 Ok(response) => return Ok(response),
                 Err(error) if has_cloud_fallback(config) => {
                     tracing::debug!("Local completion failed ({error}); trying cloud fallback");
@@ -158,7 +174,13 @@ pub fn complete(
     let mut last_error = String::new();
 
     if let Some(endpoint) = ollama_cloud_endpoint(config) {
-        match complete_with_endpoint(&endpoint, effective_timeout, messages, options) {
+        match complete_with_endpoint(
+            &endpoint,
+            effective_timeout,
+            messages,
+            options,
+            first_byte_secs,
+        ) {
             Ok(response) => return Ok(response),
             Err(e) => {
                 last_error = e.clone();
@@ -176,7 +198,13 @@ pub fn complete(
             model: &model,
             authorization: Some(format!("Bearer {api_key}")),
         };
-        match complete_with_endpoint(&endpoint, effective_timeout, messages, options) {
+        match complete_with_endpoint(
+            &endpoint,
+            effective_timeout,
+            messages,
+            options,
+            first_byte_secs,
+        ) {
             Ok(response) => return Ok(response),
             Err(e) => {
                 last_error = e.clone();
@@ -214,12 +242,12 @@ pub fn complete(
 
 /// First-byte timeout wrapper for `complete` (Track 0017).
 ///
-/// Spawns the HTTP call in a thread and uses `recv_timeout` to enforce a
-/// short deadline only for the *first byte* / response headers. Once the
-/// first byte arrives, the normal `complete` read timeout covers the rest of
-/// the (potentially slow) generation. This prevents stalling for the full
-/// ≥600s generation timeout when a server accepts the TCP connection but
-/// never responds.
+/// Bounds only the time to receive response headers (first byte). Once the
+/// server begins responding, the normal generous `complete` read timeout
+/// covers the rest of the (potentially slow) body generation/parsing. This
+/// prevents stalling for the full generation timeout when a server accepts
+/// the TCP connection but never sends headers, while still allowing slow-but-
+/// healthy completions to finish.
 ///
 /// Defaults to 15 seconds for the first-byte budget.
 pub fn complete_with_first_byte_timeout(
@@ -229,34 +257,13 @@ pub fn complete_with_first_byte_timeout(
     timeout_secs_override: Option<u64>,
     first_byte_secs: Option<u64>,
 ) -> Result<String, String> {
-    let first_byte = Duration::from_secs(first_byte_secs.unwrap_or(15));
-
-    let (tx, rx) = std::sync::mpsc::channel();
-    let config_clone = config.clone();
-    let messages_clone: Vec<ChatMessage> = messages.to_vec();
-    let options_clone = options.clone();
-
-    std::thread::spawn(move || {
-        let result = complete(
-            &config_clone,
-            &messages_clone,
-            &options_clone,
-            timeout_secs_override,
-        );
-        let _ = tx.send(result);
-    });
-
-    match rx.recv_timeout(first_byte) {
-        Ok(result) => result,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(format!(
-            "First byte timeout: model did not begin responding within {}s",
-            first_byte.as_secs()
-        )),
-        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(format!(
-            "Provider thread panicked while waiting for first byte (timeout: {}s)",
-            first_byte.as_secs()
-        )),
-    }
+    complete_with_options(
+        config,
+        messages,
+        options,
+        timeout_secs_override,
+        first_byte_secs.or(Some(15)),
+    )
 }
 
 /// Returns true if the error string indicates a first-byte timeout.
@@ -320,6 +327,7 @@ fn complete_with_endpoint(
     timeout_secs: u64,
     messages: &[ChatMessage],
     options: &CompletionOptions,
+    first_byte_secs: Option<u64>,
 ) -> Result<String, String> {
     let target = completion_target(endpoint.base_url);
 
@@ -328,7 +336,29 @@ fn complete_with_endpoint(
         return Err(warning);
     }
 
-    let body = match target.kind {
+    let body = build_endpoint_body(endpoint, messages, options, &target);
+
+    tracing::debug!(
+        "Using completion URL: {} (kind={:?})",
+        target.url,
+        target.kind
+    );
+
+    if let Some(fb_secs) = first_byte_secs {
+        return complete_endpoint_with_first_byte(endpoint, &target, &body, timeout_secs, fb_secs);
+    }
+
+    let response = send_endpoint_request(endpoint, &target, &body, timeout_secs)?;
+    parse_endpoint_response(response, endpoint, &target)
+}
+
+fn build_endpoint_body(
+    endpoint: &CompletionEndpoint<'_>,
+    messages: &[ChatMessage],
+    options: &CompletionOptions,
+    target: &EndpointTarget,
+) -> serde_json::Value {
+    match target.kind {
         EndpointKind::OllamaNative => {
             serde_json::json!({
                 "model": endpoint.model,
@@ -349,14 +379,15 @@ fn complete_with_endpoint(
                 "stream": false,
             })
         }
-    };
+    }
+}
 
-    tracing::debug!(
-        "Using completion URL: {} (kind={:?})",
-        target.url,
-        target.kind
-    );
-
+fn send_endpoint_request(
+    endpoint: &CompletionEndpoint<'_>,
+    target: &EndpointTarget,
+    body: &serde_json::Value,
+    timeout_secs: u64,
+) -> Result<ureq::Response, String> {
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(5))
         .timeout_read(Duration::from_secs(timeout_secs))
@@ -365,17 +396,16 @@ fn complete_with_endpoint(
 
     let mut retry = false;
 
-    let response = loop {
+    loop {
         let mut request = agent
             .post(&target.url)
             .set("Content-Type", "application/json");
         if let Some(value) = &endpoint.authorization {
             request = request.set("Authorization", value);
         }
-        let result = request.send_json(&body);
 
-        break match result {
-            Ok(resp) => resp,
+        match request.send_json(body) {
+            Ok(resp) => return Ok(resp),
             Err(ureq::Error::Status(503, _response)) if !retry => {
                 std::thread::sleep(Duration::from_secs(2));
                 retry = true;
@@ -404,7 +434,12 @@ fn complete_with_endpoint(
                 ));
             }
             Err(ureq::Error::Transport(inner)) => {
-                if transport_is_timeout(&inner) {
+                if transport_is_timeout(&inner)
+                    || inner
+                        .to_string()
+                        .to_lowercase()
+                        .contains("first byte timeout")
+                {
                     return Err(format!(
                         "{} timed out after {}s",
                         endpoint.label, timeout_secs
@@ -415,9 +450,216 @@ fn complete_with_endpoint(
                     endpoint.label, endpoint.base_url, inner
                 ));
             }
-        };
-    };
+        }
+    }
+}
 
+fn parse_endpoint_response(
+    response: ureq::Response,
+    endpoint: &CompletionEndpoint<'_>,
+    target: &EndpointTarget,
+) -> Result<String, String> {
+    match target.kind {
+        EndpointKind::OllamaNative => {
+            let parsed: ollama::OllamaChatResponse = response
+                .into_json()
+                .map_err(|e| format!("Failed to parse Ollama native response: {e}"))?;
+            if parsed.message.content.is_empty() {
+                if let Some(ref thinking) = parsed.message.thinking
+                    && !thinking.is_empty()
+                {
+                    return Err(format!(
+                        "{} returned empty content (reasoning only: {} chars)",
+                        endpoint.label,
+                        thinking.len()
+                    ));
+                }
+                return Err(format!("{} returned empty message content", endpoint.label));
+            }
+            Ok(parsed.message.content)
+        }
+        EndpointKind::OpenAICompatible => {
+            let parsed: openai::CompletionResponse = response
+                .into_json()
+                .map_err(|e| format!("Failed to parse completion response: {e}"))?;
+            let choice = parsed
+                .choices
+                .into_iter()
+                .next()
+                .ok_or_else(|| "No completion choices returned".to_string())?;
+            if choice.message.content.is_empty() {
+                if let Some(reasoning) = choice.message.reasoning
+                    && !reasoning.is_empty()
+                {
+                    tracing::warn!(
+                        "Model returned thinking-only response ({} chars), using reasoning as content",
+                        reasoning.len()
+                    );
+                    return Ok(reasoning);
+                }
+                return Err(format!("{} returned empty message content", endpoint.label));
+            }
+            Ok(choice.message.content)
+        }
+    }
+}
+
+/// First-byte timeout wrapper for a single endpoint call.
+///
+/// The full HTTP call (headers + body read) runs in a dedicated worker thread
+/// so that all ureq/agent state stays in one thread and the response stream is
+/// never moved across thread boundaries. A short `recv_timeout` guards the
+/// header phase; once headers arrive the caller waits for the body parse with
+/// the normal read timeout. This keeps the first-byte deadline scoped to the
+/// time until the server begins the HTTP response, while still allowing slow
+/// body generation to finish under the generous read timeout.
+fn complete_endpoint_with_first_byte(
+    endpoint: &CompletionEndpoint<'_>,
+    target: &EndpointTarget,
+    body: &serde_json::Value,
+    timeout_secs: u64,
+    first_byte_secs: u64,
+) -> Result<String, String> {
+    let (headers_tx, headers_rx) = std::sync::mpsc::channel::<Result<(), String>>();
+    let (result_tx, result_rx) = std::sync::mpsc::channel::<Result<String, String>>();
+
+    // Capture owned data for the worker thread.
+    let endpoint_owned = CompletionEndpointOwned {
+        label: endpoint.label.to_string(),
+        base_url: endpoint.base_url.to_string(),
+        model: endpoint.model.to_string(),
+        authorization: endpoint.authorization.clone(),
+    };
+    let target = target.clone();
+    let body = body.clone();
+
+    std::thread::spawn(move || {
+        match send_endpoint_request_owned(&endpoint_owned, &target, &body, timeout_secs) {
+            Ok(response) => {
+                let headers_ok = headers_tx.send(Ok(())).is_ok();
+                if headers_ok {
+                    let parse_result =
+                        parse_endpoint_response_owned(response, &endpoint_owned, &target);
+                    let _ = result_tx.send(parse_result);
+                }
+            }
+            Err(err) => {
+                let _ = headers_tx.send(Err(err.clone()));
+                let _ = result_tx.send(Err(err));
+            }
+        }
+    });
+
+    match headers_rx.recv_timeout(Duration::from_secs(first_byte_secs)) {
+        Ok(Ok(())) => match result_rx.recv_timeout(Duration::from_secs(timeout_secs)) {
+            Ok(result) => result,
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(format!(
+                "{} timed out after {}s",
+                endpoint.label, timeout_secs
+            )),
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(format!(
+                "{} provider thread panicked during response parsing",
+                endpoint.label
+            )),
+        },
+        Ok(Err(err)) => Err(err),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(format!(
+            "First byte timeout: model did not begin responding within {}s",
+            first_byte_secs
+        )),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(format!(
+            "{} provider thread panicked during request",
+            endpoint.label
+        )),
+    }
+}
+
+#[derive(Clone)]
+struct CompletionEndpointOwned {
+    label: String,
+    base_url: String,
+    #[allow(dead_code)]
+    model: String,
+    authorization: Option<String>,
+}
+
+fn send_endpoint_request_owned(
+    endpoint: &CompletionEndpointOwned,
+    target: &EndpointTarget,
+    body: &serde_json::Value,
+    timeout_secs: u64,
+) -> Result<ureq::Response, String> {
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(Duration::from_secs(5))
+        .timeout_read(Duration::from_secs(timeout_secs))
+        .timeout_write(Duration::from_secs(30))
+        .build();
+
+    let mut retry = false;
+
+    loop {
+        let mut request = agent
+            .post(&target.url)
+            .set("Content-Type", "application/json");
+        if let Some(value) = &endpoint.authorization {
+            request = request.set("Authorization", value);
+        }
+
+        match request.send_json(body) {
+            Ok(resp) => return Ok(resp),
+            Err(ureq::Error::Status(503, _response)) if !retry => {
+                std::thread::sleep(Duration::from_secs(2));
+                retry = true;
+                continue;
+            }
+            Err(ureq::Error::Status(503, response)) => {
+                let body_text = response.into_string().unwrap_or_default();
+                return Err(format!(
+                    "{} returned 503: {}",
+                    endpoint.label,
+                    body_text.chars().take(200).collect::<String>()
+                ));
+            }
+            Err(ureq::Error::Status(429, _)) => {
+                return Err(format!(
+                    "{} rate limited. Wait a moment or check your quota/credits.",
+                    endpoint.label
+                ));
+            }
+            Err(ureq::Error::Status(code, response)) => {
+                let body_text = response.into_string().unwrap_or_default();
+                return Err(format!(
+                    "{} returned {code}: {}",
+                    endpoint.label,
+                    body_text.chars().take(200).collect::<String>()
+                ));
+            }
+            Err(ureq::Error::Transport(inner)) => {
+                if transport_is_timeout(&inner)
+                    || inner
+                        .to_string()
+                        .to_lowercase()
+                        .contains("first byte timeout")
+                {
+                    return Err(format!(
+                        "{} timed out after {}s",
+                        endpoint.label, timeout_secs
+                    ));
+                }
+                return Err(format!(
+                    "{} not reachable at {} \u{2014} {}",
+                    endpoint.label, endpoint.base_url, inner
+                ));
+            }
+        }
+    }
+}
+
+fn parse_endpoint_response_owned(
+    response: ureq::Response,
+    endpoint: &CompletionEndpointOwned,
+    target: &EndpointTarget,
+) -> Result<String, String> {
     match target.kind {
         EndpointKind::OllamaNative => {
             let parsed: ollama::OllamaChatResponse = response
@@ -762,6 +1004,34 @@ mod tests {
             elapsed < std::time::Duration::from_secs(3),
             "expected <3s, got {elapsed:?}"
         );
+    }
+
+    /// U17.3: a fast full response must complete when the first-byte wrapper is
+    /// active. This exercises the success path of
+    /// `complete_with_first_byte_timeout` end-to-end with a real HTTP server.
+    #[test]
+    fn complete_first_byte_timeout_fast_response_succeeds() {
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/v1/chat/completions");
+            then.status(200)
+                .header("Content-Type", "application/json")
+                .json_body(serde_json::json!({
+                    "choices": [{"message": {"content": "fast but timed"}}]
+                }));
+        });
+
+        let config = test_config(&server.base_url());
+        let result = complete_with_first_byte_timeout(
+            &config,
+            &test_messages(),
+            &CompletionOptions::default(),
+            None,
+            None,
+        );
+        assert!(result.is_ok(), "expected Ok, got: {result:?}");
+        assert_eq!(result.unwrap(), "fast but timed");
     }
 
     /// U22.1 (red): when the override is None the call should still succeed

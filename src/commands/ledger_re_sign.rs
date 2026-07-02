@@ -16,6 +16,21 @@ pub fn execute_ledger_re_sign(
     dry_run: bool,
     yes: bool,
 ) -> Result<()> {
+    execute_ledger_re_sign_with_keys_dir(tx, all_invalid, dry_run, yes, None)
+}
+
+/// Internal entry point with an optional keys directory override.
+///
+/// `keys_dir_override` is used by tests so they can run in a temporary key store
+/// without touching the operator's real `~/.ledgerful/keys`. When `None`, the
+/// production default from [`crate::ledger::crypto::get_keys_dir`] is used.
+pub fn execute_ledger_re_sign_with_keys_dir(
+    tx: Option<String>,
+    all_invalid: bool,
+    dry_run: bool,
+    yes: bool,
+    keys_dir_override: Option<std::path::PathBuf>,
+) -> Result<()> {
     if tx.is_none() && !all_invalid {
         return Err(miette!(
             "Specify either --tx <id> to re-sign one transaction, or --all-invalid to re-sign every invalid signature. Use --dry-run to preview."
@@ -23,12 +38,10 @@ pub fn execute_ledger_re_sign(
     }
 
     let layout = get_layout()?;
-    let keys_dir = layout
-        .root
-        .join(".ledgerful")
-        .join("keys")
-        .as_std_path()
-        .to_path_buf();
+    let keys_dir = keys_dir_override
+        .clone()
+        .map(Ok)
+        .unwrap_or_else(crate::ledger::crypto::get_keys_dir)?;
     let db_path = layout
         .state_subdir()
         .join("ledger.db")
@@ -79,15 +92,13 @@ pub fn execute_ledger_re_sign(
         ));
     }
 
-    // Determine the public key we would re-sign with, without consuming the signing key.
-    // In dry-run mode we only need the verifying key fingerprint; avoid creating a new key
-    // store on a machine that only wants a preview.
+    // Determine the public key we would re-sign with, without mutating the key store.
+    // In dry-run mode we must not create or alter files; only read the existing public key.
+    // When no key store exists, we report that the mutation would create one on --yes.
     let new_pub_key = if dry_run {
         if keys_dir.exists() {
-            let (_, verifying_key) = crate::ledger::crypto::get_or_create_keys_in(&keys_dir)?;
-            hex::encode(verifying_key.to_bytes())
+            read_public_key_hex(&keys_dir).unwrap_or_else(|| "(public key unreadable)".to_string())
         } else {
-            // No key store exists yet; report that the preview would create one if it mutates.
             "(key-store would be created on --yes)".to_string()
         }
     } else {
@@ -507,12 +518,33 @@ fn nanos_since_epoch() -> u64 {
         .as_nanos() as u64
 }
 
+/// Read the existing public key file as a hex string, without creating keys or
+/// writing any files. Returns `None` if the public key file is missing.
+fn read_public_key_hex(keys_dir: &std::path::Path) -> Option<String> {
+    let pub_path = keys_dir.join("public.pem");
+    if !pub_path.exists() {
+        return None;
+    }
+    std::fs::read_to_string(&pub_path)
+        .ok()
+        .map(|s| s.trim().to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::ledger::crypto::sign_ledger_entry_in;
     use crate::ledger::types::{Category, ChangeType, EntryType, LedgerEntry};
     use rusqlite::Connection;
+    #[allow(dead_code)]
+    fn execute_ledger_re_sign(
+        tx: Option<String>,
+        all_invalid: bool,
+        dry_run: bool,
+        yes: bool,
+    ) -> Result<()> {
+        execute_ledger_re_sign_with_keys_dir(tx, all_invalid, dry_run, yes, None)
+    }
 
     fn setup_in_memory_db() -> Connection {
         let conn = Connection::open_in_memory().unwrap();
