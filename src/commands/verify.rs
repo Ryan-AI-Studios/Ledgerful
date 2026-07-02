@@ -35,22 +35,25 @@ pub fn verify_ledger_signatures(layout: &Layout) -> Result<()> {
         entries.len(),
         signing_required
     );
+    let invalid = enumerate_invalid_ledger_entries(&entries, signing_required);
+    let invalid_count = invalid.len();
+    let all_valid = invalid_count == 0;
+
+    let invalid_tx_ids: std::collections::HashSet<&str> =
+        invalid.iter().map(|(tx_id, _, _)| tx_id.as_str()).collect();
     let mut valid_count = 0usize;
     let mut skipped_count = 0usize;
 
     for entry in &entries {
         match (&entry.signature, &entry.public_key) {
-            (Some(sig), Some(pub_key)) => {
-                let valid = crate::ledger::crypto::verify_signature(
-                    &entry.tx_id,
-                    &entry.category.to_string(),
-                    &entry.summary,
-                    &entry.reason,
-                    &entry.committed_at,
-                    sig,
-                    pub_key,
-                );
-                if valid {
+            (Some(_sig), Some(pub_key)) => {
+                if invalid_tx_ids.contains(entry.tx_id.as_str()) {
+                    eprintln!(
+                        "  [{}] TX {} signature verification FAILED!",
+                        "INVALID".red(),
+                        &entry.tx_id[..8]
+                    );
+                } else {
                     eprintln!(
                         "  [{}] TX {} signed by {}",
                         "VALID".green(),
@@ -58,12 +61,6 @@ pub fn verify_ledger_signatures(layout: &Layout) -> Result<()> {
                         &pub_key[..8]
                     );
                     valid_count += 1;
-                } else {
-                    eprintln!(
-                        "  [{}] TX {} signature verification FAILED!",
-                        "INVALID".red(),
-                        &entry.tx_id[..8]
-                    );
                 }
             }
             _ => {
@@ -84,10 +81,6 @@ pub fn verify_ledger_signatures(layout: &Layout) -> Result<()> {
             }
         }
     }
-
-    let invalid = enumerate_invalid_ledger_entries(&entries, signing_required);
-    let invalid_count = invalid.len();
-    let all_valid = invalid_count == 0;
 
     eprintln!(
         "\nSignature verification summary: {} valid, {} invalid, {} skipped.",

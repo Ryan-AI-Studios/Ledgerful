@@ -334,7 +334,6 @@ fn build_maintenance_entry(
             key_fingerprint(new_pub_key)
         )
     };
-    let _ = author;
 
     let summary = if is_batch {
         format!(
