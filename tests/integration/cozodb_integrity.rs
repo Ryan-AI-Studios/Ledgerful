@@ -2,10 +2,12 @@ use std::fs;
 use std::process::Command;
 
 use httpmock::prelude::*;
+use serial_test::serial;
 
 use crate::common::setup_git_repo;
 
 #[test]
+#[serial(test)]
 fn test_cozodb_hard_migration_integrity() {
     let binary_path = env!("CARGO_BIN_EXE_ledgerful");
     let tmp = tempfile::tempdir().unwrap();
