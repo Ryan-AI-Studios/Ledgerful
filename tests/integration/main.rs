@@ -78,6 +78,7 @@ mod ledger_git_commit;
 mod ledger_graph_edges;
 mod ledger_lifecycle;
 mod ledger_provenance;
+mod ledger_re_sign;
 mod ledger_search;
 mod ledger_signature_fix;
 mod m33_migration;

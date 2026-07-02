@@ -565,6 +565,7 @@ impl Commands {
                 LedgerCommands::Adopt { .. } => "ledger_adopt",
                 LedgerCommands::Audit { .. } => "ledger_audit",
                 LedgerCommands::Note { .. } => "ledger_note",
+                LedgerCommands::ReSign { .. } => "ledger_re_sign",
                 LedgerCommands::Gc { .. } => "ledger_gc",
             },
             Commands::Verify { .. } => "verify",
@@ -1110,6 +1111,21 @@ pub enum LedgerCommands {
         /// The note content (takes precedence over positional note)
         #[arg(short, long)]
         message: Option<String>,
+    },
+    /// Re-sign ledger entries with invalid signatures (key-repair)
+    ReSign {
+        /// Re-sign a single transaction by id or prefix
+        #[arg(short, long, conflicts_with = "all_invalid")]
+        tx: Option<String>,
+        /// Re-sign all entries whose stored signatures fail verification
+        #[arg(long, conflicts_with = "tx")]
+        all_invalid: bool,
+        /// Preview candidates and keys that would be used; do not mutate
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+        /// Skip interactive confirmation and proceed with backup + re-sign
+        #[arg(long)]
+        yes: bool,
     },
     /// Garbage collect orphaned or stale ledger entries
     Gc {
