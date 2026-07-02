@@ -10,6 +10,7 @@ use indicatif::{ProgressBar, ProgressStyle};
 use miette::Result;
 use std::path::Path;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 use tracing::{debug, warn};
 
 pub struct ImpactOrchestrator {
@@ -24,6 +25,30 @@ impl Default for ImpactOrchestrator {
 }
 
 impl ImpactOrchestrator {
+    /// Determine whether AI-driven enrichment is available. Returns `None` when
+    /// the local model appears reachable (or is not configured at all, which is
+    /// a legitimate non-AI mode). Returns a warning string when the model is
+    /// configured but unreachable, so impact output can annotate that AI
+    /// enrichment was skipped instead of silently degrading.
+    fn ai_enrichment_status(config: &Config) -> Option<String> {
+        let lm = &config.local_model;
+        let url = lm
+            .embedding_url
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .or(Some(lm.base_url.as_str()))?;
+        if url.is_empty() {
+            return None;
+        }
+        if !crate::util::network::is_url_reachable(url, Duration::from_millis(500)) {
+            return Some(format!(
+                "AI enrichment skipped: local model at {} is unreachable",
+                url
+            ));
+        }
+        None
+    }
+
     pub fn new() -> Self {
         Self {
             enrichment_providers: Vec::new(),
@@ -111,6 +136,14 @@ impl ImpactOrchestrator {
         project_root: &Path,
     ) -> Result<()> {
         debug!("Starting impact orchestration...");
+
+        // Annotate AI enrichment availability up front so the output always shows
+        // whether AI-driven enrichment (semantic / embedding / knowledge) was
+        // skipped. This keeps the impact command deterministic and non-fatal when
+        // the local model is down.
+        if let Some(status) = Self::ai_enrichment_status(config) {
+            packet.analysis_warnings.push(status);
+        }
 
         // 1. Prepare Context
         let file_id_map = storage.get_active_file_id_map()?;
@@ -275,6 +308,61 @@ mod tests {
             .find(|c| c.status == "Added")
             .expect("Added file not found");
         assert!(added.old_path.is_none());
+    }
+
+    #[test]
+    fn test_ai_enrichment_status_unreachable_annotates() {
+        let mut config = Config::default();
+        config.local_model.base_url = "http://127.0.0.1:1".to_string();
+
+        let status = ImpactOrchestrator::ai_enrichment_status(&config);
+        assert!(status.is_some(), "expected warning for unreachable model");
+        let msg = status.unwrap();
+        assert!(
+            msg.contains("AI enrichment skipped"),
+            "expected skip annotation, got: {msg}"
+        );
+        assert!(
+            msg.contains("127.0.0.1:1"),
+            "expected URL in annotation, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn test_ai_enrichment_status_empty_url_is_none() {
+        let config = Config::default();
+        assert!(
+            ImpactOrchestrator::ai_enrichment_status(&config).is_none(),
+            "empty base_url should not produce a skip annotation"
+        );
+    }
+
+    #[test]
+    fn test_orchestrator_annotates_ai_unavailable_and_continues() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::state::migrations::get_migrations()
+            .to_latest(&mut conn)
+            .unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        let mut config = Config::default();
+        // Point at an unreachable model so the AI-enrichment annotation fires.
+        config.local_model.base_url = "http://127.0.0.1:1".to_string();
+        let temp = tempfile::tempdir().unwrap();
+        let mut packet = ImpactPacket::default();
+
+        let orchestrator = ImpactOrchestrator::with_builtins();
+        orchestrator
+            .run(&mut packet, &storage, &config, temp.path())
+            .expect("orchestrator should not fail when model is unreachable");
+
+        assert!(
+            packet
+                .analysis_warnings
+                .iter()
+                .any(|w| w.contains("AI enrichment skipped")),
+            "expected AI enrichment skip annotation in {:?}",
+            packet.analysis_warnings
+        );
     }
 
     #[test]

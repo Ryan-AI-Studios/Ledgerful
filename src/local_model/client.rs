@@ -212,6 +212,58 @@ pub fn complete(
     }
 }
 
+/// First-byte timeout wrapper for `complete` (Track 0017).
+///
+/// Spawns the HTTP call in a thread and uses `recv_timeout` to enforce a
+/// short deadline only for the *first byte* / response headers. Once the
+/// first byte arrives, the normal `complete` read timeout covers the rest of
+/// the (potentially slow) generation. This prevents stalling for the full
+/// ≥600s generation timeout when a server accepts the TCP connection but
+/// never responds.
+///
+/// Defaults to 15 seconds for the first-byte budget.
+pub fn complete_with_first_byte_timeout(
+    config: &LocalModelConfig,
+    messages: &[ChatMessage],
+    options: &CompletionOptions,
+    timeout_secs_override: Option<u64>,
+    first_byte_secs: Option<u64>,
+) -> Result<String, String> {
+    let first_byte = Duration::from_secs(first_byte_secs.unwrap_or(15));
+
+    let (tx, rx) = std::sync::mpsc::channel();
+    let config_clone = config.clone();
+    let messages_clone: Vec<ChatMessage> = messages.to_vec();
+    let options_clone = options.clone();
+
+    std::thread::spawn(move || {
+        let result = complete(
+            &config_clone,
+            &messages_clone,
+            &options_clone,
+            timeout_secs_override,
+        );
+        let _ = tx.send(result);
+    });
+
+    match rx.recv_timeout(first_byte) {
+        Ok(result) => result,
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(format!(
+            "First byte timeout: model did not begin responding within {}s",
+            first_byte.as_secs()
+        )),
+        Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(format!(
+            "Provider thread panicked while waiting for first byte (timeout: {}s)",
+            first_byte.as_secs()
+        )),
+    }
+}
+
+/// Returns true if the error string indicates a first-byte timeout.
+pub fn is_first_byte_timeout_error(err: &str) -> bool {
+    err.to_lowercase().contains("first byte timeout")
+}
+
 /// Hard-deadline wrapper for `complete` (Track TA15).
 ///
 /// Spawns the HTTP call in a thread and uses `recv_timeout` to enforce a
@@ -1050,5 +1102,101 @@ mod tests {
             config.ollama_cloud_api_key.as_deref(),
             Some("test-key-value")
         );
+    }
+
+    /// U17.1: an accept-then-hang server (TCP accepts but never sends headers)
+    /// must fail fast via the first-byte timeout, not wait for the full read
+    /// timeout.
+    #[test]
+    fn complete_first_byte_timeout_accept_then_hang() {
+        use std::time::Instant;
+
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind listener");
+        let addr = listener.local_addr().expect("get local addr");
+
+        std::thread::spawn(move || {
+            // Accept connections and hold them open without reading/writing,
+            // simulating an overloaded or hung model server.
+            while let Ok((stream, _)) = listener.accept() {
+                let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
+                let _ = stream.set_write_timeout(Some(Duration::from_secs(60)));
+                // Leak this thread until the test process exits; the
+                // first-byte wrapper returns long before then.
+                std::thread::sleep(Duration::from_secs(60));
+            }
+        });
+
+        // Give the listener thread a moment to start accepting.
+        std::thread::sleep(Duration::from_millis(100));
+
+        let mut config = test_config(&format!("http://{}", addr));
+        // Keep the inner ureq read timeout short so the spawned worker thread
+        // finishes quickly after the first-byte timeout fires.
+        config.timeout_secs = 5;
+
+        let start = Instant::now();
+        let result = complete_with_first_byte_timeout(
+            &config,
+            &test_messages(),
+            &CompletionOptions::default(),
+            Some(3),
+            Some(2),
+        );
+        let elapsed = start.elapsed();
+
+        assert!(
+            result.is_err(),
+            "expected first-byte timeout error, got: {result:?}"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            is_first_byte_timeout_error(&err),
+            "expected first-byte timeout error, got: {err}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "expected <3s, got {elapsed:?}"
+        );
+    }
+
+    /// U17.2: connection-refused must fail fast without waiting for the first
+    /// byte or the read timeout.
+    #[test]
+    fn complete_first_byte_timeout_connection_refused() {
+        use std::time::Instant;
+
+        let config = test_config("http://127.0.0.1:1");
+        let start = Instant::now();
+        let result = complete_with_first_byte_timeout(
+            &config,
+            &test_messages(),
+            &CompletionOptions::default(),
+            None,
+            Some(2),
+        );
+        let elapsed = start.elapsed();
+
+        assert!(
+            result.is_err(),
+            "expected unreachable error, got: {result:?}"
+        );
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("is unreachable"),
+            "expected 'is unreachable' in error, got: {err}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(2),
+            "expected fast fail <2s, got {elapsed:?}"
+        );
+    }
+
+    #[test]
+    fn is_first_byte_timeout_error_classifies() {
+        assert!(is_first_byte_timeout_error(
+            "First byte timeout: model did not begin responding within 2s"
+        ));
+        assert!(!is_first_byte_timeout_error("Some other transport error"));
+        assert!(!is_first_byte_timeout_error(""));
     }
 }
