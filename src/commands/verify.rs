@@ -35,10 +35,8 @@ pub fn verify_ledger_signatures(layout: &Layout) -> Result<()> {
         entries.len(),
         signing_required
     );
-    let mut all_valid = true;
-    let mut valid_count = 0;
-    let mut invalid_count = 0;
-    let mut skipped_count = 0;
+    let mut valid_count = 0usize;
+    let mut skipped_count = 0usize;
 
     for entry in &entries {
         match (&entry.signature, &entry.public_key) {
@@ -66,8 +64,6 @@ pub fn verify_ledger_signatures(layout: &Layout) -> Result<()> {
                         "INVALID".red(),
                         &entry.tx_id[..8]
                     );
-                    invalid_count += 1;
-                    all_valid = false;
                 }
             }
             _ => {
@@ -77,8 +73,6 @@ pub fn verify_ledger_signatures(layout: &Layout) -> Result<()> {
                         "UNSIGNED".yellow(),
                         &entry.tx_id[..8]
                     );
-                    invalid_count += 1;
-                    all_valid = false;
                 } else {
                     eprintln!(
                         "  [{}] TX {} has no signature (signing not required, skipping).",
@@ -90,6 +84,10 @@ pub fn verify_ledger_signatures(layout: &Layout) -> Result<()> {
             }
         }
     }
+
+    let invalid = enumerate_invalid_ledger_entries(&entries, signing_required);
+    let invalid_count = invalid.len();
+    let all_valid = invalid_count == 0;
 
     eprintln!(
         "\nSignature verification summary: {} valid, {} invalid, {} skipped.",
@@ -116,6 +114,40 @@ pub fn verify_ledger_signatures(layout: &Layout) -> Result<()> {
             invalid_count
         ))
     }
+}
+
+pub fn enumerate_invalid_ledger_entries(
+    entries: &[crate::ledger::types::LedgerEntry],
+    signing_required: bool,
+) -> Vec<(String, String, String)> {
+    let mut invalid = Vec::new();
+    for entry in entries {
+        match (&entry.signature, &entry.public_key) {
+            (Some(sig), Some(pub_key)) => {
+                let valid = crate::ledger::crypto::verify_signature(
+                    &entry.tx_id,
+                    &entry.category.to_string(),
+                    &entry.summary,
+                    &entry.reason,
+                    &entry.committed_at,
+                    sig,
+                    pub_key,
+                );
+                if !valid {
+                    invalid.push((entry.tx_id.clone(), sig.clone(), pub_key.clone()));
+                }
+            }
+            _ => {
+                if signing_required {
+                    // Missing signatures are treated as invalid when signing is required,
+                    // but we have no old signature/key fingerprint to record. We still include
+                    // them with empty placeholders so callers can decide how to surface them.
+                    invalid.push((entry.tx_id.clone(), String::new(), String::new()));
+                }
+            }
+        }
+    }
+    invalid
 }
 
 #[allow(clippy::too_many_arguments)]

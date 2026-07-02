@@ -27,7 +27,7 @@ globset = "0.4.18"
 
 camino = { version = "1.2.2", features = ["serde1"] }
 
-rusqlite = { version = "0.40.1", features = ["bundled"] }
+rusqlite = { version = "0.40.1", features = ["bundled", "backup"] }
 rusqlite_migration = "2.6.0"
 
 uuid = { version = "1.23", features = ["v4", "serde"] }

@@ -169,6 +169,7 @@ pub enum EntryType {
     Lesson,
     Reconciliation,
     Rollback,
+    Maintenance,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]

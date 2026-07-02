@@ -358,6 +358,21 @@ pub fn get_all_committed_ledger_entries(
     Ok(entries)
 }
 
+pub fn update_ledger_entry_signature(
+    conn: &Connection,
+    tx_id: &str,
+    signature: &str,
+    public_key: &str,
+) -> Result<usize, LedgerError> {
+    let count = conn.execute(
+        "UPDATE ledger_entries
+         SET signature = ?1, public_key = ?2
+         WHERE tx_id = ?3",
+        params![signature, public_key, tx_id],
+    )?;
+    Ok(count)
+}
+
 pub fn get_committed_ledger_entries_paginated(
     conn: &Connection,
     category: Option<&str>,

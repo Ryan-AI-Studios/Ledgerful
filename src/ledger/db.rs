@@ -269,6 +269,15 @@ impl<'a> LedgerDb<'a> {
         transactions::get_committed_ledger_entries_paginated(self.conn, category, limit, offset)
     }
 
+    pub fn update_ledger_entry_signature(
+        &self,
+        tx_id: &str,
+        signature: &str,
+        public_key: &str,
+    ) -> Result<usize, LedgerError> {
+        transactions::update_ledger_entry_signature(self.conn, tx_id, signature, public_key)
+    }
+
     pub fn find_transactions_by_file(
         &self,
         file_path: &str,

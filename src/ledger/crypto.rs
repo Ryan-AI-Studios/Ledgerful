@@ -226,27 +226,40 @@ pub fn verify_signature(
     signature_hex: &str,
     public_key_hex: &str,
 ) -> bool {
-    let pub_bytes = match hex::decode(public_key_hex) {
-        Ok(b) => b,
-        Err(_) => return false,
-    };
-    let pub_array: [u8; 32] = match pub_bytes.try_into() {
-        Ok(arr) => arr,
-        Err(_) => return false,
-    };
-    let verifying_key = match VerifyingKey::from_bytes(&pub_array) {
-        Ok(k) => k,
-        Err(_) => return false,
-    };
+    verify_signature_with_result(
+        tx_id,
+        category,
+        summary,
+        reason,
+        committed_at,
+        signature_hex,
+        public_key_hex,
+    )
+    .is_ok()
+}
 
-    let sig_bytes = match hex::decode(signature_hex) {
-        Ok(b) => b,
-        Err(_) => return false,
-    };
-    let sig_array: [u8; 64] = match sig_bytes.try_into() {
-        Ok(arr) => arr,
-        Err(_) => return false,
-    };
+fn verify_signature_with_result(
+    tx_id: &str,
+    category: &str,
+    summary: &str,
+    reason: &str,
+    committed_at: &str,
+    signature_hex: &str,
+    public_key_hex: &str,
+) -> Result<(), SignatureVerifyError> {
+    let pub_bytes =
+        hex::decode(public_key_hex).map_err(|_| SignatureVerifyError::InvalidPublicKeyEncoding)?;
+    let pub_array: [u8; 32] = pub_bytes
+        .try_into()
+        .map_err(|_| SignatureVerifyError::InvalidPublicKeyLength)?;
+    let verifying_key = VerifyingKey::from_bytes(&pub_array)
+        .map_err(|_| SignatureVerifyError::InvalidPublicKeyMaterial)?;
+
+    let sig_bytes =
+        hex::decode(signature_hex).map_err(|_| SignatureVerifyError::InvalidSignatureEncoding)?;
+    let sig_array: [u8; 64] = sig_bytes
+        .try_into()
+        .map_err(|_| SignatureVerifyError::InvalidSignatureLength)?;
     let signature = Signature::from_bytes(&sig_array);
 
     let payload = format!(
@@ -254,7 +267,27 @@ pub fn verify_signature(
         tx_id, category, summary, reason, committed_at
     );
 
-    verifying_key.verify(payload.as_bytes(), &signature).is_ok()
+    verifying_key
+        .verify(payload.as_bytes(), &signature)
+        .map_err(|_| SignatureVerifyError::SignatureMismatch)?;
+
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+enum SignatureVerifyError {
+    #[error("public key is not valid hex")]
+    InvalidPublicKeyEncoding,
+    #[error("public key has unexpected length")]
+    InvalidPublicKeyLength,
+    #[error("public key bytes are not a valid Ed25519 verifying key")]
+    InvalidPublicKeyMaterial,
+    #[error("signature is not valid hex")]
+    InvalidSignatureEncoding,
+    #[error("signature has unexpected length")]
+    InvalidSignatureLength,
+    #[error("signature does not verify against stored payload")]
+    SignatureMismatch,
 }
 
 #[cfg(test)]

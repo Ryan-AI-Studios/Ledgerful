@@ -76,6 +76,33 @@ pub enum LedgerError {
         help("The custom validator failed. Check the error message for specific details.")
     )]
     ValidatorFailed(String, String),
+
+    #[error("Ledger re-sign cancelled: {0}")]
+    #[diagnostic(
+        code(ledger::re_sign_cancelled),
+        help(
+            "Re-sign is a destructive provenance operation. Review the dry-run output, then pass --yes if you accept the backup + re-sign plan."
+        )
+    )]
+    ReSignCancelled(String),
+
+    #[error("Ledger re-sign backup failed: {0}")]
+    #[diagnostic(
+        code(ledger::re_sign_backup_failed),
+        help(
+            "The ledger database backup could not be created or did not pass PRAGMA integrity_check. Resolve the disk/database issue before retrying."
+        )
+    )]
+    ReSignBackupFailed(String),
+
+    #[error("Ledger re-sign validation failed: {0}")]
+    #[diagnostic(
+        code(ledger::re_sign_validation),
+        help(
+            "No re-sign candidates matched the given criteria, or the requested transaction is not eligible for re-sign."
+        )
+    )]
+    ReSignValidation(String),
 }
 
 #[cfg(test)]

@@ -526,6 +526,12 @@ fn dispatch_ledger(command: LedgerCommands) -> Result<()> {
             note,
             message,
         } => crate::commands::ledger::execute_ledger_note(&entity, note, message),
+        LedgerCommands::ReSign {
+            tx,
+            all_invalid,
+            dry_run,
+            yes,
+        } => crate::commands::ledger_re_sign::execute_ledger_re_sign(tx, all_invalid, dry_run, yes),
         LedgerCommands::Gc {
             stale,
             orphans,
