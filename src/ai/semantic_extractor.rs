@@ -1,5 +1,8 @@
 use crate::config::model::{GeminiConfig, LocalModelConfig};
-use crate::local_model::client::{ChatMessage, CompletionOptions, complete, gemini_complete};
+use crate::local_model::client::{
+    ChatMessage, CompletionOptions, complete_with_first_byte_timeout, gemini_complete,
+    is_first_byte_timeout_error,
+};
 use crate::state::storage_cozo::CozoStorage;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -314,8 +317,13 @@ impl SemanticExtractor {
         };
 
         // Semantic extraction can require many output tokens at ~20ms/token on GPU,
-        // so use a generous read timeout (10 min) to prevent premature cut-off.
+        // so use a generous read timeout (10 min) to prevent premature cut-off once
+        // the model starts streaming. The first-byte timeout below bounds the time
+        // we wait for the server to begin the response.
         let effective_timeout = std::cmp::max(600, local_model_config.timeout_secs);
+        // Short budget for the server to begin responding; prevents stalling on an
+        // accept-then-hang server.
+        let first_byte_secs = 15u64;
 
         let debug_dir = std::env::var(DEBUG_DUMP_ENV).ok();
 
@@ -359,20 +367,22 @@ impl SemanticExtractor {
                             "Gemini extraction failed: {}. Falling back to local model...",
                             e
                         );
-                        complete(
+                        complete_with_first_byte_timeout(
                             local_model_config,
                             &messages,
                             &options,
                             Some(effective_timeout),
+                            Some(first_byte_secs),
                         )
                     }
                 }
             } else {
-                complete(
+                complete_with_first_byte_timeout(
                     local_model_config,
                     &messages,
                     &options,
                     Some(effective_timeout),
+                    Some(first_byte_secs),
                 )
             };
 
@@ -441,6 +451,19 @@ impl SemanticExtractor {
                 }
                 Err(e) => {
                     last_error = e.clone();
+                    // Fail fast for connection-level or first-byte failures: looping on a
+                    // down/hung model would otherwise stall for max_retries * timeout.
+                    if is_first_byte_timeout_error(&e)
+                        || e.contains("is unreachable")
+                        || e.contains("not configured")
+                        || e.contains("not reachable")
+                    {
+                        warn!(
+                            "Semantic extraction [{}/{}]: model unavailable ({}); aborting retries",
+                            attempt, self.config.max_retries, e
+                        );
+                        break;
+                    }
                     if e.contains("503") || e.contains("rate limited") {
                         std::thread::sleep(std::time::Duration::from_secs(1));
                     }
