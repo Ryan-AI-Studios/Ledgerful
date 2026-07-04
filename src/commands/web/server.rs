@@ -2,7 +2,7 @@
 
 use crate::commands::helpers::load_ledger_config;
 use crate::commands::web::api;
-use crate::commands::web::api::{HotspotResponse, map_hotspots_to_responses};
+use crate::commands::web::types::{HotspotResponse, map_hotspots_to_responses};
 use crate::commands::web::auth::{extract_token_header, validate_token};
 use crate::commands::web::error::WebError;
 use crate::commands::web::git_meta::{build_git_metadata_map, git_meta_cache_needs_refresh};

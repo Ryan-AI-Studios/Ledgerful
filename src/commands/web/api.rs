@@ -6,15 +6,21 @@
 
 use crate::commands::helpers::load_ledger_config;
 use crate::commands::web::error::WebError;
-use crate::commands::web::git_meta::lookup_git_meta;
-use crate::commands::web::server::display_entity;
 use crate::commands::web::state::AppState;
+use crate::commands::web::types::*;
+
+// Re-export public shared types so existing external imports keep working.
+pub use crate::commands::web::types::{
+    ComplianceSignatureEntry, ComplianceSummaryResponse, HotspotResponse, HotspotTrendQuery,
+    HotspotTrendResponse, HotspotTrendSeries, KgEdge, KgNode, KnowledgeGraphQuery,
+    KnowledgeGraphResponse, SecurityBoundariesResponse, VerificationHealthResponse,
+    VerificationStepResponse, VerificationTrendPoint, VerifyHistoryQuery,
+};
 use crate::config::load::load_config;
 use crate::contracts::AffectedContract;
 use crate::git::repo::open_repo;
 use crate::git::status::get_repo_status;
 use crate::impact::hotspots::query_file_complexities;
-use crate::impact::packet::Hotspot;
 use crate::ledger::db::LedgerDb;
 use crate::ledger::types::LedgerEntry;
 use crate::state::layout::Layout;
@@ -25,22 +31,18 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use chrono::NaiveDate;
 use miette::{IntoDiagnostic, Result, miette};
-use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 #[cfg(any(test, feature = "openapi", feature = "web"))]
-use utoipa::{IntoParams, OpenApi, ToSchema};
+use utoipa::OpenApi;
 
 #[cfg(any(test, feature = "openapi", feature = "web"))]
 use super::server::{
     __path_changes_handler, __path_config_handler, __path_health_handler, __path_hotspots_handler,
     __path_ledger_handler, __path_ledger_search_handler, __path_ledger_tx_handler,
     __path_projects_handler, __path_session_handler, __path_snapshot_handler,
-    __path_status_handler, __path_sync_status_handler, ChangeResponse, ChangedFileResponse,
-    ChangesQuery, ConfigResponse, HotspotsQueryParams, LedgerDetailResponse, LedgerEntryResponse,
-    LedgerListQuery, LedgerSearchQuery, ProjectResponse, SnapshotResponse, StatusResponse,
-    SyncStatusResponse, UserSession,
+    __path_status_handler, __path_sync_status_handler,
 };
 
 #[cfg(any(test, feature = "openapi", feature = "web"))]
@@ -151,97 +153,6 @@ const KG_MAX_LIMIT: usize = 1000;
 // HotspotResponse DTO (Track TA29)
 // ---------------------------------------------------------------------------
 
-/// Frontend-facing hotspot DTO decoupled from the internal `Hotspot` domain
-/// struct. The internal struct (`intelligence::Hotspot`) is coupled to the
-/// impact math module; this DTO gives the API a stable contract that the
-/// frontend can rely on even if the internal struct changes.
-///
-/// Backward-compat fields (`displayScore`, `score`, `complexity`, `frequency`,
-/// `centrality`) are included temporarily until the frontend PR merges. They
-/// will be removed once the frontend consumes the new fields directly.
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
-#[serde(rename_all = "camelCase")]
-pub struct HotspotResponse {
-    // Frontend-facing fields (the contract):
-    pub id: String,
-    pub file_path: String,
-    pub risk_level: String,
-    pub risk_score: f32,
-    pub last_touched_at: Option<String>,
-    pub contributor: Option<String>,
-    pub change_count: u32,
-    pub rank: usize,
-
-    // Backward-compat fields (remove after frontend PR merges):
-    pub display_score: f32,
-    pub score: f32,
-    pub complexity: i32,
-    pub frequency: f64,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub centrality: Option<usize>,
-}
-
-/// Derive a human-readable risk level from `display_score`.
-///
-/// `display_score` is `ln(1 + score * 1000)` (log scale, typically 0-5), so
-/// the thresholds use the log scale, NOT a 0-100 percentage:
-/// - `>= 4.0` → `"CRITICAL"` (≈ raw 0.054)
-/// - `>= 3.0` → `"HIGH"` (≈ raw 0.020)
-/// - `>= 2.0` → `"MEDIUM"` (≈ raw 0.0072)
-/// - `< 2.0`  → `"LOW"`
-pub fn risk_level_from_display_score(display_score: f32) -> String {
-    if display_score >= 4.0 {
-        "CRITICAL".to_string()
-    } else if display_score >= 3.0 {
-        "HIGH".to_string()
-    } else if display_score >= 2.0 {
-        "MEDIUM".to_string()
-    } else {
-        "LOW".to_string()
-    }
-}
-
-/// Map internal `Hotspot` structs to `HotspotResponse` DTOs, enriching each
-/// with git metadata (`last_touched_at`, `contributor`) from the provided map.
-///
-/// The input `hotspots` must already be sorted by `display_score` descending
-/// (the order produced by `calculate_hotspots`). `rank` is the 1-based index.
-/// `change_count` is `frequency.round().max(1.0) as u32` — floor at 1 so any
-/// file in the hotspots list shows at least 1 change.
-pub fn map_hotspots_to_responses(
-    hotspots: &[Hotspot],
-    git_meta: &HashMap<String, (String, String)>,
-) -> Vec<HotspotResponse> {
-    hotspots
-        .iter()
-        .enumerate()
-        .map(|(idx, h)| {
-            let path_str = h.path.to_string_lossy().to_string();
-            let (last_touched_at, contributor) = match lookup_git_meta(git_meta, &path_str) {
-                Some((ts, author)) => (Some(ts.clone()), Some(author.clone())),
-                None => (None, None),
-            };
-            let change_count = (h.frequency.max(1.0)).round() as u32;
-            HotspotResponse {
-                id: path_str.clone(),
-                file_path: path_str,
-                risk_level: risk_level_from_display_score(h.display_score),
-                risk_score: h.display_score,
-                last_touched_at,
-                contributor,
-                change_count,
-                rank: idx + 1,
-                display_score: h.display_score,
-                score: h.score,
-                complexity: h.complexity,
-                frequency: h.frequency,
-                centrality: h.centrality,
-            }
-        })
-        .collect()
-}
-
 // ---------------------------------------------------------------------------
 // Report endpoints
 // ---------------------------------------------------------------------------
@@ -287,33 +198,6 @@ pub async fn latest_verify_handler(
 // ---------------------------------------------------------------------------
 // Verification dashboard endpoints (Track E1)
 // ---------------------------------------------------------------------------
-
-/// `GET /api/verify/health` — overall verification health derived from the
-/// latest `verification_runs` row.
-///
-/// Status mapping (documented for the reviewer):
-/// - No runs recorded → `DEGRADED` with `message = "No verification runs
-///   recorded"` and `lastRunAt = null`. This is NOT an error (200, not 404)
-///   so the dashboard can render its empty state.
-/// - Latest run `overall_pass = false` → `FAILING`.
-/// - Latest run `overall_pass = true` but older than 7 days → `DEGRADED`
-///   with `message = "Last verification run is stale (older than 7 days)"`.
-///   (A stale failing run stays `FAILING` — failure takes precedence over
-///   staleness.)
-/// - Otherwise → `HEALTHY`.
-#[derive(Debug, Serialize)]
-#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
-#[serde(rename_all = "camelCase")]
-pub struct VerificationHealthResponse {
-    pub status: String,
-    // NOTE: `last_run_at` is intentionally NOT `skip_serializing_if`-gated —
-    // the frontend contract is `lastRunAt: string | null`, so the field MUST
-    // be present in the JSON as `null` when there are no verification runs
-    // (the dashboard empty state), not omitted.
-    pub last_run_at: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-}
 
 /// `GET /api/verify/health` — overall verification health.
 #[utoipa::path(
@@ -386,24 +270,6 @@ fn fetch_verify_health(layout: &Layout) -> Result<VerificationHealthResponse> {
 /// last `days` days (default 30, accepts 90). Returns a bare JSON array of
 /// `{ date, passed, failed }` sorted ascending by date. Dates with no runs
 /// are omitted (deterministic: only dates that have at least one run appear).
-#[derive(Debug, Deserialize, Default)]
-#[cfg_attr(
-    any(test, feature = "openapi", feature = "web"),
-    derive(IntoParams, ToSchema)
-)]
-pub struct VerifyHistoryQuery {
-    days: Option<u64>,
-}
-
-#[derive(Debug, Serialize)]
-#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
-#[serde(rename_all = "camelCase")]
-pub struct VerificationTrendPoint {
-    pub date: String,
-    pub passed: u64,
-    pub failed: u64,
-}
-
 /// `GET /api/verify/history` — pass/fail trend over time.
 #[utoipa::path(
     get,
@@ -445,35 +311,6 @@ fn fetch_verify_history(layout: &Layout, days: u64) -> Result<Vec<VerificationTr
             failed: r.failed,
         })
         .collect())
-}
-
-/// `GET /api/verify/steps` — per-step aggregates across all history.
-///
-/// Returns a bare JSON array of `{ id, name, lastRunAt, averageDurationMs,
-/// passRatePercent, recentFailures }` sorted ascending by step command.
-///
-/// `id` is the step's stable identifier (its `command` — the verify plan step
-/// `src/verify/plan.rs::VerificationStep` has no separate id field, and
-/// `verification_results` only stores `command`). `name` is the friendly
-/// label: the step's `description` from the most recent `verification_runs.
-/// plan_json` that contains a step with that command, falling back to
-/// `command` when no plan_json is available, fails to parse, or has no
-/// matching step. `plan_json` is a serialized `VerificationPlan` (see
-/// `verify::engine::persist_verify_report`); parse errors on any single row
-/// are skipped so one malformed run cannot fail the whole endpoint.
-///
-/// `recentFailures` counts failures within the last 10 verification runs
-/// (by `verification_runs.id DESC`). Flagged as an assumption.
-#[derive(Debug, Serialize)]
-#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
-#[serde(rename_all = "camelCase")]
-pub struct VerificationStepResponse {
-    pub id: String,
-    pub name: String,
-    pub last_run_at: String,
-    pub average_duration_ms: f64,
-    pub pass_rate_percent: f64,
-    pub recent_failures: u64,
 }
 
 /// `GET /api/verify/steps` — per-step verification aggregates.
@@ -622,31 +459,6 @@ fn read_report_json(layout: &Layout, filename: &str) -> Result<Option<serde_json
 // ---------------------------------------------------------------------------
 // Hotspot trend endpoint
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize, Default)]
-#[cfg_attr(
-    any(test, feature = "openapi", feature = "web"),
-    derive(IntoParams, ToSchema)
-)]
-pub struct HotspotTrendQuery {
-    days: Option<u64>,
-    limit: Option<usize>,
-}
-
-#[derive(Serialize)]
-#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
-pub struct HotspotTrendResponse {
-    pub labels: Vec<String>,
-    pub series: Vec<HotspotTrendSeries>,
-    pub truncated: bool,
-}
-
-#[derive(Serialize)]
-#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
-pub struct HotspotTrendSeries {
-    pub path: String,
-    pub scores: Vec<f32>,
-}
 
 /// `GET /api/hotspots/trend` — rolling hotspot trend series.
 #[utoipa::path(
@@ -1007,13 +819,6 @@ fn fetch_endpoints_changed(layout: &Layout) -> Result<Vec<AffectedContract>> {
 // Security boundaries endpoint
 // ---------------------------------------------------------------------------
 
-#[derive(Serialize)]
-#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
-pub struct SecurityBoundariesResponse {
-    pub meta: serde_json::Value,
-    pub boundaries: serde_json::Value,
-}
-
 /// `GET /api/security/boundaries` — security boundary counts and edges.
 #[utoipa::path(
     get,
@@ -1136,49 +941,6 @@ fn empty_boundaries_response() -> SecurityBoundariesResponse {
 // ---------------------------------------------------------------------------
 // Knowledge-graph subgraph endpoint
 // ---------------------------------------------------------------------------
-
-#[derive(Debug, Deserialize, Default)]
-#[cfg_attr(
-    any(test, feature = "openapi", feature = "web"),
-    derive(IntoParams, ToSchema)
-)]
-pub struct KnowledgeGraphQuery {
-    limit: Option<usize>,
-    focus: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
-pub struct KnowledgeGraphResponse {
-    pub nodes: Vec<KgNode>,
-    pub edges: Vec<KgEdge>,
-    pub truncated: bool,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
-pub struct KgNode {
-    pub id: String,
-    pub label: String,
-    pub category: String,
-    pub risk_score: f64,
-    pub file_path: String,
-    pub complexity: i32,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub metadata: Option<serde_json::Value>,
-}
-
-#[derive(Debug, Clone, Serialize)]
-#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
-pub struct KgEdge {
-    pub source: String,
-    pub target: String,
-    pub relation: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub confidence: Option<f64>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub provenance_id: Option<String>,
-}
 
 /// `GET /api/knowledge-graph` — CozoDB knowledge-graph subgraph.
 #[utoipa::path(
@@ -1617,44 +1379,6 @@ fn fetch_edges_among(
 /// ordered `committed_at DESC` so this is the most recent 100 entries.
 const COMPLIANCE_SIGNATURES_LIMIT: usize = 100;
 
-/// `GET /api/compliance/summary` — aggregate cryptographic validity and audit
-/// completion rates over the ledger, plus the recent hotspot delta.
-///
-/// Response (camelCase):
-/// - `totalSigned`: count of ledger entries with BOTH `signature` and
-///   `public_key` present (i.e. signed rows, regardless of whether the
-///   signature currently verifies).
-/// - `validityPercent`: `valid_count / total_entries * 100.0` rounded to 2dp,
-///   where `valid_count` is the number of entries whose signature verifies
-///   against the stored public key (or, for unsigned rows when
-///   `intent.require_signing` is false, the row is NOT counted as valid —
-///   only cryptographically VALID rows contribute). `0.0` when there are no
-///   entries.
-/// - `lastAuditAt`: the most recent `committed_at` among entries classified
-///   VALID (the last verifiably-signed event). `null` when there are no
-///   VALID entries / no entries. This field is intentionally NOT
-///   `skip_serializing_if`-gated — the frontend contract is
-///   `lastAuditAt: string | null`, so it MUST serialize as `null` in the
-///   empty state (matches E1's `lastRunAt` contract).
-/// - `hotspotDeltaPercent`: see `fetch_hotspot_delta_percent`.
-///
-/// No-DB path (ledger.db absent): returns
-/// `{ totalSigned: 0, validityPercent: 0.0, lastAuditAt: null,
-/// hotspotDeltaPercent: 0.0 }` with HTTP 200 — the dashboard empty state,
-/// NOT an error.
-#[derive(Debug, Serialize)]
-#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
-#[serde(rename_all = "camelCase")]
-pub struct ComplianceSummaryResponse {
-    pub total_signed: u64,
-    pub validity_percent: f64,
-    // NOTE: intentionally NOT `skip_serializing_if`-gated — the frontend
-    // contract is `lastAuditAt: string | null`, so the field MUST be present
-    // as `null` in the empty state, not omitted.
-    pub last_audit_at: Option<String>,
-    pub hotspot_delta_percent: f64,
-}
-
 /// `GET /api/compliance/summary` — aggregate compliance summary.
 #[utoipa::path(
     get,
@@ -1742,36 +1466,6 @@ fn fetch_compliance_summary(layout: &Layout) -> Result<ComplianceSummaryResponse
         last_audit_at,
         hotspot_delta_percent,
     })
-}
-
-/// `GET /api/compliance/signatures` — per-entry signature status for the
-/// recent ledger.
-///
-/// Returns a bare JSON array of `{ txId, entity, summary, committedAt,
-/// status, category }` (camelCase) sorted by `committed_at` DESC, bounded to
-/// the most recent `COMPLIANCE_SIGNATURES_LIMIT` (100) entries.
-///
-/// `status` is the string `VALID` | `INVALID` | `SKIPPED`:
-/// - `(Some(sig), Some(pub))` → `verify_signature(...)` → `VALID` if true,
-///   else `INVALID`.
-/// - otherwise (no signature) → `INVALID` when `intent.require_signing` is
-///   true (the CLI labels this `UNSIGNED`; the dashboard status set is
-///   `{VALID,INVALID,SKIPPED}` per the E2 spec, so `UNSIGNED` maps to
-///   `INVALID`), else `SKIPPED`.
-///
-/// `category` is the `Category` enum's `Display` form (e.g. `"FEATURE"`).
-///
-/// No-DB path → empty array `[]` (200, not an error).
-#[derive(Debug, Serialize)]
-#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
-#[serde(rename_all = "camelCase")]
-pub struct ComplianceSignatureEntry {
-    pub tx_id: String,
-    pub entity: String,
-    pub summary: String,
-    pub committed_at: String,
-    pub status: String,
-    pub category: String,
 }
 
 /// `GET /api/compliance/signatures` — recent signature status entries.

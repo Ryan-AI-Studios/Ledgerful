@@ -700,7 +700,7 @@
         "tags": [
           "verify"
         ],
-        "summary": "`GET /api/verify/history` — pass/fail trend over time.",
+        "summary": "`GET /api/verify/history?days=30` — per-date pass/fail counts over the\nlast `days` days (default 30, accepts 90). Returns a bare JSON array of\n`{ date, passed, failed }` sorted ascending by date. Dates with no runs\nare omitted (deterministic: only dates that have at least one run appear).\n`GET /api/verify/history` — pass/fail trend over time.",
         "operationId": "getVerifyHistory",
         "parameters": [
           {
@@ -1791,7 +1791,6 @@
       },
       "VerifyHistoryQuery": {
         "type": "object",
-        "description": "`GET /api/verify/history?days=30` — per-date pass/fail counts over the\nlast `days` days (default 30, accepts 90). Returns a bare JSON array of\n`{ date, passed, failed }` sorted ascending by date. Dates with no runs\nare omitted (deterministic: only dates that have at least one run appear).",
         "properties": {
           "days": {
             "type": [

@@ -4,6 +4,7 @@ pub mod error;
 pub mod git_meta;
 pub mod server;
 pub mod state;
+pub mod types;
 
 use crate::cli::args::{WebCommands, WebStartArgs};
 use crate::commands::helpers::get_layout;
