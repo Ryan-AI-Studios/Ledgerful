@@ -408,7 +408,11 @@ impl FederatedScanner {
             let file_name = file_name.to_string_lossy();
 
             if path.is_dir() {
-                if matches!(file_name.as_ref(), ".git" | ".ledgerful" | "target") {
+                if matches!(
+                    file_name.as_ref(),
+                    ".git" | ".ledgerful" | "target" | "node_modules" | ".opencode" | ".cargo"
+                        | ".claude" | ".config" | ".agents" | "vendor"
+                ) {
                     continue;
                 }
                 self.scan_dependency_dir(&path, sibling_schema, edges, matcher)?;
