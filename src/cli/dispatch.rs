@@ -118,6 +118,12 @@ pub fn run_with(cli: Cli) -> Result<()> {
         Commands::Security(args) => crate::commands::security::execute_security(args),
         Commands::Tests(args) => crate::commands::test_mapping::execute_tests_for_entity(args),
         Commands::Ledger { command } => dispatch_ledger(command),
+        #[cfg(any(feature = "openapi", feature = "web"))]
+        Commands::Openapi => {
+            let json = crate::commands::web::api::generate_openapi_json();
+            println!("{}", json);
+            return Ok(());
+        }
         Commands::Verify {
             command,
             timeout,
@@ -539,6 +545,374 @@ fn dispatch_ledger(command: LedgerCommands) -> Result<()> {
             force,
             dry_run,
         } => crate::commands::ledger::execute_ledger_gc(stale, orphans, ttl_hours, force, dry_run),
+        LedgerCommands::Resume { tx_id } => crate::commands::ledger::execute_ledger_resume(tx_id),
+        LedgerCommands::ExportProvenance { out_path, force } => {
+            dispatch_ledger_export_provenance(out_path, force)
+        }
+        LedgerCommands::HookRepair { force } => {
+            crate::commands::ledger::execute_ledger_hook_repair(force)
+        }
+    }
+}
+
+fn dispatch_ledger_export_provenance(
+    out_path: Option<std::path::PathBuf>,
+    force: bool,
+) -> Result<()> {
+    use camino::Utf8PathBuf;
+
+    let Some(path) = out_path else {
+        return crate::commands::ledger::execute_ledger_export_provenance(None);
+    };
+
+    let clean = validate_export_path(&path, force)?;
+    let utf8 = Utf8PathBuf::from_path_buf(clean)
+        .map_err(|_| miette::miette!("export path is not valid UTF-8"))?;
+    crate::commands::ledger::execute_ledger_export_provenance(Some(utf8.to_string()))
+}
+
+fn validate_export_path(path: &std::path::Path, force: bool) -> miette::Result<std::path::PathBuf> {
+    let repo_root = crate::commands::helpers::get_repo_root()
+        .map_err(|e| miette::miette!("failed to determine repository root: {e}"))?;
+
+    let absolute = std::env::current_dir()
+        .map(|cwd| cwd.join(path))
+        .map_err(|e| miette::miette!("failed to determine current directory: {e}"))?;
+    let cleaned = path_clean::PathClean::clean(&absolute);
+
+    // Reject paths that escape the repository root (e.g. "../foo.json").
+    let repo_root_std = repo_root.as_std_path();
+    if cleaned != repo_root_std && !cleaned.starts_with(repo_root_std) {
+        return Err(miette::miette!(
+            "export path must be inside the repository ({})",
+            repo_root_std.display()
+        ));
+    }
+
+    // Reject directory-only targets (e.g. "src/..") and paths with no file component.
+    let file_name_os = cleaned.file_name();
+    let file_name_valid = file_name_os
+        .and_then(|n| n.to_str().map(|s| !s.is_empty()))
+        .unwrap_or(false);
+    if cleaned.is_dir() || !file_name_valid {
+        return Err(miette::miette!(
+            "invalid path: no file component; must specify a file, not a directory"
+        ));
+    }
+
+    // Resolve symlinks/junctions for the safety-boundary comparison.
+    let canonical = if cleaned.exists() {
+        std::fs::canonicalize(&cleaned)
+            .map_err(|e| miette::miette!("failed to resolve path: {e}"))?
+    } else {
+        match cleaned.parent() {
+            Some(parent) => {
+                let base = std::fs::canonicalize(parent)
+                    .map_err(|e| miette::miette!("failed to resolve parent directory: {e}"))?;
+                base.join(file_name_os.unwrap_or_default())
+            }
+            None => cleaned.clone(),
+        }
+    };
+
+    let canonical = strip_verbatim_prefix(&canonical);
+
+    // Re-check the repository boundary after canonicalization so a repo-local
+    // symlink/junction cannot resolve outside the repository.
+    let canonical_repo_root = std::fs::canonicalize(repo_root_std)
+        .map_err(|e| miette::miette!("failed to resolve repo root: {e}"))?;
+    let canonical_repo_root = strip_verbatim_prefix(&canonical_repo_root);
+    if canonical != canonical_repo_root && !canonical.starts_with(&canonical_repo_root) {
+        return Err(miette::miette!(
+            "export path resolves outside the repository after symlink resolution"
+        ));
+    }
+
+    let cargo_toml_path = strip_verbatim_prefix(&canonical_repo_root.join("Cargo.toml"));
+    if canonical == cargo_toml_path {
+        return Err(miette::miette!("refusing to write to Cargo.toml"));
+    }
+
+    let src_dir = strip_verbatim_prefix(&canonical_repo_root.join("src"));
+    if canonical.starts_with(&src_dir) {
+        return Err(miette::miette!("refusing to write inside src/"));
+    }
+
+    let state_dir = strip_verbatim_prefix(&canonical_repo_root.join(".ledgerful").join("state"));
+    if canonical.starts_with(&state_dir) {
+        return Err(miette::miette!(
+            "refusing to write inside .ledgerful/state/"
+        ));
+    }
+
+    if canonical.exists() && !force {
+        return Err(miette::miette!(
+            "{} already exists; use --force to overwrite",
+            canonical.display()
+        ));
+    }
+
+    Ok(canonical)
+}
+
+/// Strip the Windows "\\?\" verbatim prefix so that canonical paths compare
+/// naturally with user-provided paths. On non-Windows platforms this is a no-op.
+fn strip_verbatim_prefix(path: &std::path::Path) -> std::path::PathBuf {
+    #[cfg(windows)]
+    {
+        use std::path::Component;
+        let mut components = path.components();
+        if let Some(Component::Prefix(prefix)) = components.next()
+            && let Some(disk) = prefix
+                .as_os_str()
+                .to_str()
+                .and_then(|s| s.strip_prefix(r"\\?\"))
+        {
+            let rest = components.as_path();
+            return std::path::Path::new(disk).join(rest);
+        }
+    }
+    path.to_path_buf()
+}
+
+#[cfg(test)]
+mod export_path_tests {
+    use super::*;
+    use camino::Utf8Path;
+    use tempfile::tempdir;
+
+    struct CwdGuard {
+        original: std::path::PathBuf,
+    }
+
+    impl CwdGuard {
+        fn enter(path: &std::path::Path) -> Self {
+            let original = std::env::current_dir().unwrap();
+            std::env::set_current_dir(path).unwrap();
+            CwdGuard { original }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
+    }
+
+    fn temp_repo() -> (tempfile::TempDir, camino::Utf8PathBuf) {
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap().to_path_buf();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&root)
+            .output()
+            .expect("git init failed");
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::create_dir_all(root.join(".ledgerful").join("state")).unwrap();
+        std::fs::File::create(root.join("Cargo.toml")).unwrap();
+        (tmp, root)
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn validate_export_path_accepts_valid_relative_file() {
+        let (_tmp, root) = temp_repo();
+        let _guard = CwdGuard::enter(root.as_std_path());
+
+        let path = validate_export_path(std::path::Path::new("out.json"), false).unwrap();
+        assert_eq!(path, root.as_std_path().join("out.json"));
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn validate_export_path_accepts_existing_file_with_force() {
+        let (_tmp, root) = temp_repo();
+        let _guard = CwdGuard::enter(root.as_std_path());
+        std::fs::File::create(root.join("existing.json")).unwrap();
+
+        let path = validate_export_path(std::path::Path::new("existing.json"), true).unwrap();
+        assert_eq!(path, root.as_std_path().join("existing.json"));
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn validate_export_path_refuses_existing_file_without_force() {
+        let (_tmp, root) = temp_repo();
+        let _guard = CwdGuard::enter(root.as_std_path());
+        std::fs::File::create(root.join("existing.json")).unwrap();
+
+        let err = validate_export_path(std::path::Path::new("existing.json"), false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("already exists"));
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn validate_export_path_refuses_src_directory() {
+        let (_tmp, root) = temp_repo();
+        let _guard = CwdGuard::enter(root.as_std_path());
+
+        let err = validate_export_path(std::path::Path::new("src/foo.json"), false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("inside src/"));
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn validate_export_path_refuses_cargo_toml() {
+        let (_tmp, root) = temp_repo();
+        let _guard = CwdGuard::enter(root.as_std_path());
+
+        let err = validate_export_path(std::path::Path::new("Cargo.toml"), false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("Cargo.toml"));
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn validate_export_path_refuses_state_directory() {
+        let (_tmp, root) = temp_repo();
+        let _guard = CwdGuard::enter(root.as_std_path());
+
+        let err = validate_export_path(std::path::Path::new(".ledgerful/state/foo.json"), false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("inside .ledgerful/state/"));
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn validate_export_path_refuses_dotdot_traversal() {
+        let (_tmp, root) = temp_repo();
+        let _guard = CwdGuard::enter(root.as_std_path());
+
+        let err = validate_export_path(std::path::Path::new("../src/foo.json"), false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("inside the repository") || err.contains("inside src/"));
+    }
+
+    #[cfg(windows)]
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn validate_export_path_refuses_symlink_resolving_outside_repo() {
+        let (_tmp, root) = temp_repo();
+        let _guard = CwdGuard::enter(root.as_std_path());
+
+        // Create a directory outside the repo and a symlink/junction inside the
+        // repo that points to it. Windows requires elevated privileges for
+        // directory symlinks, so we fall back to a junction when symlinking fails.
+        let outside = root.as_std_path().join("../outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let outside_abs = std::fs::canonicalize(&outside).unwrap();
+        let link_path = root.as_std_path().join("link_to_outside");
+
+        let symlink_ok = std::os::windows::fs::symlink_dir(&outside_abs, &link_path);
+        if symlink_ok.is_err() {
+            let _ = std::fs::remove_dir_all(&link_path);
+            // Junction fallback requires Windows-specific APIs; skip if unavailable.
+            if std::process::Command::new("cmd")
+                .args([
+                    "/c",
+                    "mklink",
+                    "/J",
+                    link_path.to_str().unwrap_or_default(),
+                    outside_abs.to_str().unwrap_or_default(),
+                ])
+                .output()
+                .map(|out| !out.status.success())
+                .unwrap_or(true)
+            {
+                // Symlinks/junctions unavailable in this environment; skip.
+                return;
+            }
+        }
+
+        let err = validate_export_path(std::path::Path::new("link_to_outside/escaped.json"), false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            err.contains("resolves outside the repository") || err.contains("inside src/"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn validate_export_path_refuses_symlink_resolving_outside_repo() {
+        let (_tmp, root) = temp_repo();
+        let _guard = CwdGuard::enter(root.as_std_path());
+
+        let outside = root.as_std_path().join("../outside");
+        std::fs::create_dir_all(&outside).unwrap();
+        let outside_abs = std::fs::canonicalize(&outside).unwrap();
+        let link_path = root.as_std_path().join("link_to_outside");
+
+        if std::os::unix::fs::symlink(&outside_abs, &link_path).is_err() {
+            return;
+        }
+
+        let err = validate_export_path(std::path::Path::new("link_to_outside/escaped.json"), false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            err.contains("resolves outside the repository") || err.contains("inside src/"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn validate_export_path_refuses_src_dotdot() {
+        let (_tmp, root) = temp_repo();
+        let _guard = CwdGuard::enter(root.as_std_path());
+
+        let err = validate_export_path(std::path::Path::new("src/.."), false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("no file component") || err.contains("directory"));
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn validate_export_path_refuses_absolute_path_in_src() {
+        let (_tmp, root) = temp_repo();
+        let _guard = CwdGuard::enter(root.as_std_path());
+
+        let err = validate_export_path(&root.as_std_path().join("src/foo.json"), false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("inside src/"));
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn validate_export_path_rejects_directory_target() {
+        let (_tmp, root) = temp_repo();
+        let _guard = CwdGuard::enter(root.as_std_path());
+        std::fs::create_dir_all(root.join("mydir")).unwrap();
+
+        let err = validate_export_path(std::path::Path::new("mydir"), false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            err.contains("already exists") || err.contains("directory"),
+            "unexpected error: {err}"
+        );
     }
 }
 

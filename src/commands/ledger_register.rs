@@ -102,7 +102,14 @@ pub fn execute_validator_lifecycle(subcommand: ValidatorSubcommands) -> Result<(
     Ok(())
 }
 
-pub fn execute_ledger_register(rule_type: RuleType, payload: String, force: bool) -> Result<()> {
+/// Internal programmatic API for web/MCP server. Not exposed as CLI — takes raw JSON payload that bypasses clap type-safety. Use `register_rule`/`register_validator` for CLI access.
+#[doc(hidden)]
+#[allow(dead_code)]
+pub(crate) fn execute_ledger_register(
+    rule_type: RuleType,
+    payload: String,
+    force: bool,
+) -> Result<()> {
     let layout = get_layout()?;
     let storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
     let db = LedgerDb::new(storage.get_connection());

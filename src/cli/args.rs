@@ -477,6 +477,9 @@ pub enum Commands {
     /// Run the MCP server (stdio transport)
     #[cfg(feature = "mcp")]
     Mcp,
+    /// Print the canonical OpenAPI JSON spec for this build to stdout
+    #[cfg(any(feature = "openapi", feature = "web"))]
+    Openapi,
 }
 
 impl Commands {
@@ -567,6 +570,9 @@ impl Commands {
                 LedgerCommands::Note { .. } => "ledger_note",
                 LedgerCommands::ReSign { .. } => "ledger_re_sign",
                 LedgerCommands::Gc { .. } => "ledger_gc",
+                LedgerCommands::Resume { .. } => "ledger_resume",
+                LedgerCommands::ExportProvenance { .. } => "ledger_export_provenance",
+                LedgerCommands::HookRepair { .. } => "ledger_hook_repair",
             },
             Commands::Verify { .. } => "verify",
             Commands::Ask { .. } => "ask",
@@ -631,6 +637,8 @@ impl Commands {
             },
             #[cfg(feature = "mcp")]
             Commands::Mcp => "mcp",
+            #[cfg(any(feature = "openapi", feature = "web"))]
+            Commands::Openapi => "openapi",
         }
     }
 }
@@ -1144,6 +1152,27 @@ pub enum LedgerCommands {
         /// Show what would be removed without actually deleting it
         #[arg(long = "dry-run")]
         dry_run: bool,
+    },
+    /// Resume a pending transaction by ID or the most recent pending transaction
+    Resume {
+        /// Transaction ID to resume (optional, defaults to most recent pending)
+        #[arg(short, long = "tx", value_name = "TX_ID")]
+        tx_id: Option<String>,
+    },
+    /// Export committed ledger entries as a stable JSON provenance artifact
+    ExportProvenance {
+        /// Output path for the JSON provenance file (default: stdout)
+        #[arg(short, long, value_name = "PATH")]
+        out_path: Option<PathBuf>,
+        /// Overwrite an existing output file
+        #[arg(short, long)]
+        force: bool,
+    },
+    /// Repair a stale post-commit hook sidecar after a crash
+    HookRepair {
+        /// Roll back the stale transaction and remove the sidecar
+        #[arg(short, long)]
+        force: bool,
     },
 }
 

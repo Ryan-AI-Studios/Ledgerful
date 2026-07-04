@@ -277,6 +277,10 @@ pub fn execute_ledger_status(
     Ok(())
 }
 
+/// Export stable provenance as pretty-printed JSON.
+///
+/// When `output` is `None`, writes JSON to stdout. When `Some(path)`, writes
+/// to the specified file path.
 pub fn execute_ledger_export_provenance(output: Option<String>) -> Result<()> {
     let layout = get_layout()?;
     let storage = StorageManager::open_read_only(&layout.root)?;
@@ -285,14 +289,16 @@ pub fn execute_ledger_export_provenance(output: Option<String>) -> Result<()> {
         .get_all_committed_ledger_entries()
         .map_err(|e| miette::miette!("{}", e))?;
 
-    let output_path = output.unwrap_or_else(|| "provenance-export.json".to_string());
-    let file = std::fs::File::create(&output_path).into_diagnostic()?;
-    serde_json::to_writer_pretty(file, &entries).into_diagnostic()?;
-
-    println!(
-        "{} Stable provenance exported to {}",
-        "SUCCESS:".green().bold(),
-        output_path
-    );
+    if let Some(output_path) = output {
+        let file = std::fs::File::create(&output_path).into_diagnostic()?;
+        serde_json::to_writer_pretty(file, &entries).into_diagnostic()?;
+        println!(
+            "{} Stable provenance exported to {}",
+            "SUCCESS:".green().bold(),
+            output_path
+        );
+    } else {
+        serde_json::to_writer_pretty(std::io::stdout(), &entries).into_diagnostic()?;
+    }
     Ok(())
 }

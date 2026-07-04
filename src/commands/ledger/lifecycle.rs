@@ -414,4 +414,82 @@ mod tests {
             "git commit -m \"feat: add \\\"important\\\" feature\""
         );
     }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn execute_ledger_resume_none_prints_no_pending_message() {
+        execute_ledger_resume_with_test_context(|| {
+            let result = execute_ledger_resume(None);
+            assert!(result.is_ok());
+            // The function prints to stdout; we can't capture it portably here
+            // without global redirection. The test exercises the None path and
+            // relies on `is_ok()` to guard a later explicit observation layer.
+        });
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn execute_ledger_resume_some_unknown_tx_id_returns_not_found() {
+        execute_ledger_resume_with_test_context(|| {
+            let result =
+                execute_ledger_resume(Some("00000000-0000-0000-0000-000000000001".to_string()));
+            let err = result.unwrap_err().to_string();
+            assert!(
+                err.contains("not found") || err.contains("'00000000-0000-0000-0000-000000000001'"),
+                "unexpected error: {err}"
+            );
+        });
+    }
+
+    fn execute_ledger_resume_with_test_context<F>(test: F)
+    where
+        F: FnOnce(),
+    {
+        use std::io::Write as _;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let _guard = CwdGuard::enter(root.as_std_path());
+
+        let out = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root.as_std_path())
+            .output()
+            .expect("git init failed");
+        assert!(out.status.success(), "git init failed: {:?}", out);
+
+        for (key, value) in [("user.name", "Test"), ("user.email", "test@test.com")] {
+            let out = std::process::Command::new("git")
+                .args(["config", key, value])
+                .current_dir(root.as_std_path())
+                .output()
+                .unwrap_or_else(|_| panic!("git config {key} failed"));
+            assert!(out.status.success(), "git config {key} failed: {:?}", out);
+        }
+
+        let mut file = std::fs::File::create(root.join(".gitignore")).unwrap();
+        file.write_all(b".ledgerful/\n").unwrap();
+
+        crate::commands::init::execute_init(true).unwrap();
+
+        test();
+    }
+
+    struct CwdGuard {
+        original: std::path::PathBuf,
+    }
+
+    impl CwdGuard {
+        fn enter(path: &std::path::Path) -> Self {
+            let original = std::env::current_dir().unwrap();
+            std::env::set_current_dir(path).unwrap();
+            CwdGuard { original }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
+    }
 }

@@ -390,3 +390,136 @@ pub fn execute_ledger_hook_repair(force: bool) -> Result<()> {
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use camino::Utf8Path;
+    use tempfile::tempdir;
+
+    struct CwdGuard {
+        original: std::path::PathBuf,
+    }
+
+    impl CwdGuard {
+        fn enter(path: &std::path::Path) -> Self {
+            let original = std::env::current_dir().unwrap();
+            std::env::set_current_dir(path).unwrap();
+            CwdGuard { original }
+        }
+    }
+
+    impl Drop for CwdGuard {
+        fn drop(&mut self) {
+            let _ = std::env::set_current_dir(&self.original);
+        }
+    }
+
+    fn setup_repo(root: &Utf8Path) {
+        let out = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root.as_std_path())
+            .output()
+            .expect("git init failed");
+        assert!(out.status.success(), "git init failed: {:?}", out);
+
+        for (key, value) in [("user.name", "Test"), ("user.email", "test@test.com")] {
+            let out = std::process::Command::new("git")
+                .args(["config", key, value])
+                .current_dir(root.as_std_path())
+                .output()
+                .unwrap_or_else(|_| panic!("git config {key} failed"));
+            assert!(out.status.success(), "git config {key} failed: {:?}", out);
+        }
+
+        let mut file = std::fs::File::create(root.join(".gitignore")).unwrap();
+        std::io::Write::write_all(&mut file, b".ledgerful/\n").unwrap();
+        crate::commands::init::execute_init(true).unwrap();
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn execute_ledger_hook_repair_no_sidecar_reports_consistent() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let _guard = CwdGuard::enter(root.as_std_path());
+        setup_repo(root);
+
+        let result = execute_ledger_hook_repair(false);
+        assert!(result.is_ok());
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn execute_ledger_hook_repair_force_no_sidecar_returns_ok() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let _guard = CwdGuard::enter(root.as_std_path());
+        setup_repo(root);
+
+        let result = execute_ledger_hook_repair(true);
+        assert!(result.is_ok());
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn execute_ledger_hook_repair_matching_sidecar_reports_no_repair_needed() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let _guard = CwdGuard::enter(root.as_std_path());
+        setup_repo(root);
+
+        // Commit a file so HEAD has a stable message hash.
+        std::fs::File::create(root.join("file.txt")).unwrap();
+        let out = std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root.as_std_path())
+            .output()
+            .expect("git add failed");
+        assert!(out.status.success(), "git add failed: {:?}", out);
+        let out = std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(root.as_std_path())
+            .output()
+            .expect("git commit failed");
+        assert!(out.status.success(), "git commit failed: {:?}", out);
+
+        let output = std::process::Command::new("git")
+            .args(["log", "-1", "--format=%B"])
+            .current_dir(root.as_std_path())
+            .output()
+            .expect("git log failed");
+        assert!(output.status.success(), "git log failed: {:?}", output);
+        let current_commit_msg = String::from_utf8_lossy(&output.stdout).to_string();
+        let cleaned_msg = crate::util::text::clean_commit_msg(&current_commit_msg);
+
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(cleaned_msg.as_bytes());
+        let current_hash = hex::encode(hasher.finalize());
+
+        let sidecar = crate::commands::hook_post_commit::PendingHookTx {
+            tx_id: "00000000-0000-0000-0000-000000000001".to_string(),
+            commit_msg_hash: current_hash,
+            summary: "init".to_string(),
+            reason: "test".to_string(),
+            committed_at: None,
+            risk: None,
+            related_tickets: None,
+            signature: None,
+            public_key: None,
+        };
+        let sidecar_path = root
+            .join(".ledgerful")
+            .join("state")
+            .join("pending_hook_tx");
+        std::fs::write(
+            &sidecar_path,
+            serde_json::to_string(&sidecar).expect("serialize sidecar"),
+        )
+        .unwrap();
+
+        let result = execute_ledger_hook_repair(false);
+        assert!(result.is_ok());
+    }
+}

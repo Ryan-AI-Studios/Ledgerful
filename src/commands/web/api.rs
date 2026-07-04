@@ -2109,6 +2109,19 @@ mod tests {
 // ---------------------------------------------------------------------------
 
 #[cfg(test)]
+mod openapi_tests {
+    use super::*;
+
+    #[test]
+    fn generate_openapi_json_produces_valid_json() {
+        let json = generate_openapi_json();
+        assert!(json.starts_with('{'));
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("OpenAPI JSON parses");
+        assert!(parsed.get("openapi").is_some());
+    }
+}
+
+#[cfg(test)]
 mod hotspot_dto_tests {
     use super::*;
     use crate::impact::packet::Hotspot;
