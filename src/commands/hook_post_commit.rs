@@ -52,7 +52,7 @@ pub fn execute_hook_post_commit_for_layout(layout: &crate::state::layout::Layout
     }
 
     // Then, in a detached thread, record hotspot trends. The thread has a
-    // 5-second wall-clock budget and is best-effort only.
+    // 10-second wall-clock budget and is best-effort only.
     let db_path = layout
         .state_subdir()
         .join("ledger.db")
@@ -69,9 +69,9 @@ pub fn execute_hook_post_commit_for_layout(layout: &crate::state::layout::Layout
                 tracing::debug!("Post-commit hook: work failed: {}", e);
             }
             let elapsed = start.elapsed();
-            if elapsed > Duration::from_secs(30) {
+            if elapsed > Duration::from_secs(10) {
                 tracing::debug!(
-                    "Post-commit hook: work took {:?}, exceeding 30s budget",
+                    "Post-commit hook: work took {:?}, exceeding 10s budget",
                     elapsed
                 );
             }
@@ -79,14 +79,14 @@ pub fn execute_hook_post_commit_for_layout(layout: &crate::state::layout::Layout
             let _ = result;
         });
 
-    // Wait up to the 30-second budget for the recorder to finish. On Windows
+    // Wait up to the 10-second budget for the recorder to finish. On Windows
     // the process exits immediately when the main thread returns, killing any
     // still-running detached threads before they can commit SQLite writes, so
     // we must block briefly here while still never failing the git commit.
-    // The budget was raised from 5s to 30s to accommodate the best-effort
+    // The budget was raised from 5s to 10s to accommodate the best-effort
     // incremental index that runs before hotspot trend recording.
-    if done_rx.recv_timeout(Duration::from_secs(30)).is_err() {
-        tracing::debug!("Post-commit hook: post-commit work did not complete within 30s budget");
+    if done_rx.recv_timeout(Duration::from_secs(10)).is_err() {
+        tracing::debug!("Post-commit hook: post-commit work did not complete within 10s budget");
     }
 
     Ok(())
@@ -219,11 +219,14 @@ fn record_hotspot_trends(repo_root: &camino::Utf8Path, db_path: &std::path::Path
     // Best-effort incremental index: refreshes AST/symbol index for changed
     // files only. Non-fatal — failures are logged and swallowed so the git
     // commit never fails.
-    use crate::config::model::Config as FullConfig;
     use crate::index::ProjectIndexer;
-    let mut indexer = ProjectIndexer::new(storage, repo_root.to_owned(), FullConfig::default());
+    let mut indexer = ProjectIndexer::new(storage, repo_root.to_owned(), config.clone());
     if let Err(e) = indexer.incremental_index() {
         tracing::debug!("Post-commit hook: incremental index failed: {}", e);
+    }
+    // Explicitly shutdown storage to release SQLite/CozoDB locks before re-opening
+    if let Err(e) = indexer.shutdown_storage() {
+        tracing::debug!("Post-commit hook: storage shutdown failed: {}", e);
     }
     drop(indexer);
 

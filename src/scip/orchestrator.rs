@@ -133,19 +133,25 @@ impl ScipToolchain {
         });
 
         let timeout = Duration::from_secs(SCIP_INDEX_TIMEOUT_SECS);
-        let status =
-            match wait_timeout::ChildExt::wait_timeout(&mut child, timeout).into_diagnostic()? {
-                Some(status) => status,
-                None => {
-                    let _ = child.kill();
-                    let _ = stderr_thread.join();
-                    let _ = stdout_thread.join();
-                    return Err(miette!(
-                        "SCIP indexer timed out after {} seconds",
-                        SCIP_INDEX_TIMEOUT_SECS
-                    ));
-                }
-            };
+        let wait_result = wait_timeout::ChildExt::wait_timeout(&mut child, timeout);
+        let status = match wait_result {
+            Ok(Some(status)) => status,
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = stderr_thread.join();
+                let _ = stdout_thread.join();
+                return Err(miette!(
+                    "SCIP indexer timed out after {} seconds",
+                    SCIP_INDEX_TIMEOUT_SECS
+                ));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = stderr_thread.join();
+                let _ = stdout_thread.join();
+                return Err(miette!("Failed to wait for SCIP indexer: {}", e));
+            }
+        };
 
         // Ensure drain threads finish
         let stderr_buf = stderr_thread.join().unwrap_or_default();
