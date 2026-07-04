@@ -38,7 +38,7 @@ use super::cozo::{KG_MAX_LIMIT, fetch_knowledge_graph, fetch_security_boundaries
 // Report endpoints
 // ---------------------------------------------------------------------------
 
-/// `GET /api/reports/latest-impact.json` ΓÇö passthrough of the latest impact
+/// `GET /api/reports/latest-impact.json` — passthrough of the latest impact
 /// report JSON. Returns `application/json` with an opaque object schema when
 /// a report exists; 404 otherwise.
 #[utoipa::path(
@@ -57,7 +57,7 @@ pub async fn latest_impact_handler(
     serve_report(state.layout.clone(), "latest-impact.json").await
 }
 
-/// `GET /api/reports/latest-verify.json` ΓÇö passthrough of the latest verify
+/// `GET /api/reports/latest-verify.json` — passthrough of the latest verify
 /// report JSON. Returns `application/json` with an opaque object schema when
 /// a report exists; 404 otherwise.
 #[utoipa::path(
@@ -80,7 +80,7 @@ pub async fn latest_verify_handler(
 // Verification dashboard endpoints (Track E1)
 // ---------------------------------------------------------------------------
 
-/// `GET /api/verify/health` ΓÇö overall verification health.
+/// `GET /api/verify/health` — overall verification health.
 #[utoipa::path(
     get,
     path = "/api/verify/health",
@@ -130,7 +130,7 @@ fn fetch_verify_health(layout: &Layout) -> Result<VerificationHealthResponse> {
         });
     }
 
-    // Latest run passed ΓÇö check staleness against the 7-day threshold.
+    // Latest run passed — check staleness against the 7-day threshold.
     let stale = is_stale_timestamp(&timestamp, STALE_VERIFY_THRESHOLD_SECS);
     if stale {
         Ok(VerificationHealthResponse {
@@ -147,11 +147,11 @@ fn fetch_verify_health(layout: &Layout) -> Result<VerificationHealthResponse> {
     }
 }
 
-/// `GET /api/verify/history?days=30` ΓÇö per-date pass/fail counts over the
+/// `GET /api/verify/history?days=30` — per-date pass/fail counts over the
 /// last `days` days (default 30, accepts 90). Returns a bare JSON array of
 /// `{ date, passed, failed }` sorted ascending by date. Dates with no runs
 /// are omitted (deterministic: only dates that have at least one run appear).
-/// `GET /api/verify/history` ΓÇö pass/fail trend over time.
+/// `GET /api/verify/history` — pass/fail trend over time.
 #[utoipa::path(
     get,
     path = "/api/verify/history",
@@ -194,7 +194,7 @@ fn fetch_verify_history(layout: &Layout, days: u64) -> Result<Vec<VerificationTr
         .collect())
 }
 
-/// `GET /api/verify/steps` ΓÇö per-step verification aggregates.
+/// `GET /api/verify/steps` — per-step verification aggregates.
 #[utoipa::path(
     get,
     path = "/api/verify/steps",
@@ -257,7 +257,7 @@ fn fetch_verify_steps(layout: &Layout) -> Result<Vec<VerificationStepResponse>> 
 /// step name yields a multi-thousand-character string that breaks the table
 /// layout, so we keep only the first ` | `-delimited segment.
 ///
-/// When the first segment is itself a `"Predicted impact ΓÇª"` annotation (the
+/// When the first segment is itself a `"Predicted impact …"` annotation (the
 /// command only ever appeared via predicted-impact rules, never via an explicit
 /// `"From rules:"` / `"Default:"` prefix), there is no friendly label to show,
 /// so we fall back to the raw command string.
@@ -286,7 +286,7 @@ const VERIFY_STEPS_RECENT_RUN_COUNT: usize = 10;
 
 /// Number of most-recent `plan_json` rows to parse for friendly step `name`
 /// (description) lookup on `/api/verify/steps`. Bounded to keep the endpoint
-/// efficient ΓÇö parsing failures on any single row are silently skipped.
+/// efficient — parsing failures on any single row are silently skipped.
 const VERIFY_STEPS_DESC_RUN_COUNT: usize = 50;
 
 /// Return an RFC 3339 timestamp `days` days before now, for use as a SQL
@@ -341,7 +341,7 @@ fn read_report_json(layout: &Layout, filename: &str) -> Result<Option<serde_json
 // Hotspot trend endpoint
 // ---------------------------------------------------------------------------
 
-/// `GET /api/hotspots/trend` ΓÇö rolling hotspot trend series.
+/// `GET /api/hotspots/trend` — rolling hotspot trend series.
 #[utoipa::path(
     get,
     path = "/api/hotspots/trend",
@@ -636,7 +636,7 @@ pub(crate) fn collect_recent_commits(
 // Affected API endpoints endpoint
 // ---------------------------------------------------------------------------
 
-/// `GET /api/endpoints/changed` ΓÇö API contracts affected by changed files.
+/// `GET /api/endpoints/changed` — API contracts affected by changed files.
 #[utoipa::path(
     get,
     path = "/api/endpoints/changed",
@@ -700,7 +700,7 @@ fn fetch_endpoints_changed(layout: &Layout) -> Result<Vec<AffectedContract>> {
 // Security boundaries endpoint
 // ---------------------------------------------------------------------------
 
-/// `GET /api/security/boundaries` ΓÇö security boundary counts and edges.
+/// `GET /api/security/boundaries` — security boundary counts and edges.
 #[utoipa::path(
     get,
     path = "/api/security/boundaries",
@@ -725,7 +725,7 @@ pub async fn security_boundaries_handler(
 // Knowledge-graph subgraph endpoint
 // ---------------------------------------------------------------------------
 
-/// `GET /api/knowledge-graph` ΓÇö CozoDB knowledge-graph subgraph.
+/// `GET /api/knowledge-graph` — CozoDB knowledge-graph subgraph.
 #[utoipa::path(
     get,
     path = "/api/knowledge-graph",
@@ -778,7 +778,7 @@ pub async fn knowledge_graph_handler(
 /// ordered `committed_at DESC` so this is the most recent 100 entries.
 const COMPLIANCE_SIGNATURES_LIMIT: usize = 100;
 
-/// `GET /api/compliance/summary` ΓÇö aggregate compliance summary.
+/// `GET /api/compliance/summary` — aggregate compliance summary.
 #[utoipa::path(
     get,
     path = "/api/compliance/summary",
@@ -867,7 +867,7 @@ fn fetch_compliance_summary(layout: &Layout) -> Result<ComplianceSummaryResponse
     })
 }
 
-/// `GET /api/compliance/signatures` ΓÇö recent signature status entries.
+/// `GET /api/compliance/signatures` — recent signature status entries.
 #[utoipa::path(
     get,
     path = "/api/compliance/signatures",
@@ -977,14 +977,14 @@ fn classify_signature(entry: &LedgerEntry, require_signing: bool) -> SignatureSt
     }
 }
 
-/// `hotspotDeltaPercent` ΓÇö the percent change in total hotspot count between
+/// `hotspotDeltaPercent` — the percent change in total hotspot count between
 /// the two most recent `hotspot_history` snapshots.
 ///
 /// Definition: a "snapshot" is the set of `hotspot_history` rows sharing a
 /// `timestamp` value (the `hotspot_history` migration at
 /// `src/state/migrations/m38_hotspot_history.rs` writes one row per file per
 /// scan, all rows in a scan share the scan's timestamp). The "total hotspot
-/// count" for a snapshot is `COUNT(*)` of rows with that timestamp ΓÇö i.e. the
+/// count" for a snapshot is `COUNT(*)` of rows with that timestamp — i.e. the
 /// number of files flagged as hotspots in that scan.
 ///
 /// Computation: `((newer_total - older_total) / older_total) * 100`, rounded
@@ -996,11 +996,11 @@ fn classify_signature(entry: &LedgerEntry, require_signing: bool) -> SignatureSt
 /// per-snapshot totals newest-first. This handler does only the percent math.
 ///
 /// Guards:
-/// - fewer than 2 distinct snapshots ΓåÆ `0.0` (no trend to report).
-/// - `older_total == 0` ΓåÆ `100.0` if `newer_total > 0` else `0.0` (avoids
+/// - fewer than 2 distinct snapshots → `0.0` (no trend to report).
+/// - `older_total == 0` → `100.0` if `newer_total > 0` else `0.0` (avoids
 ///   division by zero; a transition from "no hotspots" to "some hotspots" is
-///   reported as a 100% increase). This branch is structurally unreachable ΓÇö
-///   a `DISTINCT timestamp` always has `COUNT(*) >= 1` ΓÇö but is retained as
+///   reported as a 100% increase). This branch is structurally unreachable —
+///   a `DISTINCT timestamp` always has `COUNT(*) >= 1` — but is retained as
 ///   defensive code for future schema changes.
 fn fetch_hotspot_delta_percent(storage: &StorageManager) -> Result<f64> {
     let totals = storage.get_latest_hotspot_snapshot_totals(2)?;
@@ -1030,7 +1030,7 @@ fn round_2dp(value: f64) -> f64 {
 // Track E3: SOC2 Evidence Export
 // ---------------------------------------------------------------------------
 
-/// `GET /api/compliance/export` ΓÇö generate a tamper-evident `.zip` of SOC2
+/// `GET /api/compliance/export` — generate a tamper-evident `.zip` of SOC2
 /// evidence on the fly and return it as a binary download.
 ///
 /// The zip contains `manifest.json` (SHA-256 + size of every other file),
@@ -1045,8 +1045,8 @@ fn round_2dp(value: f64) -> f64 {
 /// `application/zip` + `Content-Disposition: attachment` headers to the
 /// returned `Response`. Empty / no-DB state still yields a valid zip
 /// (header-only CSVs, no `adr/` files, a manifest over the files that
-/// exist, and a signature over that manifest) ΓÇö 200, not an error.
-/// `GET /api/compliance/export` ΓÇö download a tamper-evident SOC2 evidence
+/// exist, and a signature over that manifest) — 200, not an error.
+/// `GET /api/compliance/export` — download a tamper-evident SOC2 evidence
 /// `.zip`. Returns `application/zip` with `Content-Disposition: attachment`.
 #[utoipa::path(
     get,
@@ -1123,7 +1123,7 @@ mod tests {
     #[test]
     fn friendly_step_name_predicted_only_falls_back_to_command() {
         // A command that only ever appeared via predicted-impact rules has no
-        // friendly prefix at all ΓÇö its description STARTS with "Predicted
+        // friendly prefix at all — its description STARTS with "Predicted
         // impact", so the first segment is not a usable label.
         let blob = "Predicted impact (Temporal) on src/bridge/export.rs \
             | Predicted impact (Temporal) on src/bridge/mod.rs";

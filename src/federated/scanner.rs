@@ -408,6 +408,11 @@ impl FederatedScanner {
             let file_name = file_name.to_string_lossy();
 
             if path.is_dir() {
+                // Skip directories that are known to be large tooling caches,
+                // dependency trees, or configuration/data stores. Walking them
+                // during federated dependency scanning is expensive and adds
+                // no useful cross-repo symbol edges (e.g. `.opencode/node_modules`
+                // once caused `scan --impact` to walk ~2,500 files and hang).
                 if matches!(
                     file_name.as_ref(),
                     ".git"
@@ -577,6 +582,7 @@ mod dependency_tests {
     use super::*;
     use crate::federated::schema::PublicInterface;
     use crate::index::symbols::SymbolKind;
+    use camino::Utf8PathBuf;
     use tempfile::tempdir;
 
     #[test]
@@ -697,6 +703,51 @@ mod dependency_tests {
         // Edge cases: empty content or symbols
         assert!(!matcher.matches("symbol", ""));
         assert!(!matcher.matches("", "content"));
+    }
+
+    #[test]
+    fn scan_dependency_dir_skips_tooling_caches() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+
+        // A normal source file that should be scanned.
+        fs::write(
+            root.join("main.rs"),
+            "pub fn local_handler() { let _ = remote_api(); }",
+        )
+        .unwrap();
+
+        // A tooling-cache directory that should be skipped entirely.
+        fs::create_dir_all(root.join("node_modules").join("some-package")).unwrap();
+        fs::write(
+            root.join("node_modules")
+                .join("some-package")
+                .join("index.js"),
+            "function remote_api() {}",
+        )
+        .unwrap();
+
+        let schema = FederatedSchema::new(
+            "sibling".to_string(),
+            vec![PublicInterface {
+                symbol: "remote_api".to_string(),
+                file: "src/lib.rs".to_string(),
+                kind: SymbolKind::Function,
+            }],
+        );
+
+        let scanner = FederatedScanner::new(root);
+        let dependencies = scanner
+            .discover_dependencies_in_current_repo(&schema)
+            .unwrap();
+
+        // `main.rs` references `remote_api` (word-boundary match) so we expect
+        // one dependency edge. The `node_modules/` copy must NOT contribute a
+        // second edge, proving the directory was skipped.
+        assert_eq!(
+            dependencies,
+            vec![("local_handler".to_string(), "remote_api".to_string())]
+        );
     }
 }
 

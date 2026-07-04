@@ -64,8 +64,8 @@
         "tags": [
           "compliance"
         ],
-        "summary": "`GET /api/compliance/export` ΓÇö generate a tamper-evident `.zip` of SOC2\nevidence on the fly and return it as a binary download.",
-        "description": "The zip contains `manifest.json` (SHA-256 + size of every other file),\n`manifest.sig` + `manifest.pub` (Ed25519 signature over the manifest\nbytes and the verifying key, reusing the repo's keypair so the existing\noffline verifier can validate the export), `ledger.csv` (all committed\nprovenance records), `verification_history.csv` (CI gate pass/fail\nrecords), and `adr/*.md` (generated MADR-format ADRs tied to the ledger).\n\nAll SQLite + zip + SHA-256 + Ed25519 work runs inside\n`tokio::task::spawn_blocking`; the handler only attaches the\n`application/zip` + `Content-Disposition: attachment` headers to the\nreturned `Response`. Empty / no-DB state still yields a valid zip\n(header-only CSVs, no `adr/` files, a manifest over the files that\nexist, and a signature over that manifest) ΓÇö 200, not an error.\n`GET /api/compliance/export` ΓÇö download a tamper-evident SOC2 evidence\n`.zip`. Returns `application/zip` with `Content-Disposition: attachment`.",
+        "summary": "`GET /api/compliance/export` — generate a tamper-evident `.zip` of SOC2\nevidence on the fly and return it as a binary download.",
+        "description": "The zip contains `manifest.json` (SHA-256 + size of every other file),\n`manifest.sig` + `manifest.pub` (Ed25519 signature over the manifest\nbytes and the verifying key, reusing the repo's keypair so the existing\noffline verifier can validate the export), `ledger.csv` (all committed\nprovenance records), `verification_history.csv` (CI gate pass/fail\nrecords), and `adr/*.md` (generated MADR-format ADRs tied to the ledger).\n\nAll SQLite + zip + SHA-256 + Ed25519 work runs inside\n`tokio::task::spawn_blocking`; the handler only attaches the\n`application/zip` + `Content-Disposition: attachment` headers to the\nreturned `Response`. Empty / no-DB state still yields a valid zip\n(header-only CSVs, no `adr/` files, a manifest over the files that\nexist, and a signature over that manifest) — 200, not an error.\n`GET /api/compliance/export` — download a tamper-evident SOC2 evidence\n`.zip`. Returns `application/zip` with `Content-Disposition: attachment`.",
         "operationId": "exportComplianceEvidence",
         "responses": {
           "200": {
@@ -82,7 +82,7 @@
         "tags": [
           "compliance"
         ],
-        "summary": "`GET /api/compliance/signatures` ΓÇö recent signature status entries.",
+        "summary": "`GET /api/compliance/signatures` — recent signature status entries.",
         "operationId": "getComplianceSignatures",
         "responses": {
           "200": {
@@ -106,7 +106,7 @@
         "tags": [
           "compliance"
         ],
-        "summary": "`GET /api/compliance/summary` ΓÇö aggregate compliance summary.",
+        "summary": "`GET /api/compliance/summary` — aggregate compliance summary.",
         "operationId": "getComplianceSummary",
         "responses": {
           "200": {
@@ -148,7 +148,7 @@
         "tags": [
           "endpoints"
         ],
-        "summary": "`GET /api/endpoints/changed` ΓÇö API contracts affected by changed files.",
+        "summary": "`GET /api/endpoints/changed` — API contracts affected by changed files.",
         "operationId": "getEndpointsChanged",
         "responses": {
           "200": {
@@ -223,7 +223,7 @@
         "tags": [
           "hotspots"
         ],
-        "summary": "`GET /api/hotspots/trend` ΓÇö rolling hotspot trend series.",
+        "summary": "`GET /api/hotspots/trend` — rolling hotspot trend series.",
         "operationId": "getHotspotTrend",
         "parameters": [
           {
@@ -271,7 +271,7 @@
         "tags": [
           "knowledge-graph"
         ],
-        "summary": "`GET /api/knowledge-graph` ΓÇö CozoDB knowledge-graph subgraph.",
+        "summary": "`GET /api/knowledge-graph` — CozoDB knowledge-graph subgraph.",
         "operationId": "getKnowledgeGraph",
         "parameters": [
           {
@@ -514,7 +514,7 @@
         "tags": [
           "reports"
         ],
-        "summary": "`GET /api/reports/latest-impact.json` ΓÇö passthrough of the latest impact\nreport JSON. Returns `application/json` with an opaque object schema when\na report exists; 404 otherwise.",
+        "summary": "`GET /api/reports/latest-impact.json` — passthrough of the latest impact\nreport JSON. Returns `application/json` with an opaque object schema when\na report exists; 404 otherwise.",
         "operationId": "getLatestImpactReport",
         "responses": {
           "200": {
@@ -538,7 +538,7 @@
         "tags": [
           "reports"
         ],
-        "summary": "`GET /api/reports/latest-verify.json` ΓÇö passthrough of the latest verify\nreport JSON. Returns `application/json` with an opaque object schema when\na report exists; 404 otherwise.",
+        "summary": "`GET /api/reports/latest-verify.json` — passthrough of the latest verify\nreport JSON. Returns `application/json` with an opaque object schema when\na report exists; 404 otherwise.",
         "operationId": "getLatestVerifyReport",
         "responses": {
           "200": {
@@ -562,7 +562,7 @@
         "tags": [
           "security"
         ],
-        "summary": "`GET /api/security/boundaries` ΓÇö security boundary counts and edges.",
+        "summary": "`GET /api/security/boundaries` — security boundary counts and edges.",
         "operationId": "getSecurityBoundaries",
         "responses": {
           "200": {
@@ -679,7 +679,7 @@
         "tags": [
           "verify"
         ],
-        "summary": "`GET /api/verify/health` ΓÇö overall verification health.",
+        "summary": "`GET /api/verify/health` — overall verification health.",
         "operationId": "getVerifyHealth",
         "responses": {
           "200": {
@@ -700,7 +700,7 @@
         "tags": [
           "verify"
         ],
-        "summary": "`GET /api/verify/history?days=30` ΓÇö per-date pass/fail counts over the\nlast `days` days (default 30, accepts 90). Returns a bare JSON array of\n`{ date, passed, failed }` sorted ascending by date. Dates with no runs\nare omitted (deterministic: only dates that have at least one run appear).\n`GET /api/verify/history` ΓÇö pass/fail trend over time.",
+        "summary": "`GET /api/verify/history?days=30` — per-date pass/fail counts over the\nlast `days` days (default 30, accepts 90). Returns a bare JSON array of\n`{ date, passed, failed }` sorted ascending by date. Dates with no runs\nare omitted (deterministic: only dates that have at least one run appear).\n`GET /api/verify/history` — pass/fail trend over time.",
         "operationId": "getVerifyHistory",
         "parameters": [
           {
@@ -739,7 +739,7 @@
         "tags": [
           "verify"
         ],
-        "summary": "`GET /api/verify/steps` ΓÇö per-step verification aggregates.",
+        "summary": "`GET /api/verify/steps` — per-step verification aggregates.",
         "operationId": "getVerifySteps",
         "responses": {
           "200": {
