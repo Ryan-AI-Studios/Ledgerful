@@ -585,3 +585,15 @@ pub fn execute_ask(
         ),
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::config::model::Config;
+
+    #[test]
+    fn ask_completion_options_are_bounded() {
+        let options = crate::commands::ask::ask_completion_options();
+        assert_eq!(options.max_tokens, 512);
+        assert!(options.max_tokens < Config::default().local_model.context_window);
+    }
+}

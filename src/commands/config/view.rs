@@ -95,11 +95,20 @@ pub fn execute_config_view(json: bool, section: Option<String>, key: Option<Stri
         );
     } else {
         if filtered.is_string() {
-            println!("{}", filtered.as_str().unwrap());
+            println!(
+                "{}",
+                filtered
+                    .as_str()
+                    .ok_or_else(|| miette::miette!("expected string value"))?
+            );
         } else if filtered.is_number() || filtered.is_boolean() || filtered.is_null() {
             println!("{}", filtered);
         } else {
-            println!("{}", serde_json::to_string_pretty(&filtered).unwrap());
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&filtered)
+                    .map_err(|e| miette::miette!("Failed to serialize: {e}"))?
+            );
         }
     }
     Ok(())

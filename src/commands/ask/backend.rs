@@ -359,4 +359,117 @@ mod tests {
         let sanitized = sanitize_error_for_logging(input);
         assert_eq!(sanitized, input);
     }
+
+    mod gemini_model {
+        use crate::config::model::GeminiConfig;
+        use crate::gemini::modes::GeminiMode;
+
+        fn clear_gemini_model_env() {
+            unsafe {
+                std::env::remove_var("GEMINI_FAST_MODEL");
+                std::env::remove_var("GEMINI_DEEP_MODEL");
+            }
+        }
+
+        #[test]
+        #[serial_test::serial(env)]
+        fn test_select_gemini_model_logic() {
+            let packet = crate::impact::packet::ImpactPacket::default();
+
+            // 1. Defaults
+            clear_gemini_model_env();
+            let config = GeminiConfig {
+                fast_model: Some("fast".to_string()),
+                deep_model: Some("deep".to_string()),
+                ..GeminiConfig::default()
+            };
+            let fast_model =
+                crate::gemini::wrapper::select_gemini_model(&config, GeminiMode::Suggest, &packet);
+            assert_eq!(fast_model, "fast");
+
+            let deep_model = crate::gemini::wrapper::select_gemini_model(
+                &config,
+                GeminiMode::ReviewPatch,
+                &packet,
+            );
+            assert_eq!(deep_model, "deep");
+
+            // 2. Config Overrides
+            let config_custom = GeminiConfig {
+                model: Some("custom".to_string()),
+                ..GeminiConfig::default()
+            };
+            let model = crate::gemini::wrapper::select_gemini_model(
+                &config_custom,
+                GeminiMode::Suggest,
+                &packet,
+            );
+            assert_eq!(model, "custom");
+
+            // 3. Env Overrides
+            unsafe {
+                std::env::set_var("GEMINI_FAST_MODEL", "env-fast");
+                std::env::set_var("GEMINI_DEEP_MODEL", "env-deep");
+            }
+            let config_empty = GeminiConfig::default();
+            let fast_model_env = crate::gemini::wrapper::select_gemini_model(
+                &config_empty,
+                GeminiMode::Suggest,
+                &packet,
+            );
+            assert_eq!(fast_model_env, "env-fast");
+
+            let deep_model_env = crate::gemini::wrapper::select_gemini_model(
+                &config_empty,
+                GeminiMode::ReviewPatch,
+                &packet,
+            );
+            assert_eq!(deep_model_env, "env-deep");
+
+            clear_gemini_model_env();
+        }
+    }
+
+    mod context_window_budget {
+        use crate::config::model::GeminiConfig;
+
+        const MIN_CONTEXT_CHARS: usize = 32_768;
+
+        fn char_limit(config: &GeminiConfig) -> usize {
+            (config.context_window as u64 * 4 * 80 / 100).max(MIN_CONTEXT_CHARS as u64) as usize
+        }
+
+        #[test]
+        fn test_default_context_window_yields_hardcoded_budget() {
+            let config = GeminiConfig::default(); // defaults to 128,000
+            assert_eq!(char_limit(&config), 409_600);
+        }
+
+        #[test]
+        fn test_custom_context_window_adjusts_budget() {
+            let config = GeminiConfig {
+                context_window: 200_000,
+                ..Default::default()
+            };
+            assert_eq!(char_limit(&config), 640_000);
+        }
+
+        #[test]
+        fn test_small_context_window_budget() {
+            let config = GeminiConfig {
+                context_window: 32_000,
+                ..Default::default()
+            };
+            assert_eq!(char_limit(&config), 102_400);
+        }
+
+        #[test]
+        fn test_zero_context_window_fallback() {
+            let config = GeminiConfig {
+                context_window: 0,
+                ..Default::default()
+            };
+            assert_eq!(char_limit(&config), 32_768);
+        }
+    }
 }

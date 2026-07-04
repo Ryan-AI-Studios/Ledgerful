@@ -36,9 +36,9 @@ pub(crate) fn resolve_semantic_concurrency(
     config: &Config,
 ) -> crate::semantic::concurrency::ResolvedConcurrency {
     use crate::semantic::concurrency::{ResolveOptions, resolve_split_semantic_concurrency};
-    let available_parallelism = std::thread::available_parallelism()
-        .ok()
-        .map(|n| std::num::NonZeroUsize::new(n.get()).expect("available_parallelism is non-zero"));
+    let available_parallelism = std::thread::available_parallelism().ok().map(|n| {
+        std::num::NonZeroUsize::new(n.get()).unwrap_or(std::num::NonZeroUsize::new(1).unwrap())
+    });
     let resolve_opts = ResolveOptions {
         available_parallelism,
         ..Default::default()
