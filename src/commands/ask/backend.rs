@@ -1,0 +1,362 @@
+use crate::commands::ask::Backend;
+use crate::config::model::Config;
+use std::env;
+
+/// Resolve the ordered provider entries with full per-provider config
+/// (model, timeout, base_url, api_key_env). Applies env var overrides
+/// and --backend CLI flag reordering.
+pub fn resolve_provider_entries(
+    config: &Config,
+    explicit: Option<Backend>,
+) -> std::result::Result<Vec<crate::config::model::ProviderEntry>, String> {
+    use crate::config::model::{Provider, ProviderEntry};
+
+    let env_reader = |name: &str| env::var(name).ok();
+
+    let mut entries = config.ask.providers.priority.clone();
+
+    // Apply env var overrides (R7)
+    for i in 1..=4 {
+        let env_name = format!("LEDGERFUL_ASK_PROVIDER_{i}");
+        if let Some(val) = env_reader(&env_name) {
+            let provider = Provider::from_str_fail_fast(&val, &env_name)?;
+            let model = env_reader(&format!("LEDGERFUL_ASK_MODEL_{i}"));
+            if i <= entries.len() {
+                entries[i - 1].backend = provider;
+                if let Some(m) = model {
+                    entries[i - 1].model = Some(m);
+                }
+            } else {
+                entries.push(ProviderEntry {
+                    backend: provider,
+                    model,
+                    timeout_secs: None,
+                    api_key_env: None,
+                    base_url: None,
+                });
+            }
+        }
+    }
+
+    // If config and env vars are empty, use legacy behavior for backward compat
+    if entries.is_empty() {
+        let dotenv_reader = |name: &str| crate::config::model::read_env_key(name);
+        let legacy = resolve_backend_with(config, explicit, &env_reader, &dotenv_reader);
+        let legacy_provider = match legacy {
+            Backend::Gemini => Provider::Gemini,
+            Backend::Local | Backend::OllamaCloud | Backend::OpenRouter => {
+                if crate::local_model::client::has_ollama_cloud_fallback(&config.local_model) {
+                    Provider::OllamaCloud
+                } else {
+                    Provider::Local
+                }
+            }
+        };
+        return Ok(vec![ProviderEntry {
+            backend: legacy_provider,
+            model: None,
+            timeout_secs: None,
+            api_key_env: None,
+            base_url: None,
+        }]);
+    }
+
+    // --backend override: move specified provider to front (R7a)
+    if let Some(b) = explicit {
+        let target = match b {
+            Backend::Gemini => Provider::Gemini,
+            Backend::Local => Provider::Local,
+            Backend::OllamaCloud => Provider::OllamaCloud,
+            Backend::OpenRouter => Provider::OpenRouter,
+        };
+        let existing = entries.iter().position(|e| e.backend == target);
+        match existing {
+            Some(idx) => {
+                let entry = entries.remove(idx);
+                entries.insert(0, entry);
+            }
+            None => {
+                let default_entry = match target {
+                    Provider::OllamaCloud => ProviderEntry {
+                        backend: Provider::OllamaCloud,
+                        model: config.local_model.ollama_cloud_model.clone(),
+                        timeout_secs: Some(config.local_model.timeout_secs),
+                        api_key_env: None,
+                        base_url: config.local_model.ollama_cloud_url.clone(),
+                    },
+                    Provider::Gemini => ProviderEntry {
+                        backend: Provider::Gemini,
+                        model: config.gemini.fast_model.clone(),
+                        timeout_secs: config.gemini.timeout_secs,
+                        api_key_env: None,
+                        base_url: None,
+                    },
+                    Provider::Local => ProviderEntry {
+                        backend: Provider::Local,
+                        model: Some(config.local_model.generation_model.clone()),
+                        timeout_secs: Some(config.local_model.timeout_secs),
+                        api_key_env: None,
+                        base_url: Some(config.local_model.base_url.clone()),
+                    },
+                    Provider::OpenRouter => ProviderEntry {
+                        backend: Provider::OpenRouter,
+                        model: env_reader("OPENROUTER_MODEL"),
+                        timeout_secs: Some(config.local_model.timeout_secs),
+                        api_key_env: Some("OPENROUTER_API_KEY".to_string()),
+                        base_url: Some("https://openrouter.ai/api/v1".to_string()),
+                    },
+                };
+                entries.insert(0, default_entry);
+            }
+        }
+    }
+
+    Ok(entries)
+}
+
+pub fn resolve_backend(config: &Config, explicit: Option<Backend>) -> Backend {
+    resolve_backend_with(config, explicit, &|name| env::var(name).ok(), &|name| {
+        crate::config::model::read_env_key(name)
+    })
+}
+
+pub fn resolve_backend_with(
+    config: &Config,
+    explicit: Option<Backend>,
+    env_reader: &dyn Fn(&str) -> Option<String>,
+    dotenv_reader: &dyn Fn(&str) -> Option<String>,
+) -> Backend {
+    let has_gemini_key = config.gemini.api_key.is_some()
+        || env_reader("GEMINI_API_KEY").is_some()
+        || dotenv_reader("GEMINI_API_KEY").is_some();
+
+    let has_local = crate::local_model::client::is_configured(&config.local_model);
+
+    if let Some(b) = explicit {
+        if b == Backend::Gemini && !has_gemini_key {
+            return Backend::Local;
+        }
+        // New provider variants map to Local for the legacy path
+        // (they're handled by the provider priority chain in execute_ask)
+        return match b {
+            Backend::OllamaCloud | Backend::OpenRouter => Backend::Local,
+            other => other,
+        };
+    }
+
+    if config.local_model.prefer_local && has_local {
+        return Backend::Local;
+    }
+
+    if !has_gemini_key && has_local {
+        return Backend::Local;
+    }
+
+    Backend::Gemini
+}
+
+/// Resolve the ordered provider priority list (Track TA14).
+/// Delegates to `resolve_provider_entries` and maps to `Vec<Provider>`.
+pub fn resolve_provider_priority(
+    config: &Config,
+    explicit: Option<Backend>,
+) -> std::result::Result<Vec<crate::config::model::Provider>, String> {
+    let entries = resolve_provider_entries(config, explicit)?;
+    Ok(entries.into_iter().map(|e| e.backend).collect())
+}
+
+/// Sanitize an error message for safe logging (R7b).
+/// Strips bearer tokens and api_key= values from the string.
+/// Uses `to_ascii_lowercase` (not `to_lowercase`) to preserve byte
+/// alignment between the search string and the original — `to_lowercase`
+/// can change byte length for non-ASCII characters (e.g. German sharp-s),
+/// causing byte-index panics when slicing the original.
+pub fn sanitize_error_for_logging(err: &str) -> String {
+    let lower = err.to_ascii_lowercase();
+    let mut sanitized = err.to_string();
+
+    // Strip bearer tokens (case-insensitive)
+    if let Some(idx) = lower.find("bearer ") {
+        let start = idx;
+        let rest = &sanitized[start + 7..];
+        let end = rest
+            .find(|c: char| c.is_whitespace() || c == ',' || c == ')' || c == ']')
+            .unwrap_or(rest.len());
+        sanitized = format!(
+            "{}bearer [REDACTED]{}",
+            &sanitized[..start],
+            &sanitized[start + 7 + end..]
+        );
+    }
+
+    // Strip api_key= values
+    let lower2 = sanitized.to_ascii_lowercase();
+    if let Some(idx) = lower2.find("api_key=") {
+        let start = idx;
+        let rest = &sanitized[start + 8..];
+        let end = rest
+            .find(|c: char| c.is_whitespace() || c == ',' || c == ')' || c == ']' || c == '&')
+            .unwrap_or(rest.len());
+        sanitized = format!(
+            "{}api_key=[REDACTED]{}",
+            &sanitized[..start],
+            &sanitized[start + 8 + end..]
+        );
+    }
+
+    sanitized
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    mod env_guard {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/integration/common/env_guard.rs"
+        ));
+    }
+    use env_guard::TempEnv;
+
+    fn clear_provider_env() {
+        for key in [
+            "LEDGERFUL_ASK_PROVIDER_1",
+            "LEDGERFUL_ASK_PROVIDER_2",
+            "LEDGERFUL_ASK_PROVIDER_3",
+            "LEDGERFUL_ASK_PROVIDER_4",
+            "LEDGERFUL_ASK_MODEL_1",
+            "LEDGERFUL_ASK_MODEL_2",
+            "LEDGERFUL_ASK_MODEL_3",
+            "LEDGERFUL_ASK_MODEL_4",
+        ] {
+            let _ = TempEnv::remove(key);
+        }
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn resolve_backend_uses_local_when_only_ollama_cloud_is_configured() {
+        clear_provider_env();
+        let mut config = Config::default();
+        config.local_model.ollama_cloud_url = Some("https://api.ollama.com".to_string());
+        config.local_model.ollama_cloud_api_key = Some("token".to_string());
+        config.local_model.ollama_cloud_model = Some("minimax-m3:cloud".to_string());
+
+        let backend = resolve_backend_with(&config, None, &|_| None, &|_| None);
+        assert_eq!(backend, Backend::Local);
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn resolve_provider_priority_empty_config_falls_back_to_legacy() {
+        clear_provider_env();
+        let config = Config::default();
+        let providers = resolve_provider_priority(&config, None).unwrap();
+        assert_eq!(providers.len(), 1);
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn resolve_provider_priority_with_config_uses_order() {
+        use crate::config::model::{Provider, ProviderEntry, ProvidersConfig};
+
+        clear_provider_env();
+        let mut config = Config::default();
+        config.ask.providers = ProvidersConfig {
+            priority: vec![
+                ProviderEntry {
+                    backend: Provider::OllamaCloud,
+                    model: Some("glm-5.2".to_string()),
+                    timeout_secs: Some(30),
+                    api_key_env: None,
+                    base_url: None,
+                },
+                ProviderEntry {
+                    backend: Provider::Gemini,
+                    model: Some("gemini-3.1-flash-lite".to_string()),
+                    timeout_secs: Some(60),
+                    api_key_env: None,
+                    base_url: None,
+                },
+            ],
+        };
+
+        let providers = resolve_provider_priority(&config, None).unwrap();
+        assert_eq!(providers.len(), 2);
+        assert_eq!(providers[0], Provider::OllamaCloud);
+        assert_eq!(providers[1], Provider::Gemini);
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn resolve_provider_priority_backend_flag_moves_to_front() {
+        use crate::config::model::{Provider, ProviderEntry, ProvidersConfig};
+
+        clear_provider_env();
+        let mut config = Config::default();
+        config.ask.providers = ProvidersConfig {
+            priority: vec![
+                ProviderEntry {
+                    backend: Provider::Gemini,
+                    model: None,
+                    timeout_secs: None,
+                    api_key_env: None,
+                    base_url: None,
+                },
+                ProviderEntry {
+                    backend: Provider::Local,
+                    model: None,
+                    timeout_secs: None,
+                    api_key_env: None,
+                    base_url: None,
+                },
+            ],
+        };
+
+        let providers = resolve_provider_priority(&config, Some(Backend::Local)).unwrap();
+        assert_eq!(providers[0], Provider::Local);
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn resolve_provider_priority_env_var_invalid_fails_fast() {
+        clear_provider_env();
+        let key = "LEDGERFUL_ASK_PROVIDER_1";
+        unsafe {
+            std::env::set_var(key, "typo_cloud");
+        }
+        let config = Config::default();
+        let result = resolve_provider_priority(&config, None);
+        unsafe {
+            std::env::remove_var(key);
+        }
+        assert!(result.is_err());
+        let err = result.unwrap_err();
+        assert!(err.contains("Invalid provider"));
+        assert!(err.contains("typo_cloud"));
+    }
+
+    #[test]
+    fn sanitize_error_for_logging_strips_bearer_tokens() {
+        let input = "Error: bearer sk-abc123xyz failed";
+        let sanitized = sanitize_error_for_logging(input);
+        assert!(sanitized.contains("[REDACTED]"));
+        assert!(!sanitized.contains("sk-abc123xyz"));
+    }
+
+    #[test]
+    fn sanitize_error_for_logging_strips_api_key_values() {
+        let input = "Failed at https://example.com?api_key=secret123";
+        let sanitized = sanitize_error_for_logging(input);
+        assert!(sanitized.contains("[REDACTED]"));
+        assert!(!sanitized.contains("secret123"));
+    }
+
+    #[test]
+    fn sanitize_error_for_logging_preserves_safe_strings() {
+        let input = "Connection refused at localhost:8081";
+        let sanitized = sanitize_error_for_logging(input);
+        assert_eq!(sanitized, input);
+    }
+}

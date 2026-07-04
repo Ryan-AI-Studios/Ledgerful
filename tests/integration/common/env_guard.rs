@@ -20,6 +20,7 @@ pub struct TempEnv {
 
 impl TempEnv {
     /// Set an environment variable to `value` for the lifetime of the guard.
+    #[allow(dead_code)]
     pub fn set(key: &str, value: &str) -> Self {
         let original = std::env::var_os(key);
         // SAFETY: env mutation is serialized via #[serial(env)] on callers.
