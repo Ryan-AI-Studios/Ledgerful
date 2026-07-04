@@ -203,6 +203,7 @@ mod tests {
             project_root: std::env::current_dir()
                 .unwrap_or_else(|_| PathBuf::from(r"C:\dev\ledgerful")),
             warnings: Arc::new(Mutex::new(Vec::new())),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
         };
         let mut packet = ImpactPacket {
             changes: vec![ChangedFile {
@@ -260,6 +261,7 @@ mod tests {
             file_id_map: HashMap::new(),
             project_root: PathBuf::from("."),
             warnings: Arc::new(Mutex::new(Vec::new())),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
         };
 
         let _packet = ImpactPacket {

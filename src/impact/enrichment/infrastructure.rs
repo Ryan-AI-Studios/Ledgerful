@@ -68,6 +68,7 @@ mod tests {
             file_id_map: HashMap::new(),
             project_root: PathBuf::new(),
             warnings: Arc::new(Mutex::new(Vec::new())),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
         };
         let mut packet = ImpactPacket::default();
 

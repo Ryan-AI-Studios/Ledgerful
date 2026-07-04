@@ -137,13 +137,16 @@ pub fn execute_federate_scan() -> Result<()> {
     // auto-syncing stale/missing sibling schema.json files, gated by the
     // `[federation] auto_sync_siblings` config flag (default `false`).
     // Other `scan_siblings()` callers (the `GET /api/projects` HTTP
-    // handler in `src/commands/web/server.rs`, and
-    // `src/federated/refresh.rs`) deliberately do NOT load config or pass
-    // this flag — auto-sync spawns blocking subprocesses per sibling, and
-    // running that synchronously inside an HTTP request handler would be a
-    // latency/DoS hazard.
-    let scanner =
-        FederatedScanner::new(utf8_repo_root).with_auto_sync(config.federation.auto_sync_siblings);
+    // handler in `src/commands/web/server/handlers.rs`, and
+    // `src/federated/refresh.rs`) now load federation config for the
+    // scan-reliability controls (exclusions/budget/timeouts) via
+    // `with_federation_config`, but still deliberately do NOT pass
+    // `auto_sync` — auto-sync spawns blocking subprocesses per sibling,
+    // and running that synchronously inside an HTTP request handler
+    // would be a latency/DoS hazard.
+    let scanner = FederatedScanner::new(utf8_repo_root)
+        .with_auto_sync(config.federation.auto_sync_siblings)
+        .with_federation_config(&config.federation);
     let (siblings, warnings) = scanner.scan_siblings()?;
 
     for warning in &warnings {
@@ -156,6 +159,12 @@ pub fn execute_federate_scan() -> Result<()> {
     }
 
     let timestamp = Utc::now().to_rfc3339();
+    // 0034: collect cross-sibling scan-degradation warnings and dedup before
+    // printing. The local-repo walk re-runs per sibling with identical
+    // root/budget, so a budget/deadline breach produces byte-identical text
+    // on every iteration — without dedup, an 8-sibling scan would print the
+    // same WARN line 8 times.
+    let mut cross_sibling_warnings: Vec<String> = Vec::new();
     for (path, schema, sibling_warnings) in &siblings {
         println!(
             "  Processing {}: {}",
@@ -184,7 +193,7 @@ pub fn execute_federate_scan() -> Result<()> {
 
         // Task 2.2: Discover and save dependencies
         clear_federated_dependencies(storage.get_connection(), &schema.repo_name)?;
-        let dependencies =
+        let (dependencies, scan_warnings) =
             scanner.discover_dependencies(&local_packet, &schema.repo_name, schema)?;
 
         for (local_symbol, sibling_symbol) in dependencies {
@@ -195,6 +204,8 @@ pub fn execute_federate_scan() -> Result<()> {
                 &sibling_symbol,
             )?;
         }
+        // 0034: collect scan degradation warnings for cross-sibling dedup.
+        cross_sibling_warnings.extend(scan_warnings);
 
         // Import federated ledger entries if present
         if let Some(entries) = &schema.ledger {
@@ -206,6 +217,14 @@ pub fn execute_federate_scan() -> Result<()> {
             )
             .into_diagnostic()?;
         }
+    }
+
+    // 0034: dedup cross-sibling degradation warnings (the walk re-runs per
+    // sibling with identical root/budget, so breaches produce identical text).
+    cross_sibling_warnings.sort();
+    cross_sibling_warnings.dedup();
+    for warning in cross_sibling_warnings {
+        println!("{} {}", "WARN".yellow().bold(), warning);
     }
 
     println!(

@@ -149,17 +149,43 @@ impl ImpactOrchestrator {
         let file_id_map = storage.get_active_file_id_map()?;
         let warnings_collector = Arc::new(Mutex::new(Vec::new()));
 
+        // 0034: cooperative backstop deadline, computed once and threaded
+        // through `EnrichmentContext` to every provider (notably
+        // `FederatedProvider` → `refresh_federated_dependencies` → scanner)
+        // so a multi-sibling federated run shares ONE global deadline instead
+        // of each walk getting a fresh budget. Checked at provider boundaries
+        // so a hung provider cannot stall the whole command. Non-fatal: on
+        // breach we stop the loop and annotate which provider was running,
+        // preserving partial results from already-completed providers. This
+        // is NOT a thread-kill — synchronous providers already in-flight when
+        // the deadline passes will still run to completion, but no further
+        // providers are started. The subprocess and walk root causes are
+        // bounded separately (scanner.rs:run_federate_export and
+        // scan_dependency_dir), so this deadline is a backstop, not the
+        // primary fix.
+        let deadline = std::time::Instant::now() + config.federation.scan_timeout();
+
         let context = EnrichmentContext {
             storage,
             config,
             file_id_map,
             project_root: project_root.to_path_buf(),
             warnings: Arc::clone(&warnings_collector),
+            deadline,
         };
 
         // 2. Execute Enrichment Providers (Resilient Execution)
         for provider in &self.enrichment_providers {
             let name = provider.name();
+            if std::time::Instant::now() >= deadline {
+                let msg = format!(
+                    "Impact scan exceeded overall timeout ({}s); stopping before provider '{}'. Partial results retained.",
+                    config.federation.scan_timeout_secs, name
+                );
+                warn!("{}", msg);
+                context.add_warning(msg);
+                break;
+            }
             debug!("Running enrichment provider: {}", name);
 
             if let Err(e) = provider.enrich(&context, packet) {
@@ -361,6 +387,39 @@ mod tests {
                 .iter()
                 .any(|w| w.contains("AI enrichment skipped")),
             "expected AI enrichment skip annotation in {:?}",
+            packet.analysis_warnings
+        );
+    }
+
+    /// 0034: a breached backstop deadline annotates analysis_warnings with the
+    /// provider that would have run next, and preserves partial results.
+    #[test]
+    fn test_backstop_deadline_annotates_and_preserves_partial_results() {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::state::migrations::get_migrations()
+            .to_latest(&mut conn)
+            .unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        let mut config = Config::default();
+        // Set the backstop to zero so the deadline is already breached when
+        // the enrichment loop starts — the first provider triggers the
+        // annotation without running.
+        config.federation.scan_timeout_secs = 0;
+        let temp = tempfile::tempdir().unwrap();
+        let mut packet = ImpactPacket::default();
+
+        let orchestrator = ImpactOrchestrator::with_builtins();
+        orchestrator
+            .run(&mut packet, &storage, &config, temp.path())
+            .expect("orchestrator should not fail on a breached deadline");
+
+        assert!(
+            packet
+                .analysis_warnings
+                .iter()
+                .any(|w| w.contains("Impact scan exceeded overall timeout")
+                    && w.contains("Partial results retained")),
+            "expected a backstop-timeout annotation in {:?}",
             packet.analysis_warnings
         );
     }

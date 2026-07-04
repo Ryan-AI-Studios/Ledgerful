@@ -96,6 +96,7 @@ dirs = "6.0.0"
 which = "8.0.3"
 jsonc-parser = { version = "0.32.4", features = ["serde", "serde_json"] }
 utoipa = { version = "5.5.0", features = ["axum_extras"], optional = true }
+process-wrap = { version = "9.1.0", features = ["std", "job-object", "process-group"] }
 
 
 [target.'cfg(unix)'.dependencies]

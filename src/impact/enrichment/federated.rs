@@ -11,12 +11,23 @@ impl EnrichmentProvider for FederatedProvider {
     }
 
     fn enrich(&self, context: &EnrichmentContext, packet: &mut ImpactPacket) -> Result<()> {
-        if let Err(e) = crate::federated::refresh::refresh_federated_dependencies(
+        match crate::federated::refresh::refresh_federated_dependencies(
             &context.project_root,
             packet,
             context.storage,
+            context.config,
+            Some(context.deadline),
         ) {
-            warn!("Federated discovery refresh failed: {e}");
+            Ok(degradation_warnings) => {
+                // 0034: surface scan degradation warnings (budget hit,
+                // deadline breached) to the packet's analysis_warnings so
+                // the impact output records which provider truncated, not
+                // just the log sink (DoD-5).
+                packet.analysis_warnings.extend(degradation_warnings);
+            }
+            Err(e) => {
+                warn!("Federated discovery refresh failed: {e}");
+            }
         }
 
         // Cross-repo impact analysis
@@ -50,6 +61,7 @@ mod tests {
             file_id_map: HashMap::new(),
             project_root: PathBuf::new(),
             warnings: Arc::new(Mutex::new(Vec::new())),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
         };
         let mut packet = ImpactPacket::default();
 

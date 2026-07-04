@@ -304,9 +304,15 @@ pub(crate) async fn projects_handler(
 
         // Optionally discover sibling projects via federation. The scan is bounded
         // and failures are ignored so this read-only endpoint never fails because
-        // of slow or broken sibling discovery.
-        let scanner =
-            crate::federated::scanner::FederatedScanner::new(layout.root.clone()).with_limit(5);
+        // of slow or broken sibling discovery. Thread the user's federation config
+        // (exclusions/budget) so the web path honors the same reliability controls
+        // as the CLI path; defaults preserve behavior when no config is present.
+        let fed_config = load_ledger_config(&layout)
+            .map(|c| c.federation)
+            .unwrap_or_default();
+        let scanner = crate::federated::scanner::FederatedScanner::new(layout.root.clone())
+            .with_limit(5)
+            .with_federation_config(&fed_config);
         if let Ok((siblings, _warnings)) = scanner.scan_siblings() {
             for (path, schema, validation_warnings) in siblings {
                 projects.push(ProjectResponse {

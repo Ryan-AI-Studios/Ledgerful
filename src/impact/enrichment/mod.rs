@@ -25,6 +25,7 @@ use miette::Result;
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
+use std::time::Instant;
 
 /// Context provided to every enrichment provider during the impact analysis lifecycle.
 pub struct EnrichmentContext<'a> {
@@ -33,6 +34,11 @@ pub struct EnrichmentContext<'a> {
     pub file_id_map: HashMap<PathBuf, i64>,
     pub project_root: PathBuf,
     pub warnings: Arc<Mutex<Vec<String>>>,
+    /// 0034: the impact run's global backstop deadline. Providers that spawn
+    /// long-running work (notably `FederatedProvider`) thread this through to
+    /// their subprocess/walk so a multi-sibling federated run shares one
+    /// deadline instead of each walk getting a fresh budget.
+    pub deadline: Instant,
 }
 
 impl<'a> EnrichmentContext<'a> {

@@ -1,13 +1,15 @@
+use crate::config::model::FederationConfig;
 use crate::federated::schema::FederatedSchema;
 use crate::index::languages::{Language, parse_symbols};
 use crate::index::references::extract_import_export;
 use camino::{Utf8Path, Utf8PathBuf};
 use miette::{IntoDiagnostic, Result};
+use process_wrap::std::*;
 use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
 use std::panic;
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 use tracing::{debug, info, warn};
 
 pub const DEFAULT_SIBLING_LIMIT: usize = 20;
@@ -99,6 +101,75 @@ fn symbol_imported(symbol: &str, path: &Utf8Path, content: &str) -> bool {
     false
 }
 
+/// Per-scan mutable state for the federated dependency walk.
+/// 0034: holds file-count budget, start time for threshold-gated progress,
+/// resolved exclusions, and the overall backstop deadline.
+struct ScanContext<'a> {
+    file_count: usize,
+    start_time: Instant,
+    has_logged: bool,
+    exclusions: &'a [String],
+    deadline: Instant,
+    file_budget: usize,
+    /// 0034: degradation warnings collected during the walk (budget hit,
+    /// deadline breached). Drained by the caller and surfaced to
+    /// `analysis_warnings` so the packet records *which* provider timed out
+    /// or truncated, not just the log sink (DoD-5).
+    warnings: Vec<String>,
+    /// 0034: guards against flooding `warnings`/`warn!` with one
+    /// deadline-breach message per sibling directory once the deadline has
+    /// tripped. The first breach records the message; subsequent recursive
+    /// calls return silently (same single-warning pattern as the budget
+    /// path's top-of-function check).
+    deadline_warned: bool,
+}
+
+impl<'a> ScanContext<'a> {
+    fn new(config: &'a FederationConfig, deadline_override: Option<Instant>) -> ScanContext<'a> {
+        // 0034: when the caller (orchestrator) threads a single absolute
+        // deadline, use it; otherwise compute a fresh one from the config.
+        let deadline = deadline_override
+            .unwrap_or_else(|| Instant::now() + Duration::from_secs(config.scan_timeout_secs));
+        ScanContext {
+            file_count: 0,
+            start_time: Instant::now(),
+            has_logged: false,
+            exclusions: &config.scan_exclusions,
+            deadline,
+            file_budget: config.scan_file_budget,
+            warnings: Vec::new(),
+            deadline_warned: false,
+        }
+    }
+
+    #[cfg(test)]
+    fn with_deadline(mut self, deadline: Instant) -> Self {
+        self.deadline = deadline;
+        self
+    }
+
+    fn should_exclude(&self, name: &str) -> bool {
+        self.exclusions.iter().any(|excluded| excluded == name)
+    }
+
+    fn deadline_breached(&self) -> bool {
+        Instant::now() >= self.deadline
+    }
+
+    fn emit_progress_once(&mut self, dir: &Utf8Path) {
+        if self.has_logged {
+            return;
+        }
+        if self.start_time.elapsed() >= Duration::from_secs(3) {
+            info!(
+                "Scanning {} files for federated dependencies in {}...",
+                self.file_count, dir
+            );
+            self.has_logged = true;
+        }
+    }
+}
+
 pub struct FederatedScanner {
     root: Utf8PathBuf,
     sibling_limit: usize,
@@ -114,6 +185,16 @@ pub struct FederatedScanner {
     /// `src/commands/federate.rs` opts in via `with_auto_sync`, gated by the
     /// `[federation] auto_sync_siblings` config flag.
     auto_sync: bool,
+    /// 0034: scan reliability configuration. Defaults to `FederationConfig::default()`
+    /// so behavior is unchanged when no config is threaded in.
+    federation_config: FederationConfig,
+    /// 0034: optional override for the scan deadline. When set (e.g. by the
+    /// impact orchestrator threading its single absolute deadline), the
+    /// scanner's `ScanContext` uses this `Instant` instead of computing a
+    /// fresh `Instant::now() + scan_timeout_secs`. This ensures a federated
+    /// run with several siblings shares one global deadline rather than each
+    /// walk getting its own fresh budget (DoD-5 single-deadline contract).
+    deadline_override: Option<Instant>,
 }
 
 impl FederatedScanner {
@@ -122,6 +203,8 @@ impl FederatedScanner {
             root,
             sibling_limit: DEFAULT_SIBLING_LIMIT,
             auto_sync: false,
+            federation_config: FederationConfig::default(),
+            deadline_override: None,
         }
     }
 
@@ -136,6 +219,24 @@ impl FederatedScanner {
     /// caller-gated rather than always-on.
     pub fn with_auto_sync(mut self, enabled: bool) -> Self {
         self.auto_sync = enabled;
+        self
+    }
+
+    /// 0034: thread federation config (timeouts, budget, exclusions) into the
+    /// scanner so the walk and the auto-sync export respect them.
+    pub fn with_federation_config(mut self, config: &FederationConfig) -> Self {
+        self.federation_config = config.clone();
+        self
+    }
+
+    /// 0034: override the scan deadline with an absolute `Instant` (typically
+    /// the impact orchestrator's single global deadline). When set, the
+    /// scanner's `ScanContext` uses this instead of computing a fresh
+    /// `Instant::now() + scan_timeout_secs`, so a multi-sibling federated
+    /// run shares one global deadline rather than each walk getting its own
+    /// fresh budget.
+    pub fn with_deadline(mut self, deadline: Instant) -> Self {
+        self.deadline_override = Some(deadline);
         self
     }
 
@@ -269,7 +370,8 @@ impl FederatedScanner {
                                 path
                             );
                         } else {
-                            match run_federate_export(&path) {
+                            match run_federate_export(&path, self.federation_config.sync_timeout())
+                            {
                                 Ok(()) => {
                                     info!("Auto-synced schema.json for sibling at {}", path);
                                 }
@@ -339,13 +441,15 @@ impl FederatedScanner {
         }
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn discover_dependencies(
         &self,
         local_packet: &crate::impact::packet::ImpactPacket,
         _sibling_name: &str,
         sibling_schema: &FederatedSchema,
-    ) -> Result<Vec<(String, String)>> {
-        let mut edges = self.discover_dependencies_in_current_repo(sibling_schema)?;
+    ) -> Result<(Vec<(String, String)>, Vec<String>)> {
+        let (mut edges, mut warnings) =
+            self.discover_dependencies_in_current_repo(sibling_schema)?;
         let mut matcher = SymbolMatcher::new();
 
         for interface in &sibling_schema.public_interfaces {
@@ -378,28 +482,78 @@ impl FederatedScanner {
 
         edges.sort();
         edges.dedup();
-        Ok(edges)
+        warnings.sort();
+        warnings.dedup();
+        Ok((edges, warnings))
     }
 
+    #[allow(clippy::type_complexity)]
     pub fn discover_dependencies_in_current_repo(
         &self,
         sibling_schema: &FederatedSchema,
-    ) -> Result<Vec<(String, String)>> {
+    ) -> Result<(Vec<(String, String)>, Vec<String>)> {
         let mut edges = Vec::new();
         let mut matcher = SymbolMatcher::new();
-        self.scan_dependency_dir(&self.root, sibling_schema, &mut edges, &mut matcher)?;
+        let mut ctx = ScanContext::new(&self.federation_config, self.deadline_override);
+        self.scan_dependency_dir(
+            &self.root,
+            sibling_schema,
+            &mut edges,
+            &mut matcher,
+            &mut ctx,
+        )?;
         edges.sort();
         edges.dedup();
-        Ok(edges)
+        // 0034: surface degradation warnings to the caller so they reach
+        // `analysis_warnings` on the packet (DoD-5), not just the log sink.
+        ctx.warnings.sort();
+        ctx.warnings.dedup();
+        Ok((edges, ctx.warnings))
     }
 
+    /// 0034: deadline-aware recursive dependency walk.
+    /// Exclusion is evaluated on the directory `file_name` BEFORE `read_dir`
+    /// and BEFORE any file-budget increment (excluded trees cost zero budget).
     fn scan_dependency_dir(
         &self,
         dir: &Utf8Path,
         sibling_schema: &FederatedSchema,
         edges: &mut Vec<(String, String)>,
         matcher: &mut SymbolMatcher,
+        ctx: &mut ScanContext,
     ) -> Result<()> {
+        // Cooperative backstop: if the overall scan deadline is already
+        // spent, stop descending this directory cleanly. Rate-limited: only
+        // the FIRST breach records a warning + log line, so a large-tree
+        // walk that breaches while many sibling directories are still queued
+        // doesn't flood `analysis_warnings`/stdout with one message per dir
+        // (same single-warning pattern as the budget path below).
+        if ctx.deadline_breached() {
+            if !ctx.deadline_warned {
+                let msg = format!(
+                    "Federated Intelligence Enrichment Provider: scan deadline reached at {}; partial results retained.",
+                    dir
+                );
+                warn!("{}", msg);
+                ctx.warnings.push(msg);
+                ctx.deadline_warned = true;
+            }
+            return Ok(());
+        }
+        // 0034: once the file budget is exhausted, unwind the recursion
+        // immediately rather than continuing to explore untouched subtrees.
+        // Without this top-of-function check, an ancestor's `for` loop would
+        // keep recursing into remaining sibling directories (each doing a
+        // `read_dir` + iterating to its first file) after a budget breach
+        // inside a subdirectory — cheaper than the original hang but still
+        // touches every remaining dir. This check makes "stop walking"
+        // literal (DoD-2).
+        if ctx.file_count >= ctx.file_budget {
+            return Ok(());
+        }
+
+        ctx.emit_progress_once(dir);
+
         for entry in fs::read_dir(dir).into_diagnostic()? {
             let entry = entry.into_diagnostic()?;
             let path = Utf8PathBuf::from_path_buf(entry.path())
@@ -408,29 +562,28 @@ impl FederatedScanner {
             let file_name = file_name.to_string_lossy();
 
             if path.is_dir() {
-                // Skip directories that are known to be large tooling caches,
-                // dependency trees, or configuration/data stores. Walking them
-                // during federated dependency scanning is expensive and adds
-                // no useful cross-repo symbol edges (e.g. `.opencode/node_modules`
-                // once caused `scan --impact` to walk ~2,500 files and hang).
-                if matches!(
-                    file_name.as_ref(),
-                    ".git"
-                        | ".ledgerful"
-                        | "target"
-                        | "node_modules"
-                        | ".opencode"
-                        | ".cargo"
-                        | ".claude"
-                        | ".config"
-                        | ".agents"
-                        | "vendor"
-                ) {
+                // 0034: config-driven exclusions checked on the directory name
+                // BEFORE recursing and BEFORE any budget increment.
+                if ctx.should_exclude(&file_name) {
                     continue;
                 }
-                self.scan_dependency_dir(&path, sibling_schema, edges, matcher)?;
+                self.scan_dependency_dir(&path, sibling_schema, edges, matcher, ctx)?;
                 continue;
             }
+
+            // 0034: count each scanned file against the budget; excluded dirs
+            // were skipped above, so they cost zero. Check BEFORE processing
+            // so exactly `file_budget` files are scanned (not budget-1).
+            if ctx.file_count >= ctx.file_budget {
+                let msg = format!(
+                    "Federated Intelligence Enrichment Provider: dependency scan hit file budget ({}) at {}; partial results retained. Add exclusions under `[federation] scan_exclusions`.",
+                    ctx.file_budget, dir
+                );
+                warn!("{}", msg);
+                ctx.warnings.push(msg);
+                return Ok(());
+            }
+            ctx.file_count += 1;
 
             let Some(extension) = path.extension() else {
                 continue;
@@ -558,13 +711,113 @@ fn needs_sync(schema_exists: bool, generated_at: &str, commit_mtime: Option<Syst
 /// the same time, which can spike CPU/memory enough to be a DoS hazard on
 /// the developer's own machine (the spec's explicit "Concurrency bound"
 /// requirement).
-fn run_federate_export(sibling_root: &Utf8Path) -> Result<()> {
+///
+/// 0034: the export is spawned in its own process group (Unix process group /
+/// Windows Job Object) and waited on with a bounded timeout. On expiry the
+/// whole group is killed and reaped so no grandchild (e.g. git) leaks; the
+/// error is non-fatal so the caller can continue to the next sibling.
+fn run_federate_export(sibling_root: &Utf8Path, sync_timeout: Duration) -> Result<()> {
     let current_exe = std::env::current_exe().into_diagnostic()?;
-    let status = std::process::Command::new(current_exe)
+    let mut command = std::process::Command::new(current_exe);
+    command
         .args(["federate", "export"])
-        .current_dir(sibling_root.as_std_path())
-        .status()
-        .into_diagnostic()?;
+        .current_dir(sibling_root.as_std_path());
+    let mut command = CommandWrap::from(command);
+    #[cfg(unix)]
+    {
+        command.wrap(ProcessGroup);
+    }
+    #[cfg(windows)]
+    {
+        command.wrap(JobObject);
+    }
+
+    let mut child = command.spawn().into_diagnostic()?;
+
+    let status = match wait_timeout::ChildExt::wait_timeout(
+        // SAFETY: `inner_child_mut()` returns a reference to the always-valid
+        // inner `std::process::Child` held by the `process-wrap` wrapper. The
+        // child was just spawned and not yet moved or consumed, so the inner
+        // reference is valid for the duration of this `wait_timeout` call.
+        // NOTE: `wait_timeout` only reaps the IMMEDIATE child. The wrapper's
+        // own `wait()` (called below) is what reaps the whole process group
+        // (Unix: `waitpid(-pgid)`) or Job Object (Windows: `wait_on_job`).
+        unsafe { child.inner_child_mut() },
+        sync_timeout,
+    )
+    .into_diagnostic()?
+    {
+        Some(status) => {
+            // The immediate child exited. Grandchildren (e.g. `git` spawned
+            // by the export) may still be running in the group/job. Use a
+            // BOUNDED non-blocking reap loop (`try_wait`) for a short grace
+            // period to clean up already-exited members without risking a
+            // silent hang on a stuck grandchild. The wrapper's blocking
+            // `wait()` would loop until ALL group members exit (Unix
+            // `waitpid(-pgid)` / Windows `wait_on_job(INFINITE)`) — which is
+            // the right call on the timeout path (where we've just killed
+            // the group) but would re-introduce a silent hang on the success
+            // path if a grandchild is stuck. After the grace period, any
+            // still-living grandchildren are reparented (Unix) or orphaned
+            // (Windows); a successful export is expected to have joined its
+            // own children, so this is a backstop, not the common case.
+            const REAP_GRACE: Duration = Duration::from_secs(2);
+            let reap_start = Instant::now();
+            while reap_start.elapsed() < REAP_GRACE {
+                match child.try_wait() {
+                    Ok(Some(_)) => break,
+                    Ok(None) => std::thread::sleep(Duration::from_millis(50)),
+                    Err(e) => {
+                        warn!(
+                            "process-group reap after successful export at {} failed ({:?}); a zombie grandchild may remain",
+                            sibling_root, e
+                        );
+                        break;
+                    }
+                }
+            }
+            if reap_start.elapsed() >= REAP_GRACE {
+                warn!(
+                    "process-group reap after successful export at {} did not complete within {:?}; lingering grandchildren may remain (the export process should join its own children before exiting)",
+                    sibling_root, REAP_GRACE
+                );
+            }
+            status
+        }
+        None => {
+            let timeout_msg = format!(
+                "ledgerful federate export for sibling at {} exceeded sync timeout ({:?}); killing process group",
+                sibling_root, sync_timeout
+            );
+            warn!("{}", timeout_msg);
+            // Kill the whole process group/job. If the kill itself fails we
+            // surface it in the error chain rather than swallowing it — a
+            // failed kill could leak the export/git subtree, which is the
+            // exact hazard this timeout exists to prevent.
+            let kill_err = child.start_kill().err();
+            // Reap the killed group so no zombie remains. A failed reap is
+            // less dangerous than a failed kill (the process is already
+            // terminated), but still reported.
+            let reap_err = child.wait().err();
+            let mut msg = format!(
+                "ledgerful federate export timed out for sibling at {} (timeout: {:?})",
+                sibling_root, sync_timeout
+            );
+            if let Some(e) = kill_err {
+                msg.push_str(&format!(
+                    "; WARNING: process-group kill failed ({:?}) — child may have leaked",
+                    e
+                ));
+            }
+            if let Some(e) = reap_err {
+                msg.push_str(&format!(
+                    "; WARNING: process reap failed ({:?}) — zombie may remain",
+                    e
+                ));
+            }
+            return Err(miette::miette!("{}", msg));
+        }
+    };
 
     if status.success() {
         Ok(())
@@ -605,7 +858,7 @@ mod dependency_tests {
         );
 
         let scanner = FederatedScanner::new(root);
-        let dependencies = scanner
+        let (dependencies, _warnings) = scanner
             .discover_dependencies_in_current_repo(&schema)
             .unwrap();
 
@@ -632,7 +885,7 @@ mod dependency_tests {
         );
 
         let scanner = FederatedScanner::new(root);
-        let dependencies = scanner
+        let (dependencies, _warnings) = scanner
             .discover_dependencies_in_current_repo(&schema)
             .unwrap();
 
@@ -664,7 +917,7 @@ mod dependency_tests {
         );
 
         let scanner = FederatedScanner::new(root);
-        let dependencies = scanner
+        let (dependencies, _warnings) = scanner
             .discover_dependencies_in_current_repo(&schema)
             .unwrap();
 
@@ -737,7 +990,7 @@ mod dependency_tests {
         );
 
         let scanner = FederatedScanner::new(root);
-        let dependencies = scanner
+        let (dependencies, _warnings) = scanner
             .discover_dependencies_in_current_repo(&schema)
             .unwrap();
 
@@ -747,6 +1000,239 @@ mod dependency_tests {
         assert_eq!(
             dependencies,
             vec![("local_handler".to_string(), "remote_api".to_string())]
+        );
+    }
+
+    /// 0034 regression: a 1,000+-file non-excluded tree terminates because of
+    /// the file-count budget, not by hanging or by a test harness kill.
+    #[test]
+    fn scan_dependency_dir_terminates_within_budget_on_large_tree() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let src = root.join("src");
+        fs::create_dir_all(&src).unwrap();
+
+        // 1,100 files containing a symbol reference, all in a non-excluded dir.
+        for i in 0..1100 {
+            fs::write(
+                src.join(format!("file_{}.rs", i)),
+                format!("pub fn local_fn_{i}() {{ let _ = remote_api(); }}"),
+            )
+            .unwrap();
+        }
+
+        let config = FederationConfig {
+            scan_file_budget: 500,
+            ..FederationConfig::default()
+        };
+        let scanner = FederatedScanner::new(root).with_federation_config(&config);
+
+        let schema = FederatedSchema::new(
+            "sibling".to_string(),
+            vec![PublicInterface {
+                symbol: "remote_api".to_string(),
+                file: "src/lib.rs".to_string(),
+                kind: SymbolKind::Function,
+            }],
+        );
+
+        let (dependencies, _warnings) = scanner
+            .discover_dependencies_in_current_repo(&schema)
+            .unwrap();
+
+        // The scan processes exactly `file_budget` files (checked before
+        // processing), so with 1100 matching files and budget=500 we expect
+        // exactly 500 edges (one per file scanned).
+        assert_eq!(
+            dependencies.len(),
+            500,
+            "expected exactly budget edges, got {}",
+            dependencies.len()
+        );
+        assert!(
+            dependencies.iter().any(|(s, _)| s.starts_with("local_fn_")),
+            "expected at least one local_fn edge, got {dependencies:?}"
+        );
+    }
+
+    /// 0034: user-provided exclusions override the default list.
+    #[test]
+    fn scan_dependency_dir_honors_config_exclusions() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let custom = root.join("custom_cache");
+        fs::create_dir_all(&custom).unwrap();
+
+        fs::write(
+            root.join("main.rs"),
+            "pub fn local_handler() { let _ = remote_api(); }",
+        )
+        .unwrap();
+        fs::write(
+            custom.join("ignored.rs"),
+            "pub fn ignored_fn() { let _ = remote_api(); }",
+        )
+        .unwrap();
+
+        let config = FederationConfig {
+            scan_exclusions: vec!["custom_cache".to_string()],
+            ..FederationConfig::default()
+        };
+        let scanner = FederatedScanner::new(root).with_federation_config(&config);
+
+        let schema = FederatedSchema::new(
+            "sibling".to_string(),
+            vec![PublicInterface {
+                symbol: "remote_api".to_string(),
+                file: "src/lib.rs".to_string(),
+                kind: SymbolKind::Function,
+            }],
+        );
+
+        let (dependencies, _warnings) = scanner
+            .discover_dependencies_in_current_repo(&schema)
+            .unwrap();
+
+        assert_eq!(
+            dependencies,
+            vec![("local_handler".to_string(), "remote_api".to_string())],
+            "custom_cache/ must be skipped via config exclusion"
+        );
+    }
+
+    /// 0034: a backstop deadline causes the walk to stop cleanly and return
+    /// partial edges instead of hanging. The deadline-breach warning is
+    /// rate-limited: even with many sibling directories queued in the
+    /// ancestor's `for` loop, only ONE warning is recorded (no flood).
+    #[test]
+    fn scan_dependency_dir_stops_cleanly_at_deadline() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+
+        // Multiple top-level dirs so the ancestor's `for` loop would call
+        // `scan_dependency_dir` several times after the deadline trips —
+        // proving the rate-limiting works (only one warning recorded).
+        for d in 0..10 {
+            let dir = root.join(format!("pkg_{d}"));
+            fs::create_dir_all(&dir).unwrap();
+            for i in 0..5 {
+                fs::write(
+                    dir.join(format!("file_{i}.rs")),
+                    format!("pub fn local_fn_{d}_{i}() {{ let _ = remote_api(); }}"),
+                )
+                .unwrap();
+            }
+        }
+
+        let config = FederationConfig {
+            scan_file_budget: 10_000,
+            scan_timeout_secs: 0,
+            ..FederationConfig::default()
+        };
+        let scanner = FederatedScanner::new(root).with_federation_config(&config);
+        let deadline = Instant::now() - Duration::from_millis(1);
+        let mut ctx = ScanContext::new(&scanner.federation_config, None).with_deadline(deadline);
+
+        let schema = FederatedSchema::new(
+            "sibling".to_string(),
+            vec![PublicInterface {
+                symbol: "remote_api".to_string(),
+                file: "src/lib.rs".to_string(),
+                kind: SymbolKind::Function,
+            }],
+        );
+
+        let mut edges = Vec::new();
+        let mut matcher = SymbolMatcher::new();
+        scanner
+            .scan_dependency_dir(&scanner.root, &schema, &mut edges, &mut matcher, &mut ctx)
+            .unwrap();
+
+        assert!(
+            edges.is_empty(),
+            "deadline already breached at top of walk, no edges expected"
+        );
+        // 0034 DoD-5: the breach must surface a structured warning naming the
+        // provider, not just log — so it reaches `analysis_warnings` via the
+        // caller. Verify the warning was collected in ctx.warnings and names
+        // the Federated Intelligence Enrichment Provider.
+        assert!(
+            ctx.warnings
+                .iter()
+                .any(|w| w.contains("Federated Intelligence Enrichment Provider")
+                    && w.contains("scan deadline reached")),
+            "expected a deadline-breach warning naming the provider, got {:?}",
+            ctx.warnings
+        );
+        // 0034 v3: rate-limiting — exactly ONE deadline warning even though
+        // 10 top-level dirs would each trigger the check. Without the
+        // `deadline_warned` guard this would be 10 (one per dir, each with a
+        // different dir path surviving dedup).
+        let deadline_warnings: Vec<_> = ctx
+            .warnings
+            .iter()
+            .filter(|w| w.contains("scan deadline reached"))
+            .collect();
+        assert_eq!(
+            deadline_warnings.len(),
+            1,
+            "expected exactly one rate-limited deadline warning, got {}: {:?}",
+            deadline_warnings.len(),
+            ctx.warnings
+        );
+    }
+
+    /// 0034 DoD-2: hitting the file budget surfaces a structured warning
+    /// naming the provider and the fix hint, not just a log line.
+    #[test]
+    fn scan_dependency_dir_budget_breach_surfaces_warning() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let src = root.join("src");
+        fs::create_dir_all(&src).unwrap();
+        for i in 0..10 {
+            fs::write(
+                src.join(format!("file_{}.rs", i)),
+                format!("pub fn local_fn_{i}() {{ let _ = remote_api(); }}"),
+            )
+            .unwrap();
+        }
+
+        let config = FederationConfig {
+            scan_file_budget: 3,
+            ..FederationConfig::default()
+        };
+        let scanner = FederatedScanner::new(root).with_federation_config(&config);
+
+        let schema = FederatedSchema::new(
+            "sibling".to_string(),
+            vec![PublicInterface {
+                symbol: "remote_api".to_string(),
+                file: "src/lib.rs".to_string(),
+                kind: SymbolKind::Function,
+            }],
+        );
+
+        let (edges, warnings) = scanner
+            .discover_dependencies_in_current_repo(&schema)
+            .unwrap();
+
+        // Exactly `budget` edges (3 files processed).
+        assert_eq!(
+            edges.len(),
+            3,
+            "expected exactly budget edges, got {}",
+            edges.len()
+        );
+        // The budget-breach warning names the provider and the fix hint.
+        assert!(
+            warnings
+                .iter()
+                .any(|w| w.contains("Federated Intelligence Enrichment Provider")
+                    && w.contains("file budget")
+                    && w.contains("scan_exclusions")),
+            "expected a budget-breach warning naming the provider + fix hint, got {:?}",
+            warnings
         );
     }
 }
@@ -1158,5 +1644,116 @@ mod auto_sync_tests {
                 .join("schema.json")
                 .exists()
         );
+    }
+}
+
+/// 0034: tests for the bounded subprocess timeout and process-group kill
+/// behavior. These exercises the `command-group` + `wait-timeout` path
+/// without invoking the real `ledgerful federate export` subprocess.
+#[cfg(test)]
+mod timeout_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// 0034: a long-running child process is killed when the sync timeout
+    /// expires. On Windows this uses a Job Object (which also kills
+    /// grandchildren spawned via `CreateProcess` that don't break away from
+    /// the job); on Unix a process group.
+    ///
+    /// This test verifies the timeout + group-kill + reap path end-to-end on
+    /// a single long-running child. Verifying grandchild kill via the OS's
+    /// Job Object propagation is inherently shell-dependent (PowerShell's
+    /// `Start-Process` uses `ShellExecuteEx` and breaks away from jobs;
+    /// `cmd /c start /b` sets `CREATE_BREAKAWAY_FROM_JOB`), so we test the
+    /// core guarantee (the child is killed, not orphaned) and rely on the
+    /// Job Object contract for grandchild cleanup. The production
+    /// `run_federate_export` spawns `ledgerful federate export` which uses
+    /// `std::process::Command` (= `CreateProcess`, no breakaway) for its
+    /// `git` subprocess, so grandchildren stay in the job in production.
+    #[test]
+    fn run_federate_export_times_out_and_kills_process_group() {
+        // Spawn a long-running child via the same group path as production.
+        // `ping -n 600 127.0.0.1` sleeps ~600s on Windows; `sleep 600` on Unix.
+        let command = if cfg!(windows) {
+            let mut c = std::process::Command::new("ping");
+            c.args(["-n", "600", "127.0.0.1"]);
+            c
+        } else {
+            let mut c = std::process::Command::new("sleep");
+            c.args(["600"]);
+            c
+        };
+        let mut command = CommandWrap::from(command);
+        #[cfg(unix)]
+        {
+            command.wrap(ProcessGroup);
+        }
+        #[cfg(windows)]
+        {
+            command.wrap(JobObject);
+        }
+
+        let mut child = command.spawn().expect("spawn");
+        let start = Instant::now();
+        let status = wait_timeout::ChildExt::wait_timeout(
+            unsafe { child.inner_child_mut() },
+            Duration::from_millis(500),
+        )
+        .expect("wait timeout call");
+        let elapsed = start.elapsed();
+
+        assert!(
+            status.is_none(),
+            "child should still be running at timeout, got {status:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(3),
+            "export should have timed out quickly, took {:?}",
+            elapsed
+        );
+
+        // Kill the whole group/job and reap so no zombie remains.
+        child
+            .start_kill()
+            .expect("start_kill should succeed on a running child");
+        let reap = child.wait().expect("wait after kill should reap the child");
+        assert!(
+            !reap.success(),
+            "killed child should have a non-success exit status, got {reap:?}"
+        );
+    }
+
+    /// 0034: a child that exits quickly should propagate success normally.
+    #[test]
+    fn run_federate_export_propagates_success_for_fast_child() {
+        // Use `cmd /c exit 0` on Windows and `true` elsewhere. We can't mock
+        // current_exe() from here, so this test directly exercises the helper
+        // internals by spawning the platform's trivial success command through
+        // the same group path. run_federate_export hard-codes current_exe(),
+        // but we test the conceptual behavior via a small inline spawn.
+        let command = if cfg!(windows) {
+            let mut c = std::process::Command::new("cmd");
+            c.args(["/c", "exit 0"]);
+            c
+        } else {
+            std::process::Command::new("true")
+        };
+        let mut command = CommandWrap::from(command);
+        #[cfg(unix)]
+        {
+            command.wrap(ProcessGroup);
+        }
+        #[cfg(windows)]
+        {
+            command.wrap(JobObject);
+        }
+        let mut child = command.spawn().expect("spawn");
+        let status = wait_timeout::ChildExt::wait_timeout(
+            unsafe { child.inner_child_mut() },
+            Duration::from_secs(2),
+        )
+        .expect("wait")
+        .expect("child should exit");
+        assert!(status.success());
     }
 }
