@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 use tracing::info;
 
-const SCIP_INDEX_TIMEOUT_SECS: u64 = 300;
+const SCIP_INDEX_TIMEOUT_SECS: u64 = 600;
 
 pub enum ScipToolchain {
     RustAnalyzer,
