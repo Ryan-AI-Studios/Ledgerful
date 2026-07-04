@@ -410,8 +410,16 @@ impl FederatedScanner {
             if path.is_dir() {
                 if matches!(
                     file_name.as_ref(),
-                    ".git" | ".ledgerful" | "target" | "node_modules" | ".opencode" | ".cargo"
-                        | ".claude" | ".config" | ".agents" | "vendor"
+                    ".git"
+                        | ".ledgerful"
+                        | "target"
+                        | "node_modules"
+                        | ".opencode"
+                        | ".cargo"
+                        | ".claude"
+                        | ".config"
+                        | ".agents"
+                        | "vendor"
                 ) {
                     continue;
                 }
