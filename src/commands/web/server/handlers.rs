@@ -27,7 +27,10 @@ use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use axum::Json;
 use axum::extract::{Path, Query, State};
+#[cfg(any(test, debug_assertions))]
 use axum::http::StatusCode;
+#[cfg(not(debug_assertions))]
+use axum::http::{HeaderValue, header};
 use axum::response::{IntoResponse, Response};
 use miette::{Result, miette};
 use serde_json::json;

@@ -8,14 +8,6 @@ use crate::commands::helpers::load_ledger_config;
 use crate::commands::web::error::WebError;
 use crate::commands::web::state::AppState;
 use crate::commands::web::types::*;
-
-// Re-export public shared types so existing external imports keep working.
-pub use crate::commands::web::types::{
-    ComplianceSignatureEntry, ComplianceSummaryResponse, HotspotResponse, HotspotTrendQuery,
-    HotspotTrendResponse, HotspotTrendSeries, KgEdge, KgNode, KnowledgeGraphQuery,
-    KnowledgeGraphResponse, SecurityBoundariesResponse, VerificationHealthResponse,
-    VerificationStepResponse, VerificationTrendPoint, VerifyHistoryQuery,
-};
 use crate::config::load::load_config;
 use crate::contracts::AffectedContract;
 use crate::git::repo::open_repo;
@@ -31,123 +23,12 @@ use axum::http::StatusCode;
 use axum::response::IntoResponse;
 use chrono::NaiveDate;
 use miette::{IntoDiagnostic, Result, miette};
-use serde_json::json;
-use std::collections::{BTreeMap, HashMap, HashSet};
-
-#[cfg(any(test, feature = "openapi", feature = "web"))]
-use utoipa::OpenApi;
-
-#[cfg(any(test, feature = "openapi", feature = "web"))]
-use super::server::{
-    __path_changes_handler, __path_config_handler, __path_health_handler, __path_hotspots_handler,
-    __path_ledger_handler, __path_ledger_search_handler, __path_ledger_tx_handler,
-    __path_projects_handler, __path_session_handler, __path_snapshot_handler,
-    __path_status_handler, __path_sync_status_handler,
-};
-
-#[cfg(any(test, feature = "openapi", feature = "web"))]
-#[derive(OpenApi)]
-#[openapi(
-    info(
-        title = "Ledgerful Daemon API",
-        version = "0.1.6",
-        description = "Machine-readable OpenAPI contract for the Ledgerful daemon `/api/*` endpoints. Generated from the Rust DTOs via utoipa."
-    ),
-    paths(
-        health_handler,
-        session_handler,
-        snapshot_handler,
-        status_handler,
-        projects_handler,
-        ledger_handler,
-        ledger_search_handler,
-        ledger_tx_handler,
-        changes_handler,
-        hotspots_handler,
-        config_handler,
-        hotspots_trend_handler,
-        latest_impact_handler,
-        latest_verify_handler,
-        verify_health_handler,
-        verify_history_handler,
-        verify_steps_handler,
-        compliance_summary_handler,
-        compliance_signatures_handler,
-        compliance_export_handler,
-        endpoints_changed_handler,
-        security_boundaries_handler,
-        knowledge_graph_handler,
-        sync_status_handler
-    ),
-    components(schemas(
-        UserSession,
-        SnapshotResponse,
-        StatusResponse,
-        ProjectResponse,
-        LedgerEntryResponse,
-        LedgerDetailResponse,
-        ChangedFileResponse,
-        LedgerListQuery,
-        LedgerSearchQuery,
-        ChangesQuery,
-        ChangeResponse,
-        HotspotsQueryParams,
-        ConfigResponse,
-        HotspotResponse,
-        HotspotTrendQuery,
-        HotspotTrendResponse,
-        HotspotTrendSeries,
-        VerificationHealthResponse,
-        VerifyHistoryQuery,
-        VerificationTrendPoint,
-        VerificationStepResponse,
-        ComplianceSummaryResponse,
-        ComplianceSignatureEntry,
-        AffectedContract,
-        SecurityBoundariesResponse,
-        KnowledgeGraphQuery,
-        KnowledgeGraphResponse,
-        KgNode,
-        KgEdge,
-        SyncStatusResponse,
-        crate::commands::web::error::ProblemDetail
-    )),
-    tags(
-        (name = "health", description = "Daemon liveness"),
-        (name = "session", description = "Current user session"),
-        (name = "snapshot", description = "Summary metrics"),
-        (name = "status", description = "Daemon health status"),
-        (name = "projects", description = "Project list"),
-        (name = "ledger", description = "Ledger transactions"),
-        (name = "changes", description = "Recent changes"),
-        (name = "hotspots", description = "Hotspot rankings and trends"),
-        (name = "reports", description = "Latest impact/verify report JSON"),
-        (name = "verify", description = "Verification health/history/steps"),
-        (name = "compliance", description = "Compliance summary/signatures/export"),
-        (name = "endpoints", description = "Affected API contracts"),
-        (name = "security", description = "Security boundaries"),
-        (name = "knowledge-graph", description = "CozoDB knowledge-graph subgraph"),
-        (name = "config", description = "Daemon configuration"),
-        (name = "sync", description = "Local M0 sync state")
-    )
-)]
-pub struct ApiDoc;
-
-/// Generate the canonical OpenAPI JSON string for this build.
-#[cfg(any(test, feature = "openapi", feature = "web"))]
-pub fn generate_openapi_json() -> String {
-    use utoipa::OpenApi;
-    ApiDoc::openapi().to_pretty_json().unwrap_or_else(|e| {
-        tracing::error!("OpenAPI serialization failed: {e}");
-        String::from("{}")
-    })
-}
-
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
-use std::time::{Duration, Instant, UNIX_EPOCH};
+use std::time::{Instant, UNIX_EPOCH};
 
-const KG_CACHE_TTL: Duration = Duration::from_secs(60);
-const KG_MAX_LIMIT: usize = 1000;
+use super::KG_CACHE_TTL;
+use super::cozo::{KG_MAX_LIMIT, fetch_knowledge_graph, fetch_security_boundaries};
 
 // ---------------------------------------------------------------------------
 // HotspotResponse DTO (Track TA29)
@@ -157,7 +38,7 @@ const KG_MAX_LIMIT: usize = 1000;
 // Report endpoints
 // ---------------------------------------------------------------------------
 
-/// `GET /api/reports/latest-impact.json` — passthrough of the latest impact
+/// `GET /api/reports/latest-impact.json` ΓÇö passthrough of the latest impact
 /// report JSON. Returns `application/json` with an opaque object schema when
 /// a report exists; 404 otherwise.
 #[utoipa::path(
@@ -176,7 +57,7 @@ pub async fn latest_impact_handler(
     serve_report(state.layout.clone(), "latest-impact.json").await
 }
 
-/// `GET /api/reports/latest-verify.json` — passthrough of the latest verify
+/// `GET /api/reports/latest-verify.json` ΓÇö passthrough of the latest verify
 /// report JSON. Returns `application/json` with an opaque object schema when
 /// a report exists; 404 otherwise.
 #[utoipa::path(
@@ -199,7 +80,7 @@ pub async fn latest_verify_handler(
 // Verification dashboard endpoints (Track E1)
 // ---------------------------------------------------------------------------
 
-/// `GET /api/verify/health` — overall verification health.
+/// `GET /api/verify/health` ΓÇö overall verification health.
 #[utoipa::path(
     get,
     path = "/api/verify/health",
@@ -249,7 +130,7 @@ fn fetch_verify_health(layout: &Layout) -> Result<VerificationHealthResponse> {
         });
     }
 
-    // Latest run passed — check staleness against the 7-day threshold.
+    // Latest run passed ΓÇö check staleness against the 7-day threshold.
     let stale = is_stale_timestamp(&timestamp, STALE_VERIFY_THRESHOLD_SECS);
     if stale {
         Ok(VerificationHealthResponse {
@@ -266,11 +147,11 @@ fn fetch_verify_health(layout: &Layout) -> Result<VerificationHealthResponse> {
     }
 }
 
-/// `GET /api/verify/history?days=30` — per-date pass/fail counts over the
+/// `GET /api/verify/history?days=30` ΓÇö per-date pass/fail counts over the
 /// last `days` days (default 30, accepts 90). Returns a bare JSON array of
 /// `{ date, passed, failed }` sorted ascending by date. Dates with no runs
 /// are omitted (deterministic: only dates that have at least one run appear).
-/// `GET /api/verify/history` — pass/fail trend over time.
+/// `GET /api/verify/history` ΓÇö pass/fail trend over time.
 #[utoipa::path(
     get,
     path = "/api/verify/history",
@@ -313,7 +194,7 @@ fn fetch_verify_history(layout: &Layout, days: u64) -> Result<Vec<VerificationTr
         .collect())
 }
 
-/// `GET /api/verify/steps` — per-step verification aggregates.
+/// `GET /api/verify/steps` ΓÇö per-step verification aggregates.
 #[utoipa::path(
     get,
     path = "/api/verify/steps",
@@ -376,7 +257,7 @@ fn fetch_verify_steps(layout: &Layout) -> Result<Vec<VerificationStepResponse>> 
 /// step name yields a multi-thousand-character string that breaks the table
 /// layout, so we keep only the first ` | `-delimited segment.
 ///
-/// When the first segment is itself a `"Predicted impact …"` annotation (the
+/// When the first segment is itself a `"Predicted impact ΓÇª"` annotation (the
 /// command only ever appeared via predicted-impact rules, never via an explicit
 /// `"From rules:"` / `"Default:"` prefix), there is no friendly label to show,
 /// so we fall back to the raw command string.
@@ -405,7 +286,7 @@ const VERIFY_STEPS_RECENT_RUN_COUNT: usize = 10;
 
 /// Number of most-recent `plan_json` rows to parse for friendly step `name`
 /// (description) lookup on `/api/verify/steps`. Bounded to keep the endpoint
-/// efficient — parsing failures on any single row are silently skipped.
+/// efficient ΓÇö parsing failures on any single row are silently skipped.
 const VERIFY_STEPS_DESC_RUN_COUNT: usize = 50;
 
 /// Return an RFC 3339 timestamp `days` days before now, for use as a SQL
@@ -460,7 +341,7 @@ fn read_report_json(layout: &Layout, filename: &str) -> Result<Option<serde_json
 // Hotspot trend endpoint
 // ---------------------------------------------------------------------------
 
-/// `GET /api/hotspots/trend` — rolling hotspot trend series.
+/// `GET /api/hotspots/trend` ΓÇö rolling hotspot trend series.
 #[utoipa::path(
     get,
     path = "/api/hotspots/trend",
@@ -636,7 +517,7 @@ fn build_date_buckets(days: u64) -> (Vec<String>, usize, NaiveDate) {
     (labels, bucket_count, start_date)
 }
 
-fn collect_recent_commits(
+pub(crate) fn collect_recent_commits(
     repo: &gix::Repository,
     days: u64,
     max_commits: usize,
@@ -755,7 +636,7 @@ fn collect_recent_commits(
 // Affected API endpoints endpoint
 // ---------------------------------------------------------------------------
 
-/// `GET /api/endpoints/changed` — API contracts affected by changed files.
+/// `GET /api/endpoints/changed` ΓÇö API contracts affected by changed files.
 #[utoipa::path(
     get,
     path = "/api/endpoints/changed",
@@ -819,7 +700,7 @@ fn fetch_endpoints_changed(layout: &Layout) -> Result<Vec<AffectedContract>> {
 // Security boundaries endpoint
 // ---------------------------------------------------------------------------
 
-/// `GET /api/security/boundaries` — security boundary counts and edges.
+/// `GET /api/security/boundaries` ΓÇö security boundary counts and edges.
 #[utoipa::path(
     get,
     path = "/api/security/boundaries",
@@ -840,109 +721,11 @@ pub async fn security_boundaries_handler(
     Ok(Json(response))
 }
 
-fn fetch_security_boundaries(layout: &Layout) -> Result<SecurityBoundariesResponse> {
-    let storage = match StorageManager::open_read_only(&layout.root) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!("Storage not available for /api/security/boundaries: {e}");
-            return Ok(empty_boundaries_response());
-        }
-    };
-
-    let cozo = match storage.cozo {
-        Some(c) => c,
-        None => {
-            tracing::warn!("CozoDB not available for /api/security/boundaries");
-            return Ok(empty_boundaries_response());
-        }
-    };
-
-    // Authorisation nodes: policy, principal, action, resource.
-    let auth_res = cozo.run_script(
-        "?[id, label, category] := *node{id, label, category}, \
-         category in ['policy', 'principal', 'action', 'resource']",
-    )?;
-
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    let mut auth_nodes = Vec::new();
-    for row in &auth_res.rows {
-        if let (
-            Some(cozo::DataValue::Str(id)),
-            Some(cozo::DataValue::Str(label)),
-            Some(cozo::DataValue::Str(cat)),
-        ) = (row.first(), row.get(1), row.get(2))
-        {
-            *counts.entry(cat.to_string()).or_insert(0) += 1;
-            auth_nodes.push(json!({
-                "id": id.to_string(),
-                "label": label.to_string(),
-                "category": cat.to_string(),
-            }));
-        }
-    }
-
-    // Cross-surface boundary edges: policy -> protected entity.
-    let boundary_res = cozo.run_script(
-        "?[policy_id, policy_label, relation, target_id, target_label, target_cat] := \
-         *node{id: policy_id, label: policy_label, category: 'policy'}, \
-         *edge{source: policy_id, target: target_id, relation: rel}, \
-         *node{id: target_id, label: target_label, category: target_cat}, \
-         target_cat in ['service', 'endpoint', 'config_key', 'deploy_surface', 'adr'], \
-         relation = rel",
-    )?;
-
-    let mut boundary_edges = Vec::new();
-    for row in &boundary_res.rows {
-        if let (
-            Some(cozo::DataValue::Str(pid)),
-            Some(cozo::DataValue::Str(plabel)),
-            Some(cozo::DataValue::Str(rel)),
-            Some(cozo::DataValue::Str(tid)),
-            Some(cozo::DataValue::Str(tlabel)),
-            Some(cozo::DataValue::Str(tcat)),
-        ) = (
-            row.first(),
-            row.get(1),
-            row.get(2),
-            row.get(3),
-            row.get(4),
-            row.get(5),
-        ) {
-            boundary_edges.push(json!({
-                "policy_id": pid.to_string(),
-                "policy_label": plabel.to_string(),
-                "relation": rel.to_string(),
-                "target_id": tid.to_string(),
-                "target_label": tlabel.to_string(),
-                "target_category": tcat.to_string(),
-            }));
-        }
-    }
-
-    Ok(SecurityBoundariesResponse {
-        meta: json!({ "counts": counts }),
-        boundaries: json!({
-            "auth_nodes": auth_nodes,
-            "boundary_edges": boundary_edges,
-        }),
-    })
-}
-
-fn empty_boundaries_response() -> SecurityBoundariesResponse {
-    SecurityBoundariesResponse {
-        meta: json!({ "counts": {} }),
-        boundaries: json!({
-            "auth_nodes": [],
-            "boundary_edges": [],
-        }),
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Knowledge-graph subgraph endpoint
 // ---------------------------------------------------------------------------
 
-/// `GET /api/knowledge-graph` — CozoDB knowledge-graph subgraph.
+/// `GET /api/knowledge-graph` ΓÇö CozoDB knowledge-graph subgraph.
 #[utoipa::path(
     get,
     path = "/api/knowledge-graph",
@@ -986,390 +769,6 @@ pub async fn knowledge_graph_handler(
     Ok(Json(response))
 }
 
-fn fetch_knowledge_graph(
-    layout: &Layout,
-    limit: usize,
-    focus_changed: bool,
-) -> Result<KnowledgeGraphResponse> {
-    let storage = match StorageManager::open_read_only(&layout.root) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!("Storage not available for /api/knowledge-graph: {e}");
-            return Ok(empty_kg_response());
-        }
-    };
-
-    let cozo = match storage.cozo {
-        Some(c) => c,
-        None => {
-            tracing::warn!("CozoDB not available for /api/knowledge-graph");
-            return Ok(empty_kg_response());
-        }
-    };
-
-    let mut node_ids: Vec<String> = Vec::new();
-    let mut truncated = false;
-
-    if focus_changed {
-        let changed_files = collect_changed_file_paths(layout);
-        if !changed_files.is_empty() {
-            let params = id_list_param("files", &changed_files);
-            let changed_res = cozo.run_script_with_params(
-                "?[id] := *node{id, metadata: meta}, \
-                 source_file = get(meta, 'source_file'), \
-                 source_file in $files",
-                params,
-                cozo::ScriptMutability::Immutable,
-            );
-
-            let mut seed_ids = HashSet::new();
-            if let Ok(res) = changed_res {
-                for row in &res.rows {
-                    if let Some(cozo::DataValue::Str(id)) = row.first() {
-                        seed_ids.insert(id.to_string());
-                    }
-                }
-            }
-
-            if !seed_ids.is_empty() {
-                let mut ids_within_two_hops =
-                    expand_two_hops(&cozo, &seed_ids, limit.saturating_mul(2))?;
-                if ids_within_two_hops.len() > limit {
-                    truncated = true;
-                    ids_within_two_hops.truncate(limit);
-                }
-                node_ids = ids_within_two_hops.into_iter().collect();
-            }
-        }
-    }
-
-    if node_ids.is_empty() {
-        // Fallback: highest-risk nodes when there are no recent changes or focus is off.
-        node_ids = fetch_top_risk_nodes(&cozo, limit)?;
-    }
-
-    if node_ids.is_empty() {
-        return Ok(empty_kg_response());
-    }
-
-    let mut nodes = fetch_node_details(&cozo, &node_ids)?;
-    let edges = fetch_edges_among(&cozo, &node_ids)?;
-
-    enrich_kg_nodes(layout, &mut nodes);
-
-    Ok(KnowledgeGraphResponse {
-        nodes,
-        edges,
-        truncated,
-    })
-}
-
-/// Enrich knowledge-graph nodes with SQLite-derived file paths and complexities.
-/// This closes the gap between the backend node shape and the frontend graph
-/// table, which expects top-level `file_path` and `complexity` fields.
-fn enrich_kg_nodes(layout: &Layout, nodes: &mut [KgNode]) {
-    let storage = match StorageManager::open_read_only_sqlite_only(&layout.root) {
-        Ok(s) => s,
-        Err(e) => {
-            tracing::warn!("Storage not available for knowledge-graph enrichment: {e}");
-            return;
-        }
-    };
-
-    let file_paths: Vec<String> = nodes
-        .iter()
-        .filter(|n| n.category == "file")
-        .filter_map(|n| {
-            n.id.strip_prefix("urn:ledgerful:file:")
-                .map(|s| s.to_string())
-        })
-        .collect();
-    let symbol_qns: Vec<String> = nodes
-        .iter()
-        .filter(|n| n.category == "symbol")
-        .filter_map(|n| {
-            n.id.strip_prefix("urn:ledgerful:symbol:")
-                .map(|s| s.to_string())
-        })
-        .collect();
-
-    // File nodes: complexity from the hotspots table, file path from the URN.
-    if let Ok(complexities) = query_file_complexities(&storage, &file_paths) {
-        for n in nodes.iter_mut().filter(|n| n.category == "file") {
-            if let Some(p) = n.id.strip_prefix("urn:ledgerful:file:") {
-                n.complexity = complexities.get(p).copied().unwrap_or(0);
-            }
-        }
-    }
-
-    // Symbol nodes: file path and cognitive complexity from project_symbols.
-    if !symbol_qns.is_empty() {
-        let placeholders = symbol_qns.iter().map(|_| "?").collect::<Vec<_>>().join(",");
-        let sql = format!(
-            "SELECT ps.qualified_name, pf.file_path, ps.cognitive_complexity \
-             FROM project_symbols ps \
-             JOIN project_files pf ON ps.file_id = pf.id \
-             WHERE ps.qualified_name IN ({})",
-            placeholders
-        );
-        let conn = storage.get_connection();
-        if let Ok(mut stmt) = conn.prepare(&sql) {
-            let rows = stmt.query_map(rusqlite::params_from_iter(&symbol_qns), |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, i32>(2)?,
-                ))
-            });
-            if let Ok(rows) = rows {
-                let mut lookup: HashMap<String, (String, i32)> = HashMap::new();
-                for (qn, file_path, complexity) in rows.flatten() {
-                    lookup.insert(qn, (file_path, complexity));
-                }
-                for n in nodes.iter_mut() {
-                    if n.category == "symbol"
-                        && let Some(qn) = n.id.strip_prefix("urn:ledgerful:symbol:")
-                        && let Some((file_path, complexity)) = lookup.get(qn)
-                    {
-                        if n.file_path.is_empty() {
-                            n.file_path.clone_from(file_path);
-                        }
-                        n.complexity = *complexity;
-                    }
-                }
-            }
-        }
-    }
-}
-
-fn empty_kg_response() -> KnowledgeGraphResponse {
-    KnowledgeGraphResponse {
-        nodes: Vec::new(),
-        edges: Vec::new(),
-        truncated: false,
-    }
-}
-
-fn collect_changed_file_paths(layout: &Layout) -> Vec<String> {
-    let mut paths = HashSet::new();
-
-    // Current working-tree changes.
-    if let Ok(repo) = open_repo(layout.root.as_std_path())
-        && let Ok(changes) = get_repo_status(&repo)
-    {
-        for change in changes {
-            paths.insert(change.path.to_string_lossy().replace('\\', "/"));
-        }
-    }
-
-    // Recent commits (last 7 days) for broader context.
-    if let Ok(repo) = open_repo(layout.root.as_std_path())
-        && let Ok(commits) = collect_recent_commits(&repo, 7, 1000)
-    {
-        for (_, files) in commits {
-            for file in files {
-                paths.insert(file);
-            }
-        }
-    }
-
-    paths.into_iter().collect()
-}
-
-fn id_list_param(key: &str, ids: &[String]) -> BTreeMap<String, cozo::DataValue> {
-    let mut params = BTreeMap::new();
-    let list: Vec<cozo::DataValue> = ids
-        .iter()
-        .map(|id| cozo::DataValue::Str(id.clone().into()))
-        .collect();
-    params.insert(key.to_string(), cozo::DataValue::List(Box::new(list)));
-    params
-}
-
-/// Return all node IDs within two undirected hops of `seed_ids`, capped at `cap`.
-fn expand_two_hops(
-    cozo: &crate::state::storage_cozo::CozoStorage,
-    seed_ids: &HashSet<String>,
-    cap: usize,
-) -> Result<Vec<String>> {
-    let mut current: HashSet<String> = seed_ids.clone();
-    let seed_vec: Vec<String> = seed_ids.iter().cloned().collect();
-
-    // First hop.
-    let params = id_list_param("ids", &seed_vec);
-    let res = cozo.run_script_with_params(
-        "?[nid] := *edge{source: s, target: nid}, s in $ids \\n\
-         ?[nid] := *edge{source: nid, target: s}, s in $ids",
-        params,
-        cozo::ScriptMutability::Immutable,
-    )?;
-    for row in &res.rows {
-        if let Some(cozo::DataValue::Str(id)) = row.first() {
-            current.insert(id.to_string());
-            if current.len() >= cap {
-                break;
-            }
-        }
-    }
-
-    // Second hop, using the expanded first-hop set.
-    let first_hop: Vec<String> = current.iter().cloned().collect();
-    let params = id_list_param("ids", &first_hop);
-    let res = cozo.run_script_with_params(
-        "?[nid] := *edge{source: s, target: nid}, s in $ids \\n\
-         ?[nid] := *edge{source: nid, target: s}, s in $ids",
-        params,
-        cozo::ScriptMutability::Immutable,
-    )?;
-    for row in &res.rows {
-        if let Some(cozo::DataValue::Str(id)) = row.first() {
-            current.insert(id.to_string());
-            if current.len() >= cap {
-                break;
-            }
-        }
-    }
-
-    let mut ids: Vec<String> = current.into_iter().collect();
-    ids.sort_unstable();
-    Ok(ids)
-}
-
-fn fetch_top_risk_nodes(
-    cozo: &crate::state::storage_cozo::CozoStorage,
-    limit: usize,
-) -> Result<Vec<String>> {
-    let query = format!(
-        "?[id, risk_score] := *node{{id, risk_score}} \\n         :order -risk_score \\n         :limit {}",
-        limit
-    );
-    let res = cozo.run_script(&query)?;
-    let mut ids = Vec::new();
-    for row in &res.rows {
-        if let Some(cozo::DataValue::Str(id)) = row.first() {
-            ids.push(id.to_string());
-            if ids.len() >= limit {
-                break;
-            }
-        }
-    }
-    Ok(ids)
-}
-
-fn fetch_node_details(
-    cozo: &crate::state::storage_cozo::CozoStorage,
-    ids: &[String],
-) -> Result<Vec<KgNode>> {
-    let params = id_list_param("ids", ids);
-    let res = cozo.run_script_with_params(
-        "?[id, label, category, risk_score, metadata] := \
-         *node{id, label, category, risk_score, metadata}, id in $ids",
-        params,
-        cozo::ScriptMutability::Immutable,
-    )?;
-
-    let mut nodes = Vec::with_capacity(res.rows.len());
-    for row in &res.rows {
-        if let (
-            Some(cozo::DataValue::Str(id)),
-            Some(cozo::DataValue::Str(label)),
-            Some(cozo::DataValue::Str(category)),
-            Some(cozo::DataValue::Num(cozo::Num::Float(risk_score))),
-            maybe_meta,
-        ) = (row.first(), row.get(1), row.get(2), row.get(3), row.get(4))
-        {
-            let metadata = maybe_meta.and_then(|v| match v {
-                cozo::DataValue::Json(val) => serde_json::to_value(val).ok(),
-                _ => None,
-            });
-            let file_path = node_file_path(category, id, label, &metadata);
-            let complexity = node_complexity(&metadata);
-            nodes.push(KgNode {
-                id: id.to_string(),
-                label: label.to_string(),
-                category: category.to_string(),
-                risk_score: *risk_score,
-                file_path,
-                complexity,
-                metadata,
-            });
-        }
-    }
-    Ok(nodes)
-}
-
-/// Derive a displayable file path for a knowledge-graph node from its metadata
-/// or URN. File nodes use their identifier as the path; everything else falls
-/// back to any `source_file` recorded in metadata.
-fn node_file_path(
-    category: &str,
-    id: &str,
-    _label: &str,
-    metadata: &Option<serde_json::Value>,
-) -> String {
-    if let Some(m) = metadata
-        && let Some(s) = m.get("source_file").and_then(|v| v.as_str())
-    {
-        return s.to_string();
-    }
-    if category == "file"
-        && let Some(suffix) = id.strip_prefix("urn:ledgerful:file:")
-    {
-        return suffix.to_string();
-    }
-    String::new()
-}
-
-fn node_complexity(metadata: &Option<serde_json::Value>) -> i32 {
-    metadata
-        .as_ref()
-        .and_then(|m| m.get("complexity").and_then(|v| v.as_i64()))
-        .unwrap_or(0) as i32
-}
-
-fn fetch_edges_among(
-    cozo: &crate::state::storage_cozo::CozoStorage,
-    ids: &[String],
-) -> Result<Vec<KgEdge>> {
-    let params = id_list_param("ids", ids);
-    let res = cozo.run_script_with_params(
-        "?[source, target, relation, confidence, provenance_id] := \
-         *edge{source, target, relation, confidence, provenance_id}, \
-         source in $ids, target in $ids",
-        params,
-        cozo::ScriptMutability::Immutable,
-    )?;
-
-    let mut edges = Vec::with_capacity(res.rows.len());
-    for row in &res.rows {
-        if let (
-            Some(cozo::DataValue::Str(source)),
-            Some(cozo::DataValue::Str(target)),
-            Some(cozo::DataValue::Str(relation)),
-            confidence,
-            provenance,
-        ) = (row.first(), row.get(1), row.get(2), row.get(3), row.get(4))
-        {
-            let confidence = confidence.and_then(|v| match v {
-                cozo::DataValue::Num(cozo::Num::Float(f)) => Some(*f),
-                _ => None,
-            });
-            let provenance_id = provenance.and_then(|v| match v {
-                cozo::DataValue::Str(s) => Some(s.to_string()),
-                _ => None,
-            });
-            edges.push(KgEdge {
-                source: source.to_string(),
-                target: target.to_string(),
-                relation: relation.to_string(),
-                confidence,
-                provenance_id,
-            });
-        }
-    }
-    Ok(edges)
-}
-
 // ---------------------------------------------------------------------------
 // Compliance dashboard endpoints (Track E2)
 // ---------------------------------------------------------------------------
@@ -1379,7 +778,7 @@ fn fetch_edges_among(
 /// ordered `committed_at DESC` so this is the most recent 100 entries.
 const COMPLIANCE_SIGNATURES_LIMIT: usize = 100;
 
-/// `GET /api/compliance/summary` — aggregate compliance summary.
+/// `GET /api/compliance/summary` ΓÇö aggregate compliance summary.
 #[utoipa::path(
     get,
     path = "/api/compliance/summary",
@@ -1468,7 +867,7 @@ fn fetch_compliance_summary(layout: &Layout) -> Result<ComplianceSummaryResponse
     })
 }
 
-/// `GET /api/compliance/signatures` — recent signature status entries.
+/// `GET /api/compliance/signatures` ΓÇö recent signature status entries.
 #[utoipa::path(
     get,
     path = "/api/compliance/signatures",
@@ -1578,14 +977,14 @@ fn classify_signature(entry: &LedgerEntry, require_signing: bool) -> SignatureSt
     }
 }
 
-/// `hotspotDeltaPercent` — the percent change in total hotspot count between
+/// `hotspotDeltaPercent` ΓÇö the percent change in total hotspot count between
 /// the two most recent `hotspot_history` snapshots.
 ///
 /// Definition: a "snapshot" is the set of `hotspot_history` rows sharing a
 /// `timestamp` value (the `hotspot_history` migration at
 /// `src/state/migrations/m38_hotspot_history.rs` writes one row per file per
 /// scan, all rows in a scan share the scan's timestamp). The "total hotspot
-/// count" for a snapshot is `COUNT(*)` of rows with that timestamp — i.e. the
+/// count" for a snapshot is `COUNT(*)` of rows with that timestamp ΓÇö i.e. the
 /// number of files flagged as hotspots in that scan.
 ///
 /// Computation: `((newer_total - older_total) / older_total) * 100`, rounded
@@ -1597,11 +996,11 @@ fn classify_signature(entry: &LedgerEntry, require_signing: bool) -> SignatureSt
 /// per-snapshot totals newest-first. This handler does only the percent math.
 ///
 /// Guards:
-/// - fewer than 2 distinct snapshots → `0.0` (no trend to report).
-/// - `older_total == 0` → `100.0` if `newer_total > 0` else `0.0` (avoids
+/// - fewer than 2 distinct snapshots ΓåÆ `0.0` (no trend to report).
+/// - `older_total == 0` ΓåÆ `100.0` if `newer_total > 0` else `0.0` (avoids
 ///   division by zero; a transition from "no hotspots" to "some hotspots" is
-///   reported as a 100% increase). This branch is structurally unreachable —
-///   a `DISTINCT timestamp` always has `COUNT(*) >= 1` — but is retained as
+///   reported as a 100% increase). This branch is structurally unreachable ΓÇö
+///   a `DISTINCT timestamp` always has `COUNT(*) >= 1` ΓÇö but is retained as
 ///   defensive code for future schema changes.
 fn fetch_hotspot_delta_percent(storage: &StorageManager) -> Result<f64> {
     let totals = storage.get_latest_hotspot_snapshot_totals(2)?;
@@ -1631,7 +1030,7 @@ fn round_2dp(value: f64) -> f64 {
 // Track E3: SOC2 Evidence Export
 // ---------------------------------------------------------------------------
 
-/// `GET /api/compliance/export` — generate a tamper-evident `.zip` of SOC2
+/// `GET /api/compliance/export` ΓÇö generate a tamper-evident `.zip` of SOC2
 /// evidence on the fly and return it as a binary download.
 ///
 /// The zip contains `manifest.json` (SHA-256 + size of every other file),
@@ -1646,8 +1045,8 @@ fn round_2dp(value: f64) -> f64 {
 /// `application/zip` + `Content-Disposition: attachment` headers to the
 /// returned `Response`. Empty / no-DB state still yields a valid zip
 /// (header-only CSVs, no `adr/` files, a manifest over the files that
-/// exist, and a signature over that manifest) — 200, not an error.
-/// `GET /api/compliance/export` — download a tamper-evident SOC2 evidence
+/// exist, and a signature over that manifest) ΓÇö 200, not an error.
+/// `GET /api/compliance/export` ΓÇö download a tamper-evident SOC2 evidence
 /// `.zip`. Returns `application/zip` with `Content-Disposition: attachment`.
 #[utoipa::path(
     get,
@@ -1687,58 +1086,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn kg_node_serializes_file_path_and_complexity() {
-        let node = KgNode {
-            id: "urn:ledgerful:file:src/main.rs".to_string(),
-            label: "src/main.rs".to_string(),
-            category: "file".to_string(),
-            risk_score: 3.5,
-            file_path: "src/main.rs".to_string(),
-            complexity: 7,
-            metadata: None,
-        };
-        let json = serde_json::to_value(node).unwrap();
-        assert_eq!(json["file_path"].as_str(), Some("src/main.rs"));
-        assert_eq!(json["complexity"].as_i64(), Some(7));
-    }
-
-    #[test]
-    fn node_file_path_prefers_metadata_source_file() {
-        let meta = Some(json!({ "source_file": "policies/auth.cedar" }));
-        assert_eq!(
-            node_file_path("policy", "urn:ledgerful:policy:x", "auth", &meta),
-            "policies/auth.cedar"
-        );
-    }
-
-    #[test]
-    fn node_file_path_derives_from_file_urn() {
-        assert_eq!(
-            node_file_path("file", "urn:ledgerful:file:src/lib.rs", "src/lib.rs", &None),
-            "src/lib.rs"
-        );
-    }
-
-    #[test]
-    fn node_file_path_returns_empty_when_unavailable() {
-        assert_eq!(
-            node_file_path("service", "urn:ledgerful:service:svc", "svc", &None),
-            ""
-        );
-    }
-
-    #[test]
-    fn node_complexity_reads_metadata_integer() {
-        let meta = Some(json!({ "complexity": 42 }));
-        assert_eq!(node_complexity(&meta), 42);
-    }
-
-    #[test]
-    fn node_complexity_defaults_to_zero() {
-        assert_eq!(node_complexity(&None), 0);
-    }
-
-    #[test]
     fn friendly_step_name_none_falls_back_to_command() {
         assert_eq!(friendly_step_name(None, "cargo test"), "cargo test");
     }
@@ -1776,7 +1123,7 @@ mod tests {
     #[test]
     fn friendly_step_name_predicted_only_falls_back_to_command() {
         // A command that only ever appeared via predicted-impact rules has no
-        // friendly prefix at all — its description STARTS with "Predicted
+        // friendly prefix at all ΓÇö its description STARTS with "Predicted
         // impact", so the first segment is not a usable label.
         let blob = "Predicted impact (Temporal) on src/bridge/export.rs \
             | Predicted impact (Temporal) on src/bridge/mod.rs";
@@ -1795,201 +1142,5 @@ mod tests {
             friendly_step_name(Some("   "), "cargo fmt --check"),
             "cargo fmt --check"
         );
-    }
-}
-
-// ---------------------------------------------------------------------------
-// HotspotResponse DTO unit tests (Track TA29)
-// ---------------------------------------------------------------------------
-
-#[cfg(test)]
-mod openapi_tests {
-    use super::*;
-
-    #[test]
-    fn generate_openapi_json_produces_valid_json() {
-        let json = generate_openapi_json();
-        assert!(json.starts_with('{'));
-        let parsed: serde_json::Value = serde_json::from_str(&json).expect("OpenAPI JSON parses");
-        assert!(parsed.get("openapi").is_some());
-    }
-}
-
-#[cfg(test)]
-mod hotspot_dto_tests {
-    use super::*;
-    use crate::impact::packet::Hotspot;
-    use camino::Utf8PathBuf;
-    use std::path::PathBuf;
-
-    fn make_hotspot(path: &str, score: f32, display_score: f32, frequency: f64) -> Hotspot {
-        Hotspot {
-            path: PathBuf::from(path),
-            score,
-            display_score,
-            complexity: 10,
-            frequency,
-            centrality: None,
-        }
-    }
-
-    #[test]
-    fn risk_level_critical_at_threshold_4() {
-        assert_eq!(risk_level_from_display_score(4.0), "CRITICAL");
-    }
-
-    #[test]
-    fn risk_level_high_just_below_critical() {
-        assert_eq!(risk_level_from_display_score(3.99), "HIGH");
-    }
-
-    #[test]
-    fn risk_level_high_at_threshold_3() {
-        assert_eq!(risk_level_from_display_score(3.0), "HIGH");
-    }
-
-    #[test]
-    fn risk_level_medium_at_threshold_2() {
-        assert_eq!(risk_level_from_display_score(2.0), "MEDIUM");
-    }
-
-    #[test]
-    fn risk_level_low_just_below_medium() {
-        assert_eq!(risk_level_from_display_score(1.99), "LOW");
-    }
-
-    #[test]
-    fn risk_level_low_at_zero() {
-        assert_eq!(risk_level_from_display_score(0.0), "LOW");
-    }
-
-    #[test]
-    fn change_count_floors_at_1() {
-        let hotspots = vec![make_hotspot("src/main.rs", 0.5, 3.0, 0.4)];
-        let git_meta = HashMap::new();
-        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
-        assert_eq!(responses[0].change_count, 1);
-    }
-
-    #[test]
-    fn change_count_rounds_frequency() {
-        let hotspots = vec![make_hotspot("src/main.rs", 0.5, 3.0, 2.6)];
-        let git_meta = HashMap::new();
-        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
-        assert_eq!(responses[0].change_count, 3);
-    }
-
-    #[test]
-    fn rank_is_1_based() {
-        let hotspots = vec![
-            make_hotspot("src/a.rs", 0.9, 4.5, 5.0),
-            make_hotspot("src/b.rs", 0.7, 3.5, 3.0),
-            make_hotspot("src/c.rs", 0.5, 2.5, 1.0),
-        ];
-        let git_meta = HashMap::new();
-        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
-        assert_eq!(responses[0].rank, 1);
-        assert_eq!(responses[1].rank, 2);
-        assert_eq!(responses[2].rank, 3);
-    }
-
-    #[test]
-    fn git_meta_null_for_unknown_file() {
-        let hotspots = vec![make_hotspot("src/unknown.rs", 0.5, 3.0, 1.0)];
-        let git_meta = HashMap::new();
-        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
-        assert!(responses[0].last_touched_at.is_none());
-        assert!(responses[0].contributor.is_none());
-    }
-
-    #[test]
-    fn git_meta_populated_for_known_file() {
-        let hotspots = vec![make_hotspot("src/main.rs", 0.5, 3.0, 1.0)];
-        let mut git_meta = HashMap::new();
-        git_meta.insert(
-            "src/main.rs".to_string(),
-            ("2024-06-01T12:00:00+00:00".to_string(), "Alice".to_string()),
-        );
-        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
-        assert_eq!(
-            responses[0].last_touched_at.as_deref(),
-            Some("2024-06-01T12:00:00+00:00")
-        );
-        assert_eq!(responses[0].contributor.as_deref(), Some("Alice"));
-    }
-
-    #[test]
-    fn git_meta_lookup_normalizes_backslashes() {
-        let hotspots = vec![make_hotspot("src\\main.rs", 0.5, 3.0, 1.0)];
-        let mut git_meta = HashMap::new();
-        git_meta.insert(
-            "src/main.rs".to_string(),
-            ("2024-06-01T12:00:00+00:00".to_string(), "Bob".to_string()),
-        );
-        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
-        assert_eq!(responses[0].contributor.as_deref(), Some("Bob"));
-    }
-
-    #[test]
-    fn backward_compat_fields_preserved() {
-        let hotspots = vec![make_hotspot("src/main.rs", 0.42, 3.5, 7.5)];
-        let git_meta = HashMap::new();
-        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
-        let r = &responses[0];
-        assert!((r.display_score - 3.5).abs() < 1e-6);
-        assert!((r.score - 0.42).abs() < 1e-6);
-        assert_eq!(r.complexity, 10);
-        assert!((r.frequency - 7.5).abs() < 1e-6);
-        assert!(r.centrality.is_none());
-    }
-
-    #[test]
-    fn id_equals_file_path() {
-        let hotspots = vec![make_hotspot("src/main.rs", 0.5, 3.0, 1.0)];
-        let git_meta = HashMap::new();
-        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
-        assert_eq!(responses[0].id, "src/main.rs");
-        assert_eq!(responses[0].file_path, "src/main.rs");
-    }
-
-    #[test]
-    fn risk_score_equals_display_score() {
-        let hotspots = vec![make_hotspot("src/main.rs", 0.5, 3.72, 1.0)];
-        let git_meta = HashMap::new();
-        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
-        assert!((responses[0].risk_score - 3.72).abs() < 1e-6);
-    }
-
-    #[test]
-    fn empty_hotspots_produces_empty_response() {
-        let hotspots: Vec<Hotspot> = Vec::new();
-        let git_meta = HashMap::new();
-        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
-        assert!(responses.is_empty());
-    }
-
-    #[test]
-    fn centrality_copied_when_present() {
-        let mut h = make_hotspot("src/main.rs", 0.5, 3.0, 1.0);
-        h.centrality = Some(42);
-        let hotspots = vec![h];
-        let git_meta = HashMap::new();
-        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
-        assert_eq!(responses[0].centrality, Some(42));
-    }
-
-    #[test]
-    fn utf8_path_preserved() {
-        let hotspots = vec![make_hotspot("src/héllo.rs", 0.5, 3.0, 1.0)];
-        let git_meta = HashMap::new();
-        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
-        assert_eq!(responses[0].file_path, "src/héllo.rs");
-    }
-
-    // Suppress unused import warning — Utf8PathBuf is used in production code
-    // outside tests but we import it here for completeness.
-    #[test]
-    fn _utf8_path_buf_import_marker() {
-        let _ = Utf8PathBuf::from("marker");
     }
 }

@@ -548,3 +548,198 @@ pub struct ComplianceSignatureEntry {
     pub status: String,
     pub category: String,
 }
+
+#[cfg(test)]
+mod hotspot_dto_tests {
+    use super::*;
+    use crate::impact::packet::Hotspot;
+    use camino::Utf8PathBuf;
+    use std::path::PathBuf;
+
+    fn make_hotspot(path: &str, score: f32, display_score: f32, frequency: f64) -> Hotspot {
+        Hotspot {
+            path: PathBuf::from(path),
+            score,
+            display_score,
+            complexity: 10,
+            frequency,
+            centrality: None,
+        }
+    }
+
+    #[test]
+    fn risk_level_critical_at_threshold_4() {
+        assert_eq!(risk_level_from_display_score(4.0), "CRITICAL");
+    }
+
+    #[test]
+    fn risk_level_high_just_below_critical() {
+        assert_eq!(risk_level_from_display_score(3.99), "HIGH");
+    }
+
+    #[test]
+    fn risk_level_high_at_threshold_3() {
+        assert_eq!(risk_level_from_display_score(3.0), "HIGH");
+    }
+
+    #[test]
+    fn risk_level_medium_at_threshold_2() {
+        assert_eq!(risk_level_from_display_score(2.0), "MEDIUM");
+    }
+
+    #[test]
+    fn risk_level_low_just_below_medium() {
+        assert_eq!(risk_level_from_display_score(1.99), "LOW");
+    }
+
+    #[test]
+    fn risk_level_low_at_zero() {
+        assert_eq!(risk_level_from_display_score(0.0), "LOW");
+    }
+
+    #[test]
+    fn change_count_floors_at_1() {
+        let hotspots = vec![make_hotspot("src/main.rs", 0.5, 3.0, 0.4)];
+        let git_meta = HashMap::new();
+        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
+        assert_eq!(responses[0].change_count, 1);
+    }
+
+    #[test]
+    fn change_count_rounds_frequency() {
+        let hotspots = vec![make_hotspot("src/main.rs", 0.5, 3.0, 2.6)];
+        let git_meta = HashMap::new();
+        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
+        assert_eq!(responses[0].change_count, 3);
+    }
+
+    #[test]
+    fn rank_is_1_based() {
+        let hotspots = vec![
+            make_hotspot("src/a.rs", 0.9, 4.5, 5.0),
+            make_hotspot("src/b.rs", 0.7, 3.5, 3.0),
+            make_hotspot("src/c.rs", 0.5, 2.5, 1.0),
+        ];
+        let git_meta = HashMap::new();
+        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
+        assert_eq!(responses[0].rank, 1);
+        assert_eq!(responses[1].rank, 2);
+        assert_eq!(responses[2].rank, 3);
+    }
+
+    #[test]
+    fn git_meta_null_for_unknown_file() {
+        let hotspots = vec![make_hotspot("src/unknown.rs", 0.5, 3.0, 1.0)];
+        let git_meta = HashMap::new();
+        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
+        assert!(responses[0].last_touched_at.is_none());
+        assert!(responses[0].contributor.is_none());
+    }
+
+    #[test]
+    fn git_meta_populated_for_known_file() {
+        let hotspots = vec![make_hotspot("src/main.rs", 0.5, 3.0, 1.0)];
+        let mut git_meta = HashMap::new();
+        git_meta.insert(
+            "src/main.rs".to_string(),
+            ("2024-06-01T12:00:00+00:00".to_string(), "Alice".to_string()),
+        );
+        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
+        assert_eq!(
+            responses[0].last_touched_at.as_deref(),
+            Some("2024-06-01T12:00:00+00:00")
+        );
+        assert_eq!(responses[0].contributor.as_deref(), Some("Alice"));
+    }
+
+    #[test]
+    fn git_meta_lookup_normalizes_backslashes() {
+        let hotspots = vec![make_hotspot("src\\main.rs", 0.5, 3.0, 1.0)];
+        let mut git_meta = HashMap::new();
+        git_meta.insert(
+            "src/main.rs".to_string(),
+            ("2024-06-01T12:00:00+00:00".to_string(), "Bob".to_string()),
+        );
+        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
+        assert_eq!(responses[0].contributor.as_deref(), Some("Bob"));
+    }
+
+    #[test]
+    fn backward_compat_fields_preserved() {
+        let hotspots = vec![make_hotspot("src/main.rs", 0.42, 3.5, 7.5)];
+        let git_meta = HashMap::new();
+        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
+        let r = &responses[0];
+        assert!((r.display_score - 3.5).abs() < 1e-6);
+        assert!((r.score - 0.42).abs() < 1e-6);
+        assert_eq!(r.complexity, 10);
+        assert!((r.frequency - 7.5).abs() < 1e-6);
+        assert!(r.centrality.is_none());
+    }
+
+    #[test]
+    fn id_equals_file_path() {
+        let hotspots = vec![make_hotspot("src/main.rs", 0.5, 3.0, 1.0)];
+        let git_meta = HashMap::new();
+        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
+        assert_eq!(responses[0].id, "src/main.rs");
+        assert_eq!(responses[0].file_path, "src/main.rs");
+    }
+
+    #[test]
+    fn risk_score_equals_display_score() {
+        let hotspots = vec![make_hotspot("src/main.rs", 0.5, 3.72, 1.0)];
+        let git_meta = HashMap::new();
+        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
+        assert!((responses[0].risk_score - 3.72).abs() < 1e-6);
+    }
+
+    #[test]
+    fn empty_hotspots_produces_empty_response() {
+        let hotspots: Vec<Hotspot> = Vec::new();
+        let git_meta = HashMap::new();
+        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
+        assert!(responses.is_empty());
+    }
+
+    #[test]
+    fn centrality_copied_when_present() {
+        let mut h = make_hotspot("src/main.rs", 0.5, 3.0, 1.0);
+        h.centrality = Some(42);
+        let hotspots = vec![h];
+        let git_meta = HashMap::new();
+        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
+        assert_eq!(responses[0].centrality, Some(42));
+    }
+
+    #[test]
+    fn utf8_path_preserved() {
+        let hotspots = vec![make_hotspot("src/h\u{e9}llo.rs", 0.5, 3.0, 1.0)];
+        let git_meta = HashMap::new();
+        let responses = map_hotspots_to_responses(&hotspots, &git_meta);
+        assert_eq!(responses[0].file_path, "src/h\u{e9}llo.rs");
+    }
+
+    // Suppress unused import warning - Utf8PathBuf is used in production code
+    // outside tests but we import it here for completeness.
+    #[test]
+    fn _utf8_path_buf_import_marker() {
+        let _ = Utf8PathBuf::from("marker");
+    }
+
+    #[test]
+    fn kg_node_serializes_file_path_and_complexity() {
+        let node = KgNode {
+            id: "urn:ledgerful:file:src/main.rs".to_string(),
+            label: "src/main.rs".to_string(),
+            category: "file".to_string(),
+            risk_score: 3.5,
+            file_path: "src/main.rs".to_string(),
+            complexity: 7,
+            metadata: None,
+        };
+        let json = serde_json::to_value(node).unwrap();
+        assert_eq!(json["file_path"].as_str(), Some("src/main.rs"));
+        assert_eq!(json["complexity"].as_i64(), Some(7));
+    }
+}
