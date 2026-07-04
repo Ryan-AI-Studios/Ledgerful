@@ -66,7 +66,7 @@ const SHARED_INFRA_PATTERNS: &[&str] = &[
     "src/config/**",
     "src/state/migrations/**",
     "src/state/migrations.rs",
-    "src/state/storage.rs",
+    "src/state/storage/**",
     "src/state/storage_cozo.rs",
     ".ledgerful/**",
     ".github/workflows/**",
@@ -1101,6 +1101,18 @@ mod tests {
         let packet = ImpactPacket {
             changes: vec![ChangedFile {
                 path: PathBuf::from("src/state/migrations/m11.rs"),
+                ..Default::default()
+            }],
+            ..ImpactPacket::default()
+        };
+        assert!(touches_shared_infra(&packet));
+    }
+
+    #[test]
+    fn test_touches_shared_infra_storage_subdir() {
+        let packet = ImpactPacket {
+            changes: vec![ChangedFile {
+                path: PathBuf::from("src/state/storage/connection.rs"),
                 ..Default::default()
             }],
             ..ImpactPacket::default()

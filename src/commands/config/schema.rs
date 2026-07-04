@@ -12,7 +12,7 @@ pub fn execute_config_schema(json: bool) -> Result<()> {
     let conn = storage.get_connection();
 
     let mut stmt = conn.prepare(
-        "SELECT var_name, source_kind, required, is_secret, default_value_redacted, description, owner, environment 
+        "SELECT var_name, source_kind, required, is_secret, default_value_redacted, description, owner, environment
          FROM env_declarations ORDER BY var_name ASC"
     ).into_diagnostic()?;
 

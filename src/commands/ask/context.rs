@@ -114,7 +114,7 @@ pub(crate) fn fetch_kg_neighborhood(
     }
     let script = format!(
         r#"
-        ?[caller, callee, relation] := *edge{{source: caller, target: callee, relation: relation}}, 
+        ?[caller, callee, relation] := *edge{{source: caller, target: callee, relation: relation}},
                                        caller in [{symbols_array}] or callee in [{symbols_array}]
         :limit 50
     "#
