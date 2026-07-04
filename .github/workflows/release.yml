@@ -71,6 +71,7 @@ jobs:
           path: ../ledgerful-frontend/out
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
+          toolchain: stable
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - shell: bash
@@ -132,6 +133,8 @@ jobs:
           cache: npm
           cache-dependency-path: mcp-server/package-lock.json
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - run: cargo build --bin ledgerful --locked --no-default-features --features mcp
       - run: npm ci

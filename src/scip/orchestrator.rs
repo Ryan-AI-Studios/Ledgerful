@@ -4,7 +4,7 @@ use std::process::{Command, Stdio};
 use std::time::Duration;
 use tracing::info;
 
-const SCIP_INDEX_TIMEOUT_SECS: u64 = 300;
+const SCIP_INDEX_TIMEOUT_SECS: u64 = 600;
 
 pub enum ScipToolchain {
     RustAnalyzer,
@@ -81,29 +81,84 @@ impl ScipToolchain {
         info!("Running SCIP indexer: {:?}", cmd);
 
         let mut child = cmd.spawn().into_diagnostic()?;
-        let timeout = Duration::from_secs(SCIP_INDEX_TIMEOUT_SECS);
-        let status =
-            match wait_timeout::ChildExt::wait_timeout(&mut child, timeout).into_diagnostic()? {
-                Some(status) => status,
-                None => {
-                    let _ = child.kill();
-                    return Err(miette!(
-                        "SCIP indexer timed out after {} seconds",
-                        SCIP_INDEX_TIMEOUT_SECS
-                    ));
+
+        // Drain stdout/stderr in background threads to prevent pipe-buffer
+        // deadlock. rust-analyzer scip emits thousands of warning lines on
+        // stderr; if the OS pipe buffer (~64 KB on Windows) fills and nobody
+        // is reading, the child blocks on write() and appears to "hang" —
+        // causing a false timeout. Drain continuously and capture the tail
+        // for error reporting.
+        let stderr_handle = child.stderr.take();
+        let stdout_handle = child.stdout.take();
+        let stderr_thread = std::thread::spawn(move || {
+            let mut buf = Vec::with_capacity(8192);
+            if let Some(mut r) = stderr_handle {
+                let mut chunk = [0u8; 4096];
+                loop {
+                    use std::io::Read;
+                    match r.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            // Keep only the last 8 KB for error messages
+                            buf.extend_from_slice(&chunk[..n]);
+                            if buf.len() > 8192 {
+                                buf.drain(0..buf.len() - 8192);
+                            }
+                        }
+                        Err(_) => break,
+                    }
                 }
-            };
+            }
+            buf
+        });
+        let stdout_thread = std::thread::spawn(move || {
+            let mut buf = Vec::with_capacity(8192);
+            if let Some(mut r) = stdout_handle {
+                let mut chunk = [0u8; 4096];
+                loop {
+                    use std::io::Read;
+                    match r.read(&mut chunk) {
+                        Ok(0) => break,
+                        Ok(n) => {
+                            buf.extend_from_slice(&chunk[..n]);
+                            if buf.len() > 8192 {
+                                buf.drain(0..buf.len() - 8192);
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+            }
+            buf
+        });
+
+        let timeout = Duration::from_secs(SCIP_INDEX_TIMEOUT_SECS);
+        let wait_result = wait_timeout::ChildExt::wait_timeout(&mut child, timeout);
+        let status = match wait_result {
+            Ok(Some(status)) => status,
+            Ok(None) => {
+                let _ = child.kill();
+                let _ = stderr_thread.join();
+                let _ = stdout_thread.join();
+                return Err(miette!(
+                    "SCIP indexer timed out after {} seconds",
+                    SCIP_INDEX_TIMEOUT_SECS
+                ));
+            }
+            Err(e) => {
+                let _ = child.kill();
+                let _ = stderr_thread.join();
+                let _ = stdout_thread.join();
+                return Err(miette!("Failed to wait for SCIP indexer: {}", e));
+            }
+        };
+
+        // Ensure drain threads finish
+        let stderr_buf = stderr_thread.join().unwrap_or_default();
+        let _stdout_buf = stdout_thread.join().unwrap_or_default();
 
         if !status.success() {
-            let stderr = child
-                .stderr
-                .take()
-                .map(|mut r| {
-                    let mut buf = String::new();
-                    std::io::Read::read_to_string(&mut r, &mut buf).ok();
-                    buf
-                })
-                .unwrap_or_default();
+            let stderr = String::from_utf8_lossy(&stderr_buf).to_string();
             return Err(miette!(
                 "SCIP indexer failed with status: {}: {}",
                 status,

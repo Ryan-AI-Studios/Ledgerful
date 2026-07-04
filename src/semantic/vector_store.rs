@@ -296,7 +296,7 @@ impl<'a> VectorStore<'a> {
 
         // 2. Create the index
         let hnsw_script = format!(
-            "::hnsw create snippet_embedding:snippet_idx {{dim:{},dtype:F32,fields:[embedding],distance:L2,m:16,ef_construction:200}}",
+            "::hnsw create snippet_embedding:snippet_idx {{dim:{},dtype:F32,fields:[embedding],distance:L2,m:16,ef_construction:100}}",
             self.dim
         );
 

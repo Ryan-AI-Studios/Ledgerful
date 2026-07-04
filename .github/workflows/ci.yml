@@ -47,6 +47,8 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - run: cargo fmt --check
 
@@ -64,6 +66,8 @@ jobs:
           name: ledgerful-web-spa
           path: ../ledgerful-frontend/out
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - run: cargo clippy --all-targets --all-features -- -D warnings
 
@@ -82,6 +86,8 @@ jobs:
           name: ledgerful-web-spa
           path: ../ledgerful-frontend/out
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2
@@ -118,6 +124,8 @@ jobs:
           name: ledgerful-web-spa
           path: ../ledgerful-frontend/out
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2
@@ -146,6 +154,8 @@ jobs:
           name: ledgerful-web-spa
           path: ../ledgerful-frontend/out
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - name: Install cargo-nextest
         uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2
@@ -165,6 +175,8 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - run: cargo install cargo-deny --locked
       - run: cargo deny check advisories
@@ -175,6 +187,8 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
       - run: cargo install cargo-deny --locked
       - run: cargo deny check
@@ -186,6 +200,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
+          toolchain: stable
           components: llvm-tools-preview
       - uses: taiki-e/install-action@e2ba4a39dc7bf116c8a572366d98fadc69b818f5
       - uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2
@@ -202,6 +217,8 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
       - uses: taiki-e/install-action@18124c74391878d932c447fcd1687a5fa1058c01
       - uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2
       - run: cargo mutants --workspace --in-place --file 'src/ledger/**' --file 'src/impact/**' --file 'src/verify/**'

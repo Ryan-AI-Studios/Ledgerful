@@ -81,6 +81,15 @@ impl ProjectIndexer {
         &mut self.storage
     }
 
+    pub fn shutdown_storage(&mut self) -> Result<()> {
+        let placeholder =
+            StorageManager::init_from_conn(rusqlite::Connection::open_in_memory().map_err(
+                |e| miette::miette!("Failed to open in-memory SQLite for shutdown: {}", e),
+            )?);
+        let storage = std::mem::replace(&mut self.storage, placeholder);
+        storage.shutdown()
+    }
+
     pub fn new_for_worker(repo_path: Utf8PathBuf) -> Self {
         Self {
             storage: StorageManager::init_from_conn(
