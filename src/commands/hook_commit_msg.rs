@@ -126,6 +126,63 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
 
     let repo_root = layout.root.as_std_path();
 
+    // Proactive GC: clean up any pre-existing sidecar before writing a new one.
+    // A new commit-msg invocation implies any old sidecar is stale, UNLESS it matches HEAD.
+    let sidecar_path = layout.state_subdir().join("pending_hook_tx");
+    if sidecar_path.exists() {
+        match fs::read_to_string(&sidecar_path) {
+            Ok(content) => match serde_json::from_str::<PendingHookTx>(&content) {
+                Ok(pending) => {
+                    let mut matches_head = false;
+                    if let Ok(output) = std::process::Command::new("git").args(["log", "-1", "--format=%B"]).current_dir(repo_root).output() {
+                        if output.status.success() {
+                            let head_msg = String::from_utf8_lossy(&output.stdout).to_string();
+                            let cleaned = crate::util::text::clean_commit_msg(&head_msg);
+                            let current_hash = hash_message(&cleaned);
+                            matches_head = current_hash == pending.commit_msg_hash;
+                        }
+                    }
+
+                    if matches_head {
+                        return Err(miette::miette!(
+                            "A pending commit sidecar exists that matches HEAD. The previous commit succeeded but its post-commit hook failed or was skipped. Please recover it by running 'ledgerful ledger commit' or manually remove the sidecar."
+                        ));
+                    }
+
+                    match StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()) {
+                        Ok(mut storage) => {
+                            let mut tx_mgr = TransactionManager::new(
+                                &mut storage,
+                                layout.root.clone().into(),
+                                config.clone(),
+                            );
+                            if let Err(e) = tx_mgr.rollback_change(pending.tx_id, "Aborted: stale hook sidecar".to_string()) {
+                                tracing::warn!("Failed to rollback stale sidecar transaction: {}. Keeping sidecar.", e);
+                            } else if let Err(e) = fs::remove_file(&sidecar_path) {
+                                tracing::warn!("Failed to remove stale sidecar file: {}. Keeping sidecar.", e);
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!("Failed to init storage for sidecar GC: {}. Keeping sidecar.", e);
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("Failed to parse pending hook sidecar for GC: {}", e);
+                    if let Err(e) = fs::remove_file(&sidecar_path) {
+                        tracing::warn!("Failed to remove unparseable sidecar file: {}", e);
+                    }
+                }
+            },
+            Err(e) => {
+                tracing::warn!("Failed to read pending hook sidecar for GC: {}", e);
+                if let Err(e) = fs::remove_file(&sidecar_path) {
+                    tracing::warn!("Failed to remove unreadable sidecar file: {}", e);
+                }
+            }
+        }
+    }
+
     // 2. Read git staged files
     let staged_files = get_staged_files(repo_root);
     if staged_files.is_empty() {
@@ -156,7 +213,7 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
         if is_trivial {
             history.bypass_remaining -= 1;
             save_skip_history(&skip_history_path, &history);
-            eprintln!("[Ledgerful] Auto-accepting trivial commit (consecutive skips bypass).");
+            tracing::info!(target: "cli_summary", "[Ledgerful] Auto-accepting trivial commit (consecutive skips bypass).");
 
             return Ok(());
         } else {
@@ -195,7 +252,8 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
 
     // Fast-path bypass for well-formed conventional commits
     if is_well_formed_conventional(&raw_commit_msg) {
-        eprintln!(
+        tracing::info!(
+            target: "cli_summary",
             "[Ledgerful] Well-formed conventional commit detected; skipping LLM intent drafting."
         );
         let lines: Vec<&str> = raw_commit_msg.lines().collect();
@@ -213,7 +271,7 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
         drafted_related = Vec::new();
         confidence = 1.0;
     } else {
-        eprintln!("[Ledgerful] Drafting change intent via local LLM...");
+        tracing::info!(target: "cli_summary", "[Ledgerful] Drafting change intent via local LLM...");
 
         let spinner = if is_terminal && !env_no_tui {
             Some(crate::ui::spinner::Spinner::new(
@@ -258,9 +316,9 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
 
     if confidence >= 0.85 || !tui_allowed {
         if confidence >= 0.85 {
-            eprintln!("[Ledgerful] High-confidence intent drafted silently.");
+            tracing::info!(target: "cli_summary", "[Ledgerful] High-confidence intent drafted silently.");
         } else {
-            eprintln!("[Ledgerful] Non-interactive shell detected; committing silently.");
+            tracing::info!(target: "cli_summary", "[Ledgerful] Non-interactive shell detected; committing silently.");
         }
 
         silently_record_ledger(SilentRecordArgs {
@@ -309,7 +367,7 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
                 history.bypass_remaining = 2;
             }
             save_skip_history(&skip_history_path, &history);
-            eprintln!("[Ledgerful] Intent entry skipped.");
+            tracing::info!(target: "cli_summary", "[Ledgerful] Intent entry skipped.");
             return Ok(());
         } else {
             // Reset skips

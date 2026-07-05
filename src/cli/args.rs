@@ -204,6 +204,7 @@ pub enum Commands {
         subcommand: BridgeCommands,
     },
     /// Manage project ledger and transactional provenance
+    #[command(long_about = "Manage project ledger and transactional provenance.\n\nNOTE: Ledgerful uses a two-step commit model. Git hooks cannot see the final hash pre-commit, so a pending sidecar is created first, and the post-commit hook promotes it to the ledger.")]
     Ledger {
         #[command(subcommand)]
         command: LedgerCommands,

@@ -30,7 +30,8 @@ pub fn verify_ledger_signatures(layout: &Layout) -> Result<()> {
         return Ok(());
     }
 
-    eprintln!(
+    tracing::info!(
+        target: "cli_summary",
         "Verifying signatures for {} ledger entries (require_signing={})...",
         entries.len(),
         signing_required
@@ -54,7 +55,8 @@ pub fn verify_ledger_signatures(layout: &Layout) -> Result<()> {
                         &entry.tx_id[..8]
                     );
                 } else {
-                    eprintln!(
+                    tracing::info!(
+                        target: "cli_summary",
                         "  [{}] TX {} signed by {}",
                         "VALID".green(),
                         &entry.tx_id[..8],
@@ -71,7 +73,8 @@ pub fn verify_ledger_signatures(layout: &Layout) -> Result<()> {
                         &entry.tx_id[..8]
                     );
                 } else {
-                    eprintln!(
+                    tracing::info!(
+                        target: "cli_summary",
                         "  [{}] TX {} has no signature (signing not required, skipping).",
                         "SKIP".yellow(),
                         &entry.tx_id[..8]
@@ -82,7 +85,8 @@ pub fn verify_ledger_signatures(layout: &Layout) -> Result<()> {
         }
     }
 
-    eprintln!(
+    tracing::info!(
+        target: "cli_summary",
         "\nSignature verification summary: {} valid, {} invalid, {} skipped.",
         valid_count.green(),
         if invalid_count > 0 {
@@ -94,7 +98,8 @@ pub fn verify_ledger_signatures(layout: &Layout) -> Result<()> {
     );
 
     if all_valid {
-        eprintln!(
+        tracing::info!(
+            target: "cli_summary",
             "{}",
             "All signature validations passed successfully!"
                 .green()
@@ -477,7 +482,7 @@ pub fn execute_verify(
     if !ctx.no_predict {
         let num_steps = steps.len();
         if num_steps > 0 {
-            eprintln!("Running {} verification step(s)...", num_steps);
+            tracing::info!(target: "cli_summary", "Running {} verification step(s)...", num_steps);
         }
     }
 

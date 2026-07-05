@@ -58,9 +58,25 @@ fn run() -> Result<()> {
             }
         );
 
+    let normal_layer = fmt::layer()
+        .with_writer(std::io::stderr)
+        .with_filter(tracing_subscriber::filter::filter_fn(move |meta| {
+            meta.target() != "cli_summary"
+        }))
+        .with_filter(build_log_filter(effective_verbose));
+
+    let summary_layer = fmt::layer()
+        .with_writer(std::io::stderr)
+        .without_time()
+        .with_target(false)
+        .with_level(false)
+        .with_filter(tracing_subscriber::filter::filter_fn(move |meta| {
+            meta.target() == "cli_summary"
+        }));
+
     tracing_subscriber::registry()
-        .with(fmt::layer().with_writer(std::io::stderr))
-        .with(build_log_filter(effective_verbose))
+        .with(normal_layer)
+        .with(summary_layer)
         .init();
 
     // H4: Sweep for stale shadow-copy binaries left over from a prior update

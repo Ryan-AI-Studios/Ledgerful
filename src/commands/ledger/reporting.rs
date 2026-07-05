@@ -186,6 +186,42 @@ pub fn execute_ledger_status(
             get_status_icon(LedgerStatus::Pending),
             "PENDING TRANSACTIONS".yellow().bold()
         );
+
+        let sidecar_path = layout.state_subdir().join("pending_hook_tx");
+        if sidecar_path.exists() {
+            match std::fs::read_to_string(&sidecar_path) {
+                Ok(content) => match serde_json::from_str::<crate::commands::hook_post_commit::PendingHookTx>(&content) {
+                    Ok(pending_sidecar) => {
+                        let mut matches_head = false;
+                        if let Ok(output) = std::process::Command::new("git").args(["log", "-1", "--format=%B"]).current_dir(layout.root.as_std_path()).output() {
+                            if output.status.success() {
+                                let head_msg = String::from_utf8_lossy(&output.stdout).to_string();
+                                let cleaned = crate::util::text::clean_commit_msg(&head_msg);
+                                use sha2::{Digest, Sha256};
+                                let mut hasher = Sha256::new();
+                                hasher.update(cleaned.as_bytes());
+                                let current_hash = hex::encode(hasher.finalize());
+                                matches_head = current_hash == pending_sidecar.commit_msg_hash;
+                            }
+                        }
+                        if matches_head {
+                            println!("  {} [Sidecar] Pending commit sidecar matches HEAD", "󰀦".yellow());
+                        } else {
+                            println!("  {} [Sidecar] Pending commit sidecar exists but does NOT match HEAD (stale)", "󰀦".yellow());
+                        }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to parse pending hook sidecar: {}", e);
+                        println!("  {} [Sidecar] Pending commit sidecar is broken/unparseable (stale)", "󰀦".red());
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("Failed to read pending hook sidecar: {}", e);
+                    println!("  {} [Sidecar] Pending commit sidecar is unreadable (stale)", "󰀦".red());
+                }
+            }
+        }
+
         if pending.is_empty() {
             println!("  None.");
         } else {
