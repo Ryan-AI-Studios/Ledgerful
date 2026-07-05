@@ -43,6 +43,7 @@ fn test_impact_packet_is_loadable_by_verify_after_scan() {
     // (using prediction mode, no manual command override)
     let result = execute_verify(
         Some("echo ok".into()),
+        None,
         10,
         false,
         false,

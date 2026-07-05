@@ -98,6 +98,8 @@ fn promote_pending_ledger_tx(layout: &crate::state::layout::Layout) -> Result<()
     let config = load_ledger_config(layout)?;
     let sidecar_path = layout.state_subdir().join("pending_hook_tx");
 
+
+
     if !sidecar_path.exists() {
         return Ok(());
     }
@@ -122,6 +124,7 @@ fn promote_pending_ledger_tx(layout: &crate::state::layout::Layout) -> Result<()
     let current_hash = hex::encode(hasher.finalize());
 
     if pending.commit_msg_hash != current_hash {
+
         tracing::info!(
             target: "cli_summary",
             "[Ledgerful] Pending transaction {} was for a different commit; discarding sidecar.",

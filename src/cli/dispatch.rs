@@ -126,6 +126,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
         }
         Commands::Verify {
             command,
+            tx_id,
             timeout,
             no_predict,
             explain,
@@ -135,8 +136,8 @@ pub fn run_with(cli: Cli) -> Result<()> {
             dry_run,
             scope,
         } => dispatch_verify(
-            &layout, command, timeout, no_predict, explain, entity, health, signatures, dry_run,
-            scope,
+            &layout, command, tx_id, timeout, no_predict, explain, entity, health, signatures,
+            dry_run, scope,
         ),
         Commands::Ask {
             query,
@@ -920,6 +921,7 @@ mod export_path_tests {
 fn dispatch_verify(
     layout: &crate::state::layout::Layout,
     command: Option<String>,
+    tx_id: Option<String>,
     timeout: u64,
     no_predict: bool,
     explain: bool,
@@ -933,7 +935,7 @@ fn dispatch_verify(
         crate::commands::verify::verify_ledger_signatures(layout)
     } else {
         crate::commands::verify::execute_verify(
-            command, timeout, no_predict, explain, entity, health, dry_run, scope,
+            command, tx_id, timeout, no_predict, explain, entity, health, dry_run, scope,
         )
     }
 }

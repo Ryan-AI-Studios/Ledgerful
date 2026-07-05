@@ -386,7 +386,7 @@ fn test_ask_warns_on_stale_cached_impact_packet() {
     // before that failure, since the freshness check runs ahead of backend
     // validation.
     let output = Command::new(ledgerful_bin)
-        .args(["ask", "tell me about the architecture of this codebase"])
+        .args(["ask", "explain my recent changes"])
         .current_dir(root)
         .env("LEDGERFUL_NON_INTERACTIVE", "1")
         .env_remove("GEMINI_API_KEY")
@@ -481,7 +481,7 @@ fn test_ask_warns_on_stale_clean_tree_tombstone() {
     // further down -- the warning must still have been printed to stderr
     // before that failure.
     let output = Command::new(ledgerful_bin)
-        .args(["ask", "tell me about the architecture of this codebase"])
+        .args(["ask", "explain my recent changes"])
         .current_dir(root)
         .env("LEDGERFUL_NON_INTERACTIVE", "1")
         .env_remove("GEMINI_API_KEY")

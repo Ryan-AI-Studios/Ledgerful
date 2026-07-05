@@ -13,6 +13,7 @@ fn test_verify_command_pass() {
     let cmd = "echo hello";
     let result = execute_verify(
         Some(cmd.into()),
+        None,
         5,
         false,
         false,
@@ -32,6 +33,7 @@ fn test_verify_command_fail() {
     let cmd = "exit 1";
     let result = execute_verify(
         Some(cmd.into()),
+        None,
         5,
         false,
         false,
@@ -55,6 +57,7 @@ fn test_verify_command_timeout() {
     };
     let result = execute_verify(
         Some(cmd.into()),
+        None,
         1,
         false,
         false,
@@ -75,6 +78,7 @@ fn test_verify_command_not_found() {
     let _guard = DirGuard::from_utf8(root);
     let result = execute_verify(
         Some("nonexistent_command_9999".into()),
+        None,
         5,
         false,
         false,
@@ -96,6 +100,7 @@ fn test_verify_dry_run_does_not_execute() {
     let _guard = DirGuard::from_utf8(root);
     let result = execute_verify(
         Some("nonexistent_command_that_would_fail_if_run".into()),
+        None,
         5,
         false,
         false,
@@ -119,6 +124,7 @@ fn test_verify_health_check_known_executable() {
     let _guard = DirGuard::from_utf8(root);
     let result = execute_verify(
         Some("cargo --version".into()),
+        None,
         10,
         false,
         false,
@@ -143,6 +149,7 @@ fn test_verify_health_check_missing_executable() {
     // Health mode checks config steps and auto-detected tools. We test that
     // health mode completes without panicking/hanging on a normal dev machine.
     let result = execute_verify(
+        None,
         None,
         5,
         false,
@@ -169,6 +176,7 @@ fn test_verify_health_check_env_prefix_command() {
     // Health check passes None manual command so it uses auto-detection.
     // The key test is that it doesn't crash or hang.
     let result = execute_verify(
+        None,
         None,
         10,
         false,
@@ -470,3 +478,449 @@ mod escape_cozo_string_tests {
         assert_eq!(escape_cozo_string(""), "");
     }
 }
+
+#[test]
+fn test_verify_fails_with_unresolvable_tx_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    crate::common::setup_git_repo(root);
+    
+    let ledgerful_bin = std::env!("CARGO_BIN_EXE_ledgerful");
+
+    std::process::Command::new(ledgerful_bin)
+        .arg("init")
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    let output = std::process::Command::new(ledgerful_bin)
+        .args(["verify", "--tx-id", "test_tx_id", "echo hello"])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "verify command should have failed"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("Failed to resolve tx-id 'test_tx_id'"),
+        "Missing diagnostic in stderr: {}", stderr
+    );
+}
+
+#[test]
+fn test_verify_persists_with_resolved_tx_id() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    crate::common::setup_git_repo(root);
+    
+    let ledgerful_bin = std::env!("CARGO_BIN_EXE_ledgerful");
+
+    std::process::Command::new(ledgerful_bin)
+        .arg("init")
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    // Start a transaction
+    std::process::Command::new(ledgerful_bin)
+        .args(["ledger", "start", "my-feature", "--category", "FEATURE", "--message", "test tx"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    // Get the pending tx id
+    let output = std::process::Command::new(ledgerful_bin)
+        .args(["ledger", "status", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    
+    let status_json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let tx_id = status_json["pendingTxIds"][0].as_str().unwrap().to_string();
+
+    let verify_output = std::process::Command::new(ledgerful_bin)
+        .args(["verify", "--tx-id", &tx_id, "echo hello"])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+
+    assert!(
+        verify_output.status.success(),
+        "verify command failed: {}",
+        String::from_utf8_lossy(&verify_output.stderr)
+    );
+
+    let db_path = root.join(".ledgerful").join("state").join("ledger.db");
+    let db = rusqlite::Connection::open(&db_path).unwrap();
+    let count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM verification_runs WHERE tx_id = ?1",
+            rusqlite::params![tx_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(count, 1, "Expected exactly 1 verification run with tx_id = '{}'", tx_id);
+}
+
+
+
+#[test]
+fn test_verify_explicit_tx_id_must_be_pending() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(root.as_std_path());
+    
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+
+    std::process::Command::new(ledgerful_bin).arg("init").current_dir(root).output().unwrap();
+
+    // Start a transaction
+    let start_out = std::process::Command::new(ledgerful_bin)
+        .args(["ledger", "start", "my-feature-3", "--category", "FEATURE", "--message", "test pending"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(start_out.status.success(), "Start failed: {}", String::from_utf8_lossy(&start_out.stderr));
+
+    // Get the pending tx id
+    let output = std::process::Command::new(ledgerful_bin)
+        .args(["ledger", "status", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "Status failed: {}", String::from_utf8_lossy(&output.stderr));
+
+    let status_json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let tx_id = status_json["pendingTxIds"][0].as_str().unwrap().to_string();
+
+    // Commit the transaction
+    std::process::Command::new(ledgerful_bin)
+        .args(["ledger", "commit", &tx_id, "--summary", "done", "--reason", "reason"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    // Try verifying with the COMMITTED tx-id
+    let verify_output = std::process::Command::new(ledgerful_bin)
+        .args(["verify", "echo hello", "--tx-id", &tx_id])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+
+    assert!(!verify_output.status.success(), "Verify should fail when tx-id is not PENDING");
+    let err = String::from_utf8_lossy(&verify_output.stderr);
+    assert!(err.contains("must be PENDING"));
+}
+
+#[test]
+fn test_verify_tx_id_deferred_on_dry_run_or_health() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(root.as_std_path());
+    
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+
+    std::process::Command::new(ledgerful_bin).arg("init").current_dir(root).output().unwrap();
+
+    // Dry run with an invalid tx-id should succeed because tx-id resolution is deferred
+    let verify_dry = std::process::Command::new(ledgerful_bin)
+        .args(["verify", "echo hello", "--tx-id", "invalid-id-123", "--dry-run"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    assert!(verify_dry.status.success(), "Verify --dry-run should ignore invalid tx-id");
+
+    // Health run with an invalid tx-id should succeed
+    let verify_health = std::process::Command::new(ledgerful_bin)
+        .args(["verify", "--tx-id", "invalid-id-123", "--health"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    assert!(verify_health.status.success(), "Verify --health should ignore invalid tx-id");
+}
+
+#[test]
+fn test_verify_commit_editmsg_without_index_lock_does_not_autobind() {
+    use std::fs;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    crate::common::setup_git_repo(root);
+    
+    std::fs::write(root.join("dummy.txt"), "hello").unwrap();
+    crate::common::git_add_and_commit(root, "initial commit");
+
+    let ledgerful_bin = std::env!("CARGO_BIN_EXE_ledgerful");
+
+    std::process::Command::new(ledgerful_bin)
+        .arg("init")
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    std::process::Command::new(ledgerful_bin)
+        .args(["ledger", "start", "my-feature-stale", "--category", "FEATURE", "--message", "test stale bind"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    let output = std::process::Command::new(ledgerful_bin)
+        .args(["ledger", "status", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    
+    let status_json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let tx_id = status_json["pendingTxIds"][0].as_str().unwrap().to_string();
+
+    // Write the sidecar
+    let sidecar_path = root.join(".ledgerful").join("state").join("pending_hook_tx");
+    
+    let editmsg_content = "feat: stale commit\n\nThis is a stale commit message.";
+    let cleaned = ledgerful::util::text::clean_commit_msg(editmsg_content);
+    let edit_hash = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(cleaned.as_bytes());
+        hex::encode(hasher.finalize())
+    };
+
+    let sidecar_json = serde_json::json!({
+        "tx_id": tx_id,
+        "commit_msg_hash": edit_hash,
+        "summary": "stale commit",
+        "reason": "dummy reason"
+    });
+    fs::write(sidecar_path, serde_json::to_string(&sidecar_json).unwrap()).unwrap();
+
+    // Write the COMMIT_EDITMSG
+    let editmsg_path = root.join(".git").join("COMMIT_EDITMSG");
+    fs::write(&editmsg_path, editmsg_content).unwrap();
+
+    // DELIBERATELY DO NOT CREATE .git/index.lock
+
+    // Run verify WITH the sidecar and COMMIT_EDITMSG present
+    let verify_output = std::process::Command::new(ledgerful_bin)
+        .args(["verify", "echo hello stale"])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+
+    assert!(verify_output.status.success());
+
+    let db_path = root.join(".ledgerful").join("state").join("ledger.db");
+    let db = rusqlite::Connection::open(&db_path).unwrap();
+    let count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM verification_runs WHERE tx_id = ?1",
+            rusqlite::params![tx_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    // Because index.lock does not exist, it should NOT auto-bind
+    assert_eq!(count, 0, "Expected NO auto-bind without index.lock");
+}
+
+#[test]
+fn test_verify_commit_editmsg_with_index_lock_autobinds() {
+    use std::fs;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    crate::common::setup_git_repo(root);
+    
+    std::fs::write(root.join("dummy.txt"), "hello").unwrap();
+    crate::common::git_add_and_commit(root, "initial commit");
+
+    let ledgerful_bin = std::env!("CARGO_BIN_EXE_ledgerful");
+
+    std::process::Command::new(ledgerful_bin)
+        .arg("init")
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    std::process::Command::new(ledgerful_bin)
+        .args(["ledger", "start", "my-feature-fresh", "--category", "FEATURE", "--message", "test fresh bind"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    let output = std::process::Command::new(ledgerful_bin)
+        .args(["ledger", "status", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    
+    let status_json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let tx_id = status_json["pendingTxIds"][0].as_str().unwrap().to_string();
+
+    // Write the sidecar
+    let sidecar_path = root.join(".ledgerful").join("state").join("pending_hook_tx");
+    
+    let editmsg_content = "feat: fresh commit\n\nThis is a fresh commit message.";
+    let cleaned = ledgerful::util::text::clean_commit_msg(editmsg_content);
+    let edit_hash = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(cleaned.as_bytes());
+        hex::encode(hasher.finalize())
+    };
+
+    let sidecar_json = serde_json::json!({
+        "tx_id": tx_id,
+        "commit_msg_hash": edit_hash,
+        "summary": "fresh commit",
+        "reason": "dummy reason"
+    });
+    fs::write(sidecar_path, serde_json::to_string(&sidecar_json).unwrap()).unwrap();
+
+    // Write the COMMIT_EDITMSG
+    let editmsg_path = root.join(".git").join("COMMIT_EDITMSG");
+    fs::write(&editmsg_path, editmsg_content).unwrap();
+
+    // Create the .git/index.lock dummy file
+    let index_lock_path = root.join(".git").join("index.lock");
+    fs::write(&index_lock_path, "").unwrap();
+
+    // Run verify WITH the sidecar, COMMIT_EDITMSG, and index.lock present
+    let verify_output = std::process::Command::new(ledgerful_bin)
+        .args(["verify", "echo hello fresh"])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+
+    assert!(verify_output.status.success());
+
+    let db_path = root.join(".ledgerful").join("state").join("ledger.db");
+    let db = rusqlite::Connection::open(&db_path).unwrap();
+    let count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM verification_runs WHERE tx_id = ?1",
+            rusqlite::params![tx_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    // Because index.lock exists, it SHOULD auto-bind
+    assert_eq!(count, 1, "Expected auto-bind with index.lock present");
+}
+
+/// Negative test for the Codex Round 9 MEDIUM finding.
+///
+/// The verify auto-bind freshness check must ONLY trigger when BOTH:
+///   1. `COMMIT_EDITMSG` exists and its hash matches the sidecar, AND
+///   2. `.git/index.lock` exists.
+///
+/// A sidecar whose `commit_msg_hash` matches HEAD (the last committed message)
+/// but where `COMMIT_EDITMSG` is absent must NOT auto-bind, even if
+/// `index.lock` is present — because `index.lock` can be created by unrelated
+/// git activity (e.g., a concurrent `git add` in another terminal) and HEAD
+/// matching the sidecar is the signature of a stale "post-commit failed" sidecar.
+#[test]
+fn test_verify_head_match_with_index_lock_but_no_editmsg_does_not_autobind() {
+    use std::fs;
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    crate::common::setup_git_repo(root);
+
+    // Make an initial commit so HEAD exists
+    std::fs::write(root.join("dummy.txt"), "hello").unwrap();
+    crate::common::git_add_and_commit(root, "initial commit");
+
+    let ledgerful_bin = std::env!("CARGO_BIN_EXE_ledgerful");
+
+    std::process::Command::new(ledgerful_bin)
+        .arg("init")
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    std::process::Command::new(ledgerful_bin)
+        .args([
+            "ledger", "start", "my-stale-head-feature",
+            "--category", "FEATURE",
+            "--message", "test head-only bind is rejected",
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    let output = std::process::Command::new(ledgerful_bin)
+        .args(["ledger", "status", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    let status_json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let tx_id = status_json["pendingTxIds"][0].as_str().unwrap().to_string();
+
+    // Hash the HEAD commit message to simulate a "HEAD-matching" sidecar
+    let head_output = std::process::Command::new("git")
+        .args(["log", "-1", "--format=%B"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    let head_msg = String::from_utf8_lossy(&head_output.stdout).to_string();
+    let cleaned = ledgerful::util::text::clean_commit_msg(&head_msg);
+    let head_hash = {
+        use sha2::{Digest, Sha256};
+        let mut hasher = Sha256::new();
+        hasher.update(cleaned.as_bytes());
+        hex::encode(hasher.finalize())
+    };
+
+    // Write sidecar whose commit_msg_hash matches HEAD
+    let sidecar_path = root.join(".ledgerful").join("state").join("pending_hook_tx");
+    let sidecar_json = serde_json::json!({
+        "tx_id": tx_id,
+        "commit_msg_hash": head_hash,
+        "summary": "head-matching sidecar",
+        "reason": "dummy reason"
+    });
+    fs::write(&sidecar_path, serde_json::to_string(&sidecar_json).unwrap()).unwrap();
+
+    // Ensure COMMIT_EDITMSG does NOT exist (simulate absence of active in-flight commit)
+    let editmsg_path = root.join(".git").join("COMMIT_EDITMSG");
+    if editmsg_path.exists() {
+        fs::remove_file(&editmsg_path).unwrap();
+    }
+
+    // Create .git/index.lock (e.g., from a concurrent `git add` in another terminal)
+    let index_lock_path = root.join(".git").join("index.lock");
+    fs::write(&index_lock_path, "").unwrap();
+
+    // Run verify — should succeed but must NOT auto-bind
+    let verify_output = std::process::Command::new(ledgerful_bin)
+        .args(["verify", "echo hello head-only"])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+
+    assert!(verify_output.status.success());
+
+    let db_path = root.join(".ledgerful").join("state").join("ledger.db");
+    let db = rusqlite::Connection::open(&db_path).unwrap();
+    let count: i64 = db
+        .query_row(
+            "SELECT COUNT(*) FROM verification_runs WHERE tx_id = ?1",
+            rusqlite::params![tx_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    // HEAD-match + index.lock without COMMIT_EDITMSG must NOT auto-bind.
+    // If a HEAD-match path exists in the auto-bind logic this assertion will fail with count == 1.
+    assert_eq!(
+        count, 0,
+        "Auto-bind must NOT trigger from HEAD-match + index.lock when COMMIT_EDITMSG is absent"
+    );
+}
+

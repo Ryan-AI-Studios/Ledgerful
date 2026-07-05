@@ -41,6 +41,7 @@ impl StorageManager {
         timestamp: &str,
         plan_json: Option<&str>,
         overall_pass: bool,
+        tx_id: Option<&str>,
     ) -> Result<i64> {
         debug_assert!(
             !self.is_read_only,
@@ -48,8 +49,8 @@ impl StorageManager {
         );
         self.conn
             .execute(
-                "INSERT INTO verification_runs (timestamp, plan_json, overall_pass) VALUES (?1, ?2, ?3)",
-                (timestamp, plan_json, overall_pass as i32),
+                "INSERT INTO verification_runs (timestamp, plan_json, overall_pass, tx_id) VALUES (?1, ?2, ?3, ?4)",
+                (timestamp, plan_json, overall_pass as i32, tx_id),
             )
             .into_diagnostic()?;
         Ok(self.conn.last_insert_rowid())
@@ -62,6 +63,7 @@ impl StorageManager {
         exit_code: i32,
         duration_ms: u64,
         truncated: bool,
+        tx_id: Option<&str>,
     ) -> Result<()> {
         debug_assert!(
             !self.is_read_only,
@@ -69,8 +71,8 @@ impl StorageManager {
         );
         self.conn
             .execute(
-                "INSERT INTO verification_results (run_id, command, exit_code, duration_ms, truncated) VALUES (?1, ?2, ?3, ?4, ?5)",
-                (run_id, command, exit_code, duration_ms as i64, truncated as i32),
+                "INSERT INTO verification_results (run_id, command, exit_code, duration_ms, truncated, tx_id) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                (run_id, command, exit_code, duration_ms as i64, truncated as i32, tx_id),
             )
             .into_diagnostic()?;
         Ok(())
@@ -308,7 +310,7 @@ mod tests {
     fn test_save_verification_run() {
         let storage = in_memory_storage();
         let id = storage
-            .save_verification_run("2026-01-01T00:00:00Z", Some(r#"{"steps":[]}"#), true)
+            .save_verification_run("2026-01-01T00:00:00Z", Some(r#"{"steps":[]}"#), true, None)
             .unwrap();
         assert!(id > 0);
 
@@ -321,10 +323,10 @@ mod tests {
     fn test_save_verification_result() {
         let storage = in_memory_storage();
         let run_id = storage
-            .save_verification_run("2026-01-01T00:00:00Z", None, false)
+            .save_verification_run("2026-01-01T00:00:00Z", None, false, None)
             .unwrap();
         storage
-            .save_verification_result(run_id, "cargo test", 1, 3000, false)
+            .save_verification_result(run_id, "cargo test", 1, 3000, false, None)
             .unwrap();
     }
 

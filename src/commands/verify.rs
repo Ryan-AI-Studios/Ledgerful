@@ -151,6 +151,7 @@ pub fn enumerate_invalid_ledger_entries(
 #[allow(clippy::too_many_arguments)]
 pub fn execute_verify(
     command_str: Option<String>,
+    tx_id: Option<String>,
     timeout_secs: u64,
     no_predict: bool,
     explain: bool,
@@ -169,6 +170,8 @@ pub fn execute_verify(
         warn!("Config load failed: {e}. Using defaults.");
         crate::config::model::Config::default()
     });
+
+    // Deferred `tx_id` resolution until after short-circuits.
 
     let mut ctx = VerificationContext::new(
         layout.clone(),
@@ -486,7 +489,90 @@ pub fn execute_verify(
         }
     }
 
-    let mut report = VerifyEngine::execute(&mut ctx, plan, &steps, manual_requested)?;
+    let resolved_tx_id = if let Some(ref id) = tx_id {
+        match StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()) {
+            Ok(mut stg) => {
+                let mgr = crate::ledger::TransactionManager::new(&mut stg, layout.root.clone().into(), config.clone());
+                let resolved = mgr.resolve_tx_id(id).map_err(|e| miette::miette!("Failed to resolve tx-id '{}': {}", id, e))?;
+                match mgr.get_transaction(&resolved) {
+                    Ok(Some(tx)) => {
+                        if tx.status != "PENDING" {
+                            return Err(miette::miette!("Cannot attach to transaction '{}': status is '{}' (must be PENDING)", resolved, tx.status));
+                        }
+                    }
+                    Ok(None) => {
+                        return Err(miette::miette!("Transaction '{}' not found", resolved));
+                    }
+                    Err(e) => {
+                        return Err(miette::miette!("Failed to read transaction '{}' from database: {}", resolved, e));
+                    }
+                }
+                Some(resolved)
+            }
+            Err(_) => return Err(miette::miette!("Failed to initialize storage for tx-id resolution")),
+        }
+    } else {
+        let sidecar_path = layout.state_subdir().join("pending_hook_tx");
+        let mut auto_id = None;
+        if sidecar_path.exists() {
+            match std::fs::read_to_string(&sidecar_path) {
+                Ok(content) => match serde_json::from_str::<crate::commands::hook_post_commit::PendingHookTx>(&content) {
+                    Ok(pending) => {
+                        let repo_root = layout.root.as_std_path();
+                        let mut fresh = false;
+                        
+                        let editmsg_path = repo_root.join(".git").join("COMMIT_EDITMSG");
+                        let index_lock_path = repo_root.join(".git").join("index.lock");
+                        
+                        if editmsg_path.exists() && index_lock_path.exists() {
+                            if let Ok(edit_msg) = std::fs::read_to_string(&editmsg_path) {
+                                let cleaned = crate::util::text::clean_commit_msg(&edit_msg);
+                                use sha2::{Digest, Sha256};
+                                let mut hasher = Sha256::new();
+                                hasher.update(cleaned.as_bytes());
+                                let edit_hash = hex::encode(hasher.finalize());
+                                if edit_hash == pending.commit_msg_hash {
+                                    fresh = true;
+                                }
+                            }
+                        }
+
+                        if fresh {
+                            match StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()) {
+                                Ok(mut stg) => {
+                                    let mgr = crate::ledger::TransactionManager::new(&mut stg, layout.root.clone().into(), config.clone());
+                                    match mgr.resolve_tx_id(&pending.tx_id) {
+                                        Ok(resolved) => {
+                                            match mgr.get_transaction(&resolved) {
+                                                Ok(Some(tx)) => {
+                                                    if tx.status == "PENDING" {
+                                                        auto_id = Some(resolved);
+                                                    } else {
+                                                        warn!("Sidecar transaction {} is in state '{}', not PENDING; skipping auto-bind.", resolved, tx.status);
+                                                    }
+                                                }
+                                                Ok(None) => warn!("Sidecar transaction {} not found in DB; skipping auto-bind.", resolved),
+                                                Err(e) => warn!("Failed to read sidecar transaction {} from DB: {}; skipping auto-bind.", resolved, e),
+                                            }
+                                        }
+                                        Err(e) => warn!("Sidecar transaction {} could not be resolved: {}; skipping auto-bind.", pending.tx_id, e),
+                                    }
+                                }
+                                Err(e) => warn!("Failed to initialize storage for auto-bind: {}; skipping auto-bind.", e),
+                            }
+                        } else {
+                            warn!("Sidecar transaction {} is stale (commit_msg_hash mismatch); skipping auto-bind.", pending.tx_id);
+                        }
+                    }
+                    Err(e) => warn!("Failed to parse pending hook sidecar: {}; skipping auto-bind.", e),
+                }
+                Err(e) => warn!("Failed to read pending hook sidecar: {}; skipping auto-bind.", e),
+            }
+        }
+        auto_id
+    };
+
+    let mut report = VerifyEngine::execute(&mut ctx, plan, &steps, manual_requested, resolved_tx_id)?;
 
     // 5. Generate Suggestions
     let ledger_status = query_ledger_status(&layout);

@@ -71,6 +71,7 @@ impl VerifyEngine {
         plan: Option<VerificationPlan>,
         steps: &[VerificationStep],
         manual_requested: bool,
+        tx_id: Option<String>,
     ) -> Result<VerificationReport> {
         let mut persisted_results = Vec::new();
         let mut overall_success = true;
@@ -97,7 +98,8 @@ impl VerifyEngine {
         }
 
         let mut report = VerificationReport::new(plan, persisted_results.clone())
-            .with_warnings(ctx.warnings.clone());
+            .with_warnings(ctx.warnings.clone())
+            .with_tx_id(tx_id);
         report.overall_pass = overall_success;
 
         write_verify_report(&ctx.layout, &report)?;
@@ -131,10 +133,15 @@ impl VerifyEngine {
 
     fn persist_verify_report(layout: &Layout, report: &VerificationReport) {
         let db_path = layout.state_subdir().join("ledger.db");
-        let Ok(storage) = StorageManager::init(db_path.as_std_path()) else {
+        let Ok(mut storage) = StorageManager::init(db_path.as_std_path()) else {
             warn!("Could not initialize SQLite for verification report persistence");
             return;
         };
+
+        if let Err(e) = storage.get_connection_mut().execute("BEGIN IMMEDIATE", []) {
+            warn!("Failed to begin transaction for verification results: {e}");
+            return;
+        }
 
         let plan_json = report
             .plan
@@ -145,8 +152,10 @@ impl VerifyEngine {
             &report.timestamp,
             plan_json.as_deref(),
             report.overall_pass,
+            report.tx_id.as_deref(),
         ) else {
             warn!("Failed to persist verification run metadata");
+            let _ = storage.get_connection_mut().execute("ROLLBACK", []);
             return;
         };
 
@@ -157,9 +166,16 @@ impl VerifyEngine {
                 result.exit_code,
                 result.duration_ms,
                 result.truncated,
+                report.tx_id.as_deref(),
             ) {
                 warn!("Failed to persist verification result: {err}");
+                let _ = storage.get_connection_mut().execute("ROLLBACK", []);
+                return;
             }
+        }
+
+        if let Err(e) = storage.get_connection_mut().execute("COMMIT", []) {
+            warn!("Failed to commit transaction for verification results: {e}");
         }
     }
 

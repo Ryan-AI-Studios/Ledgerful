@@ -1197,6 +1197,21 @@ async fn test_api_ledger_detail_reads_verification_enrichment() {
     )
     .unwrap();
 
+    // Add an unlinked run (NULL tx_id) to verify it is not counted
+    conn.execute(
+        "INSERT INTO verification_runs (timestamp, plan_json, overall_pass, tx_id) \
+         VALUES ('2026-06-17T10:00:02Z', '{}', 0, NULL)",
+        [],
+    )
+    .unwrap();
+    let null_run = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO verification_results (run_id, command, exit_code, duration_ms, truncated, tx_id) \
+         VALUES (?1, 'cargo check', 1, 50, 0, NULL)",
+        rusqlite::params![null_run],
+    )
+    .unwrap();
+
     // Seed a hotspot_history row for one of the two changed files so
     // `hotspots_crossed` is non-zero and actually exercises the JOIN,
     // not just the empty-table path. `src/foo.rs` is one of the two

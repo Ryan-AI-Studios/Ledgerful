@@ -33,6 +33,8 @@ pub struct VerificationReport {
     pub suggested_actions: Vec<crate::verify::suggestions::Suggestion>,
     pub overall_pass: bool,
     pub timestamp: String,
+    #[serde(default)]
+    pub tx_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -40,6 +42,8 @@ pub struct VerifyHistoryRecord {
     pub timestamp: String,
     pub passed: bool,
     pub duration_secs: u64,
+    #[serde(default)]
+    pub tx_id: Option<String>,
 }
 
 impl VerificationReport {
@@ -52,7 +56,13 @@ impl VerificationReport {
             suggested_actions: Vec::new(),
             overall_pass,
             timestamp: Utc::now().to_rfc3339(),
+            tx_id: None,
         }
+    }
+
+    pub fn with_tx_id(mut self, tx_id: Option<String>) -> Self {
+        self.tx_id = tx_id;
+        self
     }
 
     pub fn with_warnings(mut self, warnings: Vec<String>) -> Self {
@@ -104,6 +114,7 @@ fn update_verify_history(layout: &Layout, report: &VerificationReport) -> Result
         timestamp: report.timestamp.clone(),
         passed: report.overall_pass,
         duration_secs: total_duration_ms / 1000,
+        tx_id: report.tx_id.clone(),
     });
 
     if history.len() > 100 {

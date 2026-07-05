@@ -134,36 +134,67 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
             Ok(content) => match serde_json::from_str::<PendingHookTx>(&content) {
                 Ok(pending) => {
                     let mut matches_head = false;
-                    if let Ok(output) = std::process::Command::new("git").args(["log", "-1", "--format=%B"]).current_dir(repo_root).output() {
-                        if output.status.success() {
-                            let head_msg = String::from_utf8_lossy(&output.stdout).to_string();
-                            let cleaned = crate::util::text::clean_commit_msg(&head_msg);
-                            let current_hash = hash_message(&cleaned);
-                            matches_head = current_hash == pending.commit_msg_hash;
+                    let mut matches_editmsg = false;
+                    let editmsg_path = repo_root.join(".git").join("COMMIT_EDITMSG");
+
+                    if let Ok(output) = std::process::Command::new("git")
+                        .args(["log", "-1", "--format=%B"])
+                        .current_dir(repo_root)
+                        .output()
+                        && output.status.success()
+                    {
+                        let head_msg = String::from_utf8_lossy(&output.stdout).to_string();
+                        let cleaned = crate::util::text::clean_commit_msg(&head_msg);
+                        let current_hash = hash_message(&cleaned);
+                        matches_head = current_hash == pending.commit_msg_hash;
+                    }
+
+                    // matches_editmsg: the active COMMIT_EDITMSG hash matches the sidecar.
+                    // We do NOT require index.lock here — this hook is only ever invoked by git
+                    // during an active commit, so COMMIT_EDITMSG existing and matching our sidecar
+                    // hash is sufficient proof that this is an amend/re-run (not a stale sidecar).
+                    if editmsg_path.exists() {
+                        if let Ok(edit_msg) = std::fs::read_to_string(&editmsg_path) {
+                            let cleaned = crate::util::text::clean_commit_msg(&edit_msg);
+                            matches_editmsg = hash_message(&cleaned) == pending.commit_msg_hash;
                         }
                     }
 
-                    if matches_head {
+                    if matches_editmsg {
+                        // Sidecar matches the active commit-msg and an active commit is in flight (index.lock).
+                        // Do not garbage collect it. This is expected if the hook is re-run (e.g. from an amended commit or pre-commit hook calling it).
+                        return Ok(());
+                    } else if matches_head {
                         return Err(miette::miette!(
                             "A pending commit sidecar exists that matches HEAD. The previous commit succeeded but its post-commit hook failed or was skipped. Please recover it by running 'ledgerful ledger commit' or manually remove the sidecar."
                         ));
-                    }
-
-                    match StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()) {
-                        Ok(mut storage) => {
-                            let mut tx_mgr = TransactionManager::new(
-                                &mut storage,
-                                layout.root.clone().into(),
-                                config.clone(),
-                            );
-                            if let Err(e) = tx_mgr.rollback_change(pending.tx_id, "Aborted: stale hook sidecar".to_string()) {
-                                tracing::warn!("Failed to rollback stale sidecar transaction: {}. Keeping sidecar.", e);
-                            } else if let Err(e) = fs::remove_file(&sidecar_path) {
-                                tracing::warn!("Failed to remove stale sidecar file: {}. Keeping sidecar.", e);
+                    } else {
+                        tracing::warn!("Found stale pending sidecar (does not match HEAD). Rolling back pending transaction and cleaning up.");
+                        
+                        let db_path = layout.state_subdir().join("ledger.db");
+                        let mut rollback_ok = false;
+                        match StorageManager::init(db_path.as_std_path()) {
+                            Ok(mut storage) => {
+                                let mut tx_mgr = TransactionManager::new(
+                                    &mut storage,
+                                    layout.root.clone().into(),
+                                    config.clone(),
+                                );
+                                if let Err(e) = tx_mgr.rollback_change(pending.tx_id.clone(), "Stale sidecar cleaned up by commit-msg hook".to_string()) {
+                                    return Err(miette::miette!("Failed to rollback stale pending transaction {}: {}", pending.tx_id, e));
+                                } else {
+                                    rollback_ok = true;
+                                }
+                            }
+                            Err(e) => {
+                                return Err(miette::miette!("Failed to initialize storage for sidecar rollback: {}", e));
                             }
                         }
-                        Err(e) => {
-                            tracing::warn!("Failed to init storage for sidecar GC: {}. Keeping sidecar.", e);
+                        
+                        if rollback_ok {
+                            if let Err(e) = fs::remove_file(&sidecar_path) {
+                                tracing::warn!("Failed to remove stale sidecar file: {}", e);
+                            }
                         }
                     }
                 }
@@ -321,6 +352,19 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
             tracing::info!(target: "cli_summary", "[Ledgerful] Non-interactive shell detected; committing silently.");
         }
 
+        // Update commit message file if LLM refined it
+        let mut final_commit_msg = raw_commit_msg.clone();
+        if confidence >= 0.85 && !drafted_what.is_empty() {
+            let trailers = extract_trailers(&raw_commit_msg);
+            let updated_msg = if trailers.is_empty() {
+                format!("{}\n\n{}", drafted_what, drafted_why)
+            } else {
+                format!("{}\n\n{}\n\n{}", drafted_what, drafted_why, trailers)
+            };
+            fs::write(msg_file, &updated_msg).into_diagnostic()?;
+            final_commit_msg = updated_msg;
+        }
+
         silently_record_ledger(SilentRecordArgs {
             config: &config,
             entity: &entity,
@@ -329,19 +373,8 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
             risk: &drafted_risk,
             related: drafted_related,
             related_files: &related_files,
-            raw_commit_msg: &raw_commit_msg,
+            raw_commit_msg: &final_commit_msg,
         })?;
-
-        // Update commit message file if LLM refined it
-        if confidence >= 0.85 && !drafted_what.is_empty() {
-            let trailers = extract_trailers(&raw_commit_msg);
-            let updated_msg = if trailers.is_empty() {
-                format!("{}\n\n{}", drafted_what, drafted_why)
-            } else {
-                format!("{}\n\n{}\n\n{}", drafted_what, drafted_why, trailers)
-            };
-            fs::write(msg_file, updated_msg).into_diagnostic()?;
-        }
 
         // Reset skips
         history.consecutive_skips = 0;
@@ -376,17 +409,6 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
             save_skip_history(&skip_history_path, &history);
         }
 
-        silently_record_ledger(SilentRecordArgs {
-            config: &config,
-            entity: &entity,
-            what: &final_state.what,
-            why: &final_state.why,
-            risk: &final_state.risk,
-            related: final_state.related.clone(),
-            related_files: &related_files,
-            raw_commit_msg: &raw_commit_msg,
-        })?;
-
         // Update commit message file with TUI values
         let trailers = extract_trailers(&raw_commit_msg);
         let updated_msg = if trailers.is_empty() {
@@ -397,7 +419,18 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
                 final_state.what, final_state.why, trailers
             )
         };
-        fs::write(msg_file, updated_msg).into_diagnostic()?;
+        fs::write(msg_file, &updated_msg).into_diagnostic()?;
+
+        silently_record_ledger(SilentRecordArgs {
+            config: &config,
+            entity: &entity,
+            what: &final_state.what,
+            why: &final_state.why,
+            risk: &final_state.risk,
+            related: final_state.related.clone(),
+            related_files: &related_files,
+            raw_commit_msg: &updated_msg,
+        })?;
 
         Ok(())
     } else {

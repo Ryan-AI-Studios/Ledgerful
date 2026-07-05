@@ -204,7 +204,9 @@ pub enum Commands {
         subcommand: BridgeCommands,
     },
     /// Manage project ledger and transactional provenance
-    #[command(long_about = "Manage project ledger and transactional provenance.\n\nNOTE: Ledgerful uses a two-step commit model. Git hooks cannot see the final hash pre-commit, so a pending sidecar is created first, and the post-commit hook promotes it to the ledger.")]
+    #[command(
+        long_about = "Manage project ledger and transactional provenance.\n\nNOTE: Ledgerful uses a two-step commit model. Git hooks cannot see the final hash pre-commit, so a pending sidecar is created first, and the post-commit hook promotes it to the ledger."
+    )]
     Ledger {
         #[command(subcommand)]
         command: LedgerCommands,
@@ -213,6 +215,9 @@ pub enum Commands {
     Verify {
         /// Optional specific command or step to run
         command: Option<String>,
+        /// Transaction ID to associate with this verification run
+        #[arg(long)]
+        tx_id: Option<String>,
         /// Timeout in seconds
         #[arg(long, short, default_value_t = 600)]
         timeout: u64,
