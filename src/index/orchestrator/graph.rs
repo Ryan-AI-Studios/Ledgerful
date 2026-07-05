@@ -107,6 +107,13 @@ pub fn build_kg_native(
                             result.input_tokens,
                             result.output_tokens,
                         );
+                        if !result.parse_warnings.is_empty() {
+                            warn!(
+                                "Semantic extraction produced {} parse/validation warning(s): {:?}",
+                                result.parse_warnings.len(),
+                                result.parse_warnings
+                            );
+                        }
                         if let Err(e) =
                             crate::ai::semantic_extractor::SemanticExtractor::ingest_into_cozo(
                                 &result,

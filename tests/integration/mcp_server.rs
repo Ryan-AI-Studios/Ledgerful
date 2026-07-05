@@ -586,7 +586,7 @@ mod tests {
             "Expected 'Failed to get layout' or 'Failed to discover git repository' in error message"
         );
         assert!(
-            text.contains("run `ledgerful init`"),
+            text.contains("run: ledgerful init"),
             "Expected hint in error message"
         );
     }

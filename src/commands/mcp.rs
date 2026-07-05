@@ -1,6 +1,8 @@
 #[cfg(feature = "mcp")]
 pub mod manifest;
 #[cfg(feature = "mcp")]
+pub mod sanitize;
+#[cfg(feature = "mcp")]
 pub mod server;
 #[cfg(feature = "mcp")]
 pub mod tools;
