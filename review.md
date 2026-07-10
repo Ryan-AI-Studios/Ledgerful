@@ -2,12 +2,14 @@
 
 `critical`: none.
 
-`high` [src/commands/hook_commit_msg.rs](/abs/path/C:/dev/ledgerful/src/commands/hook_commit_msg.rs:160)  
-The stale-sidecar guard still rejects a legitimate in-flight hook re-run when the new commit message text is identical to `HEAD` (for example `git commit --amend --no-edit`). `matches_head` is checked before `matches_editmsg`, so an active commit whose `COMMIT_EDITMSG` equals the previous commit message is treated as “previous commit succeeded but post-commit failed” and the hook aborts, even though the comment says this path should allow re-runs. The current tests do not cover the “sidecar exists + active amend + same message as HEAD” case.
+`high`: none.
 
-`medium` [src/commands/hook_commit_msg.rs](/abs/path/C:/dev/ledgerful/src/commands/hook_commit_msg.rs:153) [src/commands/verify.rs](/abs/path/C:/dev/ledgerful/src/commands/verify.rs:527) [src/commands/ledger/reporting.rs](/abs/path/C:/dev/ledgerful/src/commands/ledger/reporting.rs:223)  
-Track 0036 now depends on `.git\index.lock` as the discriminator for “active commit in flight” across cleanup, auto-bind, and status reporting. The integration coverage only simulates that by touching a dummy file, so the behavior is still resting on an unproven Git-for-Windows timing assumption. If that assumption is wrong, valid sidecars will be classified as stale or skipped, which directly breaks verify-to-transaction mapping.
+`medium` [src/commands/hook_post_commit.rs](/abs/path/C:/dev/ledgerful/src/commands/hook_post_commit.rs:101)  
+Unconditional debug `eprintln!` calls were left in the production `post-commit` hook. Every commit now emits `POST-COMMIT HOOK RUNNING!...`, and the mismatch path also dumps both message hashes plus the full current/cleaned commit message to stderr at [src/commands/hook_post_commit.rs](/abs/path/C:/dev/ledgerful/src/commands/hook_post_commit.rs:127). That is a user-visible regression in normal git commits and can leak commit contents into CI logs or wrapper tooling that treats hook stderr as diagnostic output.
 
-`low` [tests/integration/hook_commit_msg.rs](/abs/path/C:/dev/ledgerful/tests/integration/hook_commit_msg.rs:233)  
-`test_real_shell_git_commit_amend_success` is not exercising the real two-hook lifecycle: it installs `commit-msg` only, not `post-commit`. That means it does not validate the actual sidecar promotion/cleanup path that makes amend and verify auto-binding safe, so it gives weaker confidence than its name suggests.
+`low` [tests/integration/cli_verify.rs](/abs/path/C:/dev/ledgerful/tests/integration/cli_verify.rs:515) [src/state/storage/verification.rs](/abs/path/C:/dev/ledgerful/src/state/storage/verification.rs:59)  
+The new persistence test only proves `verification_runs.tx_id` is written. The feature also writes `tx_id` onto every `verification_results` row, and that per-step linkage is part of the actual mapping contract, but there is no direct coverage for it. A regression in result-row persistence would currently slip through.
+
+`low` [tests/integration/hook_commit_msg.rs](/abs/path/C:/dev/ledgerful/tests/integration/hook_commit_msg.rs:343)  
+The hook integration tests assert success/failure and DB state, but they do not assert that the hook stays quiet on stdout/stderr. That gap is exactly why the new debug prints in `hook_post_commit` can land without a test failure.
 
