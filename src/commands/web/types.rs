@@ -164,8 +164,17 @@ pub(crate) struct LedgerDetailResponse {
 #[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
 pub(crate) struct ChangedFileResponse {
     pub(crate) path: String,
-    pub(crate) additions: i64,
-    pub(crate) deletions: i64,
+    /// `None` for pre-m48 legacy rows or binary files whose stats are
+    /// unavailable.  Serialized as `null` so the frontend can distinguish
+    /// "unknown" from a real zero.
+    pub(crate) additions: Option<i64>,
+    /// See `additions`.
+    pub(crate) deletions: Option<i64>,
+    /// `true` when the file was detected as binary by git numstat (`-\t-`).
+    /// Lets the frontend render "binary" instead of the generic "—" used
+    /// for pre-m48 legacy rows.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub(crate) is_binary: bool,
 }
 
 #[derive(Debug, Deserialize, Default)]

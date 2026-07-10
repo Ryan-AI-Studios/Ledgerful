@@ -57,6 +57,16 @@ impl<'a> LedgerDb<'a> {
         transactions::update_transaction_status(self.conn, tx_id, status, resolved_at)
     }
 
+    pub fn commit_transaction(
+        &self,
+        tx_id: &str,
+        status: &str,
+        resolved_at: Option<&str>,
+        snapshot_id: Option<i64>,
+    ) -> Result<usize, LedgerError> {
+        transactions::commit_transaction(self.conn, tx_id, status, resolved_at, snapshot_id)
+    }
+
     pub fn get_stale_pending_transactions(
         &self,
         ttl_days: u64,

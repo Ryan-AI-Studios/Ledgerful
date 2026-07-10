@@ -119,7 +119,7 @@ fn test_stale_sidecar_is_rolled_back_on_next_commit_attempt() {
     let tmp = tempfile::tempdir().unwrap();
     let root = tmp.path();
     crate::common::setup_git_repo(root);
-    
+
     std::fs::write(root.join("dummy.txt"), "hello").unwrap();
     crate::common::git_add_and_commit(root, "initial commit");
 
@@ -133,7 +133,15 @@ fn test_stale_sidecar_is_rolled_back_on_next_commit_attempt() {
 
     // Start a transaction
     std::process::Command::new(ledgerful_bin)
-        .args(["ledger", "start", "my-abandoned-feature", "--category", "FEATURE", "--message", "test stale rollback"])
+        .args([
+            "ledger",
+            "start",
+            "my-abandoned-feature",
+            "--category",
+            "FEATURE",
+            "--message",
+            "test stale rollback",
+        ])
         .current_dir(root)
         .output()
         .unwrap();
@@ -143,12 +151,15 @@ fn test_stale_sidecar_is_rolled_back_on_next_commit_attempt() {
         .current_dir(root)
         .output()
         .unwrap();
-    
+
     let status_json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
     let tx_id = status_json["pendingTxIds"][0].as_str().unwrap().to_string();
 
     // Write a sidecar with a hash that doesn't match HEAD
-    let sidecar_path = root.join(".ledgerful").join("state").join("pending_hook_tx");
+    let sidecar_path = root
+        .join(".ledgerful")
+        .join("state")
+        .join("pending_hook_tx");
     let sidecar_json = serde_json::json!({
         "tx_id": tx_id,
         "commit_msg_hash": "deadbeef12345678", // Definitely won't match
@@ -159,9 +170,17 @@ fn test_stale_sidecar_is_rolled_back_on_next_commit_attempt() {
 
     // Now simulate a new commit attempt by running the commit-msg hook
     let msg_file = root.join(".git").join("COMMIT_EDITMSG");
-    std::fs::write(&msg_file, "feat: new fresh commit\n\nThis is a brand new commit.").unwrap();
+    std::fs::write(
+        &msg_file,
+        "feat: new fresh commit\n\nThis is a brand new commit.",
+    )
+    .unwrap();
     std::fs::write(root.join("dummy2.txt"), "hello").unwrap();
-    std::process::Command::new("git").args(["add", "dummy2.txt"]).current_dir(root).output().unwrap();
+    std::process::Command::new("git")
+        .args(["add", "dummy2.txt"])
+        .current_dir(root)
+        .output()
+        .unwrap();
 
     let hook_output = std::process::Command::new(ledgerful_bin)
         .args(["internal", "hook-commit-msg", msg_file.to_str().unwrap()])
@@ -187,7 +206,10 @@ fn test_stale_sidecar_is_rolled_back_on_next_commit_attempt() {
     let new_sidecar_content = std::fs::read_to_string(&sidecar_path).unwrap();
     let new_sidecar_json: serde_json::Value = serde_json::from_str(&new_sidecar_content).unwrap();
     let new_tx_id = new_sidecar_json["tx_id"].as_str().unwrap();
-    assert_ne!(new_tx_id, tx_id, "Sidecar tx_id should be different after recreating");
+    assert_ne!(
+        new_tx_id, tx_id,
+        "Sidecar tx_id should be different after recreating"
+    );
 
     // Verify the original transaction was rolled back
     let db_path = root.join(".ledgerful").join("state").join("ledger.db");
@@ -199,7 +221,10 @@ fn test_stale_sidecar_is_rolled_back_on_next_commit_attempt() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(status, "ROLLED_BACK", "Stale transaction should be rolled back");
+    assert_eq!(
+        status, "ROLLED_BACK",
+        "Stale transaction should be rolled back"
+    );
 }
 
 #[test]
@@ -248,7 +273,14 @@ fn test_real_shell_git_commit_amend_success() {
     )
     .unwrap();
     #[cfg(unix)]
-    std::os::unix::fs::PermissionsExt::set_mode(&mut std::fs::File::open(root.join(".git").join("hooks").join("commit-msg")).unwrap().metadata().unwrap().permissions(), 0o755);
+    std::os::unix::fs::PermissionsExt::set_mode(
+        &mut std::fs::File::open(root.join(".git").join("hooks").join("commit-msg"))
+            .unwrap()
+            .metadata()
+            .unwrap()
+            .permissions(),
+        0o755,
+    );
 
     // Remove post-commit so the sidecar stays PENDING after the initial commit.
     // Remove pre-commit so it does not block the amend (it would reject the amend because TX1 is pending).
@@ -282,7 +314,10 @@ fn test_real_shell_git_commit_amend_success() {
     );
 
     // Verify sidecar was created (TX1 is PENDING because post-commit wasn't installed)
-    let sidecar_path = root.join(".ledgerful").join("state").join("pending_hook_tx");
+    let sidecar_path = root
+        .join(".ledgerful")
+        .join("state")
+        .join("pending_hook_tx");
     assert!(
         sidecar_path.exists(),
         "Sidecar should exist after initial commit (post-commit was skipped)"
@@ -338,7 +373,14 @@ fn test_real_shell_git_commit_amend_success() {
     )
     .unwrap();
     #[cfg(unix)]
-    std::os::unix::fs::PermissionsExt::set_mode(&mut std::fs::File::open(root.join(".git").join("hooks").join("post-commit")).unwrap().metadata().unwrap().permissions(), 0o755);
+    std::os::unix::fs::PermissionsExt::set_mode(
+        &mut std::fs::File::open(root.join(".git").join("hooks").join("post-commit"))
+            .unwrap()
+            .metadata()
+            .unwrap()
+            .permissions(),
+        0o755,
+    );
 
     let post_commit_output = std::process::Command::new(ledgerful_bin)
         .args(["internal", "hook-post-commit"])
@@ -354,7 +396,10 @@ fn test_real_shell_git_commit_amend_success() {
     );
 
     // Sidecar should now be cleaned up
-    assert!(!sidecar_path.exists(), "Sidecar should be cleaned up after post-commit runs");
+    assert!(
+        !sidecar_path.exists(),
+        "Sidecar should be cleaned up after post-commit runs"
+    );
 
     // Verify the DB state: exactly one transaction (TX1) was ever created and it is now COMMITTED.
     // If the early-return on `matches_editmsg` is missing, the amend would call `start_change`
@@ -369,7 +414,10 @@ fn test_real_shell_git_commit_amend_success() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(committed_count, 1, "There should be exactly one committed transaction");
+    assert_eq!(
+        committed_count, 1,
+        "There should be exactly one committed transaction"
+    );
 
     let pending_count: i32 = db
         .query_row(
@@ -378,20 +426,18 @@ fn test_real_shell_git_commit_amend_success() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(pending_count, 0, "No extra pending transactions should be leaked by an amend");
+    assert_eq!(
+        pending_count, 0,
+        "No extra pending transactions should be leaked by an amend"
+    );
 
     // The key assertion: exactly one transaction was ever created across the initial commit + amend
     // lifecycle. Without the `matches_editmsg` early return this would be 2.
     let total_count: i32 = db
-        .query_row(
-            "SELECT COUNT(*) FROM transactions",
-            [],
-            |row| row.get(0),
-        )
+        .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))
         .unwrap();
     assert_eq!(
         total_count, 1,
         "Exactly one transaction should have been created across the initial commit + amend lifecycle (got {total_count})"
     );
 }
-

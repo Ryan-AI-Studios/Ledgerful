@@ -867,18 +867,28 @@
       "ChangedFileResponse": {
         "type": "object",
         "required": [
-          "path",
-          "additions",
-          "deletions"
+          "path"
         ],
         "properties": {
           "additions": {
-            "type": "integer",
-            "format": "int64"
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "`None` for pre-m48 legacy rows or binary files whose stats are\nunavailable.  Serialized as `null` so the frontend can distinguish\n\"unknown\" from a real zero."
           },
           "deletions": {
-            "type": "integer",
-            "format": "int64"
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "See `additions`."
+          },
+          "is_binary": {
+            "type": "boolean",
+            "description": "`true` when the file was detected as binary by git numstat (`-\\t-`).\nLets the frontend render \"binary\" instead of the generic \"—\" used\nfor pre-m48 legacy rows."
           },
           "path": {
             "type": "string"

@@ -4,7 +4,7 @@ use crate::state::storage::connection::StorageManager;
 use miette::{IntoDiagnostic, Result};
 
 impl StorageManager {
-    pub fn save_packet(&self, packet: &ImpactPacket) -> Result<()> {
+    pub fn save_packet(&self, packet: &ImpactPacket) -> Result<i64> {
         debug_assert!(
             !self.is_read_only,
             "write called on read-only StorageManager"
@@ -30,7 +30,7 @@ impl StorageManager {
         self.save_changed_files(snapshot_id, &packet.changes)?;
         persist_symbols(&self.conn, snapshot_id, &packet.changes)?;
 
-        Ok(())
+        Ok(snapshot_id)
     }
 
     pub fn get_latest_packet(&self) -> Result<Option<ImpactPacket>> {
@@ -95,6 +95,33 @@ impl StorageManager {
                     "INSERT INTO changed_files (snapshot_id, path, status, is_staged) VALUES (?1, ?2, ?3, ?4)",
                     (snapshot_id, file.path.to_string_lossy().as_ref(), &file.status, file.is_staged as i32),
                 )
+                .into_diagnostic()?;
+        }
+        Ok(())
+    }
+
+    pub fn update_changed_files_stats(
+        &self,
+        snapshot_id: i64,
+        stats: &std::collections::HashMap<String, crate::git::numstat::FileNumstat>,
+    ) -> Result<()> {
+        debug_assert!(
+            !self.is_read_only,
+            "write called on read-only StorageManager"
+        );
+        let mut stmt = self
+            .conn
+            .prepare(
+                "UPDATE changed_files
+                 SET additions = ?1, deletions = ?2, is_binary = ?3
+                 WHERE snapshot_id = ?4 AND path = ?5",
+            )
+            .into_diagnostic()?;
+        for (path, numstat) in stats {
+            let adds: Option<i64> = numstat.additions.map(|v| v as i64);
+            let dels: Option<i64> = numstat.deletions.map(|v| v as i64);
+            let is_binary = (adds.is_none() && dels.is_none()) as i64;
+            stmt.execute(rusqlite::params![adds, dels, is_binary, snapshot_id, path])
                 .into_diagnostic()?;
         }
         Ok(())

@@ -61,6 +61,7 @@ impl<'a> DriftManager<'a> {
             first_seen_at: Some(now.clone()),
             last_seen_at: Some(now),
             issue_ref: None,
+            snapshot_id: None,
         };
 
         db.upsert_unaudited_transaction(&tx)?;

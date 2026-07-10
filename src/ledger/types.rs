@@ -223,6 +223,11 @@ pub struct CommitRequest {
     pub changed_files: Option<Vec<String>>,
     #[serde(default)]
     pub force: bool,
+    /// Staged snapshot captured by the commit-msg hook. Carried through the
+    /// pending sidecar so the post-commit hook can link the committed
+    /// transaction to its `changed_files` rows.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -243,6 +248,7 @@ pub struct Transaction {
     pub first_seen_at: Option<String>,
     pub last_seen_at: Option<String>,
     pub issue_ref: Option<String>,
+    pub snapshot_id: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

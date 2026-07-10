@@ -103,7 +103,8 @@ mod tests {
                 drift_count INTEGER DEFAULT 1,
                 first_seen_at TEXT,
                 last_seen_at TEXT,
-                issue_ref TEXT
+                issue_ref TEXT,
+                snapshot_id INTEGER
             );
             CREATE TABLE ledger_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -151,6 +152,7 @@ mod tests {
             first_seen_at: None,
             last_seen_at: None,
             issue_ref: None,
+            snapshot_id: None,
         }
     }
 
@@ -244,6 +246,7 @@ mod tests {
             first_seen_at: None,
             last_seen_at: None,
             issue_ref: None,
+            snapshot_id: None,
         };
         let new = sample_tx("new.rs", "PENDING");
         crate::ledger::db::transactions::insert_transaction(&conn, &old).unwrap();

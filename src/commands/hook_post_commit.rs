@@ -1,4 +1,5 @@
 use crate::commands::helpers::{get_layout, load_ledger_config};
+use crate::git::numstat::per_file_numstat;
 use crate::git::repo::{get_head_info, open_repo};
 use crate::impact::hotspots::{HotspotQuery, calculate_hotspots};
 use crate::impact::packet::Hotspot;
@@ -26,6 +27,7 @@ pub struct PendingHookTx {
     pub related_tickets: Option<String>,
     pub signature: Option<String>,
     pub public_key: Option<String>,
+    pub snapshot_id: Option<i64>,
 }
 
 /// Entry point for the `internal hook-post-commit` command. This is invoked by
@@ -98,8 +100,6 @@ fn promote_pending_ledger_tx(layout: &crate::state::layout::Layout) -> Result<()
     let config = load_ledger_config(layout)?;
     let sidecar_path = layout.state_subdir().join("pending_hook_tx");
 
-
-
     if !sidecar_path.exists() {
         return Ok(());
     }
@@ -111,7 +111,7 @@ fn promote_pending_ledger_tx(layout: &crate::state::layout::Layout) -> Result<()
     let repo_root = layout.root.clone();
     let output = std::process::Command::new("git")
         .args(["log", "-1", "--format=%B"])
-        .current_dir(repo_root)
+        .current_dir(repo_root.as_std_path())
         .output()
         .into_diagnostic()?;
 
@@ -124,7 +124,6 @@ fn promote_pending_ledger_tx(layout: &crate::state::layout::Layout) -> Result<()
     let current_hash = hex::encode(hasher.finalize());
 
     if pending.commit_msg_hash != current_hash {
-
         tracing::info!(
             target: "cli_summary",
             "[Ledgerful] Pending transaction {} was for a different commit; discarding sidecar.",
@@ -156,11 +155,31 @@ fn promote_pending_ledger_tx(layout: &crate::state::layout::Layout) -> Result<()
         public_key: pending.public_key,
         risk: pending.risk,
         related_tickets: pending.related_tickets,
+        snapshot_id: pending.snapshot_id,
         ..Default::default()
     };
 
-    match tx_mgr.commit_change(pending.tx_id.clone(), req, false) {
+    let snapshot_id_from_sidecar = pending.snapshot_id;
+
+    let committed_tx_id = pending.tx_id.clone();
+    let repo_root_for_stats = repo_root.clone();
+    match tx_mgr.commit_change(committed_tx_id.clone(), req, false) {
         Ok(_) => {
+            // Best-effort: attach per-file diff stats to the changed_files rows
+            // for the transaction's snapshot.  The git commit object now exists,
+            // so we can compute the committed-diff basis.
+            if let Err(e) = update_changed_files_diff_stats(
+                &mut tx_mgr,
+                &committed_tx_id,
+                &repo_root_for_stats,
+                snapshot_id_from_sidecar,
+            ) {
+                tracing::debug!(
+                    "Post-commit hook: failed to update diff stats for {}: {}",
+                    committed_tx_id,
+                    e
+                );
+            }
             let _ = fs::remove_file(sidecar_path);
             Ok(())
         }
@@ -170,13 +189,61 @@ fn promote_pending_ledger_tx(layout: &crate::state::layout::Layout) -> Result<()
                 e
             );
             let _ = tx_mgr.rollback_change(
-                pending.tx_id,
+                committed_tx_id,
                 "Rollback due to promotion failure".to_string(),
             );
             let _ = fs::remove_file(sidecar_path);
             Err(miette!("{}", e))
         }
     }
+}
+
+/// Update per-file addition/deletion stats for the committed transaction's
+/// snapshot using the committed-diff basis.
+///
+/// Best-effort: any failure is returned so the caller can log it and continue;
+/// the git commit must never be blocked by stats computation.
+fn update_changed_files_diff_stats(
+    tx_mgr: &mut TransactionManager<'_>,
+    tx_id: &str,
+    repo_root: &camino::Utf8Path,
+    snapshot_id_override: Option<i64>,
+) -> Result<()> {
+    let snapshot_id = if let Some(sid) = snapshot_id_override {
+        sid
+    } else {
+        let tx = tx_mgr
+            .get_transaction(tx_id)
+            .map_err(|e| miette!("failed to read transaction: {}", e))?
+            .ok_or_else(|| miette!("transaction not found after commit"))?;
+        tx.snapshot_id
+            .ok_or_else(|| miette!("committed transaction has no snapshot"))?
+    };
+
+    let (head_hash, _branch) = match open_repo(repo_root.as_std_path())
+        .map_err(|e| miette!("cannot open repo: {}", e))?
+        .head()
+        .map_err(|e| miette!("cannot read HEAD: {}", e))?
+        .id()
+    {
+        Some(id) => (id.to_string(), None::<&str>),
+        None => return Ok(()),
+    };
+
+    let stats = per_file_numstat(repo_root.as_std_path(), &head_hash)
+        .map_err(|e| miette!("numstat failed: {}", e))?;
+
+    tx_mgr
+        .storage_mut()
+        .update_changed_files_stats(snapshot_id, &stats)
+        .map_err(|e| miette!("failed to persist diff stats: {}", e))?;
+
+    tracing::debug!(
+        "Post-commit hook: updated diff stats for {} changed files in snapshot {}",
+        stats.len(),
+        snapshot_id
+    );
+    Ok(())
 }
 
 /// Append a hotspot snapshot for the current HEAD to `hotspot_trends`.

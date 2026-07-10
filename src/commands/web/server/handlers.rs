@@ -566,7 +566,7 @@ fn fetch_changed_files(
 ) -> Result<Vec<ChangedFileResponse>, LedgerError> {
     let mut stmt = conn
         .prepare(
-            "SELECT cf.path
+            "SELECT cf.path, cf.additions, cf.deletions, cf.is_binary
              FROM changed_files cf
              WHERE cf.snapshot_id = (
                  SELECT snapshot_id FROM transactions WHERE tx_id = ?1
@@ -576,10 +576,12 @@ fn fetch_changed_files(
 
     let rows = stmt
         .query_map(rusqlite::params![tx_id], |row| {
+            let is_binary_val: i64 = row.get(3).unwrap_or(0);
             Ok(ChangedFileResponse {
                 path: row.get(0)?,
-                additions: 0,
-                deletions: 0,
+                additions: row.get(1)?,
+                deletions: row.get(2)?,
+                is_binary: is_binary_val != 0,
             })
         })
         .map_err(LedgerError::from)?;

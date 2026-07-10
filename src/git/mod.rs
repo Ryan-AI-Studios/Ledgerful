@@ -3,6 +3,7 @@ pub mod commit;
 pub mod diff;
 pub mod ignore;
 pub mod metadata;
+pub mod numstat;
 pub mod repo;
 pub mod status;
 

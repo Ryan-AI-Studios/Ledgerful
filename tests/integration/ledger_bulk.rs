@@ -30,6 +30,7 @@ fn test_reconcile_drift_bulk_concurrency() {
             first_seen_at: Some("2023-01-01T00:00:00Z".to_string()),
             last_seen_at: Some("2023-01-01T00:00:00Z".to_string()),
             issue_ref: None,
+            snapshot_id: None,
         };
         db.insert_transaction(&tx1).unwrap();
     }
@@ -113,6 +114,7 @@ fn test_adopt_drift_bulk_concurrency() {
         first_seen_at: Some("2023-01-01T00:00:00Z".to_string()),
         last_seen_at: Some("2023-01-01T00:00:00Z".to_string()),
         issue_ref: None,
+        snapshot_id: None,
     };
     db.insert_transaction(&tx2).unwrap();
 

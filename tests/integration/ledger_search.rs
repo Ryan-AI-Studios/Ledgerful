@@ -28,6 +28,7 @@ fn insert_dummy_tx(db: &LedgerDb, tx_id: &str) {
         drift_count: 1,
         first_seen_at: None,
         last_seen_at: None,
+        snapshot_id: None,
     };
     db.insert_transaction(&tx).unwrap();
 }

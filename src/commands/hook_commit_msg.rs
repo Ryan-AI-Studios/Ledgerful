@@ -28,6 +28,7 @@ pub struct PendingHookTx {
     pub related_tickets: Option<String>,
     pub signature: Option<String>,
     pub public_key: Option<String>,
+    pub snapshot_id: Option<i64>,
 }
 
 fn write_pending_sidecar(
@@ -153,11 +154,11 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
                     // We do NOT require index.lock here — this hook is only ever invoked by git
                     // during an active commit, so COMMIT_EDITMSG existing and matching our sidecar
                     // hash is sufficient proof that this is an amend/re-run (not a stale sidecar).
-                    if editmsg_path.exists() {
-                        if let Ok(edit_msg) = std::fs::read_to_string(&editmsg_path) {
-                            let cleaned = crate::util::text::clean_commit_msg(&edit_msg);
-                            matches_editmsg = hash_message(&cleaned) == pending.commit_msg_hash;
-                        }
+                    if editmsg_path.exists()
+                        && let Ok(edit_msg) = std::fs::read_to_string(&editmsg_path)
+                    {
+                        let cleaned = crate::util::text::clean_commit_msg(&edit_msg);
+                        matches_editmsg = hash_message(&cleaned) == pending.commit_msg_hash;
                     }
 
                     if matches_editmsg {
@@ -169,10 +170,11 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
                             "A pending commit sidecar exists that matches HEAD. The previous commit succeeded but its post-commit hook failed or was skipped. Please recover it by running 'ledgerful ledger commit' or manually remove the sidecar."
                         ));
                     } else {
-                        tracing::warn!("Found stale pending sidecar (does not match HEAD). Rolling back pending transaction and cleaning up.");
-                        
+                        tracing::warn!(
+                            "Found stale pending sidecar (does not match HEAD). Rolling back pending transaction and cleaning up."
+                        );
+
                         let db_path = layout.state_subdir().join("ledger.db");
-                        let mut rollback_ok = false;
                         match StorageManager::init(db_path.as_std_path()) {
                             Ok(mut storage) => {
                                 let mut tx_mgr = TransactionManager::new(
@@ -180,21 +182,27 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
                                     layout.root.clone().into(),
                                     config.clone(),
                                 );
-                                if let Err(e) = tx_mgr.rollback_change(pending.tx_id.clone(), "Stale sidecar cleaned up by commit-msg hook".to_string()) {
-                                    return Err(miette::miette!("Failed to rollback stale pending transaction {}: {}", pending.tx_id, e));
-                                } else {
-                                    rollback_ok = true;
+                                if let Err(e) = tx_mgr.rollback_change(
+                                    pending.tx_id.clone(),
+                                    "Stale sidecar cleaned up by commit-msg hook".to_string(),
+                                ) {
+                                    return Err(miette::miette!(
+                                        "Failed to rollback stale pending transaction {}: {}",
+                                        pending.tx_id,
+                                        e
+                                    ));
                                 }
                             }
                             Err(e) => {
-                                return Err(miette::miette!("Failed to initialize storage for sidecar rollback: {}", e));
+                                return Err(miette::miette!(
+                                    "Failed to initialize storage for sidecar rollback: {}",
+                                    e
+                                ));
                             }
                         }
-                        
-                        if rollback_ok {
-                            if let Err(e) = fs::remove_file(&sidecar_path) {
-                                tracing::warn!("Failed to remove stale sidecar file: {}", e);
-                            }
+
+                        if let Err(e) = fs::remove_file(&sidecar_path) {
+                            tracing::warn!("Failed to remove stale sidecar file: {}", e);
                         }
                     }
                 }
@@ -214,13 +222,18 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
         }
     }
 
-    // 2. Read git staged files
+    // 2. Read git staged files and capture a snapshot so the post-commit hook
+    // can attach per-file diff stats later.
     let staged_files = get_staged_files(repo_root);
     if staged_files.is_empty() {
         return Ok(()); // Nothing staged, nothing to record
     }
     let entity = canonical_entity(&staged_files);
     let related_files = staged_files.join(", ");
+
+    // Capture snapshot for diff stats. This is best-effort; failure is logged
+    // but the commit-msg hook continues.
+    let snapshot_capture = capture_staged_snapshot(&layout, repo_root);
 
     // 3. Read current commit message
     if !msg_file.exists() {
@@ -374,6 +387,7 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
             related: drafted_related,
             related_files: &related_files,
             raw_commit_msg: &final_commit_msg,
+            snapshot_id: snapshot_capture.as_ref().map(|s| s.snapshot_id),
         })?;
 
         // Reset skips
@@ -430,6 +444,7 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
             related: final_state.related.clone(),
             related_files: &related_files,
             raw_commit_msg: &updated_msg,
+            snapshot_id: snapshot_capture.as_ref().map(|s| s.snapshot_id),
         })?;
 
         Ok(())
@@ -449,6 +464,7 @@ struct SilentRecordArgs<'a> {
     related: Vec<String>,
     related_files: &'a str,
     raw_commit_msg: &'a str,
+    snapshot_id: Option<i64>,
 }
 
 fn silently_record_ledger(args: SilentRecordArgs) -> Result<()> {
@@ -514,11 +530,70 @@ fn silently_record_ledger(args: SilentRecordArgs) -> Result<()> {
         related_tickets: Some(combined_related),
         signature,
         public_key: pub_key,
+        snapshot_id: args.snapshot_id,
     };
 
     write_pending_sidecar(&layout, &pending)?;
 
     Ok(())
+}
+
+/// Staged-snapshot capture result carried from commit-msg to post-commit via
+/// the pending sidecar.
+#[derive(Debug, Clone, Copy)]
+struct CapturedSnapshot {
+    snapshot_id: i64,
+}
+
+/// Capture a snapshot of the staged (pre-commit) working tree so the
+/// post-commit hook has `changed_files` rows to attach diff stats to.
+///
+/// This is best-effort: the packet is persisted with `head_hash` = current
+/// HEAD, and the post-commit hook recomputes stats against the new HEAD.
+fn capture_staged_snapshot(
+    layout: &crate::state::layout::Layout,
+    repo_root: &Path,
+) -> Option<CapturedSnapshot> {
+    use crate::git::repo::{get_head_info, open_repo};
+    use crate::git::status::get_repo_status;
+    use crate::impact::orchestrator::map_snapshot_to_packet;
+    use crate::state::storage::StorageManager;
+
+    let repo = open_repo(repo_root).ok()?;
+    let (head_hash, branch_name) = get_head_info(&repo).ok()?;
+    let all_changes = get_repo_status(&repo).ok()?;
+    let changes: Vec<_> = all_changes.into_iter().filter(|c| c.is_staged).collect();
+    let is_clean = changes.is_empty();
+
+    let snapshot = crate::git::RepoSnapshot {
+        head_hash,
+        branch_name,
+        is_clean,
+        changes,
+    };
+
+    let mut packet = map_snapshot_to_packet(snapshot, repo_root).ok()?;
+    packet.finalize();
+    crate::impact::redact::redact_secrets(&mut packet);
+
+    let db_path = layout.state_subdir().join("ledger.db");
+    let storage = match StorageManager::init(db_path.as_std_path()) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::debug!("capture_staged_snapshot: StorageManager::init failed: {e}");
+            return None;
+        }
+    };
+    let snapshot_id = match storage.save_packet(&packet) {
+        Ok(id) => id,
+        Err(e) => {
+            tracing::debug!("capture_staged_snapshot: save_packet failed: {e}");
+            return None;
+        }
+    };
+    tracing::debug!("capture_staged_snapshot: saved snapshot_id={snapshot_id}");
+
+    Some(CapturedSnapshot { snapshot_id })
 }
 
 fn get_staged_files(repo_root: &Path) -> Vec<String> {

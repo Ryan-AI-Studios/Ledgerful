@@ -179,6 +179,7 @@ fn test_adopt_writes_kg_edges_with_real_files() {
             first_seen_at: None,
             last_seen_at: None,
             issue_ref: None,
+            snapshot_id: None,
         };
         let db = LedgerDb::new(storage.get_connection());
         db.insert_transaction(&drift_tx).unwrap();

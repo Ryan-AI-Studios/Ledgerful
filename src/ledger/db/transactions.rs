@@ -7,8 +7,8 @@ pub fn insert_transaction(conn: &Connection, tx: &Transaction) -> Result<(), Led
         "INSERT INTO transactions (
             tx_id, operation_id, status, category, entity, entity_normalized,
             planned_action, session_id, source, started_at, resolved_at, issue_ref,
-            detected_at, drift_count, first_seen_at, last_seen_at
-        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            detected_at, drift_count, first_seen_at, last_seen_at, snapshot_id
+        ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17)",
         params![
             tx.tx_id,
             tx.operation_id,
@@ -28,6 +28,7 @@ pub fn insert_transaction(conn: &Connection, tx: &Transaction) -> Result<(), Led
             tx.drift_count,
             tx.first_seen_at,
             tx.last_seen_at,
+            tx.snapshot_id,
         ],
     )?;
     Ok(())
@@ -37,7 +38,7 @@ pub fn get_transaction(conn: &Connection, tx_id: &str) -> Result<Option<Transact
     conn.query_row(
         "SELECT tx_id, operation_id, status, category, entity, entity_normalized,
             planned_action, session_id, source, started_at, resolved_at, issue_ref,
-            detected_at, drift_count, first_seen_at, last_seen_at
+            detected_at, drift_count, first_seen_at, last_seen_at, snapshot_id
      FROM transactions WHERE tx_id = ?1",
         [tx_id],
         map_transaction,
@@ -53,7 +54,7 @@ pub fn get_pending_by_entity(
     conn.query_row(
         "SELECT tx_id, operation_id, status, category, entity, entity_normalized,
             planned_action, session_id, source, started_at, resolved_at, issue_ref,
-            detected_at, drift_count, first_seen_at, last_seen_at
+            detected_at, drift_count, first_seen_at, last_seen_at, snapshot_id
      FROM transactions WHERE entity_normalized = ?1 AND status = 'PENDING'",
         [entity_normalized],
         map_transaction,
@@ -69,7 +70,7 @@ pub fn get_unaudited_by_entity(
     conn.query_row(
         "SELECT tx_id, operation_id, status, category, entity, entity_normalized,
             planned_action, session_id, source, started_at, resolved_at, issue_ref,
-            detected_at, drift_count, first_seen_at, last_seen_at
+            detected_at, drift_count, first_seen_at, last_seen_at, snapshot_id
      FROM transactions WHERE entity_normalized = ?1 AND status = 'UNAUDITED'",
         [entity_normalized],
         map_transaction,
@@ -85,8 +86,8 @@ pub fn upsert_unaudited_transaction(
     conn.execute(
         "INSERT INTO transactions (
             tx_id, status, category, entity, entity_normalized, session_id, source,
-            started_at, detected_at, drift_count, first_seen_at, last_seen_at
-        ) VALUES (?1, 'UNAUDITED', ?2, ?3, ?4, ?5, 'WATCHER', ?6, ?7, 1, ?8, ?9)
+            started_at, detected_at, drift_count, first_seen_at, last_seen_at, snapshot_id
+        ) VALUES (?1, 'UNAUDITED', ?2, ?3, ?4, ?5, 'WATCHER', ?6, ?7, 1, ?8, ?9, ?10)
         ON CONFLICT(entity_normalized) WHERE status = 'UNAUDITED' DO UPDATE SET
             drift_count = drift_count + 1,
             last_seen_at = EXCLUDED.last_seen_at",
@@ -102,6 +103,7 @@ pub fn upsert_unaudited_transaction(
             tx.detected_at,
             tx.first_seen_at,
             tx.last_seen_at,
+            tx.snapshot_id,
         ],
     )?;
     Ok(())
@@ -116,6 +118,24 @@ pub fn update_transaction_status(
     let count = conn.execute(
         "UPDATE transactions SET status = ?1, resolved_at = ?2 WHERE tx_id = ?3 AND status = 'PENDING'",
         params![status, resolved_at, tx_id],
+    )?;
+    Ok(count)
+}
+
+/// Promote a pending transaction to committed, also linking it to the staged
+/// snapshot captured by the commit-msg hook so `changed_files` can be joined.
+pub fn commit_transaction(
+    conn: &Connection,
+    tx_id: &str,
+    status: &str,
+    resolved_at: Option<&str>,
+    snapshot_id: Option<i64>,
+) -> Result<usize, LedgerError> {
+    let count = conn.execute(
+        "UPDATE transactions
+         SET status = ?1, resolved_at = ?2, snapshot_id = ?3
+         WHERE tx_id = ?4 AND status = 'PENDING'",
+        params![status, resolved_at, snapshot_id, tx_id],
     )?;
     Ok(count)
 }
@@ -147,7 +167,7 @@ pub fn get_all_pending(conn: &Connection) -> Result<Vec<Transaction>, LedgerErro
     let mut stmt = conn.prepare(
         "SELECT tx_id, operation_id, status, category, entity, entity_normalized,
             planned_action, session_id, source, started_at, resolved_at, issue_ref,
-            detected_at, drift_count, first_seen_at, last_seen_at
+            detected_at, drift_count, first_seen_at, last_seen_at, snapshot_id
      FROM transactions WHERE status = 'PENDING' ORDER BY started_at DESC",
     )?;
 
@@ -163,7 +183,7 @@ pub fn get_all_unaudited(conn: &Connection) -> Result<Vec<Transaction>, LedgerEr
     let mut stmt = conn.prepare(
         "SELECT tx_id, operation_id, status, category, entity, entity_normalized,
             planned_action, session_id, source, started_at, resolved_at, issue_ref,
-            detected_at, drift_count, first_seen_at, last_seen_at
+            detected_at, drift_count, first_seen_at, last_seen_at, snapshot_id
      FROM transactions WHERE status = 'UNAUDITED' ORDER BY last_seen_at DESC",
     )?;
 
@@ -183,7 +203,7 @@ pub fn get_unaudited_by_pattern(
     let mut stmt = conn.prepare(
         "SELECT tx_id, operation_id, status, category, entity, entity_normalized,
             planned_action, session_id, source, started_at, resolved_at, issue_ref,
-            detected_at, drift_count, first_seen_at, last_seen_at
+            detected_at, drift_count, first_seen_at, last_seen_at, snapshot_id
      FROM transactions WHERE status = 'UNAUDITED' AND entity_normalized LIKE ?1",
     )?;
 
@@ -230,6 +250,7 @@ pub fn map_transaction(row: &rusqlite::Row) -> rusqlite::Result<Transaction> {
         drift_count: row.get(13)?,
         first_seen_at: row.get(14)?,
         last_seen_at: row.get(15)?,
+        snapshot_id: row.get(16)?,
     })
 }
 
@@ -443,7 +464,8 @@ mod tests {
                 drift_count INTEGER DEFAULT 1,
                 first_seen_at TEXT,
                 last_seen_at TEXT,
-                issue_ref TEXT
+                issue_ref TEXT,
+                snapshot_id INTEGER
             );
             CREATE UNIQUE INDEX idx_transactions_unaudited_entity ON transactions(entity_normalized) WHERE status = 'UNAUDITED';
             CREATE UNIQUE INDEX idx_transactions_pending_entity ON transactions(entity_normalized) WHERE status = 'PENDING';
@@ -493,6 +515,7 @@ mod tests {
             first_seen_at: None,
             last_seen_at: None,
             issue_ref: None,
+            snapshot_id: None,
         }
     }
 

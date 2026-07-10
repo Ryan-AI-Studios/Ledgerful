@@ -508,6 +508,7 @@ mod tests {
             related_tickets: None,
             signature: None,
             public_key: None,
+            snapshot_id: None,
         };
         let sidecar_path = root
             .join(".ledgerful")

@@ -19,6 +19,7 @@ pub mod m44_usage_days;
 pub mod m45_ledger_verification_runs_tx;
 pub mod m46_hotspot_trends;
 pub mod m47_project_files_git_meta;
+pub mod m48_changed_files_diff_stats;
 
 use rusqlite_migration::Migrations;
 
@@ -102,6 +103,12 @@ pub fn get_migrations() -> Migrations<'static> {
     // a binary without the migration. Both columns are nullable and default
     // to NULL, so the surface-area leak is harmless.
     all_m.extend(m47_project_files_git_meta::m47_project_files_git_meta());
+    // m48 adds nullable `additions`/`deletions` columns to `changed_files`
+    // (Track 0037). Registered unconditionally so the schema version stays
+    // monotonic across feature-flag combinations; the columns are nullable
+    // and default to NULL, so they are harmless in builds that do not
+    // populate them.
+    all_m.extend(m48_changed_files_diff_stats::m48_changed_files_diff_stats());
 
     Migrations::new(all_m)
 }
@@ -137,6 +144,7 @@ pub fn get_migrations_count() -> usize {
     count += m45_ledger_verification_runs_tx::m45_ledger_verification_runs_tx().len();
     count += m46_hotspot_trends::m46_hotspot_trends().len();
     count += m47_project_files_git_meta::m47_project_files_git_meta().len();
+    count += m48_changed_files_diff_stats::m48_changed_files_diff_stats().len();
 
     count
 }

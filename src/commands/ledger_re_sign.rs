@@ -413,6 +413,7 @@ fn insert_maintenance_transaction(
         first_seen_at: Some(committed_at.to_string()),
         last_seen_at: Some(committed_at.to_string()),
         issue_ref: None,
+        snapshot_id: None,
     };
     db.insert_transaction(&tx)
         .map_err(|e| miette!("Failed to insert maintenance transaction row: {}", e))?;
@@ -564,7 +565,8 @@ mod tests {
                 drift_count INTEGER DEFAULT 1,
                 first_seen_at TEXT,
                 last_seen_at TEXT,
-                issue_ref TEXT
+                issue_ref TEXT,
+                snapshot_id INTEGER
             );
             CREATE TABLE ledger_entries (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,

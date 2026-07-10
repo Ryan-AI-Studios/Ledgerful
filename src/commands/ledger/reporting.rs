@@ -217,20 +217,26 @@ pub fn execute_ledger_status(
                             );
                         } else {
                             let mut matches_editmsg = false;
-                            let editmsg_path = layout.root.as_std_path().join(".git").join("COMMIT_EDITMSG");
-                            let index_lock_path = layout.root.as_std_path().join(".git").join("index.lock");
-                            
-                            if editmsg_path.exists() && index_lock_path.exists() {
-                                if let Ok(edit_msg) = std::fs::read_to_string(&editmsg_path) {
-                                    let cleaned = crate::util::text::clean_commit_msg(&edit_msg);
-                                    use sha2::{Digest, Sha256};
-                                    let mut hasher = Sha256::new();
-                                    hasher.update(cleaned.as_bytes());
-                                    let edit_hash = hex::encode(hasher.finalize());
-                                    matches_editmsg = edit_hash == pending_sidecar.commit_msg_hash;
-                                }
+                            let editmsg_path = layout
+                                .root
+                                .as_std_path()
+                                .join(".git")
+                                .join("COMMIT_EDITMSG");
+                            let index_lock_path =
+                                layout.root.as_std_path().join(".git").join("index.lock");
+
+                            if editmsg_path.exists()
+                                && index_lock_path.exists()
+                                && let Ok(edit_msg) = std::fs::read_to_string(&editmsg_path)
+                            {
+                                let cleaned = crate::util::text::clean_commit_msg(&edit_msg);
+                                use sha2::{Digest, Sha256};
+                                let mut hasher = Sha256::new();
+                                hasher.update(cleaned.as_bytes());
+                                let edit_hash = hex::encode(hasher.finalize());
+                                matches_editmsg = edit_hash == pending_sidecar.commit_msg_hash;
                             }
-                            
+
                             if matches_editmsg {
                                 println!(
                                     "  {} [Sidecar] Pending commit sidecar matches active COMMIT_EDITMSG",

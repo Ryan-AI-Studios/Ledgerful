@@ -40,6 +40,10 @@ impl<'a> TransactionManager<'a> {
         self.storage.get_connection()
     }
 
+    pub(crate) fn storage_mut(&mut self) -> &mut crate::state::storage::connection::StorageManager {
+        self.storage
+    }
+
     pub fn start_change(&mut self, req: TransactionRequest) -> Result<String, LedgerError> {
         let normalized = self.entity_normalized(&req.entity)?;
 
@@ -114,6 +118,7 @@ impl<'a> TransactionManager<'a> {
             drift_count: 1,
             first_seen_at: Some(now.clone()),
             last_seen_at: Some(now),
+            snapshot_id: None,
         };
 
         db.insert_transaction(&tx).map_err(|e| {
@@ -258,8 +263,9 @@ impl<'a> TransactionManager<'a> {
         {
             let db = LedgerDb::new(&sqlite_tx);
 
-            // 1. Update transaction status to COMMITTED
-            let count = db.update_transaction_status(&tx_id, "COMMITTED", Some(&now))?;
+            // 1. Update transaction status to COMMITTED and link the staged
+            // snapshot (if any) captured by the commit-msg hook.
+            let count = db.commit_transaction(&tx_id, "COMMITTED", Some(&now), req.snapshot_id)?;
             if count == 0 {
                 return Err(LedgerError::InvalidState(
                     tx_id,
