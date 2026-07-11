@@ -206,6 +206,7 @@ fn compute_status(layout: &Layout) -> Result<StatusResponse> {
         .map(|mut d| d.next().is_some())
         .unwrap_or(false);
     let graph_ready = layout.state_subdir().join("ledger.cozo").exists();
+    let is_demo = layout.root.join(".ledgerful").join("DEMO_MARKER").exists();
 
     Ok(StatusResponse {
         index_ready,
@@ -226,6 +227,7 @@ fn compute_status(layout: &Layout) -> Result<StatusResponse> {
                 .as_deref()
                 .or_else(|| config.local_model.base_url.as_str().non_empty()),
         ),
+        is_demo,
     })
 }
 

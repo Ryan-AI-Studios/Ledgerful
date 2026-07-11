@@ -1689,6 +1689,10 @@
           "index_ready": {
             "type": "boolean"
           },
+          "is_demo": {
+            "type": "boolean",
+            "description": "`true` when the repo was created by `ledgerful demo` (DEMO_MARKER\npresent). The dashboard renders a DEMO banner so synthetic repos\nself-identify in the UI. Additive; non-demo repos serialize `false`."
+          },
           "pending_transactions": {
             "type": "integer",
             "minimum": 0

@@ -45,6 +45,15 @@ pub(crate) struct StatusResponse {
     pub(crate) unaudited_drift: usize,
     pub(crate) embedding_model_reachable: bool,
     pub(crate) completion_model_reachable: bool,
+    /// `true` when the repo was created by `ledgerful demo` (DEMO_MARKER
+    /// present). The dashboard renders a DEMO banner so synthetic repos
+    /// self-identify in the UI. Additive; non-demo repos serialize `false`.
+    #[serde(skip_serializing_if = "is_false")]
+    pub(crate) is_demo: bool,
+}
+
+fn is_false(v: &bool) -> bool {
+    !v
 }
 
 #[derive(Serialize)]
