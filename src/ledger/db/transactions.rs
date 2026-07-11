@@ -262,8 +262,8 @@ pub fn insert_ledger_entry(conn: &Connection, entry: &LedgerEntry) -> Result<(),
             tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
             verification_status, verification_basis, outcome_notes,
-            origin, trace_id, signature, public_key, risk, related_tickets, author, observed
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
+            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
         params![
             entry.tx_id,
             serde_json::to_string(&entry.category)
@@ -306,6 +306,7 @@ pub fn insert_ledger_entry(conn: &Connection, entry: &LedgerEntry) -> Result<(),
             entry.related_tickets,
             entry.author,
             entry.observed.map(|v| v as i32),
+            entry.prev_hash,
         ],
     )?;
     Ok(())
@@ -319,7 +320,7 @@ pub fn get_ledger_entries_for_tx(
         "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
             verification_status, verification_basis, outcome_notes,
-            origin, trace_id, signature, public_key, risk, related_tickets, author, observed
+            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash
      FROM ledger_entries WHERE tx_id = ?1",
     )?;
 
@@ -342,7 +343,7 @@ pub fn get_ledger_entries_by_entity_paginated(
         "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
             verification_status, verification_basis, outcome_notes,
-            origin, trace_id, signature, public_key, risk, related_tickets, author, observed
+            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash
      FROM ledger_entries WHERE entity_normalized = ?1
      ORDER BY committed_at DESC
      LIMIT ?2 OFFSET ?3",
@@ -367,8 +368,8 @@ pub fn get_all_committed_ledger_entries(
         "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
             verification_status, verification_basis, outcome_notes,
-            origin, trace_id, signature, public_key, risk, related_tickets, author, observed
-     FROM ledger_entries ORDER BY committed_at ASC",
+            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash
+     FROM ledger_entries ORDER BY committed_at ASC, tx_id ASC",
     )?;
 
     let rows = stmt.query_map([], super::map_ledger_entry)?;
@@ -395,6 +396,97 @@ pub fn update_ledger_entry_signature(
     Ok(count)
 }
 
+pub fn get_chain_head(conn: &Connection) -> Result<Option<ChainHead>, LedgerError> {
+    let mut stmt = conn.prepare(
+        "SELECT latest_entry_hash, genesis, length, head_signature, head_public_key, updated_at
+         FROM chain_head WHERE id = 1",
+    )?;
+    let mut rows = stmt.query_map([], |row| {
+        Ok(ChainHead {
+            latest_entry_hash: row.get(0)?,
+            genesis: row.get(1)?,
+            length: row.get(2)?,
+            head_signature: row.get(3)?,
+            head_public_key: row.get(4)?,
+            updated_at: row.get(5)?,
+        })
+    })?;
+    if let Some(row) = rows.next() {
+        return Ok(Some(row?));
+    }
+    Ok(None)
+}
+
+/// Update the singleton chain head row with a conditional guard.
+///
+/// The caller must supply the head it observed (`expected`). If the row in the
+/// DB no longer matches the expected head, 0 rows are affected and this
+/// returns `false`. This makes the CAS in `append_to_chain_with_cas` real,
+/// even when the caller holds an open transaction (where re-reading the head
+/// inside the same connection cannot observe an external writer).
+pub fn update_chain_head(
+    conn: &Connection,
+    head: &ChainHead,
+    expected: Option<&ChainHead>,
+) -> Result<bool, LedgerError> {
+    let affected = if let Some(exp) = expected {
+        conn.execute(
+            "UPDATE chain_head
+             SET latest_entry_hash = ?1,
+                 genesis = ?2,
+                 length = ?3,
+                 head_signature = ?4,
+                 head_public_key = ?5,
+                 updated_at = ?6
+             WHERE id = 1
+               AND latest_entry_hash = ?7
+               AND genesis = ?8
+               AND length = ?9",
+            params![
+                head.latest_entry_hash,
+                head.genesis,
+                head.length,
+                head.head_signature,
+                head.head_public_key,
+                head.updated_at,
+                exp.latest_entry_hash,
+                exp.genesis,
+                exp.length,
+            ],
+        )?
+    } else {
+        // No prior head: only proceed if the row is absent.
+        conn.execute(
+            "INSERT INTO chain_head (id, latest_entry_hash, genesis, length, head_signature, head_public_key, updated_at)
+             SELECT 1, ?1, ?2, ?3, ?4, ?5, ?6
+             WHERE NOT EXISTS (SELECT 1 FROM chain_head WHERE id = 1)",
+            params![
+                head.latest_entry_hash,
+                head.genesis,
+                head.length,
+                head.head_signature,
+                head.head_public_key,
+                head.updated_at,
+            ],
+        )?
+    };
+    Ok(affected > 0)
+}
+
+/// Recompute and store the chain link for an existing ledger entry. Used during
+/// re-sign when signatures change and therefore entry hashes change.
+pub fn update_ledger_entry_prev_hash(
+    conn: &Connection,
+    tx_id: &str,
+    prev_hash: Option<&str>,
+) -> Result<usize, LedgerError> {
+    let count = conn.execute(
+        "UPDATE ledger_entries SET prev_hash = ?1 WHERE tx_id = ?2",
+        params![prev_hash, tx_id],
+    )?;
+    Ok(count)
+}
+
 pub fn get_committed_ledger_entries_paginated(
     conn: &Connection,
     category: Option<&str>,
@@ -405,18 +497,18 @@ pub fn get_committed_ledger_entries_paginated(
         "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
             verification_status, verification_basis, outcome_notes,
-            origin, trace_id, signature, public_key, risk, related_tickets, author, observed
+            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash
          FROM ledger_entries
          WHERE category = ?1
-         ORDER BY committed_at ASC
+         ORDER BY committed_at ASC, tx_id ASC
          LIMIT ?2 OFFSET ?3"
     } else {
         "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
             verification_status, verification_basis, outcome_notes,
-            origin, trace_id, signature, public_key, risk, related_tickets, author, observed
+            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash
          FROM ledger_entries
-         ORDER BY committed_at ASC
+         ORDER BY committed_at ASC, tx_id ASC
          LIMIT ?1 OFFSET ?2"
     };
 
@@ -492,7 +584,8 @@ mod tests {
                 risk TEXT,
                 related_tickets TEXT,
                 author TEXT NOT NULL DEFAULT 'unknown',
-                observed INTEGER
+                observed INTEGER,
+                prev_hash TEXT
             );",
         )
         .unwrap();
@@ -593,6 +686,7 @@ mod tests {
             related_tickets: None,
             author: "Test User".to_string(),
             observed: None,
+            prev_hash: None,
         };
         insert_ledger_entry(&conn, &entry).unwrap();
 

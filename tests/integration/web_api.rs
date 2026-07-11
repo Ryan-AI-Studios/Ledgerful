@@ -109,7 +109,8 @@ fn seed_ledger_entry(
             risk TEXT,
             related_tickets TEXT,
             author TEXT NOT NULL DEFAULT 'unknown',
-            observed INTEGER
+            observed INTEGER,
+            prev_hash TEXT
         );",
     )
     .unwrap();
@@ -159,6 +160,7 @@ fn seed_ledger_entry(
         related_tickets: None,
         author: "Test User".to_string(),
         observed: None,
+        prev_hash: None,
     };
 
     db.insert_ledger_entry(&entry).unwrap();
@@ -3054,6 +3056,7 @@ async fn test_soc2_export_seeded() {
         "manifest.pub",
         "ledger.csv",
         "verification_history.csv",
+        "chain_head.json",
     ] {
         assert!(
             names.iter().any(|n| n == required),
@@ -3149,7 +3152,7 @@ async fn test_soc2_export_empty_state_no_db() {
     let ledger_csv = String::from_utf8(read_zip_file(&body, "ledger.csv")).unwrap();
     assert!(
         ledger_csv
-            == "tx_id,category,entity,change_type,summary,reason,committed_at,signed,signature,observed\n",
+            == "tx_id,category,entity,change_type,summary,reason,committed_at,signed,signature,observed,prev_hash\n",
         "empty-state ledger.csv must be header-only; got:\n{ledger_csv}"
     );
     let verify_csv = String::from_utf8(read_zip_file(&body, "verification_history.csv")).unwrap();

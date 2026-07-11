@@ -270,6 +270,26 @@ impl<'a> LedgerDb<'a> {
         transactions::get_all_committed_ledger_entries(self.conn)
     }
 
+    pub fn get_chain_head(&self) -> Result<Option<ChainHead>, LedgerError> {
+        transactions::get_chain_head(self.conn)
+    }
+
+    pub fn update_chain_head(
+        &self,
+        head: &ChainHead,
+        expected: Option<&ChainHead>,
+    ) -> Result<bool, LedgerError> {
+        transactions::update_chain_head(self.conn, head, expected)
+    }
+
+    pub fn update_ledger_entry_prev_hash(
+        &self,
+        tx_id: &str,
+        prev_hash: Option<&str>,
+    ) -> Result<usize, LedgerError> {
+        transactions::update_ledger_entry_prev_hash(self.conn, tx_id, prev_hash)
+    }
+
     pub fn get_committed_ledger_entries_paginated(
         &self,
         category: Option<&str>,
@@ -304,7 +324,7 @@ impl<'a> LedgerDb<'a> {
             "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
                 change_type, summary, reason, is_breaking, committed_at,
                 verification_status, verification_basis, outcome_notes,
-                origin, trace_id, signature, public_key, risk, related_tickets, author, observed
+                origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash
              FROM ledger_entries
              WHERE entity_normalized LIKE ?1
              ORDER BY committed_at DESC
@@ -410,6 +430,7 @@ pub(crate) fn map_ledger_entry(row: &rusqlite::Row) -> rusqlite::Result<LedgerEn
         Some(1) => Some(true),
         _ => None,
     };
+    let prev_hash: Option<String> = row.get(22)?;
 
     Ok(LedgerEntry {
         id: row.get(0)?,
@@ -434,5 +455,6 @@ pub(crate) fn map_ledger_entry(row: &rusqlite::Row) -> rusqlite::Result<LedgerEn
         related_tickets: row.get(19)?,
         author: row.get(20)?,
         observed,
+        prev_hash,
     })
 }

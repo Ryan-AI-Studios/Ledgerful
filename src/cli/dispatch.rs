@@ -134,11 +134,24 @@ pub fn run_with(cli: Cli) -> Result<()> {
             entity,
             health,
             signatures,
+            chain,
+            against_export,
             dry_run,
             scope,
         } => dispatch_verify(
-            &layout, command, tx_id, timeout, no_predict, explain, entity, health, signatures,
-            dry_run, scope,
+            &layout,
+            command,
+            tx_id,
+            timeout,
+            no_predict,
+            explain,
+            entity,
+            health,
+            signatures,
+            chain,
+            against_export,
+            dry_run,
+            scope,
         ),
         Commands::Ask {
             query,
@@ -929,11 +942,18 @@ fn dispatch_verify(
     entity: Option<String>,
     health: bool,
     signatures: bool,
+    chain: bool,
+    against_export: Option<std::path::PathBuf>,
     dry_run: bool,
     scope: crate::verify::plan::VerifyScope,
 ) -> Result<()> {
-    if signatures {
-        crate::commands::verify::verify_ledger_signatures(layout)
+    if signatures || chain || against_export.is_some() {
+        crate::commands::verify::verify_ledger_signatures_with_options(
+            layout,
+            signatures,
+            chain,
+            against_export.as_deref(),
+        )
     } else {
         crate::commands::verify::execute_verify(
             command, tx_id, timeout, no_predict, explain, entity, health, dry_run, scope,

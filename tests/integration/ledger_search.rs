@@ -64,6 +64,7 @@ fn test_search_basic() {
         related_tickets: None,
         author: "Test User".to_string(),
         observed: None,
+        prev_hash: None,
     };
 
     let entry2 = LedgerEntry {
@@ -89,6 +90,7 @@ fn test_search_basic() {
         related_tickets: None,
         author: "Test User".to_string(),
         observed: None,
+        prev_hash: None,
     };
 
     db.insert_ledger_entry(&entry1).unwrap();
@@ -139,6 +141,7 @@ fn test_search_filters() {
         related_tickets: None,
         author: "Test User".to_string(),
         observed: None,
+        prev_hash: None,
     };
 
     let entry2 = LedgerEntry {
@@ -164,6 +167,7 @@ fn test_search_filters() {
         related_tickets: None,
         author: "Test User".to_string(),
         observed: None,
+        prev_hash: None,
     };
 
     db.insert_ledger_entry(&entry1).unwrap();
@@ -213,6 +217,7 @@ fn test_search_ranking() {
         related_tickets: None,
         author: "Test User".to_string(),
         observed: None,
+        prev_hash: None,
     };
 
     let entry2 = LedgerEntry {
@@ -238,6 +243,7 @@ fn test_search_ranking() {
         related_tickets: None,
         author: "Test User".to_string(),
         observed: None,
+        prev_hash: None,
     };
 
     db.insert_ledger_entry(&entry1).unwrap();
@@ -318,6 +324,7 @@ fn test_search_days_filtering() {
         related_tickets: None,
         author: "Test User".to_string(),
         observed: None,
+        prev_hash: None,
     };
 
     let entry2 = LedgerEntry {
@@ -343,6 +350,7 @@ fn test_search_days_filtering() {
         related_tickets: None,
         author: "Test User".to_string(),
         observed: None,
+        prev_hash: None,
     };
 
     db.insert_ledger_entry(&entry1).unwrap();

@@ -291,7 +291,7 @@ fn batch_re_sign_emits_one_maintenance_entry() {
     let maintenance: Vec<_> = entries
         .iter()
         .filter(|e| e.entry_type == ledgerful::ledger::types::EntryType::Maintenance)
-        .filter(|e| e.summary.starts_with("Re-signed"))
+        .filter(|e| e.summary.contains("Chain segment break: re-sign"))
         .collect();
     assert_eq!(
         maintenance.len(),
@@ -562,7 +562,7 @@ fn maintenance_entry_is_signed_when_signing_required() {
     let maintenance: Vec<_> = entries
         .iter()
         .filter(|e| e.entry_type == ledgerful::ledger::types::EntryType::Maintenance)
-        .filter(|e| e.summary.starts_with("Re-signed"))
+        .filter(|e| e.summary.contains("Chain segment break: re-sign"))
         .collect();
     assert_eq!(
         maintenance.len(),
@@ -590,4 +590,77 @@ fn maintenance_entry_is_signed_when_signing_required() {
         ),
         "maintenance entry signature must verify"
     );
+}
+
+#[test]
+#[serial(cwd, env)]
+fn re_sign_then_verify_chain_passes() {
+    let _env_non_interactive = non_interactive();
+    let (_dir, root, db_path) = setup_initialized_repo();
+    let _guard = DirGuard::from_utf8(&root);
+
+    let entity_path = root.join("src/main.rs");
+    std::fs::create_dir_all(entity_path.parent().unwrap()).unwrap();
+    std::fs::write(&entity_path, "").unwrap();
+
+    let mut storage = StorageManager::init(db_path.as_std_path()).unwrap();
+    let mut tx_mgr = TransactionManager::new(&mut storage, root.clone().into(), Config::default());
+    let mut tx_ids = Vec::new();
+    let keys = keys_dir(root.as_std_path());
+    for i in 0..3 {
+        let tx_id = tx_mgr
+            .start_change(TransactionRequest {
+                category: Category::Feature,
+                entity: "src/main.rs".to_string(),
+                planned_action: Some(format!("entry {i}")),
+                ..Default::default()
+            })
+            .unwrap();
+        let committed_at = "2026-06-03T00:00:00Z";
+        let (sig, pub_key) = sign_ledger_entry_in(
+            &keys,
+            &tx_id,
+            &Category::Feature.to_string(),
+            &format!("entry {i}"),
+            "reason",
+            committed_at,
+        )
+        .unwrap();
+        tx_mgr
+            .commit_change(
+                tx_id.clone(),
+                CommitRequest {
+                    change_type: ChangeType::Modify,
+                    summary: format!("entry {i}"),
+                    reason: "reason".to_string(),
+                    committed_at: Some(committed_at.to_string()),
+                    signature: sig,
+                    public_key: pub_key,
+                    ..Default::default()
+                },
+                false,
+            )
+            .unwrap();
+        tx_ids.push(tx_id);
+    }
+    drop(tx_mgr);
+    drop(storage);
+
+    // Corrupt every signature so re-sign has work to do.
+    for tx_id in &tx_ids {
+        corrupt_entry(
+            db_path.as_std_path(),
+            tx_id,
+            "0000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000",
+            "0000000000000000000000000000000000000000000000000000000000000000",
+        );
+    }
+
+    execute_ledger_re_sign_with_keys_dir(None, true, false, true, Some(keys.clone())).unwrap();
+
+    // After re-signing, verify --chain must PASS, proving the maintenance entry
+    // links to the correct new tail hash and the genesis prev_hash is None.
+    let layout = ledgerful::state::layout::Layout::new(root.as_str());
+    ledgerful::commands::verify::verify_ledger_signatures_with_options(&layout, true, true, None)
+        .expect("verify --chain must pass after re-sign");
 }

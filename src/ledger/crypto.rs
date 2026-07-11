@@ -1,6 +1,7 @@
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use miette::{IntoDiagnostic, Result};
 use rand::rngs::OsRng;
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -217,6 +218,100 @@ pub fn sign_ledger_entry_in(
     Ok((Some(sig_hex), Some(pub_hex)))
 }
 
+/// Deterministic entry hash that commits to the entry's identity and its chain
+/// linkage. The hash is outside the Ed25519 signing basis and is used for the
+/// `prev_hash` column and the signed chain head.
+///
+/// Canonical input: `tx_id || signature_hex || prev_hash` where `prev_hash` is
+/// the previous head's `latest_entry_hash`, or the empty string for the genesis
+/// entry.
+pub fn compute_entry_hash(tx_id: &str, signature_hex: &str, prev_hash: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(tx_id.as_bytes());
+    hasher.update(signature_hex.as_bytes());
+    hasher.update(prev_hash.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// Canonical chain-head signing payload, shared between signing and
+/// verification so the format cannot drift.
+fn chain_head_payload(latest_entry_hash: &str, genesis: &str, length: i64) -> String {
+    format!(
+        "chain_head:{}\nlatest_entry_hash:{}\ngenesis:{}\nlength:{}",
+        "chain_head", latest_entry_hash, genesis, length
+    )
+}
+
+pub fn sign_chain_head(
+    keys_dir: &Path,
+    latest_entry_hash: &str,
+    genesis: &str,
+    length: i64,
+) -> Result<(Option<String>, Option<String>)> {
+    let (signing_key, verifying_key) = get_or_create_keys_in(keys_dir)?;
+
+    if !verify_keypair_consistency(&signing_key, &verifying_key) {
+        return Err(miette::miette!(
+            "Keypair consistency check failed: public key does not match private seed. Refusing to sign chain head."
+        ));
+    }
+
+    let payload = chain_head_payload(latest_entry_hash, genesis, length);
+
+    let signature = signing_key.sign(payload.as_bytes());
+    let sig_hex = hex::encode(signature.to_bytes());
+    let pub_hex = hex::encode(verifying_key.to_bytes());
+
+    Ok((Some(sig_hex), Some(pub_hex)))
+}
+
+pub fn verify_chain_head(
+    latest_entry_hash: &str,
+    genesis: &str,
+    length: i64,
+    signature_hex: &str,
+    public_key_hex: &str,
+) -> bool {
+    verify_chain_head_with_result(
+        latest_entry_hash,
+        genesis,
+        length,
+        signature_hex,
+        public_key_hex,
+    )
+    .is_ok()
+}
+
+fn verify_chain_head_with_result(
+    latest_entry_hash: &str,
+    genesis: &str,
+    length: i64,
+    signature_hex: &str,
+    public_key_hex: &str,
+) -> Result<(), ChainHeadVerifyError> {
+    let payload = chain_head_payload(latest_entry_hash, genesis, length);
+
+    let pub_decoded =
+        hex::decode(public_key_hex).map_err(|_| ChainHeadVerifyError::InvalidPublicKey)?;
+    let pub_array: [u8; 32] = pub_decoded
+        .try_into()
+        .map_err(|_| ChainHeadVerifyError::InvalidPublicKey)?;
+    let verifying_key =
+        VerifyingKey::from_bytes(&pub_array).map_err(|_| ChainHeadVerifyError::InvalidPublicKey)?;
+
+    let sig_decoded =
+        hex::decode(signature_hex).map_err(|_| ChainHeadVerifyError::InvalidSignature)?;
+    let sig_array: [u8; 64] = sig_decoded
+        .try_into()
+        .map_err(|_| ChainHeadVerifyError::InvalidSignature)?;
+    let signature = Signature::from_bytes(&sig_array);
+
+    verifying_key
+        .verify(payload.as_bytes(), &signature)
+        .map_err(|_| ChainHeadVerifyError::VerificationFailed)?;
+    Ok(())
+}
+
 pub fn verify_signature(
     tx_id: &str,
     category: &str,
@@ -288,6 +383,16 @@ enum SignatureVerifyError {
     InvalidSignatureLength,
     #[error("signature does not verify against stored payload")]
     SignatureMismatch,
+}
+
+#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+enum ChainHeadVerifyError {
+    #[error("chain head public key is not valid")]
+    InvalidPublicKey,
+    #[error("chain head signature is not valid")]
+    InvalidSignature,
+    #[error("chain head signature does not verify")]
+    VerificationFailed,
 }
 
 #[cfg(test)]

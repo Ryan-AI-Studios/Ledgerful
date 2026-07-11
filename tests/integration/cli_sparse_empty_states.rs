@@ -53,12 +53,14 @@ fn test_sparse_empty_states_json__slow() {
     assert_eq!(v["emptyReason"].as_str().unwrap(), "noIndexedData");
 
     // 4. Security boundaries
+    // After `init` the ledger seeds a mode transaction node in the graph, so the
+    // empty reason is the "populated graph but no Cedar policy" variant.
     let out = Command::new(exe)
         .args(["security", "boundaries", "--json"])
         .output()
         .unwrap();
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["emptyReason"].as_str().unwrap(), "noIndexedData");
+    assert_eq!(v["emptyReason"].as_str().unwrap(), "noMatches");
 
     // 5. Test mapping nonexistent BEFORE index
     let out = Command::new(exe)

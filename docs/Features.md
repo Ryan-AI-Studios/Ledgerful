@@ -14,6 +14,7 @@ Ledgerful treats architectural changes as atomic transactions, maintaining a per
 *   **ADR Generation**: Export architectural decisions directly from the ledger into MADR-format Markdown documents.
 *   **Ledger Search**: Full-text search (FTS5) across all historical transactions and design notes.
 *   **Ledger Federation**: Securely export and sync ledger entries across sibling repositories for cross-repo provenance.
+*   **Chain Integrity (Track 0046)**: Each committed ledger entry carries a `prev_hash` linking it to the prior chain head, and a signed `chain_head` row binds the latest entry hash, genesis boundary, and chain length. `ledgerful verify --signatures --chain` validates the chain end-to-end and reports the exact break location. The chain verifies the integrity and continuity of the presented chain; detection of rollback to an earlier valid state requires an independently retained chain head (e.g., a SOC2 evidence export or the public ledger artifact).
 
 ## 2. Impact Analysis & Risk Assessment
 

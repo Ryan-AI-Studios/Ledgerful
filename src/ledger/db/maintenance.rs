@@ -61,7 +61,7 @@ pub fn get_recent_ledger_entries_paginated(
         "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
             verification_status, verification_basis, outcome_notes,
-            origin, trace_id, signature, public_key, risk, related_tickets, author, observed
+            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash
      FROM ledger_entries
      ORDER BY committed_at DESC
      LIMIT ?1 OFFSET ?2",
@@ -128,7 +128,8 @@ mod tests {
                 risk TEXT,
                 related_tickets TEXT,
                 author TEXT NOT NULL DEFAULT 'unknown',
-                observed INTEGER
+                observed INTEGER,
+                prev_hash TEXT
             );",
         )
         .unwrap();
@@ -181,6 +182,7 @@ mod tests {
             related_tickets: None,
             author: "Test User".to_string(),
             observed: None,
+            prev_hash: None,
         }
     }
 

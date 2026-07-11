@@ -245,6 +245,13 @@ pub enum Commands {
         /// Mathematically verify all transaction signatures in the ledger
         #[arg(long)]
         signatures: bool,
+        /// Verify ledger chain continuity end-to-end (requires --signatures or
+        /// validates the chain linkage separately)
+        #[arg(long)]
+        chain: bool,
+        /// Compare the live chain head against a previously exported SOC2 zip
+        #[arg(long, value_name = "PATH")]
+        against_export: Option<std::path::PathBuf>,
         /// Show the verification plan without executing any commands
         #[arg(long)]
         dry_run: bool,

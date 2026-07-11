@@ -343,7 +343,7 @@ impl<'a> TransactionManager<'a> {
             // Capture author from git config at commit time
             let author = capture_git_author(&self.repo_root);
 
-            let entry = LedgerEntry {
+            let mut entry = LedgerEntry {
                 id: 0, // DB will assign
                 tx_id: tx_id.clone(),
                 category: tx.category,
@@ -370,7 +370,19 @@ impl<'a> TransactionManager<'a> {
                 } else {
                     req.observed
                 },
+                prev_hash: None,
             };
+
+            let keys_dir = crate::ledger::crypto::get_keys_dir().map_err(|e| {
+                LedgerError::Validation(format!("Failed to locate keys directory: {e}"))
+            })?;
+            append_to_chain_with_cas(
+                &db,
+                &keys_dir,
+                self.config.intent.require_signing,
+                &mut entry,
+            )
+            .map_err(|e| LedgerError::Validation(format!("Chain append failed: {e}")))?;
 
             db.insert_ledger_entry(&entry)?;
         }
@@ -462,6 +474,10 @@ impl<'a> TransactionManager<'a> {
 
         let now = Utc::now().to_rfc3339();
 
+        let keys_dir = crate::ledger::crypto::get_keys_dir().map_err(|e| {
+            LedgerError::Validation(format!("Failed to locate keys directory: {e}"))
+        })?;
+
         let sqlite_tx = self
             .storage
             .get_connection_mut()
@@ -499,7 +515,7 @@ impl<'a> TransactionManager<'a> {
                 }
             };
 
-            let entry = LedgerEntry {
+            let mut entry = LedgerEntry {
                 id: 0,
                 tx_id,
                 category: tx.category,
@@ -522,7 +538,15 @@ impl<'a> TransactionManager<'a> {
                 related_tickets: tx.issue_ref,
                 author: capture_git_author(&self.repo_root),
                 observed: None,
+                prev_hash: None,
             };
+            append_to_chain_with_cas(
+                &db,
+                &keys_dir,
+                self.config.intent.require_signing,
+                &mut entry,
+            )
+            .map_err(|e| LedgerError::Validation(format!("Chain append failed: {e}")))?;
             db.insert_ledger_entry(&entry)?;
         }
         sqlite_tx.commit().map_err(LedgerError::from)?;
@@ -583,6 +607,9 @@ impl<'a> TransactionManager<'a> {
         }
 
         let now = Utc::now().to_rfc3339();
+        let keys_dir = crate::ledger::crypto::get_keys_dir().map_err(|e| {
+            LedgerError::Validation(format!("Failed to locate keys directory: {e}"))
+        })?;
         let sqlite_tx = self
             .storage
             .get_connection_mut()
@@ -623,7 +650,7 @@ impl<'a> TransactionManager<'a> {
                     }
                 };
 
-                let entry = LedgerEntry {
+                let mut entry = LedgerEntry {
                     id: 0,
                     tx_id: tx.tx_id,
                     category: tx.category,
@@ -646,7 +673,15 @@ impl<'a> TransactionManager<'a> {
                     related_tickets: None,
                     author: capture_git_author(&self.repo_root),
                     observed: None,
+                    prev_hash: None,
                 };
+                append_to_chain_with_cas(
+                    &db,
+                    &keys_dir,
+                    self.config.intent.require_signing,
+                    &mut entry,
+                )
+                .map_err(|e| LedgerError::Validation(format!("Chain append failed: {e}")))?;
                 db.insert_ledger_entry(&entry)?;
             }
         }
@@ -1025,6 +1060,124 @@ fn capture_git_author(repo_root: &Path) -> String {
     read("user.name")
         .or_else(|| read("user.email"))
         .unwrap_or_else(|| "unknown".to_string())
+}
+
+/// Append a ledger entry to the linear chain inside a SQLite transaction.
+///
+/// Uses optimistic concurrency control (read head, compute hash, re-read head,
+/// assert it did not move, then write). On contention, retries up to
+/// `MAX_RETRIES` against the new head. This keeps the chain strictly linear
+/// even if two writers read the same head simultaneously.
+fn append_to_chain_with_cas(
+    db: &LedgerDb,
+    keys_dir: &std::path::Path,
+    signing_required: bool,
+    entry: &mut LedgerEntry,
+) -> Result<(), miette::Error> {
+    const MAX_RETRIES: usize = 3;
+
+    let sig_hex = entry.signature.as_deref().unwrap_or("");
+    let mut attempt = 0usize;
+
+    loop {
+        let head_before = db
+            .get_chain_head()
+            .map_err(|e| miette::miette!("DB error reading chain head: {e}"))?;
+        let prev_chain_hash = head_before
+            .as_ref()
+            .map(|h| h.latest_entry_hash.as_str())
+            .unwrap_or("");
+        let entry_hash =
+            crate::ledger::crypto::compute_entry_hash(&entry.tx_id, sig_hex, prev_chain_hash);
+
+        let head_after = db
+            .get_chain_head()
+            .map_err(|e| miette::miette!("DB error re-reading chain head: {e}"))?;
+        // CAS compares only the guard fields, not the signature, so a re-signed
+        // head with the same latest_entry_hash/genesis/length does not spuriously
+        // fail the compare.
+        let guard_eq = match (&head_before, &head_after) {
+            (None, None) => true,
+            (Some(b), Some(a)) => {
+                b.latest_entry_hash == a.latest_entry_hash
+                    && b.genesis == a.genesis
+                    && b.length == a.length
+            }
+            _ => false,
+        };
+        if !guard_eq {
+            attempt += 1;
+            if attempt >= MAX_RETRIES {
+                return Err(miette::miette!(
+                    "Chain head moved {MAX_RETRIES} times during append; aborting to prevent a fork"
+                ));
+            }
+            continue;
+        }
+
+        entry.prev_hash = if prev_chain_hash.is_empty() {
+            None
+        } else {
+            Some(prev_chain_hash.to_string())
+        };
+
+        let (new_latest, genesis, new_length, updated_at) = if let Some(ref head) = head_before {
+            (
+                entry_hash.clone(),
+                head.genesis.clone(),
+                head.length + 1,
+                entry.committed_at.clone(),
+            )
+        } else {
+            (
+                entry_hash.clone(),
+                entry.committed_at.clone(),
+                1i64,
+                entry.committed_at.clone(),
+            )
+        };
+
+        let (head_sig, head_pub) = match crate::ledger::crypto::sign_chain_head(
+            keys_dir,
+            &new_latest,
+            &genesis,
+            new_length,
+        ) {
+            Ok(res) => res,
+            Err(e) => {
+                if signing_required {
+                    return Err(miette::miette!("Failed to sign chain head: {e}"));
+                }
+                tracing::warn!(
+                    "Chain head signing failed (signing not required, storing unsigned head): {e}"
+                );
+                (None, None)
+            }
+        };
+
+        let new_head = ChainHead {
+            latest_entry_hash: new_latest,
+            genesis,
+            length: new_length,
+            head_signature: head_sig,
+            head_public_key: head_pub,
+            updated_at,
+        };
+        let updated = db
+            .update_chain_head(&new_head, head_before.as_ref())
+            .map_err(|e| miette::miette!("DB error updating chain head: {e}"))?;
+        if !updated {
+            attempt += 1;
+            if attempt >= MAX_RETRIES {
+                return Err(miette::miette!(
+                    "Chain head moved {MAX_RETRIES} times during append; aborting to prevent a fork"
+                ));
+            }
+            continue;
+        }
+
+        return Ok(());
+    }
 }
 
 #[cfg(test)]

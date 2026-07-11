@@ -7,6 +7,7 @@ use crate::state::storage::StorageManager;
 use chrono::Utc;
 use miette::{Result, miette};
 use owo_colors::OwoColorize;
+use rusqlite::OptionalExtension;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -137,8 +138,25 @@ pub fn execute_ledger_re_sign_with_keys_dir(
                 old_pub_fp.dimmed()
             );
         }
+        let old_head_fp = preview_storage
+            .get_connection()
+            .query_row(
+                "SELECT latest_entry_hash FROM chain_head WHERE id = 1",
+                [],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .ok()
+            .flatten()
+            .map(|h| key_fingerprint(&h))
+            .unwrap_or_else(|| "(none)".to_string());
         println!(
-            "\n{} Mutations skipped. Pass --yes to back up the ledger and re-sign.",
+            "\n{} Chain segment break preview: old head {} -> new head (computed on --yes).",
+            "DRY RUN:".cyan().bold(),
+            old_head_fp.cyan()
+        );
+        println!(
+            "{} Mutations skipped. Pass --yes to back up the ledger and re-sign.",
             "DRY RUN:".cyan().bold()
         );
         return Ok(());
@@ -180,6 +198,13 @@ pub fn execute_ledger_re_sign_with_keys_dir(
         .get_connection_mut()
         .transaction()
         .map_err(|e| miette!("Failed to begin re-sign transaction: {}", e))?;
+
+    let old_head_opt: Option<crate::ledger::types::ChainHead> = {
+        let db = LedgerDb::new(&sqlite_tx);
+        db.get_chain_head()
+            .map_err(|e| miette!("Failed to read chain head: {}", e))?
+    };
+    let old_head_hash = old_head_opt.as_ref().map(|h| h.latest_entry_hash.as_str());
 
     {
         let db = LedgerDb::new(&sqlite_tx);
@@ -233,7 +258,61 @@ pub fn execute_ledger_re_sign_with_keys_dir(
         }
     }
 
-    // Exactly one MAINTENANCE entry documents the whole batch / single repair.
+    // Rebuild chain links for the entries whose signatures changed. Because each
+    // entry hash depends on the previous head, a single re-signed entry forces
+    // a new chain suffix from the genesis point forward.
+    let (new_chain_length, new_genesis, new_tail_hash) = {
+        let db = LedgerDb::new(&sqlite_tx);
+        let mut entries = db
+            .get_all_committed_ledger_entries()
+            .map_err(|e| miette!("Failed to read ledger entries for chain rebuild: {}", e))?;
+        entries.sort_by(|a, b| {
+            a.committed_at
+                .cmp(&b.committed_at)
+                .then_with(|| a.tx_id.cmp(&b.tx_id))
+        });
+
+        // Re-sign creates a fresh chain segment from the earliest existing entry
+        // through the new maintenance tail. The old genesis is intentionally
+        // replaced because the signatures (and therefore entry hashes) changed,
+        // so any entries committed before the previous genesis boundary are now
+        // part of the re-established chain.
+        let genesis = entries
+            .first()
+            .map(|e| e.committed_at.clone())
+            .unwrap_or_else(|| now.clone());
+        let mut chain_length: i64 = 0;
+        let mut prev_hash: Option<String> = None;
+        for entry in &entries {
+            let prev = prev_hash.as_deref().unwrap_or("");
+            if prev.is_empty() {
+                db.update_ledger_entry_prev_hash(&entry.tx_id, None)
+                    .map_err(|e| {
+                        miette!(
+                            "Failed to clear genesis prev_hash for {}: {}",
+                            entry.tx_id,
+                            e
+                        )
+                    })?;
+            } else {
+                db.update_ledger_entry_prev_hash(&entry.tx_id, Some(prev))
+                    .map_err(|e| {
+                        miette!("Failed to update prev_hash for {}: {}", entry.tx_id, e)
+                    })?;
+            }
+            chain_length += 1;
+            let sig_hex = entry.signature.as_deref().unwrap_or("");
+            prev_hash = Some(crate::ledger::crypto::compute_entry_hash(
+                &entry.tx_id,
+                sig_hex,
+                prev,
+            ));
+        }
+        (chain_length, genesis, prev_hash)
+    };
+
+    // Exactly one MAINTENANCE entry documents the whole batch / single repair
+    // and serves as the new chain head, linking the old head to the new head.
     let maintenance_entry = build_maintenance_entry(
         &candidates,
         &repaired_tx_ids,
@@ -242,6 +321,7 @@ pub fn execute_ledger_re_sign_with_keys_dir(
         &new_pub_key,
         &now,
         &author,
+        old_head_hash,
     );
 
     let maintenance_tx_id = {
@@ -253,8 +333,9 @@ pub fn execute_ledger_re_sign_with_keys_dir(
             &maintenance_entry.author,
         )?;
 
-        // If signing is required, sign the maintenance entry so it does not itself become
-        // an invalid-signature row in verify --signatures.
+        // Sign the maintenance entry so it has a stable hash for the chain head
+        // and so it does not itself become an invalid-signature row when signing
+        // is required.
         let mut signed_maintenance_entry = maintenance_entry.clone();
         if signing_required {
             let (maint_sig, maint_pub) = crate::ledger::crypto::sign_ledger_entry_in(
@@ -269,8 +350,60 @@ pub fn execute_ledger_re_sign_with_keys_dir(
             signed_maintenance_entry.signature = maint_sig;
             signed_maintenance_entry.public_key = maint_pub;
         }
+
+        let maint_prev = new_tail_hash.as_deref().unwrap_or("");
+        signed_maintenance_entry.prev_hash = if maint_prev.is_empty() {
+            None
+        } else {
+            Some(maint_prev.to_string())
+        };
+
         db.insert_ledger_entry(&signed_maintenance_entry)
             .map_err(|e| miette!("Failed to insert maintenance ledger entry: {}", e))?;
+
+        let maint_sig_hex = signed_maintenance_entry.signature.as_deref().unwrap_or("");
+        let new_latest_hash = crate::ledger::crypto::compute_entry_hash(
+            &signed_maintenance_entry.tx_id,
+            maint_sig_hex,
+            maint_prev,
+        );
+
+        let (head_sig, head_pub) = match crate::ledger::crypto::sign_chain_head(
+            &keys_dir,
+            &new_latest_hash,
+            &new_genesis,
+            new_chain_length + 1,
+        ) {
+            Ok(res) => res,
+            Err(e) => {
+                if signing_required {
+                    return Err(miette!("Failed to sign new chain head: {}", e));
+                }
+                tracing::warn!(
+                    "Chain head signing failed (signing not required, storing unsigned head): {}",
+                    e
+                );
+                (None, None)
+            }
+        };
+
+        let new_head = crate::ledger::types::ChainHead {
+            latest_entry_hash: new_latest_hash,
+            genesis: new_genesis,
+            length: new_chain_length + 1,
+            head_signature: head_sig,
+            head_public_key: head_pub,
+            updated_at: now.clone(),
+        };
+        let updated = db
+            .update_chain_head(&new_head, old_head_opt.as_ref())
+            .map_err(|e| miette!("Failed to update chain head: {}", e))?;
+        if !updated {
+            return Err(miette!(
+                "Chain head moved during re-sign (CAS mismatch). Aborting to prevent stale head."
+            ));
+        }
+
         signed_maintenance_entry.tx_id.clone()
     };
 
@@ -298,6 +431,7 @@ pub fn execute_ledger_re_sign_with_keys_dir(
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_maintenance_entry(
     candidates: &[(String, String, String)],
     repaired_tx_ids: &[String],
@@ -306,6 +440,7 @@ fn build_maintenance_entry(
     new_pub_key: &str,
     committed_at: &str,
     author: &str,
+    old_head_hash: Option<&str>,
 ) -> LedgerEntry {
     let is_batch = candidates.len() > 1;
     let affected = if is_batch {
@@ -335,19 +470,24 @@ fn build_maintenance_entry(
         )
     };
 
+    let old_head_fp = old_head_hash
+        .map(key_fingerprint)
+        .unwrap_or_else(|| "(none)".to_string());
+
     let summary = if is_batch {
         format!(
-            "Re-signed {} ledger entries with invalid signatures",
+            "Chain segment break: re-sign — re-signed {} ledger entries",
             candidates.len()
         )
     } else {
-        "Re-signed one ledger entry with an invalid signature".to_string()
+        "Chain segment break: re-sign — re-signed one ledger entry".to_string()
     };
 
     let reason = format!(
-        "Key-repair / re-sign operation. Old key fingerprints: [{}]. New public key fingerprint: {}. Affected: {}.",
+        "Key-repair / re-sign operation. Old key fingerprints: [{}]. New public key fingerprint: {}. Old chain head: {}. Affected: {}.",
         old_keys.join(", "),
         key_fingerprint(new_pub_key),
+        old_head_fp,
         affected
     );
 
@@ -388,6 +528,7 @@ fn build_maintenance_entry(
         related_tickets: None,
         author: author.to_string(),
         observed: None,
+        prev_hash: None,
     }
 }
 
@@ -591,7 +732,8 @@ mod tests {
                 risk TEXT,
                 related_tickets TEXT,
                 author TEXT NOT NULL DEFAULT 'unknown',
-                observed INTEGER
+                observed INTEGER,
+                prev_hash TEXT
             );",
         )
         .unwrap();
@@ -626,6 +768,7 @@ mod tests {
             related_tickets: None,
             author: "test".to_string(),
             observed: None,
+            prev_hash: None,
         }
     }
 
@@ -697,6 +840,7 @@ mod tests {
             "newpub",
             "2024-06-01T10:00:00Z",
             "tester",
+            Some("oldheadhash"),
         );
         assert_eq!(entry.entry_type, EntryType::Maintenance);
         assert_eq!(entry.category, Category::Chore);
@@ -716,6 +860,7 @@ mod tests {
             "newpub",
             "2024-06-01T10:00:00Z",
             "tester",
+            None,
         );
         assert!(entry.reason.contains("tx_id=tx-1"));
         assert!(entry.reason.contains("old_sig="));

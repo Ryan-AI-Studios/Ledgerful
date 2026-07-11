@@ -889,15 +889,19 @@ fn fetch_compliance_summary(layout: &Layout) -> Result<ComplianceSummaryResponse
         .require_signing;
 
     // `get_all_committed_ledger_entries` returns entries ordered
-    // `committed_at ASC` (see `src/ledger/db/transactions.rs:349`). Sort
-    // defensively into DESC order so `last_audit_at` (the most recent VALID
+    // `committed_at ASC, tx_id ASC` (see `src/ledger/db/transactions.rs:349`).
+    // Sort defensively into DESC order so `last_audit_at` (the most recent VALID
     // entry's `committed_at`) and downstream consumers are deterministic.
     let mut entries = {
         let db = LedgerDb::new(conn);
         db.get_all_committed_ledger_entries()
             .map_err(|e| miette!("Failed to read ledger entries: {e}"))?
     };
-    entries.sort_by(|a, b| b.committed_at.cmp(&a.committed_at));
+    entries.sort_by(|a, b| {
+        b.committed_at
+            .cmp(&a.committed_at)
+            .then_with(|| b.tx_id.cmp(&a.tx_id))
+    });
 
     let mut total_signed: u64 = 0;
     let mut valid_count: u64 = 0;
@@ -969,7 +973,7 @@ fn fetch_compliance_signatures(layout: &Layout) -> Result<Vec<ComplianceSignatur
         .intent
         .require_signing;
 
-    // `get_all_committed_ledger_entries` returns `committed_at ASC`
+    // `get_all_committed_ledger_entries` returns `committed_at ASC, tx_id ASC`
     // (`src/ledger/db/transactions.rs:349`). Sort into DESC order so the
     // most recent entries come first, then bound to the most recent
     // `COMPLIANCE_SIGNATURES_LIMIT` (100). `.take(100)` preserves this DESC
@@ -979,7 +983,11 @@ fn fetch_compliance_signatures(layout: &Layout) -> Result<Vec<ComplianceSignatur
         db.get_all_committed_ledger_entries()
             .map_err(|e| miette!("Failed to read ledger entries: {e}"))?
     };
-    entries.sort_by(|a, b| b.committed_at.cmp(&a.committed_at));
+    entries.sort_by(|a, b| {
+        b.committed_at
+            .cmp(&a.committed_at)
+            .then_with(|| b.tx_id.cmp(&a.tx_id))
+    });
 
     let out: Vec<ComplianceSignatureEntry> = entries
         .into_iter()

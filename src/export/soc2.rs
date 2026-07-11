@@ -24,12 +24,14 @@
 //! web dashboard's `/api/compliance/export` handler.
 
 use crate::ledger::adr::{generate_madr_content, slugify_summary};
-use crate::ledger::crypto::get_or_create_keys;
+use crate::ledger::crypto::{compute_entry_hash, get_or_create_keys};
 use crate::ledger::db::LedgerDb;
+use crate::ledger::types::ChainHead;
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use ed25519_dalek::Signer;
 use miette::{Result, miette};
+use rusqlite::OptionalExtension;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::io::Write;
@@ -38,7 +40,7 @@ use std::io::Write;
 /// the zip (e.g. `"ledger.csv"`, `"adr/0001-use-uuid.md"`). `sha256` is the
 /// hex-encoded SHA-256 of the file's bytes as written to the zip. `size` is
 /// the byte length.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct ManifestFile {
     name: String,
@@ -109,7 +111,7 @@ pub fn generate_soc2_export(layout: &Layout) -> Result<Vec<u8>> {
 
     let config = crate::config::load::load_config(layout).unwrap_or_default();
 
-    let (ledger_entries, verification_rows, adr_entries) = if has_db {
+    let (ledger_entries, verification_rows, adr_entries, chain_head) = if has_db {
         let storage = StorageManager::open_read_only_sqlite_only(&layout.root)?;
         let conn = storage.get_connection();
         let db = LedgerDb::new(conn);
@@ -117,11 +119,15 @@ pub fn generate_soc2_export(layout: &Layout) -> Result<Vec<u8>> {
         let mut entries = db
             .get_all_committed_ledger_entries()
             .map_err(|e| miette!("Failed to read ledger entries: {e}"))?;
-        // `get_all_committed_ledger_entries` returns `committed_at ASC`
+        // `get_all_committed_ledger_entries` returns `committed_at ASC, tx_id ASC`
         // (`src/ledger/db/transactions.rs:349`); the CSV contract is
-        // `committed_at ASC` so this is already correct. Sort defensively in
+        // `committed_at ASC, tx_id ASC` so this is already correct. Sort defensively in
         // case the underlying ordering changes.
-        entries.sort_by(|a, b| a.committed_at.cmp(&b.committed_at));
+        entries.sort_by(|a, b| {
+            a.committed_at
+                .cmp(&b.committed_at)
+                .then_with(|| a.tx_id.cmp(&b.tx_id))
+        });
 
         let vrows = storage.get_verification_export_rows()?;
 
@@ -129,9 +135,35 @@ pub fn generate_soc2_export(layout: &Layout) -> Result<Vec<u8>> {
             .get_adr_entries(None)
             .map_err(|e| miette!("Failed to read ADR entries: {e}"))?;
 
-        (entries, vrows, adrs)
+        let head = conn
+            .query_row(
+                "SELECT latest_entry_hash, genesis, length, head_signature, head_public_key, updated_at FROM chain_head WHERE id = 1",
+                [],
+                |row| {
+                    Ok(ChainHead {
+                        latest_entry_hash: row.get(0)?,
+                        genesis: row.get(1)?,
+                        length: row.get(2)?,
+                        head_signature: row.get(3)?,
+                        head_public_key: row.get(4)?,
+                        updated_at: row.get(5)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|e| miette!("Failed to read chain head: {e}"))?;
+
+        // If the singleton chain_head row is missing but the ledger has
+        // entries, synthesize a head from the entries so the export still
+        // captures a rollback ceiling. The synthesized head is unsigned
+        // (signature fields are None), which `chain_continuity_status` reports
+        // as invalid/unverifiable and which `--against-export` can still use
+        // for length/hash comparison.
+        let head = head.or_else(|| synthesize_chain_head(&entries));
+
+        (entries, vrows, adrs, head)
     } else {
-        (Vec::new(), Vec::new(), Vec::new())
+        (Vec::new(), Vec::new(), Vec::new(), None)
     };
 
     // 2. Build the file payloads (bytes + manifest entries).
@@ -169,14 +201,25 @@ pub fn generate_soc2_export(layout: &Layout) -> Result<Vec<u8>> {
         manifest_files.push(mf);
     }
 
+    let mode_disclosure =
+        build_mode_disclosure(&ledger_entries, &config.gate.mode, chain_head.as_ref());
+
+    // Include chain_head.json in the export before sorting so it participates
+    // in the deterministic alphabetical order.
+    if let Some(ref head) = chain_head {
+        let chain_head_json = serde_json::to_vec(head)
+            .map_err(|e| miette!("Failed to serialize chain_head.json: {e}"))?;
+        let (entry, mf) = ZipEntry::new("chain_head.json", chain_head_json);
+        zip_entries.push(entry);
+        manifest_files.push(mf);
+    }
+
     // 3. Determinism: sort manifest files by name ASC. The zip itself is
     // written in the same order so the byte stream is also deterministic
     // (modulo zip metadata timestamps, which `SimpleFileOptions::default`
     // leaves at epoch zero).
     manifest_files.sort_by(|a, b| a.name.cmp(&b.name));
     zip_entries.sort_by(|a, b| a.name.cmp(&b.name));
-
-    let mode_disclosure = build_mode_disclosure(&ledger_entries, &config.gate.mode);
 
     let manifest = Manifest {
         generated_at: chrono::Utc::now().to_rfc3339(),
@@ -246,6 +289,7 @@ pub fn generate_soc2_export(layout: &Layout) -> Result<Vec<u8>> {
 fn build_mode_disclosure(
     entries: &[crate::ledger::types::LedgerEntry],
     current_mode: &str,
+    chain_head: Option<&ChainHead>,
 ) -> GateModeDisclosure {
     let mut mode: Option<String> = None;
     let mut transition_points: Vec<String> = Vec::new();
@@ -303,14 +347,82 @@ fn build_mode_disclosure(
         )
     };
 
+    let chain_continuity_status = match chain_head {
+        Some(head) => {
+            let valid = crate::ledger::crypto::verify_chain_head(
+                &head.latest_entry_hash,
+                &head.genesis,
+                head.length,
+                head.head_signature.as_deref().unwrap_or(""),
+                head.head_public_key.as_deref().unwrap_or(""),
+            );
+            if valid {
+                format!(
+                    "verified: {} linked entries from genesis {} to head {}",
+                    head.length, head.genesis, head.latest_entry_hash
+                )
+            } else {
+                format!(
+                    "INVALID — stored chain head signature does not verify (head {}, genesis {}, length {})",
+                    head.latest_entry_hash, head.genesis, head.length
+                )
+            }
+        }
+        None => {
+            if entries.iter().any(|e| e.prev_hash.is_some()) {
+                "INVALID — entries have prev_hash values but no chain head is present (downgrade detected)".to_string()
+            } else {
+                "not verified — chain feature not present or not yet started".to_string()
+            }
+        }
+    };
+
     GateModeDisclosure {
         reported_effective_mode: current_mode.to_string(),
         transition_history,
-        chain_continuity_status: "not verified — chain feature not present".to_string(),
+        chain_continuity_status,
         completeness_note:
-            "Completeness of the transition history is established only when chain continuity is verified."
+            "Verifies the integrity and continuity of the presented chain; detection of rollback to an earlier valid state requires an independently retained chain head."
                 .to_string(),
     }
+}
+
+/// Synthesize a `ChainHead` from ledger entries when the singleton
+/// `chain_head` row is absent. This ensures every non-empty export carries a
+/// `chain_head.json` for rollback detection, even for legacy ledgers or
+/// rows inserted outside the normal append path.
+///
+/// The genesis is the hash of the chronologically first entry; the latest
+/// entry hash is the hash of the last entry. Length is the entry count.
+/// Signature fields are `None` because no signed singleton exists.
+pub fn synthesize_chain_head(entries: &[crate::ledger::types::LedgerEntry]) -> Option<ChainHead> {
+    if entries.is_empty() {
+        return None;
+    }
+    let mut sorted = entries.to_vec();
+    sorted.sort_by(|a, b| {
+        a.committed_at
+            .cmp(&b.committed_at)
+            .then_with(|| a.tx_id.cmp(&b.tx_id))
+    });
+    let first = sorted.first()?;
+    let last = sorted.last()?;
+    // genesis is the ISO-8601 timestamp of the first in-chain entry, matching
+    // the normal append path and verify_chain_integrity.
+    let genesis = first.committed_at.clone();
+    let latest = compute_entry_hash(
+        &last.tx_id,
+        last.signature.as_deref().unwrap_or(""),
+        last.prev_hash.as_deref().unwrap_or(""),
+    );
+    Some(ChainHead {
+        latest_entry_hash: latest,
+        genesis,
+        length: sorted.len() as i64,
+        head_signature: None,
+        head_public_key: None,
+        updated_at: chrono::Utc::now().to_rfc3339(),
+    })
 }
 
 fn parse_mode_from_entry_text(text: &str) -> Option<String> {
@@ -344,7 +456,7 @@ fn csv_quote(s: &str) -> String {
 fn build_ledger_csv(entries: &[crate::ledger::types::LedgerEntry]) -> Vec<u8> {
     let mut out = String::new();
     out.push_str(
-        "tx_id,category,entity,change_type,summary,reason,committed_at,signed,signature,observed\n",
+        "tx_id,category,entity,change_type,summary,reason,committed_at,signed,signature,observed,prev_hash\n",
     );
     for entry in entries {
         let signed = if entry.signature.is_some() {
@@ -358,8 +470,9 @@ fn build_ledger_csv(entries: &[crate::ledger::types::LedgerEntry]) -> Vec<u8> {
             Some(false) => "no",
             None => "",
         };
+        let prev_hash = entry.prev_hash.as_deref().unwrap_or("");
         out.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{},{}\n",
             csv_quote(&entry.tx_id),
             csv_quote(&entry.category.to_string()),
             csv_quote(&entry.entity),
@@ -370,6 +483,7 @@ fn build_ledger_csv(entries: &[crate::ledger::types::LedgerEntry]) -> Vec<u8> {
             signed,
             csv_quote(&signature),
             observed,
+            csv_quote(prev_hash),
         ));
     }
     out.into_bytes()
@@ -446,6 +560,7 @@ mod tests {
             related_tickets: None,
             author: "Test".to_string(),
             observed: Some(true),
+            prev_hash: None,
         };
         let csv = build_ledger_csv(&[entry]);
         let s = std::str::from_utf8(&csv).unwrap();
@@ -455,8 +570,8 @@ mod tests {
         );
         assert!(s.contains(",yes,"));
         assert!(
-            s.ends_with(",yes\n"),
-            "observed marker should be exported: {s}"
+            s.ends_with(",yes,\n"),
+            "observed and empty prev_hash should be exported: {s}"
         );
     }
 

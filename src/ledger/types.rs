@@ -288,6 +288,20 @@ pub struct LedgerEntry {
     /// commit happened under observe mode and was recorded as observed.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub observed: Option<bool>,
+    /// Chain linkage: the `latest_entry_hash` of the prior chain head. `None`
+    /// marks the genesis entry. Stored outside the Ed25519 signing basis.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub prev_hash: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ChainHead {
+    pub latest_entry_hash: String,
+    pub genesis: String,
+    pub length: i64,
+    pub head_signature: Option<String>,
+    pub head_public_key: Option<String>,
+    pub updated_at: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum, Default)]

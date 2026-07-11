@@ -22,6 +22,7 @@ pub mod m47_project_files_git_meta;
 pub mod m48_changed_files_diff_stats;
 pub mod m49_project_trend_days;
 pub mod m50_ledger_entry_observed;
+pub mod m51_ledger_chain_hash;
 
 use rusqlite_migration::Migrations;
 
@@ -123,6 +124,13 @@ pub fn get_migrations() -> Migrations<'static> {
     // feature-flag combinations; the column is nullable and defaults to NULL,
     // so it is harmless in builds that do not populate it.
     all_m.extend(m50_ledger_entry_observed::m50_ledger_entry_observed());
+    // m51 adds the additive ledger chain hash schema (Track 0046): a nullable
+    // `prev_hash` column on `ledger_entries` and a singleton `chain_head`
+    // table. The chain lives outside the Ed25519 signing basis. Registered
+    // unconditionally so the schema version stays monotonic across binaries
+    // built with different feature sets; the column and table are empty in
+    // builds that do not populate them, so the surface-area leak is harmless.
+    all_m.extend(m51_ledger_chain_hash::m51_ledger_chain_hash());
 
     Migrations::new(all_m)
 }
@@ -161,6 +169,8 @@ pub fn get_migrations_count() -> usize {
     count += m48_changed_files_diff_stats::m48_changed_files_diff_stats().len();
     count += m49_project_trend_days::m49_project_trend_days().len();
     count += m50_ledger_entry_observed::m50_ledger_entry_observed().len();
+    // m51 is counted unconditionally — see the matching comment in `get_migrations`.
+    count += m51_ledger_chain_hash::m51_ledger_chain_hash().len();
 
     count
 }
@@ -227,6 +237,7 @@ mod tests {
                 "usage_counters",
                 "hotspot_trends",
                 "project_trend_days",
+                "chain_head",
             ];
 
             // `sync_state` and `tx_tombstones` are registered
@@ -276,6 +287,18 @@ mod tests {
         assert_eq!(
             observed_exists, 1,
             "ledger_entries.observed column should exist"
+        );
+
+        let prev_hash_exists: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('ledger_entries') WHERE name='prev_hash'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            prev_hash_exists, 1,
+            "ledger_entries.prev_hash column should exist"
         );
     }
 

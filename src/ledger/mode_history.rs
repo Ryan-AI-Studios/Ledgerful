@@ -117,6 +117,7 @@ mod tests {
             related_tickets: None,
             author: "test".to_string(),
             observed: None,
+            prev_hash: None,
         };
         (tx, entry)
     }

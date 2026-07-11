@@ -96,6 +96,7 @@ mod tests {
             related_tickets: None,
             author: "Test User".to_string(),
             observed: None,
+            prev_hash: None,
         };
 
         let content = generate_madr_content(&entry);

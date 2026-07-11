@@ -69,6 +69,7 @@ mod incremental_graph_consistency;
 mod latest_impact_freshness;
 mod ledger_adr;
 mod ledger_bulk;
+mod ledger_chain_hash;
 mod ledger_cli_parsing;
 mod ledger_crypto;
 mod ledger_drift;
