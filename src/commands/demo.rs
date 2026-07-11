@@ -165,6 +165,11 @@ fn run_ledger_verify_fast(root: &Path) -> Result<()> {
     if output.status.code().is_none() {
         return Err(miette::miette!("ledger verify --scope fast was killed"));
     }
+    // The synthetic demo repo won't pass all verification steps (e.g. cargo
+    // clippy on dummy Rust files), but the run is still recorded in
+    // verification_history.csv — which is the spec's goal ("so
+    // verification_history.csv is non-empty"). We accept any non-killed exit
+    // status so the demo can proceed to export.
     Ok(())
 }
 
@@ -305,6 +310,16 @@ pub fn execute_demo(keep: bool, output: Option<PathBuf>, force: bool) -> Result<
     // Use observe mode (the 0050 default) so the demo shows the real
     // observe-first onboarding users actually receive.
     crate::commands::init::execute_init(false, false)?;
+
+    // Write a demo marker file so the web UI (if opened with --keep) can
+    // detect and self-identify the repo as synthetic. The marker is a simple
+    // JSON file in .ledgerful/state/ that the API can check.
+    let demo_marker = demo_dir.join(".ledgerful").join("DEMO_MARKER");
+    std::fs::write(
+        &demo_marker,
+        r#"{"demo": true, "source": "ledgerful demo", "notice": "This is a synthetic demo repository. All entries are disposable."}"#,
+    )
+    .into_diagnostic()?;
 
     // Commit initial files so they exist in git; the first real cycle must have
     // something to modify. This first commit also exercises the hook flow in

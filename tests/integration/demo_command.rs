@@ -201,6 +201,10 @@ fn demo__keep_retains_dir() {
         demo_dir.join("ledgerful-DEMO-evidence.zip").exists(),
         "demo dir must have the evidence export"
     );
+    assert!(
+        demo_dir.join(".ledgerful").join("DEMO_MARKER").exists(),
+        "demo dir must have a DEMO_MARKER file for dashboard self-identification"
+    );
 }
 
 #[test]
