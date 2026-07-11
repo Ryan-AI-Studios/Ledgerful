@@ -12,7 +12,7 @@
 //! - Global git config is not modified.
 //! - The demo completes within the wall-clock budget.
 
-use crate::common::{TempEnv, non_interactive};
+use crate::common::non_interactive;
 use serial_test::serial;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -113,14 +113,19 @@ fn demo__hook_fires_and_produces_signed_entries() {
     );
 
     let ledger_csv = String::from_utf8(members.get("ledger.csv").unwrap().clone()).unwrap();
-    let data_lines = ledger_csv
+    let data_lines: Vec<&str> = ledger_csv
         .lines()
         .filter(|l| !l.is_empty())
         .skip(1) // header
-        .count();
+        .collect();
     assert!(
-        data_lines > 0,
+        !data_lines.is_empty(),
         "ledger.csv must contain non-zero entries (hook actually fired); got:\n{ledger_csv}"
+    );
+    // DoD 3: DEMO marker in entry summaries
+    assert!(
+        data_lines.iter().any(|line| line.contains("[DEMO]")),
+        "ledger.csv data rows must contain [DEMO] in summaries; got:\n{ledger_csv}"
     );
 }
 
@@ -291,5 +296,26 @@ fn demo__stdout_contains_demo_marker_and_export_path() {
     assert!(
         stdout.contains("verify"),
         "stdout must contain a verify instruction; got:\n{stdout}"
+    );
+}
+
+#[test]
+#[serial(cwd, env)]
+fn demo__completes_within_wall_clock_budget() {
+    let _ni = non_interactive();
+    let tmp = tempdir().unwrap();
+
+    let start = std::time::Instant::now();
+    let (_stdout, _stderr, success) = run_demo(
+        &["demo", "--keep", "--output", "demo-budget-test"],
+        tmp.path(),
+    );
+    let elapsed = start.elapsed();
+
+    assert!(success, "demo should succeed");
+    assert!(
+        elapsed.as_secs() <= 90,
+        "demo must complete within 90s ceiling; took {:?}",
+        elapsed
     );
 }

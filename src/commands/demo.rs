@@ -26,7 +26,7 @@ struct DemoCycle {
     reason: &'static str,
     conventional_subject: &'static str,
     conventional_body: &'static str,
-    modify: fn(&Path),
+    modify: fn(&Path) -> Result<()>,
 }
 
 fn build_cycles() -> Vec<DemoCycle> {
@@ -36,12 +36,12 @@ fn build_cycles() -> Vec<DemoCycle> {
             category: "FEATURE",
             message: "[DEMO] Add invoice calculation logic",
             reason: "Support line-item totals with tax computation",
-            conventional_subject: "feat(invoice): add invoice calculation logic",
+            conventional_subject: "feat(invoice): [DEMO] add invoice calculation logic",
             conventional_body: "Add line-item totals and tax computation to the invoice module.\n\n[DEMO] This commit is part of the Ledgerful synthetic demo flow.",
             modify: |root| {
                 let path = root.join("src/invoice.rs");
                 let content = "use rust_decimal::Decimal;\n\n/// Calculate the total for a line item including tax.\npub fn line_total(unit_price: Decimal, quantity: u32, tax_rate: Decimal) -> Decimal {\n    let subtotal = unit_price * Decimal::from(quantity);\n    subtotal * (Decimal::ONE + tax_rate)\n}\n";
-                let _ = std::fs::write(&path, content);
+                std::fs::write(&path, content).into_diagnostic()
             },
         },
         DemoCycle {
@@ -49,13 +49,13 @@ fn build_cycles() -> Vec<DemoCycle> {
             category: "REFACTOR",
             message: "[DEMO] Extract tax rate into config",
             reason: "Make tax rate configurable for different jurisdictions",
-            conventional_subject: "refactor(invoice): extract tax rate into config",
+            conventional_subject: "refactor(invoice): [DEMO] extract tax rate into config",
             conventional_body: "Move the hard-coded tax rate into a configurable `TaxConfig` struct.\n\n[DEMO] This commit is part of the Ledgerful synthetic demo flow.",
             modify: |root| {
                 let path = root.join("src/invoice.rs");
-                let original = std::fs::read_to_string(&path).unwrap_or_default();
+                let original = std::fs::read_to_string(&path).into_diagnostic()?;
                 let config = "\n/// Configurable tax rate.\npub struct TaxConfig {\n    pub rate: Decimal,\n}\n";
-                let _ = std::fs::write(&path, original + config);
+                std::fs::write(&path, original + config).into_diagnostic()
             },
         },
         DemoCycle {
@@ -63,13 +63,13 @@ fn build_cycles() -> Vec<DemoCycle> {
             category: "FEATURE",
             message: "[DEMO] Add CLI argument parsing",
             reason: "Support --input and --output flags",
-            conventional_subject: "feat(cli): add CLI argument parsing",
+            conventional_subject: "feat(cli): [DEMO] add CLI argument parsing",
             conventional_body: "Parse --input and --output flags for the invoice generator.\n\n[DEMO] This commit is part of the Ledgerful synthetic demo flow.",
             modify: |root| {
                 let path = root.join("src/main.rs");
-                let original = std::fs::read_to_string(&path).unwrap_or_default();
+                let original = std::fs::read_to_string(&path).into_diagnostic()?;
                 let addition = "\n#[allow(dead_code)]\nfn parse_args() -> (String, String) {\n    (\"invoices.csv\".to_string(), \"output.csv\".to_string())\n}\n";
-                let _ = std::fs::write(&path, original + addition);
+                std::fs::write(&path, original + addition).into_diagnostic()
             },
         },
         DemoCycle {
@@ -77,13 +77,13 @@ fn build_cycles() -> Vec<DemoCycle> {
             category: "CHORE",
             message: "[DEMO] Bump version to 0.2.0",
             reason: "Pre-release version bump",
-            conventional_subject: "chore(release): bump version to 0.2.0",
+            conventional_subject: "chore(release): [DEMO] bump version to 0.2.0",
             conventional_body: "Advance the package version to 0.2.0 ahead of the first release.\n\n[DEMO] This commit is part of the Ledgerful synthetic demo flow.",
             modify: |root| {
                 let path = root.join("Cargo.toml");
-                let original = std::fs::read_to_string(&path).unwrap_or_default();
+                let original = std::fs::read_to_string(&path).into_diagnostic()?;
                 let updated = original.replace("version = \"0.1.0\"", "version = \"0.2.0\"");
-                let _ = std::fs::write(&path, updated);
+                std::fs::write(&path, updated).into_diagnostic()
             },
         },
         DemoCycle {
@@ -91,13 +91,13 @@ fn build_cycles() -> Vec<DemoCycle> {
             category: "BUGFIX",
             message: "[DEMO] Fix rounding error in tax calculation",
             reason: "Use decimal arithmetic to avoid floating-point errors",
-            conventional_subject: "fix(invoice): fix rounding error in tax calculation",
+            conventional_subject: "fix(invoice): [DEMO] fix rounding error in tax calculation",
             conventional_body: "Switch tax calculation from f64 to Decimal to eliminate floating-point rounding.\n\n[DEMO] This commit is part of the Ledgerful synthetic demo flow.",
             modify: |root| {
                 let path = root.join("src/invoice.rs");
-                let original = std::fs::read_to_string(&path).unwrap_or_default();
+                let original = std::fs::read_to_string(&path).into_diagnostic()?;
                 let addition = "\n// BUGFIX: explicit rounding to two decimal places\npub fn round_money(value: Decimal) -> Decimal {\n    value.round_dp(2)\n}\n";
-                let _ = std::fs::write(&path, original + addition);
+                std::fs::write(&path, original + addition).into_diagnostic()
             },
         },
     ]
@@ -161,8 +161,15 @@ fn set_repo_local_git_config(root: &Path) -> Result<()> {
     Ok(())
 }
 
+fn ledgerful_binary() -> String {
+    std::env::current_exe()
+        .ok()
+        .map(|p| p.to_string_lossy().to_string())
+        .unwrap_or_else(|| crate::BINARY_NAME.to_string())
+}
+
 fn run_ledger_verify_fast(root: &Path) -> Result<()> {
-    let output = Command::new(crate::BINARY_NAME)
+    let output = Command::new(ledgerful_binary())
         .args(["verify", "--scope", "fast"])
         .current_dir(root)
         .env("LEDGERFUL_NON_INTERACTIVE", "1")
@@ -198,9 +205,9 @@ fn run_commit(root: &Path, subject: &str, body: &str) -> Result<()> {
     Ok(())
 }
 
-/// Determine whether a directory is "non-empty" for the demo force check.
-/// Hidden files and empty directories are ignored so the common case of an
-/// already-created empty directory does not require `--force`.
+/// Determine whether a directory is non-empty. Any entry (including
+/// dotfiles like `.git`, `.gitignore`, `.env`) counts as non-empty so the
+/// demo never silently destroys a hidden repository or config.
 fn dir_is_non_empty(path: &Path) -> bool {
     let Ok(entries) = std::fs::read_dir(path) else {
         return false;
@@ -208,7 +215,7 @@ fn dir_is_non_empty(path: &Path) -> bool {
     entries.filter_map(|e| e.ok()).any(|e| {
         let name = e.file_name();
         let name_str = name.to_string_lossy();
-        name_str != "." && name_str != ".." && !name_str.starts_with('.')
+        name_str != "." && name_str != ".."
     })
 }
 
@@ -255,8 +262,10 @@ impl DemoHomeGuard {
         let original_cwd = std::env::current_dir().into_diagnostic()?;
 
         // SAFETY: this function is only called from the single-threaded demo
-        // command path before any subprocesses are spawned, and the caller is
-        // expected to drop the guard before returning to normal operation.
+        // command path before any subprocesses are spawned. The env mutation
+        // is intentionally visible to spawned subprocesses (git, ledgerful)
+        // so they resolve keys/config relative to the demo directory. The
+        // guard restores state on drop.
         unsafe {
             std::env::set_var("HOME", &demo_dir);
             std::env::set_var("USERPROFILE", &demo_dir);
@@ -334,7 +343,7 @@ pub fn execute_demo(keep: bool, output: Option<PathBuf>, force: bool) -> Result<
             cycles.len(),
             cycle.conventional_subject
         );
-        (cycle.modify)(&demo_dir);
+        (cycle.modify)(&demo_dir)?;
         // In enforce mode the pre-commit hook blocks commits when any pending
         // transaction exists, so we let the commit-msg hook create the ledger
         // sidecar as part of the real git commit flow instead of starting a
@@ -371,22 +380,30 @@ pub fn execute_demo(keep: bool, output: Option<PathBuf>, force: bool) -> Result<
         "SUCCESS:".green().bold(),
         export_path_str
     );
+    if keep {
+        println!(
+            "{} Verify it offline with the public key in the export: {}",
+            "Verifier:".cyan().bold(),
+            format!(
+                "ledgerful verify --signatures --against-export {}",
+                export_path_str
+            )
+            .cyan()
+        );
+        println!(
+            "{} Open the demo repo in the dashboard: {}",
+            "Dashboard:".cyan().bold(),
+            format!("cd {} && ledgerful web start", demo_dir.display()).cyan()
+        );
+    } else {
+        println!(
+            "{} Export cleaned up. Re-run with {} to inspect or verify the export.",
+            "[DEMO]".cyan().bold(),
+            "--keep".yellow().bold()
+        );
+    }
     println!(
-        "{} Verify it offline with the public key in the export: {}",
-        "Verifier:".cyan().bold(),
-        format!(
-            "ledgerful verify --signatures --against-export {}",
-            export_path_str
-        )
-        .cyan()
-    );
-    println!(
-        "{} Open the demo repo in the dashboard: {}",
-        "Dashboard:".cyan().bold(),
-        format!("ledgerful web start -- from {}", demo_dir.display()).cyan()
-    );
-    println!(
-        "{} Gate mode for this demo: {} (observe mode warns only; enforce would block).",
+        "{} Gate mode for this demo: {}. Commits succeeded because the hook flow creates ledger sidecars automatically for well-formed conventional commits.",
         "Notice:".yellow().bold(),
         "enforce".yellow().bold()
     );

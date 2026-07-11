@@ -48,6 +48,10 @@ struct ManifestFile {
     size: u64,
 }
 
+fn is_false(v: &bool) -> bool {
+    !v
+}
+
 /// The `manifest.json` payload. `files` is sorted by `name` ASC for
 /// determinism. `generated_at` is `chrono::Utc::now().to_rfc3339()`.
 /// `entry_count` is the number of ledger entries included in `ledger.csv`.
@@ -60,6 +64,7 @@ struct Manifest {
     files: Vec<ManifestFile>,
     entry_count: u64,
     gate_mode_disclosure: GateModeDisclosure,
+    #[serde(skip_serializing_if = "is_false")]
     demo: bool,
 }
 
