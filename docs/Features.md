@@ -15,6 +15,8 @@ Ledgerful treats architectural changes as atomic transactions, maintaining a per
 *   **Ledger Search**: Full-text search (FTS5) across all historical transactions and design notes.
 *   **Ledger Federation**: Securely export and sync ledger entries across sibling repositories for cross-repo provenance.
 *   **Chain Integrity (Track 0046)**: Each committed ledger entry carries a `prev_hash` linking it to the prior chain head, and a signed `chain_head` row binds the latest entry hash, genesis boundary, and chain length. `ledgerful verify --signatures --chain` validates the chain end-to-end and reports the exact break location. The chain verifies the integrity and continuity of the presented chain; detection of rollback to an earlier valid state requires an independently retained chain head (e.g., a SOC2 evidence export or the public ledger artifact).
+*   **Demo Command (Track 0039)**: `ledgerful demo [--keep] [--output <dir>]` creates a synthetic invoice-service repo and drives it through the real hook flow (init, 5 commit cycles, verify, export) producing real Ed25519-signed entries from an ephemeral keypair, ending with a self-identifying DEMO SOC2 evidence export. Fully offline, ~15-30s warm path, cleans up by default (`--keep` to inspect).
+*   **CLI Evidence Export (Track 0039)**: `ledgerful export evidence --profile soc2 [--out <path>] [--force]` produces the identical SOC2 evidence zip as the dashboard button, callable without the `web` feature. 0032 path-safety applies (refuse `src/`, `.ledgerful/state/`, `Cargo.toml`; refuse overwrite without `--force`; symlink re-check).
 
 ## 2. Impact Analysis & Risk Assessment
 
