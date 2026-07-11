@@ -18,7 +18,7 @@ fn test_config_verify_default() {
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     // execute_config_verify uses Layout::new(cwd), so cwd must be the repo root
     let result = execute_config_verify(false, None, false);
@@ -35,7 +35,7 @@ fn test_config_view_shows_values() {
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let result = execute_config_view(false, None, None);
     assert!(result.is_ok());
@@ -51,7 +51,7 @@ fn test_config_schema_output() {
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let result = execute_config_schema(false);
     assert!(result.is_ok());

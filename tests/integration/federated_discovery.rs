@@ -19,7 +19,7 @@ fn test_federate_export_from_subdirectory() {
     setup_git_repo(tmp.path());
 
     let _guard = DirGuard::from_utf8(&root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let subdir = root.join("src").join("inner");
     fs::create_dir_all(&subdir).unwrap();
@@ -51,7 +51,7 @@ fn test_federate_export_stamps_generated_at_and_binary_version() {
     setup_git_repo(tmp.path());
 
     let _guard = DirGuard::from_utf8(&root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     execute_federate_export(false, None).unwrap();
 
@@ -85,7 +85,7 @@ fn test_federate_status_from_subdirectory() {
     setup_git_repo(tmp.path());
 
     let _guard = DirGuard::from_utf8(&root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let subdir = root.join("some").join("nested").join("dir");
     fs::create_dir_all(&subdir).unwrap();
@@ -116,14 +116,14 @@ fn test_federate_scan_from_subdirectory() {
     // Init and export repo2
     {
         let _guard = DirGuard::from_utf8(&repo2);
-        execute_init(false).unwrap();
+        execute_init(false, false).unwrap();
         execute_federate_export(false, None).unwrap();
     }
 
     // Init and scan from repo1 subdirectory
     {
         let _guard = DirGuard::from_utf8(&repo1);
-        execute_init(false).unwrap();
+        execute_init(false, false).unwrap();
 
         // Mock a scan packet so scan doesn't fail early
         let db_path = repo1.join(".ledgerful").join("state").join("ledger.db");

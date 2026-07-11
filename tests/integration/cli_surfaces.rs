@@ -23,7 +23,7 @@ fn test_endpoints_json() {
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     // EndpointsArgs fields are private, so construct via clap::Cli::try_parse_from
     use clap::Parser;
@@ -49,7 +49,7 @@ fn test_data_models_impact_changed() {
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let args = DataModelsArgs {
         command: DataModelSubcommands::Impact {
@@ -71,7 +71,7 @@ fn test_observability_coverage_json() {
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let args = ObservabilityArgs {
         command: ObservabilitySubcommands::Coverage { json: true },
@@ -90,7 +90,7 @@ fn test_security_boundaries_human() {
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let args = SecurityArgs {
         command: SecuritySubcommands::Boundaries { json: false },
@@ -109,7 +109,7 @@ fn test_services_diff() {
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let args = ServicesDiffArgs {
         full: false,

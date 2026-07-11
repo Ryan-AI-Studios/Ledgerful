@@ -14,7 +14,7 @@ fn audit_returns_entity_list() {
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     // Audit with limit 5, no entity filter, not json, no unaudited
     let result = execute_ledger_audit(None, false, 5, 0, false);
@@ -35,7 +35,7 @@ fn audit_entity_related_returns_related_entities() {
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let db_path = root.join(".ledgerful/state/ledger.db");
     let mut storage = ledgerful::state::storage::StorageManager::init(&db_path).unwrap();

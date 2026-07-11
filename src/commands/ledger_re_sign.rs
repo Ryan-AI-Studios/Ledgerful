@@ -387,6 +387,7 @@ fn build_maintenance_entry(
         risk: None,
         related_tickets: None,
         author: author.to_string(),
+        observed: None,
     }
 }
 
@@ -589,7 +590,8 @@ mod tests {
                 public_key TEXT,
                 risk TEXT,
                 related_tickets TEXT,
-                author TEXT NOT NULL DEFAULT 'unknown'
+                author TEXT NOT NULL DEFAULT 'unknown',
+                observed INTEGER
             );",
         )
         .unwrap();
@@ -623,6 +625,7 @@ mod tests {
             risk: None,
             related_tickets: None,
             author: "test".to_string(),
+            observed: None,
         }
     }
 

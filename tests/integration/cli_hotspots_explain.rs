@@ -43,7 +43,7 @@ fn test_hotspots_explain_reports_nonzero_metrics_for_known_hotspot() {
     }
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
     execute_index(IndexArgs::default()).unwrap();
 
     let repo_root = Utf8Path::from_path(root).unwrap();
@@ -84,7 +84,7 @@ fn test_hotspots_explain_unknown_entity_returns_zero_without_error() {
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
     execute_index(IndexArgs::default()).unwrap();
 
     let repo_root = Utf8Path::from_path(root).unwrap();

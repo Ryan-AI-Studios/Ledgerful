@@ -60,6 +60,7 @@ mod daemon_lifecycle;
 mod doc_generation;
 mod dump_rust_tree;
 mod federated_discovery;
+mod gate_mode;
 mod hook_commit_msg;
 mod hook_post_commit;
 mod hotspot_ranking;

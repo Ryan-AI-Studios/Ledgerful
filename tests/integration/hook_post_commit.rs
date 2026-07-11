@@ -79,7 +79,7 @@ fn setup_indexed_repo() -> tempfile::TempDir {
     let _home_guard_profile = TempEnv::set("USERPROFILE", root.to_str().unwrap());
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
     execute_index(IndexArgs::default()).unwrap();
 
     // Remove the auto-installed post-commit hook so tests can drive the hook
@@ -165,7 +165,7 @@ fn setup_repo_with_hooks() -> HookedRepo {
     let home_guard_profile = crate::common::TempEnv::set("USERPROFILE", root.to_str().unwrap());
 
     let dir_guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
     execute_index(IndexArgs::default()).unwrap();
 
     // Enable rename detection so `git show --numstat -z` emits renames as a

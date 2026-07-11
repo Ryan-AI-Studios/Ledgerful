@@ -19,6 +19,7 @@ pub struct TransactionManager<'a> {
     repo_root: PathBuf,
     is_case_insensitive: bool,
     config: Config,
+    observe_warned: bool,
 }
 
 impl<'a> TransactionManager<'a> {
@@ -33,11 +34,16 @@ impl<'a> TransactionManager<'a> {
             repo_root,
             is_case_insensitive,
             config,
+            observe_warned: false,
         }
     }
 
     pub fn get_connection(&self) -> &Connection {
         self.storage.get_connection()
+    }
+
+    pub fn observe_warned(&self) -> bool {
+        self.observe_warned
     }
 
     pub(crate) fn storage_mut(&mut self) -> &mut crate::state::storage::connection::StorageManager {
@@ -80,18 +86,30 @@ impl<'a> TransactionManager<'a> {
                             if let Some(ref action) = req.planned_action
                                 && action.to_lowercase().contains(&term_lower)
                             {
-                                return Err(LedgerError::RuleViolation(format!(
+                                let msg = format!(
                                     "Planned action violates tech stack rule for {} (forbidden term: {})",
                                     rule.name, term_lower
-                                )));
+                                );
+                                if self.config.gate.is_enforce() {
+                                    return Err(LedgerError::RuleViolation(msg));
+                                }
+                                tracing::warn!("{} (observe mode, continuing)", msg);
+                                self.observe_warned = true;
+                                break;
                             }
 
                             // Also check entity path
                             if normalized.to_lowercase().contains(&term_lower) {
-                                return Err(LedgerError::RuleViolation(format!(
+                                let msg = format!(
                                     "Entity path violates tech stack rule for {} (forbidden term: {})",
                                     rule.name, term_lower
-                                )));
+                                );
+                                if self.config.gate.is_enforce() {
+                                    return Err(LedgerError::RuleViolation(msg));
+                                }
+                                tracing::warn!("{} (observe mode, continuing)", msg);
+                                self.observe_warned = true;
+                                break;
                             }
                         }
                     }
@@ -135,7 +153,7 @@ impl<'a> TransactionManager<'a> {
     pub fn commit_change(
         &mut self,
         tx_id: String,
-        req: CommitRequest,
+        mut req: CommitRequest,
         force: bool,
     ) -> Result<(), LedgerError> {
         let tx_id = self.resolve_tx_id(&tx_id)?;
@@ -165,10 +183,13 @@ impl<'a> TransactionManager<'a> {
                         tx.category
                     );
                 } else if req.verification_status.is_none() || req.verification_basis.is_none() {
-                    return Err(LedgerError::VerificationRequired(format!(
-                        "{} (both status and basis required)",
-                        tx.category
-                    )));
+                    let msg = format!("{} (both status and basis required)", tx.category);
+                    if self.config.gate.is_enforce() {
+                        return Err(LedgerError::VerificationRequired(msg));
+                    }
+                    tracing::warn!("{} (observe mode, continuing)", msg);
+                    self.observe_warned = true;
+                    req.observed = Some(true);
                 }
             }
         }
@@ -236,10 +257,17 @@ impl<'a> TransactionManager<'a> {
                 if !result.success {
                     match v.validation_level {
                         ValidationLevel::Error => {
-                            return Err(LedgerError::ValidatorFailed(
+                            let msg =
+                                format!("STDOUT: {}\nSTDERR: {}", result.stdout, result.stderr);
+                            if self.config.gate.is_enforce() {
+                                return Err(LedgerError::ValidatorFailed(v.name, msg));
+                            }
+                            tracing::warn!(
+                                "Validator '{}' failed (observe mode, continuing): {}",
                                 v.name,
-                                format!("STDOUT: {}\nSTDERR: {}", result.stdout, result.stderr),
-                            ));
+                                msg
+                            );
+                            self.observe_warned = true;
                         }
                         ValidationLevel::Warning => {
                             eprintln!(
@@ -274,11 +302,13 @@ impl<'a> TransactionManager<'a> {
             }
 
             // 2. Create ledger entry
-            let entry_type = if tx.category == Category::Architecture {
-                EntryType::Architecture
-            } else {
-                EntryType::Implementation
-            };
+            let entry_type = req.entry_type.unwrap_or_else(|| {
+                if tx.category == Category::Architecture {
+                    EntryType::Architecture
+                } else {
+                    EntryType::Implementation
+                }
+            });
 
             let mut outcome_notes = req.outcome_notes;
             let (signature, pub_key) = if req.signature.is_some() {
@@ -335,11 +365,17 @@ impl<'a> TransactionManager<'a> {
                 risk: req.risk,
                 related_tickets: req.related_tickets.or(req.issue_ref),
                 author,
+                observed: if self.observe_warned {
+                    Some(true)
+                } else {
+                    req.observed
+                },
             };
 
             db.insert_ledger_entry(&entry)?;
         }
         sqlite_tx.commit().map_err(LedgerError::from)?;
+        self.observe_warned = false;
 
         // 3. Update Knowledge Graph (CozoDB)
         if let Some(ref cozo) = self.storage.cozo {
@@ -485,6 +521,7 @@ impl<'a> TransactionManager<'a> {
                 risk: Some("TRIVIAL".to_string()),
                 related_tickets: tx.issue_ref,
                 author: capture_git_author(&self.repo_root),
+                observed: None,
             };
             db.insert_ledger_entry(&entry)?;
         }
@@ -608,6 +645,7 @@ impl<'a> TransactionManager<'a> {
                     risk: Some("TRIVIAL".to_string()),
                     related_tickets: None,
                     author: capture_git_author(&self.repo_root),
+                    observed: None,
                 };
                 db.insert_ledger_entry(&entry)?;
             }

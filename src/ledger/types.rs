@@ -223,11 +223,20 @@ pub struct CommitRequest {
     pub changed_files: Option<Vec<String>>,
     #[serde(default)]
     pub force: bool,
+    /// Optional entry type override. When omitted the default logic in
+    /// `commit_change` selects the entry type from the transaction category.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub entry_type: Option<EntryType>,
     /// Staged snapshot captured by the commit-msg hook. Carried through the
     /// pending sidecar so the post-commit hook can link the committed
     /// transaction to its `changed_files` rows.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub snapshot_id: Option<i64>,
+    /// Observe-mode marker: set when the hook sidecar is committed while the
+    /// repo gate mode is `observe`. Stored as unsigned metadata outside the
+    /// cryptographically-signed basis.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -274,6 +283,11 @@ pub struct LedgerEntry {
     pub risk: Option<String>,
     pub related_tickets: Option<String>,
     pub author: String,
+    /// Observe-mode marker: unsigned metadata outside the signed basis. `None`
+    /// means the field was absent from the source; `Some(true)` means the
+    /// commit happened under observe mode and was recorded as observed.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum, Default)]

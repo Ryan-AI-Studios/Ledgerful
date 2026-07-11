@@ -30,6 +30,10 @@ pub struct PendingHookTx {
     pub signature: Option<String>,
     pub public_key: Option<String>,
     pub snapshot_id: Option<i64>,
+    /// Carried from the commit-msg hook through the pending sidecar so the
+    /// post-commit hook can record whether the commit happened under observe
+    /// mode. Stored as unsigned ledger metadata.
+    pub observed: Option<bool>,
 }
 
 /// Entry point for the `internal hook-post-commit` command. This is invoked by
@@ -105,6 +109,16 @@ pub fn execute_hook_post_commit_for_layout(layout: &crate::state::layout::Layout
     Ok(())
 }
 
+/// Read the pending sidecar file if it exists.
+pub fn read_pending_sidecar(path: &std::path::Path) -> Result<Option<PendingHookTx>> {
+    if !path.exists() {
+        return Ok(None);
+    }
+    let content = fs::read_to_string(path).into_diagnostic()?;
+    let pending: PendingHookTx = serde_json::from_str(&content).into_diagnostic()?;
+    Ok(Some(pending))
+}
+
 /// Promote a pending ledger sidecar transaction if one exists and matches the
 /// current HEAD commit message hash.
 fn promote_pending_ledger_tx(layout: &crate::state::layout::Layout) -> Result<()> {
@@ -150,7 +164,8 @@ fn promote_pending_ledger_tx(layout: &crate::state::layout::Layout) -> Result<()
     };
 
     let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
-    let mut tx_mgr = TransactionManager::new(&mut storage, layout.root.clone().into(), config);
+    let mut tx_mgr =
+        TransactionManager::new(&mut storage, layout.root.clone().into(), config.clone());
 
     let req = CommitRequest {
         summary: pending.summary,
@@ -167,6 +182,7 @@ fn promote_pending_ledger_tx(layout: &crate::state::layout::Layout) -> Result<()
         risk: pending.risk,
         related_tickets: pending.related_tickets,
         snapshot_id: pending.snapshot_id,
+        observed: pending.observed,
         ..Default::default()
     };
 
@@ -195,16 +211,24 @@ fn promote_pending_ledger_tx(layout: &crate::state::layout::Layout) -> Result<()
             Ok(())
         }
         Err(e) => {
-            eprintln!(
-                "[Ledgerful] Post-commit hook failed to promote ledger entry: {}",
+            if config.gate.is_enforce() {
+                eprintln!(
+                    "[Ledgerful] Post-commit hook failed to promote ledger entry: {}",
+                    e
+                );
+                let _ = tx_mgr.rollback_change(
+                    committed_tx_id,
+                    "Rollback due to promotion failure".to_string(),
+                );
+                let _ = fs::remove_file(sidecar_path);
+                return Err(miette!("{}", e));
+            }
+            tracing::warn!(
+                target: "cli_summary",
+                "[Ledgerful] Post-commit hook failed to promote ledger entry (observe mode, continuing): {}",
                 e
             );
-            let _ = tx_mgr.rollback_change(
-                committed_tx_id,
-                "Rollback due to promotion failure".to_string(),
-            );
-            let _ = fs::remove_file(sidecar_path);
-            Err(miette!("{}", e))
+            Ok(())
         }
     }
 }

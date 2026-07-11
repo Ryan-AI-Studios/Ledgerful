@@ -434,7 +434,15 @@ mod tests {
 
         let mut file = std::fs::File::create(root.join(".gitignore")).unwrap();
         std::io::Write::write_all(&mut file, b".ledgerful/\n").unwrap();
-        crate::commands::init::execute_init(true).unwrap();
+        crate::commands::init::execute_init(true, false).unwrap();
+
+        // Remove auto-installed git hooks so `git commit` does not invoke a
+        // potentially stale `ledgerful` binary from PATH. These unit tests drive
+        // the hook code paths in-process.
+        let hooks_dir = root.join(".git").join("hooks");
+        for hook in ["pre-commit", "pre-push", "commit-msg", "post-commit"] {
+            let _ = std::fs::remove_file(hooks_dir.join(hook));
+        }
     }
 
     #[serial_test::serial(cwd)]
@@ -509,6 +517,7 @@ mod tests {
             signature: None,
             public_key: None,
             snapshot_id: None,
+            observed: None,
         };
         let sidecar_path = root
             .join(".ledgerful")

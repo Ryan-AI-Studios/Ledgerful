@@ -15,6 +15,7 @@ fn test_verification_gate_blocks_high_risk_categories() {
     let mut storage = StorageManager::init(&storage_path).unwrap();
 
     let mut config = Config::default();
+    config.gate.mode = "enforce".to_string();
     config.ledger.verify_to_commit = true;
 
     let mut tx_mgr = TransactionManager::new(&mut storage, root.clone(), config);
@@ -70,6 +71,7 @@ fn test_verification_gate_allows_with_status() {
     let mut storage = StorageManager::init(&storage_path).unwrap();
 
     let mut config = Config::default();
+    config.gate.mode = "enforce".to_string();
     config.ledger.verify_to_commit = true;
 
     let mut tx_mgr = TransactionManager::new(&mut storage, root.clone(), config);
@@ -110,6 +112,7 @@ fn test_verification_gate_rejects_missing_basis() {
     let mut storage = StorageManager::init(&storage_path).unwrap();
 
     let mut config = Config::default();
+    config.gate.mode = "enforce".to_string();
     config.ledger.verify_to_commit = true;
 
     let mut tx_mgr = TransactionManager::new(&mut storage, root.clone(), config);
@@ -153,6 +156,7 @@ fn test_verification_gate_force_override() {
     let mut storage = StorageManager::init(&storage_path).unwrap();
 
     let mut config = Config::default();
+    config.gate.mode = "enforce".to_string();
     config.ledger.verify_to_commit = true;
 
     let mut tx_mgr = TransactionManager::new(&mut storage, root.clone(), config);
@@ -226,6 +230,7 @@ fn test_verification_gate_allows_low_risk_categories() {
     let mut storage = StorageManager::init(&storage_path).unwrap();
 
     let mut config = Config::default();
+    config.gate.mode = "enforce".to_string();
     config.ledger.verify_to_commit = true;
 
     let mut tx_mgr = TransactionManager::new(&mut storage, root.clone(), config);

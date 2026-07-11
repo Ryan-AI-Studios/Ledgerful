@@ -14,7 +14,7 @@ fn dead_code_reports_unused_symbols() {
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     // threshold 0.9, limit 50, auto_index false, include_traits false, prune false, expand false, explain None
     let result = execute_dead_code(0.9, 50, false, false, false, false, None);
@@ -31,7 +31,7 @@ fn test_dead_code_include_traits_flag() {
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     // include_traits = true must not error even when no traits are present
     let result = execute_dead_code(0.9, 50, false, true, false, false, None);
@@ -58,7 +58,7 @@ fn test_dead_code_bounded_latency_on_nontrivial_fixture() {
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
     seed_dead_code_fixture(500);
 
     let start = std::time::Instant::now();
@@ -88,7 +88,7 @@ fn test_dead_code_explain_resolves_varied_path_formats() {
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let absolute = root.join("src/main.rs").to_string_lossy().to_string();
     let mut indexed = vec![
@@ -122,7 +122,7 @@ fn test_dead_code_explain_non_indexed_file_exits_zero() {
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let result = execute_dead_code(
         0.9,

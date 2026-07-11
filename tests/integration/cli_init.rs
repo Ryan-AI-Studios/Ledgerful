@@ -17,7 +17,7 @@ fn test_init_command_integration() {
 
     let _guard = DirGuard::from_utf8(root);
 
-    let result = execute_init(false);
+    let result = execute_init(false, false);
     assert!(result.is_ok());
 
     let cg_dir = root.join(".ledgerful");
@@ -57,7 +57,7 @@ fn test_init_no_gitignore() {
 
     let _guard = DirGuard::from_utf8(root);
 
-    let result = execute_init(true);
+    let result = execute_init(true, false);
     assert!(result.is_ok());
 
     let cg_dir = root.join(".ledgerful");
@@ -89,7 +89,7 @@ fn test_init_uses_default_config_template_env() {
         template.as_std_path().to_str().unwrap(),
     );
 
-    let result = execute_init(false);
+    let result = execute_init(false, false);
     assert!(result.is_ok());
 
     let config = fs::read_to_string(root.join(".ledgerful").join("config.toml")).unwrap();
@@ -121,7 +121,7 @@ fn init_template_secret_is_omitted_even_without_gitignore() {
         template.as_std_path().to_str().unwrap(),
     );
 
-    execute_init(true).expect("init should sanitize the starter template");
+    execute_init(true, false).expect("init should sanitize the starter template");
 
     let config = fs::read_to_string(root.join(".ledgerful").join("config.toml")).unwrap();
     assert!(!config.contains(SENTINEL));
@@ -146,7 +146,7 @@ fn init_malformed_template_fails_closed_without_publishing_config() {
         template.as_std_path().to_str().unwrap(),
     );
 
-    let error = execute_init(false)
+    let error = execute_init(false, false)
         .expect_err("malformed starter must fail closed")
         .to_string();
 
@@ -174,7 +174,7 @@ fn init_home_template_is_sanitized_when_no_explicit_template_is_set() {
     let _profile = TempEnv::set("USERPROFILE", root.as_str());
     let _home = TempEnv::set("HOME", root.as_str());
 
-    execute_init(false).expect("home template should sanitize");
+    execute_init(false, false).expect("home template should sanitize");
 
     let config = fs::read_to_string(root.join(".ledgerful").join("config.toml")).unwrap();
     assert!(!config.contains(SENTINEL));
@@ -200,7 +200,7 @@ fn init_existing_config_wins_over_malformed_template() {
         template.as_std_path().to_str().unwrap(),
     );
 
-    execute_init(false).expect("existing config must bypass malformed starter");
+    execute_init(false, false).expect("existing config must bypass malformed starter");
 
     assert_eq!(
         fs::read_to_string(config_dir.join("config.toml")).unwrap(),
@@ -219,8 +219,8 @@ fn test_init_git_hooks_are_idempotent() {
 
     let _guard = DirGuard::from_utf8(root);
 
-    execute_init(false).unwrap();
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
+    execute_init(false, false).unwrap();
 
     let pre_commit = fs::read_to_string(root.join(".git").join("hooks").join("pre-commit"))
         .expect("pre-commit hook should be installed");
@@ -254,7 +254,7 @@ fn test_init_appends_git_hooks_without_replacing_existing_content() {
 
     let _guard = DirGuard::from_utf8(root);
 
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let pre_commit = fs::read_to_string(root.join(".git").join("hooks").join("pre-commit"))
         .expect("pre-commit hook should be installed");
@@ -299,7 +299,7 @@ fi\n";
 
     let _guard = DirGuard::from_utf8(root);
 
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let pre_push = fs::read_to_string(root.join(".git").join("hooks").join("pre-push"))
         .expect("pre-push hook should be installed");
@@ -329,7 +329,7 @@ fn test_init_fresh_repo_does_not_emit_unsafe_aliases() {
 
     let _guard = DirGuard::from_utf8(root);
 
-    let result = execute_init(false);
+    let result = execute_init(false, false);
     assert!(result.is_ok());
 
     let rules_file = root.join(".ledgerful").join("rules.toml");
@@ -370,7 +370,7 @@ fn test_init_empty_repo_and_add_scaffold_after_init() {
     let _guard = DirGuard::from_utf8(root);
 
     // 1. Init on empty repo
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
     let layout = ledgerful::state::layout::Layout::new(root);
     let config = ledgerful::config::load::load_config(&layout).unwrap_or_default();
     assert_eq!(
@@ -403,7 +403,7 @@ fn test_init_empty_repo_and_add_scaffold_after_init() {
     .unwrap();
 
     // 3. Re-run init (should be idempotent, not overwrite rules)
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     // 4. Verification plan should now dynamically pick up the new scaffold
     let profile2 = ledgerful::platform::repository::detect_repository(root.as_std_path());
@@ -439,7 +439,7 @@ fn init_skips_hooks_when_lefthook_present() {
 
     let _guard = DirGuard::from_utf8(root);
 
-    let result = execute_init(false);
+    let result = execute_init(false, false);
     assert!(result.is_ok());
 
     // No git hooks should be installed when a third-party manager (lefthook) is present

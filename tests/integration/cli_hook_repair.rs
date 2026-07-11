@@ -196,7 +196,7 @@ fn init_generates_only_ledgerful_hook_commands() {
     setup_git_repo(tmp.path());
     let _guard = DirGuard::from_utf8(root);
 
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     for hook_name in ["pre-commit", "pre-push", "commit-msg", "post-commit"] {
         let content = fs::read_to_string(root.join(".git").join("hooks").join(hook_name)).unwrap();

@@ -15,7 +15,7 @@ fn test_sparse_empty_states_json__slow() {
     git_cmd(root, &["commit", "--no-verify", "-m", "initial"]);
 
     let _guard = DirGuard::new(root);
-    ledgerful::commands::init::execute_init(false).unwrap();
+    ledgerful::commands::init::execute_init(false, false).unwrap();
 
     let layout = Layout::new(root.to_str().unwrap());
     std::fs::write(
@@ -118,25 +118,25 @@ fn test_security_boundaries_distinguishes_unbuilt_graph_from_unconfigured_polici
     git_cmd(root, &["commit", "--no-verify", "-m", "initial"]);
 
     let _guard = DirGuard::new(root);
-    ledgerful::commands::init::execute_init(false).unwrap();
+    ledgerful::commands::init::execute_init(false, false).unwrap();
 
     let exe = env!("CARGO_BIN_EXE_ledgerful");
 
-    // Before any indexing: the graph has not been built at all, so this is
-    // a prerequisite gap, not a "no Cedar files" configuration gap.
+    // After init the ledger has a seeded mode transaction node, so the graph
+    // is technically populated but contains no Cedar policy/principal/action/
+    // resource nodes. The empty reason is therefore a configuration gap (no
+    // Cedar files), not an unbuilt-graph prerequisite gap.
     let out = Command::new(exe)
         .args(["security", "boundaries", "--json"])
         .output()
         .unwrap();
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["emptyReason"].as_str().unwrap(), "noIndexedData");
+    assert_eq!(v["emptyReason"].as_str().unwrap(), "noMatches");
     let message_before = v["message"].as_str().unwrap_or_default().to_string();
     assert!(
-        message_before.to_lowercase().contains("not been built")
-            || message_before
-                .to_lowercase()
-                .contains("index --analyze-graph"),
-        "expected an unbuilt-graph message, got: {message_before}"
+        message_before.to_lowercase().contains("cedar policy")
+            || message_before.to_lowercase().contains("no cedar policy"),
+        "expected a no-Cedar-policy message, got: {message_before}"
     );
 
     // Build the graph with --analyze-graph. This repo has no Cedar policy

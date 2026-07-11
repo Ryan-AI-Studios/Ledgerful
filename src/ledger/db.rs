@@ -304,7 +304,7 @@ impl<'a> LedgerDb<'a> {
             "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
                 change_type, summary, reason, is_breaking, committed_at,
                 verification_status, verification_basis, outcome_notes,
-                origin, trace_id, signature, public_key, risk, related_tickets, author
+                origin, trace_id, signature, public_key, risk, related_tickets, author, observed
              FROM ledger_entries
              WHERE entity_normalized LIKE ?1
              ORDER BY committed_at DESC
@@ -404,6 +404,12 @@ pub(crate) fn map_ledger_entry(row: &rusqlite::Row) -> rusqlite::Result<LedgerEn
         ),
         None => None,
     };
+    let observed_raw: Option<i32> = row.get(21)?;
+    let observed = match observed_raw {
+        Some(0) => Some(false),
+        Some(1) => Some(true),
+        _ => None,
+    };
 
     Ok(LedgerEntry {
         id: row.get(0)?,
@@ -427,5 +433,6 @@ pub(crate) fn map_ledger_entry(row: &rusqlite::Row) -> rusqlite::Result<LedgerEn
         risk: row.get(18)?,
         related_tickets: row.get(19)?,
         author: row.get(20)?,
+        observed,
     })
 }

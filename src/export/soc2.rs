@@ -57,6 +57,17 @@ struct Manifest {
     generated_at: String,
     files: Vec<ManifestFile>,
     entry_count: u64,
+    gate_mode_disclosure: GateModeDisclosure,
+}
+
+/// Four-field mode disclosure required by track 0050.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct GateModeDisclosure {
+    reported_effective_mode: String,
+    transition_history: String,
+    chain_continuity_status: String,
+    completeness_note: String,
 }
 
 /// A file to be written into the zip, with its manifest entry (name + hash +
@@ -95,6 +106,8 @@ pub fn generate_soc2_export(layout: &Layout) -> Result<Vec<u8>> {
     // state) — in that case we emit header-only CSVs and skip ADRs.
     let db_path = layout.state_subdir().join("ledger.db");
     let has_db = db_path.exists();
+
+    let config = crate::config::load::load_config(layout).unwrap_or_default();
 
     let (ledger_entries, verification_rows, adr_entries) = if has_db {
         let storage = StorageManager::open_read_only_sqlite_only(&layout.root)?;
@@ -163,10 +176,13 @@ pub fn generate_soc2_export(layout: &Layout) -> Result<Vec<u8>> {
     manifest_files.sort_by(|a, b| a.name.cmp(&b.name));
     zip_entries.sort_by(|a, b| a.name.cmp(&b.name));
 
+    let mode_disclosure = build_mode_disclosure(&ledger_entries, &config.gate.mode);
+
     let manifest = Manifest {
         generated_at: chrono::Utc::now().to_rfc3339(),
         files: manifest_files,
         entry_count: ledger_entries.len() as u64,
+        gate_mode_disclosure: mode_disclosure,
     };
     let manifest_json = serde_json::to_vec(&manifest)
         .map_err(|e| miette!("Failed to serialize manifest.json: {e}"))?;
@@ -227,6 +243,87 @@ pub fn generate_soc2_export(layout: &Layout) -> Result<Vec<u8>> {
 /// and any inner double quotes are doubled (`"` → `""`), as RFC 4180
 /// requires. This is the minimal RFC 4180 quoting form — fields are quoted
 /// exactly when the spec mandates it and never otherwise.
+fn build_mode_disclosure(
+    entries: &[crate::ledger::types::LedgerEntry],
+    current_mode: &str,
+) -> GateModeDisclosure {
+    let mut mode: Option<String> = None;
+    let mut transition_points: Vec<String> = Vec::new();
+    let mut observed_ranges: Vec<String> = Vec::new();
+    let mut last_index: usize = 0;
+
+    for (idx, entry) in entries.iter().enumerate() {
+        if entry.entity == "ledgerful/gate-mode"
+            && entry.entry_type == crate::ledger::types::EntryType::Maintenance
+        {
+            let new_mode = parse_mode_from_entry_text(&entry.summary)
+                .or_else(|| parse_mode_from_entry_text(&entry.reason));
+            if let Some(new_mode) = new_mode {
+                if let Some(prev) = mode.as_ref() {
+                    observed_ranges.push(format!(
+                        "entries {}–{} under {}",
+                        last_index + 1,
+                        idx,
+                        prev
+                    ));
+                }
+                mode = Some(new_mode.clone());
+                transition_points.push(format!(
+                    "entry {}: {} (tx_id: {})",
+                    idx + 1,
+                    new_mode,
+                    entry.tx_id
+                ));
+                last_index = idx + 1;
+            }
+        }
+    }
+
+    if let Some(prev) = mode.as_ref()
+        && last_index < entries.len()
+    {
+        observed_ranges.push(format!(
+            "entries {}–{} under {}",
+            last_index + 1,
+            entries.len(),
+            prev
+        ));
+    }
+
+    let transition_history = if transition_points.is_empty() {
+        format!(
+            "No mode-transition entries found; all {} entries predate mode tracking.",
+            entries.len()
+        )
+    } else {
+        format!(
+            "{}; {}",
+            transition_points.join("; "),
+            observed_ranges.join("; ")
+        )
+    };
+
+    GateModeDisclosure {
+        reported_effective_mode: current_mode.to_string(),
+        transition_history,
+        chain_continuity_status: "not verified — chain feature not present".to_string(),
+        completeness_note:
+            "Completeness of the transition history is established only when chain continuity is verified."
+                .to_string(),
+    }
+}
+
+fn parse_mode_from_entry_text(text: &str) -> Option<String> {
+    let normalized = text.to_lowercase();
+    if normalized.contains("to enforce") || normalized.contains("initialized to enforce") {
+        Some("enforce".to_string())
+    } else if normalized.contains("to observe") || normalized.contains("initialized to observe") {
+        Some("observe".to_string())
+    } else {
+        None
+    }
+}
+
 fn csv_quote(s: &str) -> String {
     let needs_quoting = s.contains(',') || s.contains('"') || s.contains('\n') || s.contains('\r');
     if needs_quoting {
@@ -247,7 +344,7 @@ fn csv_quote(s: &str) -> String {
 fn build_ledger_csv(entries: &[crate::ledger::types::LedgerEntry]) -> Vec<u8> {
     let mut out = String::new();
     out.push_str(
-        "tx_id,category,entity,change_type,summary,reason,committed_at,signed,signature\n",
+        "tx_id,category,entity,change_type,summary,reason,committed_at,signed,signature,observed\n",
     );
     for entry in entries {
         let signed = if entry.signature.is_some() {
@@ -256,8 +353,13 @@ fn build_ledger_csv(entries: &[crate::ledger::types::LedgerEntry]) -> Vec<u8> {
             "no"
         };
         let signature = entry.signature.clone().unwrap_or_default();
+        let observed = match entry.observed {
+            Some(true) => "yes",
+            Some(false) => "no",
+            None => "",
+        };
         out.push_str(&format!(
-            "{},{},{},{},{},{},{},{},{}\n",
+            "{},{},{},{},{},{},{},{},{},{}\n",
             csv_quote(&entry.tx_id),
             csv_quote(&entry.category.to_string()),
             csv_quote(&entry.entity),
@@ -267,6 +369,7 @@ fn build_ledger_csv(entries: &[crate::ledger::types::LedgerEntry]) -> Vec<u8> {
             csv_quote(&entry.committed_at),
             signed,
             csv_quote(&signature),
+            observed,
         ));
     }
     out.into_bytes()
@@ -342,6 +445,7 @@ mod tests {
             risk: None,
             related_tickets: None,
             author: "Test".to_string(),
+            observed: Some(true),
         };
         let csv = build_ledger_csv(&[entry]);
         let s = std::str::from_utf8(&csv).unwrap();
@@ -350,6 +454,10 @@ mod tests {
             "summary with comma must be quoted: {s}"
         );
         assert!(s.contains(",yes,"));
+        assert!(
+            s.ends_with(",yes\n"),
+            "observed marker should be exported: {s}"
+        );
     }
 
     #[test]

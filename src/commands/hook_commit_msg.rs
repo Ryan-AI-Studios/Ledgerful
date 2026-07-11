@@ -29,6 +29,10 @@ pub struct PendingHookTx {
     pub signature: Option<String>,
     pub public_key: Option<String>,
     pub snapshot_id: Option<i64>,
+    /// Carried from the commit-msg hook through the pending sidecar so the
+    /// post-commit hook can record whether the commit happened under observe
+    /// mode. Stored as unsigned ledger metadata.
+    pub observed: Option<bool>,
 }
 
 fn write_pending_sidecar(
@@ -486,6 +490,8 @@ fn silently_record_ledger(args: SilentRecordArgs) -> Result<()> {
         })
         .map_err(|e| miette::miette!("{}", e))?;
 
+    let observe_warned = tx_mgr.observe_warned();
+
     let committed_at = chrono::Utc::now().to_rfc3339();
 
     let sign_result = sign_ledger_entry(
@@ -531,6 +537,7 @@ fn silently_record_ledger(args: SilentRecordArgs) -> Result<()> {
         signature,
         public_key: pub_key,
         snapshot_id: args.snapshot_id,
+        observed: if observe_warned { Some(true) } else { None },
     };
 
     write_pending_sidecar(&layout, &pending)?;

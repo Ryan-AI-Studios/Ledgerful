@@ -259,7 +259,7 @@ fn install_pre_push_verify_block(root: &Utf8PathBuf) -> Result<()> {
     Ok(())
 }
 
-pub fn execute_init(no_gitignore: bool) -> Result<()> {
+pub fn execute_init(no_gitignore: bool, enforce: bool) -> Result<()> {
     // 1. Discover repository root
     let root = match gix::discover(".") {
         Ok(repo) => {
@@ -289,9 +289,19 @@ pub fn execute_init(no_gitignore: bool) -> Result<()> {
 
     // 3. Generate starter configurations
     let config_path = layout.config_file();
-    if !config_path.exists() {
+    let gate_mode = if enforce { "enforce" } else { "observe" };
+    let config_created = !config_path.exists();
+    if config_created {
         let starter = starter_config_contents()?;
-        let created = publish_starter_config(config_path.as_std_path(), &starter.contents)?;
+        let mut contents = starter.contents;
+        if contents.contains("[gate]") {
+            contents = contents.replace("mode = \"observe\"", &format!("mode = \"{}\"", gate_mode));
+        } else {
+            contents.push_str("\n[gate]\nmode = \"");
+            contents.push_str(gate_mode);
+            contents.push_str("\"\n");
+        }
+        let created = publish_starter_config(config_path.as_std_path(), &contents)?;
         if created {
             if !starter.removed_secret_paths.is_empty() {
                 eprintln!(
@@ -406,6 +416,99 @@ pub fn execute_init(no_gitignore: bool) -> Result<()> {
     }
     println!();
 
+    if config_created {
+        if let Err(e) = write_initial_mode_ledger_entry(&layout, gate_mode) {
+            eprintln!("Warning: could not record initial gate mode ledger entry: {e}");
+        }
+    } else {
+        let existing_config = crate::config::load::load_config(&layout).unwrap_or_default();
+        let actual_mode = existing_config.gate.mode.clone();
+        print_init_status_block(&actual_mode);
+        info!("Ledgerful initialized successfully!");
+        return Ok(());
+    }
+    print_init_status_block(gate_mode);
     info!("Ledgerful initialized successfully!");
     Ok(())
+}
+
+pub(crate) fn write_initial_mode_ledger_entry(
+    layout: &crate::state::layout::Layout,
+    gate_mode: &str,
+) -> miette::Result<()> {
+    use crate::ledger::{
+        Category, ChangeType, CommitRequest, EntryType, TransactionManager, TransactionRequest,
+    };
+    use crate::state::storage::StorageManager;
+
+    let db_path = layout.state_subdir().join("ledger.db");
+    let mut storage = StorageManager::init(db_path.as_std_path())?;
+    let config = crate::commands::helpers::load_ledger_config(layout)?;
+    let mut tx_mgr = TransactionManager::new(&mut storage, layout.root.clone().into(), config);
+
+    let tx_id = tx_mgr
+        .start_change(TransactionRequest {
+            category: Category::Chore,
+            entity: "ledgerful/gate-mode".to_string(),
+            planned_action: Some(format!("Initialize gate mode: {}", gate_mode)),
+            ..Default::default()
+        })
+        .map_err(|e| miette::miette!("{}", e))?;
+
+    tx_mgr
+        .commit_change(
+            tx_id.clone(),
+            CommitRequest {
+                change_type: ChangeType::Modify,
+                summary: format!("Gate mode initialized to {}", gate_mode),
+                reason: "Initial mode set by ledgerful init".to_string(),
+                entry_type: Some(EntryType::Maintenance),
+                ..Default::default()
+            },
+            false,
+        )
+        .map_err(|e| miette::miette!("{}", e))?;
+
+    Ok(())
+}
+
+fn print_init_status_block(gate_mode: &str) {
+    use owo_colors::OwoColorize;
+
+    println!("\n{}", "Ledgerful Status".bold().underline());
+    println!("  Gate mode: {}", gate_mode.yellow().bold());
+
+    let has_local_model = std::env::var("OLLAMA_API_KEY").is_ok()
+        || std::env::var("OLLAMA_CLOUD_API_KEY").is_ok()
+        || std::env::var("GEMINI_API_KEY").is_ok();
+    let model_line = if has_local_model {
+        "cloud env detected"
+    } else {
+        "none (run 'ledgerful setup ai' or set GEMINI_API_KEY / OLLAMA_CLOUD_API_KEY)"
+    };
+    println!("  Model:      {}", model_line);
+
+    let keys_dir = crate::ledger::crypto::get_keys_dir()
+        .map(|d| d.to_string_lossy().to_string())
+        .unwrap_or_else(|_| "~/.ledgerful/keys".to_string());
+    println!("  Keys:       {}", keys_dir);
+    println!("  Hooks:      commit-msg, post-commit, pre-push (.git/hooks/)");
+    println!("  Pending tx: {}", "0".green());
+    println!("  Drift:      {}", "0".green());
+
+    println!("\n{}", "Next Steps".bold().underline());
+    println!(
+        "  1. ledgerful index --incremental    # Index changed files (~5-10s for a medium repo)"
+    );
+    println!(
+        "  2. ledgerful web start              # Launch the local dashboard at http://127.0.0.1:52001"
+    );
+    println!("  3. ledgerful verify --scope fast    # Run scoped verification on changed files");
+
+    if gate_mode == "observe" {
+        println!(
+            "\n{} commits are recorded and warned, never blocked. Run 'ledgerful gate mode enforce' when ready.",
+            "Notice:".bold().yellow()
+        );
+    }
 }

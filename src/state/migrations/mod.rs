@@ -21,6 +21,7 @@ pub mod m46_hotspot_trends;
 pub mod m47_project_files_git_meta;
 pub mod m48_changed_files_diff_stats;
 pub mod m49_project_trend_days;
+pub mod m50_ledger_entry_observed;
 
 use rusqlite_migration::Migrations;
 
@@ -117,6 +118,11 @@ pub fn get_migrations() -> Migrations<'static> {
     // The table is empty in builds that don't populate it, so the
     // surface-area leak is harmless.
     all_m.extend(m49_project_trend_days::m49_project_trend_days());
+    // m50 adds the nullable `observed` column to `ledger_entries` (Track 0050).
+    // Registered unconditionally so the schema version stays monotonic across
+    // feature-flag combinations; the column is nullable and defaults to NULL,
+    // so it is harmless in builds that do not populate it.
+    all_m.extend(m50_ledger_entry_observed::m50_ledger_entry_observed());
 
     Migrations::new(all_m)
 }
@@ -154,6 +160,7 @@ pub fn get_migrations_count() -> usize {
     count += m47_project_files_git_meta::m47_project_files_git_meta().len();
     count += m48_changed_files_diff_stats::m48_changed_files_diff_stats().len();
     count += m49_project_trend_days::m49_project_trend_days().len();
+    count += m50_ledger_entry_observed::m50_ledger_entry_observed().len();
 
     count
 }
@@ -258,6 +265,18 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 1, "Table {} should exist", table);
         }
+
+        let observed_exists: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM pragma_table_info('ledger_entries') WHERE name='observed'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            observed_exists, 1,
+            "ledger_entries.observed column should exist"
+        );
     }
 
     #[test]

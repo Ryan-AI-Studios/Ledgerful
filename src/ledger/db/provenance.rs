@@ -68,7 +68,7 @@ pub fn find_transactions_by_file(
         "SELECT DISTINCT l.id, l.tx_id, l.category, l.entry_type, l.entity, l.entity_normalized,
             l.change_type, l.summary, l.reason, l.is_breaking, l.committed_at,
             l.verification_status, l.verification_basis, l.outcome_notes,
-            l.origin, l.trace_id, l.signature, l.public_key, l.risk, l.related_tickets, l.author
+            l.origin, l.trace_id, l.signature, l.public_key, l.risk, l.related_tickets, l.author, l.observed
      FROM ledger_entries l
      JOIN token_provenance tp ON l.tx_id = tp.tx_id
      WHERE tp.entity = ?1 OR tp.entity LIKE ?2

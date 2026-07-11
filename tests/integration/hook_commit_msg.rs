@@ -401,27 +401,29 @@ fn test_real_shell_git_commit_amend_success() {
         "Sidecar should be cleaned up after post-commit runs"
     );
 
-    // Verify the DB state: exactly one transaction (TX1) was ever created and it is now COMMITTED.
-    // If the early-return on `matches_editmsg` is missing, the amend would call `start_change`
-    // again, making total_count == 2.
+    // Verify the DB state: exactly one transaction (TX1) from the commit+amend
+    // lifecycle was ever created and it is now COMMITTED. `ledgerful init` seeds
+    // an additional mode transaction, so exclude that from counts.
+    // If the early-return on `matches_editmsg` is missing, the amend would call
+    // `start_change` again, making total_count == 2.
     let db_path = root.join(".ledgerful").join("state").join("ledger.db");
     let db = rusqlite::Connection::open(&db_path).unwrap();
 
     let committed_count: i32 = db
         .query_row(
-            "SELECT COUNT(*) FROM transactions WHERE status = 'COMMITTED'",
+            "SELECT COUNT(*) FROM transactions WHERE status = 'COMMITTED' AND entity != 'ledgerful/gate-mode'",
             [],
             |row| row.get(0),
         )
         .unwrap();
     assert_eq!(
         committed_count, 1,
-        "There should be exactly one committed transaction"
+        "There should be exactly one committed transaction from the commit+amend lifecycle"
     );
 
     let pending_count: i32 = db
         .query_row(
-            "SELECT COUNT(*) FROM transactions WHERE status = 'PENDING'",
+            "SELECT COUNT(*) FROM transactions WHERE status = 'PENDING' AND entity != 'ledgerful/gate-mode'",
             [],
             |row| row.get(0),
         )
@@ -434,7 +436,11 @@ fn test_real_shell_git_commit_amend_success() {
     // The key assertion: exactly one transaction was ever created across the initial commit + amend
     // lifecycle. Without the `matches_editmsg` early return this would be 2.
     let total_count: i32 = db
-        .query_row("SELECT COUNT(*) FROM transactions", [], |row| row.get(0))
+        .query_row(
+            "SELECT COUNT(*) FROM transactions WHERE entity != 'ledgerful/gate-mode'",
+            [],
+            |row| row.get(0),
+        )
         .unwrap();
     assert_eq!(
         total_count, 1,

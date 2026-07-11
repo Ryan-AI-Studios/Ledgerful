@@ -1,6 +1,6 @@
 use crate::cli::args::{
-    Cli, Commands, ConfigCommands, FederateCommands, IntentCommands, InternalCommands,
-    LedgerCommands, RegisterCommands, ServiceSubcommands,
+    Cli, Commands, ConfigCommands, FederateCommands, GateCommands, IntentCommands,
+    InternalCommands, LedgerCommands, RegisterCommands, ServiceSubcommands,
 };
 use crate::commands::search::SearchArgs;
 use miette::{IntoDiagnostic, Result};
@@ -16,7 +16,8 @@ pub fn run_with(cli: Cli) -> Result<()> {
     let command_name = cli.command.command_name();
 
     let result = match cli.command {
-        Commands::Init { force } => crate::commands::init::execute_init(force),
+        Commands::Init { force, enforce } => crate::commands::init::execute_init(force, enforce),
+        Commands::Gate { command } => dispatch_gate(command),
         Commands::Setup { yes, skip_scan } => crate::commands::setup::execute_setup(yes, skip_scan),
         Commands::Scan {
             impact,
@@ -990,6 +991,39 @@ fn dispatch_usage(command: crate::cli::args::UsageCommands) -> Result<()> {
         crate::cli::args::UsageCommands::Status => crate::commands::usage::execute_usage_status(),
         crate::cli::args::UsageCommands::ShowPayload => {
             crate::commands::usage::execute_usage_show_payload()
+        }
+    }
+}
+
+fn dispatch_gate(command: GateCommands) -> Result<()> {
+    match command {
+        GateCommands::Mode { mode } => {
+            let layout = crate::commands::helpers::get_layout()?;
+            if let Some(mode) = mode {
+                let mode = mode.to_lowercase();
+                if !crate::config::model::GateConfig::valid_modes().contains(&mode.as_str()) {
+                    return Err(miette::miette!(
+                        "invalid gate mode '{}'; valid modes are: observe, enforce",
+                        mode
+                    ));
+                }
+                let config = crate::config::load::load_config(&layout).unwrap_or_default();
+                let old_mode = config.gate.mode.clone();
+                if old_mode == mode {
+                    println!("Gate mode is already: {}", mode);
+                    return Ok(());
+                }
+                crate::commands::gate::write_mode_transition_entry(&layout, &old_mode, &mode)?;
+                crate::commands::config::execute_config_set_in(
+                    &layout,
+                    &format!("gate.mode={}", mode),
+                )?;
+                println!("Gate mode changed: {} → {}", old_mode, mode);
+            } else {
+                let config = crate::config::load::load_config(&layout).unwrap_or_default();
+                println!("Gate mode: {}", config.gate.mode);
+            }
+            Ok(())
         }
     }
 }

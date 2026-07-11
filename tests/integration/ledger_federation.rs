@@ -29,7 +29,7 @@ fn test_ledger_federation_flow() {
 
     {
         let _guard = DirGuard::from_utf8(&local_path);
-        execute_init(false).unwrap();
+        execute_init(false, false).unwrap();
         execute_scan(true, false, false, None, None).unwrap();
     }
 

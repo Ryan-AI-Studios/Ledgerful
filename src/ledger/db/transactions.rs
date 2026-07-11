@@ -262,8 +262,8 @@ pub fn insert_ledger_entry(conn: &Connection, entry: &LedgerEntry) -> Result<(),
             tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
             verification_status, verification_basis, outcome_notes,
-            origin, trace_id, signature, public_key, risk, related_tickets, author
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20)",
+            origin, trace_id, signature, public_key, risk, related_tickets, author, observed
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21)",
         params![
             entry.tx_id,
             serde_json::to_string(&entry.category)
@@ -305,6 +305,7 @@ pub fn insert_ledger_entry(conn: &Connection, entry: &LedgerEntry) -> Result<(),
             entry.risk,
             entry.related_tickets,
             entry.author,
+            entry.observed.map(|v| v as i32),
         ],
     )?;
     Ok(())
@@ -318,7 +319,7 @@ pub fn get_ledger_entries_for_tx(
         "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
             verification_status, verification_basis, outcome_notes,
-            origin, trace_id, signature, public_key, risk, related_tickets, author
+            origin, trace_id, signature, public_key, risk, related_tickets, author, observed
      FROM ledger_entries WHERE tx_id = ?1",
     )?;
 
@@ -341,7 +342,7 @@ pub fn get_ledger_entries_by_entity_paginated(
         "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
             verification_status, verification_basis, outcome_notes,
-            origin, trace_id, signature, public_key, risk, related_tickets, author
+            origin, trace_id, signature, public_key, risk, related_tickets, author, observed
      FROM ledger_entries WHERE entity_normalized = ?1
      ORDER BY committed_at DESC
      LIMIT ?2 OFFSET ?3",
@@ -366,7 +367,7 @@ pub fn get_all_committed_ledger_entries(
         "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
             verification_status, verification_basis, outcome_notes,
-            origin, trace_id, signature, public_key, risk, related_tickets, author
+            origin, trace_id, signature, public_key, risk, related_tickets, author, observed
      FROM ledger_entries ORDER BY committed_at ASC",
     )?;
 
@@ -404,7 +405,7 @@ pub fn get_committed_ledger_entries_paginated(
         "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
             verification_status, verification_basis, outcome_notes,
-            origin, trace_id, signature, public_key, risk, related_tickets, author
+            origin, trace_id, signature, public_key, risk, related_tickets, author, observed
          FROM ledger_entries
          WHERE category = ?1
          ORDER BY committed_at ASC
@@ -413,7 +414,7 @@ pub fn get_committed_ledger_entries_paginated(
         "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
             verification_status, verification_basis, outcome_notes,
-            origin, trace_id, signature, public_key, risk, related_tickets, author
+            origin, trace_id, signature, public_key, risk, related_tickets, author, observed
          FROM ledger_entries
          ORDER BY committed_at ASC
          LIMIT ?1 OFFSET ?2"
@@ -490,7 +491,8 @@ mod tests {
                 public_key TEXT,
                 risk TEXT,
                 related_tickets TEXT,
-                author TEXT NOT NULL DEFAULT 'unknown'
+                author TEXT NOT NULL DEFAULT 'unknown',
+                observed INTEGER
             );",
         )
         .unwrap();
@@ -590,6 +592,7 @@ mod tests {
             risk: None,
             related_tickets: None,
             author: "Test User".to_string(),
+            observed: None,
         };
         insert_ledger_entry(&conn, &entry).unwrap();
 

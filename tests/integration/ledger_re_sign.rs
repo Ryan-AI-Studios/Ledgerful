@@ -32,7 +32,7 @@ fn setup_initialized_repo() -> (TempDir, camino::Utf8PathBuf, camino::Utf8PathBu
     let _guard = DirGuard::from_utf8(&root_utf8);
 
     std::fs::create_dir_all(keys_dir(dir.path())).unwrap();
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let db_path = root_utf8.join(".ledgerful").join("state").join("ledger.db");
     (dir, root_utf8, db_path)
@@ -291,6 +291,7 @@ fn batch_re_sign_emits_one_maintenance_entry() {
     let maintenance: Vec<_> = entries
         .iter()
         .filter(|e| e.entry_type == ledgerful::ledger::types::EntryType::Maintenance)
+        .filter(|e| e.summary.starts_with("Re-signed"))
         .collect();
     assert_eq!(
         maintenance.len(),
@@ -561,8 +562,17 @@ fn maintenance_entry_is_signed_when_signing_required() {
     let maintenance: Vec<_> = entries
         .iter()
         .filter(|e| e.entry_type == ledgerful::ledger::types::EntryType::Maintenance)
+        .filter(|e| e.summary.starts_with("Re-signed"))
         .collect();
-    assert_eq!(maintenance.len(), 1);
+    assert_eq!(
+        maintenance.len(),
+        1,
+        "expected exactly one re-sign maintenance entry, found {} maintenance entries",
+        entries
+            .iter()
+            .filter(|e| e.entry_type == ledgerful::ledger::types::EntryType::Maintenance)
+            .count()
+    );
     let maint = &maintenance[0];
     assert!(
         maint.signature.is_some() && maint.public_key.is_some(),

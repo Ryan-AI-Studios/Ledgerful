@@ -28,7 +28,7 @@ fn test_prune_removes_lines_and_records_pending_transaction() {
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let root_utf8 = camino::Utf8Path::from_path(root).unwrap();
     seed_dead_code_fixture(root, 2);

@@ -77,6 +77,9 @@ required = "always"
 tui_enabled = true
 require_signing = false
 
+[gate]
+mode = "observe"
+
 [impact.risk_weights]
 rs = 1.0
 toml = 0.8
@@ -128,6 +131,7 @@ mod tests {
             config.local_model.embedding_url.as_deref(),
             Some("http://127.0.0.1:8083")
         );
+        assert_eq!(config.gate.mode, "observe");
     }
 
     #[test]

@@ -828,7 +828,7 @@ fn test_dogfood_recipe_end_to_end_populates_observability_and_security() {
     // the exact CWD-fragility class of bug the recipe documentation has.
     {
         let _guard = DirGuard::new(root);
-        execute_init(false).unwrap();
+        execute_init(false, false).unwrap();
 
         let obs_dir = root.join("observability");
         let policy_dir = root.join("policies");

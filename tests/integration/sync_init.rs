@@ -19,7 +19,7 @@ fn test_sync_init_creates_device_keypair() {
     let _guard = DirGuard::from_utf8(root);
 
     // Initialize regular ledgerful first
-    ledgerful::commands::init::execute_init(false).unwrap();
+    ledgerful::commands::init::execute_init(false, false).unwrap();
 
     // Use a fixed secret for deterministic test
     let test_secret = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";

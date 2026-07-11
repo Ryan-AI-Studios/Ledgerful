@@ -75,7 +75,8 @@ pub fn execute_ledger_commit(
     let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
     let config = load_ledger_config(&layout)?;
 
-    let mut tx_mgr = TransactionManager::new(&mut storage, layout.root.into(), config.clone());
+    let mut tx_mgr =
+        TransactionManager::new(&mut storage, layout.root.clone().into(), config.clone());
 
     let resolved_id = if let Some(id) = tx_id {
         tx_mgr
@@ -97,6 +98,14 @@ pub fn execute_ledger_commit(
         .category
         .to_string();
 
+    let observed = {
+        let sidecar_path = layout.state_subdir().join("pending_hook_tx");
+        match crate::commands::hook_post_commit::read_pending_sidecar(sidecar_path.as_std_path()) {
+            Ok(Some(pending)) if pending.tx_id == resolved_id => pending.observed,
+            _ => None,
+        }
+    };
+
     tx_mgr
         .commit_change(
             resolved_id.clone(),
@@ -105,11 +114,21 @@ pub fn execute_ledger_commit(
                 summary: summary.to_string(),
                 reason: reason.to_string(),
                 is_breaking: breaking,
+                observed,
                 ..Default::default()
             },
             force,
         )
         .map_err(|e| miette::miette!("{}", e))?;
+
+    let sidecar_path = layout.state_subdir().join("pending_hook_tx");
+    if sidecar_path.exists()
+        && let Ok(Some(pending)) =
+            crate::commands::hook_post_commit::read_pending_sidecar(sidecar_path.as_std_path())
+        && pending.tx_id == resolved_id
+    {
+        let _ = std::fs::remove_file(&sidecar_path);
+    }
 
     println!("{}", "Transaction committed.".green().bold());
 
@@ -470,7 +489,7 @@ mod tests {
         let mut file = std::fs::File::create(root.join(".gitignore")).unwrap();
         file.write_all(b".ledgerful/\n").unwrap();
 
-        crate::commands::init::execute_init(true).unwrap();
+        crate::commands::init::execute_init(true, false).unwrap();
 
         test();
     }

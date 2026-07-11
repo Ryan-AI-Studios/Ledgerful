@@ -99,7 +99,7 @@ pub fn execute_setup(yes: bool, skip_scan: bool) -> Result<()> {
                 .prompt()
                 .unwrap_or(false);
             if reconfigure {
-                crate::commands::init::execute_init(false)?;
+                crate::commands::init::execute_init(false, false)?;
             } else {
                 println!("{} Using existing setup.", "✓".green());
             }
@@ -108,7 +108,7 @@ pub fn execute_setup(yes: bool, skip_scan: bool) -> Result<()> {
         }
     } else {
         println!("{} Initializing Ledgerful in {}", "→".cyan(), layout.root);
-        crate::commands::init::execute_init(false)?;
+        crate::commands::init::execute_init(false, false)?;
         println!("{} Initialization complete.", "✓".green());
     }
 

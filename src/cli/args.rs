@@ -31,6 +31,15 @@ pub enum Commands {
         /// Force re-initialization (overwrites existing config)
         #[arg(short, long)]
         force: bool,
+        /// Start in enforce mode instead of the default observe mode
+        #[arg(long)]
+        enforce: bool,
+    },
+
+    /// Gate mode configuration
+    Gate {
+        #[command(subcommand)]
+        command: GateCommands,
     },
     /// Guided onboarding wizard (welcome → init → doctor → first scan → success)
     Setup {
@@ -502,6 +511,16 @@ impl Commands {
     pub fn command_name(&self) -> &'static str {
         match self {
             Commands::Init { .. } => "init",
+            Commands::Gate { command } => match command {
+                GateCommands::Mode { mode } => {
+                    if mode.is_some() {
+                        "gate_mode_set"
+                    } else {
+                        "gate_mode_show"
+                    }
+                }
+            },
+
             Commands::Setup { .. } => "setup",
             Commands::Scan { .. } => "scan",
             Commands::Impact { .. } => "impact",
@@ -909,6 +928,15 @@ pub enum HotspotSubcommands {
 pub enum IntentCommands {
     /// Launch the interactive intent confirmation UI with mock data
     Demo,
+}
+
+#[derive(Subcommand, Debug)]
+pub enum GateCommands {
+    /// Show or set the gate mode
+    Mode {
+        /// Set mode: observe or enforce
+        mode: Option<String>,
+    },
 }
 
 #[derive(Subcommand, Debug)]

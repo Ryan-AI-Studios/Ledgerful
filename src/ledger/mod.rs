@@ -5,6 +5,7 @@ pub mod drift;
 pub mod enforcement;
 pub mod error;
 pub mod federation;
+pub mod mode_history;
 pub mod provenance;
 pub mod session;
 pub mod transaction;

@@ -17,7 +17,7 @@ fn test_federate_scan_no_remotes__slow() {
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     // Stage and commit the .gitignore that init created, so scan has clean state
     git_add_and_commit(root, "after init");

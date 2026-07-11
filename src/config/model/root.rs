@@ -46,4 +46,6 @@ pub struct Config {
     pub ask: super::ask::AskConfig,
     #[serde(default)]
     pub federation: super::federation::FederationConfig,
+    #[serde(default)]
+    pub gate: super::gate::GateConfig,
 }

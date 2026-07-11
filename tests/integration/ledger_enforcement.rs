@@ -251,6 +251,7 @@ fn test_tech_stack_enforcement_at_start() {
 
     let mut manager = TransactionManager::new(&mut storage, dir.path().to_path_buf(), {
         let mut cfg = Config::default();
+        cfg.gate.mode = "enforce".to_string();
         cfg.ledger.enforcement_enabled = true;
         cfg
     });
@@ -381,11 +382,11 @@ fn test_commit_validator_blocking() {
     }
 
     let mut storage_mut = StorageManager::init(&db_path).unwrap();
-    let mut manager = TransactionManager::new(
-        &mut storage_mut,
-        dir.path().to_path_buf(),
-        Config::default(),
-    );
+    let mut manager = TransactionManager::new(&mut storage_mut, dir.path().to_path_buf(), {
+        let mut cfg = Config::default();
+        cfg.gate.mode = "enforce".to_string();
+        cfg
+    });
 
     std::fs::write(dir.path().join("main.rs"), "").unwrap();
 
@@ -440,11 +441,11 @@ fn test_commit_validator_warning() {
     }
 
     let mut storage_mut = StorageManager::init(&db_path).unwrap();
-    let mut manager = TransactionManager::new(
-        &mut storage_mut,
-        dir.path().to_path_buf(),
-        Config::default(),
-    );
+    let mut manager = TransactionManager::new(&mut storage_mut, dir.path().to_path_buf(), {
+        let mut cfg = Config::default();
+        cfg.gate.mode = "enforce".to_string();
+        cfg
+    });
 
     std::fs::write(dir.path().join("main.rs"), "").unwrap();
 
@@ -494,11 +495,11 @@ fn test_commit_validator_timeout() {
     }
 
     let mut storage_mut = StorageManager::init(&db_path).unwrap();
-    let mut manager = TransactionManager::new(
-        &mut storage_mut,
-        dir.path().to_path_buf(),
-        Config::default(),
-    );
+    let mut manager = TransactionManager::new(&mut storage_mut, dir.path().to_path_buf(), {
+        let mut cfg = Config::default();
+        cfg.gate.mode = "enforce".to_string();
+        cfg
+    });
 
     std::fs::write(dir.path().join("main.rs"), "").unwrap();
 
@@ -557,8 +558,11 @@ fn test_commit_validator_absolute_path() {
 
     let mut storage_mut = StorageManager::init(&db_path).unwrap();
     let repo_root = dir.path().to_path_buf();
-    let mut manager =
-        TransactionManager::new(&mut storage_mut, repo_root.clone(), Config::default());
+    let mut manager = TransactionManager::new(&mut storage_mut, repo_root.clone(), {
+        let mut cfg = Config::default();
+        cfg.gate.mode = "enforce".to_string();
+        cfg
+    });
 
     std::fs::write(dir.path().join("main.rs"), "").unwrap();
 
@@ -625,11 +629,11 @@ fn test_all_category_validators() {
     }
 
     let mut storage_mut = StorageManager::init(&db_path).unwrap();
-    let mut manager = TransactionManager::new(
-        &mut storage_mut,
-        dir.path().to_path_buf(),
-        Config::default(),
-    );
+    let mut manager = TransactionManager::new(&mut storage_mut, dir.path().to_path_buf(), {
+        let mut cfg = Config::default();
+        cfg.gate.mode = "enforce".to_string();
+        cfg
+    });
 
     std::fs::write(dir.path().join("main.rs"), "").unwrap();
 
@@ -677,6 +681,7 @@ fn test_verification_gate_blocks_high_risk_categories() {
     }
 
     let mut config = Config::default();
+    config.gate.mode = "enforce".to_string();
     config.ledger.verify_to_commit = true;
 
     let mut tx_mgr = TransactionManager::new(&mut storage, repo_root, config);
@@ -739,6 +744,7 @@ fn test_verification_gate_allows_with_status() {
     std::fs::write(&entity_path, "").unwrap();
 
     let mut config = Config::default();
+    config.gate.mode = "enforce".to_string();
     config.ledger.verify_to_commit = true;
 
     let mut tx_mgr = TransactionManager::new(&mut storage, repo_root, config);
@@ -778,6 +784,7 @@ fn test_verification_gate_force_override() {
     std::fs::write(&entity_path, "").unwrap();
 
     let mut config = Config::default();
+    config.gate.mode = "enforce".to_string();
     config.ledger.verify_to_commit = true;
 
     let mut tx_mgr = TransactionManager::new(&mut storage, repo_root, config);

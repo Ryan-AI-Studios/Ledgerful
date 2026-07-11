@@ -49,6 +49,10 @@ pub fn execute_doctor() -> Result<()> {
 
     report.active_ask_backend = format_active_ask_backend(&config);
 
+    report
+        .index_health
+        .push(format_gate_mode_status(&layout, &config));
+
     if config.local_model.embedding_model.is_empty() {
         report.embedding_model_status = "Not configured".yellow().to_string();
     } else {
@@ -618,6 +622,30 @@ fn format_active_ask_backend_with(
                 format!("Local ({})", host)
             }
         }
+    }
+}
+
+fn format_gate_mode_status(
+    layout: &crate::state::layout::Layout,
+    config: &crate::config::model::Config,
+) -> String {
+    let effective_mode = config.gate.mode.clone();
+    let ledger_mode = crate::ledger::mode_history::current_mode_from_ledger(layout);
+
+    match ledger_mode {
+        Some(ledger_mode) if ledger_mode == effective_mode => {
+            format!("Gate mode: {} (matches ledger history)", effective_mode)
+        }
+        Some(ledger_mode) => format!(
+            "Gate mode: {} (WARNING: ledger history shows {}; run `ledgerful gate mode {}`)",
+            effective_mode, ledger_mode, ledger_mode
+        )
+        .yellow()
+        .to_string(),
+        None => format!(
+            "Gate mode: {} (no ledger transition history yet)",
+            effective_mode
+        ),
     }
 }
 

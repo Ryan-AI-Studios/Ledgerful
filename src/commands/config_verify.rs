@@ -50,6 +50,7 @@ pub fn all_sections() -> Vec<Box<dyn ConfigSection>> {
         Box::new(BackendSection),
         Box::new(SemanticSection),
         Box::new(AskSection),
+        Box::new(GateSection),
     ]
 }
 
@@ -451,6 +452,34 @@ impl ConfigSection for SemanticSection {
     }
 }
 
+pub struct GateSection;
+
+impl ConfigSection for GateSection {
+    fn name(&self) -> &'static str {
+        "Gate"
+    }
+
+    fn order(&self) -> u8 {
+        4
+    }
+
+    fn render_rows(&self, config: &Config) -> Vec<ConfigRow> {
+        let mut rows = Vec::new();
+
+        rows.push(ConfigRow {
+            label: "mode".to_string(),
+            value: config.gate.mode.clone(),
+            source: if config.gate.mode == "observe" {
+                ValueSource::Default
+            } else {
+                ValueSource::Explicit
+            },
+        });
+
+        rows
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -458,10 +487,11 @@ mod tests {
     #[test]
     fn test_sections_returns_all_implementations() {
         let sections = all_sections();
-        assert_eq!(sections.len(), 3);
+        assert_eq!(sections.len(), 4);
         assert_eq!(sections[0].name(), "Backend");
         assert_eq!(sections[1].name(), "Semantic");
         assert_eq!(sections[2].name(), "Ask");
+        assert_eq!(sections[3].name(), "Gate");
     }
 
     #[test]

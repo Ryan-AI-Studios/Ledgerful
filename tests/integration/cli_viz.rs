@@ -14,7 +14,7 @@ fn test_viz_generates_html() {
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let out_path = root.join("output.html");
     let result = execute_viz(Some(out_path.clone()), 50, 3, None, "graph".to_string());

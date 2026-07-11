@@ -2,6 +2,7 @@ mod ask;
 mod coverage;
 mod env;
 mod federation;
+mod gate;
 mod gemini;
 mod ledger;
 mod local_model;
@@ -13,6 +14,7 @@ mod verify;
 pub use self::ask::*;
 pub use self::coverage::*;
 pub use self::federation::*;
+pub use self::gate::*;
 pub use self::gemini::*;
 pub use self::ledger::*;
 pub use self::local_model::*;
@@ -49,6 +51,7 @@ mod tests {
                 .ignore_patterns
                 .contains(&"target/**".to_string())
         );
+        assert_eq!(config.gate.mode, "observe");
     }
 
     #[test]

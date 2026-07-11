@@ -145,7 +145,10 @@ mod tests {
     fn facade_exports_reachable() {
         // If this test compiles, the facade re-exports are intact.
         let _: Cli = Cli {
-            command: Commands::Init { force: false },
+            command: Commands::Init {
+                force: false,
+                enforce: false,
+            },
             verbose: false,
         };
         let _: LedgerCommands = LedgerCommands::Status {

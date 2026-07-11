@@ -122,7 +122,7 @@ fn ledger_status_verify_signatures_rejects_corrupted_signature() {
     let keys_dir = keys_dir(dir.path());
     std::fs::create_dir_all(&keys_dir).unwrap();
 
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let entity_path = root.join("src/main.rs");
     std::fs::create_dir_all(entity_path.parent().unwrap()).unwrap();
@@ -200,7 +200,7 @@ fn test_ledger_status_all_flag_succeeds_with_more_than_ten_entries() {
     let keys_dir = keys_dir(dir.path());
     std::fs::create_dir_all(&keys_dir).unwrap();
 
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let entity_path = root.join("src/main.rs");
     std::fs::create_dir_all(entity_path.parent().unwrap()).unwrap();

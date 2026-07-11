@@ -108,7 +108,8 @@ fn seed_ledger_entry(
             public_key TEXT,
             risk TEXT,
             related_tickets TEXT,
-            author TEXT NOT NULL DEFAULT 'unknown'
+            author TEXT NOT NULL DEFAULT 'unknown',
+            observed INTEGER
         );",
     )
     .unwrap();
@@ -157,7 +158,9 @@ fn seed_ledger_entry(
         risk: Some("LOW".to_string()),
         related_tickets: None,
         author: "Test User".to_string(),
+        observed: None,
     };
+
     db.insert_ledger_entry(&entry).unwrap();
 }
 
@@ -1270,10 +1273,10 @@ async fn test_api_ledger_detail_reads_verification_enrichment() {
         "INSERT INTO ledger_entries (
             tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
-            origin, author
+            origin, author, observed
          ) VALUES (?1, 'FEATURE', 'IMPLEMENTATION', 'src/foo.rs', 'src/foo.rs',
                    'MODIFY', 'Enriched tx', 'Test', 0, '2026-06-17T10:00:00Z',
-                   'LOCAL', 'Test User')",
+                   'LOCAL', 'Test User', NULL)",
         rusqlite::params![tx_id],
     )
     .unwrap();
@@ -2913,9 +2916,9 @@ fn seed_adr_ledger_entry(layout: &Layout, tx_id: &str, summary: &str, committed_
     conn.execute(
         "INSERT INTO ledger_entries \
          (tx_id, category, entry_type, entity, entity_normalized, change_type, \
-          summary, reason, is_breaking, committed_at, origin, author) \
+          summary, reason, is_breaking, committed_at, origin, author, observed) \
          VALUES (?1, 'ARCHITECTURE', 'ARCHITECTURE', 'entity', 'entity', 'CREATE', \
-                 ?2, 'reason', 0, ?3, 'LOCAL', 'Test User')",
+                 ?2, 'reason', 0, ?3, 'LOCAL', 'Test User', NULL)",
         rusqlite::params![tx_id, summary, committed_at],
     )
     .unwrap();
@@ -3146,7 +3149,7 @@ async fn test_soc2_export_empty_state_no_db() {
     let ledger_csv = String::from_utf8(read_zip_file(&body, "ledger.csv")).unwrap();
     assert!(
         ledger_csv
-            == "tx_id,category,entity,change_type,summary,reason,committed_at,signed,signature\n",
+            == "tx_id,category,entity,change_type,summary,reason,committed_at,signed,signature,observed\n",
         "empty-state ledger.csv must be header-only; got:\n{ledger_csv}"
     );
     let verify_csv = String::from_utf8(read_zip_file(&body, "verification_history.csv")).unwrap();

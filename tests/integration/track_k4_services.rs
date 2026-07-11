@@ -64,7 +64,7 @@ fn test_monorepo_service_impact() {
 
     let _guard = DirGuard::new(root);
 
-    ledgerful::commands::init::execute_init(false).unwrap();
+    ledgerful::commands::init::execute_init(false, false).unwrap();
 
     fs::write(
         root.join(".ledgerful/config.toml"),

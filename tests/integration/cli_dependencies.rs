@@ -14,7 +14,7 @@ fn dependencies_list_returns_package_list() {
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     // Now populate CozoDB with mock packages
     {

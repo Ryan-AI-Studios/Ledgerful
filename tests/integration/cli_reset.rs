@@ -26,7 +26,7 @@ fn test_reset_missing_state_is_safe() {
 #[test]
 fn test_reset_preserves_config_and_rules_by_default() {
     let (_tmp, root, _guard) = setup_repo();
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let state_dir = root.join(".ledgerful");
     let logs_dir = state_dir.join("logs");
@@ -56,7 +56,7 @@ fn test_reset_preserves_config_and_rules_by_default() {
 #[test]
 fn test_reset_preserves_ledger_by_default() {
     let (_tmp, root, _guard) = setup_repo();
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let state_dir = root.join(".ledgerful");
     let state_subdir = state_dir.join("state");
@@ -74,7 +74,7 @@ fn test_reset_preserves_ledger_by_default() {
 #[test]
 fn test_reset_include_ledger_removes_db() {
     let (_tmp, root, _guard) = setup_repo();
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let state_dir = root.join(".ledgerful");
     let state_subdir = state_dir.join("state");
@@ -90,7 +90,7 @@ fn test_reset_include_ledger_removes_db() {
 #[test]
 fn test_reset_remove_config_and_rules_requires_confirmation() {
     let (_tmp, root, _guard) = setup_repo();
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let err = execute_reset(true, true, false, false, false, false).unwrap_err();
     assert!(format!("{err}").contains("--yes"));
@@ -101,7 +101,7 @@ fn test_reset_remove_config_and_rules_requires_confirmation() {
 #[test]
 fn test_reset_remove_config_and_rules_with_confirmation() {
     let (_tmp, root, _guard) = setup_repo();
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     execute_reset(true, true, false, false, true, false).unwrap();
 
@@ -113,7 +113,7 @@ fn test_reset_remove_config_and_rules_with_confirmation() {
 #[test]
 fn test_reset_all_requires_confirmation() {
     let (_tmp, root, _guard) = setup_repo();
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let err = execute_reset(false, false, false, true, false, false).unwrap_err();
     assert!(format!("{err}").contains("--yes"));
@@ -123,7 +123,7 @@ fn test_reset_all_requires_confirmation() {
 #[test]
 fn test_reset_all_removes_entire_tree() {
     let (_tmp, root, _guard) = setup_repo();
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     execute_reset(false, false, false, true, true, false).unwrap();
 
@@ -133,7 +133,7 @@ fn test_reset_all_removes_entire_tree() {
 #[test]
 fn test_reset_is_idempotent() {
     let (_tmp, root, _guard) = setup_repo();
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     execute_reset(false, false, false, false, false, false).unwrap();
     execute_reset(false, false, false, false, false, false).unwrap();
@@ -145,7 +145,7 @@ fn test_reset_is_idempotent() {
 #[test]
 fn test_reset_never_touches_outside_ledgerful() {
     let (_tmp, root, _guard) = setup_repo();
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let outside = root.join("keep.txt");
     fs::write(&outside, "keep").unwrap();
@@ -159,7 +159,7 @@ fn test_reset_never_touches_outside_ledgerful() {
 #[test]
 fn test_reset_dry_run_does_not_modify_anything() {
     let (_tmp, root, _guard) = setup_repo();
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
 
     let state_dir = root.join(".ledgerful");
     let logs_dir = state_dir.join("logs");

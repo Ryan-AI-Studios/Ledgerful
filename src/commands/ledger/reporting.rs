@@ -27,6 +27,14 @@ pub fn execute_ledger_status(
     let tx_mgr = TransactionManager::new(&mut storage, layout.root.clone().into(), config.clone());
     let clock = SystemClock;
 
+    if config.gate.is_observe() && !compact && !json {
+        println!(
+            "{} {}",
+            "Notice:".bold().yellow(),
+            "Gate mode is observe — block conditions will warn, not block.".yellow()
+        );
+    }
+
     if json {
         let pending = tx_mgr
             .get_all_pending()
@@ -58,7 +66,14 @@ pub fn execute_ledger_status(
         );
 
         if exit_code && (status.pending_count > 0 || status.unaudited_count > 0) {
-            std::process::exit(1);
+            if config.gate.is_enforce() {
+                std::process::exit(1);
+            }
+            tracing::warn!(
+                "Gate is observe: status would block in enforce mode (pending={}, unaudited={})",
+                status.pending_count,
+                status.unaudited_count
+            );
         }
         return Ok(());
     }
@@ -137,7 +152,14 @@ pub fn execute_ledger_status(
                 unaudited_count.to_string().red()
             );
             if exit_code && (pending_count > 0 || unaudited_count > 0) {
-                std::process::exit(1);
+                if config.gate.is_enforce() {
+                    std::process::exit(1);
+                }
+                tracing::warn!(
+                    "Gate is observe: status would block in enforce mode (pending={}, unaudited={})",
+                    pending_count,
+                    unaudited_count
+                );
             }
             return Ok(());
         }
@@ -352,7 +374,14 @@ pub fn execute_ledger_status(
         }
 
         if exit_code && (pending_count > 0 || unaudited_count > 0) {
-            std::process::exit(1);
+            if config.gate.is_enforce() {
+                std::process::exit(1);
+            }
+            tracing::warn!(
+                "Gate is observe: status would block in enforce mode (pending={}, unaudited={})",
+                pending_count,
+                unaudited_count
+            );
         }
     }
 

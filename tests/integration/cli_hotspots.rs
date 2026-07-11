@@ -40,7 +40,7 @@ fn setup_indexed_repo() -> tempfile::TempDir {
     }
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
     execute_index(IndexArgs::default()).unwrap();
 
     tmp
@@ -79,7 +79,7 @@ fn setup_young_indexed_repo() -> tempfile::TempDir {
     }
 
     let _guard = DirGuard::new(root);
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
     execute_index(IndexArgs::default()).unwrap();
 
     tmp

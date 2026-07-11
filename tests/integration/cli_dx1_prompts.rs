@@ -54,7 +54,7 @@ fn setup_indexed_repo() -> tempfile::TempDir {
 
     let _guard = DirGuard::new(root);
     let _env = non_interactive();
-    execute_init(false).unwrap();
+    execute_init(false, false).unwrap();
     execute_index(IndexArgs::default()).unwrap();
 
     tmp
