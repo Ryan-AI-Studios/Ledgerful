@@ -173,6 +173,7 @@ fn run_ledger_verify_fast(root: &Path) -> Result<()> {
     Ok(())
 }
 
+#[cfg(feature = "export")]
 fn run_export(root: &Path, out_path: &Path) -> Result<()> {
     use crate::export::soc2::generate_soc2_export_with_options;
     use crate::state::layout::Layout;
@@ -186,6 +187,13 @@ fn run_export(root: &Path, out_path: &Path) -> Result<()> {
 
     std::fs::write(out_path, &zip_bytes).into_diagnostic()?;
     Ok(())
+}
+
+#[cfg(not(feature = "export"))]
+fn run_export(_root: &Path, _out_path: &Path) -> Result<()> {
+    Err(miette::miette!(
+        "export feature is not enabled; the demo command requires --features export to produce evidence"
+    ))
 }
 
 fn run_commit(root: &Path, subject: &str, body: &str) -> Result<()> {

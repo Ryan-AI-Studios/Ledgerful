@@ -303,6 +303,42 @@ async fn test_status_returns_json() {
 
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert!(json.get("pending_transactions").is_some());
+    // Non-demo repos must not expose is_demo (skip_serializing_if = false).
+    assert!(
+        json.get("is_demo").is_none(),
+        "non-demo repo must not serialize is_demo"
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_status_is_demo_true_when_marker_present() {
+    let guard = temp_layout();
+    // Write the DEMO_MARKER so the status endpoint detects a demo repo.
+    std::fs::create_dir_all(guard.layout().root.join(".ledgerful")).unwrap();
+    std::fs::write(
+        guard.layout().root.join(".ledgerful").join("DEMO_MARKER"),
+        r#"{"demo": true}"#,
+    )
+    .unwrap();
+    let (url, token, handle) = spawn_server(guard.layout()).await;
+
+    let body = tokio::task::spawn_blocking(move || {
+        authed_get(&url, &token, "/api/status")
+            .call()
+            .unwrap()
+            .into_string()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    assert_eq!(
+        json.get("is_demo").and_then(|v| v.as_bool()),
+        Some(true),
+        "demo repo must return is_demo: true"
+    );
     handle.abort();
 }
 
