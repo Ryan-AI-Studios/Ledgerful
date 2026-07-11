@@ -7,6 +7,7 @@ pub mod config_verify;
 pub mod daemon;
 pub mod data_models;
 pub mod dead_code;
+pub mod demo;
 pub mod dependencies;
 pub mod deploy;
 pub mod doctor;

@@ -1137,11 +1137,12 @@ pub async fn compliance_export_handler(
     State(state): State<Arc<AppState>>,
 ) -> Result<axum::response::Response, WebError> {
     let layout = state.layout.clone();
-    let zip_bytes =
-        tokio::task::spawn_blocking(move || crate::export::soc2::generate_soc2_export(&layout))
-            .await
-            .map_err(|e| WebError::Internal(format!("Background task failed: {e}")))?
-            .map_err(|e| WebError::Internal(format!("Failed to generate SOC2 export: {e}")))?;
+    let zip_bytes = tokio::task::spawn_blocking(move || {
+        crate::export::soc2::generate_soc2_export_with_options(&layout, false)
+    })
+    .await
+    .map_err(|e| WebError::Internal(format!("Background task failed: {e}")))?
+    .map_err(|e| WebError::Internal(format!("Failed to generate SOC2 export: {e}")))?;
 
     let mut response = axum::response::Response::new(axum::body::Body::from(zip_bytes));
     response.headers_mut().insert(

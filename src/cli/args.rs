@@ -507,6 +507,19 @@ pub enum Commands {
     /// Print the canonical OpenAPI JSON spec for this build to stdout
     #[cfg(any(feature = "openapi", feature = "web"))]
     Openapi,
+
+    /// Generate a disposable demonstration repo with signed ledger entries and a SOC2 evidence export
+    Demo {
+        /// Keep the demo repo after completion (default: clean up)
+        #[arg(short, long)]
+        keep: bool,
+        /// Output directory for the demo repo (default: ./ledgerful-demo)
+        #[arg(short, long)]
+        output: Option<PathBuf>,
+        /// Overwrite a non-empty target directory
+        #[arg(short, long)]
+        force: bool,
+    },
 }
 
 impl Commands {
@@ -668,6 +681,7 @@ impl Commands {
                 InternalCommands::HookCommitMsg { .. } => "internal_hook_commit_msg",
                 InternalCommands::HookPostCommit => "internal_hook_post_commit",
             },
+            Commands::Demo { .. } => "demo",
             #[cfg(feature = "usage-metrics")]
             Commands::Usage { command } => match command {
                 UsageCommands::Enable => "usage_enable",

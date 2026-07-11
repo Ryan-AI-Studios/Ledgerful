@@ -284,6 +284,11 @@ pub fn run_with(cli: Cli) -> Result<()> {
         #[cfg(feature = "mcp")]
         Commands::Mcp => crate::commands::mcp::execute_mcp_server(),
         Commands::Schedule { subcommand } => dispatch_schedule(subcommand),
+        Commands::Demo {
+            keep,
+            output,
+            force,
+        } => crate::commands::demo::execute_demo(keep, output, force),
     };
 
     // Usage metrics counter hook: increment counter and try flush
@@ -402,7 +407,7 @@ fn dispatch_federate(command: FederateCommands) -> Result<()> {
 
 #[cfg(feature = "export")]
 fn dispatch_export(command: ExportCommands) -> Result<()> {
-    use crate::export::soc2::generate_soc2_export;
+    use crate::export::soc2::generate_soc2_export_with_options;
     use crate::state::layout::Layout;
     use owo_colors::OwoColorize;
 
@@ -432,7 +437,7 @@ fn dispatch_export(command: ExportCommands) -> Result<()> {
                 .map_err(|_| miette::miette!("export root path is not valid UTF-8"))?;
             let layout = Layout::new(root);
 
-            let zip_bytes = generate_soc2_export(&layout)?;
+            let zip_bytes = generate_soc2_export_with_options(&layout, false)?;
 
             std::fs::write(&validated, &zip_bytes).into_diagnostic()?;
 

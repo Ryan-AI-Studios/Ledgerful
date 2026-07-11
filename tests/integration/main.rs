@@ -57,6 +57,7 @@ mod cozodb_integrity;
 mod cross_platform_doctor;
 mod crypto_key_migrate;
 mod daemon_lifecycle;
+mod demo_command;
 mod doc_generation;
 mod dump_rust_tree;
 #[cfg(feature = "export")]

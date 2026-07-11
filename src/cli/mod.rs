@@ -170,6 +170,11 @@ mod tests {
             out: None,
             force: false,
         };
+        let _: Commands = Commands::Demo {
+            keep: false,
+            output: None,
+            force: false,
+        };
         let _: IntentCommands = IntentCommands::Demo;
         let _: InternalCommands = InternalCommands::HookPostCommit;
         let _: ServiceSubcommands =
