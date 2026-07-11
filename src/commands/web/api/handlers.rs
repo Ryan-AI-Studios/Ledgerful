@@ -21,7 +21,7 @@ use axum::Json;
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::response::IntoResponse;
-use chrono::NaiveDate;
+use chrono::{NaiveDate, Utc};
 use miette::{IntoDiagnostic, Result, miette};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -493,6 +493,74 @@ fn empty_trend_response() -> HotspotTrendResponse {
         series: Vec::new(),
         truncated: false,
     }
+}
+
+// ---------------------------------------------------------------------------
+// Project trend endpoint
+// ---------------------------------------------------------------------------
+
+/// `GET /api/trends` — project-level trend series from the cached daily rollup.
+#[utoipa::path(
+    get,
+    path = "/api/trends",
+    operation_id = "getTrends",
+    tag = "trends",
+    params(TrendsQuery),
+    responses(
+        (status = 200, description = "Project-level trend data", body = TrendsResponse)
+    )
+)]
+pub async fn trends_handler(
+    State(state): State<Arc<AppState>>,
+    Query(params): Query<TrendsQuery>,
+) -> Result<impl IntoResponse, WebError> {
+    let layout = state.layout.clone();
+    let days = params.days.unwrap_or(90).clamp(1, 365);
+    let response = tokio::task::spawn_blocking(move || fetch_trends(&layout, days))
+        .await
+        .map_err(|e| WebError::Internal(format!("Background task failed: {e}")))?
+        .map_err(|e| WebError::Internal(format!("Failed to fetch trends: {e}")))?;
+    Ok(Json(response))
+}
+
+fn fetch_trends(layout: &Layout, days: u64) -> Result<TrendsResponse> {
+    let storage = match StorageManager::open_read_only_sqlite_only(&layout.root) {
+        Ok(s) => s,
+        Err(e) => {
+            let db_path = layout.state_subdir().join("ledger.db");
+            if !db_path.as_std_path().exists() {
+                return Ok(TrendsResponse { data: Vec::new() });
+            }
+            return Err(e);
+        }
+    };
+    let conn = storage.get_connection();
+    let cutoff = (Utc::now() - chrono::Duration::days((days - 1) as i64))
+        .format("%Y-%m-%d")
+        .to_string();
+    let points: Vec<TrendPointDto> = conn
+        .prepare(
+            "SELECT day, score, changes, high_risk_count FROM project_trend_days WHERE day >= ?1 ORDER BY day ASC",
+        )
+        .into_diagnostic()?
+        .query_map([&cutoff], |row| {
+            Ok(TrendPointDto {
+                date: row.get(0)?,
+                score: row.get(1)?,
+                changes: row.get(2)?,
+                high_risk_count: row.get(3)?,
+            })
+        })
+        .into_diagnostic()?
+        .filter_map(|r| match r {
+            Ok(dto) => Some(dto),
+            Err(e) => {
+                tracing::warn!("fetch_trends: skipping malformed row: {}", e);
+                None
+            }
+        })
+        .collect();
+    Ok(TrendsResponse { data: points })
 }
 
 fn build_date_buckets(days: u64) -> (Vec<String>, usize, NaiveDate) {

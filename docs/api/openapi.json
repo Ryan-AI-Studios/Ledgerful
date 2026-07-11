@@ -674,6 +674,42 @@
         }
       }
     },
+    "/api/trends": {
+      "get": {
+        "tags": [
+          "trends"
+        ],
+        "summary": "`GET /api/trends` — project-level trend series from the cached daily rollup.",
+        "operationId": "getTrends",
+        "parameters": [
+          {
+            "name": "days",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "format": "int64",
+              "minimum": 0
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "Project-level trend data",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/TrendsResponse"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
     "/api/verify/health": {
       "get": {
         "tags": [
@@ -1693,6 +1729,59 @@
           }
         }
       },
+      "TrendPointDto": {
+        "type": "object",
+        "required": [
+          "date",
+          "score",
+          "changes",
+          "highRiskCount"
+        ],
+        "properties": {
+          "changes": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "date": {
+            "type": "string"
+          },
+          "highRiskCount": {
+            "type": "integer",
+            "format": "int64"
+          },
+          "score": {
+            "type": "number",
+            "format": "double"
+          }
+        }
+      },
+      "TrendsQuery": {
+        "type": "object",
+        "properties": {
+          "days": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "TrendsResponse": {
+        "type": "object",
+        "required": [
+          "data"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/TrendPointDto"
+            }
+          }
+        }
+      },
       "UserSession": {
         "type": "object",
         "required": [
@@ -1874,6 +1963,10 @@
     {
       "name": "config",
       "description": "Daemon configuration"
+    },
+    {
+      "name": "trends",
+      "description": "Project-level trend series"
     },
     {
       "name": "sync",

@@ -452,6 +452,32 @@ pub struct SecurityBoundariesResponse {
     any(test, feature = "openapi", feature = "web"),
     derive(IntoParams, ToSchema)
 )]
+pub struct TrendsQuery {
+    pub(crate) days: Option<u64>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct TrendPointDto {
+    pub(crate) date: String,
+    pub(crate) score: f64,
+    pub(crate) changes: i64,
+    pub(crate) high_risk_count: i64,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct TrendsResponse {
+    pub(crate) data: Vec<TrendPointDto>,
+}
+
+#[derive(Debug, Deserialize, Default)]
+#[cfg_attr(
+    any(test, feature = "openapi", feature = "web"),
+    derive(IntoParams, ToSchema)
+)]
 pub struct KnowledgeGraphQuery {
     pub(crate) limit: Option<usize>,
     pub(crate) focus: Option<String>,

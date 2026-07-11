@@ -18,8 +18,8 @@ use crate::commands::web::api::handlers::{
     __path_compliance_export_handler, __path_compliance_signatures_handler,
     __path_compliance_summary_handler, __path_endpoints_changed_handler,
     __path_hotspots_trend_handler, __path_knowledge_graph_handler, __path_latest_impact_handler,
-    __path_latest_verify_handler, __path_security_boundaries_handler, __path_verify_health_handler,
-    __path_verify_history_handler, __path_verify_steps_handler,
+    __path_latest_verify_handler, __path_security_boundaries_handler, __path_trends_handler,
+    __path_verify_health_handler, __path_verify_history_handler, __path_verify_steps_handler,
 };
 
 // Re-export shared types so the utoipa `#[openapi(components(schemas(...)))]`
@@ -31,8 +31,9 @@ pub(crate) use crate::commands::web::types::{
     HotspotTrendResponse, HotspotTrendSeries, HotspotsQueryParams, KgEdge, KgNode,
     KnowledgeGraphQuery, KnowledgeGraphResponse, LedgerDetailResponse, LedgerEntryResponse,
     LedgerListQuery, LedgerSearchQuery, ProjectResponse, SecurityBoundariesResponse,
-    SnapshotResponse, StatusResponse, SyncStatusResponse, UserSession, VerificationHealthResponse,
-    VerificationStepResponse, VerificationTrendPoint, VerifyHistoryQuery,
+    SnapshotResponse, StatusResponse, SyncStatusResponse, TrendPointDto, TrendsQuery,
+    TrendsResponse, UserSession, VerificationHealthResponse, VerificationStepResponse,
+    VerificationTrendPoint, VerifyHistoryQuery,
 };
 
 #[cfg(any(test, feature = "openapi", feature = "web"))]
@@ -67,6 +68,7 @@ pub(crate) use crate::commands::web::types::{
         endpoints_changed_handler,
         security_boundaries_handler,
         knowledge_graph_handler,
+        trends_handler,
         sync_status_handler
     ),
     components(schemas(
@@ -100,6 +102,9 @@ pub(crate) use crate::commands::web::types::{
         KgNode,
         KgEdge,
         SyncStatusResponse,
+        TrendsQuery,
+        TrendsResponse,
+        TrendPointDto,
         crate::commands::web::error::ProblemDetail
     )),
     tags(
@@ -118,6 +123,7 @@ pub(crate) use crate::commands::web::types::{
         (name = "security", description = "Security boundaries"),
         (name = "knowledge-graph", description = "CozoDB knowledge-graph subgraph"),
         (name = "config", description = "Daemon configuration"),
+        (name = "trends", description = "Project-level trend series"),
         (name = "sync", description = "Local M0 sync state")
     )
 )]

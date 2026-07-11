@@ -1,6 +1,7 @@
 use crate::commands::helpers::{get_layout, load_ledger_config};
 use crate::git::numstat::per_file_numstat;
 use crate::git::repo::{get_head_info, open_repo};
+use crate::impact::hotspots::normalize_score;
 use crate::impact::hotspots::{HotspotQuery, calculate_hotspots};
 use crate::impact::packet::Hotspot;
 use crate::impact::temporal::GixHistoryProvider;
@@ -8,9 +9,10 @@ use crate::ledger::{
     ChangeType, CommitRequest, TransactionManager, VerificationBasis, VerificationStatus,
 };
 use crate::state::storage::StorageManager;
-use chrono::Utc;
+use chrono::{Duration as ChronoDuration, Utc};
 use miette::{IntoDiagnostic, Result, miette};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::fs;
 use std::sync::mpsc;
 use std::thread;
@@ -69,6 +71,15 @@ pub fn execute_hook_post_commit_for_layout(layout: &crate::state::layout::Layout
             let result = record_hotspot_trends(&repo_root, &db_path);
             if let Err(ref e) = result {
                 tracing::debug!("Post-commit hook: work failed: {}", e);
+            }
+
+            // Best-effort bounded catch-up: if project_trend_days is empty or
+            // stale, backfill from existing hotspot_trends data (90-day window).
+            // Idempotent, safe to run on every commit.
+            if let Ok(storage) = StorageManager::init(&db_path)
+                && let Err(e) = catch_up_project_trends(&storage, 90)
+            {
+                tracing::debug!("Post-commit hook: catch-up failed: {}", e);
             }
             let elapsed = start.elapsed();
             if elapsed > Duration::from_secs(10) {
@@ -333,11 +344,194 @@ fn record_hotspot_trends(repo_root: &camino::Utf8Path, db_path: &std::path::Path
 
     let timestamp = Utc::now().to_rfc3339();
     insert_hotspot_trends_with_retry(&storage, &hotspots, &head_hash, &timestamp)?;
+    if let Err(e) = upsert_project_trend_day(&storage, &timestamp) {
+        tracing::debug!(
+            "Post-commit hook: failed to upsert project trend day: {}",
+            e
+        );
+    }
     tracing::debug!(
         "Post-commit hook: recorded {} hotspot trend rows for {}",
         hotspots.len(),
         head_hash
     );
+    Ok(())
+}
+
+/// Update the daily project trend rollup for the UTC date of `timestamp`.
+///
+/// This is best-effort: failures are logged and swallowed so the git commit
+/// is never blocked. The rollup aggregates the latest `hotspot_trends`
+/// snapshot for the UTC day using the same log-scale transform used for
+/// per-file display scores.
+/// Compute the project-level trend score from a collection of per-file hotspot
+/// scores. Mirrors the `normalize_score` log-scale transform in the hotspot
+/// module, clamped to the 0-100 range expected by the frontend `TrendPoint`.
+fn project_score_from_hotspots(hotspots: &[Hotspot]) -> f64 {
+    if hotspots.is_empty() {
+        return 0.0;
+    }
+    let sum: f64 = hotspots
+        .iter()
+        .map(|h| normalize_score(h.score as f64))
+        .sum();
+    let avg = sum / hotspots.len() as f64;
+    let scaled = avg * 20.0;
+    scaled.clamp(0.0, 100.0)
+}
+
+/// Count distinct files whose log-scale hotspot score meets or exceeds the
+/// HIGH threshold (3.0 on the display-score scale).
+fn high_risk_count_from_hotspots(hotspots: &[Hotspot]) -> i64 {
+    let mut max_scores: HashMap<String, f64> = HashMap::new();
+    for h in hotspots {
+        let path = h.path.to_string_lossy().to_string();
+        let score = normalize_score(h.score as f64);
+        max_scores
+            .entry(path)
+            .and_modify(|s| {
+                if score > *s {
+                    *s = score;
+                }
+            })
+            .or_insert(score);
+    }
+    max_scores.values().filter(|&&s| s >= 3.0).count() as i64
+}
+
+/// Update the daily project trend rollup for the UTC date of `timestamp`.
+///
+/// This is best-effort: failures are logged and swallowed so the git commit
+/// is never blocked. The rollup is computed in Rust because the bundled
+/// SQLite build does not enable math functions (`ln()`).
+fn upsert_project_trend_day(storage: &StorageManager, timestamp: &str) -> Result<()> {
+    let conn = storage.get_connection();
+    let day = day_from_rfc3339(timestamp);
+
+    let mut stmt = conn
+        .prepare(
+            "SELECT file_path, score FROM hotspot_trends
+             WHERE recorded_at = (
+                 SELECT MAX(recorded_at) FROM hotspot_trends
+                 WHERE strftime('%Y-%m-%d', recorded_at) = strftime('%Y-%m-%d', ?1)
+             )",
+        )
+        .into_diagnostic()?;
+    let rows: Vec<(String, f64)> = stmt
+        .query_map([timestamp], |row| Ok((row.get(0)?, row.get(1)?)))
+        .into_diagnostic()?
+        .filter_map(|r| match r {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!("upsert_project_trend_day: skipping malformed row: {}", e);
+                None
+            }
+        })
+        .collect();
+    drop(stmt);
+
+    let hotspots: Vec<Hotspot> = rows
+        .into_iter()
+        .map(|(path, score)| Hotspot {
+            path: std::path::PathBuf::from(path),
+            score: score as f32,
+            display_score: normalize_score(score) as f32,
+            complexity: 0,
+            frequency: 0.0,
+            centrality: None,
+        })
+        .collect();
+
+    // Each row in hotspot_trends is one file in the latest snapshot, so
+    // hotspots.len() == COUNT(DISTINCT file_path) for this snapshot.
+    let changes = hotspots.len() as i64;
+    let score = project_score_from_hotspots(&hotspots);
+    let high_risk_count = high_risk_count_from_hotspots(&hotspots);
+
+    conn.execute(
+        "INSERT OR REPLACE INTO project_trend_days (day, score, changes, high_risk_count) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params![day, score, changes, high_risk_count],
+    )
+    .into_diagnostic()?;
+    Ok(())
+}
+
+/// Bounded, idempotent backfill of `project_trend_days` from existing
+/// `hotspot_trends` rows.
+///
+/// Only re-aggregates the last `catchup_days` UTC days. Uses `INSERT OR
+/// REPLACE` keyed on `day`, so it is safe to run repeatedly. This is the
+/// catch-up path for repos that already had `hotspot_trends` rows before
+/// migration m49 created the rollup table.
+pub fn catch_up_project_trends(storage: &StorageManager, catchup_days: u32) -> Result<()> {
+    let cutoff = (Utc::now() - ChronoDuration::days(catchup_days as i64)).to_rfc3339();
+    let conn = storage.get_connection();
+
+    let mut days_stmt = conn
+        .prepare(
+            "SELECT strftime('%Y-%m-%d', recorded_at) AS day, MAX(recorded_at) AS max_recorded
+             FROM hotspot_trends
+             WHERE recorded_at >= ?1
+             GROUP BY strftime('%Y-%m-%d', recorded_at)",
+        )
+        .into_diagnostic()?;
+    let days: Vec<(String, String)> = days_stmt
+        .query_map([&cutoff], |row| Ok((row.get(0)?, row.get(1)?)))
+        .into_diagnostic()?
+        .filter_map(|r| match r {
+            Ok(v) => Some(v),
+            Err(e) => {
+                tracing::warn!("catch_up_project_trends: skipping malformed day row: {}", e);
+                None
+            }
+        })
+        .collect();
+    drop(days_stmt);
+
+    let mut insert_stmt = conn
+        .prepare(
+            "INSERT OR REPLACE INTO project_trend_days (day, score, changes, high_risk_count) VALUES (?1, ?2, ?3, ?4)",
+        )
+        .into_diagnostic()?;
+
+    for (day, max_recorded) in days {
+        let mut rows_stmt = conn
+            .prepare("SELECT file_path, score FROM hotspot_trends WHERE recorded_at = ?1")
+            .into_diagnostic()?;
+        let rows: Vec<(String, f64)> = rows_stmt
+            .query_map([&max_recorded], |row| Ok((row.get(0)?, row.get(1)?)))
+            .into_diagnostic()?
+            .filter_map(|r| match r {
+                Ok(v) => Some(v),
+                Err(e) => {
+                    tracing::warn!("catch_up_project_trends: skipping malformed row: {}", e);
+                    None
+                }
+            })
+            .collect();
+        drop(rows_stmt);
+
+        let hotspots: Vec<Hotspot> = rows
+            .into_iter()
+            .map(|(path, score)| Hotspot {
+                path: std::path::PathBuf::from(path),
+                score: score as f32,
+                display_score: normalize_score(score) as f32,
+                complexity: 0,
+                frequency: 0.0,
+                centrality: None,
+            })
+            .collect();
+
+        let changes = hotspots.len() as i64;
+        let score = project_score_from_hotspots(&hotspots);
+        let high_risk_count = high_risk_count_from_hotspots(&hotspots);
+
+        insert_stmt
+            .execute(rusqlite::params![day, score, changes, high_risk_count])
+            .into_diagnostic()?;
+    }
+
     Ok(())
 }
 
@@ -501,6 +695,19 @@ fn report_is_database_busy(report: &miette::Report) -> Option<String> {
     None
 }
 
+fn day_from_rfc3339(timestamp: &str) -> String {
+    match chrono::DateTime::parse_from_rfc3339(timestamp) {
+        Ok(dt) => dt.with_timezone(&Utc).format("%Y-%m-%d").to_string(),
+        Err(_) => {
+            tracing::warn!(
+                "day_from_rfc3339: malformed timestamp '{}', falling back to 1970-01-01",
+                timestamp
+            );
+            "1970-01-01".to_string()
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -534,6 +741,153 @@ mod tests {
                 centrality: None,
             },
         ]
+    }
+
+    fn make_hotspot(path: &str, score: f32) -> Hotspot {
+        Hotspot {
+            path: PathBuf::from(path),
+            score,
+            display_score: normalize_score(score as f64) as f32,
+            complexity: 1,
+            frequency: 1.0,
+            centrality: None,
+        }
+    }
+
+    #[test]
+    fn upsert_project_trend_day_computes_rollup_from_hotspot_trends() {
+        let storage = in_memory_storage();
+        let hotspots = vec![
+            make_hotspot("src/high.rs", 0.03),
+            make_hotspot("src/mid.rs", 0.01),
+        ];
+        insert_hotspot_trends(&storage, &hotspots, "abc123", "2026-06-23T10:00:00Z").unwrap();
+
+        upsert_project_trend_day(&storage, "2026-06-23T10:00:00Z").unwrap();
+
+        let conn = storage.get_connection();
+        let (day, score, changes, high_risk_count): (String, f64, i64, i64) = conn
+            .query_row(
+                "SELECT day, score, changes, high_risk_count FROM project_trend_days",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .unwrap();
+        assert_eq!(day, "2026-06-23");
+        assert_eq!(changes, 2);
+        assert_eq!(high_risk_count, 1);
+        assert!(
+            (score - 58.32).abs() < 0.01,
+            "expected score ~58.32, got {}",
+            score
+        );
+    }
+    #[test]
+    fn upsert_project_trend_day_is_idempotent_for_same_day() {
+        let storage = in_memory_storage();
+        let hotspots = vec![make_hotspot("src/a.rs", 0.01)];
+        insert_hotspot_trends(&storage, &hotspots, "abc123", "2026-06-23T10:00:00Z").unwrap();
+        upsert_project_trend_day(&storage, "2026-06-23T10:00:00Z").unwrap();
+        upsert_project_trend_day(&storage, "2026-06-23T10:00:00Z").unwrap();
+
+        let conn = storage.get_connection();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM project_trend_days", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn upsert_project_trend_day_uses_utc_date_not_localtime() {
+        let storage = in_memory_storage();
+        let hotspots = vec![make_hotspot("src/a.rs", 0.01)];
+        // Late in the UTC day — should still bucket to the UTC date.
+        insert_hotspot_trends(&storage, &hotspots, "abc123", "2026-06-23T23:30:00Z").unwrap();
+        upsert_project_trend_day(&storage, "2026-06-23T23:30:00Z").unwrap();
+
+        let conn = storage.get_connection();
+        let day: String = conn
+            .query_row("SELECT day FROM project_trend_days", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(day, "2026-06-23");
+    }
+
+    #[test]
+    fn upsert_project_trend_day_clamps_score_to_zero_and_one_hundred() {
+        let storage = in_memory_storage();
+        let low = make_hotspot("src/low.rs", 0.0001);
+        let high = make_hotspot("src/high.rs", 10.0);
+        insert_hotspot_trends(&storage, &[low, high], "abc123", "2026-06-23T10:00:00Z").unwrap();
+        upsert_project_trend_day(&storage, "2026-06-23T10:00:00Z").unwrap();
+
+        let conn = storage.get_connection();
+        let score: f64 = conn
+            .query_row("SELECT score FROM project_trend_days", [], |row| row.get(0))
+            .unwrap();
+        assert!(
+            (0.0..=100.0).contains(&score),
+            "score {} should be clamped to [0, 100]",
+            score
+        );
+    }
+
+    #[test]
+    fn day_from_rfc3339_handles_offset_bearing_timestamp() {
+        // 23:30 with -05:00 offset → UTC is 04:30 next day → day should be 2026-06-24
+        let day = day_from_rfc3339("2026-06-23T23:30:00-05:00");
+        assert_eq!(day, "2026-06-24");
+    }
+
+    #[test]
+    fn day_from_rfc3339_handles_zulu_timestamp() {
+        let day = day_from_rfc3339("2026-06-23T10:00:00Z");
+        assert_eq!(day, "2026-06-23");
+    }
+
+    #[test]
+    fn catch_up_project_trends_is_bounded_and_idempotent() {
+        let storage = in_memory_storage();
+        let old = vec![make_hotspot("src/old.rs", 0.05)];
+        let recent = vec![make_hotspot("src/recent.rs", 0.02)];
+        // Use relative dates so the test is not time-sensitive.
+        let now = Utc::now();
+        let old_date = (now - ChronoDuration::days(100))
+            .format("%Y-%m-%dT10:00:00Z")
+            .to_string();
+        let recent_date = (now - ChronoDuration::days(10))
+            .format("%Y-%m-%dT10:00:00Z")
+            .to_string();
+        let old_day = old_date[..10].to_string();
+        let recent_day = recent_date[..10].to_string();
+        // 100 days ago should be excluded by default 90-day catch-up.
+        insert_hotspot_trends(&storage, &old, "old123", &old_date).unwrap();
+        insert_hotspot_trends(&storage, &recent, "recent123", &recent_date).unwrap();
+
+        catch_up_project_trends(&storage, 90).unwrap();
+        let first_run: Vec<String> = storage
+            .get_connection()
+            .prepare("SELECT day FROM project_trend_days ORDER BY day")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        catch_up_project_trends(&storage, 90).unwrap();
+        let second_run: Vec<String> = storage
+            .get_connection()
+            .prepare("SELECT day FROM project_trend_days ORDER BY day")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(0))
+            .unwrap()
+            .filter_map(|r| r.ok())
+            .collect();
+
+        assert_eq!(first_run, second_run);
+        assert!(first_run.contains(&recent_day));
+        assert!(!first_run.contains(&old_day));
     }
 
     #[test]

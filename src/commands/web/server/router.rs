@@ -28,6 +28,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/changes", get(handlers::changes_handler))
         .route("/hotspots", get(handlers::hotspots_handler))
         .route("/hotspots/trend", get(api::hotspots_trend_handler))
+        .route("/trends", get(api::trends_handler))
         .route(
             "/reports/latest-impact.json",
             get(api::latest_impact_handler),

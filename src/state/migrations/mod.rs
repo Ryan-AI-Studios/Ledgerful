@@ -20,6 +20,7 @@ pub mod m45_ledger_verification_runs_tx;
 pub mod m46_hotspot_trends;
 pub mod m47_project_files_git_meta;
 pub mod m48_changed_files_diff_stats;
+pub mod m49_project_trend_days;
 
 use rusqlite_migration::Migrations;
 
@@ -109,6 +110,13 @@ pub fn get_migrations() -> Migrations<'static> {
     // and default to NULL, so they are harmless in builds that do not
     // populate them.
     all_m.extend(m48_changed_files_diff_stats::m48_changed_files_diff_stats());
+    // m49 adds the `project_trend_days` daily rollup table (Track 0038).
+    // Registered unconditionally for the same backward-compat reason as
+    // m44-m48: a DB created by a binary that has run m49 would fail the
+    // rusqlite_migration pre-flight check on a binary without the migration.
+    // The table is empty in builds that don't populate it, so the
+    // surface-area leak is harmless.
+    all_m.extend(m49_project_trend_days::m49_project_trend_days());
 
     Migrations::new(all_m)
 }
@@ -145,6 +153,7 @@ pub fn get_migrations_count() -> usize {
     count += m46_hotspot_trends::m46_hotspot_trends().len();
     count += m47_project_files_git_meta::m47_project_files_git_meta().len();
     count += m48_changed_files_diff_stats::m48_changed_files_diff_stats().len();
+    count += m49_project_trend_days::m49_project_trend_days().len();
 
     count
 }
@@ -210,6 +219,7 @@ mod tests {
                 "transaction_links",
                 "usage_counters",
                 "hotspot_trends",
+                "project_trend_days",
             ];
 
             // `sync_state` and `tx_tombstones` are registered
@@ -227,6 +237,13 @@ mod tests {
             // asserting it exists unconditionally keeps the
             // schema-validation consistent with the registration.
             tables.push("usage_days");
+
+            // `project_trend_days` is registered unconditionally (m49) — see
+            // the matching comment in `get_migrations`. The table is harmless in
+            // builds without the `web` feature, and asserting it exists
+            // unconditionally keeps the schema-validation consistent with the
+            // registration.
+            tables.push("project_trend_days");
 
             tables
         };

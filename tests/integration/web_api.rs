@@ -755,6 +755,127 @@ async fn test_hotspots_trend_returns_json() {
 }
 
 #[tokio::test]
+async fn test_trends_returns_empty_array_when_no_data() {
+    let guard = temp_layout();
+    let (url, token, handle) = spawn_server(guard.layout()).await;
+
+    let body = tokio::task::spawn_blocking(move || {
+        authed_get(&url, &token, "/api/trends?days=90")
+            .call()
+            .unwrap()
+            .into_string()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let data = json["data"].as_array().expect("data is an array");
+    assert!(data.is_empty(), "expected empty data array, got {data:?}");
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_trends_returns_populated_data() {
+    use ledgerful::state::storage::StorageManager;
+
+    let guard = temp_layout();
+    let layout = guard.layout();
+    layout.ensure_state_dir().unwrap();
+    let db_path = layout.state_subdir().join("ledger.db");
+    let storage = StorageManager::init(db_path.as_std_path()).unwrap();
+    let conn = storage.get_connection();
+
+    conn.execute(
+        "INSERT INTO project_trend_days (day, score, changes, high_risk_count) VALUES (?1, ?2, ?3, ?4)",
+        rusqlite::params!["2026-06-23", 42.5, 5, 1],
+    )
+    .unwrap();
+    drop(storage);
+
+    let (url, token, handle) = spawn_server(layout.clone()).await;
+
+    let body = tokio::task::spawn_blocking(move || {
+        authed_get(&url, &token, "/api/trends?days=90")
+            .call()
+            .unwrap()
+            .into_string()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let data = json["data"].as_array().expect("data is an array");
+    assert_eq!(data.len(), 1);
+    let point = &data[0];
+    assert_eq!(point["date"].as_str(), Some("2026-06-23"));
+    assert!((point["score"].as_f64().unwrap() - 42.5).abs() < 1e-6);
+    assert_eq!(point["changes"].as_i64(), Some(5));
+    assert_eq!(point["highRiskCount"].as_i64(), Some(1));
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_trends_days_param_returns_inclusive_n_day_window() {
+    use ledgerful::state::storage::StorageManager;
+
+    let guard = temp_layout();
+    let layout = guard.layout();
+    layout.ensure_state_dir().unwrap();
+    let db_path = layout.state_subdir().join("ledger.db");
+    let storage = StorageManager::init(db_path.as_std_path()).unwrap();
+    let conn = storage.get_connection();
+
+    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let yesterday = (chrono::Utc::now() - chrono::Duration::days(1))
+        .format("%Y-%m-%d")
+        .to_string();
+    let two_days_ago = (chrono::Utc::now() - chrono::Duration::days(2))
+        .format("%Y-%m-%d")
+        .to_string();
+
+    conn.execute(
+        "INSERT INTO project_trend_days (day, score, changes, high_risk_count) VALUES (?1, 10, 1, 0)",
+        rusqlite::params![&today],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_trend_days (day, score, changes, high_risk_count) VALUES (?1, 20, 2, 0)",
+        rusqlite::params![&yesterday],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_trend_days (day, score, changes, high_risk_count) VALUES (?1, 30, 3, 0)",
+        rusqlite::params![&two_days_ago],
+    )
+    .unwrap();
+    drop(storage);
+
+    let (url, token, handle) = spawn_server(layout.clone()).await;
+
+    let body = tokio::task::spawn_blocking(move || {
+        authed_get(&url, &token, "/api/trends?days=1")
+            .call()
+            .unwrap()
+            .into_string()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    let data = json["data"].as_array().expect("data is an array");
+    assert_eq!(
+        data.len(),
+        1,
+        "days=1 should return only today, not yesterday"
+    );
+    assert_eq!(data[0]["date"].as_str(), Some(today.as_str()));
+    handle.abort();
+}
+
+#[tokio::test]
 async fn test_endpoints_changed_returns_json() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;

@@ -31,7 +31,7 @@ pub use openapi::generate_openapi_json;
 pub use handlers::{
     compliance_export_handler, compliance_signatures_handler, compliance_summary_handler,
     endpoints_changed_handler, hotspots_trend_handler, knowledge_graph_handler,
-    latest_impact_handler, latest_verify_handler, security_boundaries_handler,
+    latest_impact_handler, latest_verify_handler, security_boundaries_handler, trends_handler,
     verify_health_handler, verify_history_handler, verify_steps_handler,
 };
 
