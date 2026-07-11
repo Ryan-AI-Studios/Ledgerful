@@ -478,6 +478,11 @@ pub enum Commands {
         #[arg(long)]
         stop: bool,
     },
+    /// Export evidence artifacts (SOC2, etc.)
+    Export {
+        #[command(subcommand)]
+        command: ExportCommands,
+    },
     /// Launch the Ledgerful local web dashboard
     #[cfg(feature = "web")]
     Web {
@@ -540,6 +545,9 @@ impl Commands {
                 None => "hotspots",
             },
             Commands::Endpoints(_) => "endpoints",
+            Commands::Export { command } => match command {
+                ExportCommands::Evidence { .. } => "export_evidence",
+            },
             Commands::Federate { command } => match command {
                 FederateCommands::Export { .. } => "federate_export",
                 FederateCommands::Scan => "federate_scan",
@@ -716,6 +724,22 @@ pub enum SyncSubcommands {
         /// Number of lines to tail
         #[arg(long, short)]
         tail: Option<usize>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ExportCommands {
+    /// Export a SOC2 evidence bundle as a zip file
+    Evidence {
+        /// Export profile (currently only "soc2")
+        #[arg(long, default_value = "soc2")]
+        profile: String,
+        /// Output file path (default: ./ledgerful-soc2-evidence.zip)
+        #[arg(short, long)]
+        out: Option<std::path::PathBuf>,
+        /// Overwrite an existing file
+        #[arg(short, long)]
+        force: bool,
     },
 }
 

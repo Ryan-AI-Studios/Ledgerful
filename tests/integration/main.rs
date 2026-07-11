@@ -59,6 +59,8 @@ mod crypto_key_migrate;
 mod daemon_lifecycle;
 mod doc_generation;
 mod dump_rust_tree;
+#[cfg(feature = "export")]
+mod export_cli_parity;
 mod federated_discovery;
 mod gate_mode;
 mod hook_commit_msg;

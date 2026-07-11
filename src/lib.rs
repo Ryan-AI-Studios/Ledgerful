@@ -33,7 +33,7 @@ pub mod sync;
 
 pub const BINARY_NAME: &str = "ledgerful";
 
-#[cfg(feature = "web")]
+#[cfg(feature = "export")]
 pub mod export;
 
 #[cfg(feature = "daemon")]

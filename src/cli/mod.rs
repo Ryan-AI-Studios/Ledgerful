@@ -165,6 +165,11 @@ mod tests {
             verbose: false,
         };
         let _: FederateCommands = FederateCommands::Status;
+        let _: ExportCommands = ExportCommands::Evidence {
+            profile: "soc2".to_string(),
+            out: None,
+            force: false,
+        };
         let _: IntentCommands = IntentCommands::Demo;
         let _: InternalCommands = InternalCommands::HookPostCommit;
         let _: ServiceSubcommands =

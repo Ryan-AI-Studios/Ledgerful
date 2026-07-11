@@ -107,10 +107,11 @@ windows = { version = "0.62", features = ["Win32_Graphics_Dxgi", "Win32_Graphics
 windows-sys = { version = "0.61", features = ["Win32_System_Pipes", "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_JobObjects"] }
 
 [features]
-default = ["viz-server", "mcp", "web"]
+default = ["viz-server", "mcp", "web", "export"]
+export = ["dep:zip"]
 daemon = ["dep:tower-lsp-server", "dep:tokio"]
 viz-server = ["dep:tokio", "dep:tokio-tungstenite", "dep:futures-util", "dep:webbrowser"]
-web = ["dep:axum", "dep:tower", "dep:tower-http", "dep:rust-embed", "dep:mime_guess", "dep:webbrowser", "dep:serde_urlencoded", "dep:zip", "dep:tokio", "dep:utoipa"]
+web = ["dep:axum", "dep:tower", "dep:tower-http", "dep:rust-embed", "dep:mime_guess", "dep:webbrowser", "dep:serde_urlencoded", "dep:zip", "dep:tokio", "dep:utoipa", "export"]
 openapi = ["web"]
 sync = ["dep:chacha20poly1305", "dep:argon2", "dep:zeroize", "dep:rpassword", "dep:zip", "dep:tempfile"]
 mcp = []
