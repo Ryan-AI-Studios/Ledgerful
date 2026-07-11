@@ -290,8 +290,8 @@ fn demo__stdout_contains_demo_marker_and_export_path() {
         "stdout must mention the export filename; got:\n{stdout}"
     );
     assert!(
-        stdout.contains("enforce"),
-        "stdout must mention enforce mode; got:\n{stdout}"
+        stdout.contains("observe"),
+        "stdout must mention observe mode; got:\n{stdout}"
     );
     assert!(
         stdout.contains("verify"),

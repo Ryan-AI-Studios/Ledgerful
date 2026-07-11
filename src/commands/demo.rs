@@ -16,14 +16,6 @@ const DEMO_EVIDENCE_FILE: &str = "ledgerful-DEMO-evidence.zip";
 
 /// One scripted commit cycle.
 struct DemoCycle {
-    #[allow(dead_code)]
-    entity: &'static str,
-    #[allow(dead_code)]
-    category: &'static str,
-    #[allow(dead_code)]
-    message: &'static str,
-    #[allow(dead_code)]
-    reason: &'static str,
     conventional_subject: &'static str,
     conventional_body: &'static str,
     modify: fn(&Path) -> Result<()>,
@@ -32,10 +24,6 @@ struct DemoCycle {
 fn build_cycles() -> Vec<DemoCycle> {
     vec![
         DemoCycle {
-            entity: "src/invoice.rs",
-            category: "FEATURE",
-            message: "[DEMO] Add invoice calculation logic",
-            reason: "Support line-item totals with tax computation",
             conventional_subject: "feat(invoice): [DEMO] add invoice calculation logic",
             conventional_body: "Add line-item totals and tax computation to the invoice module.\n\n[DEMO] This commit is part of the Ledgerful synthetic demo flow.",
             modify: |root| {
@@ -45,10 +33,6 @@ fn build_cycles() -> Vec<DemoCycle> {
             },
         },
         DemoCycle {
-            entity: "src/invoice.rs",
-            category: "REFACTOR",
-            message: "[DEMO] Extract tax rate into config",
-            reason: "Make tax rate configurable for different jurisdictions",
             conventional_subject: "refactor(invoice): [DEMO] extract tax rate into config",
             conventional_body: "Move the hard-coded tax rate into a configurable `TaxConfig` struct.\n\n[DEMO] This commit is part of the Ledgerful synthetic demo flow.",
             modify: |root| {
@@ -59,10 +43,6 @@ fn build_cycles() -> Vec<DemoCycle> {
             },
         },
         DemoCycle {
-            entity: "src/main.rs",
-            category: "FEATURE",
-            message: "[DEMO] Add CLI argument parsing",
-            reason: "Support --input and --output flags",
             conventional_subject: "feat(cli): [DEMO] add CLI argument parsing",
             conventional_body: "Parse --input and --output flags for the invoice generator.\n\n[DEMO] This commit is part of the Ledgerful synthetic demo flow.",
             modify: |root| {
@@ -73,10 +53,6 @@ fn build_cycles() -> Vec<DemoCycle> {
             },
         },
         DemoCycle {
-            entity: "Cargo.toml",
-            category: "CHORE",
-            message: "[DEMO] Bump version to 0.2.0",
-            reason: "Pre-release version bump",
             conventional_subject: "chore(release): [DEMO] bump version to 0.2.0",
             conventional_body: "Advance the package version to 0.2.0 ahead of the first release.\n\n[DEMO] This commit is part of the Ledgerful synthetic demo flow.",
             modify: |root| {
@@ -87,10 +63,6 @@ fn build_cycles() -> Vec<DemoCycle> {
             },
         },
         DemoCycle {
-            entity: "src/invoice.rs",
-            category: "BUGFIX",
-            message: "[DEMO] Fix rounding error in tax calculation",
-            reason: "Use decimal arithmetic to avoid floating-point errors",
             conventional_subject: "fix(invoice): [DEMO] fix rounding error in tax calculation",
             conventional_body: "Switch tax calculation from f64 to Decimal to eliminate floating-point rounding.\n\n[DEMO] This commit is part of the Ledgerful synthetic demo flow.",
             modify: |root| {
@@ -169,15 +141,27 @@ fn ledgerful_binary() -> String {
 }
 
 fn run_ledger_verify_fast(root: &Path) -> Result<()> {
+    use owo_colors::OwoColorize;
     let output = Command::new(ledgerful_binary())
         .args(["verify", "--scope", "fast"])
         .current_dir(root)
         .env("LEDGERFUL_NON_INTERACTIVE", "1")
         .output()
         .into_diagnostic()?;
-    // Fast scoped verification on a synthetic repo with no real tests is
-    // expected to report that there is nothing to run. We still want the
-    // verification history row to be recorded, so we accept any non-error exit.
+    // Print the verify output with a [DEMO] prefix so the verification
+    // surface self-identifies as synthetic.
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    for line in stdout.lines() {
+        if !line.is_empty() {
+            println!("{} {}", "[DEMO]".cyan().bold(), line);
+        }
+    }
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    for line in stderr.lines() {
+        if !line.is_empty() {
+            eprintln!("{} {}", "[DEMO]".cyan().bold(), line);
+        }
+    }
     if output.status.code().is_none() {
         return Err(miette::miette!("ledger verify --scope fast was killed"));
     }
@@ -318,7 +302,9 @@ pub fn execute_demo(keep: bool, output: Option<PathBuf>, force: bool) -> Result<
 
     // Install Ledgerful in the synthetic repo. `execute_init` uses the current
     // directory and the current HOME, which now point at the demo directory.
-    crate::commands::init::execute_init(false, true)?;
+    // Use observe mode (the 0050 default) so the demo shows the real
+    // observe-first onboarding users actually receive.
+    crate::commands::init::execute_init(false, false)?;
 
     // Commit initial files so they exist in git; the first real cycle must have
     // something to modify. This first commit also exercises the hook flow in
@@ -344,10 +330,10 @@ pub fn execute_demo(keep: bool, output: Option<PathBuf>, force: bool) -> Result<
             cycle.conventional_subject
         );
         (cycle.modify)(&demo_dir)?;
-        // In enforce mode the pre-commit hook blocks commits when any pending
-        // transaction exists, so we let the commit-msg hook create the ledger
-        // sidecar as part of the real git commit flow instead of starting a
-        // transaction first.
+        // In observe mode the commit-msg hook auto-drafts the ledger entry
+        // from the conventional commit message and creates a pending sidecar.
+        // The post-commit hook promotes it. This is the real onboarding flow
+        // users experience: just `git commit` — Ledgerful handles the rest.
         run_commit(
             &demo_dir,
             cycle.conventional_subject,
@@ -375,12 +361,12 @@ pub fn execute_demo(keep: bool, output: Option<PathBuf>, force: bool) -> Result<
     // caller's filesystem perspective.
     drop(_home_guard);
 
-    println!(
-        "\n{} Demo evidence export ready: {}",
-        "SUCCESS:".green().bold(),
-        export_path_str
-    );
     if keep {
+        println!(
+            "\n{} Demo evidence export ready: {}",
+            "SUCCESS:".green().bold(),
+            export_path_str
+        );
         println!(
             "{} Verify it offline with the public key in the export: {}",
             "Verifier:".cyan().bold(),
@@ -397,15 +383,19 @@ pub fn execute_demo(keep: bool, output: Option<PathBuf>, force: bool) -> Result<
         );
     } else {
         println!(
-            "{} Export cleaned up. Re-run with {} to inspect or verify the export.",
+            "\n{} Demo completed. Export was generated and cleaned up.",
+            "SUCCESS:".green().bold()
+        );
+        println!(
+            "{} Re-run with {} to inspect or verify the export.",
             "[DEMO]".cyan().bold(),
             "--keep".yellow().bold()
         );
     }
     println!(
-        "{} Gate mode for this demo: {}. Commits succeeded because the hook flow creates ledger sidecars automatically for well-formed conventional commits.",
+        "{} Gate mode for this demo: {} (observe mode warns only; enforce would block).",
         "Notice:".yellow().bold(),
-        "enforce".yellow().bold()
+        "observe".yellow().bold()
     );
 
     if keep {
