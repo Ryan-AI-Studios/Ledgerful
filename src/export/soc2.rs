@@ -35,6 +35,7 @@ use rusqlite::OptionalExtension;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::io::Write;
+use std::path::Path;
 
 /// One entry in `manifest.json`'s `files` array. `name` is the path inside
 /// the zip (e.g. `"ledger.csv"`, `"adr/0001-use-uuid.md"`). `sha256` is the
@@ -110,18 +111,25 @@ impl ZipEntry {
 /// `adr/` files, a manifest with the files that exist, and a signature over
 /// that manifest. Returns the raw zip bytes.
 pub fn generate_soc2_export(layout: &Layout) -> Result<Vec<u8>> {
-    generate_soc2_export_with_options(layout, false)
+    generate_soc2_export_with_options(layout, false, None)
 }
 
-/// Generate a SOC2 evidence export with an optional demo marker.
+/// Generate a SOC2 evidence export with an optional demo marker and
+/// custom keys directory.
 ///
 /// `demo` adds `demo: true` to `manifest.json`, includes an `index.md`
 /// explaining the export was generated from a synthetic repository, and uses
 /// the demo signing path so the evidence is self-identifying.
 ///
-/// This is the same artifact as the dashboard button; callers from the dashboard
-/// pass `demo = false`.
-pub fn generate_soc2_export_with_options(layout: &Layout, demo: bool) -> Result<Vec<u8>> {
+/// `keys_dir` overrides the default home-scoped key directory. When `Some`,
+/// keys are loaded from the given path instead of `~/.ledgerful/keys/`.
+/// This is used by the demo command to sign with a repo-local ephemeral
+/// keypair instead of the user's production keys.
+pub fn generate_soc2_export_with_options(
+    layout: &Layout,
+    demo: bool,
+    keys_dir: Option<&Path>,
+) -> Result<Vec<u8>> {
     // 1. Gather data. The ledger DB may not exist yet (fresh project / empty
     // state) — in that case we emit header-only CSVs and skip ADRs.
     let db_path = layout.state_subdir().join("ledger.db");
@@ -258,7 +266,14 @@ pub fn generate_soc2_export_with_options(layout: &Layout, demo: bool) -> Result<
         .map_err(|e| miette!("Failed to serialize manifest.json: {e}"))?;
 
     // 4. Sign the manifest JSON bytes with the repo's Ed25519 keypair.
-    let (signing_key, verifying_key) = get_or_create_keys()?;
+    // When keys_dir is provided (demo repos), use that path instead of the
+    // home-scoped default to ensure demo exports are signed with the
+    // repo-local ephemeral keypair, never the user's production keys.
+    let (signing_key, verifying_key) = if let Some(kd) = keys_dir {
+        crate::ledger::crypto::get_or_create_keys_in(kd)?
+    } else {
+        get_or_create_keys()?
+    };
     let signature: [u8; 64] = signing_key.sign(&manifest_json).to_bytes();
     let pub_bytes: [u8; 32] = verifying_key.to_bytes();
 

@@ -181,7 +181,8 @@ fn run_export(root: &Path, out_path: &Path) -> Result<()> {
     let root_utf8 = Utf8PathBuf::from_path_buf(root.to_path_buf())
         .map_err(|_| miette::miette!("demo root path is not valid UTF-8"))?;
     let layout = Layout::new(root_utf8);
-    let zip_bytes = generate_soc2_export_with_options(&layout, true)?;
+    let keys_dir = root.join(".ledgerful").join("keys");
+    let zip_bytes = generate_soc2_export_with_options(&layout, true, Some(&keys_dir))?;
 
     std::fs::write(out_path, &zip_bytes).into_diagnostic()?;
     Ok(())

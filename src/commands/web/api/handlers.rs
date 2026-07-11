@@ -1138,8 +1138,28 @@ pub async fn compliance_export_handler(
 ) -> Result<axum::response::Response, WebError> {
     let layout = state.layout.clone();
     let is_demo = layout.root.join(".ledgerful").join("DEMO_MARKER").exists();
+    let keys_dir = if is_demo {
+        Some(
+            layout
+                .root
+                .join(".ledgerful")
+                .join("keys")
+                .into_std_path_buf(),
+        )
+    } else {
+        None
+    };
+    let filename = if is_demo {
+        "attachment; filename=\"ledgerful-DEMO-evidence.zip\""
+    } else {
+        "attachment; filename=\"ledgerful-soc2-evidence.zip\""
+    };
     let zip_bytes = tokio::task::spawn_blocking(move || {
-        crate::export::soc2::generate_soc2_export_with_options(&layout, is_demo)
+        crate::export::soc2::generate_soc2_export_with_options(
+            &layout,
+            is_demo,
+            keys_dir.as_deref(),
+        )
     })
     .await
     .map_err(|e| WebError::Internal(format!("Background task failed: {e}")))?
@@ -1152,9 +1172,7 @@ pub async fn compliance_export_handler(
     );
     response.headers_mut().insert(
         axum::http::header::CONTENT_DISPOSITION,
-        axum::http::HeaderValue::from_static(
-            "attachment; filename=\"ledgerful-soc2-evidence.zip\"",
-        ),
+        axum::http::HeaderValue::from_static(filename),
     );
     Ok(response)
 }

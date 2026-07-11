@@ -430,11 +430,6 @@ fn dispatch_export(command: ExportCommands) -> Result<()> {
                 ));
             }
 
-            let default_name = "ledgerful-soc2-evidence.zip";
-            let path = out.unwrap_or_else(|| std::path::PathBuf::from(default_name));
-
-            let validated = validate_export_evidence_path(&path, force)?;
-
             let root = crate::commands::helpers::get_repo_root()
                 .map(|r| r.as_std_path().to_path_buf())
                 .unwrap_or_else(|_| {
@@ -444,7 +439,30 @@ fn dispatch_export(command: ExportCommands) -> Result<()> {
                 .map_err(|_| miette::miette!("export root path is not valid UTF-8"))?;
             let layout = Layout::new(root);
 
-            let zip_bytes = generate_soc2_export_with_options(&layout, is_demo_repo(&layout))?;
+            let is_demo = is_demo_repo(&layout);
+            let keys_dir = if is_demo {
+                Some(
+                    layout
+                        .root
+                        .join(".ledgerful")
+                        .join("keys")
+                        .as_std_path()
+                        .to_path_buf(),
+                )
+            } else {
+                None
+            };
+            let default_name = if is_demo {
+                "ledgerful-DEMO-evidence.zip"
+            } else {
+                "ledgerful-soc2-evidence.zip"
+            };
+            let path = out.unwrap_or_else(|| std::path::PathBuf::from(default_name));
+
+            let validated = validate_export_evidence_path(&path, force)?;
+
+            let zip_bytes =
+                generate_soc2_export_with_options(&layout, is_demo, keys_dir.as_deref())?;
 
             std::fs::write(&validated, &zip_bytes).into_diagnostic()?;
 
