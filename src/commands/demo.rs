@@ -386,7 +386,8 @@ pub fn execute_demo(keep: bool, output: Option<PathBuf>, force: bool) -> Result<
             "{} Verify it offline with the public key in the export: {}",
             "Verifier:".cyan().bold(),
             format!(
-                "ledgerful verify --signatures --against-export {}",
+                "cd {} && ledgerful verify --signatures --against-export {}",
+                demo_dir.display(),
                 export_path_str
             )
             .cyan()

@@ -405,6 +405,13 @@ fn dispatch_federate(command: FederateCommands) -> Result<()> {
     }
 }
 
+/// Check if the current repo has a DEMO_MARKER file, indicating it was
+/// created by `ledgerful demo`. If so, exports must self-identify as demo
+/// artifacts to prevent synthetic evidence from being mistaken for real.
+fn is_demo_repo(layout: &crate::state::layout::Layout) -> bool {
+    layout.root.join(".ledgerful").join("DEMO_MARKER").exists()
+}
+
 #[cfg(feature = "export")]
 fn dispatch_export(command: ExportCommands) -> Result<()> {
     use crate::export::soc2::generate_soc2_export_with_options;
@@ -437,7 +444,7 @@ fn dispatch_export(command: ExportCommands) -> Result<()> {
                 .map_err(|_| miette::miette!("export root path is not valid UTF-8"))?;
             let layout = Layout::new(root);
 
-            let zip_bytes = generate_soc2_export_with_options(&layout, false)?;
+            let zip_bytes = generate_soc2_export_with_options(&layout, is_demo_repo(&layout))?;
 
             std::fs::write(&validated, &zip_bytes).into_diagnostic()?;
 
