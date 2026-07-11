@@ -331,7 +331,7 @@ pub fn execute_demo(keep: bool, output: Option<PathBuf>, force: bool) -> Result<
         &[
             "commit",
             "-m",
-            "chore(demo): scaffold invoice-service repository\n\nInitial synthetic files for the Ledgerful demo flow.\n\n[DEMO]",
+            "chore(demo): [DEMO] scaffold invoice-service repository\n\nInitial synthetic files for the Ledgerful demo flow.\n\n[DEMO]",
         ],
     )?;
 

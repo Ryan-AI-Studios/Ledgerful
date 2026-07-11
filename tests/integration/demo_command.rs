@@ -122,10 +122,16 @@ fn demo__hook_fires_and_produces_signed_entries() {
         !data_lines.is_empty(),
         "ledger.csv must contain non-zero entries (hook actually fired); got:\n{ledger_csv}"
     );
-    // DoD 3: DEMO marker in entry summaries
+    // DoD 3: DEMO marker in entry summaries — all demo cycle commits must
+    // carry [DEMO]. The init mode-transition entry ("Gate mode initialized
+    // to observe") is a system entry from `ledgerful init`, not a demo
+    // cycle commit, so it is excluded from the check.
     assert!(
-        data_lines.iter().any(|line| line.contains("[DEMO]")),
-        "ledger.csv data rows must contain [DEMO] in summaries; got:\n{ledger_csv}"
+        data_lines
+            .iter()
+            .filter(|line| !line.contains("ledgerful/gate-mode"))
+            .all(|line| line.contains("[DEMO]")),
+        "ALL non-system ledger.csv data rows must contain [DEMO] in summaries; got:\n{ledger_csv}"
     );
 }
 
