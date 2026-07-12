@@ -725,7 +725,7 @@ fn run_federate_export(sibling_root: &Utf8Path, sync_timeout: Duration) -> Resul
     let mut command = CommandWrap::from(command);
     #[cfg(unix)]
     {
-        command.wrap(ProcessGroup);
+        command.wrap(ProcessGroup::leader());
     }
     #[cfg(windows)]
     {
@@ -1686,7 +1686,7 @@ mod timeout_tests {
         let mut command = CommandWrap::from(command);
         #[cfg(unix)]
         {
-            command.wrap(ProcessGroup);
+            command.wrap(ProcessGroup::leader());
         }
         #[cfg(windows)]
         {
@@ -1741,7 +1741,7 @@ mod timeout_tests {
         let mut command = CommandWrap::from(command);
         #[cfg(unix)]
         {
-            command.wrap(ProcessGroup);
+            command.wrap(ProcessGroup::leader());
         }
         #[cfg(windows)]
         {
