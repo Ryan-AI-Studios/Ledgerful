@@ -272,7 +272,7 @@ jobs:
           set -euo pipefail
           version="${GITHUB_REF_NAME#v}"
           # Download the CycloneDX JSON schema and validate both SBOMs against it.
-          schema_url="https://raw.githubusercontent.com/CycloneDX/specification/refs/tags/1.5/schema/cyclonedx/1.5/bom-1.5.schema.json"
+          schema_url="https://raw.githubusercontent.com/CycloneDX/specification/refs/tags/1.5/schema/bom-1.5.schema.json"
           curl -fsSL "$schema_url" -o /tmp/cdx-schema.json
           for f in "dist/ledgerful-${version}.cdx.json" "dist/ledgerful-mcp-server-${version}.cdx.json"; do
             echo "Validating $f against CycloneDX 1.5 schema"
