@@ -15,6 +15,8 @@ jobs:
   web-build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
@@ -37,7 +39,11 @@ jobs:
     name: Build ${{ matrix.asset }}
     needs: web-build
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 60
+    timeout-minutes: 90
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     strategy:
       fail-fast: false
       matrix:
@@ -74,13 +80,29 @@ jobs:
           toolchain: stable
           targets: ${{ matrix.target }}
       - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+      - name: Install cargo-auditable + cargo-audit
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo install cargo-auditable --locked
+          cargo install cargo-audit --locked
       - shell: bash
         run: |
           if [ -n "${{ matrix.target }}" ]; then
-            cargo build --release --locked --all-features --target ${{ matrix.target }}
+            cargo auditable build --release --locked --all-features --target ${{ matrix.target }}
           else
-            cargo build --release --locked --all-features
+            cargo auditable build --release --locked --all-features
           fi
+      - name: Verify embedded dependency list
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -n "${{ matrix.target }}" ]; then
+            bin="target/${{ matrix.target }}/release/${{ matrix.binary }}"
+          else
+            bin="target/release/${{ matrix.binary }}"
+          fi
+          cargo audit bin "$bin"
       - name: Package Unix
         if: matrix.archive == 'tar'
         shell: bash
@@ -112,6 +134,21 @@ jobs:
           $archivePath = "dist/$archiveName"
           $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $archiveName" | Set-Content -Path "$archivePath.sha256" -Encoding ascii
+      - name: Attest build provenance
+        # Gated on public repo/Enterprise Cloud. actions/attest needs a public repo or GitHub Enterprise Cloud;
+        # this step is skipped while ledgerful remains private and will activate automatically at the 0027 public flip.
+        # Uses actions/attest in default SLSA build-provenance mode (no custom predicate-type/predicate needed).
+        if: github.event.repository.visibility == 'public' || github.event.repository.visibility == 'internal'
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763
+        with:
+          subject-path: dist/${{ matrix.asset }}.${{ matrix.archive == 'tar' && 'tar.gz' || 'zip' }}
+      - name: Attest build provenance (private repo fallback)
+        if: github.event.repository.visibility != 'public' && github.event.repository.visibility != 'internal'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Skipping GitHub artifact attestation: repository is not public and this is not GitHub Enterprise Cloud."
+          echo "Attestation will be enabled automatically once the repo is public (0027 public flip)."
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ${{ matrix.asset }}
@@ -125,6 +162,10 @@ jobs:
     needs: build
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
@@ -163,6 +204,20 @@ jobs:
           npm install "$package"
           popd
           LEDGERFUL_MCP_COMMAND="$scratch/node_modules/.bin/ledgerful-mcp" node test/smoke-local.js
+      - name: Attest MCP package provenance
+        # Gated on public repo/Enterprise Cloud. actions/attest needs a public repo or GitHub Enterprise Cloud;
+        # this step is skipped while ledgerful remains private and will activate automatically at the 0027 public flip.
+        if: github.event.repository.visibility == 'public' || github.event.repository.visibility == 'internal'
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763
+        with:
+          subject-path: mcp-server/dist/*.tgz
+      - name: Attest MCP package provenance (private repo fallback)
+        if: github.event.repository.visibility != 'public' && github.event.repository.visibility != 'internal'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Skipping GitHub artifact attestation: repository is not public and this is not GitHub Enterprise Cloud."
+          echo "Attestation will be enabled automatically once the repo is public (0027 public flip)."
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ledgerful-mcp-server-npm
@@ -170,12 +225,13 @@ jobs:
 
   # 0053-SupplyChainAttestation Phase 1: per-release CycloneDX SBOM for the engine
   # (all features) + the MCP npm package. Lockfile-derived and target-independent,
-  # so generated once here rather than per build-matrix entry. Phases 2-4 (cosign
-  # signing, SLSA/attest-sbom, cargo-auditable) layer on top later.
+  # so generated once here rather than per build-matrix entry.
   sbom:
     name: Generate SBOM (CycloneDX)
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
@@ -189,6 +245,8 @@ jobs:
           cache-dependency-path: mcp-server/package-lock.json
       - name: Install cargo-cyclonedx
         run: cargo install cargo-cyclonedx --locked
+      - name: Install jsonschema (for SBOM validation)
+        run: pip install jsonschema
       - name: Engine SBOM (all features — must match the --all-features release build)
         shell: bash
         run: |
@@ -208,10 +266,132 @@ jobs:
           version="${GITHUB_REF_NAME#v}"
           npm ci
           npm sbom --sbom-format cyclonedx > "../dist/ledgerful-mcp-server-${version}.cdx.json"
+      - name: Validate SBOM (CycloneDX schema)
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          # Download the CycloneDX JSON schema and validate both SBOMs against it.
+          schema_url="https://raw.githubusercontent.com/CycloneDX/specification/master/schema/cyclonedx/1.5/bom-1.5.schema.json"
+          curl -fsSL "$schema_url" -o /tmp/cdx-schema.json
+          for f in "dist/ledgerful-${version}.cdx.json" "dist/ledgerful-mcp-server-${version}.cdx.json"; do
+            echo "Validating $f against CycloneDX 1.5 schema"
+            python3 -c "
+          import json, sys, jsonschema
+          with open('/tmp/cdx-schema.json') as fh:
+              schema = json.load(fh)
+          with open(sys.argv[1]) as fh:
+              doc = json.load(fh)
+          jsonschema.validate(doc, schema)
+          print(f'{sys.argv[1]}: valid CycloneDX 1.5')
+          " "$f"
+          done
+      - name: Compute version
+        id: version
+        shell: bash
+        run: echo "value=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+      - name: Attest SBOM (private repo fallback)
+        if: github.event.repository.visibility != 'public' && github.event.repository.visibility != 'internal'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Skipping GitHub SBOM attestation: repository is not public and this is not GitHub Enterprise Cloud."
+          echo "Attestation will be enabled automatically once the repo is public (0027 public flip)."
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: sbom
           path: dist/*.cdx.json
+
+  sign:
+    name: Sign release artifacts (cosign keyless)
+    needs:
+      - build
+      - mcp-package
+      - sbom
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: Download all artifacts
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Compute version
+        id: version
+        shell: bash
+        run: echo "value=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
+      - name: Attest engine SBOM
+        # Gated on public repo/Enterprise Cloud. actions/attest-sbom needs a public repo or GitHub Enterprise Cloud;
+        # this step is skipped while ledgerful remains private and will activate automatically at the 0027 public flip.
+        # The SBOM is lockfile-derived and target-independent, so it is bound to all release archives.
+        # Note: GitHub Actions context does not expose enterprise status; a private Enterprise Cloud
+        # repo will skip this step until the repo visibility is changed.
+        if: github.event.repository.visibility == 'public' || github.event.repository.visibility == 'internal'
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e
+        with:
+          subject-path: dist/*.tar.gz,dist/*.zip
+          sbom-path: dist/ledgerful-${{ steps.version.outputs.value }}.cdx.json
+      - name: Attest MCP SBOM
+        if: github.event.repository.visibility == 'public' || github.event.repository.visibility == 'internal'
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e
+        with:
+          subject-path: dist/*.tgz
+          sbom-path: dist/ledgerful-mcp-server-${{ steps.version.outputs.value }}.cdx.json
+      - name: Attest SBOM (private repo fallback)
+        if: github.event.repository.visibility != 'public' && github.event.repository.visibility != 'internal'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Skipping GitHub SBOM attestation: repository is not public and this is not GitHub Enterprise Cloud."
+          echo "Attestation will be enabled automatically once the repo is public (0027 public flip)."
+      - name: Install cosign
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        with:
+          cosign-release: v2.9.0
+      - name: Sign archives + SBOM
+        shell: bash
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          for artifact in dist/*.tar.gz dist/*.zip dist/*.tgz "dist/ledgerful-${version}.cdx.json" "dist/ledgerful-mcp-server-${version}.cdx.json"; do
+            [ -f "$artifact" ] || continue
+            cosign sign-blob \
+              --yes \
+              --output-signature="${artifact}.sig" \
+              --output-certificate="${artifact}.pem" \
+              --bundle="${artifact}.bundle" \
+              "$artifact"
+          done
+      - name: Verify signatures (CI self-check)
+        shell: bash
+        env:
+          GITHUB_WORKFLOW_IDENTITY: "https://github.com/${{ github.repository }}/.github/workflows/release.yml@refs/tags/${{ github.ref_name }}"
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          for artifact in dist/*.tar.gz dist/*.zip dist/*.tgz "dist/ledgerful-${version}.cdx.json" "dist/ledgerful-mcp-server-${version}.cdx.json"; do
+            [ -f "$artifact" ] || continue
+            cosign verify-blob \
+              --signature "${artifact}.sig" \
+              --certificate "${artifact}.pem" \
+              --certificate-identity "$GITHUB_WORKFLOW_IDENTITY" \
+              --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+              "$artifact"
+          done
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: signatures
+          path: |
+            dist/*.sig
+            dist/*.pem
+            dist/*.bundle
 
   publish:
     name: Publish GitHub Release
@@ -219,16 +399,46 @@ jobs:
       - build
       - mcp-package
       - sbom
+      - sign
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: dist
           merge-multiple: true
+      - name: Verify GitHub attestations (public repo only)
+        # Gated on public repo/Enterprise Cloud. gh attestation verify needs the artifact to have been attested by
+        # GitHub; skipped while ledgerful remains private and will activate automatically at the 0027 public flip.
+        if: github.event.repository.visibility == 'public' || github.event.repository.visibility == 'internal'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          owner="${{ github.repository_owner }}"
+          # Binary provenance + SBOM attestation for each release archive + MCP package.
+          # gh attestation verify checks all attestation types by default (provenance + SBOM).
+          for bin in dist/*.tar.gz dist/*.zip dist/*.tgz; do
+            [ -f "$bin" ] || continue
+            gh attestation verify "$bin" --owner "$owner"
+          done
+      - name: Verify GitHub attestations (private repo fallback)
+        if: github.event.repository.visibility != 'public' && github.event.repository.visibility != 'internal'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Skipping GitHub attestation verification: repository is not public and this is not GitHub Enterprise Cloud."
+          echo "Verification will run automatically once the repo is public (0027 public flip)."
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           files: |
             dist/*.tar.gz
             dist/*.zip
+            dist/*.tgz
             dist/*.sha256
             dist/*.cdx.json
+            dist/*.sig
+            dist/*.pem
+            dist/*.bundle

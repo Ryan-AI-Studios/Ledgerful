@@ -29,7 +29,7 @@ fi
 /// `test_mapping` to run only the tests covering changed files, falling back
 /// to the full suite when shared infrastructure is touched. This keeps the
 /// pre-push gate fast (~30-60s for typical scoped changes) while CI runs the
-/// full suite. See `docs/testing.md` for the full layered strategy.
+/// full suite. See `docs/Engineering.md` ("Test Tiers" section) for the full layered strategy.
 const PRE_PUSH_VERIFY_BLOCK: &str = "\
 # ledgerful-verify-gate: fast scoped verification (pre-push only)
 if command -v ledgerful &>/dev/null; then

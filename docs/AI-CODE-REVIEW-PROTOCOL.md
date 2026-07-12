@@ -8,8 +8,8 @@
 
 - **Every PR** that touches security-sensitive code (crypto, auth, daemon API, path handling,
   deserialization, dependency manifests, CI/CD workflows).
-- **Before merging** any change to: `src/sync/crypto.rs`, `src/commands/web/`,
-  `src/sync/bundle.rs`, MCP tool inputs, GitHub Action inputs, `deny.toml`, `Cargo.toml`,
+- **Before merging** any change to: `src/ledger/crypto.rs`, `src/sync/crypto.rs`, `src/commands/web/`,
+  `src/sync/bundle.rs`, MCP tool inputs, `deny.toml`, `Cargo.toml`,
   `package.json`, or any `.github/workflows/` file.
 - **On every dependency add** (new crate or npm package) — the §3 provenance check must run.
 - **Standing rule:** security-sensitive code is not iterated by AI across multiple rounds
@@ -18,7 +18,7 @@
 
 ## What to review (by surface)
 
-### Crypto / auth (`src/sync/crypto.rs`, session-token code, `src/commands/web/auth`)
+### Crypto / auth (`src/ledger/crypto.rs`, `src/sync/crypto.rs`, session-token code, `src/commands/web/auth.rs`)
 - Ed25519 signing/verification uses the vetted crate API correctly; no custom signature logic.
 - ChaCha20-Poly1305 AEAD: unique nonces per message (no reuse), AAD covers what it must,
   decryption failures are hard-rejected (no partial-plaintext use).

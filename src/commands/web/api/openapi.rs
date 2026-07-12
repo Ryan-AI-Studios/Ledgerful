@@ -41,7 +41,7 @@ pub(crate) use crate::commands::web::types::{
 #[openapi(
     info(
         title = "Ledgerful Daemon API",
-        version = "0.1.6",
+        version = "0.1.8",
         description = "Machine-readable OpenAPI contract for the Ledgerful daemon `/api/*` endpoints. Generated from the Rust DTOs via utoipa."
     ),
     paths(

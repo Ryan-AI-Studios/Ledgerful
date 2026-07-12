@@ -107,10 +107,9 @@ the definitions and conditions below.
 The Licensor grants an Entity that is not otherwise eligible (a commercial Entity at or above the
 threshold) a non-exclusive license for Evaluation Use of the Software for 30 days, once per Entity
 and its Affiliate group. The period begins on the Entity's first use of a version distributed under
-this license, does not reset upon
-upgrades, new versions, or Affiliate transfers, and permits internal, non-Production Use only. It
-ends after 30 days unless Written Authorization is obtained. Qualified Small Entities and permitted
-noncommercial users do not need this — they are already licensed.
+this license, does not reset upon upgrades, new versions, or Affiliate transfers, and permits 
+internal, non-Production Use only. It ends after 30 days unless Written Authorization is obtained. 
+Qualified Small Entities and permitted noncommercial users do not need this — they are already licensed.
 
 ## Commercial use beyond this Exception
 

@@ -7,15 +7,25 @@ Ledgerful keeps command entry points thin and pushes behavior into focused subsy
 ```text
 CLI
   -> commands/
-    -> git/         repository discovery, status, diff, history
-    -> index/       symbols, imports, runtime usage, complexity
-    -> impact/      packet assembly, redaction, risk, temporal, hotspots
-    -> verify/      predictive plan building and verification reports
+    -> git/         repository discovery, status, diff, history, numstat
+    -> index/       symbols, imports, runtime usage, complexity, SCIP
+    -> impact/      packet assembly, redaction, risk, temporal, hotspots, enrichment
+    -> verify/      predictive plan building, scoped test selection, verification reports
     -> federated/   sibling schema discovery and cross-repo impact
     -> gemini/      prompt construction, sanitization, Gemini subprocess
+    -> local_model/ OpenAI-compatible local LLM client
+    -> embed/       embedding generation and SQLite vector storage
+    -> semantic/    AST chunking, logic extraction, CozoDB HNSW vector search
+    -> search/      streaming trigram indexing, Tantivy regex, BM25 ranking
+    -> scip/        protobuf ingestion, compiler-grade symbol navigation
+    -> docs/        Markdown crawling, chunking, parsing, indexing
+    -> contracts/   OpenAPI/Swagger parsing, contract risk matching
+    -> coverage/    service maps, data-flow, CI, deploy, observability, ADRs
     -> daemon/      optional LSP diagnostics, Hover, CodeLens
+    -> ledger/      transaction lifecycle, Ed25519 signing, chain hash, provenance
     -> state/       layout, reports, migrations, SQLite persistence
     -> watch/       debounced filesystem event batches
+    -> platform/    host, shell, path, process-policy seams
     -> util/        path normalization, clock, hashing, process
     ```
 
@@ -28,10 +38,21 @@ CLI
     - `verify` loads rules and latest packet data, recomputes missing temporal context when possible, scans current imports, predicts additional verification targets, runs commands, and writes `latest-verify.json`.
     - `ask` loads the latest impact packet, truncates and sanitizes context, then invokes Gemini.
     - `hotspots` computes risk density from git history and stored complexity.
-    - `federate` exports public interfaces and scans sibling schemas.
-    - `audit` (top-level) performs a holistic project audit or history for an entity.
-    - `daemon` is optional and feature-gated behind `--features daemon`.
-    - `reset` removes derived state without touching files outside `.ledgerful/`.
+- `federate` exports public interfaces and scans sibling schemas.
+- `audit` (top-level) performs a holistic project audit or history for an entity.
+- `daemon` is optional and feature-gated behind `--features daemon`.
+- `reset` removes derived state without touching files outside `.ledgerful/`.
+- `web` starts the optional local dashboard (feature-gated behind `web`).
+- `mcp` starts the optional MCP stdio server for AI-agent integration.
+- `search` runs regex/semantic code search over the Tantivy + CozoDB index.
+- `ask` invokes Gemini or a local LLM for analysis, suggestions, and narrative reporting.
+- `dead-code` detects high-confidence dead code via graph reachability + git inactivity.
+- `viz-server` serves a WebSocket-fed arc diagram of the Knowledge Graph.
+- `ledger` manages the transactional provenance ledger (start, commit, search, audit, re-sign, graph).
+- `gate` manages observe/enforce mode transitions with signed audit entries.
+- `demo` creates a synthetic repo and drives it through the real hook flow.
+- `export` produces SOC2 evidence ZIPs outside the `web` feature.
+- `schedule` installs cross-platform nightly indexing tasks.
 
     ## Module Boundaries
 

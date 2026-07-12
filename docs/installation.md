@@ -61,7 +61,7 @@ After installation, verify it works and the telemetry identifies your platform c
 **Windows**:
 ```powershell
 > ledgerful --version
-ledgerful 0.1.5
+ledgerful 0.1.8
 
 > ledgerful doctor
 Ledgerful Doctor - Environment Health Check
@@ -75,7 +75,7 @@ LEDGERFUL_PLATFORM: os=windows, arch=x86_64, family=windows, target_triple=x86_6
 **macOS**:
 ```bash
 $ ledgerful --version
-ledgerful 0.1.5
+ledgerful 0.1.8
 
 $ ledgerful doctor
 Ledgerful Doctor - Environment Health Check
@@ -89,7 +89,7 @@ LEDGERFUL_PLATFORM: os=macos, arch=aarch64, family=unix, target_triple=aarch64-a
 **Linux**:
 ```bash
 $ ledgerful --version
-ledgerful 0.1.5
+ledgerful 0.1.8
 
 $ ledgerful doctor
 Ledgerful Doctor - Environment Health Check
@@ -203,8 +203,8 @@ Tagged releases publish these binary assets:
 Create a release by pushing a tag:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.8
+git push origin v0.1.8
 ```
 If `LEDGERFUL_DEFAULT_CONFIG` names a file that does not exist, initialization
 preserves the historical contract and uses the built-in starter template. It

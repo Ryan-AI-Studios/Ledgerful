@@ -12,6 +12,8 @@
 target/
 graphify-out/
 
+/output/
+
 /scratch/
 
 # Agent worktrees create embedded git repos; ignore them
