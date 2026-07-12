@@ -168,11 +168,57 @@ jobs:
           name: ledgerful-mcp-server-npm
           path: mcp-server/dist/*.tgz
 
+  # 0053-SupplyChainAttestation Phase 1: per-release CycloneDX SBOM for the engine
+  # (all features) + the MCP npm package. Lockfile-derived and target-independent,
+  # so generated once here rather than per build-matrix entry. Phases 2-4 (cosign
+  # signing, SLSA/attest-sbom, cargo-auditable) layer on top later.
+  sbom:
+    name: Generate SBOM (CycloneDX)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: mcp-server/package-lock.json
+      - name: Install cargo-cyclonedx
+        run: cargo install cargo-cyclonedx --locked
+      - name: Engine SBOM (all features — must match the --all-features release build)
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          mkdir -p dist
+          cargo cyclonedx --all-features --format json
+          # cargo-cyclonedx writes <package>.cdx.json next to Cargo.toml; capture it
+          # by glob so we don't depend on the exact base-name across tool versions.
+          sbom_file="$(find . -maxdepth 2 -name '*.cdx.json' -not -path './dist/*' -print -quit)"
+          cp "$sbom_file" "dist/ledgerful-${version}.cdx.json"
+      - name: MCP package SBOM
+        working-directory: mcp-server
+        shell: bash
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+          npm ci
+          npm sbom --sbom-format cyclonedx > "../dist/ledgerful-mcp-server-${version}.cdx.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: sbom
+          path: dist/*.cdx.json
+
   publish:
     name: Publish GitHub Release
     needs:
       - build
       - mcp-package
+      - sbom
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
@@ -185,3 +231,4 @@ jobs:
             dist/*.tar.gz
             dist/*.zip
             dist/*.sha256
+            dist/*.cdx.json
