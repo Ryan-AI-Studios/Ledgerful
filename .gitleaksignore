@@ -1,0 +1,11 @@
+25ad06930e6fcad60773e721742dddd014db9e99:SECURITY.md:generic-api-key:87
+85ace228532eb523a4840c34d2ae59850b6cb6ae:src/config/redact.rs:gcp-api-key:145
+85ace228532eb523a4840c34d2ae59850b6cb6ae:src/impact/redact.rs:gcp-api-key:321
+85ace228532eb523a4840c34d2ae59850b6cb6ae:tests/integration/sync_init.rs:generic-api-key:25
+85ace228532eb523a4840c34d2ae59850b6cb6ae:vendor/sqlite3-src/source/sqlite3ext.h:generic-api-key:416
+85ace228532eb523a4840c34d2ae59850b6cb6ae:vendor/sqlite3-src/source/sqlite3ext.h:generic-api-key:572
+85ace228532eb523a4840c34d2ae59850b6cb6ae:vendor/sqlite3-src/source/sqlite3ext.h:generic-api-key:664
+85ace228532eb523a4840c34d2ae59850b6cb6ae:vendor/sqlite3-src/source/sqlite3.c:generic-api-key:136018
+85ace228532eb523a4840c34d2ae59850b6cb6ae:vendor/sqlite3-src/source/sqlite3.c:generic-api-key:136174
+85ace228532eb523a4840c34d2ae59850b6cb6ae:vendor/sqlite3-src/source/sqlite3.c:generic-api-key:136266
+85ace228532eb523a4840c34d2ae59850b6cb6ae:vendor/sqlite3-src/source/sqlite3.c:generic-api-key:247075
