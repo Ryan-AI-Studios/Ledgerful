@@ -4,6 +4,7 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 const { resolveTarget } = require("../lib/platform");
 const { packageVersion, parseChecksum, releaseBaseUrl } = require("../lib/install");
+const pkg = require("../package.json");
 
 test("maps supported platforms to release assets", () => {
   assert.equal(resolveTarget("linux", "x64").archive, "ledgerful-x86_64-unknown-linux-gnu.tar.gz");
@@ -21,15 +22,16 @@ test("parses sha256 checksum files", () => {
   assert.equal(parseChecksum(`${digest}  ledgerful-x86_64-unknown-linux-gnu.tar.gz\n`), digest);
 });
 
-test("defaults release downloads to the npm package version tag", () => {
+test("defaults release downloads to the engine release tag", () => {
   const previousTag = process.env.LEDGERFUL_MCP_RELEASE_TAG;
   const previousBase = process.env.LEDGERFUL_MCP_RELEASE_BASE_URL;
   delete process.env.LEDGERFUL_MCP_RELEASE_TAG;
   delete process.env.LEDGERFUL_MCP_RELEASE_BASE_URL;
   try {
+    const expectedTag = pkg.ledgerfulEngineTag || `v${packageVersion()}`;
     assert.equal(
       releaseBaseUrl(),
-      `https://github.com/Ryan-AI-Studios/Ledgerful/releases/download/v${packageVersion()}`
+      `https://github.com/Ryan-AI-Studios/Ledgerful/releases/download/${expectedTag}`
     );
   } finally {
     if (previousTag === undefined) {

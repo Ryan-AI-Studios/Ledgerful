@@ -15,6 +15,11 @@ function packageVersion() {
   return packageJson.version;
 }
 
+function engineReleaseTag() {
+  const packageJson = require("../package.json");
+  return packageJson.ledgerfulEngineTag || `v${packageVersion()}`;
+}
+
 function cacheRoot() {
   if (process.env.LEDGERFUL_MCP_CACHE_DIR) {
     return process.env.LEDGERFUL_MCP_CACHE_DIR;
@@ -35,7 +40,7 @@ function releaseBaseUrl() {
   if (process.env.LEDGERFUL_MCP_RELEASE_TAG) {
     return `https://github.com/${OWNER}/${REPO}/releases/download/${process.env.LEDGERFUL_MCP_RELEASE_TAG}`;
   }
-  return `https://github.com/${OWNER}/${REPO}/releases/download/v${packageVersion()}`;
+  return `https://github.com/${OWNER}/${REPO}/releases/download/${engineReleaseTag()}`;
 }
 
 function parseChecksum(text) {
@@ -92,9 +97,7 @@ async function extractArchive(archivePath, destination, target) {
       "-ExecutionPolicy",
       "Bypass",
       "-Command",
-      "Expand-Archive -LiteralPath $args[0] -DestinationPath $args[1] -Force",
-      archivePath,
-      destination
+      `Expand-Archive -LiteralPath '${archivePath}' -DestinationPath '${destination}' -Force`
     ]);
   } else {
     await spawnFile("tar", ["-xzf", archivePath, "-C", destination]);
