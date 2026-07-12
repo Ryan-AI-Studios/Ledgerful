@@ -350,9 +350,9 @@ jobs:
           echo "Skipping GitHub SBOM attestation: repository is not public and this is not GitHub Enterprise Cloud."
           echo "Attestation will be enabled automatically once the repo is public (0027 public flip)."
       - name: Install cosign
-        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6
+        uses: sigstore/cosign-installer@3094a48ba06382e0e6cfa5a4af4fcc55fc6942b9
         with:
-          cosign-release: v2.9.0
+          cosign-release: v3.1.1
       - name: Sign archives + SBOM
         shell: bash
         env:
@@ -379,8 +379,7 @@ jobs:
           for artifact in dist/*.tar.gz dist/*.zip dist/*.tgz "dist/ledgerful-${version}.cdx.json" "dist/ledgerful-mcp-server-${version}.cdx.json"; do
             [ -f "$artifact" ] || continue
             cosign verify-blob \
-              --signature "${artifact}.sig" \
-              --certificate "${artifact}.pem" \
+              --bundle "${artifact}.bundle" \
               --certificate-identity "$GITHUB_WORKFLOW_IDENTITY" \
               --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
               "$artifact"
