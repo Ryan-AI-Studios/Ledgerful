@@ -18,6 +18,7 @@ jobs:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
         with:
           repository: Ryan-AI-Studios/ledgerful-frontend
+          ref: 4a1df7e2be68bb1136a18c52f1ba420801858c89
           token: ${{ secrets.LEDGERFUL_FRONTEND_PAT }}
           path: ledgerful-frontend
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020

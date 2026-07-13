@@ -15,9 +15,8 @@ without trusting the release page alone.
 
 ```bash
 cosign verify-blob \
-  --signature ledgerful-<target>.tar.gz.sig \
-  --certificate ledgerful-<target>.tar.gz.pem \
-  --certificate-identity 'https://github.com/Ryan-AI-Studios/ledgerful/.github/workflows/release.yml@refs/tags/<version>' \
+  --bundle ledgerful-<target>.tar.gz.bundle \
+  --certificate-identity 'https://github.com/Ryan-AI-Studios/Ledgerful/.github/workflows/release.yml@refs/tags/<version>' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   ledgerful-<target>.tar.gz
 ```
