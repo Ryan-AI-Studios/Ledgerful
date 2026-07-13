@@ -136,7 +136,7 @@ jobs:
           "$hash  $archiveName" | Set-Content -Path "$archivePath.sha256" -Encoding ascii
       - name: Attest build provenance
         # Gated on public repo/Enterprise Cloud. actions/attest needs a public repo or GitHub Enterprise Cloud;
-        # this step is skipped while ledgerful remains private and will activate automatically at the 0027 public flip.
+        # this step is skipped while ledgerful remains private and will activate automatically when the repository becomes public.
         # Uses actions/attest in default SLSA build-provenance mode (no custom predicate-type/predicate needed).
         if: github.event.repository.visibility == 'public' || github.event.repository.visibility == 'internal'
         uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763
@@ -148,7 +148,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "Skipping GitHub artifact attestation: repository is not public and this is not GitHub Enterprise Cloud."
-          echo "Attestation will be enabled automatically once the repo is public (0027 public flip)."
+          echo "Attestation will be enabled automatically once the repo is public (when the repository becomes public)."
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ${{ matrix.asset }}
@@ -206,7 +206,7 @@ jobs:
           LEDGERFUL_MCP_COMMAND="$scratch/node_modules/.bin/ledgerful-mcp" node test/smoke-local.js
       - name: Attest MCP package provenance
         # Gated on public repo/Enterprise Cloud. actions/attest needs a public repo or GitHub Enterprise Cloud;
-        # this step is skipped while ledgerful remains private and will activate automatically at the 0027 public flip.
+        # this step is skipped while ledgerful remains private and will activate automatically when the repository becomes public.
         if: github.event.repository.visibility == 'public' || github.event.repository.visibility == 'internal'
         uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763
         with:
@@ -217,7 +217,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "Skipping GitHub artifact attestation: repository is not public and this is not GitHub Enterprise Cloud."
-          echo "Attestation will be enabled automatically once the repo is public (0027 public flip)."
+          echo "Attestation will be enabled automatically once the repo is public (when the repository becomes public)."
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: ledgerful-mcp-server-npm
@@ -247,7 +247,7 @@ jobs:
         run: cargo install cargo-cyclonedx --locked
       - name: Install jsonschema (for SBOM validation)
         run: pip install jsonschema
-      - name: Engine SBOM (all features — must match the --all-features release build)
+      - name: Engine SBOM (all features â€” must match the --all-features release build)
         shell: bash
         run: |
           set -euo pipefail
@@ -296,7 +296,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "Skipping GitHub SBOM attestation: repository is not public and this is not GitHub Enterprise Cloud."
-          echo "Attestation will be enabled automatically once the repo is public (0027 public flip)."
+          echo "Attestation will be enabled automatically once the repo is public (when the repository becomes public)."
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
           name: sbom
@@ -327,7 +327,7 @@ jobs:
         run: echo "value=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
       - name: Attest engine SBOM
         # Gated on public repo/Enterprise Cloud. actions/attest-sbom needs a public repo or GitHub Enterprise Cloud;
-        # this step is skipped while ledgerful remains private and will activate automatically at the 0027 public flip.
+        # this step is skipped while ledgerful remains private and will activate automatically when the repository becomes public.
         # The SBOM is lockfile-derived and target-independent, so it is bound to all release archives.
         # Note: GitHub Actions context does not expose enterprise status; a private Enterprise Cloud
         # repo will skip this step until the repo visibility is changed.
@@ -348,7 +348,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "Skipping GitHub SBOM attestation: repository is not public and this is not GitHub Enterprise Cloud."
-          echo "Attestation will be enabled automatically once the repo is public (0027 public flip)."
+          echo "Attestation will be enabled automatically once the repo is public (when the repository becomes public)."
       - name: Install cosign
         uses: sigstore/cosign-installer@3094a48ba06382e0e6cfa5a4af4fcc55fc6942b9
         with:
@@ -408,7 +408,7 @@ jobs:
           merge-multiple: true
       - name: Verify GitHub attestations (public repo only)
         # Gated on public repo/Enterprise Cloud. gh attestation verify needs the artifact to have been attested by
-        # GitHub; skipped while ledgerful remains private and will activate automatically at the 0027 public flip.
+        # GitHub; skipped while ledgerful remains private and will activate automatically when the repository becomes public.
         if: github.event.repository.visibility == 'public' || github.event.repository.visibility == 'internal'
         shell: bash
         env:
@@ -429,7 +429,7 @@ jobs:
         run: |
           set -euo pipefail
           echo "Skipping GitHub attestation verification: repository is not public and this is not GitHub Enterprise Cloud."
-          echo "Verification will run automatically once the repo is public (0027 public flip)."
+          echo "Verification will run automatically once the repo is public (when the repository becomes public)."
       - uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           files: |

@@ -1,6 +1,6 @@
 name: AI Review Gate
 
-# Enforces the AI-code adversarial review protocol (conductor track 0004, DoD-7).
+# Enforces the AI-code adversarial review protocol (security hardening, DoD-7).
 # On PR open, creates a `pending` status check for `ai-reviewed`.
 # The orchestrator pushes `success` via `gh api` after the review subagent passes.
 # Branch protection requires this check before merge (when available).

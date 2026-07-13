@@ -122,7 +122,9 @@ fn spawn_background_server(
                 Ok(nix::unistd::ForkResult::Child) => {
                     // SAFETY: single-threaded child process after double-fork,
                     // no other threads can observe the env mutation.
-                    unsafe { std::env::set_var(TOKEN_ENV_VAR, token); }
+                    unsafe {
+                        std::env::set_var(TOKEN_ENV_VAR, token);
+                    }
                     let _ = std::fs::write(pid_path.as_std_path(), std::process::id().to_string());
                     run_server_blocking(args, layout);
                     std::process::exit(0);
