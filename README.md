@@ -207,7 +207,9 @@ See [docs/architecture.md](docs/architecture.md) for module boundaries and curre
 
 ## Contributing
 
-- Work by conductor track.
+- Questions and setup help: [GitHub Discussions](https://github.com/Ryan-AI-Studios/Ledgerful/discussions).
+- Bug reports: [GitHub Issues](https://github.com/Ryan-AI-Studios/Ledgerful/issues).
+- Security reports: see [SECURITY.md](SECURITY.md) — do not file public issues for security vulnerabilities.
 - Keep changes phase-bounded and deterministic.
 - Run `cargo fmt --check`, `cargo clippy --all-targets --all-features -- -D warnings`, and `cargo test --all-features -j 1 -- --test-threads=1` before pushing.
 

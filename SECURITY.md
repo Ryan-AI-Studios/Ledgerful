@@ -8,7 +8,7 @@ branch and the most recent tagged release.
 | Version | Supported |
 |---------|----------|
 | latest `main` | yes |
-| latest tag (currently `v0.1.6`) | yes |
+| latest tag (currently `v0.1.8`) | yes |
 | older tags | no |
 
 When a release branch policy is introduced, this table will be updated.
@@ -104,13 +104,6 @@ used to report.
 - Theoretical vulnerabilities without a demonstrated attack path.
 
 ## Safe Harbor
-
-> **DRAFT — pending counsel review.** Ledgerful, LLC is not yet formed. The
-> following safe-harbor statement is based on standardized disclose.io-style
-> language and is provided in draft form. It will be finalized when legal
-> counsel reviews it alongside the LICENSE, consistent with the launch gates.
-> Until then, researchers should rely on the statement in principle but
-> understand it has not been formally adopted.
 
 Ledgerful supports responsible security research. To encourage good-faith
 security research, we commit to the following:
