@@ -23,15 +23,9 @@ will respond as quickly as we can.
 Choose **one** of these channels:
 
 1. **Email** (preferred): send your report to **security@ledgerful.dev**.
-   - *Provisioning note:* this mailbox is **pending activation** — Cloudflare
-     Email Routing must be configured by the maintainer. Until it is live, use
-     GitHub private vulnerability reporting (below) or contact the maintainer
-     directly via a public GitHub issue referencing "security" (do not include
-     vulnerability details in the public issue).
 2. **GitHub Private Vulnerability Reporting:** open the repo's **Security tab →
    "Report a vulnerability"**. This uses GitHub's built-in private advisory
-   channel (available once the repo is public). This is the most reliable
-   channel while the email mailbox is being provisioned.
+   channel.
 
 ### What to include
 
@@ -134,12 +128,11 @@ regulations.
 
 ## Supply-chain posture
 
-> **Status:** The signing and attestation pipeline is implemented in
-> `.github/workflows/release.yml` (Track 0053). It will be exercised on the
-> first release tag after the 0027 public flip. GitHub artifact attestations
-> (SLSA provenance + SBOM attestation) require a public or Enterprise Cloud
-> repository and are gated until then; cosign signatures and SBOM emission
-> are available immediately.
+> **Status:** The signing and attestation pipeline is active in
+> `.github/workflows/release.yml`. The v0.1.8 release was built with cosign
+> keyless signing, SLSA build provenance, SBOM attestation, and `cargo auditable`
+> embedded dependency lists. GitHub artifact attestations (SLSA provenance + SBOM
+> attestation) are active for the public repository.
 
 Ledgerful releases are **signed and attested** so a downloaded binary can be
 verified without trusting the release page alone. This section describes what is
@@ -166,7 +159,7 @@ signing proves provenance of the download, not validity of ledger transactions.
 
 ### Verification commands
 
-Replace `<version>` with the release tag (e.g. `v0.1.7`) and `<target>` with the release values.
+Replace `<version>` with the release tag (e.g. `v0.1.8`) and `<target>` with the release values.
 
 #### cosign keyless signature
 
@@ -174,7 +167,7 @@ Replace `<version>` with the release tag (e.g. `v0.1.7`) and `<target>` with the
 cosign verify-blob \
   --signature ledgerful-<target>.tar.gz.sig \
   --certificate ledgerful-<target>.tar.gz.pem \
-  --certificate-identity 'https://github.com/Ryan-AI-Studios/ledgerful/.github/workflows/release.yml@refs/tags/<version>' \
+  --certificate-identity 'https://github.com/Ryan-AI-Studios/Ledgerful/.github/workflows/release.yml@refs/tags/<version>' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   ledgerful-<target>.tar.gz
 ```
@@ -189,9 +182,9 @@ gh attestation verify ledgerful-mcp-server-<version>.tgz --owner Ryan-AI-Studios
 ```
 
 Attestation requires the repository to be public or on GitHub Enterprise Cloud.
-Until the repo is public, GitHub attestations are skipped by design and only
-cosign signatures are available. Verifying the release archive also verifies
-any SBOM attestations bound to it (the SBOM is the attestation predicate).
+The repository is public, so GitHub attestations are active for all release
+artifacts. Verifying the release archive also verifies any SBOM attestations
+bound to it (the SBOM is the attestation predicate).
 
 #### Embedded dependency list
 
