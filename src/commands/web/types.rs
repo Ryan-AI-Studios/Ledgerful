@@ -76,8 +76,8 @@ pub(crate) struct ProjectResponse {
 /// `SyncStatusResponse` DTO — local M0 sync state.
 ///
 /// Deliberately **not** gated on `#[cfg(feature = "sync")]` so the OpenAPI
-/// schema can document the route in all builds (schema/runtime consistency,
-/// track 0013 DoD-1). Only the sync-specific *logic* (reading `SyncState`
+/// schema can document the route in all builds (schema/runtime consistency).
+/// Only the sync-specific *logic* (reading `SyncState`
 /// from the ledger DB) is feature-gated; the DTO and the route are always
 /// present. When built without `sync`, the handler returns a clean
 /// `501 Not Implemented` (see `sync_status_handler`).

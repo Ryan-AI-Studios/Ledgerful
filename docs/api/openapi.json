@@ -648,7 +648,7 @@
           "sync"
         ],
         "summary": "`GET /api/sync/status` — local M0 sync state.",
-        "description": "**Feature gate:** the route is **always registered** (track 0013 DoD-1).\nWhen built **with** `sync`, the handler reads `SyncState` from the ledger\nDB and returns real sync metadata. When built **without** `sync`, it\nreturns a `501 Not Implemented` — the schema documents the route, and the\nruntime honors it: no documented-but-unserved route, no dangling handler.",
+        "description": "**Feature gate:** the route is **always registered**.\nWhen built **with** `sync`, the handler reads `SyncState` from the ledger\nDB and returns real sync metadata. When built **without** `sync`, it\nreturns a `501 Not Implemented` — the schema documents the route, and the\nruntime honors it: no documented-but-unserved route, no dangling handler.",
         "operationId": "getSyncStatus",
         "responses": {
           "200": {
@@ -1528,7 +1528,7 @@
       },
       "ProblemDetail": {
         "type": "object",
-        "description": "RFC 7807 problem-detail object. Additional members are allowed; this shape\nsupplies the core fields required by the track contract.\n\nTrack 0013: `ToSchema` + `pub(crate)` so the OpenAPI can document error\nresponse bodies (e.g. the 501 from `/api/sync/status` when built without\nthe `sync` feature).",
+        "description": "RFC 7807 problem-detail object. Additional members are allowed; this shape\nsupplies the core fields required by the track contract.\n\n`ToSchema` + `pub(crate)` so the OpenAPI can document error\nresponse bodies (e.g. the 501 from `/api/sync/status` when built without\nthe `sync` feature).",
         "required": [
           "type",
           "title",
@@ -1705,7 +1705,7 @@
       },
       "SyncStatusResponse": {
         "type": "object",
-        "description": "`SyncStatusResponse` DTO — local M0 sync state.\n\nDeliberately **not** gated on `#[cfg(feature = \"sync\")]` so the OpenAPI\nschema can document the route in all builds (schema/runtime consistency,\ntrack 0013 DoD-1). Only the sync-specific *logic* (reading `SyncState`\nfrom the ledger DB) is feature-gated; the DTO and the route are always\npresent. When built without `sync`, the handler returns a clean\n`501 Not Implemented` (see `sync_status_handler`).",
+        "description": "`SyncStatusResponse` DTO — local M0 sync state.\n\nDeliberately **not** gated on `#[cfg(feature = \"sync\")]` so the OpenAPI\nschema can document the route in all builds (schema/runtime consistency).\nOnly the sync-specific *logic* (reading `SyncState`\nfrom the ledger DB) is feature-gated; the DTO and the route are always\npresent. When built without `sync`, the handler returns a clean\n`501 Not Implemented` (see `sync_status_handler`).",
         "properties": {
           "device_id": {
             "type": [

@@ -22,7 +22,7 @@ pub enum WebError {
 /// RFC 7807 problem-detail object. Additional members are allowed; this shape
 /// supplies the core fields required by the track contract.
 ///
-/// Track 0013: `ToSchema` + `pub(crate)` so the OpenAPI can document error
+/// `ToSchema` + `pub(crate)` so the OpenAPI can document error
 /// response bodies (e.g. the 501 from `/api/sync/status` when built without
 /// the `sync` feature).
 #[derive(Debug, Serialize)]

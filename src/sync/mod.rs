@@ -1,6 +1,6 @@
 // `hlc`, `state`, `error` are always available — they have no `sync`-feature
-// deps (only `serde`, `rusqlite`, `miette`, `thiserror`, `std`). Track 0013:
-// the web handler's `SyncStatusResponse` DTO + `hlc_to_iso8601` helper
+// deps (only `serde`, `rusqlite`, `miette`, `thiserror`, `std`).
+// The web handler's `SyncStatusResponse` DTO + `hlc_to_iso8601` helper
 // reference these without the `sync` feature so the OpenAPI schema can
 // document `/api/sync/status` in all builds. The crypto/transport/extract/
 // apply/bundle modules stay gated.

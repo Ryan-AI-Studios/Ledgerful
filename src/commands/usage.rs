@@ -34,7 +34,7 @@
 //! explicit connect / read / write timeouts (see `try_flush`). The
 //! production default endpoint is the Supabase Edge Function:
 //! `https://scmxtnjqqklvcwyeouvj.supabase.co/functions/v1/telemetry-ingest`
-//! (per `ledgerful-frontend/docs/Backend-Notes.md` §2.4 — Track 0013/M7 contract).
+//! (per `ledgerful-frontend/docs/Backend-Notes.md` §2.4 — M7 contract).
 //! Override via `LEDGERFUL_USAGE_ENDPOINT` for tests against a mock server
 //! or self-hosted deployments.
 //!
@@ -59,7 +59,7 @@ use std::time::Duration;
 
 /// Production telemetry ingest endpoint — the Supabase Edge Function
 /// documented in `ledgerful-frontend/docs/Backend-Notes.md` §2.4
-/// (Track 0013/M7). Override via `LEDGERFUL_USAGE_ENDPOINT` for
+/// (M7). Override via `LEDGERFUL_USAGE_ENDPOINT` for
 /// tests or self-hosted deployments. No Supabase JWT is required;
 /// authentication is handled server-side via size caps and strict
 /// schema validation.
@@ -98,7 +98,7 @@ struct UsageConfig {
 /// The payload sent to the telemetry endpoint.
 ///
 /// Field order and names are pinned by the spec (`conductor/trackM7/spec.md`)
-/// and must match `ledgerful-frontend` Track 0013's ingest schema.
+/// and must match `ledgerful-frontend`'s ingest schema.
 #[derive(Serialize)]
 pub struct UsagePayload {
     pub schema_version: u8,

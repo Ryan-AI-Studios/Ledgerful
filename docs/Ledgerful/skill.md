@@ -310,7 +310,7 @@ For Dependabot or audit findings:
 - Identify whether the vulnerable crate is direct or transitive with `cargo tree -i <crate>@<version>`.
 - If the vulnerable crate is transitive through a direct dependency, prefer upgrading the direct dependency.
 - If the vulnerable path enters through a git dependency, verify whether the upstream fix is visible to downstream consumers.
-- Record external remediation handoffs in a conductor track when another repo owns the durable fix.
+- Record external remediation handoffs in a development task when another repo owns the durable fix.
 - After dependency changes, run focused dependency checks plus `ledgerful verify`.
 
 ## Maintenance & Upgrades

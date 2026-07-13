@@ -68,7 +68,7 @@ The goal is not novelty. The goal is to match the baseline operator expectations
 
 ## Enforcement Direction
 
-New conductor tracks should reference this policy when they touch:
+New development tasks should reference this policy when they touch:
 
 - command-discovery or operator-facing `ask`
 - health and status commands

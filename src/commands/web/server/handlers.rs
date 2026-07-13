@@ -338,7 +338,7 @@ pub(crate) async fn projects_handler(
 
 /// `GET /api/sync/status` — local M0 sync state.
 ///
-/// **Feature gate:** the route is **always registered** (track 0013 DoD-1).
+/// **Feature gate:** the route is **always registered**.
 /// When built **with** `sync`, the handler reads `SyncState` from the ledger
 /// DB and returns real sync metadata. When built **without** `sync`, it
 /// returns a `501 Not Implemented` — the schema documents the route, and the
