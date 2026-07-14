@@ -141,6 +141,10 @@ sqlite3-sys = { path = "./vendor/sqlite3-sys" }
 name = "integration"
 path = "tests/integration/main.rs"
 
+[[test]]
+name = "ci"
+path = "tests/ci/allowlist.rs"
+
 [[bin]]
 name = "ledgerful"
 path = "src/main.rs"
