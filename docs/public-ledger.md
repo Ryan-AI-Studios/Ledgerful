@@ -97,7 +97,10 @@ If the ledger has a chain head (track 0046), the manifest carries it as a rollba
 
 ## 9. No-network claim
 
-The `export-public` command imports no network crates. The public export module (`src/ledger/public_export.rs`) contains only offline cryptographic, file-system, and serialization code. The CI no-network guard (see `tests/ci/allowlist.rs`) greps the module for network-related dependency names and fails the build if any are introduced.
+The `export-public` command imports no network crates. The public export module (`src/ledger/public_export.rs`) contains only offline cryptographic, file-system, and serialization code. Two CI guards protect this:
+
+* The allowlist guard (see `tests/ci/allowlist.rs`) ensures sensitive fields are not published without a documented exception.
+* The no-network guard (see `.github/workflows/ci.yml`, `no-network-public-export` job) greps the module for network-related dependency names and fails the build if any are introduced.
 
 ---
 

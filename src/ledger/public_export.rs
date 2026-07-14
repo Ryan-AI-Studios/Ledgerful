@@ -122,17 +122,24 @@ pub fn export_public_bundle(options: ExportOptions<'_>) -> Result<()> {
         .map(PathBuf::from)
         .or_else(get_bot_keys_dir)
         .ok_or_else(|| miette!("Failed to determine keys directory"))?;
+    // The pseudonym secret is always needed (pseudonyms are published in
+    // entries.ndjson regardless of --sign), so we create/load it unconditionally.
     let pseudonym_secret = get_or_create_pseudonym_secret(&keys_dir)?;
 
     let public_entries: Vec<PublicEntry> = entries
         .iter()
         .map(|entry| PublicEntry::from_ledger_entry(entry, &pseudonym_secret))
-        .collect();
+        .collect::<Result<Vec<_>>>()?;
 
     let entries_ndjson = build_entries_ndjson(&public_entries)?;
     write_bundle_file(output, "entries.ndjson", &entries_ndjson)?;
 
     let time_range = compute_time_range(&public_entries);
+
+    let generated_at = entries
+        .last()
+        .map(|e| e.committed_at.clone())
+        .unwrap_or_else(|| "1970-01-01T00:00:00Z".to_string());
 
     let (_signature, _public_key, _public_key_fingerprint) = if options.sign {
         let (signing_key, verifying_key) = get_or_create_bot_keys_in(&keys_dir).map_err(|e| {
@@ -146,7 +153,7 @@ pub fn export_public_bundle(options: ExportOptions<'_>) -> Result<()> {
 
         let manifest_for_signing = Manifest {
             publisher: PUBLISHER.to_string(),
-            generated_at: chrono::Utc::now().to_rfc3339(),
+            generated_at: generated_at.clone(),
             entry_count: public_entries.len() as u64,
             time_range: time_range.clone(),
             signature_algorithm: SIGNATURE_ALGORITHM.to_string(),
@@ -183,7 +190,7 @@ pub fn export_public_bundle(options: ExportOptions<'_>) -> Result<()> {
     } else {
         let manifest = Manifest {
             publisher: PUBLISHER.to_string(),
-            generated_at: chrono::Utc::now().to_rfc3339(),
+            generated_at,
             entry_count: public_entries.len() as u64,
             time_range,
             signature_algorithm: SIGNATURE_ALGORITHM.to_string(),
@@ -342,15 +349,16 @@ struct PublicEntry {
 }
 
 impl PublicEntry {
-    fn from_ledger_entry(entry: &LedgerEntry, pseudonym_secret: &[u8]) -> Self {
-        let author_pseudonym = compute_author_pseudonym(pseudonym_secret, &entry.author);
+    fn from_ledger_entry(entry: &LedgerEntry, pseudonym_secret: &[u8]) -> Result<Self> {
+        let author_pseudonym = compute_author_pseudonym(pseudonym_secret, &entry.author)?;
         let verification_result = entry.verification_status.map(|status| match status {
             VerificationStatus::Verified => "PASS".to_string(),
+            VerificationStatus::PartiallyVerified => "PARTIAL".to_string(),
             VerificationStatus::Failed => "FAIL".to_string(),
-            _ => "PARTIAL".to_string(),
+            VerificationStatus::Unverified => "UNVERIFIED".to_string(),
         });
 
-        Self {
+        Ok(Self {
             author_pseudonym,
             category: entry.category.to_string(),
             committed_at: entry.committed_at.clone(),
@@ -366,7 +374,7 @@ impl PublicEntry {
             summary: entry.summary.clone(),
             tx_id: entry.tx_id.clone(),
             verification_result,
-        }
+        })
     }
 
     /// Serialize the public entry as an alphabetically-keyed JSON object.
@@ -396,12 +404,13 @@ impl PublicEntry {
     }
 }
 
-pub fn compute_author_pseudonym(secret: &[u8], author: &str) -> String {
+pub fn compute_author_pseudonym(secret: &[u8], author: &str) -> Result<String> {
     type HmacSha256 = Hmac<Sha256>;
-    let mut mac = HmacSha256::new_from_slice(secret).expect("HMAC accepts any key length");
+    let mut mac =
+        HmacSha256::new_from_slice(secret).map_err(|_| miette!("invalid HMAC key length"))?;
     mac.update(author.as_bytes());
     let result = mac.finalize();
-    hex::encode(result.into_bytes())
+    Ok(hex::encode(result.into_bytes()))
 }
 
 fn build_entries_ndjson(entries: &[PublicEntry]) -> Result<Vec<u8>> {
@@ -581,13 +590,7 @@ th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
       const entry = JSON.parse(line);
       const key = entry.public_key ? hexToBytes(entry.public_key) : null;
       const sig = entry.signature ? hexToBytes(entry.signature) : null;
-      const basis = [
-        entry.tx_id,
-        entry.category,
-        entry.summary,
-        entry.reason,
-        entry.committed_at
-      ].join('\n');
+      const basis = `tx_id:${entry.tx_id}\ncategory:${entry.category}\nsummary:${entry.summary}\nreason:${entry.reason}\ncommitted_at:${entry.committed_at}`;
       const payload = new TextEncoder().encode(basis);
       let entryValid = false;
       let label = 'UNSIGNED';
@@ -741,7 +744,7 @@ fn canonical_manifest_for_verify(manifest_json: &[u8]) -> Option<Vec<u8>> {
 
 /// Compute an author pseudonym deterministically from a secret and author string.
 pub fn test_compute_author_pseudonym(secret: &[u8], author: &str) -> String {
-    compute_author_pseudonym(secret, author)
+    compute_author_pseudonym(secret, author).expect("test secret is valid")
 }
 
 #[cfg(test)]
@@ -783,10 +786,10 @@ mod tests {
     #[test]
     fn compute_author_pseudonym_deterministic() {
         let secret = b"secret-key-32-bytes-long0000000";
-        let a = compute_author_pseudonym(secret, "alice@example.com");
-        let b = compute_author_pseudonym(secret, "alice@example.com");
+        let a = compute_author_pseudonym(secret, "alice@example.com").unwrap();
+        let b = compute_author_pseudonym(secret, "alice@example.com").unwrap();
         assert_eq!(a, b);
-        let c = compute_author_pseudonym(secret, "bob@example.com");
+        let c = compute_author_pseudonym(secret, "bob@example.com").unwrap();
         assert_ne!(a, c);
     }
 }

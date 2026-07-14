@@ -1,5 +1,6 @@
 use crate::common::{DirGuard, non_interactive, setup_git_repo};
 use camino::Utf8Path;
+use ed25519_dalek::{Signature, VerifyingKey};
 use ledgerful::ledger::{compute_author_pseudonym as hmac_pseudonym, verify_manifest_signature};
 use serial_test::serial;
 use std::fs;
@@ -84,11 +85,18 @@ fn export_public__two_runs_same_repo__entries_ndjson_byte_identical() {
     export_public_in_repo(tmp.path(), "bundle1", false);
     export_public_in_repo(tmp.path(), "bundle2", false);
 
-    let first = read_bundle_file(tmp.path(), "bundle1", "entries.ndjson");
-    let second = read_bundle_file(tmp.path(), "bundle2", "entries.ndjson");
+    let first_entries = read_bundle_file(tmp.path(), "bundle1", "entries.ndjson");
+    let second_entries = read_bundle_file(tmp.path(), "bundle2", "entries.ndjson");
     assert_eq!(
-        first, second,
+        first_entries, second_entries,
         "entries.ndjson must be byte-identical across deterministic re-runs"
+    );
+
+    let first_manifest = read_bundle_file(tmp.path(), "bundle1", "manifest.json");
+    let second_manifest = read_bundle_file(tmp.path(), "bundle2", "manifest.json");
+    assert_eq!(
+        first_manifest, second_manifest,
+        "manifest.json must be byte-identical across deterministic re-runs (unsigned path)"
     );
 }
 
@@ -215,7 +223,7 @@ fn export_public__pseudonym_properties__keyed_hash_and_secret_not_in_bundle() {
     // setup_git_repo configures git user.name = "Test User", which is what
     // the post-commit hook captures as the ledger entry author.
     let raw_author = "Test User";
-    let expected = hmac_pseudonym(&secret, raw_author);
+    let expected = hmac_pseudonym(&secret, raw_author).expect("test HMAC should succeed");
     assert_eq!(
         exported_pseudonym, expected,
         "exported author_pseudonym must match HMAC-SHA256(secret, author)"
@@ -233,10 +241,16 @@ fn export_public__pseudonym_properties__keyed_hash_and_secret_not_in_bundle() {
     );
 
     // Same secret + author yields the same pseudonym (correlatable).
-    assert_eq!(hmac_pseudonym(&secret, raw_author), expected);
+    assert_eq!(
+        hmac_pseudonym(&secret, raw_author).expect("test HMAC should succeed"),
+        expected
+    );
 
     // Different author with same secret differs.
-    assert_ne!(hmac_pseudonym(&secret, "Other Author"), expected);
+    assert_ne!(
+        hmac_pseudonym(&secret, "Other Author").expect("test HMAC should succeed"),
+        expected
+    );
 
     for name in [
         "manifest.json",
@@ -380,4 +394,77 @@ fn run_ledgerful_verify_signatures(dir: &Path) -> Vec<u8> {
     captured.extend_from_slice(&output.stdout);
     captured.extend_from_slice(&output.stderr);
     captured
+}
+
+fn verify_entry_signature(entry: &serde_json::Value) {
+    let public_key_hex = entry["public_key"]
+        .as_str()
+        .expect("entry must have a public_key to verify");
+    let signature_hex = entry["signature"]
+        .as_str()
+        .expect("entry must have a signature to verify");
+
+    let pub_bytes = hex::decode(public_key_hex).expect("public_key must be valid hex");
+    let pub_array: [u8; 32] = pub_bytes.try_into().expect("public_key must be 32 bytes");
+    let verifying_key =
+        VerifyingKey::from_bytes(&pub_array).expect("public_key must be valid Ed25519 key");
+
+    let sig_bytes = hex::decode(signature_hex).expect("signature must be valid hex");
+    let sig_array: [u8; 64] = sig_bytes.try_into().expect("signature must be 64 bytes");
+    let signature = Signature::from_bytes(&sig_array);
+
+    let payload = format!(
+        "tx_id:{}\ncategory:{}\nsummary:{}\nreason:{}\ncommitted_at:{}",
+        entry["tx_id"].as_str().unwrap_or(""),
+        entry["category"].as_str().unwrap_or(""),
+        entry["summary"].as_str().unwrap_or(""),
+        entry["reason"].as_str().unwrap_or(""),
+        entry["committed_at"].as_str().unwrap_or("")
+    );
+
+    verifying_key
+        .verify_strict(payload.as_bytes(), &signature)
+        .expect("entry signature must verify against reconstructed signing payload");
+}
+
+#[test]
+#[serial(env, cwd)]
+#[allow(non_snake_case)]
+fn export_public__signed_output__entry_signature_verifies_with_public_key() {
+    let _env_non_interactive = non_interactive();
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+
+    let _guard = DirGuard::from_utf8(root);
+    run_ledgerful_binary(tmp.path(), &["init"]);
+
+    fs::write(tmp.path().join("a.txt"), "hello").unwrap();
+    crate::common::git_add_and_commit_no_verify(tmp.path(), "initial commit");
+
+    let bot_keys_dir = tmp.path().join("bot-keys");
+    fs::create_dir_all(&bot_keys_dir).unwrap();
+
+    export_public_in_repo_with_key(tmp.path(), "bundle-entry-sig", &bot_keys_dir);
+
+    let entries_text = String::from_utf8(read_bundle_file(
+        tmp.path(),
+        "bundle-entry-sig",
+        "entries.ndjson",
+    ))
+    .unwrap();
+
+    let mut verified_count = 0;
+    for line in entries_text.lines().filter(|l| !l.trim().is_empty()) {
+        let entry: serde_json::Value = serde_json::from_str(line).unwrap();
+        if entry["signature"].is_string() && entry["public_key"].is_string() {
+            verify_entry_signature(&entry);
+            verified_count += 1;
+        }
+    }
+
+    assert!(
+        verified_count >= 1,
+        "at least one entry signature must verify; found {verified_count}"
+    );
 }
