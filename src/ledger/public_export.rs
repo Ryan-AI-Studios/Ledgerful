@@ -743,6 +743,7 @@ fn canonical_manifest_for_verify(manifest_json: &[u8]) -> Option<Vec<u8>> {
 }
 
 /// Compute an author pseudonym deterministically from a secret and author string.
+#[cfg(test)]
 pub fn test_compute_author_pseudonym(secret: &[u8], author: &str) -> String {
     compute_author_pseudonym(secret, author).expect("test secret is valid")
 }
