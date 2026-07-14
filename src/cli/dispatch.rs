@@ -739,6 +739,9 @@ fn dispatch_ledger(command: LedgerCommands) -> Result<()> {
         LedgerCommands::ExportProvenance { out_path, force } => {
             dispatch_ledger_export_provenance(out_path, force)
         }
+        LedgerCommands::ExportPublic { output, sign, key } => {
+            dispatch_ledger_export_public(output, sign, key)
+        }
         LedgerCommands::HookRepair { force } => {
             crate::commands::ledger::execute_ledger_hook_repair(force)
         }
@@ -759,6 +762,83 @@ fn dispatch_ledger_export_provenance(
     let utf8 = Utf8PathBuf::from_path_buf(clean)
         .map_err(|_| miette::miette!("export path is not valid UTF-8"))?;
     crate::commands::ledger::execute_ledger_export_provenance(Some(utf8.to_string()))
+}
+
+fn dispatch_ledger_export_public(
+    output: std::path::PathBuf,
+    sign: bool,
+    key: Option<std::path::PathBuf>,
+) -> Result<()> {
+    let clean = validate_export_public_path(&output)?;
+    let options = crate::ledger::ExportOptions {
+        output: &clean,
+        sign,
+        key: key.as_deref(),
+    };
+    crate::commands::ledger::execute_ledger_export_public(options)
+}
+
+fn validate_export_public_path(path: &std::path::Path) -> miette::Result<std::path::PathBuf> {
+    let repo_root = crate::commands::helpers::get_repo_root()
+        .map_err(|e| miette::miette!("failed to determine repository root: {e}"))?;
+
+    let absolute = std::env::current_dir()
+        .map(|cwd| cwd.join(path))
+        .map_err(|e| miette::miette!("failed to determine current directory: {e}"))?;
+    let cleaned = path_clean::PathClean::clean(&absolute);
+
+    let repo_root_std = repo_root.as_std_path();
+    if cleaned != repo_root_std && !cleaned.starts_with(repo_root_std) {
+        return Err(miette::miette!(
+            "export-public output must be inside the repository ({})",
+            repo_root_std.display()
+        ));
+    }
+
+    // For directory output, the target itself must be a directory (or not exist).
+    let file_name_os = cleaned.file_name();
+    let file_name_valid = file_name_os
+        .and_then(|n| n.to_str().map(|s| !s.is_empty()))
+        .unwrap_or(false);
+    if !file_name_valid {
+        return Err(miette::miette!(
+            "invalid output directory: no directory name component"
+        ));
+    }
+
+    let canonical = if cleaned.exists() {
+        std::fs::canonicalize(&cleaned)
+            .map_err(|e| miette::miette!("failed to resolve path: {e}"))?
+    } else {
+        match cleaned.parent() {
+            Some(parent) => {
+                let base = std::fs::canonicalize(parent)
+                    .map_err(|e| miette::miette!("failed to resolve parent directory: {e}"))?;
+                base.join(file_name_os.unwrap_or_default())
+            }
+            None => cleaned.clone(),
+        }
+    };
+
+    let canonical = strip_verbatim_prefix(&canonical);
+
+    let canonical_repo_root = std::fs::canonicalize(repo_root_std)
+        .map_err(|e| miette::miette!("failed to resolve repo root: {e}"))?;
+    let canonical_repo_root = strip_verbatim_prefix(&canonical_repo_root);
+    if canonical != canonical_repo_root && !canonical.starts_with(&canonical_repo_root) {
+        return Err(miette::miette!(
+            "export-public output resolves outside the repository after symlink resolution"
+        ));
+    }
+
+    let state_dir = strip_verbatim_prefix(&canonical_repo_root.join(".ledgerful").join("state"));
+    if canonical.starts_with(&state_dir) {
+        return Err(miette::miette!(
+            "refusing to write public ledger bundle inside .ledgerful/state/"
+        ));
+    }
+
+    Ok(canonical)
 }
 
 fn validate_export_path(path: &std::path::Path, force: bool) -> miette::Result<std::path::PathBuf> {

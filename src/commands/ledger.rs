@@ -11,4 +11,6 @@ pub use maintenance::{
     execute_ledger_adopt, execute_ledger_gc, execute_ledger_hook_repair, execute_ledger_reconcile,
 };
 pub use registration::{execute_ledger_register_rule, execute_ledger_register_validator};
-pub use reporting::{execute_ledger_export_provenance, execute_ledger_status};
+pub use reporting::{
+    execute_ledger_export_provenance, execute_ledger_export_public, execute_ledger_status,
+};

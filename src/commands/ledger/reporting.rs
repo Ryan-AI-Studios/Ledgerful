@@ -413,3 +413,12 @@ pub fn execute_ledger_export_provenance(output: Option<String>) -> Result<()> {
     }
     Ok(())
 }
+
+/// Export a redacted, cryptographically verifiable public ledger bundle.
+///
+/// Delegates to `crate::ledger::public_export::export_public_bundle`, which
+/// performs all allowlist filtering, pseudonymization, manifest generation,
+/// and optional bot-key signing.
+pub fn execute_ledger_export_public(options: crate::ledger::ExportOptions<'_>) -> Result<()> {
+    crate::ledger::export_public_bundle(options)
+}

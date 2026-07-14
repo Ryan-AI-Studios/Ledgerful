@@ -78,6 +78,7 @@ mod ledger_crypto;
 mod ledger_drift;
 mod ledger_enforcement;
 mod ledger_enforcement_gate;
+mod ledger_export_public;
 mod ledger_federation;
 mod ledger_git_commit;
 mod ledger_graph_edges;
