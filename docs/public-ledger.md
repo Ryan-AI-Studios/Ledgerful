@@ -28,7 +28,7 @@ ledgerful ledger export-public --output <dir> [--sign [--key <path>]]
 
 The export writes the following files to the output directory:
 
-* `manifest.json` — publisher identity (`ledgerful-ledger-bot`), entry count, time range, signature algorithm, Ed25519 signature and public key fingerprint, allowlist version, honest-ceiling text, and (when present) the signed chain head.
+* `manifest.json` — publisher identity (`ledgerful-ledger-bot`), entry count, time range, signature algorithm, Ed25519 signature and public key fingerprint, allowlist version, honest-ceiling text, an SHA-256 digest of `entries.ndjson`, and (when present) the signed chain head.
 * `entries.ndjson` — one JSON object per line, with one committed ledger entry per line, limited to the allowlisted fields.
 * `index.html` — static, no-JavaScript browse page listing the published entries.
 * `verifier.html` — standalone offline verifier using the browser's WebCrypto API. No network resources are loaded.
@@ -108,7 +108,7 @@ The `export-public` command imports no network crates. The public export module 
 
 You can verify a bundle in two ways:
 
-1. Open `verifier.html` in a modern browser. It loads `manifest.json` and `entries.ndjson` from the same directory, verifies the manifest signature with WebCrypto, and verifies every entry's Ed25519 signature. It works offline.
+1. Open `verifier.html` in a modern browser. It loads `manifest.json` and `entries.ndjson` from the same directory, verifies the manifest signature with WebCrypto, checks that the SHA-256 of `entries.ndjson` matches the `entriesSha256` field in the manifest, and verifies every entry's Ed25519 signature. It works offline.
 2. Use the CLI against the source ledger:
 
    ```bash
@@ -121,10 +121,6 @@ You can verify a bundle in two ways:
 
 ## 11. Publishing
 
-The publishing cron is shipped disabled. After launch, the user enables automated publishing with:
+The engine is responsible for exporting a signed, redacted bundle (`ledgerful ledger export-public`). The actual publishing step — copying that bundle into the web repository or uploading it to a static host — is intentionally owned by the web slice, not the engine.
 
-```bash
-ledgerful ledger publish-public --enable
-```
-
-This command is part of the web slice and is not yet implemented.
+The web slice previously referenced a hypothetical `ledgerful ledger publish-public --enable` command. That command does not exist and is not an engine command. The web-side publishing cron will invoke `ledgerful ledger export-public --output <web-repo-dir> --sign` (or equivalent CI orchestration) and then commit the resulting files from the web repository.

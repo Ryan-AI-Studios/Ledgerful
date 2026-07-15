@@ -787,15 +787,7 @@ fn validate_export_public_path(path: &std::path::Path) -> miette::Result<std::pa
         .map_err(|e| miette::miette!("failed to determine current directory: {e}"))?;
     let cleaned = path_clean::PathClean::clean(&absolute);
 
-    let repo_root_std = repo_root.as_std_path();
-    if cleaned != repo_root_std && !cleaned.starts_with(repo_root_std) {
-        return Err(miette::miette!(
-            "export-public output must be inside the repository ({})",
-            repo_root_std.display()
-        ));
-    }
-
-    // For directory output, the target itself must be a directory (or not exist).
+    // For directory output, the target itself must have a directory name component.
     let file_name_os = cleaned.file_name();
     let file_name_valid = file_name_os
         .and_then(|n| n.to_str().map(|s| !s.is_empty()))
@@ -807,6 +799,14 @@ fn validate_export_public_path(path: &std::path::Path) -> miette::Result<std::pa
     }
 
     let canonical = if cleaned.exists() {
+        let meta = std::fs::metadata(&cleaned)
+            .map_err(|e| miette::miette!("failed to inspect path: {e}"))?;
+        if !meta.is_dir() {
+            return Err(miette::miette!(
+                "output path exists and is not a directory: {}",
+                cleaned.display()
+            ));
+        }
         std::fs::canonicalize(&cleaned)
             .map_err(|e| miette::miette!("failed to resolve path: {e}"))?
     } else {
@@ -822,20 +822,27 @@ fn validate_export_public_path(path: &std::path::Path) -> miette::Result<std::pa
 
     let canonical = strip_verbatim_prefix(&canonical);
 
-    let canonical_repo_root = std::fs::canonicalize(repo_root_std)
+    let canonical_repo_root = std::fs::canonicalize(repo_root.as_std_path())
         .map_err(|e| miette::miette!("failed to resolve repo root: {e}"))?;
     let canonical_repo_root = strip_verbatim_prefix(&canonical_repo_root);
-    if canonical != canonical_repo_root && !canonical.starts_with(&canonical_repo_root) {
-        return Err(miette::miette!(
-            "export-public output resolves outside the repository after symlink resolution"
-        ));
-    }
 
     let state_dir = strip_verbatim_prefix(&canonical_repo_root.join(".ledgerful").join("state"));
     if canonical.starts_with(&state_dir) {
         return Err(miette::miette!(
             "refusing to write public ledger bundle inside .ledgerful/state/"
         ));
+    }
+
+    let src_dir = strip_verbatim_prefix(&canonical_repo_root.join("src"));
+    if canonical.starts_with(&src_dir) {
+        return Err(miette::miette!(
+            "refusing to write public ledger bundle inside src/"
+        ));
+    }
+
+    if !canonical.exists() {
+        std::fs::create_dir_all(&canonical)
+            .map_err(|e| miette::miette!("failed to create output directory: {e}"))?;
     }
 
     Ok(canonical)
@@ -980,6 +987,19 @@ mod export_path_tests {
         std::fs::create_dir_all(root.join("src")).unwrap();
         std::fs::create_dir_all(root.join(".ledgerful").join("state")).unwrap();
         std::fs::File::create(root.join("Cargo.toml")).unwrap();
+        (tmp, root)
+    }
+
+    fn temp_repo_root_only() -> (tempfile::TempDir, camino::Utf8PathBuf) {
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap().to_path_buf();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(&root)
+            .output()
+            .expect("git init failed");
+        // No src/ and no .ledgerful/state/ so outside-repo paths have something
+        // to compare against but do not accidentally hit forbidden dirs.
         (tmp, root)
     }
 
@@ -1181,6 +1201,77 @@ mod export_path_tests {
 
         assert!(
             err.contains("already exists") || err.contains("directory"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn validate_export_public_path_accepts_outside_repo() {
+        let (_tmp, root) = temp_repo();
+        let _guard = CwdGuard::enter(root.as_std_path());
+
+        let outside = root.as_std_path().join("..").join("public-output");
+        let path = validate_export_public_path(outside.as_path()).unwrap();
+        assert!(path.exists(), "output directory should be created");
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn validate_export_public_path_accepts_existing_outside_directory() {
+        let (_tmp, root) = temp_repo();
+        let _guard = CwdGuard::enter(root.as_std_path());
+
+        let outside = root.as_std_path().join("..").join("existing-output");
+        std::fs::create_dir_all(&outside).unwrap();
+        let path = validate_export_public_path(outside.as_path()).unwrap();
+        assert_eq!(
+            path,
+            strip_verbatim_prefix(&std::fs::canonicalize(&outside).unwrap())
+        );
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn validate_export_public_path_refuses_existing_file() {
+        let (_tmp, root) = temp_repo_root_only();
+        let _guard = CwdGuard::enter(root.as_std_path());
+
+        let target = root.as_std_path().join("not-a-dir.json");
+        std::fs::File::create(&target).unwrap();
+
+        let err = validate_export_public_path(target.as_path())
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("not a directory"), "unexpected error: {err}");
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn validate_export_public_path_refuses_src_directory() {
+        let (_tmp, root) = temp_repo();
+        let _guard = CwdGuard::enter(root.as_std_path());
+
+        let err = validate_export_public_path(std::path::Path::new("src/bundle"))
+            .unwrap_err()
+            .to_string();
+
+        assert!(err.contains("inside src/"), "unexpected error: {err}");
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn validate_export_public_path_refuses_state_directory() {
+        let (_tmp, root) = temp_repo();
+        let _guard = CwdGuard::enter(root.as_std_path());
+
+        let err = validate_export_public_path(std::path::Path::new(".ledgerful/state/bundle"))
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            err.contains("inside .ledgerful/state/"),
             "unexpected error: {err}"
         );
     }

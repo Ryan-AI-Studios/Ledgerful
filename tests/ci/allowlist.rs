@@ -1,7 +1,10 @@
 //! Allowlist CI guard — fails if a sensitive field reaches the public export
-//! allowlist without a deferred.md changelog entry.
+//! allowlist.
 //!
-//! Track 0045 DoD-6: the allowlist can only grow deliberately.
+//! Track 0045 DoD-6: the allowlist can only grow deliberately.  If someone
+//! wants to allow a field currently listed in `SENSITIVE_FIELDS`, they must
+//! remove it from `SENSITIVE_FIELDS` in the same commit — the test itself is
+//! the deliberate gate and is visible in review.
 
 #![cfg(test)]
 
@@ -75,41 +78,26 @@ fn allowed_fields() -> BTreeSet<&'static str> {
     extract_allowed_fields(source)
 }
 
-/// Returns the list of sensitive fields that also appear in
-/// `C:\dev\coordinated\conductor\deferred.md` as documented exceptions.
-///
-/// An exception is recognized when the line contains both the field name and
-/// the string `public export allowlist exception`.
-fn documented_exceptions() -> BTreeSet<&'static str> {
-    let changelog = include_str!("C:\\\\dev\\\\coordinated\\\\conductor\\\\deferred.md");
-    let mut exceptions = BTreeSet::new();
-    for line in changelog.lines() {
-        for field in SENSITIVE_FIELDS {
-            if line.contains(field) && line.contains("public export allowlist exception") {
-                exceptions.insert(*field);
-            }
-        }
-    }
-    exceptions
+/// Returns the set of sensitive fields that are currently present in the
+/// public export allowlist.
+fn sensitive_in_allowlist() -> BTreeSet<&'static str> {
+    let allowed = allowed_fields();
+    SENSITIVE_FIELDS
+        .iter()
+        .filter(|field| allowed.contains(*field))
+        .copied()
+        .collect()
 }
 
 #[test]
 fn no_sensitive_field_in_allowlist() {
-    let allowed = allowed_fields();
-    let exceptions = documented_exceptions();
-
-    let mut violations = BTreeSet::new();
-    for field in SENSITIVE_FIELDS {
-        if allowed.contains(field) && !exceptions.contains(field) {
-            violations.insert(*field);
-        }
-    }
+    let violations = sensitive_in_allowlist();
 
     assert!(
         violations.is_empty(),
-        "Sensitive fields found in public export allowlist without a documented exception: {:?}. \
-         If this is intentional, add an entry to C:\\\\dev\\\\coordinated\\\\conductor\\\\deferred.md \
-         containing the field name and the phrase 'public export allowlist exception'.",
+        "Sensitive fields found in public export allowlist: {:?}. \
+         If this is intentional, remove those fields from SENSITIVE_FIELDS in this file \
+         in the same commit so the change is visible in review.",
         violations
     );
 }

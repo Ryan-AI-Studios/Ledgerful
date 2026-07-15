@@ -80,6 +80,7 @@ struct Manifest {
     chain_head: Option<ChainHead>,
     allowlist_version: u32,
     honest_ceiling: String,
+    entries_sha256: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -133,6 +134,7 @@ pub fn export_public_bundle(options: ExportOptions<'_>) -> Result<()> {
 
     let entries_ndjson = build_entries_ndjson(&public_entries)?;
     write_bundle_file(output, "entries.ndjson", &entries_ndjson)?;
+    let entries_sha256 = sha256_hex(&entries_ndjson);
 
     let time_range = compute_time_range(&public_entries);
 
@@ -163,6 +165,7 @@ pub fn export_public_bundle(options: ExportOptions<'_>) -> Result<()> {
             chain_head: chain_head.clone(),
             allowlist_version: ALLOWLIST_VERSION,
             honest_ceiling: honest_ceiling_text(),
+            entries_sha256: entries_sha256.clone(),
         };
 
         let manifest_json = serialize_manifest(&manifest_for_signing)?;
@@ -200,6 +203,7 @@ pub fn export_public_bundle(options: ExportOptions<'_>) -> Result<()> {
             chain_head,
             allowlist_version: ALLOWLIST_VERSION,
             honest_ceiling: honest_ceiling_text(),
+            entries_sha256,
         };
         let manifest_json = serialize_manifest(&manifest)?;
         write_bundle_file(output, "manifest.json", &manifest_json)?;
@@ -249,6 +253,10 @@ fn compute_time_range(entries: &[PublicEntry]) -> Option<TimeRange> {
 }
 
 fn sha256_fingerprint(bytes: &[u8]) -> String {
+    sha256_hex(bytes)
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(bytes);
     hex::encode(hasher.finalize())
@@ -553,6 +561,10 @@ th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
     const key = await importEd25519PublicKey(keyBytes);
     return await window.crypto.subtle.verify(key.algorithm.name, key, sigBytes, payloadBytes);
   }
+  async function sha256Hex(data) {
+    const digest = await window.crypto.subtle.digest('SHA-256', data);
+    return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
+  }
 
   try {
     const manifestText = await loadText('manifest.json');
@@ -578,6 +590,13 @@ th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
     resultsEl.appendChild(manifestStatus);
 
     const entriesText = await loadText('entries.ndjson');
+    const expectedEntriesHash = manifest.entriesSha256;
+    const actualEntriesHash = await sha256Hex(new TextEncoder().encode(entriesText));
+    const entriesHashMatch = expectedEntriesHash && expectedEntriesHash === actualEntriesHash;
+    const entriesStatus = document.createElement('p');
+    entriesStatus.innerHTML = '<strong>Entries:</strong> ' + (entriesHashMatch ? '<span class="valid">MATCH</span> (' + actualEntriesHash + ')' : expectedEntriesHash ? '<span class="invalid">MISMATCH</span> (expected ' + expectedEntriesHash + ', got ' + actualEntriesHash + ')' : '<span class="unsigned">NO HASH</span>');
+    resultsEl.appendChild(entriesStatus);
+
     const lines = entriesText.split('\n').filter(line => line.trim());
 
     const table = document.createElement('table');
@@ -632,7 +651,8 @@ engine's own signed ledger entries.
 ## Files
 
 - `manifest.json` — publisher identity, entry count, time range, signature
-  metadata, and (if present) the signed chain head.
+  metadata, an SHA-256 hash of `entries.ndjson`, and (if present) the signed
+  chain head.
 - `entries.ndjson` — one JSON object per line containing only the allowlisted
   fields.
 - `index.html` — static browse page (no JavaScript).
