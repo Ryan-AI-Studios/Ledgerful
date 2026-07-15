@@ -1010,7 +1010,13 @@ mod export_path_tests {
         let _guard = CwdGuard::enter(root.as_std_path());
 
         let path = validate_export_path(std::path::Path::new("out.json"), false).unwrap();
-        assert_eq!(path, root.as_std_path().join("out.json"));
+        // Canonicalize both sides — on Windows CI the temp dir may resolve
+        // to an 8.3 short name (e.g. RUNNER~1) via canonicalize, while the
+        // original path uses the long name (runneradmin).
+        let expected = std::fs::canonicalize(root.as_std_path().join("out.json"))
+            .unwrap_or_else(|_| root.as_std_path().join("out.json"));
+        let canonical_path = std::fs::canonicalize(&path).unwrap_or(path);
+        assert_eq!(canonical_path, expected);
     }
 
     #[serial_test::serial(cwd)]
@@ -1021,7 +1027,11 @@ mod export_path_tests {
         std::fs::File::create(root.join("existing.json")).unwrap();
 
         let path = validate_export_path(std::path::Path::new("existing.json"), true).unwrap();
-        assert_eq!(path, root.as_std_path().join("existing.json"));
+        // Same 8.3 short-name workaround as above.
+        let expected = std::fs::canonicalize(root.as_std_path().join("existing.json"))
+            .unwrap_or_else(|_| root.as_std_path().join("existing.json"));
+        let canonical_path = std::fs::canonicalize(&path).unwrap_or(path);
+        assert_eq!(canonical_path, expected);
     }
 
     #[serial_test::serial(cwd)]
