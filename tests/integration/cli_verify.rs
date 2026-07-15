@@ -21,6 +21,7 @@ fn test_verify_command_pass() {
         false,
         false,
         VerifyScope::Full,
+        false,
     );
     assert!(result.is_ok());
 }
@@ -41,6 +42,7 @@ fn test_verify_command_fail() {
         false,
         false,
         VerifyScope::Full,
+        false,
     );
     assert!(result.is_err());
 }
@@ -65,10 +67,14 @@ fn test_verify_command_timeout() {
         false,
         false,
         VerifyScope::Full,
+        false,
     );
     assert!(result.is_err());
     let err_msg = format!("{:?}", result.err().unwrap());
-    assert!(err_msg.contains("Timed out"));
+    assert!(
+        err_msg.to_ascii_lowercase().contains("timed out"),
+        "expected timeout error, got: {err_msg}"
+    );
 }
 
 #[test]
@@ -86,6 +92,7 @@ fn test_verify_command_not_found() {
         false,
         false,
         VerifyScope::Full,
+        false,
     );
     assert!(result.is_err());
     let err_msg = format!("{:?}", result.err().unwrap());
@@ -108,6 +115,7 @@ fn test_verify_dry_run_does_not_execute() {
         false,
         true, // dry_run = true
         VerifyScope::Full,
+        false,
     );
     assert!(
         result.is_ok(),
@@ -132,6 +140,7 @@ fn test_verify_health_check_known_executable() {
         true, // health = true
         false,
         VerifyScope::Full,
+        false,
     );
     assert!(
         result.is_ok(),
@@ -158,6 +167,7 @@ fn test_verify_health_check_missing_executable() {
         true, // health = true
         false,
         VerifyScope::Full,
+        false,
     );
     // On a dev machine with cargo available, health check should succeed.
     assert!(
@@ -185,6 +195,7 @@ fn test_verify_health_check_env_prefix_command() {
         true, // health = true
         false,
         VerifyScope::Full,
+        false,
     );
     assert!(
         result.is_ok(),

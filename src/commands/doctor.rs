@@ -373,7 +373,29 @@ pub fn execute_doctor() -> Result<()> {
         tracing::warn!("Failed to write doctor-results.json: {}", e);
     }
 
+    print_sccache_hint();
+
     Ok(())
+}
+
+/// Optional informational hint: suggest sccache for cold/CI builds when no
+/// `RUSTC_WRAPPER` is set. `RUSTC_WRAPPER=sccache` caches dependency crates
+/// (the expensive, stable part of the graph); `RUSTC_WORKSPACE_WRAPPER` would
+/// only wrap workspace members and skip dependency caching, so it is not
+/// recommended here. sccache requires `CARGO_INCREMENTAL=0` — it cannot cache
+/// incrementally-compiled crates. This is guidance only; verify does not wire
+/// sccache into its command generation.
+fn print_sccache_hint() {
+    if std::env::var("RUSTC_WRAPPER").is_err() {
+        println!(
+            "\n{} Cold or CI builds may benefit from sccache v0.16.0+. \
+             Set {} and {}. Note: do not combine with {}; use one or the other.",
+            "Hint:".cyan().bold(),
+            "RUSTC_WRAPPER=sccache".cyan(),
+            "CARGO_INCREMENTAL=0".cyan(),
+            "CARGO_INCREMENTAL=1".cyan()
+        );
+    }
 }
 
 /// Count the number of failed checks in a doctor report.

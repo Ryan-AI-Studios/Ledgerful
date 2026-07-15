@@ -166,10 +166,18 @@ fn test_file_to_nextest_stem(path: &str) -> Option<String> {
 /// Build a scoped nextest command using filterset predicates for the given
 /// test file stems. Uses `test()` with the default contains matcher.
 ///
-/// Example: `cargo nextest run -E 'test(cli_scan) + test(dead_code_prune)'`
+/// The command carries the same feature/target resolution as the scoped
+/// clippy step (`--workspace --all-features`) so cargo does not recompile the
+/// dependency graph between clippy and nextest. The filterset still scopes
+/// which tests run.
+///
+/// Example: `cargo nextest run --workspace --all-features -E 'test(cli_scan) + test(dead_code_prune)'`
 fn build_scoped_nextest_command(test_stems: &[String]) -> String {
     let filtersets: Vec<String> = test_stems.iter().map(|s| format!("test({})", s)).collect();
-    format!("cargo nextest run -E '{}'", filtersets.join(" + "))
+    format!(
+        "cargo nextest run --workspace --all-features -E '{}'",
+        filtersets.join(" + ")
+    )
 }
 
 /// Build a scoped test plan using `test_mapping` to run only the tests that
@@ -191,49 +199,192 @@ pub fn build_plan_scoped(
     conn: Option<&rusqlite::Connection>,
     repo_root: &std::path::Path,
 ) -> VerificationPlan {
+    build_plan_scoped_with_options(
+        packet, rules, predicted, config, profile, scope, conn, repo_root, false,
+    )
+}
+
+/// Internal entry point that also accepts `auto_index`. When `auto_index` is
+/// true and `test_mapping` is empty/stale relative to the impact packet's
+/// `head_hash`, this triggers an incremental index for the changed files and
+/// then retries scoped selection once.
+#[allow(clippy::too_many_arguments)]
+pub fn build_plan_scoped_with_options(
+    packet: &ImpactPacket,
+    rules: &Rules,
+    predicted: &[PredictedFile],
+    config: &VerifyConfig,
+    profile: &crate::platform::repository::RepositoryProfile,
+    scope: VerifyScope,
+    conn: Option<&rusqlite::Connection>,
+    repo_root: &std::path::Path,
+    auto_index: bool,
+) -> VerificationPlan {
     if !scope.is_fast() || touches_shared_infra(packet) {
-        return build_plan_with_scope(packet, rules, predicted, config, profile, scope, repo_root);
+        let reason = if !scope.is_fast() {
+            format!("scope is {}", scope)
+        } else {
+            "shared infrastructure touched".to_string()
+        };
+        let mut plan =
+            build_plan_with_scope(packet, rules, predicted, config, profile, scope, repo_root);
+        plan.fallback_reason = Some(format_fallback_reason(&reason, "running full (~5-8 min)"));
+        return plan;
     }
 
     // Try scoped selection.
-    if let Some(conn) = conn
-        && let Some(test_stems) = query_scoped_test_files(conn, packet)
-    {
-        let scoped_cmd = build_scoped_nextest_command(&test_stems);
-        let mut steps: Vec<VerificationStep> = Vec::new();
+    let scoped_stems = conn.and_then(|c| query_scoped_test_files(c, packet));
 
-        // Always include fmt + clippy in fast scope — they're cheap and
-        // catch issues the test suite doesn't.
-        steps.push(VerificationStep {
-            command: "cargo fmt --all -- --check".to_string(),
-            timeout_secs: 60,
-            description: "Scoped: format check".to_string(),
-            shell: false,
-        });
-        steps.push(VerificationStep {
-            command: "cargo clippy --all-targets --all-features -- -D warnings".to_string(),
-            timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
-            description: "Scoped: lints".to_string(),
-            shell: false,
-        });
-        steps.push(VerificationStep {
-            command: scoped_cmd,
-            timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
-            description: format!(
-                "Scoped: tests covering {} changed file(s) via test_mapping",
-                packet.changes.len()
-            ),
-            shell: false,
-        });
-
-        return VerificationPlan {
-            source: Some(PlanSource::AutoPolicy), // Scoped testing is always auto-policy derived
-            steps,
-        };
+    if let Some(test_stems) = scoped_stems {
+        return build_fast_scoped_plan(packet, &test_stems);
     }
 
-    // Fall back to the full plan.
-    build_plan_with_scope(packet, rules, predicted, config, profile, scope, repo_root)
+    // Scoped selection unavailable. If auto_index is enabled and the mapping
+    // is empty/stale, refresh the index for changed files and retry once.
+    if auto_index && conn.is_some() && is_test_mapping_stale(conn.unwrap(), packet) {
+        if let Err(e) = run_incremental_index_for_changed_files(packet, repo_root, config) {
+            let mut plan =
+                build_plan_with_scope(packet, rules, predicted, config, profile, scope, repo_root);
+            plan.fallback_reason = Some(format_fallback_reason(
+                &format!("auto-index failed ({e}); test_mapping empty/stale"),
+                "running full (~5-8 min)",
+            ));
+            return plan;
+        }
+
+        // Re-read the mapping after indexing. If it still yields nothing, fall
+        // back to full with an announcement.
+        let retry_stems = conn.and_then(|c| query_scoped_test_files(c, packet));
+        if let Some(test_stems) = retry_stems {
+            return build_fast_scoped_plan(packet, &test_stems);
+        }
+    }
+
+    // Fall back to the full plan with a visible reason.
+    let mut plan =
+        build_plan_with_scope(packet, rules, predicted, config, profile, scope, repo_root);
+    plan.fallback_reason = Some(format_fallback_reason(
+        "test_mapping empty or has no mappings for changed files",
+        "running full (~5-8 min)",
+    ));
+    plan
+}
+
+fn format_fallback_reason(trigger: &str, consequence: &str) -> String {
+    format!("fast scope unavailable — {trigger}; {consequence}")
+}
+
+fn build_fast_scoped_plan(packet: &ImpactPacket, test_stems: &[String]) -> VerificationPlan {
+    let scoped_cmd = build_scoped_nextest_command(test_stems);
+    let mut steps: Vec<VerificationStep> = Vec::new();
+
+    // Always include fmt + clippy in fast scope — they're cheap and
+    // catch issues the test suite doesn't.
+    //
+    // fmt stays sequential before clippy. The fast path never runs a mutating
+    // `cargo fmt` (without `--check`) concurrently with a build: a mutating fmt
+    // rewrites .rs files in place, which would cause rustc/clippy torn reads,
+    // spurious errors, and incremental-cache invalidation.
+    steps.push(VerificationStep {
+        command: "cargo fmt --all -- --check".to_string(),
+        timeout_secs: 60,
+        description: "Scoped: format check".to_string(),
+        shell: false,
+    });
+    steps.push(VerificationStep {
+        command: "cargo clippy --all-targets --all-features -- -D warnings".to_string(),
+        timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
+        description: "Scoped: lints".to_string(),
+        shell: false,
+    });
+    steps.push(VerificationStep {
+        command: scoped_cmd,
+        timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
+        description: format!(
+            "Scoped: tests covering {} changed file(s) via test_mapping",
+            packet.changes.len()
+        ),
+        shell: false,
+    });
+
+    VerificationPlan {
+        source: Some(PlanSource::AutoPolicy), // Scoped testing is always auto-policy derived
+        steps,
+        fallback_reason: None,
+    }
+}
+
+/// Returns true if the test_mapping table is empty or its last-indexed HEAD
+/// differs from the impact packet's `head_hash`. This detects the common case
+/// where the index was built before the current set of changes landed.
+fn is_test_mapping_stale(conn: &rusqlite::Connection, packet: &ImpactPacket) -> bool {
+    let total: i64 = conn
+        .query_row("SELECT count(*) FROM test_mapping", [], |row| row.get(0))
+        .unwrap_or(0);
+    if total == 0 {
+        return true;
+    }
+
+    let indexed_head: Option<String> = conn
+        .query_row(
+            "SELECT value FROM index_metadata WHERE key = 'head_hash'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+
+    match (&packet.head_hash, indexed_head.as_deref()) {
+        (Some(packet_head), Some(indexed_head)) => packet_head != indexed_head,
+        // If either side is missing, treat as stale to be safe.
+        _ => true,
+    }
+}
+
+/// Run an incremental index limited to the changed files in the packet. This
+/// delegates to the same indexer used by `ledgerful index --incremental` but
+/// does not spawn a separate CLI process.
+fn run_incremental_index_for_changed_files(
+    packet: &ImpactPacket,
+    repo_root: &std::path::Path,
+    config: &VerifyConfig,
+) -> Result<(), String> {
+    use crate::config::model::Config;
+    use crate::index::ProjectIndexer;
+    use crate::state::layout::Layout;
+    use crate::state::storage::StorageManager;
+
+    let root = camino::Utf8PathBuf::from_path_buf(repo_root.to_path_buf())
+        .map_err(|_| "repo root is not valid UTF-8".to_string())?;
+    let layout = Layout::new(&root);
+    let db_path = layout.state_subdir().join("ledger.db");
+
+    let storage = StorageManager::init(db_path.as_std_path())
+        .map_err(|e| format!("failed to open storage for auto-index: {e}"))?;
+
+    let mut full_config = crate::config::load::load_config(&layout).unwrap_or_else(|err| {
+        tracing::warn!("Failed to load config for auto-index: {err}. Using defaults.");
+        Config::default()
+    });
+    full_config.verify = config.clone();
+
+    let mut indexer = ProjectIndexer::new(storage, root, full_config);
+    indexer
+        .incremental_index()
+        .map_err(|e| format!("incremental index failed: {e}"))?;
+
+    // Persist the packet's HEAD as the index HEAD so future runs can detect
+    // freshness without re-scanning.
+    if let Some(head) = &packet.head_hash {
+        let conn = indexer.storage().get_connection();
+        let _ = conn.execute(
+            "INSERT OR REPLACE INTO index_metadata (key, value) VALUES ('head_hash', ?1)",
+            [head],
+        );
+    }
+
+    // Return ownership of storage so it is dropped cleanly.
+    let _ = indexer.into_storage().shutdown();
+    Ok(())
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -265,6 +416,11 @@ pub struct VerificationPlan {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<PlanSource>,
     pub steps: Vec<VerificationStep>,
+    /// When the requested fast scope could not be honored and the plan fell
+    /// back to the full suite, this records the human-readable reason so the
+    /// runner can announce it before executing.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
 }
 
 impl VerificationPlan {
@@ -482,6 +638,7 @@ fn build_plan_with_scope(
     VerificationPlan {
         source: Some(plan_source),
         steps: unique_steps,
+        fallback_reason: None,
     }
 }
 
@@ -595,6 +752,7 @@ pub fn build_plan_from_config(config: &VerifyConfig) -> Option<VerificationPlan>
     Some(VerificationPlan {
         source: Some(PlanSource::ExplicitConfig),
         steps,
+        fallback_reason: None,
     })
 }
 
@@ -1140,7 +1298,10 @@ mod tests {
     #[test]
     fn test_build_scoped_nextest_command_single() {
         let cmd = build_scoped_nextest_command(&["cli_scan".to_string()]);
-        assert_eq!(cmd, "cargo nextest run -E 'test(cli_scan)'");
+        assert_eq!(
+            cmd,
+            "cargo nextest run --workspace --all-features -E 'test(cli_scan)'"
+        );
     }
 
     #[test]
@@ -1149,8 +1310,42 @@ mod tests {
             build_scoped_nextest_command(&["cli_scan".to_string(), "dead_code_prune".to_string()]);
         assert_eq!(
             cmd,
-            "cargo nextest run -E 'test(cli_scan) + test(dead_code_prune)'"
+            "cargo nextest run --workspace --all-features -E 'test(cli_scan) + test(dead_code_prune)'"
         );
+    }
+
+    #[test]
+    fn test_scoped_clippy_and_nextest_share_feature_target_flags() {
+        let clippy_cmd = "cargo clippy --all-targets --all-features -- -D warnings";
+        let nextest_cmd = build_scoped_nextest_command(&["cli_scan".to_string()]);
+
+        assert!(
+            nextest_cmd.contains("--workspace") || nextest_cmd.contains("--all-targets"),
+            "scoped nextest must target the workspace to match clippy: {nextest_cmd}"
+        );
+        assert!(
+            nextest_cmd.contains("--all-features"),
+            "scoped nextest must carry --all-features to match clippy: {nextest_cmd}"
+        );
+        assert!(
+            nextest_cmd.contains("-E 'test(cli_scan)'"),
+            "scoped nextest must still apply the filterset: {nextest_cmd}"
+        );
+
+        // Regression guard: ensure the exact strings share the flags that
+        // affect cargo's feature-resolution / target-selection context.
+        assert_eq!(
+            extract_build_context_flags(clippy_cmd),
+            extract_build_context_flags(&nextest_cmd.replace("--workspace", "--all-targets")),
+            "clippy and nextest must present an equivalent feature/target context to cargo"
+        );
+    }
+
+    fn extract_build_context_flags(command: &str) -> Vec<&str> {
+        command
+            .split_whitespace()
+            .filter(|tok| *tok == "--all-features" || *tok == "--all-targets")
+            .collect()
     }
 
     #[test]
@@ -1214,6 +1409,14 @@ mod tests {
         // Falls back to build_plan (no rules match Cargo.toml except the
         // rules.toml override, but in this test rules are default/empty).
         assert_eq!(plan.steps.len(), 2);
+        assert!(
+            plan.fallback_reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("shared infrastructure"),
+            "expected fallback reason to mention shared infrastructure, got {:?}",
+            plan.fallback_reason
+        );
     }
 
     #[test]
@@ -1250,6 +1453,14 @@ mod tests {
         );
         // Empty mapping → falls back to full plan.
         assert_eq!(plan.steps.len(), 2);
+        assert!(
+            plan.fallback_reason
+                .as_deref()
+                .unwrap_or("")
+                .contains("test_mapping empty"),
+            "expected fallback reason to mention empty test_mapping, got {:?}",
+            plan.fallback_reason
+        );
     }
 
     #[test]
@@ -1316,11 +1527,19 @@ mod tests {
         let scoped_step = plan
             .steps
             .iter()
-            .find(|s| s.command.contains("nextest run -E"))
+            .find(|s| {
+                s.command
+                    .contains("nextest run --workspace --all-features -E")
+            })
             .expect("scoped nextest command");
         assert!(
             scoped_step.command.contains("test(cli_hotspots)"),
             "expected cli_hotspots in command, got: {}",
+            scoped_step.command
+        );
+        assert!(
+            scoped_step.command.contains("--all-features"),
+            "scoped nextest must carry --all-features, got: {}",
             scoped_step.command
         );
     }
@@ -1334,5 +1553,125 @@ mod tests {
     #[test]
     fn test_verify_scope_default_is_full() {
         assert_eq!(VerifyScope::default(), VerifyScope::Full);
+    }
+
+    #[test]
+    fn test_is_test_mapping_stale_empty_mapping() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
+             tested_symbol_id INTEGER, tested_file_id INTEGER)",
+            [],
+        )
+        .unwrap();
+        let packet = ImpactPacket::default();
+        assert!(is_test_mapping_stale(&conn, &packet));
+    }
+
+    #[test]
+    fn test_is_test_mapping_stale_head_hash_mismatch() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
+             tested_symbol_id INTEGER, tested_file_id INTEGER)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
+             VALUES (1, 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE TABLE index_metadata (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO index_metadata (key, value) VALUES ('head_hash', 'old-hash')",
+            [],
+        )
+        .unwrap();
+        let packet = ImpactPacket {
+            head_hash: Some("new-hash".to_string()),
+            ..ImpactPacket::default()
+        };
+        assert!(is_test_mapping_stale(&conn, &packet));
+    }
+
+    #[test]
+    fn test_is_test_mapping_stale_head_hash_matches() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
+             tested_symbol_id INTEGER, tested_file_id INTEGER)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
+             VALUES (1, 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE TABLE index_metadata (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO index_metadata (key, value) VALUES ('head_hash', 'current-hash')",
+            [],
+        )
+        .unwrap();
+        let packet = ImpactPacket {
+            head_hash: Some("current-hash".to_string()),
+            ..ImpactPacket::default()
+        };
+        assert!(!is_test_mapping_stale(&conn, &packet));
+    }
+
+    #[test]
+    fn test_build_plan_scoped_fast_auto_index_failure_announcement() {
+        let packet = ImpactPacket {
+            head_hash: Some("abc123".to_string()),
+            changes: vec![ChangedFile {
+                path: PathBuf::from("src/main.rs"),
+                ..Default::default()
+            }],
+            ..ImpactPacket::default()
+        };
+        let rules = Rules::default();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // Create the tables so is_test_mapping_stale sees an empty mapping.
+        conn.execute(
+            "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
+             tested_symbol_id INTEGER, tested_file_id INTEGER)",
+            [],
+        )
+        .unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let plan = build_plan_scoped_with_options(
+            &packet,
+            &rules,
+            &[],
+            &crate::config::model::VerifyConfig::default(),
+            &crate::platform::repository::RepositoryProfile::default(),
+            VerifyScope::Fast,
+            Some(&conn),
+            tmp.path(),
+            true,
+        );
+        assert_eq!(plan.steps.len(), 2);
+        let reason = plan.fallback_reason.as_deref().unwrap_or("");
+        assert!(
+            reason.contains("auto-index failed"),
+            "expected fallback reason to mention auto-index failure, got: {reason}"
+        );
+        assert!(
+            reason.contains("running full"),
+            "expected fallback reason to announce full run, got: {reason}"
+        );
     }
 }

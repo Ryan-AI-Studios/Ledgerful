@@ -2,9 +2,7 @@ error[E0603]: module `serialization` is private
  --> tests/compile_fail/private_helper_leak.rs:1:32
   |
 1 | use ledgerful::impact::packet::serialization::deserialize_score;
-  |                                ^^^^^^^^^^^^^  ----------------- function `deserialize_score` is not publicly re-exported
-  |                                |
-  |                                private module
+  |                                ^^^^^^^^^^^^^ private module
   |
 note: the module `serialization` is defined here
  --> src/impact/packet.rs

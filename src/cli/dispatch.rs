@@ -139,6 +139,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
             against_export,
             dry_run,
             scope,
+            auto_index,
         } => dispatch_verify(
             &layout,
             command,
@@ -153,6 +154,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
             against_export,
             dry_run,
             scope,
+            auto_index,
         ),
         Commands::Ask {
             query,
@@ -1306,6 +1308,7 @@ fn dispatch_verify(
     against_export: Option<std::path::PathBuf>,
     dry_run: bool,
     scope: crate::verify::plan::VerifyScope,
+    auto_index: bool,
 ) -> Result<()> {
     if signatures || chain || against_export.is_some() {
         crate::commands::verify::verify_ledger_signatures_with_options(
@@ -1317,6 +1320,7 @@ fn dispatch_verify(
     } else {
         crate::commands::verify::execute_verify(
             command, tx_id, timeout, no_predict, explain, entity, health, dry_run, scope,
+            auto_index,
         )
     }
 }

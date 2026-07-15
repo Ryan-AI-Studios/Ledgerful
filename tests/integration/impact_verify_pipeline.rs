@@ -51,6 +51,7 @@ fn test_impact_packet_is_loadable_by_verify_after_scan() {
         false,
         false,
         VerifyScope::Full,
+        false,
     );
     assert!(
         result.is_ok(),

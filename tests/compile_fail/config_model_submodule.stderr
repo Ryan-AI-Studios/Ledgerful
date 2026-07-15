@@ -2,9 +2,7 @@ error[E0603]: module `local_model` is private
  --> tests/compile_fail/config_model_submodule.rs:1:31
   |
 1 | use ledgerful::config::model::local_model::LocalModelConfig;
-  |                               ^^^^^^^^^^^  ---------------- struct `LocalModelConfig` is not publicly re-exported
-  |                               |
-  |                               private module
+  |                               ^^^^^^^^^^^ private module
   |
 note: the module `local_model` is defined here
  --> src/config/model.rs
