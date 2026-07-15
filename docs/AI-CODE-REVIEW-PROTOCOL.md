@@ -55,14 +55,21 @@
 1. **Cross-model review:** a different model than the author reviews the diff. The orchestrator
    delegates to a review subagent (e.g. `final-verifier`, `codex-review`, or equivalent
    cross-model tool).
-2. **Human sign-off:** the owner reviews the cross-model findings and adjudicates.
+2. **Owner merge decision:** the owner receives a plain-language summary of the cross-model
+   findings, adjudicates any exceptions, and decides whether to merge. The owner is not expected
+   to provide a code-level approval.
 3. **Provenance check:** for any new dependency, verify it's a real, maintained, correctly-named
    package (run `scripts/slopsquat-sweep.ps1` or check the registry manually).
 
 ## Enforcement (CI gate)
 
-Branch protection requires the `ai-reviewed` status check before merge. This check is set by
-the orchestrator **only after** the cross-model review subagent passes. The gate is:
+Branch protection requires a pull request and the `ai-reviewed` status check before merge. Human
+code-review approvals are not required (`required_approving_review_count = 0`); independent
+adversarial AI review is the default technical approval gate. The owner retains the product,
+risk-acceptance, and final merge decision. Required CI and security checks remain mandatory.
+
+The `ai-reviewed` check is set by the orchestrator **only after** the cross-model review subagent
+passes. The gate is:
 
 - **Status check name:** `ai-reviewed`
 - **Set by:** the orchestrator (manager agent) after the review subagent reports clean.
@@ -70,10 +77,8 @@ the orchestrator **only after** the cross-model review subagent passes. The gate
   `pending` status on PR open, and the orchestrator pushes a `success` status via
   `gh api` when the review passes.
 
-> **Note:** On the free plan (private repos), branch protection is unavailable. Until the repos
-> go public or GitHub Pro is purchased, this gate is enforced **by convention** — the
-> orchestrator does not merge a PR without a passing review subagent. The workflow file is in
-> place and will activate when branch protection is available.
+Passing AI review does not merge a PR. It confirms the technical review gate; the owner still
+chooses whether and when the change is merged.
 
 ## Standing rules (every PR)
 
