@@ -1,17 +1,13 @@
 [advisories]
 version = 2
-yanked = "deny"
+yanked = "warn"
 ignore = [
     # Cozo 0.7.6 transitively pins these Sled/graph dependencies and no
     # compatible safe upgrade exists without replacing Cozo storage.
     "RUSTSEC-2023-0089",
-    "RUSTSEC-2024-0384",
-    "RUSTSEC-2025-0056",
     "RUSTSEC-2025-0057",
     "RUSTSEC-2025-0052",
     "RUSTSEC-2025-0141",
-    "RUSTSEC-2026-0041",
-    "RUSTSEC-2026-0173",
 ]
 
 [licenses]

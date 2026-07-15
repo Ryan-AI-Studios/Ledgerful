@@ -5,6 +5,18 @@ use std::path::Path;
 /// Does NOT depend on canonicalize (filesystem access), making it safe for
 /// non-existent or deleted files.
 pub fn normalize_relative_path(repo_root: &Path, input: &str) -> Result<String, String> {
+    // Reject absolute and UNC-style inputs before joining. On Unix,
+    // `PathClean::clean()` converts `\\server\share` to `/server/share`,
+    // which escapes the repo root. On Windows, `Path::push` replaces the
+    // base when the input is absolute (drive letter or UNC). Reject both
+    // patterns up front so neither platform can escape.
+    if input.starts_with('/') || input.starts_with('\\') {
+        return Err(format!(
+            "Security violation: path '{}' is outside the repository root (absolute or UNC prefix)",
+            input
+        ));
+    }
+
     let mut path = repo_root.to_path_buf();
     path.push(input);
 
