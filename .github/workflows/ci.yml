@@ -193,6 +193,30 @@ jobs:
       - run: cargo install cargo-deny --locked
       - run: cargo deny check
 
+  no-network-public-export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      actions: write
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - name: No-network grep (public export)
+        shell: bash
+        run: |
+          result=$(grep -RE "ureq|reqwest|tokio_tungstenite" src/ledger/public_export.rs || true)
+          if [ -n "$result" ]; then
+            echo "FAIL: network dependencies found in public export module"
+            echo "$result"
+            exit 1
+          fi
+          echo "PASS: no network dependencies in public export module" > no-network-result.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: no-network-grep
+          path: no-network-result.txt
+          retention-days: 90
+
   coverage:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

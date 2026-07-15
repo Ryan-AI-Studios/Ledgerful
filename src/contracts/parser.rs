@@ -213,11 +213,10 @@ fn resolve_ref(doc: &Value, ref_str: &str, depth: usize) -> Option<Value> {
 
         if let Some(obj) = current.as_object() {
             current = obj.get(&segment)?;
-        } else if let Some(arr) = current.as_array() {
+        } else {
+            let arr = current.as_array()?;
             let idx: usize = segment.parse().ok()?;
             current = arr.get(idx)?;
-        } else {
-            return None;
         }
     }
 

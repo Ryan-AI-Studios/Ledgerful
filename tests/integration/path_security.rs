@@ -65,6 +65,13 @@ fn normalize_relative_path__dotdot_sequences__never_escapes_root() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn normalize_relative_path__backslash_after_dotdot__never_becomes_absolute() {
+    let repo_root = tempfile::tempdir().unwrap();
+    prop_path_never_escapes_root(repo_root.path(), "a../../\\");
+}
+
 #[test]
 fn normalize_relative_path__percent_encoded_traversal__never_escapes_root() {
     let prefix_strategy = "[a-zA-Z0-9_]{0,10}";

@@ -625,6 +625,7 @@ impl Commands {
                 LedgerCommands::Gc { .. } => "ledger_gc",
                 LedgerCommands::Resume { .. } => "ledger_resume",
                 LedgerCommands::ExportProvenance { .. } => "ledger_export_provenance",
+                LedgerCommands::ExportPublic { .. } => "ledger_export_public",
                 LedgerCommands::HookRepair { .. } => "ledger_hook_repair",
             },
             Commands::Verify { .. } => "verify",
@@ -1246,6 +1247,18 @@ pub enum LedgerCommands {
         /// Overwrite an existing output file
         #[arg(short, long)]
         force: bool,
+    },
+    /// Export a redacted, cryptographically verifiable public ledger bundle
+    ExportPublic {
+        /// Output directory for the bundle files
+        #[arg(short, long, value_name = "DIR")]
+        output: PathBuf,
+        /// Sign the manifest with the bot keypair
+        #[arg(long)]
+        sign: bool,
+        /// Override the bot key directory (holds bot key, bot public key, and pseudonym secret)
+        #[arg(long, value_name = "PATH")]
+        key: Option<PathBuf>,
     },
     /// Repair a stale post-commit hook sidecar after a crash
     HookRepair {
