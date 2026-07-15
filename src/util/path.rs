@@ -4,10 +4,9 @@ use std::path::Path;
 /// Does NOT depend on canonicalize (filesystem access), making it safe for
 /// non-existent or deleted files.
 pub fn normalize_relative_path(repo_root: &Path, input: &str) -> Result<String, String> {
-    // Handle inputs that may be absolute or contain backslashes.
-    // `PathClean::clean()` converts backslashes to forward slashes on all
-    // platforms, which can turn `\\server\share\..` or `D:\..` into an
-    // absolute path that escapes the repo root. We handle this by:
+    // Handle inputs that may be absolute or contain backslashes. Ledgerful
+    // stores paths with forward slashes on every platform, so validation must
+    // use those same separator semantics. We handle this by:
     // 1. If the input starts with a backslash (UNC) or a Windows drive
     //    letter (e.g. `C:`), reject it — these are never valid relative
     //    paths on any platform and always escape on Linux via path_clean.
@@ -21,9 +20,15 @@ pub fn normalize_relative_path(repo_root: &Path, input: &str) -> Result<String, 
             input
         ));
     }
+
+    // Normalize separators before constructing and validating the path. Doing
+    // this after the containment check is unsafe on Unix: a literal backslash
+    // can pass validation and then become a leading slash in the returned
+    // value (for example, `a../../\\`).
+    let normalized_input = input.replace('\\', "/");
     // Reject Windows drive-letter paths on non-Windows platforms only.
-    // On Linux/macOS, `path_clean` converts backslashes to forward slashes,
-    // and `D:\..\..` becomes `D:/../..` which escapes the repo root. On
+    // On Linux/macOS, separator normalization turns `D:\..\..` into
+    // `D:/../..`, which must not be interpreted as repo-relative. On
     // Windows, `Path::push` handles drive letters correctly by replacing
     // the base, and `strip_prefix` catches escapes.
     #[cfg(not(windows))]
@@ -38,8 +43,8 @@ pub fn normalize_relative_path(repo_root: &Path, input: &str) -> Result<String, 
     // If the input is already an absolute path inside the repo root (e.g.
     // `/tmp/repo/src/main.rs` when repo_root is `/tmp/repo`), strip the
     // root prefix before cleaning to avoid Path::push replacing the base.
-    let path = if input.starts_with('/') {
-        let input_path = Path::new(input);
+    let path = if normalized_input.starts_with('/') {
+        let input_path = Path::new(&normalized_input);
         if input_path.starts_with(repo_root) {
             let stripped = input_path.strip_prefix(repo_root).map_err(|_| {
                 format!(
@@ -52,11 +57,11 @@ pub fn normalize_relative_path(repo_root: &Path, input: &str) -> Result<String, 
             // Absolute path outside repo root — push will replace the base
             // on Windows, and clean will keep it absolute on Unix. The
             // strip_prefix check below will catch it.
-            repo_root.join(input)
+            repo_root.join(&normalized_input)
         }
     } else {
         let mut p = repo_root.to_path_buf();
-        p.push(input);
+        p.push(&normalized_input);
         p
     };
 

@@ -1010,13 +1010,12 @@ mod export_path_tests {
         let _guard = CwdGuard::enter(root.as_std_path());
 
         let path = validate_export_path(std::path::Path::new("out.json"), false).unwrap();
-        // Canonicalize both sides — on Windows CI the temp dir may resolve
-        // to an 8.3 short name (e.g. RUNNER~1) via canonicalize, while the
-        // original path uses the long name (runneradmin).
-        let expected = std::fs::canonicalize(root.as_std_path().join("out.json"))
-            .unwrap_or_else(|_| root.as_std_path().join("out.json"));
-        let canonical_path = std::fs::canonicalize(&path).unwrap_or(path);
-        assert_eq!(canonical_path, expected);
+        // The file does not exist yet, so canonicalize its parent before
+        // appending the file name. This resolves macOS /var -> /private/var
+        // and Windows long-name -> 8.3 aliases the same way as production.
+        let expected = strip_verbatim_prefix(&std::fs::canonicalize(root.as_std_path()).unwrap())
+            .join("out.json");
+        assert_eq!(path, expected);
     }
 
     #[serial_test::serial(cwd)]
@@ -1191,7 +1190,9 @@ mod export_path_tests {
         let (_tmp, root) = temp_repo();
         let _guard = CwdGuard::enter(root.as_std_path());
 
-        let err = validate_export_path(&root.as_std_path().join("src/foo.json"), false)
+        let canonical_root =
+            strip_verbatim_prefix(&std::fs::canonicalize(root.as_std_path()).unwrap());
+        let err = validate_export_path(&canonical_root.join("src/foo.json"), false)
             .unwrap_err()
             .to_string();
 
