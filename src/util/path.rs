@@ -63,7 +63,9 @@ pub fn normalize_relative_path(repo_root: &Path, input: &str) -> Result<String, 
     // Lexically clean the path (resolves .. without filesystem access)
     let cleaned = path.clean();
 
-    // Ensure the path is still within the repo_root
+    // Ensure the path is still within the repo_root. On some platforms
+    // `clean()` may treat backslashes as separators, causing `..` traversal
+    // to escape. The strip_prefix check catches absolute escapes.
     let relative = cleaned.strip_prefix(repo_root).map_err(|_| {
         format!(
             "Security violation: path '{}' is outside the repository root",
@@ -71,8 +73,19 @@ pub fn normalize_relative_path(repo_root: &Path, input: &str) -> Result<String, 
         )
     })?;
 
+    // Additional guard: the relative path must not start with `..` —
+    // `strip_prefix` can succeed on some platforms even when the cleaned
+    // path resolves above the root via backslash-as-separator behavior.
+    let relative_str = relative.to_string_lossy();
+    if relative_str.starts_with("..") {
+        return Err(format!(
+            "Security violation: path '{}' is outside the repository root (traversal in cleaned path)",
+            input
+        ));
+    }
+
     // Normalize to forward slashes for internal storage
-    Ok(relative.to_string_lossy().replace('\\', "/"))
+    Ok(relative_str.replace('\\', "/"))
 }
 /// Filesystem-level containment check for a resolved path against a root.
 /// Canonicalizes both `resolved` and `repo_root`, then verifies `resolved`
