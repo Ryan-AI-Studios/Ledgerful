@@ -1190,13 +1190,16 @@ mod export_path_tests {
         let (_tmp, root) = temp_repo();
         let _guard = CwdGuard::enter(root.as_std_path());
 
-        let canonical_root =
-            strip_verbatim_prefix(&std::fs::canonicalize(root.as_std_path()).unwrap());
-        let err = validate_export_path(&canonical_root.join("src/foo.json"), false)
+        // Match the namespace used by `get_repo_root()`. On Windows CI,
+        // canonicalizing the temp root can instead produce an equivalent 8.3
+        // alias such as `RUNNER~1`, which fails the earlier lexical boundary
+        // check before this test reaches the protected `src/` check.
+        let active_root = std::env::current_dir().unwrap();
+        let err = validate_export_path(&active_root.join("src/foo.json"), false)
             .unwrap_err()
             .to_string();
 
-        assert!(err.contains("inside src/"));
+        assert!(err.contains("inside src/"), "unexpected error: {err}");
     }
 
     #[serial_test::serial(cwd)]
