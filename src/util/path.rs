@@ -1,24 +1,64 @@
 use path_clean::PathClean;
 use std::path::Path;
-
 /// Securely normalizes a path relative to a repository root.
 /// Does NOT depend on canonicalize (filesystem access), making it safe for
 /// non-existent or deleted files.
 pub fn normalize_relative_path(repo_root: &Path, input: &str) -> Result<String, String> {
-    // Reject absolute and UNC-style inputs before joining. On Unix,
-    // `PathClean::clean()` converts `\\server\share` to `/server/share`,
-    // which escapes the repo root. On Windows, `Path::push` replaces the
-    // base when the input is absolute (drive letter or UNC). Reject both
-    // patterns up front so neither platform can escape.
-    if input.starts_with('/') || input.starts_with('\\') {
+    // Handle inputs that may be absolute or contain backslashes.
+    // `PathClean::clean()` converts backslashes to forward slashes on all
+    // platforms, which can turn `\\server\share\..` or `D:\..` into an
+    // absolute path that escapes the repo root. We handle this by:
+    // 1. If the input starts with a backslash (UNC) or a Windows drive
+    //    letter (e.g. `C:`), reject it — these are never valid relative
+    //    paths on any platform and always escape on Linux via path_clean.
+    // 2. For forward-slash absolute paths (`/tmp/...`), allow them only if
+    //    they resolve inside the repo root (the strip_prefix check below
+    //    catches escapes; on Windows `Path::push` replaces the base, which
+    //    also fails the strip_prefix check).
+    if input.starts_with('\\') {
         return Err(format!(
-            "Security violation: path '{}' is outside the repository root (absolute or UNC prefix)",
+            "Security violation: path '{}' is outside the repository root (UNC or backslash prefix)",
+            input
+        ));
+    }
+    // Reject Windows drive-letter paths on non-Windows platforms only.
+    // On Linux/macOS, `path_clean` converts backslashes to forward slashes,
+    // and `D:\..\..` becomes `D:/../..` which escapes the repo root. On
+    // Windows, `Path::push` handles drive letters correctly by replacing
+    // the base, and `strip_prefix` catches escapes.
+    #[cfg(not(windows))]
+    if input.len() >= 2 && input.as_bytes()[0].is_ascii_alphabetic() && input.as_bytes()[1] == b':'
+    {
+        return Err(format!(
+            "Security violation: path '{}' is outside the repository root (drive-letter prefix)",
             input
         ));
     }
 
-    let mut path = repo_root.to_path_buf();
-    path.push(input);
+    // If the input is already an absolute path inside the repo root (e.g.
+    // `/tmp/repo/src/main.rs` when repo_root is `/tmp/repo`), strip the
+    // root prefix before cleaning to avoid Path::push replacing the base.
+    let path = if input.starts_with('/') {
+        let input_path = Path::new(input);
+        if input_path.starts_with(repo_root) {
+            let stripped = input_path.strip_prefix(repo_root).map_err(|_| {
+                format!(
+                    "Security violation: path '{}' is outside the repository root",
+                    input
+                )
+            })?;
+            repo_root.join(stripped)
+        } else {
+            // Absolute path outside repo root — push will replace the base
+            // on Windows, and clean will keep it absolute on Unix. The
+            // strip_prefix check below will catch it.
+            repo_root.join(input)
+        }
+    } else {
+        let mut p = repo_root.to_path_buf();
+        p.push(input);
+        p
+    };
 
     // Lexically clean the path (resolves .. without filesystem access)
     let cleaned = path.clean();
@@ -34,7 +74,6 @@ pub fn normalize_relative_path(repo_root: &Path, input: &str) -> Result<String, 
     // Normalize to forward slashes for internal storage
     Ok(relative.to_string_lossy().replace('\\', "/"))
 }
-
 /// Filesystem-level containment check for a resolved path against a root.
 /// Canonicalizes both `resolved` and `repo_root`, then verifies `resolved`
 /// starts with `repo_root`. Skips symlinks to prevent symlink escapes.
