@@ -983,17 +983,6 @@ pub fn execute_verify(
         auto_id
     };
 
-    let scope = plan
-        .as_ref()
-        .and_then(|p| {
-            if p.fallback_reason.is_some() {
-                Some(crate::verify::plan::VerifyScope::Fast)
-            } else {
-                None
-            }
-        })
-        .unwrap_or(scope);
-
     let mut report = VerifyEngine::execute_with_scope(
         &mut ctx,
         plan,

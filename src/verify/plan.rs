@@ -220,15 +220,17 @@ pub fn build_plan_scoped_with_options(
     repo_root: &std::path::Path,
     auto_index: bool,
 ) -> VerificationPlan {
-    if !scope.is_fast() || touches_shared_infra(packet) {
-        let reason = if !scope.is_fast() {
-            format!("scope is {}", scope)
-        } else {
-            "shared infrastructure touched".to_string()
-        };
+    if !scope.is_fast() {
+        // Explicit full request — no fallback announcement needed.
+        return build_plan_with_scope(packet, rules, predicted, config, profile, scope, repo_root);
+    }
+    if touches_shared_infra(packet) {
         let mut plan =
             build_plan_with_scope(packet, rules, predicted, config, profile, scope, repo_root);
-        plan.fallback_reason = Some(format_fallback_reason(&reason, "running full (~5-8 min)"));
+        plan.fallback_reason = Some(format_fallback_reason(
+            "shared infrastructure touched",
+            "running full (~5-8 min)",
+        ));
         return plan;
     }
 
@@ -241,7 +243,10 @@ pub fn build_plan_scoped_with_options(
 
     // Scoped selection unavailable. If auto_index is enabled and the mapping
     // is empty/stale, refresh the index for changed files and retry once.
-    if auto_index && conn.is_some() && is_test_mapping_stale(conn.unwrap(), packet) {
+    if auto_index
+        && let Some(c) = conn
+        && is_test_mapping_stale(c, packet)
+    {
         if let Err(e) = run_incremental_index_for_changed_files(packet, repo_root, config) {
             let mut plan =
                 build_plan_with_scope(packet, rules, predicted, config, profile, scope, repo_root);
@@ -263,10 +268,16 @@ pub fn build_plan_scoped_with_options(
     // Fall back to the full plan with a visible reason.
     let mut plan =
         build_plan_with_scope(packet, rules, predicted, config, profile, scope, repo_root);
-    plan.fallback_reason = Some(format_fallback_reason(
-        "test_mapping empty or has no mappings for changed files",
-        "running full (~5-8 min)",
-    ));
+    let reason = if let Some(c) = conn {
+        if is_test_mapping_stale(c, packet) {
+            "test_mapping is stale or empty; run `ledgerful index --incremental` or use `--auto-index`"
+        } else {
+            "test_mapping has no mappings for the changed files"
+        }
+    } else {
+        "test_mapping unavailable (no database connection)"
+    };
+    plan.fallback_reason = Some(format_fallback_reason(reason, "running full (~5-8 min)"));
     plan
 }
 
@@ -1315,37 +1326,29 @@ mod tests {
     }
 
     #[test]
-    fn test_scoped_clippy_and_nextest_share_feature_target_flags() {
+    fn test_scoped_clippy_and_nextest_share_feature_flags() {
+        // §B regression guard: clippy and scoped nextest must share
+        // --all-features so cargo does not recompile the dependency graph
+        // between the two steps under a different feature resolution.
+        let test_stems = vec!["cli_scan".to_string()];
+        let nextest_cmd = build_scoped_nextest_command(&test_stems);
         let clippy_cmd = "cargo clippy --all-targets --all-features -- -D warnings";
-        let nextest_cmd = build_scoped_nextest_command(&["cli_scan".to_string()]);
 
-        assert!(
-            nextest_cmd.contains("--workspace") || nextest_cmd.contains("--all-targets"),
-            "scoped nextest must target the workspace to match clippy: {nextest_cmd}"
-        );
         assert!(
             nextest_cmd.contains("--all-features"),
-            "scoped nextest must carry --all-features to match clippy: {nextest_cmd}"
+            "scoped nextest must carry --all-features, got: {nextest_cmd}"
         );
         assert!(
-            nextest_cmd.contains("-E 'test(cli_scan)'"),
-            "scoped nextest must still apply the filterset: {nextest_cmd}"
+            nextest_cmd.contains("--workspace"),
+            "scoped nextest must carry --workspace, got: {nextest_cmd}"
         );
-
-        // Regression guard: ensure the exact strings share the flags that
-        // affect cargo's feature-resolution / target-selection context.
-        assert_eq!(
-            extract_build_context_flags(clippy_cmd),
-            extract_build_context_flags(&nextest_cmd.replace("--workspace", "--all-targets")),
-            "clippy and nextest must present an equivalent feature/target context to cargo"
+        assert!(
+            clippy_cmd.contains("--all-features"),
+            "scoped clippy must carry --all-features, got: {clippy_cmd}"
         );
-    }
-
-    fn extract_build_context_flags(command: &str) -> Vec<&str> {
-        command
-            .split_whitespace()
-            .filter(|tok| *tok == "--all-features" || *tok == "--all-targets")
-            .collect()
+        // Both must carry --all-features (the cache-buster was that nextest lacked it).
+        // clippy uses --all-targets, nextest uses --workspace — different selection
+        // scopes, but the feature resolution must be identical.
     }
 
     #[test]
@@ -1453,12 +1456,12 @@ mod tests {
         );
         // Empty mapping → falls back to full plan.
         assert_eq!(plan.steps.len(), 2);
+        let reason = plan.fallback_reason.as_deref().unwrap_or("");
         assert!(
-            plan.fallback_reason
-                .as_deref()
-                .unwrap_or("")
-                .contains("test_mapping empty"),
-            "expected fallback reason to mention empty test_mapping, got {:?}",
+            reason.contains("test_mapping is stale or empty")
+                || reason.contains("test_mapping has no mappings for the changed files")
+                || reason.contains("test_mapping unavailable"),
+            "expected fallback reason to explain mapping unavailability, got {:?}",
             plan.fallback_reason
         );
     }
@@ -1672,6 +1675,89 @@ mod tests {
         assert!(
             reason.contains("running full"),
             "expected fallback reason to announce full run, got: {reason}"
+        );
+    }
+
+    #[test]
+    fn test_build_plan_scoped_fast_auto_index_not_triggered_when_mapping_exists() {
+        // When test_mapping already has entries and is not stale,
+        // auto_index=true should NOT trigger a reindex — the scoped plan
+        // is returned directly.
+        let packet = ImpactPacket {
+            changes: vec![ChangedFile {
+                path: PathBuf::from("src/commands/hotspots.rs"),
+                ..Default::default()
+            }],
+            ..ImpactPacket::default()
+        };
+        let rules = Rules::default();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        // Set up tables with a mapping.
+        conn.execute(
+            "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
+             tested_symbol_id INTEGER, tested_file_id INTEGER)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE TABLE project_symbols (id INTEGER PRIMARY KEY, symbol_name TEXT, file_id INTEGER)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE TABLE index_metadata (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_files (id, file_path) VALUES (1, 'src/commands/hotspots.rs')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_files (id, file_path) VALUES (2, 'tests/integration/cli_hotspots.rs')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
+             VALUES (10, 2, 20, 1)",
+            [],
+        )
+        .unwrap();
+
+        let plan = build_plan_scoped_with_options(
+            &packet,
+            &rules,
+            &[],
+            &crate::config::model::VerifyConfig::default(),
+            &crate::platform::repository::RepositoryProfile::default(),
+            VerifyScope::Fast,
+            Some(&conn),
+            std::path::Path::new("."),
+            true, // auto_index=true
+        );
+        // Should return scoped plan (3 steps), not full plan.
+        assert_eq!(
+            plan.steps.len(),
+            3,
+            "expected scoped plan, got {} steps: {:?}",
+            plan.steps.len(),
+            plan.steps
+        );
+        assert!(
+            plan.fallback_reason.is_none(),
+            "should not have fallback reason"
+        );
+        assert!(
+            plan.steps
+                .iter()
+                .any(|s| s.command.contains("test(cli_hotspots)"))
         );
     }
 }

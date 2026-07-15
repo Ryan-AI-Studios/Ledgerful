@@ -263,9 +263,9 @@ impl VerifyEngine {
 }
 
 fn is_ci() -> bool {
-    std::env::var("CI")
-        .ok()
-        .is_some_and(|v| v.eq_ignore_ascii_case("true"))
+    // Most CI systems set CI=true, but some use CI=1, CI=yes, or just CI=
+    // (present but empty). Any presence of the variable indicates CI.
+    std::env::var("CI").is_ok()
 }
 
 /// Deterministic helper for the fast-path `CARGO_INCREMENTAL=1` decision.
