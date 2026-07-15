@@ -318,6 +318,47 @@ fn export_public__empty_ledger__empty_bundle_with_zero_entries() {
 #[test]
 #[serial(env, cwd)]
 #[allow(non_snake_case)]
+fn export_public__entries_sha256_matches_file_hash() {
+    use sha2::{Digest, Sha256};
+
+    let _env_non_interactive = non_interactive();
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+
+    let _guard = DirGuard::from_utf8(root);
+    run_ledgerful_binary(tmp.path(), &["init"]);
+
+    fs::write(tmp.path().join("a.txt"), "hello").unwrap();
+    crate::common::git_add_and_commit_no_verify(tmp.path(), "initial commit");
+
+    export_public_in_repo(tmp.path(), "bundle-sha256", false);
+
+    let entries_bytes = read_bundle_file(tmp.path(), "bundle-sha256", "entries.ndjson");
+    let manifest: serde_json::Value = serde_json::from_slice(&read_bundle_file(
+        tmp.path(),
+        "bundle-sha256",
+        "manifest.json",
+    ))
+    .unwrap();
+
+    let manifest_hash = manifest["entriesSha256"]
+        .as_str()
+        .expect("manifest must include entriesSha256");
+
+    let mut hasher = Sha256::new();
+    hasher.update(&entries_bytes);
+    let computed_hash = hex::encode(hasher.finalize());
+
+    assert_eq!(
+        manifest_hash, computed_hash,
+        "manifest.entriesSha256 must equal SHA-256 of entries.ndjson bytes"
+    );
+}
+
+#[test]
+#[serial(env, cwd)]
+#[allow(non_snake_case)]
 fn export_public__with_chain_head__manifest_includes_chain_head() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();

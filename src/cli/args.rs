@@ -1256,7 +1256,7 @@ pub enum LedgerCommands {
         /// Sign the manifest with the bot keypair
         #[arg(long)]
         sign: bool,
-        /// Override the bot key path (defaults to ~/.ledgerful/keys/)
+        /// Override the bot key directory (holds bot key, bot public key, and pseudonym secret)
         #[arg(long, value_name = "PATH")]
         key: Option<PathBuf>,
     },
