@@ -7,7 +7,7 @@ use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use crate::verify::plan::{VerificationPlan, VerificationStep};
 use crate::verify::results::{VerificationReport, VerificationResult, write_verify_report};
-use crate::verify::runner::{execute_step, prepare_manual_step, prepare_rule_step};
+use crate::verify::runner::{execute_step_with_command, prepare_manual_step, prepare_rule_step};
 use chrono::Utc;
 use miette::Result;
 use std::path::PathBuf;
@@ -73,6 +73,24 @@ impl VerifyEngine {
         manual_requested: bool,
         tx_id: Option<String>,
     ) -> Result<VerificationReport> {
+        Self::execute_with_scope(
+            ctx,
+            plan,
+            steps,
+            manual_requested,
+            tx_id,
+            crate::verify::plan::VerifyScope::Full,
+        )
+    }
+
+    pub fn execute_with_scope(
+        ctx: &mut VerificationContext,
+        plan: Option<VerificationPlan>,
+        steps: &[VerificationStep],
+        manual_requested: bool,
+        tx_id: Option<String>,
+        scope: crate::verify::plan::VerifyScope,
+    ) -> Result<VerificationReport> {
         let mut persisted_results = Vec::new();
         let mut overall_success = true;
         let policy = ProcessPolicy::default();
@@ -87,7 +105,25 @@ impl VerifyEngine {
                 "Running verification command via {:?}: {}",
                 prepared.execution_mode, prepared.display_command
             );
-            let result = execute_step(&prepared, &policy)?;
+
+            // Local fast-path speed lever: enable incremental compilation for
+            // warm rebuilds. Only on the fast convenience scope; never in CI or
+            // on the authoritative full scope. Mutually exclusive with sccache
+            // (which requires CARGO_INCREMENTAL=0), so this is only set when
+            // no RUSTC_WRAPPER is present.
+            let has_rustc_wrapper = std::env::var("RUSTC_WRAPPER").is_ok();
+            let mut command = std::process::Command::new(&prepared.executable);
+            command.args(&prepared.args);
+            if should_enable_incremental(
+                scope,
+                &prepared.display_command,
+                is_ci(),
+                has_rustc_wrapper,
+            ) {
+                command.env("CARGO_INCREMENTAL", "1");
+            }
+
+            let result = execute_step_with_command(&prepared, &policy, Some(command))?;
             print_verify_result(&prepared.display_command, step.timeout_secs, &result);
 
             let report_result = Self::to_report_result(&prepared.display_command, &result);
@@ -223,5 +259,77 @@ impl VerifyEngine {
         ) {
             warn!("Failed to record test outcomes for semantic prediction: {e}");
         }
+    }
+}
+
+fn is_ci() -> bool {
+    // Most CI systems set CI=true, but some use CI=1, CI=yes, or just CI=
+    // (present but empty). Any presence of the variable indicates CI.
+    std::env::var("CI").is_ok()
+}
+
+/// Deterministic helper for the fast-path `CARGO_INCREMENTAL=1` decision.
+/// Kept pure so unit tests don't depend on ambient environment variables.
+fn should_enable_incremental(
+    scope: crate::verify::plan::VerifyScope,
+    display_command: &str,
+    is_ci: bool,
+    has_rustc_wrapper: bool,
+) -> bool {
+    scope.is_fast() && !is_ci && display_command.starts_with("cargo ") && !has_rustc_wrapper
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_should_enable_incremental_on_fast_non_ci_cargo() {
+        assert!(should_enable_incremental(
+            crate::verify::plan::VerifyScope::Fast,
+            "cargo clippy --all-targets --all-features",
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn test_should_not_enable_incremental_on_full_scope() {
+        assert!(!should_enable_incremental(
+            crate::verify::plan::VerifyScope::Full,
+            "cargo clippy --all-targets --all-features",
+            false,
+            false,
+        ));
+    }
+
+    #[test]
+    fn test_should_not_enable_incremental_in_ci() {
+        assert!(!should_enable_incremental(
+            crate::verify::plan::VerifyScope::Fast,
+            "cargo nextest run --workspace",
+            true,
+            false,
+        ));
+    }
+
+    #[test]
+    fn test_should_not_enable_incremental_when_sccache_active() {
+        assert!(!should_enable_incremental(
+            crate::verify::plan::VerifyScope::Fast,
+            "cargo nextest run --workspace",
+            false,
+            true,
+        ));
+    }
+
+    #[test]
+    fn test_should_not_enable_incremental_for_non_cargo_command() {
+        assert!(!should_enable_incremental(
+            crate::verify::plan::VerifyScope::Fast,
+            "ledgerful audit",
+            false,
+            false,
+        ));
     }
 }

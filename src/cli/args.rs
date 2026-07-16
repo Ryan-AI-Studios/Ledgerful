@@ -260,6 +260,11 @@ pub enum Commands {
         /// Default: `full`. The pre-push hook uses `fast`.
         #[arg(long, default_value = "full")]
         scope: crate::verify::plan::VerifyScope,
+        /// Automatically refresh a stale or empty `test_mapping` index before
+        /// scoped selection on `--scope fast`. Falls back to full suite with
+        /// an announcement if indexing fails. Opt-in to avoid surprise latency.
+        #[arg(long)]
+        auto_index: bool,
     },
     /// Ask Gemini or a local model for assistance based on the current context
     Ask {

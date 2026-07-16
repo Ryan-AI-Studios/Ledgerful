@@ -59,10 +59,24 @@ pub fn prepare_rule_step(step: &VerificationStep) -> Result<PreparedStep> {
 }
 
 pub fn execute_step(step: &PreparedStep, policy: &ProcessPolicy) -> Result<ExecutionResult> {
+    execute_step_with_command(step, policy, None)
+}
+
+/// Execute a prepared step, optionally using a caller-provided `Command`
+/// (e.g. to inject environment variables such as `CARGO_INCREMENTAL`). When
+/// `command_override` is `None`, a fresh `Command` is built from `step`.
+pub fn execute_step_with_command(
+    step: &PreparedStep,
+    policy: &ProcessPolicy,
+    command_override: Option<std::process::Command>,
+) -> Result<ExecutionResult> {
     check_policy(&step.executable, policy).into_diagnostic()?;
 
-    let mut command = Command::new(&step.executable);
-    command.args(&step.args);
+    let mut command = command_override.unwrap_or_else(|| {
+        let mut c = Command::new(&step.executable);
+        c.args(&step.args);
+        c
+    });
     command.stdin(Stdio::null());
     command
         .current_dir(env::current_dir().into_diagnostic()?)
@@ -88,7 +102,14 @@ pub fn execute_step(step: &PreparedStep, policy: &ProcessPolicy) -> Result<Execu
             Ok(result)
         }
         Err(ProcessError::Timeout { timeout }) => {
-            Err(CommandError::Verify(format!("Timed out after {:?}", timeout)).into())
+            let elapsed = timeout.as_secs();
+            let command = &step.display_command;
+            let message = format!(
+                "Step timed out after {elapsed}s: {command}\n\
+                 Likely cause: cold build or feature-resolution mismatch. \
+                 Try: run `ledgerful index --incremental` or use `--scope full` deliberately."
+            );
+            Err(CommandError::Verify(message).into())
         }
         Err(ProcessError::NotFound { cmd }) => {
             let hint = fallback_install_hint(&cmd);
@@ -355,6 +376,18 @@ mod tests {
         };
 
         let err = execute_step(&prepared, &ProcessPolicy::default()).unwrap_err();
-        assert!(format!("{err:?}").contains("Timed out"));
+        let err_text = format!("{err:?}");
+        assert!(
+            err_text.contains("timed out"),
+            "expected 'timed out' in error: {err_text}"
+        );
+        assert!(
+            err_text.contains("ping -n 10 127.0.0.1") || err_text.contains("sleep 10"),
+            "expected timeout message to include the command, got: {err_text}"
+        );
+        assert!(
+            err_text.contains("ledgerful index --incremental"),
+            "expected actionable next step in timeout message, got: {err_text}"
+        );
     }
 }

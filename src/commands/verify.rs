@@ -3,7 +3,7 @@ use crate::output::verification::VerificationReporter;
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use crate::verify::engine::{VerificationContext, VerifyEngine};
-use crate::verify::plan::{VerificationStep, build_plan_from_config, build_plan_scoped};
+use crate::verify::plan::{VerificationStep, build_plan_from_config};
 use crate::verify::predictor::OutcomePredictor;
 use crate::verify::suggestions::{generate_suggestions, query_ledger_status};
 use crate::verify::timeouts::manual_timeout;
@@ -512,6 +512,7 @@ pub fn execute_verify(
     health: bool,
     dry_run: bool,
     scope: crate::verify::plan::VerifyScope,
+    auto_index: bool,
 ) -> Result<()> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
@@ -625,7 +626,7 @@ pub fn execute_verify(
                         let profile = crate::platform::repository::detect_repository(
                             layout.root.as_std_path(),
                         );
-                        build_plan_scoped(
+                        crate::verify::plan::build_plan_scoped_with_options(
                             packet,
                             &rules,
                             &prediction.files,
@@ -634,6 +635,7 @@ pub fn execute_verify(
                             scope,
                             conn,
                             layout.root.as_std_path(),
+                            auto_index,
                         )
                     }
                     None => {
@@ -663,6 +665,12 @@ pub fn execute_verify(
                         "Probabilistic verification ordering applied ({} active models).",
                         probs.len()
                     );
+                }
+
+                // Announce fast→full fallback before the user waits through a
+                // full run they did not expect.
+                if let Some(reason) = &plan.fallback_reason {
+                    println!("{} {}", "ℹ".cyan(), reason.yellow());
                 }
 
                 print_verify_plan(&plan);
@@ -975,8 +983,14 @@ pub fn execute_verify(
         auto_id
     };
 
-    let mut report =
-        VerifyEngine::execute(&mut ctx, plan, &steps, manual_requested, resolved_tx_id)?;
+    let mut report = VerifyEngine::execute_with_scope(
+        &mut ctx,
+        plan,
+        &steps,
+        manual_requested,
+        resolved_tx_id,
+        scope,
+    )?;
 
     // 5. Generate Suggestions
     let ledger_status = query_ledger_status(&layout);
