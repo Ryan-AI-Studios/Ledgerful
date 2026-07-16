@@ -1,4 +1,4 @@
-use camino::Utf8Path;
+﻿use camino::Utf8Path;
 use ledgerful::commands::web::auth::generate_token;
 use ledgerful::commands::web::server::router;
 use ledgerful::commands::web::state::AppState;
@@ -6,7 +6,7 @@ use ledgerful::ledger::db::LedgerDb;
 use ledgerful::ledger::types::{Category, ChangeType, EntryType, LedgerEntry, Transaction};
 use ledgerful::state::layout::Layout;
 use rusqlite::Connection;
-use serial_test::serial;
+
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
@@ -1321,11 +1321,11 @@ async fn test_api_ledger_detail_reads_verification_enrichment() {
 
     // Insert one passing verification_run and one failing
     // verification_run (so flakes == 1). Then insert three
-    // verification_results (test/build commands) — two on the passing
+    // verification_results (test/build commands) â€” two on the passing
     // run, one on the failing run. Per M8 opencode-review L1,
     // `tests_run` counts `verification_results` (3) and `flakes`
     // counts failing `verification_runs` (1). The 1:many
-    // run→results ratio is what makes the distinction observable
+    // runâ†’results ratio is what makes the distinction observable
     // (the old test seeded 2 runs + 2 results 1:1, so a mis-keyed
     // JOIN could not be detected).
     conn.execute(
@@ -1437,7 +1437,7 @@ async fn test_api_ledger_detail_reads_verification_enrichment() {
     );
     // `src/foo.rs` is in `hotspot_history`; `src/bar.rs` is not.
     // Expected: 1 hotspot crossed (not 0 or 2). This pins the
-    // `count_hotspots_crossed` JOIN — a regression that broke the
+    // `count_hotspots_crossed` JOIN â€” a regression that broke the
     // intersection logic or read from the wrong snapshot would produce
     // 0 or 2 instead of 1.
     assert_eq!(
@@ -1522,8 +1522,8 @@ async fn test_api_projects_reflect_impact_report() {
     let health_score = first["health_score"].as_u64().expect("health_score is u64");
     // Per M8 opencode-review L3: pin the value. With `riskLevel: "high"`
     // and no doctor file, the formula is `100 - 60 (high) - 0 (no
-    // doctor) = 40`. A regression that mapped High→30 (score 70) or
-    // High→10 (score 90) would not be caught by the `health_score < 80`
+    // doctor) = 40`. A regression that mapped Highâ†’30 (score 70) or
+    // Highâ†’10 (score 90) would not be caught by the `health_score < 80`
     // threshold alone.
     assert_eq!(
         health_score, 40,
@@ -1550,7 +1550,7 @@ async fn test_api_sync_status_when_never_synced() {
     let guard = temp_layout();
     let layout = guard.layout();
 
-    // No sync_state row in the DB → "never synced" case.
+    // No sync_state row in the DB â†’ "never synced" case.
     let (url, token, handle) = spawn_server(layout.clone()).await;
     let body = tokio::task::spawn_blocking(move || {
         authed_get(&url, &token, "/api/sync/status")
@@ -1665,11 +1665,11 @@ async fn test_api_sync_status_after_init() {
 }
 
 /// Track 0013 DoD-1: when built **without** `sync`, `/api/sync/status`
-/// returns a clean `501 Not Implemented` (schema/runtime consistency — the
+/// returns a clean `501 Not Implemented` (schema/runtime consistency â€” the
 /// route is always registered, but the handler returns 501 when the
 /// feature is off).
 ///
-/// This test is `#[cfg(not(feature = "sync"))]` — it only compiles/runs
+/// This test is `#[cfg(not(feature = "sync"))]` â€” it only compiles/runs
 /// in a no-sync build. In the default CI run (which uses `--features sync`),
 /// it is skipped.
 #[cfg(not(feature = "sync"))]
@@ -1703,14 +1703,14 @@ async fn test_api_sync_status_returns_501_without_sync_feature() {
 /// zero.
 ///
 /// The test seeds the doctor-results file directly (which is the
-/// exact file `execute_doctor` writes — see
+/// exact file `execute_doctor` writes â€” see
 /// `src/commands/doctor.rs::write_doctor_results`) with a known
 /// failure count, then fetches `/api/projects` and asserts the
 /// `health_score` reflects the term. We seed the file rather than
 /// running the full `execute_doctor` because the doctor command is
 /// heavy (it probes embedding / completion model endpoints, the
 /// native graph, the Tantivy index, etc.) and depends on process CWD
-/// — the file format and writer logic are covered by the
+/// â€” the file format and writer logic are covered by the
 /// `count_doctor_failures` and `write_doctor_results` unit tests in
 /// `src/commands/doctor.rs`.
 #[tokio::test]
@@ -1720,7 +1720,7 @@ async fn test_api_projects_health_score_reflects_doctor_results() {
 
     // Write a valid impact report (low risk) so the only penalty in
     // the score is the doctor term. `100 - 5 (low) - 2*20 (doctor) = 55`
-    // → status "warning" (50 <= 55 < 80).
+    // â†’ status "warning" (50 <= 55 < 80).
     let reports_dir = layout.reports_dir();
     std::fs::create_dir_all(&reports_dir).unwrap();
     let report = serde_json::json!({
@@ -1793,7 +1793,7 @@ async fn test_api_projects_health_score_reflects_doctor_results() {
 
 /// Per M8 opencode-review H1 (negative case): without a
 /// `doctor-results.json` file present, the `doctor_failures` term is
-/// 0 — the existing behavior — and the health_score reflects the
+/// 0 â€” the existing behavior â€” and the health_score reflects the
 /// risk term only.
 #[tokio::test]
 async fn test_api_projects_health_score_no_doctor_file_is_clean() {
@@ -1843,7 +1843,7 @@ async fn test_api_projects_health_score_no_doctor_file_is_clean() {
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
     let first = &json.as_array().unwrap()[0];
     let health_score = first["health_score"].as_u64().expect("health_score is u64");
-    // 100 - 5 (low) - 0 (no doctor file) = 95 → healthy
+    // 100 - 5 (low) - 0 (no doctor file) = 95 â†’ healthy
     assert_eq!(
         health_score, 95,
         "no doctor file with low risk must produce health_score=95; got {health_score}"
@@ -1939,7 +1939,7 @@ async fn test_api_projects_health_score_corrupt_report_penalized() {
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
     let first = &json.as_array().unwrap()[0];
     let health_score = first["health_score"].as_u64().expect("health_score is u64");
-    // 100 - 40 (corrupt-report penalty) - 0 (no doctor) = 60 → warning
+    // 100 - 40 (corrupt-report penalty) - 0 (no doctor) = 60 â†’ warning
     assert_eq!(
         health_score, 60,
         "corrupt impact report must produce health_score=60 (M1 fix); got {health_score}"
@@ -1967,7 +1967,7 @@ async fn test_federated_schema_pre_m8_imports_unknown_author() {
 
     // Build a pre-M8-style FederatedSchema JSON. The key
     // characteristic is that `ledger` entries are serialized
-    // *without* an `author` field — simulating what a pre-M8 binary
+    // *without* an `author` field â€” simulating what a pre-M8 binary
     // using `with_ledger(...)` would have written.
     let pre_m8_json = r#"{
         "schema_version": "1.0",
@@ -1990,7 +1990,7 @@ async fn test_federated_schema_pre_m8_imports_unknown_author() {
         ]
     }"#;
 
-    // Deserialize — must succeed even though `author` is missing.
+    // Deserialize â€” must succeed even though `author` is missing.
     let parsed: FederatedSchema =
         serde_json::from_str(pre_m8_json).expect("pre-M8 schema must deserialize");
     assert_eq!(parsed.schema_version, "1.0");
@@ -2110,7 +2110,7 @@ fn seed_verification_runs(layout: &Layout) {
     // Run 3 (2026-06-18, pass): cargo test 400ms pass, cargo clippy 500ms pass.
     //
     // `plan_json` is a serialized `VerificationPlan` (camelCase) carrying a
-    // friendly `description` per step — `/api/verify/steps` reads this to
+    // friendly `description` per step â€” `/api/verify/steps` reads this to
     // populate `name` (falling back to `command`).
     let plan_json = r#"{"steps":[{"command":"cargo test","timeoutSecs":120,"description":"Run the test suite"},{"command":"cargo clippy","timeoutSecs":120,"description":"Lint with clippy"}]}"#;
     conn.execute(
@@ -2170,7 +2170,7 @@ async fn test_verify_health_no_runs_is_degraded() {
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(json["status"].as_str(), Some("DEGRADED"));
     // The field MUST be present as `null` (not omitted) so the frontend
-    // contract `lastRunAt: string | null` is satisfied — the dashboard empty
+    // contract `lastRunAt: string | null` is satisfied â€” the dashboard empty
     // state depends on a present key, not a missing one. serde emits no
     // space after the colon, so match the compact form.
     let body_compact = body.replace(' ', "");
@@ -2372,7 +2372,7 @@ async fn test_verify_steps_empty_when_no_db() {
 #[tokio::test]
 async fn test_verify_steps_name_falls_back_to_command_without_plan_json() {
     // When `plan_json` is absent/empty, `name` must fall back to `command`
-    // (graceful degradation — no parse failure can break the endpoint).
+    // (graceful degradation â€” no parse failure can break the endpoint).
     let guard = temp_layout();
     {
         use ledgerful::state::storage::StorageManager;
@@ -2381,7 +2381,7 @@ async fn test_verify_steps_name_falls_back_to_command_without_plan_json() {
         let db_path = layout.state_subdir().join("ledger.db");
         let storage = StorageManager::init(db_path.as_std_path()).unwrap();
         let conn = storage.get_connection();
-        // No plan_json (NULL) and a malformed plan_json row — both must be
+        // No plan_json (NULL) and a malformed plan_json row â€” both must be
         // skipped without failing the endpoint.
         conn.execute(
             "INSERT INTO verification_runs (timestamp, plan_json, overall_pass) \
@@ -2425,7 +2425,7 @@ async fn test_verify_steps_name_falls_back_to_command_without_plan_json() {
     let steps = json.as_array().expect("steps is an array");
     assert_eq!(steps.len(), 1);
     assert_eq!(steps[0]["id"].as_str(), Some("cargo fmt --check"));
-    // No usable plan_json → name falls back to command.
+    // No usable plan_json â†’ name falls back to command.
     assert_eq!(steps[0]["name"].as_str(), Some("cargo fmt --check"));
     handle.abort();
 }
@@ -2500,7 +2500,7 @@ async fn test_verify_steps_name_strips_predicted_impact_traceability() {
             .contains("Predicted impact"),
         "predicted-impact annotations must not leak into the dashboard name"
     );
-    // No friendly prefix → fall back to the command.
+    // No friendly prefix â†’ fall back to the command.
     assert_eq!(
         steps[1]["name"].as_str(),
         Some("cargo test --test integration -- --test-threads=1")
@@ -2554,7 +2554,6 @@ async fn fetch_compliance_signatures(url: &str, token: &str) -> serde_json::Valu
 /// VALID: mint a real signature via `sign_ledger_entry_in` and seed the row with
 /// the returned (sig, pub). The signed payload's `committed_at` and
 /// `category` match the seeded row, so `verify_signature` must succeed.
-#[serial]
 #[tokio::test]
 async fn test_compliance_valid_signature() {
     use ledgerful::ledger::crypto::sign_ledger_entry_in;
@@ -2608,9 +2607,8 @@ async fn test_compliance_valid_signature() {
 }
 
 /// INVALID (tampered): seed a row with a real signature but a DIFFERENT
-/// summary than was signed. `verify_signature` must fail → `INVALID` and
+/// summary than was signed. `verify_signature` must fail â†’ `INVALID` and
 /// `validityPercent < 100`.
-#[serial]
 #[tokio::test]
 async fn test_compliance_tampered_signature_is_invalid() {
     use ledgerful::ledger::crypto::sign_ledger_entry_in;
@@ -2649,12 +2647,12 @@ async fn test_compliance_tampered_signature_is_invalid() {
 
     let (url, token, handle) = spawn_server(layout).await;
     let summary_json = fetch_compliance_summary(&url, &token).await;
-    // Signed but does not verify → counts toward totalSigned but NOT valid.
+    // Signed but does not verify â†’ counts toward totalSigned but NOT valid.
     assert_eq!(summary_json["totalSigned"].as_u64(), Some(1));
     assert_eq!(summary_json["validityPercent"].as_f64(), Some(0.0));
     assert!(
         summary_json["lastAuditAt"].is_null(),
-        "no VALID entries → lastAuditAt must be null"
+        "no VALID entries â†’ lastAuditAt must be null"
     );
 
     let sigs = fetch_compliance_signatures(&url, &token).await;
@@ -2665,7 +2663,7 @@ async fn test_compliance_tampered_signature_is_invalid() {
 }
 
 /// SKIPPED: unsigned row (`signature=None, public_key=None`) with the default
-/// config (`intent.require_signing=false`) → `SKIPPED`, and does NOT count as
+/// config (`intent.require_signing=false`) â†’ `SKIPPED`, and does NOT count as
 /// invalid.
 #[tokio::test]
 async fn test_compliance_unsigned_skipped_when_not_required() {
@@ -2696,7 +2694,7 @@ async fn test_compliance_unsigned_skipped_when_not_required() {
     handle.abort();
 }
 
-/// UNSIGNED → INVALID when `intent.require_signing=true`: an unsigned row
+/// UNSIGNED â†’ INVALID when `intent.require_signing=true`: an unsigned row
 /// with signing required must classify as `INVALID`.
 #[tokio::test]
 async fn test_compliance_unsigned_invalid_when_required() {
@@ -2750,7 +2748,7 @@ async fn test_compliance_empty_state_no_db() {
 }
 
 /// `lastAuditAt` must serialize as `null` (present, not omitted) in the empty
-/// state — the frontend contract is `lastAuditAt: string | null`.
+/// state â€” the frontend contract is `lastAuditAt: string | null`.
 #[tokio::test]
 async fn test_compliance_summary_last_audit_at_serializes_as_null_in_empty_state() {
     let guard = temp_layout();
@@ -2792,7 +2790,7 @@ async fn test_compliance_hotspot_delta_percent(
     let layout = guard.layout();
     // Use `StorageManager::init` (full migrations) rather than
     // `seed_ledger_entry_with_ts` (minimal raw tables) so the `hotspot_history`
-    // table is created by its migration. No ledger entry is needed — the
+    // table is created by its migration. No ledger entry is needed â€” the
     // summary endpoint reads hotspot delta independently of the ledger.
     layout.ensure_state_dir().unwrap();
     let db_path = layout.state_subdir().join("ledger.db");
@@ -2965,7 +2963,6 @@ fn hash_zip_file(body: &[u8], name: &str) -> String {
 /// zip is well-formed, the manifest's `ledger.csv` sha256 matches a re-hash,
 /// the Ed25519 signature verifies, and the seeded content is present in the
 /// right files.
-#[serial]
 #[tokio::test]
 async fn test_soc2_export_seeded() {
     use ledgerful::ledger::crypto::sign_ledger_entry_in;
@@ -3078,7 +3075,6 @@ async fn test_soc2_export_seeded() {
 /// Empty state (no DB): export still returns 200 + a valid zip with
 /// header-only CSVs, no `adr/` files, and a signature that verifies over
 /// the manifest.
-#[serial(env)]
 #[tokio::test]
 async fn test_soc2_export_empty_state_no_db() {
     use crate::common::TempEnv;
@@ -3133,10 +3129,9 @@ async fn test_soc2_export_empty_state_no_db() {
 /// Tamper detection (negative): take a valid export, flip one byte in
 /// `ledger.csv` within the archive, and re-serialize a new zip with the
 /// ORIGINAL manifest.json/manifest.sig/manifest.pub. Re-hashing the
-/// tampered `ledger.csv` must NOT match the manifest's `sha256` — i.e. the
+/// tampered `ledger.csv` must NOT match the manifest's `sha256` â€” i.e. the
 /// manifest would detect the tamper. This proves the tamper-evidence
 /// contract actually catches modification.
-#[serial]
 #[tokio::test]
 async fn test_soc2_export_tamper_detection() {
     use ledgerful::ledger::crypto::sign_ledger_entry_in;
@@ -3228,12 +3223,11 @@ async fn test_soc2_export_tamper_detection() {
 /// one byte in `manifest.json` while leaving `manifest.sig`, `manifest.pub`,
 /// and all data files untouched, then prove the Ed25519 signature over the
 /// ORIGINAL `manifest.json` does NOT verify against the tampered manifest
-/// bytes — i.e. `verifying_key.verify(&tampered_manifest, &signature)` is
+/// bytes â€” i.e. `verifying_key.verify(&tampered_manifest, &signature)` is
 /// `Err`. This complements `test_soc2_export_tamper_detection` (which proves
 /// the file-HASH leg catches a modified data file) by locking in the
 /// signature-rejection leg: any alteration to `manifest.json` itself is
 /// caught by the Ed25519 verifier, not just by per-file SHA-256 comparison.
-#[serial]
 #[tokio::test]
 async fn test_soc2_export_tampered_manifest_fails_signature_verification() {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
@@ -3296,7 +3290,7 @@ async fn test_soc2_export_tampered_manifest_fails_signature_verification() {
     tampered_manifest[0] ^= 0xFF;
 
     // The signature over the ORIGINAL manifest.json must NOT verify against
-    // the tampered manifest bytes — the Ed25519 verifier must reject it.
+    // the tampered manifest bytes â€” the Ed25519 verifier must reject it.
     assert!(
         verifying_key
             .verify(&tampered_manifest, &signature)
