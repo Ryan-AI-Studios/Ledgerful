@@ -62,7 +62,6 @@ fn setup_indexed_repo() -> tempfile::TempDir {
 
 /// Count rows in `hotspot_history` for the temp repo (read-only contract
 /// check: a non-interactive degrade run must not mutate history).
-#[allow(dead_code)]
 fn hotspot_history_count(root: &std::path::Path) -> i64 {
     let repo_root = Utf8Path::from_path(root).unwrap();
     let storage = StorageManager::open_read_only_sqlite_only(repo_root).unwrap();
@@ -79,7 +78,7 @@ fn hotspot_history_count(root: &std::path::Path) -> i64 {
     &["hotspots", "trend"],
     Some("No trend history yet for this repository."),
     Some("ledgerful hotspots trend --bootstrap"),
-    Some("hotspot_history"),
+    None,
     true,
 )]
 #[case::security_boundaries(
@@ -146,6 +145,14 @@ fn non_interactive_degrades_read_only(
             !root.join(path).exists(),
             "non-interactive {:?} must not create {path}/",
             command
+        );
+    }
+    // hotspots trend is a read-only degrade: history must stay empty.
+    if command == ["hotspots", "trend"] {
+        assert_eq!(
+            hotspot_history_count(root),
+            0,
+            "non-interactive `hotspots trend` must not mutate hotspot_history"
         );
     }
 }
