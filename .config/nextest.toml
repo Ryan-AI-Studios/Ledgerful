@@ -37,3 +37,26 @@ default-filter = 'test(/__slow$/)'
 inherits = "ci"
 # Only runs the compile_fail trybuild crate.
 default-filter = 'binary(compile_fail)'
+
+# Serial test-group (track 0062). max-threads = 1 means tests in this group run
+# one at a time, while the rest of the suite runs in parallel around them.
+# Phase 0 found no real contenders (full-parallel run: 2134 passed, 0 flakes),
+# so the filterset is empty (placeholder `test(/^$/)` matches no test name).
+# Add ONLY group-local contenders confirmed by the 3-run retries=0 CI gate.
+# Global-resource contenders (fixed port / hardcoded path / singleton) must be
+# fixed by isolation, not a test-group — a group cannot shield them from the
+# parallel majority.
+[test-groups.serial]
+max-threads = 1
+
+[[profile.default.overrides]]
+test-group = "serial"
+filter = 'test(/^$/)'  # placeholder — add Phase-0-confirmed group-local contenders here
+
+[[profile.ci.overrides]]
+test-group = "serial"
+filter = 'test(/^$/)'
+
+[[profile.slow.overrides]]
+test-group = "serial"
+filter = 'test(/^$/)'

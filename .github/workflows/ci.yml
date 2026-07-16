@@ -95,12 +95,16 @@ jobs:
       - name: Run fast tier (default + integration)
         shell: bash
         # Uses `.config/nextest.toml` profile `ci` (excludes `__slow` tests
-        # and the `compile_fail` trybuild crate). `-j 1` is kept on Windows
-        # to avoid NTFS/link.exe contention flakiness. TA3 replaced the
-        # process-wide cwd_lock with per-test DirGuard + `#[serial]`.
+        # and the `compile_fail` trybuild crate). `-j 4` on Windows: bounded
+        # parallelism (4 vCPU / 16 GB runner). Phase-0 of track 0062 found the
+        # old `-j 1` was guarding test-runtime OOM, not compile (no build-jobs
+        # cap exists). Full-parallel local run: 2134 passed, 0 flakes.
+        # `#[serial(cwd/env)]` are no-ops under nextest's process-per-test model
+        # (serial_test 3.5.0, no file_locks). If CI OOMs at -j 4, drop to -j 2.
+        # See `.config/nextest.toml` [test-groups.serial] for confirmed contenders.
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cargo nextest run -j 1 --workspace --all-features --profile ci
+            cargo nextest run -j 4 --workspace --all-features --profile ci
           else
             cargo nextest run --workspace --all-features --profile ci
           fi
@@ -132,9 +136,11 @@ jobs:
 
       - name: Run slow tier
         shell: bash
+        # `-j 4` on Windows: bounded parallelism for the 4 vCPU / 16 GB runner.
+        # See the `test` job and `.config/nextest.toml` [test-groups.serial].
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cargo nextest run -j 1 --workspace --all-features --profile slow
+            cargo nextest run -j 4 --workspace --all-features --profile slow
           else
             cargo nextest run --workspace --all-features --profile slow
           fi
@@ -162,9 +168,11 @@ jobs:
 
       - name: Run compile-fail tier (trybuild)
         shell: bash
+        # `-j 4` on Windows: bounded parallelism for the 4 vCPU / 16 GB runner.
+        # See the `test` job and `.config/nextest.toml` [test-groups.serial].
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
-            cargo nextest run -j 1 --workspace --all-features --profile compile-fail
+            cargo nextest run -j 4 --workspace --all-features --profile compile-fail
           else
             cargo nextest run --workspace --all-features --profile compile-fail
           fi
