@@ -12,28 +12,25 @@ on:
 permissions:
   contents: read
 
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
-
 jobs:
   web-build:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: Ryan-AI-Studios/ledgerful-frontend
           ref: 4a1df7e2be68bb1136a18c52f1ba420801858c89
           token: ${{ secrets.LEDGERFUL_FRONTEND_PAT }}
           path: ledgerful-frontend
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
       - run: npm ci
         working-directory: ledgerful-frontend
       - run: npm run build
         working-directory: ledgerful-frontend
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: ledgerful-web-spa
           path: ledgerful-frontend/out
@@ -45,7 +42,7 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-14, macos-15, windows-latest]
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: stable
@@ -60,8 +57,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-14, macos-15, windows-latest]
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ledgerful-web-spa
           path: ../ledgerful-frontend/out
@@ -80,8 +77,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, macos-14, macos-15, windows-latest]
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ledgerful-web-spa
           path: ../ledgerful-frontend/out
@@ -122,8 +119,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ledgerful-web-spa
           path: ../ledgerful-frontend/out
@@ -154,8 +151,8 @@ jobs:
       matrix:
         os: [ubuntu-latest, windows-latest]
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
           name: ledgerful-web-spa
           path: ../ledgerful-frontend/out
@@ -181,7 +178,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: stable
@@ -193,7 +190,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: stable
@@ -208,7 +205,7 @@ jobs:
       contents: read
       actions: write
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - name: No-network grep (public export)
         shell: bash
         run: |
@@ -219,7 +216,7 @@ jobs:
             exit 1
           fi
           echo "PASS: no network dependencies in public export module" > no-network-result.txt
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: no-network-grep
           path: no-network-result.txt
@@ -229,7 +226,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: stable
@@ -237,7 +234,7 @@ jobs:
       - uses: taiki-e/install-action@e2ba4a39dc7bf116c8a572366d98fadc69b818f5
       - uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2
       - run: cargo llvm-cov nextest --workspace --all-features --html --output-dir coverage/
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: coverage-report
           path: coverage/
@@ -247,14 +244,14 @@ jobs:
     if: github.event_name == 'schedule'
     timeout-minutes: 120
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: stable
       - uses: taiki-e/install-action@18124c74391878d932c447fcd1687a5fa1058c01
       - uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2
       - run: cargo mutants --workspace --in-place --file 'src/ledger/**' --file 'src/impact/**' --file 'src/verify/**'
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: mutants-report
           path: mutants.out/
