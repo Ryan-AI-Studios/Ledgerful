@@ -111,7 +111,7 @@ jobs:
         run: cargo test --workspace --all-features --doc
 
   test-slow:
-    needs: [web-build, test]
+    needs: [web-build, clippy]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 60
     strategy:
@@ -143,7 +143,7 @@ jobs:
           fi
 
   test-compile-fail:
-    needs: [web-build, test]
+    needs: [web-build, clippy]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
