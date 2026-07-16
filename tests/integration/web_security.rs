@@ -53,29 +53,20 @@ fn client() -> reqwest::Client {
     reqwest::Client::new()
 }
 
+#[rstest::rstest]
+#[case::rejects_non_loopback("evil.com", 403)]
+#[case::accepts_localhost("{host}", 200)]
+#[case::accepts_ipv4("127.0.0.1:{port}", 200)]
+#[case::accepts_ipv6_bracketed("[::1]:{port}", 200)]
+#[case::accepts_ipv6_expanded("[0:0:0:0:0:0:0:1]:{port}", 200)]
 #[tokio::test]
-async fn host_validation_rejects_non_loopback_host() {
+async fn test_host_validation(#[case] host_template: &str, #[case] expected_status: u16) {
     let guard = temp_layout();
     let (url, _token, handle) = spawn_server(guard.layout()).await;
-
-    let status = client()
-        .get(format!("{}/health", url))
-        .header(HOST, "evil.com")
-        .send()
-        .await
-        .unwrap()
-        .status()
-        .as_u16();
-
-    assert_eq!(status, 403);
-    handle.abort();
-}
-
-#[tokio::test]
-async fn host_validation_accepts_localhost() {
-    let guard = temp_layout();
-    let (url, _token, handle) = spawn_server(guard.layout()).await;
-    let host = url.trim_start_matches("http://").to_string();
+    let port = port_from_url(&url);
+    let host = host_template
+        .replace("{host}", url.trim_start_matches("http://"))
+        .replace("{port}", &port.to_string());
 
     let status = client()
         .get(format!("{}/health", url))
@@ -86,64 +77,7 @@ async fn host_validation_accepts_localhost() {
         .status()
         .as_u16();
 
-    assert_eq!(status, 200);
-    handle.abort();
-}
-
-#[tokio::test]
-async fn host_validation_accepts_ipv4_loopback() {
-    let guard = temp_layout();
-    let (url, _token, handle) = spawn_server(guard.layout()).await;
-    let port = port_from_url(&url);
-
-    let status = client()
-        .get(format!("{}/health", url))
-        .header(HOST, format!("127.0.0.1:{}", port))
-        .send()
-        .await
-        .unwrap()
-        .status()
-        .as_u16();
-
-    assert_eq!(status, 200);
-    handle.abort();
-}
-
-#[tokio::test]
-async fn host_validation_accepts_ipv6_bracketed() {
-    let guard = temp_layout();
-    let (url, _token, handle) = spawn_server(guard.layout()).await;
-    let port = port_from_url(&url);
-
-    let status = client()
-        .get(format!("{}/health", url))
-        .header(HOST, format!("[::1]:{}", port))
-        .send()
-        .await
-        .unwrap()
-        .status()
-        .as_u16();
-
-    assert_eq!(status, 200);
-    handle.abort();
-}
-
-#[tokio::test]
-async fn host_validation_accepts_ipv6_expanded() {
-    let guard = temp_layout();
-    let (url, _token, handle) = spawn_server(guard.layout()).await;
-    let port = port_from_url(&url);
-
-    let status = client()
-        .get(format!("{}/health", url))
-        .header(HOST, format!("[0:0:0:0:0:0:0:1]:{}", port))
-        .send()
-        .await
-        .unwrap()
-        .status()
-        .as_u16();
-
-    assert_eq!(status, 200);
+    assert_eq!(status, expected_status);
     handle.abort();
 }
 

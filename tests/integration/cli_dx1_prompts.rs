@@ -62,6 +62,7 @@ fn setup_indexed_repo() -> tempfile::TempDir {
 
 /// Count rows in `hotspot_history` for the temp repo (read-only contract
 /// check: a non-interactive degrade run must not mutate history).
+#[allow(dead_code)]
 fn hotspot_history_count(root: &std::path::Path) -> i64 {
     let repo_root = Utf8Path::from_path(root).unwrap();
     let storage = StorageManager::open_read_only_sqlite_only(repo_root).unwrap();
@@ -70,131 +71,81 @@ fn hotspot_history_count(root: &std::path::Path) -> i64 {
         .unwrap()
 }
 
-/// Non-interactive degrade: `hotspots trend` must not block, must exit 0, must
-/// print the read-only empty-state messages (no prompt text), and must not
-/// create hotspot history.
-#[test]
+/// Non-interactive degrade contract: each read-only surface must exit 0,
+/// must not print a `[Y/n]` prompt, and must not create its side-effect path.
+/// The first case also asserts the exact empty-state messages + bootstrap hint.
+#[rstest::rstest]
+#[case::hotspots_trend(
+    &["hotspots", "trend"],
+    Some("No trend history yet for this repository."),
+    Some("ledgerful hotspots trend --bootstrap"),
+    Some("hotspot_history"),
+    true,
+)]
+#[case::security_boundaries(
+    &["security", "boundaries"],
+    None,
+    None,
+    Some("policies"),
+    true,
+)]
+#[case::observability_coverage(
+    &["observability", "coverage"],
+    Some("No OpenSLO coverage data found."),
+    None,
+    Some("observability"),
+    true,
+)]
 #[serial(env, cwd)]
-fn test_hotspots_trend_non_interactive_degrades_read_only() {
+fn non_interactive_degrades_read_only(
+    #[case] command: &[&str],
+    #[case] expected_empty_message: Option<&str>,
+    #[case] expected_bootstrap_hint: Option<&str>,
+    #[case] side_effect_path: Option<&str>,
+    #[case] expect_success: bool,
+) {
     let tmp = setup_indexed_repo();
     let root = tmp.path();
 
     let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
     let output = Command::new(ledgerful_bin)
-        .args(["hotspots", "trend"])
-        // Explicit non-interactive override + null stdin so the run cannot block
-        // even if the TTY check were to misfire.
+        .args(command)
         .env("LEDGERFUL_NON_INTERACTIVE", "1")
         .stdin(Stdio::null())
         .current_dir(root)
         .output()
         .unwrap();
 
-    assert!(
-        output.status.success(),
-        "non-interactive `hotspots trend` must exit 0, got: {:?}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    assert!(
-        stdout.contains("No trend history yet for this repository."),
-        "expected read-only empty-state message, got: {stdout}"
-    );
-    assert!(
-        stdout.contains("ledgerful hotspots trend --bootstrap"),
-        "expected the exact bootstrap command hint, got: {stdout}"
-    );
-    // No prompt must be printed in non-interactive mode.
-    assert!(
-        !stdout.contains("[Y/n]"),
-        "non-interactive run must not print a prompt: {stdout}"
-    );
-
-    // Read-only contract: history untouched, no side effects.
     assert_eq!(
-        hotspot_history_count(root),
-        0,
-        "non-interactive `hotspots trend` must not mutate hotspot_history"
-    );
-}
-
-/// Non-interactive degrade: `security boundaries` must not block, must exit 0,
-/// must print a read-only empty-state message, and must not create a
-/// `policies/` directory under the temp repo.
-#[test]
-#[serial(env, cwd)]
-fn test_security_boundaries_non_interactive_degrades_read_only() {
-    let tmp = setup_indexed_repo();
-    let root = tmp.path();
-
-    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
-    let output = Command::new(ledgerful_bin)
-        .args(["security", "boundaries"])
-        .env("LEDGERFUL_NON_INTERACTIVE", "1")
-        .stdin(Stdio::null())
-        .current_dir(root)
-        .output()
-        .unwrap();
-
-    assert!(
         output.status.success(),
-        "non-interactive `security boundaries` must exit 0, got: {:?}",
+        expect_success,
+        "command {:?} exit-status mismatch, stderr: {:?}",
+        command,
         String::from_utf8_lossy(&output.stderr)
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
 
-    // The repo has no Cedar policy files, so the surface reports an empty
-    // state. Either the "no Cedar policy data" branch or the "knowledge graph
-    // has not been built" branch may fire depending on whether indexing
-    // populated graph nodes; both are read-only and neither prints a prompt.
+    if let Some(msg) = expected_empty_message {
+        assert!(
+            stdout.contains(msg),
+            "expected read-only empty-state message {msg:?}, got: {stdout}"
+        );
+    }
+    if let Some(hint) = expected_bootstrap_hint {
+        assert!(
+            stdout.contains(hint),
+            "expected bootstrap hint {hint:?}, got: {stdout}"
+        );
+    }
     assert!(
         !stdout.contains("[Y/n]"),
         "non-interactive run must not print a prompt: {stdout}"
     );
-    // No side effects: policies/ must not be created on the degrade path.
-    assert!(
-        !root.join("policies").exists(),
-        "non-interactive `security boundaries` must not create policies/"
-    );
-}
-
-/// Non-interactive degrade: `observability coverage` must not block, must
-/// exit 0, must print the read-only empty-state messages, and must not create
-/// an `observability/` directory under the temp repo.
-#[test]
-#[serial(env, cwd)]
-fn test_observability_coverage_non_interactive_degrades_read_only() {
-    let tmp = setup_indexed_repo();
-    let root = tmp.path();
-
-    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
-    let output = Command::new(ledgerful_bin)
-        .args(["observability", "coverage"])
-        .env("LEDGERFUL_NON_INTERACTIVE", "1")
-        .stdin(Stdio::null())
-        .current_dir(root)
-        .output()
-        .unwrap();
-
-    assert!(
-        output.status.success(),
-        "non-interactive `observability coverage` must exit 0, got: {:?}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let stdout = String::from_utf8_lossy(&output.stdout);
-
-    assert!(
-        stdout.contains("No OpenSLO coverage data found."),
-        "expected read-only empty-state message, got: {stdout}"
-    );
-    assert!(
-        !stdout.contains("[Y/n]"),
-        "non-interactive run must not print a prompt: {stdout}"
-    );
-    // No side effects: observability/ must not be created on the degrade path.
-    assert!(
-        !root.join("observability").exists(),
-        "non-interactive `observability coverage` must not create observability/"
-    );
+    if let Some(path) = side_effect_path {
+        assert!(
+            !root.join(path).exists(),
+            "non-interactive {:?} must not create {path}/",
+            command
+        );
+    }
 }

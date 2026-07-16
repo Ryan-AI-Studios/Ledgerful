@@ -2776,11 +2776,16 @@ async fn test_compliance_summary_last_audit_at_serializes_as_null_in_empty_state
 
 /// `hotspotDeltaPercent`: seed two `hotspot_history` snapshots with different
 /// total row counts and assert the computed percent delta.
-///
-/// Older snapshot (2026-06-19): 4 hotspot rows. Newer snapshot
-/// (2026-06-20): 5 hotspot rows. Expected delta: `((5-4)/4)*100 = 25.0`.
+#[rstest::rstest]
+#[case::increase(4, 5, 25.0)]
+#[case::single_snapshot(1, 0, 0.0)]
+#[case::decrease(5, 4, -20.0)]
 #[tokio::test]
-async fn test_compliance_hotspot_delta_percent() {
+async fn test_compliance_hotspot_delta_percent(
+    #[case] old_count: usize,
+    #[case] new_count: usize,
+    #[case] expected_percent: f64,
+) {
     use ledgerful::state::storage::StorageManager;
 
     let guard = temp_layout();
@@ -2793,8 +2798,8 @@ async fn test_compliance_hotspot_delta_percent() {
     let db_path = layout.state_subdir().join("ledger.db");
     let storage = StorageManager::init(db_path.as_std_path()).unwrap();
     let conn = storage.get_connection();
-    // Older snapshot: 4 rows at 2026-06-19T09:00:00Z.
-    for i in 0..4 {
+
+    for i in 0..old_count {
         conn.execute(
             "INSERT INTO hotspot_history \
              (file_path, score, display_score, complexity, frequency, timestamp) \
@@ -2803,8 +2808,7 @@ async fn test_compliance_hotspot_delta_percent() {
         )
         .unwrap();
     }
-    // Newer snapshot: 5 rows at 2026-06-20T09:00:00Z.
-    for i in 0..5 {
+    for i in 0..new_count {
         conn.execute(
             "INSERT INTO hotspot_history \
              (file_path, score, display_score, complexity, frequency, timestamp) \
@@ -2816,91 +2820,13 @@ async fn test_compliance_hotspot_delta_percent() {
 
     let (url, token, handle) = spawn_server(layout).await;
     let summary_json = fetch_compliance_summary(&url, &token).await;
-    // ((5 - 4) / 4) * 100 = 25.0
     assert_eq!(
         summary_json["hotspotDeltaPercent"].as_f64(),
-        Some(25.0),
-        "expected 25.0 percent delta (4->5 hotspots); got {:?}",
-        summary_json["hotspotDeltaPercent"]
-    );
-    handle.abort();
-}
-
-/// `hotspotDeltaPercent` with fewer than 2 snapshots → `0.0` (guard).
-#[tokio::test]
-async fn test_compliance_hotspot_delta_percent_single_snapshot_is_zero() {
-    use ledgerful::state::storage::StorageManager;
-
-    let guard = temp_layout();
-    let layout = guard.layout();
-    layout.ensure_state_dir().unwrap();
-    let db_path = layout.state_subdir().join("ledger.db");
-    let storage = StorageManager::init(db_path.as_std_path()).unwrap();
-    let conn = storage.get_connection();
-    conn.execute(
-        "INSERT INTO hotspot_history \
-         (file_path, score, display_score, complexity, frequency, timestamp) \
-         VALUES ('src/only.rs', 1.0, 1.0, 1, 1.0, '2026-06-20T09:00:00Z')",
-        [],
-    )
-    .unwrap();
-
-    let (url, token, handle) = spawn_server(layout).await;
-    let summary_json = fetch_compliance_summary(&url, &token).await;
-    assert_eq!(summary_json["hotspotDeltaPercent"].as_f64(), Some(0.0));
-    handle.abort();
-}
-
-/// `hotspotDeltaPercent` decreasing direction: older snapshot has 5 rows,
-/// newer has 4 → `((4-5)/5)*100 = -20.0`. Pins the formula in the decreasing
-/// direction (the increasing direction is covered by
-/// `test_compliance_hotspot_delta_percent`).
-///
-/// The `older_total == 0 → 100.0` division-by-zero guard on
-/// `fetch_hotspot_delta_percent` is structurally unreachable via the HTTP
-/// path: `older_total` is `COUNT(*)` for a `timestamp` that appears in
-/// `SELECT DISTINCT timestamp FROM hotspot_history`, so it is always `>= 1`.
-/// The guard is retained as defensive code for future schema changes and is
-/// verified by inspection against the doc comment on
-/// `fetch_hotspot_delta_percent`.
-#[tokio::test]
-async fn test_compliance_hotspot_delta_percent_decreasing() {
-    use ledgerful::state::storage::StorageManager;
-
-    let guard = temp_layout();
-    let layout = guard.layout();
-    layout.ensure_state_dir().unwrap();
-    let db_path = layout.state_subdir().join("ledger.db");
-    let storage = StorageManager::init(db_path.as_std_path()).unwrap();
-    let conn = storage.get_connection();
-    // Older snapshot: 5 rows at 2026-06-19T09:00:00Z.
-    for i in 0..5 {
-        conn.execute(
-            "INSERT INTO hotspot_history \
-             (file_path, score, display_score, complexity, frequency, timestamp) \
-             VALUES (?1, 1.0, 1.0, 1, 1.0, '2026-06-19T09:00:00Z')",
-            rusqlite::params![format!("src/old{i}.rs")],
-        )
-        .unwrap();
-    }
-    // Newer snapshot: 4 rows at 2026-06-20T09:00:00Z.
-    for i in 0..4 {
-        conn.execute(
-            "INSERT INTO hotspot_history \
-             (file_path, score, display_score, complexity, frequency, timestamp) \
-             VALUES (?1, 2.0, 2.0, 2, 2.0, '2026-06-20T09:00:00Z')",
-            rusqlite::params![format!("src/new{i}.rs")],
-        )
-        .unwrap();
-    }
-
-    let (url, token, handle) = spawn_server(layout).await;
-    let summary_json = fetch_compliance_summary(&url, &token).await;
-    // ((4 - 5) / 5) * 100 = -20.0
-    assert_eq!(
-        summary_json["hotspotDeltaPercent"].as_f64(),
-        Some(-20.0),
-        "expected -20.0 percent delta (5->4 hotspots); got {:?}",
+        Some(expected_percent),
+        "expected {} percent delta ({}->{} hotspots); got {:?}",
+        expected_percent,
+        old_count,
+        new_count,
         summary_json["hotspotDeltaPercent"]
     );
     handle.abort();

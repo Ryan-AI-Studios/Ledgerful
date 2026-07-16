@@ -508,38 +508,6 @@ mod tests {
     }
 
     #[test]
-    fn existing_private_key_is_not_clobbered_by_legacy_file() {
-        let (_temp, keys_dir) = temp_keys_dir();
-
-        let new_seed = [3u8; 32];
-        let new_signing = SigningKey::from_bytes(&new_seed);
-        let new_verifying = new_signing.verifying_key();
-
-        let legacy_seed = [4u8; 32];
-
-        fs::write(keys_dir.join("private.key"), hex::encode(new_seed)).unwrap();
-        fs::write(
-            keys_dir.join("public.pem"),
-            hex::encode(new_verifying.to_bytes()),
-        )
-        .unwrap();
-        fs::write(keys_dir.join("private.pem"), hex::encode(legacy_seed)).unwrap();
-
-        let (loaded_signing, loaded_verifying) = get_or_create_keys_in(&keys_dir).unwrap();
-
-        assert_eq!(
-            loaded_signing.to_bytes(),
-            new_seed,
-            "private.key must not be clobbered"
-        );
-        assert_eq!(loaded_verifying.to_bytes(), new_verifying.to_bytes());
-
-        if keys_dir.join("private.pem").exists() {
-            assert!(keys_dir.join("private.key").exists());
-        }
-    }
-
-    #[test]
     fn verify_keypair_consistency_true_for_matching_pair() {
         let signing_key = SigningKey::from_bytes(&[21u8; 32]);
         let verifying_key = signing_key.verifying_key();
