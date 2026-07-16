@@ -209,7 +209,7 @@ pub fn format_pruned_packet(pruned: &PrunedPacket<'_>) -> String {
 
     if !pruned.ai_insights.is_empty() {
         out.push_str(&format!(
-            "\nExternal AI-Brains Context ({}):\n",
+            "\nExternal Context ({}):\n",
             pruned.ai_insights.len()
         ));
         for insight in pruned.ai_insights {

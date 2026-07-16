@@ -36,7 +36,7 @@ fn test_ipc_receive_records_staggered() {
     };
 
     // Convert pipe name to UTF-16
-    let pipe_name: Vec<u16> = r"\\.\pipe\aibrains-sync"
+    let pipe_name: Vec<u16> = r"\\.\pipe\ledgerful-bridge"
         .encode_utf16()
         .chain(std::iter::once(0))
         .collect();
@@ -133,7 +133,7 @@ fn test_ipc_receive_records_staggered() {
 
     // Wait a brief moment for server to start ConnectNamedPipe
     wait_for_condition(
-        || fs::metadata(r"\\.\pipe\aibrains-sync").is_ok(),
+        || fs::metadata(r"\\.\pipe\ledgerful-bridge").is_ok(),
         Duration::from_secs(2),
         Duration::from_millis(50),
     )

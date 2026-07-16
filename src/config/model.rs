@@ -1,4 +1,5 @@
 mod ask;
+mod bridge;
 mod coverage;
 mod env;
 mod federation;
@@ -12,6 +13,7 @@ mod sync;
 mod verify;
 
 pub use self::ask::*;
+pub use self::bridge::*;
 pub use self::coverage::*;
 pub use self::federation::*;
 pub use self::gate::*;

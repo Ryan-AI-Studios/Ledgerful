@@ -1,16 +1,30 @@
 use crate::bridge::model::{BridgeRecord, deserialize_record};
+use crate::config::load::load_config;
+use crate::state::layout::Layout;
 use crate::util::query::sanitize_fts5_query;
-use miette::Result;
+use miette::{IntoDiagnostic, Result};
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use wait_timeout::ChildExt;
 
+fn provider_command() -> String {
+    let current_dir = std::env::current_dir()
+        .into_diagnostic()
+        .unwrap_or_default();
+    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    load_config(&layout)
+        .map(|c| c.bridge.provider_command)
+        .unwrap_or_else(|_| "ai-brains".to_string())
+}
+
 pub fn query_external_cli(query: &str) -> Result<Vec<BridgeRecord>> {
     // CR3: Increased from 800ms to 2000ms to prevent false timeouts on loaded systems.
     let timeout = Duration::from_millis(2000);
 
-    let mut child = match Command::new("ai-brains")
+    let command_name = provider_command();
+
+    let mut child = match Command::new(&command_name)
         .args([
             "sync",
             "query",
@@ -25,7 +39,8 @@ pub fn query_external_cli(query: &str) -> Result<Vec<BridgeRecord>> {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!(
-                "Failed to spawn ai-brains CLI: {}. AI-Brains integration is degraded.",
+                "Failed to spawn bridge provider '{}': {}. Bridge provider integration is degraded.",
+                command_name,
                 e
             );
             return Ok(Vec::new());
@@ -35,13 +50,20 @@ pub fn query_external_cli(query: &str) -> Result<Vec<BridgeRecord>> {
     let status = match child.wait_timeout(timeout) {
         Ok(Some(status)) => status,
         Ok(None) => {
-            tracing::warn!("ai-brains query timed out. Killing process.");
+            tracing::warn!(
+                "Bridge provider '{}' query timed out. Killing process.",
+                command_name
+            );
             let _ = child.kill();
             let _ = child.wait();
             return Ok(Vec::new());
         }
         Err(e) => {
-            tracing::warn!("Error waiting for ai-brains: {}", e);
+            tracing::warn!(
+                "Error waiting for bridge provider '{}': {}",
+                command_name,
+                e
+            );
             let _ = child.kill();
             let _ = child.wait();
             return Ok(Vec::new());
@@ -54,7 +76,8 @@ pub fn query_external_cli(query: &str) -> Result<Vec<BridgeRecord>> {
             let _ = err.read_to_string(&mut stderr);
         }
         tracing::warn!(
-            "ai-brains CLI returned error: {}. AI-Brains integration is degraded.",
+            "Bridge provider '{}' returned error: {}. Bridge provider integration is degraded.",
+            command_name,
             stderr
         );
         return Ok(Vec::new());
@@ -73,7 +96,7 @@ pub fn query_external_cli(query: &str) -> Result<Vec<BridgeRecord>> {
         match deserialize_record(line) {
             Ok(record) => records.push(record),
             Err(e) => {
-                tracing::warn!("Failed to parse ai-brains record: {}", e);
+                tracing::warn!("Failed to parse bridge provider record: {}", e);
             }
         }
     }

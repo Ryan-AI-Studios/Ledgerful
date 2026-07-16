@@ -4,7 +4,7 @@ use miette::Result;
 
 #[derive(Subcommand, Debug)]
 pub enum BridgeCommands {
-    /// Export Ledgerful state for AI-Brains
+    /// Export Ledgerful state (hotspots/ledger/decisions) as BridgeRecord NDJSON
     Export {
         /// Output path
         #[arg(long, short)]
@@ -31,13 +31,13 @@ pub enum BridgeCommands {
         #[arg(long)]
         json: bool,
     },
-    /// Import AI-Brains insights into Ledgerful
+    /// Import external insights (BridgeRecord NDJSON) into Ledgerful
     Import {
         /// Input path (NDJSON)
         #[arg(long, short)]
         input: String,
     },
-    /// Query AI-Brains for context
+    /// Query the bridge for context
     Query {
         /// Query string
         query: String,

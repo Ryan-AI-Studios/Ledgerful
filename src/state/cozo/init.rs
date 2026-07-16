@@ -29,7 +29,7 @@ pub fn setup_schema(storage: &CozoStorage) -> Result<()> {
         storage.run_script(CREATE_FTS_INDEX)?;
     }
 
-    // AI-Brains relations
+    // Bridge relations
     if !existing.contains(&"Turn".to_string()) {
         storage.run_script(CREATE_TURN_TABLE)?;
     }
