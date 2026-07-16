@@ -3,6 +3,9 @@ use ledgerful::cli::{self, Cli};
 use miette::Result;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
+// DO NOT MERGE — track 0066 DoD-3 fail-fast test
+fn _compile_error_test() { let x: u32 = "not a u32"; }
+
 /// Build the log filter based on the verbose flag.
 ///
 /// - `verbose = true`: use "debug" level for all crates
