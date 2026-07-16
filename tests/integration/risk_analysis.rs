@@ -245,16 +245,40 @@ fn test_common_env_var_dep_is_filtered_from_risk() {
 
 // ── E4-4: Runtime usage delta risk signals ────────────────────────────────────
 
-#[test]
-fn test_runtime_delta_env_count_change_triggers_risk_reason() {
+#[rstest::rstest]
+#[case::env_count_change(
+    1, 3, 0, 0,
+    vec!["DATABASE_URL"], vec![],
+    "New environment variable references"
+)]
+#[case::config_count_change(
+    0, 0, 2, 4,
+    vec![], vec![],
+    "Configuration key references changed"
+)]
+#[case::identity_change(
+    1, 1, 0, 0,
+    vec!["DATABASE_URL"], vec!["REDIS_URL"],
+    "Environment variable identities changed"
+)]
+fn runtime_delta_triggers_risk_reason(
+    #[case] env_vars_previous_count: usize,
+    #[case] env_vars_current_count: usize,
+    #[case] config_keys_previous_count: usize,
+    #[case] config_keys_current_count: usize,
+    #[case] env_vars_previous: Vec<&str>,
+    #[case] env_vars_current: Vec<&str>,
+    #[case] expected_reason: &str,
+) {
     let mut packet = ImpactPacket::default();
     packet.runtime_usage_delta.push(RuntimeUsageDelta {
         file_path: "src/server.rs".to_string(),
-        env_vars_previous_count: 1,
-        env_vars_current_count: 3,
-        config_keys_previous_count: 0,
-        config_keys_current_count: 0,
-        ..Default::default()
+        env_vars_previous_count,
+        env_vars_current_count,
+        config_keys_previous_count,
+        config_keys_current_count,
+        env_vars_previous: env_vars_previous.iter().map(|s| s.to_string()).collect(),
+        env_vars_current: env_vars_current.iter().map(|s| s.to_string()).collect(),
     });
 
     let rules = Rules::default();
@@ -269,71 +293,9 @@ fn test_runtime_delta_env_count_change_triggers_risk_reason() {
         packet
             .risk_reasons
             .iter()
-            .any(|r| r.contains("New environment variable references")),
-        "Expected env-var delta reason, got: {:?}",
-        packet.risk_reasons
-    );
-}
-
-#[test]
-fn test_runtime_delta_config_count_change_triggers_risk_reason() {
-    let mut packet = ImpactPacket::default();
-    packet.runtime_usage_delta.push(RuntimeUsageDelta {
-        file_path: "src/config.rs".to_string(),
-        env_vars_previous_count: 0,
-        env_vars_current_count: 0,
-        config_keys_previous_count: 2,
-        config_keys_current_count: 4,
-        ..Default::default()
-    });
-
-    let rules = Rules::default();
-    analyze_risk(
-        &mut packet,
-        &rules,
-        &ledgerful::config::model::Config::default(),
-    )
-    .unwrap();
-
-    assert!(
-        packet
-            .risk_reasons
-            .iter()
-            .any(|r| r.contains("Configuration key references changed")),
-        "Expected config-key delta reason, got: {:?}",
-        packet.risk_reasons
-    );
-}
-
-#[test]
-fn test_runtime_delta_same_cardinality_identity_change_detected() {
-    // Y5: The delta model now tracks identity, not just counts.
-    // Replacing DATABASE_URL→REDIS_URL (1→1) now produces a signal.
-    let mut packet = ImpactPacket::default();
-    packet.runtime_usage_delta.push(RuntimeUsageDelta {
-        file_path: "src/db.rs".to_string(),
-        env_vars_previous_count: 1,
-        env_vars_current_count: 1, // same count but different variable
-        config_keys_previous_count: 0,
-        config_keys_current_count: 0,
-        env_vars_previous: vec!["DATABASE_URL".to_string()],
-        env_vars_current: vec!["REDIS_URL".to_string()],
-    });
-
-    let rules = Rules::default();
-    analyze_risk(
-        &mut packet,
-        &rules,
-        &ledgerful::config::model::Config::default(),
-    )
-    .unwrap();
-
-    assert!(
-        packet
-            .risk_reasons
-            .iter()
-            .any(|r| r.contains("Environment variable identities changed")),
-        "Expected identity-aware env-var delta reason, got: {:?}",
+            .any(|r| r.contains(expected_reason)),
+        "Expected '{}' reason, got: {:?}",
+        expected_reason,
         packet.risk_reasons
     );
 }

@@ -212,150 +212,161 @@ fn config_diff_global_verbose_does_not_emit_debug_tracing() {
     );
 }
 
-/// TA19 R2/R3: `config diff --show-internal` exposes internal env vars in
-/// the primary missing-declarations list instead of filtering them out.
-#[test]
-fn config_diff_show_internal_lists_internal_env_vars() {
-    let tmp = tempdir().unwrap();
-    let root = tmp.path();
-
-    setup_git_repo(root);
-    fs::create_dir_all(root.join("src")).unwrap();
-    fs::write(
-        root.join("src/main.rs"),
-        r#"fn main() { let _ = std::env::var("LEDGERFUL_TEST_VAR"); }"#,
-    )
-    .unwrap();
-    git_add_and_commit(root, "initial");
-
-    let exe = env!("CARGO_BIN_EXE_ledgerful");
-    Command::new(exe)
-        .arg("init")
-        .current_dir(root)
-        .output()
-        .unwrap();
-    let index_out = Command::new(exe)
-        .args(["index", "--incremental"])
-        .current_dir(root)
-        .output()
-        .unwrap();
-    assert!(
-        index_out.status.success(),
-        "index failed: {}",
-        String::from_utf8_lossy(&index_out.stderr)
-    );
-
-    let out = Command::new(exe)
-        .args(["config", "diff", "--show-internal", "--json"])
-        .current_dir(root)
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        out.status.success(),
-        "config diff --show-internal --json failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-
-    let missing_vars: Vec<&str> = v["missing_declarations"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|entry| entry["var_name"].as_str().unwrap())
-        .collect();
-    assert!(
-        missing_vars.contains(&"LEDGERFUL_TEST_VAR"),
-        "expected LEDGERFUL_TEST_VAR in missing_declarations with --show-internal: {stdout}"
-    );
-    assert!(
-        v.get("internal_env_vars").is_none(),
-        "internal_env_vars key must not appear when --show-internal is set: {stdout}"
-    );
+#[derive(Clone, Copy)]
+struct ConfigDiffCase {
+    name: &'static str,
+    /// Source-file fixture: either a `src/main.rs` snippet referencing an
+    /// internal var, or a `.env.example` with the given contents.
+    fixture: ConfigDiffFixture,
+    /// Extra command-line args beyond `config diff`.
+    extra_args: &'static [&'static str],
+    /// Var names that must appear in `missing_declarations`.
+    expect_in_missing: &'static [&'static str],
+    /// Var names that must NOT appear in `missing_declarations`.
+    expect_not_in_missing: &'static [&'static str],
+    /// Var names that must appear in `internal_env_vars`.
+    expect_in_internal: &'static [&'static str],
+    /// Var names that must NOT appear in `internal_env_vars`.
+    expect_not_in_internal: &'static [&'static str],
+    /// If true, the JSON must not contain an `internal_env_vars` key at all.
+    expect_internal_absent: bool,
+    /// Var names that must appear in `unused_declarations`.
+    expect_in_unused: &'static [&'static str],
+    /// Var names that must NOT appear in `unused_declarations`.
+    expect_not_in_unused: &'static [&'static str],
+    /// Extra JSON assertions: (var_name, expected note, expected file_paths len).
+    internal_note_checks: &'static [(&'static str, &'static str, usize)],
+    /// Extra human-output assertions.
+    human_contains: &'static [&'static str],
+    /// For declared-but-unreferenced tail checks: var names that must not
+    /// appear after the "Declared but not referenced in code:" heading.
+    human_unused_tail_must_not_contain: &'static [&'static str],
 }
 
-/// TA19: `config diff` without flags keeps internal env vars out of the main
-/// missing-declarations list and surfaces them in a dedicated section.
-#[test]
-fn config_diff_default_filters_internal_env_vars() {
-    let tmp = tempdir().unwrap();
-    let root = tmp.path();
-
-    setup_git_repo(root);
-    fs::create_dir_all(root.join("src")).unwrap();
-    fs::write(
-        root.join("src/main.rs"),
-        r#"fn main() { let _ = std::env::var("LEDGERFUL_TEST_VAR"); }"#,
-    )
-    .unwrap();
-    git_add_and_commit(root, "initial");
-
-    let exe = env!("CARGO_BIN_EXE_ledgerful");
-    Command::new(exe)
-        .arg("init")
-        .current_dir(root)
-        .output()
-        .unwrap();
-    let index_out = Command::new(exe)
-        .args(["index", "--incremental"])
-        .current_dir(root)
-        .output()
-        .unwrap();
-    assert!(
-        index_out.status.success(),
-        "index failed: {}",
-        String::from_utf8_lossy(&index_out.stderr)
-    );
-
-    let out = Command::new(exe)
-        .args(["config", "diff", "--json"])
-        .current_dir(root)
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        out.status.success(),
-        "config diff --json failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-
-    let missing_vars: Vec<&str> = v["missing_declarations"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|entry| entry["var_name"].as_str().unwrap())
-        .collect();
-    assert!(
-        !missing_vars.contains(&"LEDGERFUL_TEST_VAR"),
-        "LEDGERFUL_TEST_VAR must not appear in missing_declarations by default: {stdout}"
-    );
-
-    let internal_vars: Vec<&str> = v["internal_env_vars"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|entry| entry["var_name"].as_str().unwrap())
-        .collect();
-    assert!(
-        internal_vars.contains(&"LEDGERFUL_TEST_VAR"),
-        "expected LEDGERFUL_TEST_VAR in internal_env_vars section by default: {stdout}"
-    );
+#[derive(Clone, Copy)]
+enum ConfigDiffFixture {
+    MainRsInternal(&'static str),
+    EnvExample(&'static str),
+    EnvExampleWithSchema {
+        env_example: &'static str,
+        schema_json: &'static str,
+    },
 }
 
-/// TA21 R1: internal env vars declared in `.env.example` but not referenced
-/// must be removed from the default "Declared but not referenced" section.
-#[test]
-fn config_diff_default_filters_internal_unused_from_declared_not_referenced() {
-    let tmp = tempdir().unwrap();
-    let root = tmp.path();
-
-    setup_git_repo(root);
-    fs::write(
-        root.join(".env.example"),
+/// TA19 / TA21: consolidated `config diff` internal-env-var behavior.
+/// The two blocked dimensions (DEBUG stderr + test-vs-prod separation) stay as
+/// standalone tests above.
+#[rstest::rstest]
+#[case::default_internal_filtered(ConfigDiffCase {
+    name: "default_internal_filtered",
+    fixture: ConfigDiffFixture::MainRsInternal(
+        r#"fn main() { let _ = std::env::var("LEDGERFUL_TEST_VAR"); }"#,
+    ),
+    extra_args: &["--json"],
+    expect_in_missing: &[],
+    expect_not_in_missing: &["LEDGERFUL_TEST_VAR"],
+    expect_in_internal: &["LEDGERFUL_TEST_VAR"],
+    expect_not_in_internal: &[],
+    expect_internal_absent: false,
+    expect_in_unused: &[],
+    expect_not_in_unused: &[],
+    internal_note_checks: &[],
+    human_contains: &[],
+    human_unused_tail_must_not_contain: &[],
+})]
+#[case::show_internal_lists_internal(ConfigDiffCase {
+    name: "show_internal_lists_internal",
+    fixture: ConfigDiffFixture::MainRsInternal(
+        r#"fn main() { let _ = std::env::var("LEDGERFUL_TEST_VAR"); }"#,
+    ),
+    extra_args: &["--show-internal", "--json"],
+    expect_in_missing: &["LEDGERFUL_TEST_VAR"],
+    expect_not_in_missing: &[],
+    expect_in_internal: &[],
+    expect_not_in_internal: &[],
+    expect_internal_absent: true,
+    expect_in_unused: &[],
+    expect_not_in_unused: &[],
+    internal_note_checks: &[],
+    human_contains: &[],
+    human_unused_tail_must_not_contain: &[],
+})]
+#[case::default_internal_unused_filtered(ConfigDiffCase {
+    name: "default_internal_unused_filtered",
+    fixture: ConfigDiffFixture::EnvExample(
         "OLLAMA_CLOUD_API_KEY=\nOPENROUTER_API_KEY=\nUSED_NORMAL_VAR=\n",
-    )
-    .unwrap();
+    ),
+    extra_args: &["--json"],
+    expect_in_missing: &[],
+    expect_not_in_missing: &[],
+    expect_in_internal: &["OLLAMA_CLOUD_API_KEY", "OPENROUTER_API_KEY"],
+    expect_not_in_internal: &[],
+    expect_internal_absent: false,
+    expect_in_unused: &["USED_NORMAL_VAR"],
+    expect_not_in_unused: &["OLLAMA_CLOUD_API_KEY", "OPENROUTER_API_KEY"],
+    internal_note_checks: &[("OLLAMA_CLOUD_API_KEY", "declared but not directly referenced", 0)],
+    human_contains: &[
+        "Internal env vars",
+        "OLLAMA_CLOUD_API_KEY",
+        "declared but not directly referenced",
+    ],
+    human_unused_tail_must_not_contain: &["OLLAMA_CLOUD_API_KEY"],
+})]
+#[case::show_internal_lists_internal_unused(ConfigDiffCase {
+    name: "show_internal_lists_internal_unused",
+    fixture: ConfigDiffFixture::EnvExample(
+        "OLLAMA_CLOUD_API_KEY=\nOPENROUTER_API_KEY=\nUSED_NORMAL_VAR=\n",
+    ),
+    extra_args: &["--show-internal", "--json"],
+    expect_in_missing: &[],
+    expect_not_in_missing: &[],
+    expect_in_internal: &[],
+    expect_not_in_internal: &[],
+    expect_internal_absent: true,
+    expect_in_unused: &["OLLAMA_CLOUD_API_KEY", "OPENROUTER_API_KEY", "USED_NORMAL_VAR"],
+    expect_not_in_unused: &[],
+    internal_note_checks: &[],
+    human_contains: &[],
+    human_unused_tail_must_not_contain: &[],
+})]
+#[case::explicit_schema_keeps_internal_in_unused(ConfigDiffCase {
+    name: "explicit_schema_keeps_internal_in_unused",
+    fixture: ConfigDiffFixture::EnvExampleWithSchema {
+        env_example: "EXPLICIT_LEDGERFUL_VAR=\nOLLAMA_CLOUD_API_KEY=\n",
+        schema_json: r#"{"EXPLICIT_LEDGERFUL_VAR": "explicit"}"#,
+    },
+    extra_args: &["--json"],
+    expect_in_missing: &[],
+    expect_not_in_missing: &[],
+    expect_in_internal: &["OLLAMA_CLOUD_API_KEY"],
+    expect_not_in_internal: &["EXPLICIT_LEDGERFUL_VAR"],
+    expect_internal_absent: false,
+    expect_in_unused: &["EXPLICIT_LEDGERFUL_VAR"],
+    expect_not_in_unused: &[],
+    internal_note_checks: &[],
+    human_contains: &[],
+    human_unused_tail_must_not_contain: &[],
+})]
+fn config_diff_internal_var_handling(#[case] case: ConfigDiffCase) {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+
+    setup_git_repo(root);
+    match case.fixture {
+        ConfigDiffFixture::MainRsInternal(src) => {
+            fs::create_dir_all(root.join("src")).unwrap();
+            fs::write(root.join("src/main.rs"), src).unwrap();
+        }
+        ConfigDiffFixture::EnvExample(contents) => {
+            fs::write(root.join(".env.example"), contents).unwrap();
+        }
+        ConfigDiffFixture::EnvExampleWithSchema {
+            env_example,
+            schema_json: _,
+        } => {
+            fs::write(root.join(".env.example"), env_example).unwrap();
+        }
+    }
     git_add_and_commit(root, "initial");
 
     let exe = env!("CARGO_BIN_EXE_ledgerful");
@@ -364,6 +375,11 @@ fn config_diff_default_filters_internal_unused_from_declared_not_referenced() {
         .current_dir(root)
         .output()
         .unwrap();
+
+    if let ConfigDiffFixture::EnvExampleWithSchema { schema_json, .. } = case.fixture {
+        fs::write(root.join(".ledgerful/schema.json"), schema_json).unwrap();
+    }
+
     let index_out = Command::new(exe)
         .args(["index", "--incremental"])
         .current_dir(root)
@@ -375,238 +391,159 @@ fn config_diff_default_filters_internal_unused_from_declared_not_referenced() {
         String::from_utf8_lossy(&index_out.stderr)
     );
 
+    let mut args = vec!["config", "diff"];
+    args.extend(case.extra_args);
     let out = Command::new(exe)
-        .args(["config", "diff", "--json"])
+        .args(&args)
         .current_dir(root)
         .output()
         .unwrap();
     let stdout = String::from_utf8_lossy(&out.stdout);
     assert!(
         out.status.success(),
-        "config diff --json failed: {}",
+        "config diff {:?} failed: {}",
+        case.extra_args,
         String::from_utf8_lossy(&out.stderr)
     );
+
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
 
-    let unused_vars: Vec<&str> = v["unused_declarations"]
+    let missing_vars: Vec<&str> = v["missing_declarations"]
         .as_array()
-        .unwrap()
-        .iter()
-        .map(|entry| entry.as_str().unwrap())
-        .collect();
-    assert!(
-        !unused_vars.contains(&"OLLAMA_CLOUD_API_KEY"),
-        "OLLAMA_CLOUD_API_KEY must not appear in unused_declarations by default: {stdout}"
-    );
-    assert!(
-        !unused_vars.contains(&"OPENROUTER_API_KEY"),
-        "OPENROUTER_API_KEY must not appear in unused_declarations by default: {stdout}"
-    );
-    assert!(
-        unused_vars.contains(&"USED_NORMAL_VAR"),
-        "USED_NORMAL_VAR should remain in unused_declarations: {stdout}"
-    );
+        .map(|arr| {
+            arr.iter()
+                .map(|entry| entry["var_name"].as_str().unwrap())
+                .collect()
+        })
+        .unwrap_or_default();
+    for var in case.expect_in_missing {
+        assert!(
+            missing_vars.contains(var),
+            "case {}: expected {} in missing_declarations: {}",
+            case.name,
+            var,
+            stdout
+        );
+    }
+    for var in case.expect_not_in_missing {
+        assert!(
+            !missing_vars.contains(var),
+            "case {}: {} must not be in missing_declarations: {}",
+            case.name,
+            var,
+            stdout
+        );
+    }
 
-    let internal_entries: Vec<&Value> = v["internal_env_vars"].as_array().unwrap().iter().collect();
+    if case.expect_internal_absent {
+        assert!(
+            v.get("internal_env_vars").is_none(),
+            "case {}: internal_env_vars key must be absent: {}",
+            case.name,
+            stdout
+        );
+    }
+
+    let internal_entries: Vec<&Value> = v["internal_env_vars"]
+        .as_array()
+        .map(|arr| arr.iter().collect())
+        .unwrap_or_default();
     let internal_names: Vec<&str> = internal_entries
         .iter()
         .map(|entry| entry["var_name"].as_str().unwrap())
         .collect();
-    assert!(
-        internal_names.contains(&"OLLAMA_CLOUD_API_KEY"),
-        "expected OLLAMA_CLOUD_API_KEY in internal_env_vars by default: {stdout}"
-    );
-    assert!(
-        internal_names.contains(&"OPENROUTER_API_KEY"),
-        "expected OPENROUTER_API_KEY in internal_env_vars by default: {stdout}"
-    );
-
-    let ollama_entry = internal_entries
-        .iter()
-        .find(|entry| entry["var_name"].as_str() == Some("OLLAMA_CLOUD_API_KEY"))
-        .unwrap();
-    assert_eq!(
-        ollama_entry["file_paths"].as_array().unwrap().len(),
-        0,
-        "declared-but-unreferenced internal var should have empty file_paths: {stdout}"
-    );
-    assert_eq!(
-        ollama_entry["note"].as_str(),
-        Some("declared but not directly referenced"),
-        "declared-but-unreferenced internal var should carry the note: {stdout}"
-    );
-
-    let human_out = Command::new(exe)
-        .args(["config", "diff"])
-        .current_dir(root)
-        .output()
-        .unwrap();
-    let human_stdout = String::from_utf8_lossy(&human_out.stdout);
-    assert!(
-        human_stdout.contains("Internal env vars"),
-        "human output must show Internal env vars section: {human_stdout}"
-    );
-    assert!(
-        human_stdout.contains("OLLAMA_CLOUD_API_KEY"),
-        "human output must list OLLAMA_CLOUD_API_KEY in the internal section: {human_stdout}"
-    );
-    assert!(
-        human_stdout.contains("declared but not directly referenced"),
-        "human output must annotate declared-but-unreferenced internal vars: {human_stdout}"
-    );
-    // The var must not appear in the "Declared but not referenced" tail.
-    let unused_tail = human_stdout
-        .split("Declared but not referenced in code:")
-        .nth(1)
-        .unwrap_or("");
-    assert!(
-        !unused_tail.contains("OLLAMA_CLOUD_API_KEY"),
-        "OLLAMA_CLOUD_API_KEY must not be in the declared-but-unreferenced tail: {human_stdout}"
-    );
-}
-
-/// TA21 R1: `--show-internal` keeps internal unused vars in the
-/// "Declared but not referenced" section.
-#[test]
-fn config_diff_show_internal_lists_internal_unused_in_declared_not_referenced() {
-    let tmp = tempdir().unwrap();
-    let root = tmp.path();
-
-    setup_git_repo(root);
-    fs::write(
-        root.join(".env.example"),
-        "OLLAMA_CLOUD_API_KEY=\nOPENROUTER_API_KEY=\nUSED_NORMAL_VAR=\n",
-    )
-    .unwrap();
-    git_add_and_commit(root, "initial");
-
-    let exe = env!("CARGO_BIN_EXE_ledgerful");
-    Command::new(exe)
-        .arg("init")
-        .current_dir(root)
-        .output()
-        .unwrap();
-    let index_out = Command::new(exe)
-        .args(["index", "--incremental"])
-        .current_dir(root)
-        .output()
-        .unwrap();
-    assert!(
-        index_out.status.success(),
-        "index failed: {}",
-        String::from_utf8_lossy(&index_out.stderr)
-    );
-
-    let out = Command::new(exe)
-        .args(["config", "diff", "--show-internal", "--json"])
-        .current_dir(root)
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        out.status.success(),
-        "config diff --show-internal --json failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    for var in case.expect_in_internal {
+        assert!(
+            internal_names.contains(var),
+            "case {}: expected {} in internal_env_vars: {}",
+            case.name,
+            var,
+            stdout
+        );
+    }
+    for var in case.expect_not_in_internal {
+        assert!(
+            !internal_names.contains(var),
+            "case {}: {} must not be in internal_env_vars: {}",
+            case.name,
+            var,
+            stdout
+        );
+    }
+    for (var, expected_note, expected_paths_len) in case.internal_note_checks {
+        let entry = internal_entries
+            .iter()
+            .find(|e| e["var_name"].as_str() == Some(var))
+            .unwrap_or_else(|| panic!("case {}: missing internal entry for {}", case.name, var));
+        assert_eq!(
+            entry["file_paths"].as_array().unwrap().len(),
+            *expected_paths_len,
+            "case {}: {} file_paths length mismatch: {}",
+            case.name,
+            var,
+            stdout
+        );
+        assert_eq!(
+            entry["note"].as_str(),
+            Some(*expected_note),
+            "case {}: {} note mismatch: {}",
+            case.name,
+            var,
+            stdout
+        );
+    }
 
     let unused_vars: Vec<&str> = v["unused_declarations"]
         .as_array()
-        .unwrap()
-        .iter()
-        .map(|entry| entry.as_str().unwrap())
-        .collect();
-    assert!(
-        unused_vars.contains(&"OLLAMA_CLOUD_API_KEY"),
-        "expected OLLAMA_CLOUD_API_KEY in unused_declarations with --show-internal: {stdout}"
-    );
-    assert!(
-        unused_vars.contains(&"OPENROUTER_API_KEY"),
-        "expected OPENROUTER_API_KEY in unused_declarations with --show-internal: {stdout}"
-    );
-    assert!(
-        v.get("internal_env_vars").is_none(),
-        "internal_env_vars key must not appear when --show-internal is set: {stdout}"
-    );
-}
+        .map(|arr| arr.iter().map(|entry| entry.as_str().unwrap()).collect())
+        .unwrap_or_default();
+    for var in case.expect_in_unused {
+        assert!(
+            unused_vars.contains(var),
+            "case {}: expected {} in unused_declarations: {}",
+            case.name,
+            var,
+            stdout
+        );
+    }
+    for var in case.expect_not_in_unused {
+        assert!(
+            !unused_vars.contains(var),
+            "case {}: {} must not be in unused_declarations: {}",
+            case.name,
+            var,
+            stdout
+        );
+    }
 
-/// TA21 R1 explicit-declaration exception: an internal env var that is
-/// formally declared in `.ledgerful/schema.json` must stay in the default
-/// "Declared but not referenced" section so the user gets type-enforcement
-/// feedback.
-#[test]
-fn config_diff_default_does_not_filter_explicitly_declared_internal_unused() {
-    let tmp = tempdir().unwrap();
-    let root = tmp.path();
-
-    setup_git_repo(root);
-    fs::write(
-        root.join(".env.example"),
-        "EXPLICIT_LEDGERFUL_VAR=\nOLLAMA_CLOUD_API_KEY=\n",
-    )
-    .unwrap();
-    git_add_and_commit(root, "initial");
-
-    let exe = env!("CARGO_BIN_EXE_ledgerful");
-    Command::new(exe)
-        .arg("init")
-        .current_dir(root)
-        .output()
-        .unwrap();
-
-    fs::write(
-        root.join(".ledgerful/schema.json"),
-        r#"{"EXPLICIT_LEDGERFUL_VAR": "explicit"}"#,
-    )
-    .unwrap();
-
-    let index_out = Command::new(exe)
-        .args(["index", "--incremental"])
-        .current_dir(root)
-        .output()
-        .unwrap();
-    assert!(
-        index_out.status.success(),
-        "index failed: {}",
-        String::from_utf8_lossy(&index_out.stderr)
-    );
-
-    let out = Command::new(exe)
-        .args(["config", "diff", "--json"])
-        .current_dir(root)
-        .output()
-        .unwrap();
-    let stdout = String::from_utf8_lossy(&out.stdout);
-    assert!(
-        out.status.success(),
-        "config diff --json failed: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
-    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-
-    let unused_vars: Vec<&str> = v["unused_declarations"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|entry| entry.as_str().unwrap())
-        .collect();
-    assert!(
-        unused_vars.contains(&"EXPLICIT_LEDGERFUL_VAR"),
-        "explicitly-declared internal var must remain in unused_declarations: {stdout}"
-    );
-
-    let internal_names: Vec<&str> = v["internal_env_vars"]
-        .as_array()
-        .unwrap()
-        .iter()
-        .map(|entry| entry["var_name"].as_str().unwrap())
-        .collect();
-    assert!(
-        !internal_names.contains(&"EXPLICIT_LEDGERFUL_VAR"),
-        "explicitly-declared internal var must not be moved to internal_env_vars: {stdout}"
-    );
-    assert!(
-        internal_names.contains(&"OLLAMA_CLOUD_API_KEY"),
-        "implicitly-declared internal var should still be filtered to internal_env_vars: {stdout}"
-    );
+    if !case.human_contains.is_empty() || !case.human_unused_tail_must_not_contain.is_empty() {
+        let human_out = Command::new(exe)
+            .args(["config", "diff"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        let human_stdout = String::from_utf8_lossy(&human_out.stdout);
+        for text in case.human_contains {
+            assert!(
+                human_stdout.contains(*text),
+                "case {}: human output missing {:?}: {}",
+                case.name,
+                text,
+                human_stdout
+            );
+        }
+        let unused_tail = human_stdout
+            .split("Declared but not referenced in code:")
+            .nth(1)
+            .unwrap_or("");
+        for var in case.human_unused_tail_must_not_contain {
+            assert!(
+                !unused_tail.contains(*var),
+                "case {}: {} must not be in declared-but-unreferenced tail: {}",
+                case.name,
+                var,
+                human_stdout
+            );
+        }
+    }
 }

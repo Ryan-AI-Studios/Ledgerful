@@ -90,7 +90,6 @@ mod ledger_signature_fix;
 mod m33_migration;
 mod milestone_j_remediation;
 mod narrative_golden;
-mod narrative_prompt;
 mod observability_cedar_graph_test;
 mod path_security;
 mod persistence;

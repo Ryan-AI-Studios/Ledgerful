@@ -463,30 +463,16 @@ fn test_verify_manual_command_does_not_warn_on_stale_cached_impact_packet() {
 // CR8: Unit tests for the Cozo Datalog string escaping helper.
 mod escape_cozo_string_tests {
     use ledgerful::commands::ask::escape_cozo_string;
+    use rstest::rstest;
 
-    #[test]
-    fn test_plain_symbol_unchanged() {
-        assert_eq!(escape_cozo_string("foo_bar"), "foo_bar");
-    }
-
-    #[test]
-    fn test_single_quote_doubled() {
-        assert_eq!(escape_cozo_string("foo'bar"), "foo''bar");
-    }
-
-    #[test]
-    fn test_backslash_escaped() {
-        assert_eq!(escape_cozo_string("foo\\bar"), "foo\\\\bar");
-    }
-
-    #[test]
-    fn test_both_special_chars() {
-        assert_eq!(escape_cozo_string("it's a\\test"), "it''s a\\\\test");
-    }
-
-    #[test]
-    fn test_empty_string() {
-        assert_eq!(escape_cozo_string(""), "");
+    #[rstest]
+    #[case::plain("foo_bar", "foo_bar")]
+    #[case::single_quote("foo'bar", "foo''bar")]
+    #[case::backslash("foo\\bar", "foo\\\\bar")]
+    #[case::both_special("it's a\\test", "it''s a\\\\test")]
+    #[case::empty("", "")]
+    fn escape_cozo_string_cases(#[case] input: &str, #[case] expected: &str) {
+        assert_eq!(escape_cozo_string(input), expected);
     }
 }
 

@@ -203,6 +203,22 @@ fn ensure_path_within_root__normal_file_inside_root__accepted() {
     );
 }
 
+#[test]
+fn ensure_path_within_root__outside_file__rejected() {
+    let temp = tempfile::tempdir().unwrap();
+    let repo_root = temp.path().join("repo");
+    std::fs::create_dir(&repo_root).unwrap();
+
+    let outside_file = temp.path().join("secret.txt");
+    std::fs::write(&outside_file, "outside").unwrap();
+
+    let outside_via_dotdot = repo_root.join("..").join("secret.txt");
+    assert!(
+        ensure_path_within_root(&repo_root, &outside_via_dotdot).is_err(),
+        "Expected outside-root file to be rejected, but got Ok"
+    );
+}
+
 #[cfg(windows)]
 #[test]
 fn ensure_path_within_root__symlink_escape__skips_if_unprivileged() {
