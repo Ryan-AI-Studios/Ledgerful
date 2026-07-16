@@ -189,7 +189,7 @@ fn sentinel_real_keys_dir_is_not_written_by_tests() {
     let tmp = tempfile::tempdir().unwrap();
     let dir = keys_dir(tmp.path());
     fs::create_dir_all(&dir).unwrap();
-    let _ = get_or_create_keys_in(&dir);
+    let _ = get_or_create_keys_in(&dir).expect("get_or_create_keys_in failed");
 
     let after_hash = sentinel_hash(&real_keys_dir);
     assert_eq!(
