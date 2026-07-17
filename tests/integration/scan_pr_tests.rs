@@ -330,6 +330,79 @@ fn pr_scan_backward_compat_base_ref_impact_json_still_works() {
 }
 
 #[test]
+fn pr_scan_rejects_empty_pr_range() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+
+    fs::write(root.join("base.txt"), "base content").unwrap();
+    git_add_and_commit(root, "base commit");
+
+    let _guard = DirGuard::new(root);
+    let result = execute_scan(
+        false,
+        false,
+        false,
+        None,
+        None,
+        Some("".into()),
+        "json".into(),
+    );
+
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("must not be empty"),
+        "expected empty range error, got: {err}"
+    );
+}
+
+#[test]
+fn pr_scan_rejects_unknown_format() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+
+    fs::write(root.join("base.txt"), "base content").unwrap();
+    git_add_and_commit(root, "base commit");
+
+    let _guard = DirGuard::new(root);
+    let result = execute_scan(
+        false,
+        false,
+        false,
+        None,
+        None,
+        Some("main...HEAD".into()),
+        "xml".into(),
+    );
+
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("unsupported --format"),
+        "expected unsupported format error, got: {err}"
+    );
+}
+
+#[test]
+fn pr_scan_same_base_and_head_yields_empty_low_risk() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+
+    fs::write(root.join("base.txt"), "base content").unwrap();
+    git_add_and_commit(root, "base commit");
+
+    let (parsed, result) = run_pr_scan_json(root, "HEAD...HEAD");
+    result.unwrap();
+
+    assert_eq!(parsed["changeCount"], 0);
+    assert_eq!(parsed["riskLevel"], "low");
+    assert_eq!(parsed["treeClean"], true);
+}
+
+#[test]
 #[serial_test::serial]
 fn pr_scan_no_network_code_in_src() {
     use std::process::Command;

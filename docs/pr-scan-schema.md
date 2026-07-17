@@ -56,7 +56,7 @@ ledgerful scan --pr main...HEAD --format text
 | `headRef` | string | Head ref used for the diff. |
 | `headHash` | string \| null | Commit hash at HEAD, if available. |
 | `branchName` | string \| null | Current branch name, if available. |
-| `treeClean` | boolean | Whether the working tree at HEAD is clean. |
+| `treeClean` | boolean | Whether the diff between `baseRef` and `headRef` is empty (no changes). In CI/PR mode this reflects diff emptiness, not working-tree dirtiness. |
 | `changeCount` | integer | `len(changes)`. |
 | `changes` | array | Sorted by `path`. Forward-slash normalized for cross-platform determinism. |
 | `changes[].path` | string | Forward-slash normalized path. |
@@ -91,17 +91,16 @@ Start at `low`.
   "sensitive path touched: <path>").
 - `changeCount >= 30` → `high` regardless (reason: "N files changed (>= 30)").
 
-Sensitive patterns (forward-slash normalized match):
+Sensitive patterns:
 
-- `Cargo.toml`
-- `Cargo.lock`
-- `.github/workflows/`
-- `crypto.rs`
-- `src/crypto.rs`
-- `migrations/`
-- `.ledgerful/config.toml`
-- `deny.toml`
-- `SECURITY.md`
+- `Cargo.toml` (exact file-name match)
+- `Cargo.lock` (exact file-name match)
+- `.github/workflows/` (directory-prefix match)
+- `crypto.rs` (exact file-name match; covers any `crypto.rs` at any depth)
+- `migrations/` (directory-prefix match)
+- `.ledgerful/config.toml` (directory-prefix match)
+- `deny.toml` (exact file-name match)
+- `SECURITY.md` (exact file-name match)
 
 All `riskReasons` are sorted alphabetically.
 

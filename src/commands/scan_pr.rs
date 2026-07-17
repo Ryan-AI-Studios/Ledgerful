@@ -109,14 +109,12 @@ impl PrScanReport {
         let (risk_level, mut risk_reasons) = derive_risk(change_count, &pr_changes);
 
         let mut analysis_warnings: Vec<String> = warnings.to_vec();
-        analysis_warnings.sort();
         // Deduplicate while preserving deterministic order.
         analysis_warnings = analysis_warnings
             .into_iter()
             .collect::<BTreeSet<_>>()
             .into_iter()
             .collect();
-        analysis_warnings.sort();
 
         // risk_reasons are sorted alphabetically for determinism.
         risk_reasons.sort();
@@ -143,12 +141,17 @@ fn forward_slash_normalize(path: &str) -> String {
 }
 
 /// Sensitive path patterns. A match bumps the risk level to `High`.
+///
+/// - File-name patterns (no trailing `/`) require an exact match of the last
+///   path component. This prevents sub-string false positives such as
+///   `crypto_utils.rs` matching `crypto.rs`.
+/// - Directory-prefix patterns (trailing `/`) match when the forward-slash
+///   normalized path starts with that prefix.
 const SENSITIVE_PATH_PATTERNS: &[&str] = &[
     "Cargo.toml",
     "Cargo.lock",
     ".github/workflows/",
     "crypto.rs",
-    "src/crypto.rs",
     "migrations/",
     ".ledgerful/config.toml",
     "deny.toml",
@@ -157,9 +160,15 @@ const SENSITIVE_PATH_PATTERNS: &[&str] = &[
 
 fn is_sensitive_path(path: &str) -> bool {
     let normalized = forward_slash_normalize(path);
-    SENSITIVE_PATH_PATTERNS
-        .iter()
-        .any(|pattern| normalized.contains(pattern))
+    SENSITIVE_PATH_PATTERNS.iter().any(|pattern| {
+        if pattern.ends_with('/') {
+            normalized.starts_with(pattern)
+        } else {
+            std::path::Path::new(&normalized)
+                .file_name()
+                .is_some_and(|name| name.to_str() == Some(pattern))
+        }
+    })
 }
 
 fn derive_risk(change_count: u32, changes: &[PrChange]) -> (PrRiskLevel, Vec<String>) {
@@ -258,6 +267,56 @@ mod tests {
                 .iter()
                 .any(|r| r.contains("sensitive path touched: Cargo.toml"))
         );
+    }
+
+    #[test]
+    fn sensitive_path_matches_any_crypto_rs_file() {
+        let changes = vec![make_change("src/crypto.rs", ChangeType::Modified)];
+        let report = PrScanReport::new(
+            "main".into(),
+            "HEAD".into(),
+            None,
+            None,
+            false,
+            &changes,
+            &[],
+        );
+        assert_eq!(report.risk_level, PrRiskLevel::High);
+        assert!(
+            report
+                .risk_reasons
+                .iter()
+                .any(|r| r.contains("sensitive path touched: src/crypto.rs"))
+        );
+    }
+
+    #[test]
+    fn similar_paths_do_not_match_sensitive_file_names() {
+        let changes = vec![
+            make_change("crypto_utils.rs", ChangeType::Modified),
+            make_change("Cargo.toml.bak", ChangeType::Modified),
+            make_change("SECURITY.md.bak", ChangeType::Modified),
+            make_change("my_crypto.rs", ChangeType::Modified),
+        ];
+        let report = PrScanReport::new(
+            "main".into(),
+            "HEAD".into(),
+            None,
+            None,
+            false,
+            &changes,
+            &[],
+        );
+        assert_eq!(report.risk_level, PrRiskLevel::Low);
+        assert!(report.risk_reasons.is_empty());
+    }
+
+    #[test]
+    fn directory_prefix_pattern_requires_full_prefix() {
+        assert!(is_sensitive_path(".github/workflows/ci.yml"));
+        assert!(!is_sensitive_path("my.github/workflows/ci.yml"));
+        assert!(is_sensitive_path("migrations/001_init.sql"));
+        assert!(!is_sensitive_path("not_migrations/001_init.sql"));
     }
 
     #[test]

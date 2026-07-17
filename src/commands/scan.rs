@@ -212,20 +212,27 @@ fn files_changed_between(
 ///
 /// Supports `base...head`, `base..head`, or a bare `base` (default head to
 /// `HEAD`). Validates that base is non-empty.
-fn parse_pr_range(range: &str) -> Result<(String, String)> {
+///
+/// Two-dot (`A..B`) is normalized to three-dot (`A...B`) because, in git,
+/// `A..B` diffs A against B directly while `A...B` diffs merge-base(A,B)
+/// against B. For PR risk assessment three-dot is always correct: two-dot
+/// can include base-branch changes that are not part of the PR.
+fn parse_pr_range(range: &str) -> Result<(String, String, String)> {
     let trimmed = range.trim();
     if trimmed.is_empty() {
         return Err(miette::miette!("--pr range must not be empty"));
     }
 
-    let (base, head) = if let Some(pos) = trimmed.find("...") {
+    let (base, head, normalized_git_range) = if let Some(pos) = trimmed.find("...") {
         let (base, head) = trimmed.split_at(pos);
-        (base, &head[3..])
+        (base, &head[3..], trimmed.to_string())
     } else if let Some(pos) = trimmed.find("..") {
         let (base, head) = trimmed.split_at(pos);
-        (base, &head[2..])
+        let head = &head[2..];
+        let normalized = format!("{}...{}", base, head);
+        (base, head, normalized)
     } else {
-        (trimmed, "HEAD")
+        (trimmed, "HEAD", format!("{}...HEAD", trimmed))
     };
 
     let base = base.trim();
@@ -244,7 +251,7 @@ fn parse_pr_range(range: &str) -> Result<(String, String)> {
         ));
     }
 
-    Ok((base.to_string(), head.to_string()))
+    Ok((base.to_string(), head.to_string(), normalized_git_range))
 }
 
 /// Validate that `--pr` and `--impact` are not used together, and that
@@ -302,8 +309,8 @@ pub fn execute_scan(
     let config = load_config(&layout).unwrap_or_default();
 
     let (changes, is_clean, pr_base_ref, pr_head_ref) = if let Some(ref range) = pr {
-        let (base, head) = parse_pr_range(range)?;
-        let all_changes = files_changed_between(&current_dir, range, &base)?;
+        let (base, head, git_range) = parse_pr_range(range)?;
+        let all_changes = files_changed_between(&current_dir, &git_range, &base)?;
         let filtered = crate::git::ignore::filter_ignored_changes(
             all_changes,
             &config.watch.ignore_patterns,
@@ -463,12 +470,12 @@ fn print_pr_scan_summary(report: &PrScanReport) {
     println!(
         "{:<15} {}",
         "HEAD commit:".bold(),
-        report.head_hash.as_deref().unwrap_or("unknown")
+        report.head_hash.as_deref().unwrap_or("<none>")
     );
     println!(
         "{:<15} {}",
         "Branch:".bold(),
-        report.branch_name.as_deref().unwrap_or("unknown")
+        report.branch_name.as_deref().unwrap_or("<none>")
     );
     println!(
         "{:<15} {}",
@@ -595,23 +602,26 @@ mod tests {
 
     #[test]
     fn parse_pr_range_three_dot() {
-        let (base, head) = parse_pr_range("main...HEAD").unwrap();
+        let (base, head, git_range) = parse_pr_range("main...HEAD").unwrap();
         assert_eq!(base, "main");
         assert_eq!(head, "HEAD");
+        assert_eq!(git_range, "main...HEAD");
     }
 
     #[test]
-    fn parse_pr_range_two_dot() {
-        let (base, head) = parse_pr_range("main..HEAD").unwrap();
+    fn parse_pr_range_two_dot_normalizes_to_three_dot() {
+        let (base, head, git_range) = parse_pr_range("main..HEAD").unwrap();
         assert_eq!(base, "main");
         assert_eq!(head, "HEAD");
+        assert_eq!(git_range, "main...HEAD");
     }
 
     #[test]
-    fn parse_pr_range_bare_base_defaults_head() {
-        let (base, head) = parse_pr_range("main").unwrap();
+    fn parse_pr_range_bare_base_defaults_head_to_three_dot() {
+        let (base, head, git_range) = parse_pr_range("main").unwrap();
         assert_eq!(base, "main");
         assert_eq!(head, "HEAD");
+        assert_eq!(git_range, "main...HEAD");
     }
 
     #[test]
@@ -624,6 +634,12 @@ mod tests {
     fn parse_pr_range_rejects_empty_head() {
         let err = parse_pr_range("main..").unwrap_err().to_string();
         assert!(err.contains("empty head ref"));
+    }
+
+    #[test]
+    fn parse_pr_range_rejects_empty_range() {
+        let err = parse_pr_range("").unwrap_err().to_string();
+        assert!(err.contains("must not be empty"));
     }
 
     #[test]
