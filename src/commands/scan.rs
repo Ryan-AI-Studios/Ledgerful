@@ -256,10 +256,15 @@ fn parse_pr_range(range: &str) -> Result<(String, String, String)> {
     Ok((base.to_string(), head.to_string(), normalized_git_range))
 }
 
-/// Validate that `--pr` and `--impact` are not used together, and that
-/// `--format` (when present with `--pr`) is one of the supported values.
+/// Validate combinations of `scan` flags.
+///
+/// Enforces: `--pr` is mutually exclusive with `--impact` and `--base-ref`;
+/// `--format` requires `--pr`; `--summary`/`--json` are not valid with `--pr`;
+/// `--out` with `--pr` requires `--format json`; the legacy `--summary`/`--json`/
+/// `--out` flags require `--impact` when `--pr` is absent.
 fn validate_scan_args(
     pr: &Option<String>,
+    base_ref: &Option<String>,
     format: &str,
     impact: bool,
     summary: bool,
@@ -270,6 +275,16 @@ fn validate_scan_args(
         return Err(miette::miette!(
             "`--pr` and `--impact` are mutually exclusive"
         ));
+    }
+
+    if pr.is_some() && base_ref.is_some() {
+        return Err(miette::miette!(
+            "--pr and --base-ref are mutually exclusive"
+        ));
+    }
+
+    if pr.is_none() && !matches!(format, "text") {
+        return Err(miette::miette!("--format requires --pr"));
     }
 
     if pr.is_some() && !matches!(format, "json" | "text") {
@@ -310,7 +325,7 @@ pub fn execute_scan(
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
 
-    validate_scan_args(&pr, &format, run_impact, summary, json, &out)?;
+    validate_scan_args(&pr, &base_ref, &format, run_impact, summary, json, &out)?;
 
     let repo = open_repo(&current_dir)?;
     let (head_hash, branch_name) = get_head_info(&repo)?;

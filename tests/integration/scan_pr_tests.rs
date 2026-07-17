@@ -578,6 +578,32 @@ fn pr_scan_rejects_incompatible_flags() {
         err.contains("--out with --pr requires --format json"),
         "expected --out+text rejection, got: {err}"
     );
+
+    // --format without --pr is not allowed.
+    let result = execute_scan(false, false, false, None, None, None, "json".into());
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("--format requires --pr"),
+        "expected --format-without-pr rejection, got: {err}"
+    );
+
+    // --pr and --base-ref together are not allowed.
+    let result = execute_scan(
+        false,
+        false,
+        false,
+        None,
+        Some("HEAD~1".into()),
+        Some("HEAD~1...HEAD".into()),
+        "text".into(),
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("--pr and --base-ref are mutually exclusive"),
+        "expected pr+base-ref rejection, got: {err}"
+    );
 }
 
 #[test]
