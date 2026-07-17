@@ -6,7 +6,7 @@ use std::time::Duration;
 
 mod client_cli;
 use crate::util::query::sanitize_fts5_query;
-pub use client_cli::query_external_cli;
+pub(crate) use client_cli::query_external_cli;
 
 pub fn query_unified(query: &str) -> Result<Vec<BridgeRecord>> {
     let current_dir = std::env::current_dir().into_diagnostic()?;
@@ -14,6 +14,10 @@ pub fn query_unified(query: &str) -> Result<Vec<BridgeRecord>> {
     let project_id = layout.get_project_id();
 
     if std::env::var("LEDGERFUL_NON_INTERACTIVE").is_ok() {
+        return Ok(Vec::new());
+    }
+
+    if !is_bridge_enabled(&layout) {
         return Ok(Vec::new());
     }
 
@@ -42,7 +46,31 @@ pub fn query_unified(query: &str) -> Result<Vec<BridgeRecord>> {
     query_external_cli(&sanitized_query)
 }
 
+pub fn is_bridge_enabled(layout: &Layout) -> bool {
+    crate::config::load::load_config(layout)
+        .map(|c| c.bridge.enabled)
+        .unwrap_or(false)
+}
+
+pub fn is_bridge_enabled_or_default() -> bool {
+    let current_dir = std::env::current_dir()
+        .map(|d| d.to_string_lossy().to_string())
+        .unwrap_or_default();
+    let layout = Layout::new(&current_dir);
+    is_bridge_enabled(&layout)
+}
+
+const BRIDGE_ENABLE_HINT: &str =
+    "Bridge is disabled. Enable with `bridge.enabled = true` in config or set LEDGERFUL_BRIDGE=1.";
+
 pub fn execute_query(query: String) -> Result<()> {
+    let current_dir = std::env::current_dir().into_diagnostic()?;
+    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    if !is_bridge_enabled(&layout) {
+        eprintln!("{}", BRIDGE_ENABLE_HINT);
+        return Ok(());
+    }
+
     eprintln!("Querying external context provider (IPC → CLI fallback)...");
     let records = query_unified(&query)?;
     if records.is_empty() {
@@ -70,4 +98,28 @@ pub fn execute_query(query: String) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::layout::Layout;
+    use camino::Utf8Path;
+    use tempfile::tempdir;
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn query_unified_disabled_returns_empty() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+
+        let config_path = layout.config_file();
+        std::fs::write(config_path, "[bridge]\nenabled = false\n").unwrap();
+
+        let _guard = crate::tests::DirGuard::new(tmp.path());
+        let result = query_unified("test").unwrap();
+        assert!(result.is_empty());
+    }
 }

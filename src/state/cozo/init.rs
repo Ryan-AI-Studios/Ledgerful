@@ -8,7 +8,19 @@ use crate::state::graph_kinds::{EdgeKind, NodeKind};
 use crate::state::storage_cozo::{CozoStorage, GraphEdge, GraphNode};
 use serde_json::json;
 
-pub fn setup_schema(storage: &CozoStorage) -> Result<()> {
+pub mod setup_schema {
+    /// Controls which optional schema objects are provisioned by
+    /// [`super::setup_schema`].
+    #[derive(Debug, Clone, Copy, Default)]
+    pub struct Options {
+        /// Create the vestigial bridge/AI relations (`Turn`, `Session`,
+        /// `Memory`, `Decision`) when true. These relations are gated by
+        /// `bridge.enabled` so a disabled bridge never touches them.
+        pub include_bridge_tables: bool,
+    }
+}
+
+pub fn setup_schema(storage: &CozoStorage, options: setup_schema::Options) -> Result<()> {
     let existing = storage.get_relations()?;
 
     if !existing.contains(&"node".to_string()) {
@@ -29,18 +41,21 @@ pub fn setup_schema(storage: &CozoStorage) -> Result<()> {
         storage.run_script(CREATE_FTS_INDEX)?;
     }
 
-    // Bridge relations
-    if !existing.contains(&"Turn".to_string()) {
-        storage.run_script(CREATE_TURN_TABLE)?;
-    }
-    if !existing.contains(&"Session".to_string()) {
-        storage.run_script(CREATE_SESSION_TABLE)?;
-    }
-    if !existing.contains(&"Memory".to_string()) {
-        storage.run_script(CREATE_MEMORY_TABLE)?;
-    }
-    if !existing.contains(&"Decision".to_string()) {
-        storage.run_script(CREATE_DECISION_TABLE)?;
+    // Bridge relations — gated by `bridge.enabled` to keep the default
+    // install free of vestigial AI/bridge schema.
+    if options.include_bridge_tables {
+        if !existing.contains(&"Turn".to_string()) {
+            storage.run_script(CREATE_TURN_TABLE)?;
+        }
+        if !existing.contains(&"Session".to_string()) {
+            storage.run_script(CREATE_SESSION_TABLE)?;
+        }
+        if !existing.contains(&"Memory".to_string()) {
+            storage.run_script(CREATE_MEMORY_TABLE)?;
+        }
+        if !existing.contains(&"Decision".to_string()) {
+            storage.run_script(CREATE_DECISION_TABLE)?;
+        }
     }
 
     // Metadata & Migration

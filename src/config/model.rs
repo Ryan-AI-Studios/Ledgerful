@@ -28,6 +28,7 @@ pub use self::verify::*;
 // Implementation helpers stay internal (pub(crate)) so the facade does not
 // leak env-resolution internals as part of the public API.
 pub(crate) use self::env::read_env_key;
+pub(crate) use self::env::resolve_bridge_config;
 pub(crate) use self::env::resolve_local_model_config;
 
 #[cfg(test)]

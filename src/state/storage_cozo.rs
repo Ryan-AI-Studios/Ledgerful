@@ -43,11 +43,21 @@ impl CozoStorage {
         Self::new_with_options(Path::new(""), false)
     }
 
+    /// Create an in-memory storage without running schema setup.
+    /// The caller is responsible for calling `setup_schema_with_options`.
+    pub fn new_in_memory_bare() -> Result<Self> {
+        let db = init::initialize_instance(Path::new(""), false)?;
+        Ok(Self { db })
+    }
+
     fn new_with_options(db_path: &Path, read_only: bool) -> Result<Self> {
         let db = init::initialize_instance(db_path, read_only)?;
         let storage = Self { db };
         if !read_only {
-            storage.setup_schema()?;
+            let include_bridge_tables = crate::bridge::client::is_bridge_enabled_or_default();
+            storage.setup_schema_with_options(init::setup_schema::Options {
+                include_bridge_tables,
+            })?;
         }
         Ok(storage)
     }
@@ -107,7 +117,11 @@ impl CozoStorage {
     }
 
     pub fn setup_schema(&self) -> Result<()> {
-        init::setup_schema(self)
+        self.setup_schema_with_options(init::setup_schema::Options::default())
+    }
+
+    pub fn setup_schema_with_options(&self, options: init::setup_schema::Options) -> Result<()> {
+        init::setup_schema(self, options)
     }
 
     pub fn migrate_cozo_schema(&self) -> Result<()> {
@@ -380,5 +394,40 @@ mod tests {
         assert_eq!(res.rows.len(), 1);
         let first_row = res.rows.first().unwrap();
         assert_eq!(first_row.first().unwrap(), &DataValue::Str("bar.rs".into()));
+    }
+
+    #[test]
+    fn setup_schema_without_bridge_tables_omits_turn_session_memory_decision() {
+        let storage = CozoStorage::new_in_memory_bare().unwrap();
+        storage
+            .setup_schema_with_options(init::setup_schema::Options {
+                include_bridge_tables: false,
+            })
+            .unwrap();
+
+        let relations = storage.get_relations().unwrap();
+        assert!(!relations.contains(&"Turn".to_string()));
+        assert!(!relations.contains(&"Session".to_string()));
+        assert!(!relations.contains(&"Memory".to_string()));
+        assert!(!relations.contains(&"Decision".to_string()));
+
+        assert!(relations.contains(&"node".to_string()));
+        assert!(relations.contains(&"edge".to_string()));
+    }
+
+    #[test]
+    fn setup_schema_with_bridge_tables_creates_turn_session_memory_decision() {
+        let storage = CozoStorage::new_in_memory_bare().unwrap();
+        storage
+            .setup_schema_with_options(init::setup_schema::Options {
+                include_bridge_tables: true,
+            })
+            .unwrap();
+
+        let relations = storage.get_relations().unwrap();
+        assert!(relations.contains(&"Turn".to_string()));
+        assert!(relations.contains(&"Session".to_string()));
+        assert!(relations.contains(&"Memory".to_string()));
+        assert!(relations.contains(&"Decision".to_string()));
     }
 }

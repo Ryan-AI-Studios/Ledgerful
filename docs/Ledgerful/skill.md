@@ -93,7 +93,35 @@ ledgerful doctor
 - **Ledger Graph**: Per-transaction entity neighborhood view. `ledgerful ledger graph <tx-id>`.
 - **Security Boundaries**: Cedar policy parsing with cross-surface links. `ledgerful security boundaries` / `security impact --changed`.
 - **Team Sync**: Decentralized team ledger synchronization via `ledgerful sync` (optional `sync` feature).
-- **Bridge Export/Import**: Local versioned NDJSON interchange for hotspots, ledger entries, and MADR data via `ledgerful bridge export --hotspots --ledger [--madr] [--stdout]` and `ledgerful bridge import --input <records.ndjson>`.
+- **Bridge Export/Import**: Local versioned NDJSON interchange for hotspots, ledger entries, and MADR data via `ledgerful bridge export --hotspots --ledger [--madr] [--stdout]` and `ledgerful bridge import --input <records.ndjson>`. The bridge is **off by default**; run it only after opting in.
+
+## Bridge Opt-In
+
+The Ledgerful bridge is **disabled by default** so a fresh install performs zero external/implicit activity. To enable it, add this to `.ledgerful/config.toml`:
+
+```toml
+[bridge]
+enabled = true
+provider_command = "ai-brains"
+```
+
+Or set the environment variable for the current session:
+
+```bash
+export LEDGERFUL_BRIDGE=1
+```
+
+```powershell
+$env:LEDGERFUL_BRIDGE = "1"
+```
+
+When `enabled = false`:
+
+- `ledgerful ask` skips bridge enrichment.
+- `ledgerful verify` does not push `verify_outcome` records.
+- `ledgerful watch` does not emit `risk_alert` records.
+- `ledgerful bridge query` prints an enable hint.
+- `ledgerful bridge export` and `ledgerful bridge import` remain usable because they are pure-local I/O.
 
 ## Code Symbol Queries — Use These First
 
