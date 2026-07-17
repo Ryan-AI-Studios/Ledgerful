@@ -104,7 +104,7 @@ fn test_federate_scan_warns_on_stale_cached_impact_packet__slow() {
 }
 
 /// TA31 R1: a sibling whose schema.json has a data-quality problem (here,
-/// an empty ledger `entity` -- the AI-Brains real-world case) must still
+/// an empty ledger `entity` -- the bridge use case) must still
 /// be discovered by `federate scan` (not hard-skipped), with its
 /// per-sibling warning printed to stdout so the user sees what needs
 /// attention. Spawns the real binary so the assertion exercises the
@@ -116,7 +116,7 @@ fn test_federate_scan_prints_warning_for_empty_entity_sibling__slow() {
     let workspace_path = workspace.path();
 
     let repo1 = workspace_path.join("repo1");
-    let sibling = workspace_path.join("ai-brains");
+    let sibling = workspace_path.join("example-sibling");
     fs::create_dir_all(&repo1).unwrap();
     fs::create_dir_all(&sibling).unwrap();
 
@@ -138,11 +138,11 @@ fn test_federate_scan_prints_warning_for_empty_entity_sibling__slow() {
     fs::create_dir_all(&sibling_state_dir).unwrap();
     let schema_json = serde_json::json!({
         "schema_version": "1.1",
-        "repo_name": "ai-brains",
+        "repo_name": "example-sibling",
         "public_interfaces": [],
         "ledger": [
             {
-                "tx_id": "tx-ai-brains-1",
+                "tx_id": "tx-example-sibling-1",
                 "category": "FEATURE",
                 "entry_type": "IMPLEMENTATION",
                 "entity": "",
@@ -189,8 +189,8 @@ fn test_federate_scan_prints_warning_for_empty_entity_sibling__slow() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     assert!(
-        stdout.contains("ai-brains"),
-        "expected the empty-entity sibling 'ai-brains' to be discovered (not hard-skipped), \
+        stdout.contains("example-sibling"),
+        "expected the empty-entity sibling 'example-sibling' to be discovered (not hard-skipped), \
          got stdout: {stdout}"
     );
     assert!(

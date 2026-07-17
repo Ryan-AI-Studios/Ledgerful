@@ -1001,7 +1001,7 @@ pub fn execute_verify(
     // 6. Final Reporting & IPC
     VerificationReporter::report(&ctx, &report);
 
-    // Push results to AI-Brains
+    // Push results to bridge
     let bridge_outcomes = report
         .results
         .iter()

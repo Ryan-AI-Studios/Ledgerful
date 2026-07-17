@@ -207,7 +207,8 @@ pub enum Commands {
     Security(crate::commands::security::SecurityArgs),
     /// List tests validating a specific entity
     Tests(crate::commands::test_mapping::TestsForEntityArgs),
-    /// Manage the Ledgerful bridge (AI-Brains integration)
+    /// Manage the data interchange bridge (export/import Ledgerful state as versioned NDJSON).
+    #[command(hide = true)]
     Bridge {
         #[command(subcommand)]
         subcommand: BridgeCommands,

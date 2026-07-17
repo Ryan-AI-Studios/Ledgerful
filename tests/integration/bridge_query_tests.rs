@@ -29,7 +29,7 @@ fn test_bridge_query_sanitization_handling() {
 #[test]
 #[ignore = "requires local embedding server to be running (http://127.0.0.1:8083)"]
 fn test_bridge_query_fail_open_on_missing_binary() {
-    // We expect the command to succeed even if ai-brains is missing (fail-open)
+    // We expect the command to succeed even if the provider is missing (fail-open)
     // but emit a warning.
     let binary = option_env!("CARGO_BIN_EXE_ledgerful").unwrap_or("target/debug/ledgerful");
     let output = Command::new(binary)

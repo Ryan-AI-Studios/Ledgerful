@@ -1238,7 +1238,7 @@ mod dependency_tests {
 }
 
 /// TA31 R1: `scan_siblings()` should surface data-quality problems (e.g.
-/// an empty ledger `entity` — the AI-Brains real-world case) as
+/// an empty ledger `entity` — the bridge use case) as
 /// per-sibling warnings instead of hard-skipping the sibling, while
 /// still hard-rejecting security violations (path traversal, absolute
 /// paths) and incompatible `schema_version`s.
@@ -1272,12 +1272,12 @@ mod scan_siblings_tests {
             }],
         )
         .with_ledger(vec![FederatedLedgerEntry {
-            tx_id: "tx-ai-brains-1".to_string(),
+            tx_id: "tx-example-sibling-1".to_string(),
             category: Category::Feature,
             entry_type: EntryType::Implementation,
             entity: String::new(),
             change_type: ChangeType::Create,
-            summary: "AI-Brains entry with no entity recorded".to_string(),
+            summary: "example sibling entry with no entity recorded".to_string(),
             reason: "legacy export".to_string(),
             is_breaking: false,
             committed_at: "2026-06-24T00:00:00Z".to_string(),
@@ -1308,7 +1308,7 @@ mod scan_siblings_tests {
         let workspace_path = Utf8PathBuf::from_path_buf(workspace.path().to_path_buf()).unwrap();
 
         let local_root = workspace_path.join("local-repo");
-        let sibling_root = workspace_path.join("ai-brains");
+        let sibling_root = workspace_path.join("example-sibling");
         fs::create_dir_all(&local_root).unwrap();
         fs::create_dir_all(&sibling_root).unwrap();
         // `scan_siblings` requires a `.ledgerful/` dir to even consider
@@ -1316,7 +1316,7 @@ mod scan_siblings_tests {
         // the sibling (the gate at line ~190).
         fs::create_dir_all(local_root.join(".ledgerful")).unwrap();
 
-        write_sibling_schema(&sibling_root, &empty_entity_schema("ai-brains"));
+        write_sibling_schema(&sibling_root, &empty_entity_schema("example-sibling"));
 
         let scanner = FederatedScanner::new(local_root);
         let (discovered, _top_level_warnings) = scanner.scan_siblings().unwrap();
@@ -1327,7 +1327,7 @@ mod scan_siblings_tests {
             "expected the empty-entity sibling to be discovered, not hard-skipped"
         );
         let (_path, schema, warnings) = &discovered[0];
-        assert_eq!(schema.repo_name, "ai-brains");
+        assert_eq!(schema.repo_name, "example-sibling");
         assert!(
             !warnings.is_empty(),
             "expected a non-empty per-sibling warning list for the empty entity"
@@ -1350,12 +1350,12 @@ mod scan_siblings_tests {
         let workspace_path = Utf8PathBuf::from_path_buf(workspace.path().to_path_buf()).unwrap();
 
         let local_root = workspace_path.join("local-repo");
-        let sibling_root = workspace_path.join("ai-brains");
+        let sibling_root = workspace_path.join("example-sibling");
         fs::create_dir_all(&local_root).unwrap();
         fs::create_dir_all(&sibling_root).unwrap();
         fs::create_dir_all(local_root.join(".ledgerful")).unwrap();
 
-        let schema = empty_entity_schema("ai-brains");
+        let schema = empty_entity_schema("example-sibling");
         write_sibling_schema(&sibling_root, &schema);
 
         let scanner = FederatedScanner::new(local_root.clone());

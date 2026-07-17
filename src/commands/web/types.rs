@@ -90,11 +90,11 @@ pub(crate) struct SyncStatusResponse {
     pub(crate) last_run_at: Option<String>,
 }
 
-/// TA31 R1 frontend-safety fallback: an empty `entity` (the AI-Brains
-/// real-world case — a federated ledger entry with no entity recorded)
-/// must not render as blank/`undefined` in the dashboard. This is
-/// applied only at JSON-serialization time in API DTOs; it does NOT
-/// change what is stored in SQLite or in schema.json on disk.
+/// TA31 R1 frontend-safety fallback: an empty `entity` (the bridge use
+/// case — a federated ledger entry with no entity recorded) must not
+/// render as blank/`undefined` in the dashboard. This is applied only
+/// at JSON-serialization time in API DTOs; it does NOT change what is
+/// stored in SQLite or in schema.json on disk.
 pub(crate) fn display_entity(entity: &str) -> String {
     if entity.trim().is_empty() {
         "(uncategorized)".to_string()

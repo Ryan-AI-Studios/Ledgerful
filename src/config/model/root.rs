@@ -48,4 +48,6 @@ pub struct Config {
     pub federation: super::federation::FederationConfig,
     #[serde(default)]
     pub gate: super::gate::GateConfig,
+    #[serde(default)]
+    pub bridge: super::bridge::BridgeConfig,
 }

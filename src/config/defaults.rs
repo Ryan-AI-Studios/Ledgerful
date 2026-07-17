@@ -80,6 +80,13 @@ require_signing = false
 [gate]
 mode = "observe"
 
+[bridge]
+# External context-provider binary invoked by `bridge query` when the IPC path
+# is unavailable. The default `ai-brains` is the documented example provider.
+# Must accept `sync query <query> --format ndjson` on stdin and emit
+# `BridgeRecord` NDJSON lines on stdout.
+provider_command = "ai-brains"
+
 [impact.risk_weights]
 rs = 1.0
 toml = 0.8

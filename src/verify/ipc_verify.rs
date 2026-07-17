@@ -6,8 +6,8 @@ use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 
 /// Structured response for IPC predictive verification.
-/// Returned to AI-Brains via the bridge when Ledgerful is called
-/// as an inline verification gate during the capture phase.
+/// Returned to the external context provider via the bridge when Ledgerful
+/// is called as an inline verification gate during the capture phase.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct IpcPredictiveResult {
@@ -26,8 +26,8 @@ pub struct IpcPredictiveResult {
 /// IPC entry-point for predictive verification.
 ///
 /// Accepts an optional scope (list of file paths or directory globs) and
-/// returns a deterministic `IpcPredictiveResult` suitable for AI-Brains'
-/// capture gate. The function targets <500ms by skipping embedding-based
+/// returns a deterministic `IpcPredictiveResult` suitable for an external
+/// context provider's capture gate. The function targets <500ms by skipping embedding-based
 /// prediction and using rule-based scores exclusively.
 ///
 /// # Determinism

@@ -255,7 +255,7 @@ pub fn execute_ask(
         );
     }
 
-    // Integrate external AI-Brains context
+    // Integrate external context
     if let Some(ref q) = query
         && let Ok(bridge_records) = crate::bridge::client::query_unified(q)
     {

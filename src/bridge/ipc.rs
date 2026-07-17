@@ -51,10 +51,10 @@ pub struct IpcClient {
 
 impl IpcClient {
     #[cfg(windows)]
-    const PIPE_PATH: &'static str = r"\\.\pipe\aibrains-sync";
+    const PIPE_PATH: &'static str = r"\\.\pipe\ledgerful-bridge";
 
     #[cfg(not(windows))]
-    const SOCKET_PATH: &'static str = "/tmp/aibrains-sync.sock";
+    const SOCKET_PATH: &'static str = "/tmp/ledgerful-bridge.sock";
 
     pub fn connect_with_timeout(timeout: Duration) -> Result<Self> {
         #[cfg(windows)]
@@ -89,7 +89,7 @@ impl IpcClient {
         match rx.recv_timeout(timeout) {
             Ok(Ok(stream)) => Ok(Self { stream }),
             Ok(Err(e)) => Err(e).into_diagnostic(),
-            Err(_) => Err(miette::miette!("Connection to AI-Brains IPC timed out.")),
+            Err(_) => Err(miette::miette!("Connection to bridge IPC timed out.")),
         }
     }
 

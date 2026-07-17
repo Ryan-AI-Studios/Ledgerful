@@ -78,7 +78,7 @@ impl FederatedSchema {
     /// non-empty. `scan_siblings()` calls this directly so it can keep
     /// discovering a sibling whose only problems are data-quality
     /// warnings (e.g. an empty `entity` on one ledger entry — the
-    /// AI-Brains case) while still hard-rejecting security violations
+    /// bridge use case) while still hard-rejecting security violations
     /// (path traversal, absolute paths) and schema_version mismatches.
     pub fn validation_issues(&self) -> (Vec<String>, Vec<String>) {
         let mut hard_errors = Vec::new();
@@ -201,7 +201,7 @@ mod tests {
     fn empty_entity_is_a_warning_not_a_hard_error() {
         let schema = FederatedSchema {
             schema_version: FederatedSchema::VERSION.to_string(),
-            repo_name: "ai-brains".to_string(),
+            repo_name: "example-sibling".to_string(),
             public_interfaces: vec![],
             ledger: Some(vec![FederatedLedgerEntry {
                 tx_id: "tx-1".to_string(),
