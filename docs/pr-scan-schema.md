@@ -61,7 +61,7 @@ ledgerful scan --pr main...HEAD --format text
 | `changes` | array | Sorted by `path`. Forward-slash normalized for cross-platform determinism. |
 | `changes[].path` | string | Forward-slash normalized path. |
 | `changes[].changeType` | string | `added`, `modified`, `deleted`, or `renamed`. |
-| `changes[].oldPath` | string \| null | Present only when `changeType` is `renamed`. |
+| `changes[].oldPath` | string (omitted when not a rename) | Present only when `changeType` is `renamed`; otherwise the field is omitted. |
 | `riskLevel` | string | `low`, `medium`, or `high`. |
 | `riskReasons` | array of strings | Sorted alphabetically, deterministic reasons for the risk level. |
 | `analysisWarnings` | array of strings | Sorted alphabetically; partial-scan or other non-fatal notes. |
@@ -117,8 +117,8 @@ error: base commit '<base>' is not present in the local clone.
 ```
 
 This is detected from git stderr containing any of:
-`Not a valid object name`, `unknown revision`, `bad revision`, or
-`does not exist`.
+`Not a valid object name`, `unknown revision`, `bad revision`,
+`does not exist`, or `Invalid symmetric difference expression`.
 
 ## No-network invariant
 

@@ -233,6 +233,30 @@ fn pr_scan_missing_base_commit_gives_fetch_depth_hint() {
 }
 
 #[test]
+fn pr_scan_missing_full_sha_base_commit_gives_fetch_depth_hint() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+
+    fs::write(root.join("base.txt"), "base content").unwrap();
+    git_add_and_commit(root, "base commit");
+
+    let fake_sha = "0123456789abcdef0123456789abcdef01234567";
+    let range = format!("{}...HEAD", fake_sha);
+    let (parsed, result) = run_pr_scan_json(root, &range);
+    assert!(
+        result.is_err(),
+        "expected an error for missing full-sha base commit"
+    );
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("fetch-depth: 0"),
+        "expected fetch-depth hint for full-sha missing base, got: {err}"
+    );
+    assert_eq!(parsed, serde_json::Value::Null);
+}
+
+#[test]
 fn pr_scan_with_impact_is_mutually_exclusive() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -258,6 +282,114 @@ fn pr_scan_with_impact_is_mutually_exclusive() {
         err.contains("mutually exclusive"),
         "expected mutual exclusion error, got: {err}"
     );
+}
+
+// Golden-output test for `scan --pr --format json`.
+//
+// We build a deterministic git fixture with known changes, strip the volatile
+// `generatedAt` field, and compare the rest byte-for-byte to a canonical JSON
+// fixture. `headHash` and `branchName` are also fixture-dependent (they depend
+// on the actual git commit hash and active branch), so they are replaced with
+// sentinel placeholders before comparison; the test separately asserts that
+// `headHash` is a 40-character hex SHA and that `branchName` is a non-empty
+// string.
+#[test]
+fn pr_scan_golden_output_matches_fixture() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/foo.rs"), "// old\n").unwrap();
+    git_add_and_commit(root, "base: foo");
+
+    fs::write(root.join("src/foo.rs"), "// new\n").unwrap();
+    fs::write(root.join("Cargo.toml"), "[package]\nname = \"fixture\"\n").unwrap();
+    fs::write(root.join("src/old.rs"), "pub fn old() {}\n").unwrap();
+    git_cmd(root, &["add", "-A"]);
+    git_cmd(root, &["commit", "-m", "modify add old"]);
+
+    fs::rename(root.join("src/old.rs"), root.join("src/new.rs")).unwrap();
+    git_cmd(root, &["add", "-A"]);
+    git_cmd(root, &["commit", "-m", "rename old to new"]);
+
+    // Git's `diff --name-status A...B` does not detect renames across the full
+    // PR range when the file was added inside the range (it reports an add of
+    // the new path and a delete of the old path). To keep the golden fixture
+    // stable and deterministic we avoid relying on cross-commit rename
+    // detection and instead assert the rename is visible at the single-commit
+    // boundary and that the aggregate range reports the same set of paths.
+    let (parsed, result) = run_pr_scan_json(root, "HEAD~2...HEAD");
+    result.unwrap();
+
+    assert_eq!(parsed["schemaVersion"], 1);
+    assert_eq!(parsed["baseRef"], "HEAD~2");
+    assert_eq!(parsed["headRef"], "HEAD");
+    assert!(
+        parsed["headHash"].as_str().is_some_and(|h| h.len() == 40),
+        "expected a full 40-char SHA headHash"
+    );
+    assert!(
+        parsed["branchName"].as_str().is_some_and(|b| !b.is_empty()),
+        "expected a non-empty branchName"
+    );
+    // treeClean is volatile for this fixture because git modifies line endings
+    // (LF -> CRLF warnings on Windows). We normalize it to a sentinel so the
+    // rest of the report remains a stable golden fixture.
+    assert!(
+        parsed["treeClean"].is_boolean(),
+        "expected treeClean to be a boolean"
+    );
+    assert_eq!(parsed["changeCount"], 3);
+    assert_eq!(parsed["riskLevel"], "high");
+
+    let mut normalized = parsed.clone();
+    let obj = normalized.as_object_mut().unwrap();
+    obj.remove("generatedAt");
+    obj.insert("headHash".into(), "__HEAD_HASH__".into());
+    obj.insert("branchName".into(), "__BRANCH_NAME__".into());
+    obj.insert("treeClean".into(), "__TREE_CLEAN__".into());
+
+    let expected = serde_json::json!({
+        "schemaVersion": 1,
+        "baseRef": "HEAD~2",
+        "headRef": "HEAD",
+        "headHash": "__HEAD_HASH__",
+        "branchName": "__BRANCH_NAME__",
+        "treeClean": "__TREE_CLEAN__",
+        "changeCount": 3,
+        "changes": [
+            {
+                "path": "Cargo.toml",
+                "changeType": "added"
+            },
+            {
+                "path": "src/foo.rs",
+                "changeType": "modified"
+            },
+            {
+                "path": "src/new.rs",
+                "changeType": "added"
+            }
+        ],
+        "riskLevel": "high",
+        "riskReasons": ["sensitive path touched: Cargo.toml"],
+        "analysisWarnings": []
+    });
+
+    assert_eq!(
+        normalized, expected,
+        "golden PR scan output did not match canonical fixture (generatedAt removed, volatile fields normalized)"
+    );
+
+    // The single-commit rename boundary still reports the rename correctly.
+    let (rename_parsed, rename_result) = run_pr_scan_json(root, "HEAD~1...HEAD");
+    rename_result.unwrap();
+    let rename_changes = rename_parsed["changes"].as_array().unwrap();
+    assert_eq!(rename_changes.len(), 1);
+    assert_eq!(rename_changes[0]["changeType"], "renamed");
+    assert_eq!(rename_changes[0]["path"], "src/new.rs");
+    assert_eq!(rename_changes[0]["oldPath"], "src/old.rs");
 }
 
 #[test]
@@ -402,6 +534,10 @@ fn pr_scan_same_base_and_head_yields_empty_low_risk() {
     assert_eq!(parsed["treeClean"], true);
 }
 
+// This test asserts that the literal privacy grep is empty across production
+// source (`src/commands/scan*` only). Docs and tests are intentionally allowed
+// to name `ureq`, `reqwest`, and `tokio_tungstenite` when documenting the
+// no-network invariant; the invariant applies to production code, not prose.
 #[test]
 #[serial_test::serial]
 fn pr_scan_no_network_code_in_src() {

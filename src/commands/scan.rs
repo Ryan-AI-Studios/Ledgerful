@@ -163,6 +163,7 @@ fn is_missing_base_commit_error(stderr: &str) -> bool {
         || lowered.contains("unknown revision")
         || lowered.contains("bad revision")
         || lowered.contains("does not exist")
+        || lowered.contains("invalid symmetric difference expression")
 }
 
 /// Format the actionable fetch-depth error.
