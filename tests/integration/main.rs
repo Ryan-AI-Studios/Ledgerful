@@ -100,6 +100,7 @@ mod predictor;
 mod repro_w2_extraction;
 mod risk_analysis;
 mod rust_parser_modular;
+mod scan_pr_tests;
 mod scip_integration;
 mod search_performance;
 mod semantic_search;

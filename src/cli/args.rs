@@ -67,6 +67,14 @@ pub enum Commands {
         /// Git ref to compare against instead of working-tree status. Used in CI.
         #[arg(long, value_name = "REF")]
         base_ref: Option<String>,
+        /// PR-style git range, e.g. `main...HEAD` or `main..HEAD`. Mutually
+        /// exclusive with --impact.
+        #[arg(long, value_name = "RANGE")]
+        pr: Option<String>,
+        /// Output format for PR scan: `json` (machine-readable) or `text`
+        /// (human-readable). Requires --pr.
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
     },
     /// Analyze impact of current changes
     Impact {

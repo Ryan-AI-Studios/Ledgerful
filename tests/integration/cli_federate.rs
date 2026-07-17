@@ -23,7 +23,7 @@ fn test_federate_scan_no_remotes__slow() {
     git_add_and_commit(root, "after init");
 
     // Need a scan with impact first to produce the packet that federated_scan reads
-    execute_scan(true, false, false, None, None).unwrap();
+    execute_scan(true, false, false, None, None, None, None).unwrap();
 
     let result = execute_federate_scan();
     if let Err(ref e) = result {

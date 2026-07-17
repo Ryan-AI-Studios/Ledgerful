@@ -39,6 +39,7 @@ pub mod observability;
 pub mod pid;
 pub mod reset;
 pub mod scan;
+pub mod scan_pr;
 pub mod schedule;
 pub mod search;
 pub mod security;

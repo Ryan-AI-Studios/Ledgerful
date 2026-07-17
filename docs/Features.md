@@ -82,5 +82,6 @@ Built for the modern developer's environment.
 *   **LSP Daemon**: Optional background server providing diagnostics, Hover, and CodeLens directly in your IDE.
 *   **Windows & WSL Resilience**: First-class support for Windows PowerShell and WSL environments.
 *   **Health Diagnostics**: `doctor` command verifies toolchain health and environment readiness, including the active ask backend (Gemini Cloud vs Local).
-*   **Dead Code Pruning**: `dead-code --prune` interactively removes high-confidence dead code with `inquire` prompts, wrapped in a pending ledger transaction for verifiable safety.
-*   **Nightly Scheduler**: `schedule setup-nightly` installs a cross-platform nightly task (Windows schtasks / Unix crontab) that runs `git fetch` + `index --analyze-graph` to keep the search/observability cache warm without workday file-lock contention.
+* **Dead Code Pruning**: `dead-code --prune` interactively removes high-confidence dead code with `inquire` prompts, wrapped in a pending ledger transaction for verifiable safety.
+* **Nightly Scheduler**: `schedule setup-nightly` installs a cross-platform nightly task (Windows schtasks / Unix crontab) that runs `git fetch` + `index --analyze-graph` to keep the search/observability cache warm without workday file-lock contention.
+* **PR Scan Surface**: `scan --pr <range> --format json` emits a stable, versioned, deterministic PR diff report for CI integration. See `docs/pr-scan-schema.md` for the schema contract.
