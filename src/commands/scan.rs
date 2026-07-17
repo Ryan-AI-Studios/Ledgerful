@@ -1,3 +1,4 @@
+use crate::commands::scan_pr::PrScanReport;
 use crate::config::load::load_config;
 use crate::git::RepoSnapshot;
 use crate::git::diff::get_diff_summary;
@@ -10,6 +11,9 @@ use crate::state::reports::{
     ScanDiffSummary, ScanReport, write_clean_tree_tombstone, write_scan_report,
 };
 use crate::state::storage::StorageManager;
+use comfy_table::modifiers::UTF8_ROUND_CORNERS;
+use comfy_table::presets::UTF8_FULL;
+use comfy_table::{Cell, Color, Table};
 use globset::{Glob, GlobSetBuilder};
 use miette::{IntoDiagnostic, Result};
 use std::env;
@@ -115,25 +119,8 @@ fn maybe_auto_analyze_graph(
     crate::index::run_graph_analysis(write_storage, project_root, config, false, false).map(|_| ())
 }
 
-/// Collect changed files by running `git diff --name-status <base_ref>...HEAD`.
-/// Returns a `Vec<FileChange>` with accurate `ChangeType` values per entry.
-fn files_changed_since(repo_root: &std::path::Path, base_ref: &str) -> Result<Vec<FileChange>> {
-    let output = Command::new("git")
-        .args(["diff", "--name-status", &format!("{}...HEAD", base_ref)])
-        .current_dir(repo_root)
-        .output()
-        .map_err(|e| miette::miette!("Failed to run git diff: {}", e))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(miette::miette!(
-            "git diff --name-status {}...HEAD failed: {}",
-            base_ref,
-            stderr.trim()
-        ));
-    }
-
-    let stdout = String::from_utf8_lossy(&output.stdout);
+/// Parse `git diff --name-status` output into `FileChange` values.
+fn parse_name_status_output(stdout: &str) -> Vec<FileChange> {
     let mut changes = Vec::new();
     for line in stdout.lines().filter(|l| !l.is_empty()) {
         let mut parts = line.splitn(3, '\t');
@@ -165,7 +152,131 @@ fn files_changed_since(repo_root: &std::path::Path, base_ref: &str) -> Result<Ve
             is_staged: true,
         });
     }
-    Ok(changes)
+    changes
+}
+
+/// Detect whether a git-diff failure is because the base commit is missing from
+/// the local clone (typical shallow checkout with `fetch-depth: 1`).
+fn is_missing_base_commit_error(stderr: &str) -> bool {
+    let lowered = stderr.to_lowercase();
+    lowered.contains("not a valid object name")
+        || lowered.contains("unknown revision")
+        || lowered.contains("bad revision")
+        || lowered.contains("does not exist")
+}
+
+/// Format the actionable fetch-depth error.
+fn missing_base_commit_error(base_ref: &str) -> miette::Error {
+    miette::miette!(
+        "base commit '{}' is not present in the local clone.\n       This usually means the checkout was shallow (fetch-depth: 1).\n       Fix: set `fetch-depth: 0` in your actions/checkout step, or fetch the base ref explicitly.",
+        base_ref
+    )
+}
+
+/// Collect changed files by running `git diff --name-status <base_ref>...HEAD`.
+/// Returns a `Vec<FileChange>` with accurate `ChangeType` values per entry.
+fn files_changed_since(repo_root: &std::path::Path, base_ref: &str) -> Result<Vec<FileChange>> {
+    files_changed_between(repo_root, &format!("{}...HEAD", base_ref), base_ref)
+}
+
+/// Collect changed files by running `git diff --name-status <range>`.
+/// `base_ref_for_errors` is used when formatting the missing-base-commit hint.
+fn files_changed_between(
+    repo_root: &std::path::Path,
+    range: &str,
+    base_ref_for_errors: &str,
+) -> Result<Vec<FileChange>> {
+    let output = Command::new("git")
+        .args(["diff", "--name-status", range])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|e| miette::miette!("Failed to run git diff: {}", e))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if is_missing_base_commit_error(&stderr) {
+            return Err(missing_base_commit_error(base_ref_for_errors));
+        }
+        return Err(miette::miette!(
+            "git diff --name-status {} failed: {}",
+            range,
+            stderr.trim()
+        ));
+    }
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    Ok(parse_name_status_output(&stdout))
+}
+
+/// Parse a `--pr <RANGE>` value into `(base_ref, head_ref)`.
+///
+/// Supports `base...head`, `base..head`, or a bare `base` (default head to
+/// `HEAD`). Validates that base is non-empty.
+fn parse_pr_range(range: &str) -> Result<(String, String)> {
+    let trimmed = range.trim();
+    if trimmed.is_empty() {
+        return Err(miette::miette!("--pr range must not be empty"));
+    }
+
+    let (base, head) = if let Some(pos) = trimmed.find("...") {
+        let (base, head) = trimmed.split_at(pos);
+        (base, &head[3..])
+    } else if let Some(pos) = trimmed.find("..") {
+        let (base, head) = trimmed.split_at(pos);
+        (base, &head[2..])
+    } else {
+        (trimmed, "HEAD")
+    };
+
+    let base = base.trim();
+    let head = head.trim();
+
+    if base.is_empty() {
+        return Err(miette::miette!(
+            "--pr range '{}' has an empty base ref",
+            range
+        ));
+    }
+    if head.is_empty() {
+        return Err(miette::miette!(
+            "--pr range '{}' has an empty head ref",
+            range
+        ));
+    }
+
+    Ok((base.to_string(), head.to_string()))
+}
+
+/// Validate that `--pr` and `--impact` are not used together, and that
+/// `--format` (when present with `--pr`) is one of the supported values.
+fn validate_scan_args(
+    pr: &Option<String>,
+    format: &str,
+    impact: bool,
+    summary: bool,
+    json: bool,
+    out: &Option<PathBuf>,
+) -> Result<()> {
+    if pr.is_some() && impact {
+        return Err(miette::miette!(
+            "`--pr` and `--impact` are mutually exclusive"
+        ));
+    }
+
+    if pr.is_some() && !matches!(format, "json" | "text") {
+        return Err(miette::miette!(
+            "unsupported --format '{}'; use 'json' or 'text'",
+            format
+        ));
+    }
+
+    if pr.is_none() && !impact && (summary || json || out.is_some()) {
+        return Err(miette::miette!(
+            "--summary, --json and --out require --impact"
+        ));
+    }
+
+    Ok(())
 }
 
 pub fn execute_scan(
@@ -174,15 +285,13 @@ pub fn execute_scan(
     json: bool,
     out: Option<PathBuf>,
     base_ref: Option<String>,
+    pr: Option<String>,
+    format: String,
 ) -> Result<()> {
-    if !run_impact && (summary || json || out.is_some()) {
-        return Err(miette::miette!(
-            "--summary, --json and --out require --impact"
-        ));
-    }
-
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
+
+    validate_scan_args(&pr, &format, run_impact, summary, json, &out)?;
 
     let repo = open_repo(&current_dir)?;
     let (head_hash, branch_name) = get_head_info(&repo)?;
@@ -192,7 +301,17 @@ pub fn execute_scan(
     let layout = Layout::new(current_dir.to_string_lossy().as_ref());
     let config = load_config(&layout).unwrap_or_default();
 
-    let (changes, is_clean) = if let Some(ref ref_str) = base_ref {
+    let (changes, is_clean, pr_base_ref, pr_head_ref) = if let Some(ref range) = pr {
+        let (base, head) = parse_pr_range(range)?;
+        let all_changes = files_changed_between(&current_dir, range, &base)?;
+        let filtered = crate::git::ignore::filter_ignored_changes(
+            all_changes,
+            &config.watch.ignore_patterns,
+            run_impact,
+        )?;
+        let clean = filtered.is_empty();
+        (filtered, clean, Some(base), Some(head))
+    } else if let Some(ref ref_str) = base_ref {
         let all_changes = files_changed_since(&current_dir, ref_str)?;
         let filtered = crate::git::ignore::filter_ignored_changes(
             all_changes,
@@ -200,7 +319,7 @@ pub fn execute_scan(
             run_impact,
         )?;
         let clean = filtered.is_empty();
-        (filtered, clean)
+        (filtered, clean, None, None)
     } else {
         let all_changes = get_repo_status(&repo)?;
         let filtered = crate::git::ignore::filter_ignored_changes(
@@ -209,7 +328,7 @@ pub fn execute_scan(
             run_impact,
         )?;
         let clean = filtered.is_empty();
-        (filtered, clean)
+        (filtered, clean, None, None)
     };
 
     let snapshot = RepoSnapshot {
@@ -219,8 +338,8 @@ pub fn execute_scan(
         changes,
     };
 
-    // Working-tree diffs are empty in CI when --base-ref is used; skip get_diff_summary calls.
-    let mut diff_summaries = if base_ref.is_some() {
+    // Working-tree diffs are empty in CI when --base-ref or --pr is used; skip get_diff_summary calls.
+    let mut diff_summaries = if base_ref.is_some() || pr.is_some() {
         vec![]
     } else {
         snapshot
@@ -239,7 +358,7 @@ pub fn execute_scan(
     let scan_report = ScanReport::from_snapshot(&snapshot, diff_summaries);
     write_scan_report(&layout, &scan_report)?;
 
-    if !run_impact && snapshot.is_clean {
+    if !run_impact && pr.is_none() && snapshot.is_clean {
         write_clean_tree_tombstone(
             &layout,
             snapshot.head_hash.clone(),
@@ -248,6 +367,31 @@ pub fn execute_scan(
     }
 
     let write_impact_json = json || out.is_some();
+
+    // PR-mode output: either JSON report or human summary.
+    if let (Some(base), Some(head)) = (pr_base_ref, pr_head_ref) {
+        let report = PrScanReport::new(
+            base,
+            head,
+            snapshot.head_hash.clone(),
+            snapshot.branch_name.clone(),
+            snapshot.is_clean,
+            &snapshot.changes,
+            &[],
+        );
+
+        if format == "json" {
+            let json_output = serde_json::to_string_pretty(&report).into_diagnostic()?;
+            if let Some(path) = out {
+                std::fs::write(&path, json_output).into_diagnostic()?;
+            } else {
+                println!("{}", json_output);
+            }
+        } else {
+            print_pr_scan_summary(&report);
+        }
+        return Ok(());
+    }
 
     if !write_impact_json {
         print_scan_summary(&snapshot);
@@ -309,6 +453,90 @@ pub fn execute_scan(
     Ok(())
 }
 
+/// Human-readable summary for `scan --pr --format text`.
+fn print_pr_scan_summary(report: &PrScanReport) {
+    use owo_colors::OwoColorize;
+
+    println!("\n{}", "Ledgerful PR Scan Summary".bold().underline());
+    println!("{:<15} {}", "Base:".bold(), report.base_ref);
+    println!("{:<15} {}", "Head:".bold(), report.head_ref);
+    println!(
+        "{:<15} {}",
+        "HEAD commit:".bold(),
+        report.head_hash.as_deref().unwrap_or("unknown")
+    );
+    println!(
+        "{:<15} {}",
+        "Branch:".bold(),
+        report.branch_name.as_deref().unwrap_or("unknown")
+    );
+    println!(
+        "{:<15} {}",
+        "Working tree:".bold(),
+        match report.tree_clean {
+            true => "CLEAN".green().to_string(),
+            false => "DIRTY".yellow().to_string(),
+        }
+    );
+    println!("{:<15} {}", "Files changed:".bold(), report.change_count);
+
+    let risk_color = match report.risk_level {
+        crate::commands::scan_pr::PrRiskLevel::Low => Color::Green,
+        crate::commands::scan_pr::PrRiskLevel::Medium => Color::Yellow,
+        crate::commands::scan_pr::PrRiskLevel::High => Color::Red,
+    };
+    let mut risk_table = Table::new();
+    risk_table
+        .load_preset(UTF8_FULL)
+        .apply_modifier(UTF8_ROUND_CORNERS)
+        .add_row(vec![
+            Cell::new("PR RISK"),
+            Cell::new(format!("{:?}", report.risk_level).to_uppercase()).fg(risk_color),
+        ]);
+    println!("{risk_table}");
+
+    if !report.risk_reasons.is_empty() {
+        println!("{}", "Risk reasons:".bold());
+        for reason in &report.risk_reasons {
+            println!("  • {}", reason);
+        }
+    }
+
+    if !report.analysis_warnings.is_empty() {
+        println!("{}", "Analysis warnings:".bold());
+        for warning in &report.analysis_warnings {
+            println!("  • {}", warning);
+        }
+    }
+
+    if !report.changes.is_empty() {
+        let mut table = Table::new();
+        table
+            .load_preset(UTF8_FULL)
+            .apply_modifier(UTF8_ROUND_CORNERS)
+            .set_header(vec!["Action", "File Path"]);
+        for change in &report.changes {
+            let action = match change.change_type.as_str() {
+                "added" => "Added".green().to_string(),
+                "modified" => "Modified".yellow().to_string(),
+                "deleted" => "Deleted".red().to_string(),
+                "renamed" => {
+                    if let Some(old) = &change.old_path {
+                        format!("Renamed ({} → {})", old, change.path)
+                            .blue()
+                            .to_string()
+                    } else {
+                        "Renamed".blue().to_string()
+                    }
+                }
+                _ => change.change_type.clone(),
+            };
+            table.add_row(vec![Cell::new(action), Cell::new(&change.path)]);
+        }
+        println!("{table}");
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -363,5 +591,49 @@ mod tests {
         let storage = StorageManager::init_from_conn(conn);
 
         assert!(!graph_is_missing_or_stale(&storage, 3));
+    }
+
+    #[test]
+    fn parse_pr_range_three_dot() {
+        let (base, head) = parse_pr_range("main...HEAD").unwrap();
+        assert_eq!(base, "main");
+        assert_eq!(head, "HEAD");
+    }
+
+    #[test]
+    fn parse_pr_range_two_dot() {
+        let (base, head) = parse_pr_range("main..HEAD").unwrap();
+        assert_eq!(base, "main");
+        assert_eq!(head, "HEAD");
+    }
+
+    #[test]
+    fn parse_pr_range_bare_base_defaults_head() {
+        let (base, head) = parse_pr_range("main").unwrap();
+        assert_eq!(base, "main");
+        assert_eq!(head, "HEAD");
+    }
+
+    #[test]
+    fn parse_pr_range_rejects_empty_base() {
+        let err = parse_pr_range("...HEAD").unwrap_err().to_string();
+        assert!(err.contains("empty base ref"));
+    }
+
+    #[test]
+    fn parse_pr_range_rejects_empty_head() {
+        let err = parse_pr_range("main..").unwrap_err().to_string();
+        assert!(err.contains("empty head ref"));
+    }
+
+    #[test]
+    fn is_missing_base_commit_error_detects_known_phrases() {
+        assert!(is_missing_base_commit_error(
+            "fatal: Not a valid object name main"
+        ));
+        assert!(is_missing_base_commit_error("unknown revision: main"));
+        assert!(is_missing_base_commit_error("bad revision 'main'"));
+        assert!(is_missing_base_commit_error("does not exist: 'main'"));
+        assert!(!is_missing_base_commit_error("some other git failure"));
     }
 }

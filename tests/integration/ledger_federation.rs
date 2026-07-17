@@ -30,7 +30,7 @@ fn test_ledger_federation_flow() {
     {
         let _guard = DirGuard::from_utf8(&local_path);
         execute_init(false, false).unwrap();
-        execute_scan(true, false, false, None, None).unwrap();
+        execute_scan(true, false, false, None, None, None, "text".into()).unwrap();
     }
 
     // 2. Setup "sibling" repo with schema

@@ -41,7 +41,7 @@ fn test_impact_freshness_states__slow() {
 
     // 2. CurrentClean
     // Run scan --impact on clean tree
-    execute_scan(true, false, false, None, None).unwrap();
+    execute_scan(true, false, false, None, None, None, "text".into()).unwrap();
     assert_eq!(
         check_impact_freshness(&layout, &snapshot),
         ImpactFreshness::CurrentClean
@@ -61,7 +61,7 @@ fn test_impact_freshness_states__slow() {
         }],
     };
     // Re-scan should yield CurrentDirty
-    execute_scan(true, false, false, None, None).unwrap();
+    execute_scan(true, false, false, None, None, None, "text".into()).unwrap();
     assert_eq!(
         check_impact_freshness(&layout, &dirty_snapshot),
         ImpactFreshness::CurrentDirty
@@ -71,7 +71,7 @@ fn test_impact_freshness_states__slow() {
     // Run scan, then modify a file
     git_cmd(root, &["add", "-A"]);
     git_cmd(root, &["commit", "--no-verify", "-m", "second"]);
-    execute_scan(true, false, false, None, None).unwrap();
+    execute_scan(true, false, false, None, None, None, "text".into()).unwrap();
 
     let (new_head, new_branch) = ledgerful::git::repo::get_head_info(&repo).unwrap();
     fs::write(
@@ -99,7 +99,7 @@ fn test_impact_freshness_states__slow() {
 
     // 5. Stale (HEAD changed)
     // Run scan, then commit
-    execute_scan(true, false, false, None, None).unwrap(); // CurrentDirty
+    execute_scan(true, false, false, None, None, None, "text".into()).unwrap(); // CurrentDirty
     git_cmd(root, &["add", "-A"]);
     git_cmd(root, &["commit", "--no-verify", "-m", "third"]);
     let (third_head, third_branch) = ledgerful::git::repo::get_head_info(&repo).unwrap();

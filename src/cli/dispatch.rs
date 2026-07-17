@@ -25,7 +25,9 @@ pub fn run_with(cli: Cli) -> Result<()> {
             json,
             out,
             base_ref,
-        } => crate::commands::scan::execute_scan(impact, summary, json, out, base_ref),
+            pr,
+            format,
+        } => crate::commands::scan::execute_scan(impact, summary, json, out, base_ref, pr, format),
         Commands::Impact {
             all_parents,
             summary,

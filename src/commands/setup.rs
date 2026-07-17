@@ -142,7 +142,7 @@ pub fn execute_setup(yes: bool, skip_scan: bool) -> Result<()> {
             })?;
 
             // Equivalent to: ledgerful scan --impact
-            execute_scan(true, false, false, None, None)?;
+            execute_scan(true, false, false, None, None, None, "text".into())?;
             println!("{} First scan complete.", "✓".green());
         }
     }
