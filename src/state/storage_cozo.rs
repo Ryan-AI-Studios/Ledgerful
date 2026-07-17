@@ -43,6 +43,13 @@ impl CozoStorage {
         Self::new_with_options(Path::new(""), false)
     }
 
+    /// Create an in-memory storage without running schema setup.
+    /// The caller is responsible for calling `setup_schema_with_options`.
+    pub fn new_in_memory_bare() -> Result<Self> {
+        let db = init::initialize_instance(Path::new(""), false)?;
+        Ok(Self { db })
+    }
+
     fn new_with_options(db_path: &Path, read_only: bool) -> Result<Self> {
         let db = init::initialize_instance(db_path, read_only)?;
         let storage = Self { db };
@@ -391,7 +398,7 @@ mod tests {
 
     #[test]
     fn setup_schema_without_bridge_tables_omits_turn_session_memory_decision() {
-        let storage = CozoStorage::new_in_memory().unwrap();
+        let storage = CozoStorage::new_in_memory_bare().unwrap();
         storage
             .setup_schema_with_options(init::setup_schema::Options {
                 include_bridge_tables: false,
@@ -404,14 +411,13 @@ mod tests {
         assert!(!relations.contains(&"Memory".to_string()));
         assert!(!relations.contains(&"Decision".to_string()));
 
-        // Core relations must still be created.
         assert!(relations.contains(&"node".to_string()));
         assert!(relations.contains(&"edge".to_string()));
     }
 
     #[test]
     fn setup_schema_with_bridge_tables_creates_turn_session_memory_decision() {
-        let storage = CozoStorage::new_in_memory().unwrap();
+        let storage = CozoStorage::new_in_memory_bare().unwrap();
         storage
             .setup_schema_with_options(init::setup_schema::Options {
                 include_bridge_tables: true,
