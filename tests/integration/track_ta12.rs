@@ -18,7 +18,7 @@ fn test_scan_clean_tree_writes_tombstone() {
 
     let _guard = DirGuard::new(root);
 
-    execute_scan(false, false, false, None, None, None, "text".into()).unwrap();
+    execute_scan(false, false, false, None, None, None, None).unwrap();
 
     let layout = Layout::new(root.to_str().unwrap());
     let report = read_latest_impact_report(&layout).unwrap();
@@ -55,7 +55,7 @@ fn test_scan_dirty_tree_does_not_write_tombstone() {
     // Pre-populate with a full packet by making the tree dirty and running
     // scan --impact.
     fs::write(root.join("file.txt"), "modified").unwrap();
-    execute_scan(true, false, false, None, None, None, "text".into()).unwrap();
+    execute_scan(true, false, false, None, None, None, None).unwrap();
     let original_report = read_latest_impact_report(&layout)
         .unwrap()
         .expect("impact report should exist");
@@ -69,7 +69,7 @@ fn test_scan_dirty_tree_does_not_write_tombstone() {
     // Now dirty the tree again and run scan without --impact. The existing
     // impact report must be left unchanged.
     fs::write(root.join("file.txt"), "modified again").unwrap();
-    execute_scan(false, false, false, None, None, None, "text".into()).unwrap();
+    execute_scan(false, false, false, None, None, None, None).unwrap();
 
     let new_report = read_latest_impact_report(&layout).unwrap().unwrap();
     match new_report {

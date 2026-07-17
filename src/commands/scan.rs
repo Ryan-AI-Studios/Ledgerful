@@ -265,7 +265,7 @@ fn parse_pr_range(range: &str) -> Result<(String, String, String)> {
 fn validate_scan_args(
     pr: &Option<String>,
     base_ref: &Option<String>,
-    format: &str,
+    format: &Option<String>,
     impact: bool,
     summary: bool,
     json: bool,
@@ -283,14 +283,20 @@ fn validate_scan_args(
         ));
     }
 
-    if pr.is_none() && !matches!(format, "text") {
+    // --format (any value, including "text") requires --pr. An explicit
+    // `--format text` without `--pr` is rejected — it is indistinguishable
+    // from the default only when the flag is absent, not when the user sets
+    // it explicitly.
+    if pr.is_none() && format.is_some() {
         return Err(miette::miette!("--format requires --pr"));
     }
 
-    if pr.is_some() && !matches!(format, "json" | "text") {
+    if let Some(fmt) = format
+        && !matches!(fmt.as_str(), "json" | "text")
+    {
         return Err(miette::miette!(
             "unsupported --format '{}'; use 'json' or 'text'",
-            format
+            fmt
         ));
     }
 
@@ -300,7 +306,7 @@ fn validate_scan_args(
         ));
     }
 
-    if pr.is_some() && out.is_some() && format != "json" {
+    if pr.is_some() && out.is_some() && format.as_deref() != Some("json") {
         return Err(miette::miette!("--out with --pr requires --format json"));
     }
 
@@ -320,7 +326,7 @@ pub fn execute_scan(
     out: Option<PathBuf>,
     base_ref: Option<String>,
     pr: Option<String>,
-    format: String,
+    format: Option<String>,
 ) -> Result<()> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
@@ -414,7 +420,7 @@ pub fn execute_scan(
             &[],
         );
 
-        if format == "json" {
+        if format.as_deref() == Some("json") {
             let json_output = serde_json::to_string_pretty(&report).into_diagnostic()?;
             if let Some(path) = out {
                 std::fs::write(&path, json_output).into_diagnostic()?;

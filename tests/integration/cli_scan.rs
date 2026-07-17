@@ -28,7 +28,7 @@ fn scan_clean_tree_reports_no_changes() {
 
     let _guard = DirGuard::new(root);
 
-    let result = execute_scan(false, false, false, None, None, None, "text".into());
+    let result = execute_scan(false, false, false, None, None, None, None);
     assert!(result.is_ok());
 
     let layout = Layout::new(root.to_string_lossy().as_ref());
@@ -59,7 +59,7 @@ fn scan_dirty_tree_reports_changed_files() {
 
     let _guard = DirGuard::new(root);
 
-    let result = execute_scan(false, false, false, None, None, None, "text".into());
+    let result = execute_scan(false, false, false, None, None, None, None);
     assert!(result.is_ok());
 
     let layout = Layout::new(root.to_string_lossy().as_ref());
@@ -90,7 +90,7 @@ fn scan_detached_head_reports_detached_state() {
 
     let _guard = DirGuard::new(root);
 
-    let result = execute_scan(false, false, false, None, None, None, "text".into());
+    let result = execute_scan(false, false, false, None, None, None, None);
     assert!(result.is_ok());
 }
 
@@ -110,16 +110,7 @@ fn test_scan_impact_out_writes_json_without_json_flag() {
     let out_path = root.join("impact.json");
     let _guard = DirGuard::new(root);
 
-    execute_scan(
-        true,
-        false,
-        false,
-        Some(out_path.clone()),
-        None,
-        None,
-        "text".into(),
-    )
-    .unwrap();
+    execute_scan(true, false, false, Some(out_path.clone()), None, None, None).unwrap();
 
     let content = fs::read_to_string(out_path).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
@@ -142,7 +133,7 @@ fn test_scan_out_requires_impact() {
         Some("out.json".into()),
         None,
         None,
-        "text".into(),
+        None,
     )
     .unwrap_err();
     assert!(
@@ -159,7 +150,7 @@ fn test_scan_json_requires_impact() {
     setup_git_repo(root);
 
     let _guard = DirGuard::new(root);
-    let error = execute_scan(false, false, true, None, None, None, "text".into()).unwrap_err();
+    let error = execute_scan(false, false, true, None, None, None, None).unwrap_err();
     assert!(
         error.to_string().contains("--impact"),
         "expected impact requirement error, got {error:?}"
@@ -174,7 +165,7 @@ fn test_scan_summary_requires_impact() {
     setup_git_repo(root);
 
     let _guard = DirGuard::new(root);
-    let error = execute_scan(false, true, false, None, None, None, "text".into()).unwrap_err();
+    let error = execute_scan(false, true, false, None, None, None, None).unwrap_err();
     assert!(
         error.to_string().contains("--impact"),
         "expected impact requirement error, got {error:?}"
@@ -207,7 +198,7 @@ fn test_scan_impact_excludes_tracked_ignored() {
 
     let _guard = DirGuard::new(root);
 
-    let result = execute_scan(true, false, false, None, None, None, "text".into());
+    let result = execute_scan(true, false, false, None, None, None, None);
     assert!(result.is_ok());
 
     let layout = Layout::new(root.to_string_lossy().as_ref());
@@ -277,7 +268,7 @@ fn scan_with_base_ref_emits_changed_files() {
         Some(out_path.clone()),
         Some("HEAD~1".to_string()),
         None,
-        "text".into(),
+        None,
     )
     .unwrap();
 
@@ -314,7 +305,7 @@ fn scan_with_base_ref_empty_when_no_diff() {
         Some(out_path.clone()),
         Some("HEAD".to_string()),
         None,
-        "text".into(),
+        None,
     )
     .unwrap();
 
@@ -354,7 +345,7 @@ fn scan_with_base_ref_detects_deleted_file() {
         Some(out_path.clone()),
         Some("HEAD~1".to_string()),
         None,
-        "text".into(),
+        None,
     )
     .unwrap();
 

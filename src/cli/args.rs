@@ -73,8 +73,8 @@ pub enum Commands {
         pr: Option<String>,
         /// Output format for PR scan: `json` (machine-readable) or `text`
         /// (human-readable). Requires --pr.
-        #[arg(long, value_name = "FORMAT", default_value = "text")]
-        format: String,
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
     },
     /// Analyze impact of current changes
     Impact {

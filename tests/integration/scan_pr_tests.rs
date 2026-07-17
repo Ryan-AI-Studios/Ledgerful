@@ -24,7 +24,7 @@ fn run_pr_scan_json(dir: &std::path::Path, range: &str) -> (serde_json::Value, m
         Some(out_path.clone()),
         None,
         Some(range.into()),
-        "json".into(),
+        Some("json".into()),
     );
     let parsed = if out_path.exists() {
         let content = fs::read_to_string(&out_path).unwrap();
@@ -273,7 +273,7 @@ fn pr_scan_with_impact_is_mutually_exclusive() {
         None,
         None,
         Some("HEAD~1...HEAD".into()),
-        "json".into(),
+        Some("json".into()),
     );
 
     assert!(result.is_err());
@@ -415,7 +415,7 @@ fn pr_scan_json_out_writes_same_payload_to_file() {
             Some(out_path.clone()),
             None,
             Some("HEAD~1...HEAD".into()),
-            "json".into(),
+            Some("json".into()),
         )
         .unwrap();
     }
@@ -450,7 +450,7 @@ fn pr_scan_backward_compat_base_ref_impact_json_still_works() {
             Some(out_path.clone()),
             Some("HEAD~1".to_string()),
             None,
-            "text".into(),
+            None,
         )
         .unwrap();
     }
@@ -478,7 +478,7 @@ fn pr_scan_rejects_empty_pr_range() {
         None,
         None,
         Some("".into()),
-        "json".into(),
+        Some("json".into()),
     );
 
     assert!(result.is_err());
@@ -506,7 +506,7 @@ fn pr_scan_rejects_unknown_format() {
         None,
         None,
         Some("main...HEAD".into()),
-        "xml".into(),
+        Some("xml".into()),
     );
 
     assert!(result.is_err());
@@ -536,7 +536,7 @@ fn pr_scan_rejects_incompatible_flags() {
         None,
         None,
         Some("HEAD~1...HEAD".into()),
-        "text".into(),
+        Some("text".into()),
     );
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
@@ -553,7 +553,7 @@ fn pr_scan_rejects_incompatible_flags() {
         None,
         None,
         Some("HEAD~1...HEAD".into()),
-        "json".into(),
+        Some("json".into()),
     );
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
@@ -570,7 +570,7 @@ fn pr_scan_rejects_incompatible_flags() {
         Some(root.join("report.json")),
         None,
         Some("HEAD~1...HEAD".into()),
-        "text".into(),
+        Some("text".into()),
     );
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
@@ -580,12 +580,23 @@ fn pr_scan_rejects_incompatible_flags() {
     );
 
     // --format without --pr is not allowed.
-    let result = execute_scan(false, false, false, None, None, None, "json".into());
+    let result = execute_scan(false, false, false, None, None, None, Some("json".into()));
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
     assert!(
         err.contains("--format requires --pr"),
         "expected --format-without-pr rejection, got: {err}"
+    );
+
+    // Explicit --format text without --pr is also rejected (R4 codex finding:
+    // previously the default_value="text" made --format text indistinguishable
+    // from the absent flag, so it bypassed validation).
+    let result = execute_scan(false, false, false, None, None, None, Some("text".into()));
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("--format requires --pr"),
+        "expected --format text-without-pr rejection, got: {err}"
     );
 
     // --pr and --base-ref together are not allowed.
@@ -596,7 +607,7 @@ fn pr_scan_rejects_incompatible_flags() {
         None,
         Some("HEAD~1".into()),
         Some("HEAD~1...HEAD".into()),
-        "text".into(),
+        Some("text".into()),
     );
     assert!(result.is_err());
     let err = result.unwrap_err().to_string();
