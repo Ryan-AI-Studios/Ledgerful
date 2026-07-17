@@ -7,6 +7,16 @@ use serde::{Deserialize, Serialize};
 /// ledger, and a local named-pipe/Unix-socket IPC path.
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct BridgeConfig {
+    /// Master switch for the Ledgerful data-interchange bridge.
+    ///
+    /// When `false` (the default), Ledgerful performs zero implicit bridge
+    /// activity: no IPC connects, no provider spawns, no automatic verify/watch
+    /// pushes, and no CozoDB `Turn`/`Session`/`Memory`/`Decision` lifecycle.
+    /// Explicit `bridge export`/`bridge import` remain usable because they are
+    /// pure-local I/O.
+    #[serde(default)]
+    pub enabled: bool,
+
     /// External context-provider binary invoked by `bridge query` when the
     /// IPC path is unavailable.
     ///
@@ -17,6 +27,10 @@ pub struct BridgeConfig {
     pub provider_command: String,
 }
 
+const fn default_enabled() -> bool {
+    false
+}
+
 fn default_provider_command() -> String {
     "ai-brains".to_string()
 }
@@ -24,6 +38,7 @@ fn default_provider_command() -> String {
 impl Default for BridgeConfig {
     fn default() -> Self {
         Self {
+            enabled: default_enabled(),
             provider_command: default_provider_command(),
         }
     }
@@ -33,6 +48,28 @@ impl Default for BridgeConfig {
 mod tests {
     use super::*;
     use crate::config::model::Config;
+
+    #[test]
+    fn bridge_enabled_defaults_to_false() {
+        let config = BridgeConfig::default();
+        assert!(!config.enabled);
+    }
+
+    #[test]
+    fn bridge_enabled_deserializes_true() {
+        let toml_str = r#"
+            [bridge]
+            enabled = true
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert!(config.bridge.enabled);
+    }
+
+    #[test]
+    fn omitted_bridge_enabled_defaults_to_false() {
+        let config: Config = toml::from_str("").unwrap();
+        assert!(!config.bridge.enabled);
+    }
 
     #[test]
     fn default_provider_command_is_example_provider() {

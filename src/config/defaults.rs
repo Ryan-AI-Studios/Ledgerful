@@ -81,6 +81,12 @@ require_signing = false
 mode = "observe"
 
 [bridge]
+# Master switch for the Ledgerful data-interchange bridge. Default is false.
+# When false, Ledgerful performs zero implicit bridge activity (no IPC, no
+# provider spawn, no automatic verify/watch pushes). Explicit `bridge export`
+# and `bridge import` remain usable because they are pure-local I/O.
+enabled = false
+
 # External context-provider binary invoked by `bridge query` when the IPC path
 # is unavailable. The default `ai-brains` is the documented example provider.
 # Must accept `sync query <query> --format ndjson` on stdin and emit

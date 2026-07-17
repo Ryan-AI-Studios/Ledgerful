@@ -31,6 +31,9 @@ pub mod watch;
 
 pub mod sync;
 
+#[cfg(test)]
+pub mod tests;
+
 pub const BINARY_NAME: &str = "ledgerful";
 
 #[cfg(feature = "export")]

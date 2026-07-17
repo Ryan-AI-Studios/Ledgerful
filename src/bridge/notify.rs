@@ -22,6 +22,9 @@ pub fn push_verify_results(results: Vec<BridgeVerifyOutcome>) {
         Err(_) => return,
     };
     let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    if !crate::bridge::client::is_bridge_enabled(&layout) {
+        return;
+    }
     let project_id = layout.get_project_id();
 
     let records: Vec<BridgeRecord> = results
@@ -69,6 +72,18 @@ pub fn push_risk_alert(
     risk_level: &str,
     threshold: f64,
 ) {
+    let current_dir = match std::env::current_dir() {
+        Ok(d) => d,
+        Err(e) => {
+            tracing::debug!("Risk alert skipped: cannot get current dir: {:?}", e);
+            return;
+        }
+    };
+    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    if !crate::bridge::client::is_bridge_enabled(&layout) {
+        return;
+    }
+
     // Deduplication: canonicalise the pair so (a,b) == (b,a)
     let pair = if file_a <= file_b {
         (file_a.to_string(), file_b.to_string())
@@ -103,14 +118,6 @@ pub fn push_risk_alert(
         }
     }
 
-    let current_dir = match std::env::current_dir() {
-        Ok(d) => d,
-        Err(e) => {
-            tracing::debug!("Risk alert skipped: cannot get current dir: {:?}", e);
-            return;
-        }
-    };
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
     let project_id = layout.get_project_id();
 
     let record = BridgeRecord::new(
@@ -155,12 +162,23 @@ mod tests {
         }
     }
 
+    /// Create a tempdir with bridge enabled so the dedup/threshold paths are reached.
+    fn enabled_bridge_tmpdir() -> (tempfile::TempDir, crate::tests::DirGuard) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        let config_path = layout.config_file();
+        std::fs::write(config_path, "[bridge]\nenabled = true\n").unwrap();
+        let guard = crate::tests::DirGuard::new(tmp.path());
+        (tmp, guard)
+    }
+
     #[test]
     fn test_push_risk_alert_deduplication() {
+        let (_tmp, _guard) = enabled_bridge_tmpdir();
         let symbols: Vec<String> = vec!["fn_foo".to_string()];
 
-        // First call should go through (will fail IPC in test, but logs debug).
-        // Use unique paths so parallel tests don't interfere.
         push_risk_alert(
             "src/dedup_a.rs",
             "src/dedup_b.rs",
@@ -171,7 +189,6 @@ mod tests {
             DEFAULT_RISK_ALERT_THRESHOLD,
         );
 
-        // Second call with same pair (reversed order) should be deduplicated.
         push_risk_alert(
             "src/dedup_b.rs",
             "src/dedup_a.rs",
@@ -182,7 +199,6 @@ mod tests {
             DEFAULT_RISK_ALERT_THRESHOLD,
         );
 
-        // Verify the canonicalised pair exists and the reversed pair does not.
         let alerted = ALERTED_PAIRS.lock().unwrap();
         let pair_canon = canonical_pair("src/dedup_a.rs", "src/dedup_b.rs");
         let pair_rev = if pair_canon.0 == "src/dedup_a.rs" {
@@ -196,10 +212,9 @@ mod tests {
 
     #[test]
     fn test_push_risk_alert_below_threshold() {
+        let (_tmp, _guard) = enabled_bridge_tmpdir();
         let symbols: Vec<String> = vec!["fn_bar".to_string()];
 
-        // Below default threshold of 0.90 — uses unique paths to avoid
-        // interference from parallel tests that share the global dedup set.
         push_risk_alert(
             "src/below_thresh_a.rs",
             "src/below_thresh_b.rs",
@@ -210,7 +225,6 @@ mod tests {
             DEFAULT_RISK_ALERT_THRESHOLD,
         );
 
-        // The pair should NOT be in the dedup set because it was rejected by threshold.
         let alerted = ALERTED_PAIRS.lock().unwrap();
         let pair = canonical_pair("src/below_thresh_a.rs", "src/below_thresh_b.rs");
         assert!(!alerted.contains(&pair));
@@ -218,6 +232,7 @@ mod tests {
 
     #[test]
     fn test_push_risk_alert_different_pairs_not_deduplicated() {
+        let (_tmp, _guard) = enabled_bridge_tmpdir();
         let symbols: Vec<String> = vec!["fn_a".to_string()];
 
         push_risk_alert(
@@ -245,12 +260,65 @@ mod tests {
         let pair2 = canonical_pair("src/notdedup_three.rs", "src/notdedup_four.rs");
         assert!(alerted.contains(&pair1));
         assert!(alerted.contains(&pair2));
-        // Count may be > 2 when tests run in parallel sharing the global set.
         assert!(alerted.len() >= 2);
     }
 
     #[test]
     fn test_default_threshold_constant() {
         assert!((DEFAULT_RISK_ALERT_THRESHOLD - 0.90).abs() < 1e-6);
+    }
+
+    #[test]
+    fn push_verify_results_disabled_does_not_spawn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        let config_path = layout.config_file();
+        std::fs::write(config_path, "[bridge]\nenabled = false\n").unwrap();
+
+        let _guard = crate::tests::DirGuard::new(tmp.path());
+
+        let outcomes = vec![BridgeVerifyOutcome {
+            success: true,
+            command: "cargo test".to_string(),
+            error_snippet: None,
+        }];
+
+        // When disabled, the function returns before spawning a thread.
+        push_verify_results(outcomes);
+    }
+
+    #[test]
+    fn push_risk_alert_disabled_does_not_spawn() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        let config_path = layout.config_file();
+        std::fs::write(config_path, "[bridge]\nenabled = false\n").unwrap();
+
+        let _guard = crate::tests::DirGuard::new(tmp.path());
+
+        // Use a unique pair so a parallel test that inserts into the global
+        // dedup set cannot make this assertion falsely pass.
+        let unique_a = "src/disabled_a_0065.rs";
+        let unique_b = "src/disabled_b_0065.rs";
+
+        push_risk_alert(
+            unique_a,
+            unique_b,
+            0.95,
+            &["fn_a".to_string()],
+            "Remediation",
+            "High",
+            DEFAULT_RISK_ALERT_THRESHOLD,
+        );
+
+        // No IPC thread should have been spawned; the global dedup set should
+        // not contain the pair because the gate returned before insertion.
+        let alerted = ALERTED_PAIRS.lock().unwrap();
+        let pair = canonical_pair(unique_a, unique_b);
+        assert!(!alerted.contains(&pair));
     }
 }

@@ -28,6 +28,7 @@ pub fn load_config(layout: &Layout) -> Result<Config> {
 
     // Apply environment variable overrides and resolve model settings
     config.local_model = crate::config::model::resolve_local_model_config(&config.local_model);
+    config.bridge = crate::config::model::resolve_bridge_config(&config.bridge);
 
     // Sanitize verify steps: warn and filter invalid ones rather than failing hard
     sanitize_verify_steps(&mut config);

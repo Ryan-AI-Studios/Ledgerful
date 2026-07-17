@@ -1,4 +1,25 @@
+use super::bridge::BridgeConfig;
 use super::local_model::LocalModelConfig;
+
+pub(crate) fn resolve_bridge_config(config: &BridgeConfig) -> BridgeConfig {
+    resolve_bridge_config_with(config, &|name| std::env::var(name).ok())
+}
+
+pub(crate) fn resolve_bridge_config_with(
+    config: &BridgeConfig,
+    env_reader: &dyn Fn(&str) -> Option<String>,
+) -> BridgeConfig {
+    let mut resolved = config.clone();
+
+    if let Some(val) = env_reader("LEDGERFUL_BRIDGE") {
+        let normalized = val.trim().to_lowercase();
+        if normalized == "1" || normalized == "true" {
+            resolved.enabled = true;
+        }
+    }
+
+    resolved
+}
 
 pub(crate) fn resolve_local_model_config(config: &LocalModelConfig) -> LocalModelConfig {
     resolve_local_model_config_with(config, &|name| std::env::var(name).ok(), &|name| {
@@ -170,6 +191,41 @@ mod tests {
             }
             result
         }
+    }
+
+    #[test]
+    fn test_resolve_bridge_config_env_enabled() {
+        let env_values: std::collections::HashMap<&str, &str> =
+            vec![("LEDGERFUL_BRIDGE", "1")].into_iter().collect();
+        let env_reader = |name: &str| env_values.get(name).map(|v| v.to_string());
+
+        let raw = BridgeConfig::default();
+        let resolved = resolve_bridge_config_with(&raw, &env_reader);
+
+        assert!(resolved.enabled);
+    }
+
+    #[test]
+    fn test_resolve_bridge_config_env_true() {
+        let env_values: std::collections::HashMap<&str, &str> =
+            vec![("LEDGERFUL_BRIDGE", "true")].into_iter().collect();
+        let env_reader = |name: &str| env_values.get(name).map(|v| v.to_string());
+
+        let raw = BridgeConfig::default();
+        let resolved = resolve_bridge_config_with(&raw, &env_reader);
+
+        assert!(resolved.enabled);
+    }
+
+    #[test]
+    fn test_resolve_bridge_config_env_unset_stays_false() {
+        let env_values: std::collections::HashMap<&str, &str> = std::collections::HashMap::new();
+        let env_reader = |name: &str| env_values.get(name).map(|v| v.to_string());
+
+        let raw = BridgeConfig::default();
+        let resolved = resolve_bridge_config_with(&raw, &env_reader);
+
+        assert!(!resolved.enabled);
     }
 
     #[test]

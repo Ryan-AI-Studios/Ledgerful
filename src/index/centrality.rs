@@ -525,6 +525,8 @@ mod tests {
         let mut conn = conn;
         get_migrations().to_latest(&mut conn).unwrap();
         let cozo = crate::state::storage_cozo::CozoStorage::new_in_memory().unwrap();
+        // Tests that exercise the Cozo graph directly need bridge tables
+        // available regardless of the default config flag.
         cozo.setup_schema().unwrap();
         let mut storage = StorageManager::init_from_conn(conn);
         storage.cozo = Some(cozo);
