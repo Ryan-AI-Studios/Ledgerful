@@ -208,10 +208,11 @@ fn files_changed_between(
     Ok(parse_name_status_output(&stdout))
 }
 
-/// Parse a `--pr <RANGE>` value into `(base_ref, head_ref)`.
+/// Parse a `--pr <RANGE>` value into `(base_ref, head_ref, git_range)`.
 ///
 /// Supports `base...head`, `base..head`, or a bare `base` (default head to
-/// `HEAD`). Validates that base is non-empty.
+/// `HEAD`). Validates that base is non-empty. `git_range` is the normalized
+/// three-dot range to pass to `git diff --name-status`.
 ///
 /// Two-dot (`A..B`) is normalized to three-dot (`A...B`) because, in git,
 /// `A..B` diffs A against B directly while `A...B` diffs merge-base(A,B)

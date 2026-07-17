@@ -98,7 +98,7 @@ Sensitive patterns:
 - `.github/workflows/` (directory-prefix match)
 - `crypto.rs` (exact file-name match; covers any `crypto.rs` at any depth)
 - `migrations/` (directory-prefix match)
-- `.ledgerful/config.toml` (directory-prefix match)
+- `.ledgerful/` (directory-prefix match; covers all ledgerful state files including `config.toml`)
 - `deny.toml` (exact file-name match)
 - `SECURITY.md` (exact file-name match)
 

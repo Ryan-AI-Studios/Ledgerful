@@ -146,14 +146,16 @@ fn forward_slash_normalize(path: &str) -> String {
 ///   path component. This prevents sub-string false positives such as
 ///   `crypto_utils.rs` matching `crypto.rs`.
 /// - Directory-prefix patterns (trailing `/`) match when the forward-slash
-///   normalized path starts with that prefix.
+///   normalized path starts with that prefix. Use these for paths containing a
+///   `/` that should match any file under that directory (e.g. `.ledgerful/`
+///   covers all ledgerful state files including `config.toml`).
 const SENSITIVE_PATH_PATTERNS: &[&str] = &[
     "Cargo.toml",
     "Cargo.lock",
     ".github/workflows/",
     "crypto.rs",
     "migrations/",
-    ".ledgerful/config.toml",
+    ".ledgerful/",
     "deny.toml",
     "SECURITY.md",
 ];
@@ -317,6 +319,14 @@ mod tests {
         assert!(!is_sensitive_path("my.github/workflows/ci.yml"));
         assert!(is_sensitive_path("migrations/001_init.sql"));
         assert!(!is_sensitive_path("not_migrations/001_init.sql"));
+    }
+
+    #[test]
+    fn ledgerful_state_directory_is_sensitive() {
+        assert!(is_sensitive_path(".ledgerful/config.toml"));
+        assert!(is_sensitive_path(".ledgerful/state/ledger.db"));
+        assert!(is_sensitive_path(".ledgerful/keys/private.key"));
+        assert!(!is_sensitive_path("my-ledgerful/config.toml"));
     }
 
     #[test]
