@@ -518,6 +518,69 @@ fn pr_scan_rejects_unknown_format() {
 }
 
 #[test]
+fn pr_scan_rejects_incompatible_flags() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+
+    fs::write(root.join("base.txt"), "base content").unwrap();
+    git_add_and_commit(root, "base commit");
+
+    let _guard = DirGuard::new(root);
+
+    // --summary with --pr is not allowed.
+    let result = execute_scan(
+        false,
+        true, // summary
+        false,
+        None,
+        None,
+        Some("HEAD~1...HEAD".into()),
+        "text".into(),
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("not compatible with --pr"),
+        "expected --summary rejection, got: {err}"
+    );
+
+    // --json with --pr is not allowed.
+    let result = execute_scan(
+        false,
+        false,
+        true, // json
+        None,
+        None,
+        Some("HEAD~1...HEAD".into()),
+        "json".into(),
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("not compatible with --pr"),
+        "expected --json rejection, got: {err}"
+    );
+
+    // --out with --pr --format text is not allowed.
+    let result = execute_scan(
+        false,
+        false,
+        false,
+        Some(root.join("report.json")),
+        None,
+        Some("HEAD~1...HEAD".into()),
+        "text".into(),
+    );
+    assert!(result.is_err());
+    let err = result.unwrap_err().to_string();
+    assert!(
+        err.contains("--out with --pr requires --format json"),
+        "expected --out+text rejection, got: {err}"
+    );
+}
+
+#[test]
 fn pr_scan_same_base_and_head_yields_empty_low_risk() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();

@@ -279,6 +279,16 @@ fn validate_scan_args(
         ));
     }
 
+    if pr.is_some() && (summary || json) {
+        return Err(miette::miette!(
+            "--summary and --json are not compatible with --pr; use --format json or --format text"
+        ));
+    }
+
+    if pr.is_some() && out.is_some() && format != "json" {
+        return Err(miette::miette!("--out with --pr requires --format json"));
+    }
+
     if pr.is_none() && !impact && (summary || json || out.is_some()) {
         return Err(miette::miette!(
             "--summary, --json and --out require --impact"
