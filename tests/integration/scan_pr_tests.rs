@@ -333,12 +333,11 @@ fn pr_scan_golden_output_matches_fixture() {
         parsed["branchName"].as_str().is_some_and(|b| !b.is_empty()),
         "expected a non-empty branchName"
     );
-    // treeClean is volatile for this fixture because git modifies line endings
-    // (LF -> CRLF warnings on Windows). We normalize it to a sentinel so the
-    // rest of the report remains a stable golden fixture.
-    assert!(
-        parsed["treeClean"].is_boolean(),
-        "expected treeClean to be a boolean"
+    // treeClean reflects diff emptiness for the PR range, which is deterministic
+    // for this fixture: three changes are present, so it must be false.
+    assert_eq!(
+        parsed["treeClean"], false,
+        "expected treeClean false for a non-empty PR diff"
     );
     assert_eq!(parsed["changeCount"], 3);
     assert_eq!(parsed["riskLevel"], "high");
@@ -348,7 +347,9 @@ fn pr_scan_golden_output_matches_fixture() {
     obj.remove("generatedAt");
     obj.insert("headHash".into(), "__HEAD_HASH__".into());
     obj.insert("branchName".into(), "__BRANCH_NAME__".into());
-    obj.insert("treeClean".into(), "__TREE_CLEAN__".into());
+    // treeClean is asserted above; remove it from the fixture comparison so the
+    // expected JSON does not hide a regression in diff-emptiness logic.
+    obj.remove("treeClean");
 
     let expected = serde_json::json!({
         "schemaVersion": 1,
@@ -356,7 +357,6 @@ fn pr_scan_golden_output_matches_fixture() {
         "headRef": "HEAD",
         "headHash": "__HEAD_HASH__",
         "branchName": "__BRANCH_NAME__",
-        "treeClean": "__TREE_CLEAN__",
         "changeCount": 3,
         "changes": [
             {
@@ -560,7 +560,7 @@ fn pr_scan_no_network_code_in_src() {
     let scan_pr_related: Vec<&str> = stdout
         .lines()
         .filter(|l| {
-            let l = l.to_lowercase();
+            let l = l.to_lowercase().replace('\\', "/");
             (l.contains("src/commands/scan") || l.contains("src/commands/scan_pr"))
                 && (l.contains("ureq") || l.contains("reqwest") || l.contains("tokio_tungstenite"))
         })
