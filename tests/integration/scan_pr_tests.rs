@@ -634,40 +634,45 @@ fn pr_scan_same_base_and_head_yields_empty_low_risk() {
     assert_eq!(parsed["treeClean"], true);
 }
 
-// This test asserts that the literal privacy grep is empty across production
-// source (`src/commands/scan*` only). Docs and tests are intentionally allowed
-// to name `ureq`, `reqwest`, and `tokio_tungstenite` when documenting the
-// no-network invariant; the invariant applies to production code, not prose.
+// This test asserts that the scan --pr code path adds zero new network code.
+// It walks `src/commands/scan*` files natively (no `rg` dependency — CI runners
+// may not have ripgrep on PATH) and checks for the network crate names. Docs and
+// tests are intentionally allowed to name `ureq`, `reqwest`, and
+// `tokio_tungstenite` when documenting the no-network invariant; the invariant
+// applies to production code, not prose.
 #[test]
-#[serial_test::serial]
 fn pr_scan_no_network_code_in_src() {
-    use std::process::Command;
+    use std::fs;
 
-    let repo_root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let output = Command::new("rg")
-        .args([
-            "-n",
-            "ureq|reqwest|tokio_tungstenite",
-            repo_root.join("src").to_str().unwrap(),
-        ])
-        .output()
-        .expect("ripgrep should be available");
+    let manifest_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let commands_dir = manifest_dir.join("src").join("commands");
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // Exclude pre-existing network code in unrelated modules (viz-server, LLM,
-    // observability, etc.). This test verifies that the *scan --pr* code path
-    // adds zero new network code.
-    let scan_pr_related: Vec<&str> = stdout
-        .lines()
-        .filter(|l| {
-            let l = l.to_lowercase().replace('\\', "/");
-            (l.contains("src/commands/scan") || l.contains("src/commands/scan_pr"))
-                && (l.contains("ureq") || l.contains("reqwest") || l.contains("tokio_tungstenite"))
+    let scan_files: Vec<std::path::PathBuf> = fs::read_dir(&commands_dir)
+        .expect("src/commands should be readable")
+        .filter_map(|e| e.ok())
+        .map(|e| e.path())
+        .filter(|p| {
+            p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with("scan"))
         })
         .collect();
+
+    let network_patterns = ["ureq", "reqwest", "tokio_tungstenite"];
+    let mut hits: Vec<String> = Vec::new();
+    for file in &scan_files {
+        let contents = fs::read_to_string(file).unwrap_or_default();
+        for (idx, line) in contents.lines().enumerate() {
+            for pat in network_patterns {
+                if line.contains(pat) {
+                    hits.push(format!("{}:{}: {}", file.display(), idx + 1, line.trim()));
+                }
+            }
+        }
+    }
+
     assert!(
-        scan_pr_related.is_empty(),
+        hits.is_empty(),
         "scan --pr code path must contain no network code, found: {:?}",
-        scan_pr_related
+        hits
     );
 }
