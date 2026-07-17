@@ -6,7 +6,7 @@ use std::time::Duration;
 
 mod client_cli;
 use crate::util::query::sanitize_fts5_query;
-pub use client_cli::query_external_cli;
+pub(crate) use client_cli::query_external_cli;
 
 pub fn query_unified(query: &str) -> Result<Vec<BridgeRecord>> {
     let current_dir = std::env::current_dir().into_diagnostic()?;
@@ -107,6 +107,7 @@ mod tests {
     use camino::Utf8Path;
     use tempfile::tempdir;
 
+    #[serial_test::serial(cwd)]
     #[test]
     fn query_unified_disabled_returns_empty() {
         let tmp = tempdir().unwrap();

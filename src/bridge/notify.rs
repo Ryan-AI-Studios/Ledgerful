@@ -268,6 +268,7 @@ mod tests {
         assert!((DEFAULT_RISK_ALERT_THRESHOLD - 0.90).abs() < 1e-6);
     }
 
+    #[serial_test::serial(cwd)]
     #[test]
     fn push_verify_results_disabled_does_not_spawn() {
         let tmp = tempfile::tempdir().unwrap();
@@ -289,6 +290,7 @@ mod tests {
         push_verify_results(outcomes);
     }
 
+    #[serial_test::serial(cwd)]
     #[test]
     fn push_risk_alert_disabled_does_not_spawn() {
         let tmp = tempfile::tempdir().unwrap();

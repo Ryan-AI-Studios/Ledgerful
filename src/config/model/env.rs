@@ -15,6 +15,8 @@ pub(crate) fn resolve_bridge_config_with(
         let normalized = val.trim().to_lowercase();
         if normalized == "1" || normalized == "true" {
             resolved.enabled = true;
+        } else if normalized == "0" || normalized == "false" {
+            resolved.enabled = false;
         }
     }
 
@@ -223,6 +225,21 @@ mod tests {
         let env_reader = |name: &str| env_values.get(name).map(|v| v.to_string());
 
         let raw = BridgeConfig::default();
+        let resolved = resolve_bridge_config_with(&raw, &env_reader);
+
+        assert!(!resolved.enabled);
+    }
+
+    #[test]
+    fn test_resolve_bridge_config_env_false_overrides_config_true() {
+        let env_values: std::collections::HashMap<&str, &str> =
+            vec![("LEDGERFUL_BRIDGE", "0")].into_iter().collect();
+        let env_reader = |name: &str| env_values.get(name).map(|v| v.to_string());
+
+        let raw = BridgeConfig {
+            enabled: true,
+            provider_command: "ai-brains".to_string(),
+        };
         let resolved = resolve_bridge_config_with(&raw, &env_reader);
 
         assert!(!resolved.enabled);
