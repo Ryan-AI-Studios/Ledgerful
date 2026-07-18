@@ -6,12 +6,14 @@ use serde::{Deserialize, Serialize};
 const SOC2_MAPPING_TOML: &str = include_str!("../../mappings/soc2.toml");
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ControlMapping {
     pub meta: Meta,
     pub control: Vec<Control>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Meta {
     pub framework: String,
     pub version: String,
@@ -21,6 +23,7 @@ pub struct Meta {
 }
 
 #[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct Control {
     pub id: String,
     pub title: String,
@@ -43,6 +46,15 @@ impl ControlMapping {
                 "SOC2 mapping meta.framework must be 'soc2', got '{}'",
                 self.meta.framework
             ));
+        }
+        if self.meta.version.is_empty() {
+            return Err(miette!("SOC2 mapping meta.version must be non-empty"));
+        }
+        if self.meta.source.is_empty() {
+            return Err(miette!("SOC2 mapping meta.source must be non-empty"));
+        }
+        if self.meta.disclaimer.is_empty() {
+            return Err(miette!("SOC2 mapping meta.disclaimer must be non-empty"));
         }
         if self.meta.status.is_empty() {
             return Err(miette!("SOC2 mapping meta.status must be non-empty"));
@@ -86,7 +98,19 @@ impl ControlMapping {
                     control.id
                 ));
             }
+            if control.evidence.is_empty() {
+                return Err(miette!(
+                    "SOC2 mapping control '{}' evidence list must be non-empty",
+                    control.id
+                ));
+            }
             for keyword in &control.evidence {
+                if keyword.is_empty() {
+                    return Err(miette!(
+                        "SOC2 mapping control '{}' evidence contains empty keyword",
+                        control.id
+                    ));
+                }
                 if !is_known_keyword(keyword) {
                     return Err(miette!(
                         "SOC2 mapping control '{}' contains unknown evidence keyword '{}'",
@@ -380,7 +404,21 @@ fn is_known_keyword(keyword: &str) -> bool {
 
 pub fn matches_evidence_keyword(entry: &LedgerEntry, keyword: &str) -> bool {
     match keyword {
-        "signed_ledger_entry" | "signature_verification" => entry.signature.is_some(),
+        "signed_ledger_entry" => entry.signature.is_some(),
+        "signature_verification" => {
+            let (Some(signature), Some(public_key)) = (&entry.signature, &entry.public_key) else {
+                return false;
+            };
+            crate::ledger::crypto::verify_signature(
+                &entry.tx_id,
+                &entry.category.to_string(),
+                &entry.summary,
+                &entry.reason,
+                &entry.committed_at,
+                signature,
+                public_key,
+            )
+        }
         "verification_result" | "continuous_verification_runs" => {
             entry.verification_status.is_some()
         }
@@ -459,18 +497,43 @@ pub fn render_mapping_doc(mapping: &ControlMapping) -> String {
         ));
     }
     lines.push(String::new());
-    lines.push("## Evidence keyword semantics".to_string());
+    lines.push("## Per-entry evidence keywords".to_string());
     lines.push(String::new());
-    lines.push("The mapping engine matches each keyword against ledger entry fields:".to_string());
+    lines.push("These keywords return `true` for an individual ledger entry when the described predicate is satisfied.".to_string());
     lines.push(String::new());
     lines.push("* `signed_ledger_entry` — entry has a non-empty `signature`.".to_string());
+    lines.push("* `signature_verification` — entry has a non-empty `signature` AND the signature verifies against the entry's `public_key` using the 5-field signing basis (tx_id, category, summary, reason, committed_at).".to_string());
     lines
         .push("* `verification_result` — entry has a non-empty `verification_status`.".to_string());
+    lines.push(
+        "* `continuous_verification_runs` — entry has a non-empty `verification_status`."
+            .to_string(),
+    );
     lines.push("* `risk_score` — entry has a non-empty `risk` field.".to_string());
     lines.push("* `risk_impact_analysis` — entry has a non-empty `risk` field.".to_string());
+    lines.push(
+        "* `blast_radius` — entry category is Feature, Architecture, Bugfix, or Refactor."
+            .to_string(),
+    );
+    lines.push(
+        "* `impact_analysis` — entry category is Feature, Architecture, Bugfix, or Refactor."
+            .to_string(),
+    );
+    lines.push(String::new());
+    lines.push("## Framework-wide evidence keywords".to_string());
+    lines.push(String::new());
+    lines.push("These keywords represent bundle/system-level evidence rather than per-entry predicates, so the per-entry matcher returns `false` for all individual entries.".to_string());
+    lines.push(String::new());
     lines.push("* `tamper_evident_chain` — the tamper-evident chain covers all entries; the chain as a whole is the evidence, not individual entries. Every entry is included because removing any entry would break continuity.".to_string());
-    lines.push("* `blast_radius` / `impact_analysis` / `scan_impact` — currently matched by change category (Feature, Architecture, Bugfix, Refactor) because per-entry risk/impact fields are not populated in the current schema; future releases will narrow these to dedicated fields when available.".to_string());
-    lines.push("* `config_diff`, `security_surface_diff`, `hotspots`, `temporal_couplings`, `drift_detection`, `signature_verification`, `no_unsigned_entries_gate`, `verify_command`, `continuous_verification_runs`, `drift_reconciliation` — currently match entries with verification or risk metadata; future releases will narrow these to dedicated fields.".to_string());
+    lines.push("* `scan_impact` — system-level impact scan output included in the export bundle, not a per-entry field.".to_string());
+    lines.push("* `config_diff` — system-level configuration diff included in the export bundle, not a per-entry field.".to_string());
+    lines.push("* `security_surface_diff` — system-level security-surface diff included in the export bundle, not a per-entry field.".to_string());
+    lines.push("* `hotspots` — repository hotspot analysis included in the export bundle, not a per-entry field.".to_string());
+    lines.push("* `temporal_couplings` — repository temporal-coupling analysis included in the export bundle, not a per-entry field.".to_string());
+    lines.push("* `drift_detection` — system-level drift detection output included in the export bundle, not a per-entry field.".to_string());
+    lines.push("* `no_unsigned_entries_gate` — enforced across the whole ledger / export bundle; every entry is covered by the policy, but no single entry by itself satisfies it.".to_string());
+    lines.push("* `verify_command` — evidence produced by running `ledgerful verify` over the bundle; not a per-entry field.".to_string());
+    lines.push("* `drift_reconciliation` — system-level drift reconciliation output included in the export bundle, not a per-entry field.".to_string());
     lines.push(String::new());
     lines.push("## Control provenance and honest limits".to_string());
     lines.push(String::new());
@@ -512,6 +575,7 @@ pub fn banned_terms() -> &'static [&'static str] {
 }
 
 #[cfg(test)]
+#[allow(non_snake_case)]
 mod tests {
     use super::*;
 
@@ -551,5 +615,185 @@ mod tests {
         let mapping = ControlMapping::load_static().unwrap();
         let selector = ControlSelector::new(vec!["CC99.9".to_string()]);
         assert!(selector.select(&mapping).is_err());
+    }
+
+    fn minimal_valid_mapping_toml() -> String {
+        "[meta]\nframework = \"soc2\"\nversion = \"1\"\nsource = \"s\"\ndisclaimer = \"d\"\nstatus = \"draft\"\n\n[[control]]\nid = \"CC1.1\"\ntitle = \"T\"\nevidence = [\"signed_ledger_entry\"]\nprovenance = \"p\"\nlimit = \"l\"\n".to_string()
+    }
+
+    #[test]
+    fn schema_validation__rejects_empty_fields() {
+        let mut toml = minimal_valid_mapping_toml();
+        toml.push_str("\n[[control]]\nid = \"CC2.2\"\ntitle = \"Empty\"\nevidence = [\"signed_ledger_entry\", \"\"]\nprovenance = \"p\"\nlimit = \"l\"\n");
+        let parsed: ControlMapping = toml::from_str(&toml).expect("toml must parse");
+        let err = parsed
+            .validate()
+            .expect_err("empty evidence keyword must fail");
+        assert!(
+            err.to_string().contains("empty keyword"),
+            "error must mention empty keyword: {err}"
+        );
+
+        let invalid = "[meta]\nframework = \"soc2\"\nversion = \"\"\nsource = \"s\"\ndisclaimer = \"d\"\nstatus = \"draft\"\n\n[[control]]\nid = \"CC1.1\"\ntitle = \"T\"\nevidence = [\"signed_ledger_entry\"]\nprovenance = \"p\"\nlimit = \"l\"\n";
+        let parsed: ControlMapping = toml::from_str(invalid).expect("toml must parse");
+        let err = parsed.validate().expect_err("empty version must fail");
+        assert!(
+            err.to_string().contains("version"),
+            "error must mention version: {err}"
+        );
+    }
+
+    #[test]
+    fn schema_validation__rejects_unknown_fields() {
+        let toml = minimal_valid_mapping_toml().replace(
+            "status = \"draft\"",
+            "status = \"draft\"\nunknown_meta = \"x\"",
+        );
+        let parsed: Result<ControlMapping, _> = toml::from_str(&toml);
+        let err = parsed.expect_err("unknown field must fail to parse");
+        assert!(
+            err.to_string().contains("unknown"),
+            "error must mention unknown field: {err}"
+        );
+
+        let toml = minimal_valid_mapping_toml()
+            .replace("limit = \"l\"", "limit = \"l\"\nunknown_control = \"x\"");
+        let parsed: Result<ControlMapping, _> = toml::from_str(&toml);
+        let err = parsed.expect_err("unknown control field must fail to parse");
+        assert!(
+            err.to_string().contains("unknown"),
+            "error must mention unknown field: {err}"
+        );
+    }
+
+    #[test]
+    fn schema_validation__rejects_duplicate_control_ids() {
+        let toml = "[meta]\nframework = \"soc2\"\nversion = \"1\"\nsource = \"s\"\ndisclaimer = \"d\"\nstatus = \"draft\"\n\n[[control]]\nid = \"CC1.1\"\ntitle = \"T\"\nevidence = [\"signed_ledger_entry\"]\nprovenance = \"p\"\nlimit = \"l\"\n\n[[control]]\nid = \"CC1.1\"\ntitle = \"Dup\"\nevidence = [\"signed_ledger_entry\"]\nprovenance = \"p\"\nlimit = \"l\"\n";
+        let parsed: ControlMapping = toml::from_str(toml).expect("toml must parse");
+        let err = parsed
+            .validate()
+            .expect_err("duplicate control id must fail");
+        assert!(
+            err.to_string().contains("duplicate"),
+            "error must mention duplicate: {err}"
+        );
+    }
+
+    #[test]
+    fn signature_verification__valid_signature_matches() {
+        use crate::ledger::crypto::sign_ledger_entry_in;
+        use crate::ledger::types::{Category, ChangeType, EntryType, LedgerEntry};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let keys_dir = tmp.path().join(".ledgerful").join("keys");
+        std::fs::create_dir_all(&keys_dir).unwrap();
+
+        let committed_at = "2026-06-20T10:00:00Z";
+        let (sig, pub_key) = sign_ledger_entry_in(
+            &keys_dir,
+            "tx-1",
+            &Category::Feature.to_string(),
+            "summary",
+            "reason",
+            committed_at,
+        )
+        .unwrap();
+
+        let entry = LedgerEntry {
+            id: 1,
+            tx_id: "tx-1".to_string(),
+            category: Category::Feature,
+            entry_type: EntryType::Implementation,
+            entity: "src/a.rs".to_string(),
+            entity_normalized: "src/a.rs".to_string(),
+            change_type: ChangeType::Modify,
+            summary: "summary".to_string(),
+            reason: "reason".to_string(),
+            is_breaking: false,
+            committed_at: committed_at.to_string(),
+            verification_status: None,
+            verification_basis: None,
+            outcome_notes: None,
+            origin: "LOCAL".to_string(),
+            trace_id: None,
+            signature: sig,
+            public_key: pub_key,
+            risk: None,
+            related_tickets: None,
+            author: "Test".to_string(),
+            observed: None,
+            prev_hash: None,
+        };
+
+        assert!(matches_evidence_keyword(&entry, "signed_ledger_entry"));
+        assert!(matches_evidence_keyword(&entry, "signature_verification"));
+    }
+
+    #[test]
+    fn signature_verification__invalid_signature_does_not_match() {
+        use crate::ledger::types::{Category, ChangeType, EntryType, LedgerEntry};
+
+        let entry = LedgerEntry {
+            id: 1,
+            tx_id: "tx-1".to_string(),
+            category: Category::Feature,
+            entry_type: EntryType::Implementation,
+            entity: "src/a.rs".to_string(),
+            entity_normalized: "src/a.rs".to_string(),
+            change_type: ChangeType::Modify,
+            summary: "summary".to_string(),
+            reason: "reason".to_string(),
+            is_breaking: false,
+            committed_at: "2026-06-20T10:00:00Z".to_string(),
+            verification_status: None,
+            verification_basis: None,
+            outcome_notes: None,
+            origin: "LOCAL".to_string(),
+            trace_id: None,
+            signature: Some("deadbeef".to_string()),
+            public_key: Some(
+                "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            ),
+            risk: None,
+            related_tickets: None,
+            author: "Test".to_string(),
+            observed: None,
+            prev_hash: None,
+        };
+
+        assert!(!matches_evidence_keyword(&entry, "signature_verification"));
+    }
+
+    #[test]
+    fn signature_verification__unsigned_entry_does_not_match() {
+        use crate::ledger::types::{Category, ChangeType, EntryType, LedgerEntry};
+
+        let entry = LedgerEntry {
+            id: 2,
+            tx_id: "tx-2".to_string(),
+            category: Category::Chore,
+            entry_type: EntryType::Maintenance,
+            entity: "src/b.rs".to_string(),
+            entity_normalized: "src/b.rs".to_string(),
+            change_type: ChangeType::Modify,
+            summary: "summary".to_string(),
+            reason: "reason".to_string(),
+            is_breaking: false,
+            committed_at: "2026-06-20T11:00:00Z".to_string(),
+            verification_status: None,
+            verification_basis: None,
+            outcome_notes: None,
+            origin: "LOCAL".to_string(),
+            trace_id: None,
+            signature: None,
+            public_key: None,
+            risk: None,
+            related_tickets: None,
+            author: "Test".to_string(),
+            observed: None,
+            prev_hash: None,
+        };
+
+        assert!(!matches_evidence_keyword(&entry, "signature_verification"));
     }
 }

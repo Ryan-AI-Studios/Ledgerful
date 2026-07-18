@@ -50,17 +50,33 @@ Each control entry declares which Ledgerful evidence keywords it wants, why that
 | CC6.8 | Detect Unauthorized / Altered Software | `signature_verification`, `no_unsigned_entries_gate`, `verify_command` |
 | CC4.1 | Ongoing Evaluation of Controls | `continuous_verification_runs`, `drift_reconciliation` |
 
-## Evidence keyword semantics
+## Per-entry evidence keywords
 
-The mapping engine matches each keyword against ledger entry fields:
+These keywords return `true` for an individual ledger entry when the described predicate is satisfied.
 
 * `signed_ledger_entry` — entry has a non-empty `signature`.
+* `signature_verification` — entry has a non-empty `signature` AND the signature verifies against the entry's `public_key` using the 5-field signing basis (tx_id, category, summary, reason, committed_at).
 * `verification_result` — entry has a non-empty `verification_status`.
+* `continuous_verification_runs` — entry has a non-empty `verification_status`.
 * `risk_score` — entry has a non-empty `risk` field.
 * `risk_impact_analysis` — entry has a non-empty `risk` field.
+* `blast_radius` — entry category is Feature, Architecture, Bugfix, or Refactor.
+* `impact_analysis` — entry category is Feature, Architecture, Bugfix, or Refactor.
+
+## Framework-wide evidence keywords
+
+These keywords represent bundle/system-level evidence rather than per-entry predicates, so the per-entry matcher returns `false` for all individual entries.
+
 * `tamper_evident_chain` — the tamper-evident chain covers all entries; the chain as a whole is the evidence, not individual entries. Every entry is included because removing any entry would break continuity.
-* `blast_radius` / `impact_analysis` / `scan_impact` — currently matched by change category (Feature, Architecture, Bugfix, Refactor) because per-entry risk/impact fields are not populated in the current schema; future releases will narrow these to dedicated fields when available.
-* `config_diff`, `security_surface_diff`, `hotspots`, `temporal_couplings`, `drift_detection`, `signature_verification`, `no_unsigned_entries_gate`, `verify_command`, `continuous_verification_runs`, `drift_reconciliation` — currently match entries with verification or risk metadata; future releases will narrow these to dedicated fields.
+* `scan_impact` — system-level impact scan output included in the export bundle, not a per-entry field.
+* `config_diff` — system-level configuration diff included in the export bundle, not a per-entry field.
+* `security_surface_diff` — system-level security-surface diff included in the export bundle, not a per-entry field.
+* `hotspots` — repository hotspot analysis included in the export bundle, not a per-entry field.
+* `temporal_couplings` — repository temporal-coupling analysis included in the export bundle, not a per-entry field.
+* `drift_detection` — system-level drift detection output included in the export bundle, not a per-entry field.
+* `no_unsigned_entries_gate` — enforced across the whole ledger / export bundle; every entry is covered by the policy, but no single entry by itself satisfies it.
+* `verify_command` — evidence produced by running `ledgerful verify` over the bundle; not a per-entry field.
+* `drift_reconciliation` — system-level drift reconciliation output included in the export bundle, not a per-entry field.
 
 ## Control provenance and honest limits
 

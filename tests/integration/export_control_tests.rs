@@ -751,6 +751,34 @@ fn control_export__chain_verification_passes() {
         latest, expected_latest,
         "chain head latest_entry_hash must match computed hash of last entry"
     );
+
+    let mut prev_hash: Option<String> = None;
+    for entry in &entries {
+        if let Some(expected_prev) = prev_hash.as_ref() {
+            assert_eq!(
+                entry.prev_hash.as_deref().unwrap_or(""),
+                expected_prev.as_str(),
+                "entry {} prev_hash must equal computed hash of previous entry",
+                entry.tx_id
+            );
+        } else {
+            assert!(
+                entry.prev_hash.is_none(),
+                "genesis entry {} must have no prev_hash",
+                entry.tx_id
+            );
+        }
+        prev_hash = Some(ledgerful::ledger::crypto::compute_entry_hash(
+            &entry.tx_id,
+            entry.signature.as_deref().unwrap_or(""),
+            entry.prev_hash.as_deref().unwrap_or(""),
+        ));
+    }
+    assert_eq!(
+        latest,
+        prev_hash.as_deref().unwrap_or(""),
+        "chain head latest_entry_hash must equal terminal computed hash after walking all links"
+    );
 }
 
 #[test]
