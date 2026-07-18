@@ -165,7 +165,7 @@ pub fn generate_soc2_export_with_options(
             .get_adr_entries(None)
             .map_err(|e| miette!("Failed to read ADR entries: {e}"))?;
 
-        let head = conn
+        let head = match conn
             .query_row(
                 "SELECT latest_entry_hash, genesis, length, head_signature, head_public_key, updated_at FROM chain_head WHERE id = 1",
                 [],
@@ -181,15 +181,11 @@ pub fn generate_soc2_export_with_options(
                 },
             )
             .optional()
-            .map_err(|e| miette!("Failed to read chain head: {e}"))?;
-
-        // If the singleton chain_head row is missing but the ledger has
-        // entries, synthesize a head from the entries so the export still
-        // captures a rollback ceiling. The synthesized head is unsigned
-        // (signature fields are None), which `chain_continuity_status` reports
-        // as invalid/unverifiable and which `--against-export` can still use
-        // for length/hash comparison.
-        let head = head.or_else(|| synthesize_chain_head(&entries));
+        {
+            Ok(head) => head,
+            Err(rusqlite::Error::SqliteFailure(_, Some(msg))) if msg.contains("no such table") => None,
+            Err(e) => return Err(miette!("Failed to read chain head: {e}")),
+        };
 
         (entries, vrows, adrs, head)
     } else {

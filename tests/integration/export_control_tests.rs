@@ -418,6 +418,93 @@ fn control_lens__contains_disclaimer_and_no_banned_terms() {
 
 #[test]
 #[serial(cwd, env)]
+fn control_lens__availability_aware_wording_with_chain_head() {
+    let _non_interactive = non_interactive();
+    let repo = setup_export_repo();
+    seed_export_ledger_with_varied_entries(&repo);
+    seed_chain_head(&repo);
+
+    let layout = build_layout(&repo);
+    let control_zip = generate_soc2_control_export(&layout, false, None, &["CC8.1".to_string()])
+        .expect("control export should succeed");
+
+    let members = extract_zip_members(&control_zip);
+    let cover = members
+        .get("control-lens/cover.md")
+        .expect("cover.md must exist");
+    let cover_text = String::from_utf8_lossy(cover);
+
+    assert!(
+        cover_text.contains("chain head present in bundle"),
+        "cover.md must indicate chain head is present"
+    );
+}
+
+#[test]
+#[serial(cwd, env)]
+fn control_lens__availability_aware_wording_without_chain_head() {
+    let _non_interactive = non_interactive();
+    let repo = setup_export_repo();
+    seed_export_ledger_with_varied_entries(&repo);
+
+    // The fixture always writes an initial ledger entry, which also creates a
+    // chain_head row. To test the "chain head absent" availability wording we
+    // remove that row directly.
+    let conn = rusqlite::Connection::open(repo.db_path.as_path()).unwrap();
+    conn.execute("DELETE FROM chain_head WHERE id = 1", [])
+        .unwrap();
+    drop(conn);
+
+    let layout = build_layout(&repo);
+    let control_zip = generate_soc2_control_export(&layout, false, None, &["CC8.1".to_string()])
+        .expect("control export should succeed");
+
+    let members = extract_zip_members(&control_zip);
+    let cover = members
+        .get("control-lens/cover.md")
+        .expect("cover.md must exist");
+    let cover_text = String::from_utf8_lossy(cover);
+
+    assert!(
+        cover_text.contains("no chain head in bundle"),
+        "cover.md must indicate chain head is absent: {cover_text}"
+    );
+    assert!(
+        !members.contains_key("chain_head.json"),
+        "bundle must not contain chain_head.json when head is absent"
+    );
+}
+
+#[test]
+#[serial(cwd, env)]
+fn control_lens__framework_wide_evidence_marked_not_in_bundle() {
+    let _non_interactive = non_interactive();
+    let repo = setup_export_repo();
+    seed_export_ledger_with_varied_entries(&repo);
+
+    let layout = build_layout(&repo);
+    let control_zip = generate_soc2_control_export(&layout, false, None, &["CC6.8".to_string()])
+        .expect("control export should succeed");
+
+    let members = extract_zip_members(&control_zip);
+    let cover = members
+        .get("control-lens/cover.md")
+        .expect("cover.md must exist");
+    let cover_text = String::from_utf8_lossy(cover);
+
+    assert!(
+        cover_text
+            .contains("`no_unsigned_entries_gate`: Ledgerful capability (not a bundle artifact)"),
+        "cover.md must mark no_unsigned_entries_gate as a Ledgerful capability: {cover_text}"
+    );
+    assert!(
+        cover_text.contains("`verify_command`: Ledgerful capability (not a bundle artifact)"),
+        "cover.md must mark verify_command as a Ledgerful capability: {cover_text}"
+    );
+}
+
+#[test]
+#[serial(cwd, env)]
 fn control_export__multiple_controls_requested() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
@@ -881,7 +968,7 @@ fn evidence_predicate__matches_expected_entry_characteristics() {
         origin: "LOCAL".to_string(),
         trace_id: None,
         signature: Some("sig".to_string()),
-        public_key: None,
+        public_key: Some("pub".to_string()),
         risk: Some("medium".to_string()),
         related_tickets: None,
         author: "Test".to_string(),
