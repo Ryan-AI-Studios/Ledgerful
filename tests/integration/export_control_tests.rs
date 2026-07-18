@@ -487,17 +487,53 @@ fn control_export__no_banned_terms_in_export() {
 fn control_export__signing_basis_unchanged() {
     let crypto_source =
         std::fs::read_to_string("src/ledger/crypto.rs").expect("crypto.rs source must be readable");
-    // Instead of matching exact whitespace/format, assert the five field
-    // names appear inside the signing payload format block between `format!`
-    // and the closing `);`.
+    // Restrict the check to the format! string literal so that variable names
+    // and other code outside the signing basis cannot create false positives.
     let format_start = crypto_source
         .find("let payload = format!(")
         .expect("crypto.rs must contain a signing payload format block");
-    let block = &crypto_source[format_start..format_start + 400];
+    let after_format = &crypto_source[format_start + "let payload = format!".len()..];
+    let open_quote = after_format
+        .find('"')
+        .expect("format! string literal must start with a double quote");
+    let literal_body = &after_format[open_quote + 1..];
+    let close_quote = literal_body
+        .find('"')
+        .expect("format! string literal must end with a double quote");
+    let literal = &literal_body[..close_quote];
+
     for field in ["tx_id", "category", "summary", "reason", "committed_at"] {
         assert!(
-            block.contains(field),
-            "signing payload format must contain field {field}"
+            literal.contains(field),
+            "signing payload format string must contain field {field}"
+        );
+    }
+
+    let placeholder_count = literal.matches("{}").count();
+    assert_eq!(
+        placeholder_count, 5,
+        "signing payload format string must contain exactly 5 field placeholders, found {placeholder_count}"
+    );
+
+    let forbidden = [
+        "entity",
+        "origin",
+        "trace_id",
+        "risk",
+        "author",
+        "observed",
+        "prev_hash",
+        "public_key",
+        "signature",
+        "verification",
+        "change_type",
+        "is_breaking",
+        "entry_type",
+    ];
+    for field in forbidden {
+        assert!(
+            !literal.contains(field),
+            "signing payload format string must not contain forbidden field {field}"
         );
     }
 }
@@ -617,11 +653,15 @@ fn read_repo_file(path: &str) -> String {
 fn source_artifacts__no_banned_terms() {
     let toml = read_repo_file("mappings/soc2.toml");
     let md = read_repo_file("docs/mappings/soc2.md");
+    let features = read_repo_file("docs/Features.md");
     if let Some(term) = any_banned_term_present(&toml) {
         panic!("mappings/soc2.toml contains banned term: {term}");
     }
     if let Some(term) = any_banned_term_present(&md) {
         panic!("docs/mappings/soc2.md contains banned term: {term}");
+    }
+    if let Some(term) = any_banned_term_present(&features) {
+        panic!("docs/Features.md contains banned term: {term}");
     }
 }
 
@@ -635,6 +675,22 @@ fn mappings_doc_drift__toml_and_doc_agree() {
         "docs/mappings/soc2.md must contain the TOML disclaimer"
     );
 
+    assert!(
+        doc.contains(&mapping.meta.version),
+        "docs/mappings/soc2.md must contain meta.version {}",
+        mapping.meta.version
+    );
+    assert!(
+        doc.contains(&mapping.meta.source),
+        "docs/mappings/soc2.md must contain meta.source {}",
+        mapping.meta.source
+    );
+    assert!(
+        doc.contains(&mapping.meta.status),
+        "docs/mappings/soc2.md must contain meta.status {}",
+        mapping.meta.status
+    );
+
     for control in &mapping.control {
         assert!(
             doc.contains(&control.id),
@@ -644,6 +700,23 @@ fn mappings_doc_drift__toml_and_doc_agree() {
         assert!(
             doc.contains(&control.title),
             "docs/mappings/soc2.md must contain control title for {}",
+            control.id
+        );
+        for keyword in &control.evidence {
+            assert!(
+                doc.contains(keyword),
+                "docs/mappings/soc2.md must contain evidence keyword {keyword} for {}",
+                control.id
+            );
+        }
+        assert!(
+            doc.contains(&control.provenance),
+            "docs/mappings/soc2.md must contain provenance for {}",
+            control.id
+        );
+        assert!(
+            doc.contains(&control.limit),
+            "docs/mappings/soc2.md must contain limit for {}",
             control.id
         );
     }

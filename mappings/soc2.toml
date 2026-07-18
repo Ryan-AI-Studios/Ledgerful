@@ -10,7 +10,7 @@ source = "2017 AICPA Trust Services Criteria, Revised Points of Focus (2022)"
 disclaimer = "This mapping identifies evidence a control assessment typically wants. It is NOT a certification or compliance attestation. The tool produces audit-ready evidence; the customer's auditor maps it to controls and renders an opinion."
 status = "draft-pending-validation"
 
-# Each [control.<id>] section maps one SOC 2 control to Ledgerful evidence.
+# Each [[control]] entry maps one SOC 2 control.
 # Fields:
 #   id = the control ID (e.g. "CC8.1")
 #   title = the control name
