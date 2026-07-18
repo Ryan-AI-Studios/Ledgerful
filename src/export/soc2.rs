@@ -262,8 +262,13 @@ pub fn generate_soc2_export_with_options(
         let mapping = ControlMapping::load_static()?;
         let selected = selector.select(&mapping)?;
         let requested = selector.canonical_requested();
-        let lens_files =
-            generate_control_lens_files(&mapping, &selected, &ledger_entries, &requested)?;
+        let lens_files = generate_control_lens_files(
+            &mapping,
+            &selected,
+            &ledger_entries,
+            &requested,
+            chain_head.as_ref(),
+        )?;
         for (name, bytes) in lens_files {
             let (entry, mf) = ZipEntry::new(name, bytes);
             zip_entries.push(entry);

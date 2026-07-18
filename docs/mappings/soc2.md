@@ -54,8 +54,8 @@ Each control entry declares which Ledgerful evidence keywords it wants, why that
 
 These keywords return `true` for an individual ledger entry when the described predicate is satisfied.
 
-* `signed_ledger_entry` — entry has a non-empty `signature`.
-* `signature_verification` — entry has a non-empty `signature` AND the signature verifies against the entry's `public_key` using the 5-field signing basis (tx_id, category, summary, reason, committed_at).
+* `signed_ledger_entry` — entry has a non-blank `signature` and any present `public_key` is non-blank.
+* `signature_verification` — entry has a non-blank `signature` AND the signature verifies against the entry's `public_key` using the 5-field signing basis (tx_id, category, summary, reason, committed_at).
 * `verification_result` — entry has a non-empty `verification_status`.
 * `continuous_verification_runs` — entry has a non-empty `verification_status`.
 * `risk_score` — entry has a non-empty `risk` field.
@@ -67,16 +67,16 @@ These keywords return `true` for an individual ledger entry when the described p
 
 These keywords represent bundle/system-level evidence rather than per-entry predicates, so the per-entry matcher returns `false` for all individual entries.
 
-* `tamper_evident_chain` — the tamper-evident chain covers all entries; the chain as a whole is the evidence, not individual entries. Every entry is included because removing any entry would break continuity.
-* `scan_impact` — system-level impact scan output included in the export bundle, not a per-entry field.
-* `config_diff` — system-level configuration diff included in the export bundle, not a per-entry field.
-* `security_surface_diff` — system-level security-surface diff included in the export bundle, not a per-entry field.
-* `hotspots` — repository hotspot analysis included in the export bundle, not a per-entry field.
-* `temporal_couplings` — repository temporal-coupling analysis included in the export bundle, not a per-entry field.
-* `drift_detection` — system-level drift detection output included in the export bundle, not a per-entry field.
-* `no_unsigned_entries_gate` — enforced across the whole ledger / export bundle; every entry is covered by the policy, but no single entry by itself satisfies it.
-* `verify_command` — evidence produced by running `ledgerful verify` over the bundle; not a per-entry field.
-* `drift_reconciliation` — system-level drift reconciliation output included in the export bundle, not a per-entry field.
+* `tamper_evident_chain` — the tamper-evident chain covers all entries; the chain as a whole is the evidence, not individual entries. Every entry is included because removing any entry would break continuity. `chain_head.json` is included in the bundle when a chain head exists.
+* `scan_impact` — Framework-level evidence category (not included in this bundle — produced by `ledgerful scan --impact`).
+* `config_diff` — Framework-level evidence category (not included in this bundle — produced by `ledgerful config diff`).
+* `security_surface_diff` — Framework-level evidence category (not included in this bundle — produced by `ledgerful security surface diff`).
+* `hotspots` — Framework-level evidence category (not included in this bundle — produced by `ledgerful hotspots`).
+* `temporal_couplings` — Framework-level evidence category (not included in this bundle — produced by `ledgerful temporal couplings`).
+* `drift_detection` — Framework-level evidence category (not included in this bundle — produced by `ledgerful drift detect`).
+* `no_unsigned_entries_gate` — Ledgerful capability (not a bundle artifact); enforced across the whole ledger / export bundle.
+* `verify_command` — Ledgerful capability (not a bundle artifact); evidence produced by running `ledgerful verify` over the bundle.
+* `drift_reconciliation` — Framework-level evidence category (not included in this bundle — produced by `ledgerful drift reconcile`).
 
 ## Control provenance and honest limits
 

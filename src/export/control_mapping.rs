@@ -216,10 +216,11 @@ pub fn generate_control_lens_files(
     selected: &[&Control],
     entries: &[LedgerEntry],
     requested: &[String],
+    chain_head: Option<&crate::ledger::types::ChainHead>,
 ) -> Result<Vec<(String, Vec<u8>)>> {
     let requested = canonicalize_requested(requested);
     let mut out: Vec<(String, Vec<u8>)> = Vec::new();
-    let cover = generate_cover_md(mapping, selected, entries, &requested)?;
+    let cover = generate_cover_md(mapping, selected, entries, &requested, chain_head)?;
     out.push(("control-lens/cover.md".to_string(), cover.into_bytes()));
 
     let index = generate_index_json(mapping, selected, entries, &requested)?;
@@ -282,6 +283,7 @@ fn generate_cover_md(
     selected: &[&Control],
     entries: &[LedgerEntry],
     requested: &[String],
+    chain_head: Option<&crate::ledger::types::ChainHead>,
 ) -> Result<String> {
     let mut lines: Vec<String> = Vec::new();
     lines.push(format!(
@@ -350,10 +352,14 @@ fn generate_cover_md(
             ));
         }
         if !framework_keywords.is_empty() {
-            lines.push(format!(
-                "- **Framework-wide evidence:** {} (applies to the entire change-control system, not individual entries)",
-                framework_keywords.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
-            ));
+            lines.push("- **Framework-wide evidence (availability-aware):**".to_string());
+            for keyword in framework_keywords {
+                lines.push(format!(
+                    "  - `{}`: {}",
+                    keyword,
+                    describe_framework_keyword(keyword, chain_head)
+                ));
+            }
         }
         lines.push(String::new());
     }
@@ -402,9 +408,36 @@ fn is_known_keyword(keyword: &str) -> bool {
     is_per_entry_keyword(keyword) || is_framework_keyword(keyword)
 }
 
+fn describe_framework_keyword(
+    keyword: &str,
+    chain_head: Option<&crate::ledger::types::ChainHead>,
+) -> String {
+    match keyword {
+        "tamper_evident_chain" => match chain_head {
+            Some(head) => format!(
+                "chain head present in bundle (chain_head.json) — length {}",
+                head.length
+            ),
+            None => "no chain head in bundle — chain continuity not asserted".to_string(),
+        },
+        "no_unsigned_entries_gate" => "Ledgerful capability (not a bundle artifact)".to_string(),
+        "verify_command" => "Ledgerful capability (not a bundle artifact)".to_string(),
+        _ => "Framework-level evidence category (not included in this bundle — produced by the corresponding `ledgerful` command, e.g. `scan --impact`, `config diff`, `hotspots`)".to_string(),
+    }
+}
+
 pub fn matches_evidence_keyword(entry: &LedgerEntry, keyword: &str) -> bool {
     match keyword {
-        "signed_ledger_entry" => entry.signature.is_some(),
+        "signed_ledger_entry" => {
+            entry
+                .signature
+                .as_deref()
+                .is_some_and(|s| !s.trim().is_empty())
+                && entry
+                    .public_key
+                    .as_deref()
+                    .is_none_or(|s| !s.trim().is_empty())
+        }
         "signature_verification" => {
             let (Some(signature), Some(public_key)) = (&entry.signature, &entry.public_key) else {
                 return false;
@@ -501,8 +534,8 @@ pub fn render_mapping_doc(mapping: &ControlMapping) -> String {
     lines.push(String::new());
     lines.push("These keywords return `true` for an individual ledger entry when the described predicate is satisfied.".to_string());
     lines.push(String::new());
-    lines.push("* `signed_ledger_entry` — entry has a non-empty `signature`.".to_string());
-    lines.push("* `signature_verification` — entry has a non-empty `signature` AND the signature verifies against the entry's `public_key` using the 5-field signing basis (tx_id, category, summary, reason, committed_at).".to_string());
+    lines.push("* `signed_ledger_entry` — entry has a non-blank `signature` and any present `public_key` is non-blank.".to_string());
+    lines.push("* `signature_verification` — entry has a non-blank `signature` AND the signature verifies against the entry's `public_key` using the 5-field signing basis (tx_id, category, summary, reason, committed_at).".to_string());
     lines
         .push("* `verification_result` — entry has a non-empty `verification_status`.".to_string());
     lines.push(
@@ -524,16 +557,16 @@ pub fn render_mapping_doc(mapping: &ControlMapping) -> String {
     lines.push(String::new());
     lines.push("These keywords represent bundle/system-level evidence rather than per-entry predicates, so the per-entry matcher returns `false` for all individual entries.".to_string());
     lines.push(String::new());
-    lines.push("* `tamper_evident_chain` — the tamper-evident chain covers all entries; the chain as a whole is the evidence, not individual entries. Every entry is included because removing any entry would break continuity.".to_string());
-    lines.push("* `scan_impact` — system-level impact scan output included in the export bundle, not a per-entry field.".to_string());
-    lines.push("* `config_diff` — system-level configuration diff included in the export bundle, not a per-entry field.".to_string());
-    lines.push("* `security_surface_diff` — system-level security-surface diff included in the export bundle, not a per-entry field.".to_string());
-    lines.push("* `hotspots` — repository hotspot analysis included in the export bundle, not a per-entry field.".to_string());
-    lines.push("* `temporal_couplings` — repository temporal-coupling analysis included in the export bundle, not a per-entry field.".to_string());
-    lines.push("* `drift_detection` — system-level drift detection output included in the export bundle, not a per-entry field.".to_string());
-    lines.push("* `no_unsigned_entries_gate` — enforced across the whole ledger / export bundle; every entry is covered by the policy, but no single entry by itself satisfies it.".to_string());
-    lines.push("* `verify_command` — evidence produced by running `ledgerful verify` over the bundle; not a per-entry field.".to_string());
-    lines.push("* `drift_reconciliation` — system-level drift reconciliation output included in the export bundle, not a per-entry field.".to_string());
+    lines.push("* `tamper_evident_chain` — the tamper-evident chain covers all entries; the chain as a whole is the evidence, not individual entries. Every entry is included because removing any entry would break continuity. `chain_head.json` is included in the bundle when a chain head exists.".to_string());
+    lines.push("* `scan_impact` — Framework-level evidence category (not included in this bundle — produced by `ledgerful scan --impact`).".to_string());
+    lines.push("* `config_diff` — Framework-level evidence category (not included in this bundle — produced by `ledgerful config diff`).".to_string());
+    lines.push("* `security_surface_diff` — Framework-level evidence category (not included in this bundle — produced by `ledgerful security surface diff`).".to_string());
+    lines.push("* `hotspots` — Framework-level evidence category (not included in this bundle — produced by `ledgerful hotspots`).".to_string());
+    lines.push("* `temporal_couplings` — Framework-level evidence category (not included in this bundle — produced by `ledgerful temporal couplings`).".to_string());
+    lines.push("* `drift_detection` — Framework-level evidence category (not included in this bundle — produced by `ledgerful drift detect`).".to_string());
+    lines.push("* `no_unsigned_entries_gate` — Ledgerful capability (not a bundle artifact); enforced across the whole ledger / export bundle.".to_string());
+    lines.push("* `verify_command` — Ledgerful capability (not a bundle artifact); evidence produced by running `ledgerful verify` over the bundle.".to_string());
+    lines.push("* `drift_reconciliation` — Framework-level evidence category (not included in this bundle — produced by `ledgerful drift reconcile`).".to_string());
     lines.push(String::new());
     lines.push("## Control provenance and honest limits".to_string());
     lines.push(String::new());
@@ -794,6 +827,177 @@ mod tests {
             prev_hash: None,
         };
 
+        assert!(!matches_evidence_keyword(&entry, "signature_verification"));
+    }
+
+    #[test]
+    fn signature_verification__empty_signature_does_not_match() {
+        use crate::ledger::types::{Category, ChangeType, EntryType, LedgerEntry};
+
+        let entry = LedgerEntry {
+            id: 3,
+            tx_id: "tx-3".to_string(),
+            category: Category::Feature,
+            entry_type: EntryType::Implementation,
+            entity: "src/a.rs".to_string(),
+            entity_normalized: "src/a.rs".to_string(),
+            change_type: ChangeType::Modify,
+            summary: "summary".to_string(),
+            reason: "reason".to_string(),
+            is_breaking: false,
+            committed_at: "2026-06-20T10:00:00Z".to_string(),
+            verification_status: None,
+            verification_basis: None,
+            outcome_notes: None,
+            origin: "LOCAL".to_string(),
+            trace_id: None,
+            signature: Some("".to_string()),
+            public_key: Some(
+                "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            ),
+            risk: None,
+            related_tickets: None,
+            author: "Test".to_string(),
+            observed: None,
+            prev_hash: None,
+        };
+
+        assert!(!matches_evidence_keyword(&entry, "signed_ledger_entry"));
+        assert!(!matches_evidence_keyword(&entry, "signature_verification"));
+    }
+
+    #[test]
+    fn signature_verification__whitespace_signature_does_not_match() {
+        use crate::ledger::types::{Category, ChangeType, EntryType, LedgerEntry};
+
+        let entry = LedgerEntry {
+            id: 4,
+            tx_id: "tx-4".to_string(),
+            category: Category::Feature,
+            entry_type: EntryType::Implementation,
+            entity: "src/a.rs".to_string(),
+            entity_normalized: "src/a.rs".to_string(),
+            change_type: ChangeType::Modify,
+            summary: "summary".to_string(),
+            reason: "reason".to_string(),
+            is_breaking: false,
+            committed_at: "2026-06-20T10:00:00Z".to_string(),
+            verification_status: None,
+            verification_basis: None,
+            outcome_notes: None,
+            origin: "LOCAL".to_string(),
+            trace_id: None,
+            signature: Some("   ".to_string()),
+            public_key: Some(
+                "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            ),
+            risk: None,
+            related_tickets: None,
+            author: "Test".to_string(),
+            observed: None,
+            prev_hash: None,
+        };
+
+        assert!(!matches_evidence_keyword(&entry, "signed_ledger_entry"));
+        assert!(!matches_evidence_keyword(&entry, "signature_verification"));
+    }
+
+    #[test]
+    fn signature_verification__valid_hex_wrong_content_does_not_match() {
+        use crate::ledger::types::{Category, ChangeType, EntryType, LedgerEntry};
+
+        let entry = LedgerEntry {
+            id: 5,
+            tx_id: "tx-5".to_string(),
+            category: Category::Feature,
+            entry_type: EntryType::Implementation,
+            entity: "src/a.rs".to_string(),
+            entity_normalized: "src/a.rs".to_string(),
+            change_type: ChangeType::Modify,
+            summary: "summary".to_string(),
+            reason: "reason".to_string(),
+            is_breaking: false,
+            committed_at: "2026-06-20T10:00:00Z".to_string(),
+            verification_status: None,
+            verification_basis: None,
+            outcome_notes: None,
+            origin: "LOCAL".to_string(),
+            trace_id: None,
+            signature: Some(
+                "00000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            ),
+            public_key: Some(
+                "0000000000000000000000000000000000000000000000000000000000000000".to_string(),
+            ),
+            risk: None,
+            related_tickets: None,
+            author: "Test".to_string(),
+            observed: None,
+            prev_hash: None,
+        };
+
+        assert!(matches_evidence_keyword(&entry, "signed_ledger_entry"));
+        assert!(!matches_evidence_keyword(&entry, "signature_verification"));
+    }
+
+    #[test]
+    fn signature_verification__mismatched_public_key_does_not_match() {
+        use crate::ledger::crypto::sign_ledger_entry_in;
+        use crate::ledger::types::{Category, ChangeType, EntryType, LedgerEntry};
+
+        let tmp = tempfile::tempdir().unwrap();
+        let keys_dir_a = tmp.path().join("keys_a");
+        let keys_dir_b = tmp.path().join("keys_b");
+        std::fs::create_dir_all(&keys_dir_a).unwrap();
+        std::fs::create_dir_all(&keys_dir_b).unwrap();
+
+        let committed_at = "2026-06-20T10:00:00Z";
+        let (sig, _pub_key_a) = sign_ledger_entry_in(
+            &keys_dir_a,
+            "tx-1",
+            &Category::Feature.to_string(),
+            "summary",
+            "reason",
+            committed_at,
+        )
+        .unwrap();
+        let (_sig_b, pub_key_b) = sign_ledger_entry_in(
+            &keys_dir_b,
+            "tx-1",
+            &Category::Feature.to_string(),
+            "summary",
+            "reason",
+            committed_at,
+        )
+        .unwrap();
+
+        let entry = LedgerEntry {
+            id: 6,
+            tx_id: "tx-1".to_string(),
+            category: Category::Feature,
+            entry_type: EntryType::Implementation,
+            entity: "src/a.rs".to_string(),
+            entity_normalized: "src/a.rs".to_string(),
+            change_type: ChangeType::Modify,
+            summary: "summary".to_string(),
+            reason: "reason".to_string(),
+            is_breaking: false,
+            committed_at: committed_at.to_string(),
+            verification_status: None,
+            verification_basis: None,
+            outcome_notes: None,
+            origin: "LOCAL".to_string(),
+            trace_id: None,
+            signature: sig,
+            public_key: pub_key_b,
+            risk: None,
+            related_tickets: None,
+            author: "Test".to_string(),
+            observed: None,
+            prev_hash: None,
+        };
+
+        assert!(matches_evidence_keyword(&entry, "signed_ledger_entry"));
         assert!(!matches_evidence_keyword(&entry, "signature_verification"));
     }
 }

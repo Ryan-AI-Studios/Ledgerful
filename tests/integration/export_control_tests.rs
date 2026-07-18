@@ -399,8 +399,12 @@ fn control_lens__contains_disclaimer_and_no_banned_terms() {
         "cover.md must list per-entry matches for CC8.1"
     );
     assert!(
-        cover_text.contains("- **Framework-wide evidence:** tamper_evident_chain"),
-        "cover.md must list tamper_evident_chain as framework-wide evidence for CC8.1"
+        cover_text.contains("- **Framework-wide evidence (availability-aware):**"),
+        "cover.md must list framework-wide evidence for CC8.1"
+    );
+    assert!(
+        cover_text.contains("`tamper_evident_chain`:"),
+        "cover.md must describe tamper_evident_chain for CC8.1"
     );
     assert!(
         !cover_text.contains("preserved unchanged"),
