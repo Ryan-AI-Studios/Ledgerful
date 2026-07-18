@@ -169,6 +169,7 @@ mod tests {
             profile: "soc2".to_string(),
             out: None,
             force: false,
+            control: Vec::new(),
         };
         let _: Commands = Commands::Demo {
             keep: false,

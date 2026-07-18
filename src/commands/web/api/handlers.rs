@@ -1159,6 +1159,7 @@ pub async fn compliance_export_handler(
             &layout,
             is_demo,
             keys_dir.as_deref(),
+            None,
         )
     })
     .await

@@ -17,11 +17,11 @@ use tempfile::tempdir;
 
 /// Owns the temp directory + environment guards so the real home directory is
 /// never touched and cwd is restored on drop.
-struct ExportRepo {
+pub(crate) struct ExportRepo {
     #[allow(dead_code)]
     dir: tempfile::TempDir,
-    root: camino::Utf8PathBuf,
-    db_path: std::path::PathBuf,
+    pub(crate) root: camino::Utf8PathBuf,
+    pub(crate) db_path: std::path::PathBuf,
     #[allow(dead_code)]
     _cwd_guard: DirGuard,
     #[allow(dead_code)]
@@ -30,7 +30,7 @@ struct ExportRepo {
     _profile_guard: TempEnv,
 }
 
-fn setup_export_repo() -> ExportRepo {
+pub(crate) fn setup_export_repo() -> ExportRepo {
     let dir = tempdir().unwrap();
     setup_git_repo(dir.path());
     let root_utf8 = Utf8Path::from_path(dir.path()).unwrap().to_path_buf();
@@ -58,7 +58,7 @@ fn setup_export_repo() -> ExportRepo {
     }
 }
 
-fn seed_export_ledger(repo: &ExportRepo) {
+pub(crate) fn seed_export_ledger(repo: &ExportRepo) {
     let keys_dir = repo.root.join(".ledgerful").join("keys");
     let keys_path = keys_dir.as_std_path();
 
@@ -132,7 +132,7 @@ fn seed_export_ledger(repo: &ExportRepo) {
 }
 
 /// Extract every file in a zip archive into a sorted map.
-fn extract_zip_members(zip_bytes: &[u8]) -> BTreeMap<String, Vec<u8>> {
+pub(crate) fn extract_zip_members(zip_bytes: &[u8]) -> BTreeMap<String, Vec<u8>> {
     let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes))
         .expect("zip archive should be readable");
     let mut out = BTreeMap::new();
@@ -148,7 +148,7 @@ fn extract_zip_members(zip_bytes: &[u8]) -> BTreeMap<String, Vec<u8>> {
 
 /// Replace the `generatedAt` timestamp in a manifest.json with a fixed sentinel
 /// so two exports produced at different wall-clock times can be compared.
-fn normalize_manifest_generated_at(manifest_bytes: &[u8]) -> Vec<u8> {
+pub(crate) fn normalize_manifest_generated_at(manifest_bytes: &[u8]) -> Vec<u8> {
     let mut manifest: serde_json::Value =
         serde_json::from_slice(manifest_bytes).expect("manifest.json should parse as JSON");
     manifest
@@ -170,7 +170,7 @@ fn normalize_manifest_generated_at(manifest_bytes: &[u8]) -> Vec<u8> {
 /// differ; instead we verify that each signature is valid for its own
 /// manifest and that the public keys match. All other members must be
 /// byte-identical.
-fn assert_zip_member_parity(zip_a: &[u8], zip_b: &[u8]) {
+pub(crate) fn assert_zip_member_parity(zip_a: &[u8], zip_b: &[u8]) {
     use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 
     let members_a = extract_zip_members(zip_a);

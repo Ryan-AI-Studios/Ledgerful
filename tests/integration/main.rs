@@ -62,6 +62,8 @@ mod doc_generation;
 mod dump_rust_tree;
 #[cfg(feature = "export")]
 mod export_cli_parity;
+#[cfg(feature = "export")]
+mod export_control_tests;
 mod federated_discovery;
 mod gate_mode;
 mod hook_commit_msg;

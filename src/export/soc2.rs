@@ -23,6 +23,9 @@
 //! `zip` crate (listed in the `web` feature) and is only invoked from the
 //! web dashboard's `/api/compliance/export` handler.
 
+use crate::export::control_mapping::{
+    ControlMapping, ControlSelector, generate_control_lens_files,
+};
 use crate::ledger::adr::{generate_madr_content, slugify_summary};
 use crate::ledger::crypto::{compute_entry_hash, get_or_create_keys};
 use crate::ledger::db::LedgerDb;
@@ -111,7 +114,7 @@ impl ZipEntry {
 /// `adr/` files, a manifest with the files that exist, and a signature over
 /// that manifest. Returns the raw zip bytes.
 pub fn generate_soc2_export(layout: &Layout) -> Result<Vec<u8>> {
-    generate_soc2_export_with_options(layout, false, None)
+    generate_soc2_export_with_options(layout, false, None, None)
 }
 
 /// Generate a SOC2 evidence export with an optional demo marker and
@@ -129,6 +132,7 @@ pub fn generate_soc2_export_with_options(
     layout: &Layout,
     demo: bool,
     keys_dir: Option<&Path>,
+    controls: Option<&ControlSelector>,
 ) -> Result<Vec<u8>> {
     // 1. Gather data. The ledger DB may not exist yet (fresh project / empty
     // state) — in that case we emit header-only CSVs and skip ADRs.
@@ -246,6 +250,25 @@ pub fn generate_soc2_export_with_options(
         let (entry, mf) = ZipEntry::new("chain_head.json", chain_head_json);
         zip_entries.push(entry);
         manifest_files.push(mf);
+    }
+
+    // Additive control lens: requested controls produce cover.md + index.json
+    // under control-lens/. These files are added to the signed bundle; they do
+    // not alter, remove, or truncate any existing file.
+    if let Some(selector) = controls {
+        if selector.requested().is_empty() {
+            return Err(miette!("at least one --control value is required"));
+        }
+        let mapping = ControlMapping::load_static()?;
+        let selected = selector.select(&mapping)?;
+        let requested = selector.requested().to_vec();
+        let lens_files =
+            generate_control_lens_files(&mapping, &selected, &ledger_entries, &requested)?;
+        for (name, bytes) in lens_files {
+            let (entry, mf) = ZipEntry::new(name, bytes);
+            zip_entries.push(entry);
+            manifest_files.push(mf);
+        }
     }
 
     // 3. Determinism: sort manifest files by name ASC. The zip itself is

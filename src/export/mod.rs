@@ -6,4 +6,6 @@
 //! `ledgerful export evidence --profile soc2`. It depends on the `zip` crate,
 //! which is made available by the `export` feature (and also by `sync`).
 
+pub mod control_mapping;
 pub mod soc2;
+pub mod soc2_control;
