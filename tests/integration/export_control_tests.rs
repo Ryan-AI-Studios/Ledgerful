@@ -329,6 +329,15 @@ fn control_lens__contains_disclaimer_and_no_banned_terms() {
     if let Some(term) = any_banned_term_present(&cover_text) {
         panic!("cover.md contains banned term: {term}");
     }
+
+    assert!(
+        cover_text.contains("- **Per-entry matches:**"),
+        "cover.md must list per-entry matches for CC8.1"
+    );
+    assert!(
+        cover_text.contains("- **Framework-wide evidence:** tamper_evident_chain"),
+        "cover.md must list tamper_evident_chain as framework-wide evidence for CC8.1"
+    );
 }
 
 #[test]

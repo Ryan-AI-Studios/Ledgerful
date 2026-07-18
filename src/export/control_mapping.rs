@@ -250,7 +250,7 @@ fn generate_cover_md(
         }
         if !framework_keywords.is_empty() {
             lines.push(format!(
-                "- **Framework-wide evidence:** {} (report/command-level evidence, not a per-entry match)",
+                "- **Framework-wide evidence:** {} (applies to the entire change-control system, not individual entries)",
                 framework_keywords.iter().map(|s| s.as_str()).collect::<Vec<_>>().join(", ")
             ));
         }
@@ -271,21 +271,11 @@ fn is_per_entry_keyword(keyword: &str) -> bool {
         "signed_ledger_entry"
             | "verification_result"
             | "risk_impact_analysis"
-            | "tamper_evident_chain"
             | "risk_score"
             | "blast_radius"
             | "impact_analysis"
             | "signature_verification"
-            | "no_unsigned_entries_gate"
-            | "verify_command"
             | "continuous_verification_runs"
-            | "drift_reconciliation"
-            | "scan_impact"
-            | "config_diff"
-            | "security_surface_diff"
-            | "hotspots"
-            | "temporal_couplings"
-            | "drift_detection"
     )
 }
 
