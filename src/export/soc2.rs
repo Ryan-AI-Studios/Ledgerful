@@ -187,6 +187,10 @@ pub fn generate_soc2_export_with_options(
             Err(e) => return Err(miette!("Failed to read chain head: {e}")),
         };
 
+        // Base-export invariant: synthesize a chain_head from the entries when
+        // no singleton chain_head row exists, so legacy or bypass-inserted data
+        // still carries a rollback ceiling in chain_head.json.
+        let head = head.or_else(|| synthesize_chain_head(&entries));
         (entries, vrows, adrs, head)
     } else {
         (Vec::new(), Vec::new(), Vec::new(), None)

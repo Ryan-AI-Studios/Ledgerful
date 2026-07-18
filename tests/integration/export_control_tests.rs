@@ -447,9 +447,9 @@ fn control_lens__availability_aware_wording_without_chain_head() {
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
 
-    // The fixture always writes an initial ledger entry, which also creates a
-    // chain_head row. To test the "chain head absent" availability wording we
-    // remove that row directly.
+    // The fixture always writes a signed chain_head row. Removing it tests the
+    // base-export synthesis path: a chain_head.json is built from the entries
+    // when no singleton row exists, and the cover describes it as synthesized.
     let conn = rusqlite::Connection::open(repo.db_path.as_path()).unwrap();
     conn.execute("DELETE FROM chain_head WHERE id = 1", [])
         .unwrap();
@@ -466,12 +466,22 @@ fn control_lens__availability_aware_wording_without_chain_head() {
     let cover_text = String::from_utf8_lossy(cover);
 
     assert!(
-        cover_text.contains("no chain head in bundle"),
-        "cover.md must indicate chain head is absent: {cover_text}"
+        cover_text.contains("chain head present in bundle (unsigned/synthesized chain_head.json)"),
+        "cover.md must indicate synthesized chain head is present: {cover_text}"
     );
     assert!(
-        !members.contains_key("chain_head.json"),
-        "bundle must not contain chain_head.json when head is absent"
+        members.contains_key("chain_head.json"),
+        "bundle must synthesize chain_head.json when singleton row is absent"
+    );
+
+    let head_json = members
+        .get("chain_head.json")
+        .expect("chain_head.json checked above");
+    let head: serde_json::Value =
+        serde_json::from_slice(head_json).expect("chain_head.json must parse");
+    assert!(
+        head["head_signature"].is_null() && head["head_public_key"].is_null(),
+        "synthesized chain_head.json must have null signature fields: {head}"
     );
 }
 
@@ -483,7 +493,9 @@ fn control_lens__framework_wide_evidence_marked_not_in_bundle() {
     seed_export_ledger_with_varied_entries(&repo);
 
     let layout = build_layout(&repo);
-    let control_zip = generate_soc2_control_export(&layout, false, None, &["CC6.8".to_string()])
+    // CC7.1 maps to command-output framework-wide keywords that are not bundle
+    // artifacts, so the cover must honestly say "not included in this bundle."
+    let control_zip = generate_soc2_control_export(&layout, false, None, &["CC7.1".to_string()])
         .expect("control export should succeed");
 
     let members = extract_zip_members(&control_zip);
@@ -493,13 +505,14 @@ fn control_lens__framework_wide_evidence_marked_not_in_bundle() {
     let cover_text = String::from_utf8_lossy(cover);
 
     assert!(
-        cover_text
-            .contains("`no_unsigned_entries_gate`: Ledgerful capability (not a bundle artifact)"),
-        "cover.md must mark no_unsigned_entries_gate as a Ledgerful capability: {cover_text}"
+        cover_text.contains("not included in this bundle"),
+        "cover.md must mark command-output framework-wide evidence as not in bundle: {cover_text}"
     );
     assert!(
-        cover_text.contains("`verify_command`: Ledgerful capability (not a bundle artifact)"),
-        "cover.md must mark verify_command as a Ledgerful capability: {cover_text}"
+        cover_text.contains(
+            "`scan_impact`: Framework-level evidence category (not included in this bundle"
+        ),
+        "cover.md must mark scan_impact as not in bundle: {cover_text}"
     );
 }
 

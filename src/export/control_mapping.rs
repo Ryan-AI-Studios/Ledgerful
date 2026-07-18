@@ -414,10 +414,25 @@ fn describe_framework_keyword(
 ) -> String {
     match keyword {
         "tamper_evident_chain" => match chain_head {
-            Some(head) => format!(
-                "chain head present in bundle (chain_head.json) — length {}",
-                head.length
-            ),
+            Some(head) => {
+                let signed = head
+                    .head_signature
+                    .as_ref()
+                    .is_some_and(|s| !s.is_empty())
+                    && head
+                        .head_public_key
+                        .as_ref()
+                        .is_some_and(|s| !s.is_empty());
+                let kind = if signed {
+                    "signed"
+                } else {
+                    "unsigned/synthesized"
+                };
+                format!(
+                    "chain head present in bundle ({kind} chain_head.json) — length {}",
+                    head.length
+                )
+            }
             None => "no chain head in bundle — chain continuity not asserted".to_string(),
         },
         "no_unsigned_entries_gate" => "Ledgerful capability (not a bundle artifact)".to_string(),
