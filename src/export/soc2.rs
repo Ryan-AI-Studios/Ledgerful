@@ -261,7 +261,7 @@ pub fn generate_soc2_export_with_options(
         }
         let mapping = ControlMapping::load_static()?;
         let selected = selector.select(&mapping)?;
-        let requested = selector.requested().to_vec();
+        let requested = selector.canonical_requested();
         let lens_files =
             generate_control_lens_files(&mapping, &selected, &ledger_entries, &requested)?;
         for (name, bytes) in lens_files {

@@ -14,8 +14,10 @@ use ledgerful::export::control_mapping::{ControlMapping, ControlSelector, banned
 use ledgerful::export::soc2::generate_soc2_export_with_options;
 use ledgerful::export::soc2_control::generate_soc2_control_export;
 use ledgerful::ledger::crypto::sign_ledger_entry_in;
+use ledgerful::ledger::db::LedgerDb;
 use ledgerful::ledger::types::{Category, ChangeType, EntryType, LedgerEntry, VerificationStatus};
 use ledgerful::state::layout::Layout;
+use ledgerful::state::storage::StorageManager;
 
 use serial_test::serial;
 use std::collections::BTreeSet;
@@ -68,23 +70,58 @@ fn seed_chain_head(repo: &crate::export_cli_parity::ExportRepo) {
 
     let conn = rusqlite::Connection::open(repo.db_path.as_path()).unwrap();
 
+    // Build a genuinely linked chain: walk entries in chronological order and
+    // set each entry's prev_hash to the computed hash of the previous entry.
+    // The genesis entry keeps a NULL prev_hash.
+    let entries: Vec<(String, Option<String>, Option<String>)> = conn
+        .prepare(
+            "SELECT tx_id, signature, prev_hash FROM ledger_entries \
+             ORDER BY committed_at ASC, tx_id ASC",
+        )
+        .unwrap()
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, Option<String>>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .unwrap()
+        .map(|r| r.unwrap())
+        .collect();
+
+    let mut prev_hash: Option<String> = None;
+    for (tx_id, sig, _) in entries {
+        let sig_hex = sig.as_deref().unwrap_or("");
+        let current_hash = ledgerful::ledger::crypto::compute_entry_hash(
+            &tx_id,
+            sig_hex,
+            prev_hash.as_deref().unwrap_or(""),
+        );
+        conn.execute(
+            "UPDATE ledger_entries SET prev_hash = ?1 WHERE tx_id = ?2",
+            rusqlite::params![prev_hash, tx_id],
+        )
+        .unwrap();
+        prev_hash = Some(current_hash);
+    }
+
     // Determine the chronologically last signed entry in the seeded ledger
     // and compute its entry hash so we can store a signed chain_head.
     let (last_tx_id, last_sig, last_prev_hash, last_committed_at): (
         String,
-        String,
+        Option<String>,
         Option<String>,
         String,
     ) = conn
         .query_row(
             "SELECT tx_id, signature, prev_hash, committed_at FROM ledger_entries \
-             WHERE signature IS NOT NULL \
-             ORDER BY committed_at ASC, tx_id ASC",
+             ORDER BY committed_at DESC, tx_id DESC LIMIT 1",
             [],
             |row| {
                 Ok((
                     row.get(0)?,
-                    row.get(1)?,
+                    row.get::<_, Option<String>>(1)?,
                     row.get::<_, Option<String>>(2)?,
                     row.get(3)?,
                 ))
@@ -94,7 +131,7 @@ fn seed_chain_head(repo: &crate::export_cli_parity::ExportRepo) {
 
     let latest_hash = ledgerful::ledger::crypto::compute_entry_hash(
         &last_tx_id,
-        &last_sig,
+        last_sig.as_deref().unwrap_or(""),
         last_prev_hash.as_deref().unwrap_or(""),
     );
 
@@ -239,11 +276,24 @@ fn control_export__signature_still_verifies_and_hashes_match() {
         let actual_sha = hex::encode(hasher.finalize());
         assert_eq!(actual_sha, expected_sha, "hash mismatch for {name}");
     }
+
+    let names: Vec<String> = files
+        .iter()
+        .map(|f| f["name"].as_str().unwrap().to_string())
+        .collect();
+    assert!(
+        names.contains(&"control-lens/cover.md".to_string()),
+        "manifest must list control-lens/cover.md"
+    );
+    assert!(
+        names.contains(&"control-lens/index.json".to_string()),
+        "manifest must list control-lens/index.json"
+    );
 }
 
 #[test]
 #[serial(cwd, env)]
-fn control_export__ledger_csv_identical_to_base() {
+fn control_export__base_payloads_byte_identical() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
@@ -256,11 +306,17 @@ fn control_export__ledger_csv_identical_to_base() {
 
     let base = extract_zip_members(&base_zip);
     let control = extract_zip_members(&control_zip);
-    assert_eq!(
-        base.get("ledger.csv"),
-        control.get("ledger.csv"),
-        "ledger.csv must be byte-identical between base and control export"
-    );
+
+    for name in base.keys() {
+        if name == "manifest.json" || name == "manifest.sig" || name == "manifest.pub" {
+            continue;
+        }
+        assert_eq!(
+            base.get(name),
+            control.get(name),
+            "{name} must be byte-identical between base and control export"
+        );
+    }
 }
 
 #[test]
@@ -301,6 +357,14 @@ fn control_lens__lists_matching_tx_ids() {
         "tx-export-verified-002".to_string(),
     ];
     assert_eq!(tx_ids, expected);
+    assert!(
+        !control["evidence"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|v| v.as_str() == Some("tamper_evident_chain")),
+        "tamper_evident_chain should not populate matchingTxIds"
+    );
 }
 
 #[test]
@@ -338,6 +402,14 @@ fn control_lens__contains_disclaimer_and_no_banned_terms() {
         cover_text.contains("- **Framework-wide evidence:** tamper_evident_chain"),
         "cover.md must list tamper_evident_chain as framework-wide evidence for CC8.1"
     );
+    assert!(
+        !cover_text.contains("preserved unchanged"),
+        "cover.md must not falsely claim manifest files are preserved unchanged"
+    );
+    assert!(
+        cover_text.contains("manifest.json and manifest.sig files are regenerated"),
+        "cover.md must accurately describe manifest regeneration"
+    );
 }
 
 #[test]
@@ -369,6 +441,53 @@ fn control_export__multiple_controls_requested() {
         .map(|c| c["id"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(ids, vec!["CC7.1", "CC8.1"]);
+}
+
+#[test]
+#[serial(cwd, env)]
+fn control_export__duplicate_controls_deduplicated() {
+    let _non_interactive = non_interactive();
+    let repo = setup_export_repo();
+    seed_export_ledger_with_varied_entries(&repo);
+
+    let layout = build_layout(&repo);
+    let zip_a = generate_soc2_control_export(
+        &layout,
+        false,
+        None,
+        &["CC8.1".to_string(), "CC8.1".to_string()],
+    )
+    .expect("duplicate selector export should succeed");
+    let zip_b = generate_soc2_control_export(&layout, false, None, &["CC8.1".to_string()])
+        .expect("single selector export should succeed");
+
+    assert_zip_member_parity(&zip_a, &zip_b);
+}
+
+#[test]
+#[serial(cwd, env)]
+fn control_export__control_order_canonical() {
+    let _non_interactive = non_interactive();
+    let repo = setup_export_repo();
+    seed_export_ledger_with_varied_entries(&repo);
+
+    let layout = build_layout(&repo);
+    let zip_a = generate_soc2_control_export(
+        &layout,
+        false,
+        None,
+        &["CC7.1".to_string(), "CC8.1".to_string()],
+    )
+    .expect("ordered selector export should succeed");
+    let zip_b = generate_soc2_control_export(
+        &layout,
+        false,
+        None,
+        &["CC8.1".to_string(), "CC7.1".to_string()],
+    )
+    .expect("reversed selector export should succeed");
+
+    assert_zip_member_parity(&zip_a, &zip_b);
 }
 
 #[test]
@@ -612,6 +731,26 @@ fn control_export__chain_verification_passes() {
         ledgerful::ledger::crypto::verify_chain_head(latest, genesis, length, sig, pub_key),
         "exported chain head signature must verify"
     );
+
+    let storage =
+        StorageManager::open_read_only_sqlite_only(&repo.root).expect("storage should open");
+    let db = LedgerDb::new(storage.get_connection());
+    let entries = db.get_all_committed_ledger_entries().unwrap();
+    assert_eq!(
+        entries.len() as i64,
+        length,
+        "chain head length must match ledger entry count"
+    );
+    let last = entries.last().expect("at least one entry");
+    let expected_latest = ledgerful::ledger::crypto::compute_entry_hash(
+        &last.tx_id,
+        last.signature.as_deref().unwrap_or(""),
+        last.prev_hash.as_deref().unwrap_or(""),
+    );
+    assert_eq!(
+        latest, expected_latest,
+        "chain head latest_entry_hash must match computed hash of last entry"
+    );
 }
 
 #[test]
@@ -676,59 +815,16 @@ fn source_artifacts__no_banned_terms() {
 
 #[test]
 fn mappings_doc_drift__toml_and_doc_agree() {
+    use ledgerful::export::control_mapping::render_mapping_doc;
+
     let mapping = ControlMapping::load_static().expect("static mapping must parse");
     let doc = read_repo_file("docs/mappings/soc2.md");
+    let rendered = render_mapping_doc(&mapping);
 
-    assert!(
-        doc.contains(&mapping.meta.disclaimer),
-        "docs/mappings/soc2.md must contain the TOML disclaimer"
+    assert_eq!(
+        doc, rendered,
+        "docs/mappings/soc2.md must match the canonical renderer output"
     );
-
-    assert!(
-        doc.contains(&mapping.meta.version),
-        "docs/mappings/soc2.md must contain meta.version {}",
-        mapping.meta.version
-    );
-    assert!(
-        doc.contains(&mapping.meta.source),
-        "docs/mappings/soc2.md must contain meta.source {}",
-        mapping.meta.source
-    );
-    assert!(
-        doc.contains(&mapping.meta.status),
-        "docs/mappings/soc2.md must contain meta.status {}",
-        mapping.meta.status
-    );
-
-    for control in &mapping.control {
-        assert!(
-            doc.contains(&control.id),
-            "docs/mappings/soc2.md must contain control id {}",
-            control.id
-        );
-        assert!(
-            doc.contains(&control.title),
-            "docs/mappings/soc2.md must contain control title for {}",
-            control.id
-        );
-        for keyword in &control.evidence {
-            assert!(
-                doc.contains(keyword),
-                "docs/mappings/soc2.md must contain evidence keyword {keyword} for {}",
-                control.id
-            );
-        }
-        assert!(
-            doc.contains(&control.provenance),
-            "docs/mappings/soc2.md must contain provenance for {}",
-            control.id
-        );
-        assert!(
-            doc.contains(&control.limit),
-            "docs/mappings/soc2.md must contain limit for {}",
-            control.id
-        );
-    }
 }
 
 #[test]
@@ -774,10 +870,12 @@ fn evidence_predicate__matches_expected_entry_characteristics() {
         &entry_signed,
         "risk_impact_analysis"
     ));
-    assert!(matches_evidence_keyword(
+    assert!(!matches_evidence_keyword(
         &entry_signed,
         "tamper_evident_chain"
     ));
+    assert!(!matches_evidence_keyword(&entry_signed, "scan_impact"));
+    assert!(!matches_evidence_keyword(&entry_signed, "config_diff"));
 
     let entry_unsigned = LedgerEntry {
         id: 2,

@@ -2,7 +2,7 @@
 
 Ledgerful can optionally scope its SOC2 evidence export to a control lens.
 The mapping lives in `mappings/soc2.toml` and is embedded at compile time.
-It is a mapping aid, **not** a certification or compliance attestation. This mapping identifies evidence a control assessment typically wants. It is NOT a certification or compliance attestation. The tool produces audit-ready evidence; the customer's auditor maps it to controls and renders an opinion.
+This mapping identifies evidence a control assessment typically wants. It is NOT a certification or compliance attestation. The tool produces audit-ready evidence; the customer's auditor maps it to controls and renders an opinion. This is a mapping aid, NOT a certification or compliance attestation.
 
 ## Using the control lens
 
@@ -13,7 +13,7 @@ ledgerful export evidence --profile soc2 --control CC8.1 --control "CC7.*" --out
 * `--control` is repeatable.
 * Family wildcards are supported: `CC7.*` matches every control whose ID starts with `CC7.`.
 * Unknown or empty selectors are rejected with a clear error.
-* The export always contains the full signed evidence bundle; the control lens only adds `control-lens/cover.md` and `control-lens/index.json`.
+* The export always contains the full signed evidence bundle; the control lens only adds `control-lens/cover.md` and `control-lens/index.json`, and the manifest/sig are regenerated to cover them.
 
 ## Mapping file format
 
@@ -24,7 +24,7 @@ The TOML file has two top-level sections:
 framework = "soc2"
 version = "1"
 source = "2017 AICPA Trust Services Criteria, Revised Points of Focus (2022)"
-disclaimer = "..."
+disclaimer = "This mapping identifies evidence a control assessment typically wants. It is NOT a certification or compliance attestation. The tool produces audit-ready evidence; the customer's auditor maps it to controls and renders an opinion."
 status = "draft-pending-validation"
 
 [[control]]
@@ -66,7 +66,7 @@ The mapping engine matches each keyword against ledger entry fields:
 
 ### CC8.1 — Change Management
 
-* **Provenance:** Signed ledger entry per change (category, intent/reason, committed_at) = documentation; verification-run outcome (tests_run, pass/fail) = tested; risk/blast-radius = impact-assessed; tamper-evident chain = complete & not backdated.
+* **Provenance:** Signed ledger entry per change (category, intent/reason, committed_at) = documentation; verification-run outcome (tests_run, pass/fail) = tested; risk/blast-radius = impact-assessed; tamper-evident chain = integrity/continuity of the presented chain, with an independently retained head needed for rollback detection.
 * **Honest limit:** Covers documentation, testing, risk-assessment, completeness. Does not by itself prove authorization/approval (who approved) — that comes from PR reviews / branch protection, which Ledgerful can reference but doesn't provide.
 
 ### CC3.4 — Assessing Changes to Internal Control
@@ -92,11 +92,11 @@ The mapping engine matches each keyword against ledger entry fields:
 ### CC4.1 — Ongoing Evaluation of Controls
 
 * **Provenance:** Continuous verification runs + drift reconciliation across the observation period.
-* **Honest limit:** Evidence the change-control operated throughout the window (Type II strength).
+* **Honest limit:** Evidence of verification runs and drift reconciliation across the observation period; does not by itself establish Type II operating-period strength or validate cadence/observation window.
 
 ## Important limitations
 
 * This mapping is a **default starting point** based on the 2017 AICPA Trust Services Criteria, Revised Points of Focus (2022).
 * Every customer environment and auditor interprets controls differently. Validate and customize `mappings/soc2.toml` before relying on it for an audit.
 * The tool produces evidence; the auditor renders the opinion.
-* The signed bundle itself is unchanged by `--control`. Only the additive `control-lens/` files are added.
+* Existing evidence payloads (ledger.csv, verification_history.csv, adr/*.md, chain_head.json) are preserved byte-identical. The manifest.json and manifest.sig files are regenerated so their signature covers the additive lens files.
