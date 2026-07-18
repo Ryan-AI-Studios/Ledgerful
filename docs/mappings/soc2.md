@@ -2,7 +2,7 @@
 
 Ledgerful can optionally scope its SOC2 evidence export to a control lens.
 The mapping lives in `mappings/soc2.toml` and is embedded at compile time.
-It is a mapping aid, **not** a certification or compliance attestation.
+It is a mapping aid, **not** a certification or compliance attestation. This mapping identifies evidence a control assessment typically wants. It is NOT a certification or compliance attestation. The tool produces audit-ready evidence; the customer's auditor maps it to controls and renders an opinion.
 
 ## Using the control lens
 
@@ -52,9 +52,10 @@ The mapping engine matches each keyword against ledger entry fields:
 
 * `signed_ledger_entry` — entry has a non-empty `signature`.
 * `verification_result` — entry has a non-empty `verification_status` / `verification_basis`.
-* `risk_score` / `risk_impact_analysis` — entry has a non-empty `risk` field.
-* `tamper_evident_chain` — entry has a non-empty `prev_hash` (chain continuity).
-* `blast_radius` / `impact_analysis` / `scan_impact` — entry has a non-empty `risk` field.
+* `risk_score` — entry has a non-empty `risk` field.
+* `risk_impact_analysis` — entry has a non-empty `risk` field.
+* `tamper_evident_chain` — the tamper-evident chain covers all entries; the chain as a whole is the evidence, not individual entries. Every entry is included because removing any entry would break continuity.
+* `blast_radius` / `impact_analysis` / `scan_impact` — currently matched by change category (Feature, Architecture, Bugfix, Refactor) because per-entry risk/impact fields are not populated in the current schema; future releases will narrow these to dedicated fields when available.
 * `config_diff`, `security_surface_diff`, `hotspots`, `temporal_couplings`, `drift_detection`, `signature_verification`, `no_unsigned_entries_gate`, `verify_command`, `continuous_verification_runs`, `drift_reconciliation` — currently match entries with verification or risk metadata; future releases will narrow these to dedicated fields.
 
 ## Important limitations

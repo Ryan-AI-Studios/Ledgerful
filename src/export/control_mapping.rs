@@ -295,7 +295,8 @@ pub fn matches_evidence_keyword(entry: &LedgerEntry, keyword: &str) -> bool {
         "verification_result" | "continuous_verification_runs" => {
             entry.verification_status.is_some()
         }
-        "risk_impact_analysis" | "blast_radius" | "impact_analysis" => matches!(
+        "risk_impact_analysis" => entry.risk.is_some(),
+        "blast_radius" | "impact_analysis" => matches!(
             entry.category,
             Category::Feature | Category::Architecture | Category::Bugfix | Category::Refactor
         ),
@@ -323,6 +324,7 @@ pub fn banned_terms() -> &'static [&'static str] {
         "audited",
         "tamper-proof",
         "you are compliant",
+        "is a compliance attestation",
     ]
 }
 

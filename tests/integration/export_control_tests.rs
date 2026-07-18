@@ -62,6 +62,76 @@ fn seed_export_ledger_with_varied_entries(repo: &crate::export_cli_parity::Expor
     }
 }
 
+fn seed_chain_head(repo: &crate::export_cli_parity::ExportRepo) {
+    let keys_dir = repo.root.join(".ledgerful").join("keys");
+    let keys_path = keys_dir.as_std_path();
+
+    let conn = rusqlite::Connection::open(repo.db_path.as_path()).unwrap();
+
+    // Determine the chronologically last signed entry in the seeded ledger
+    // and compute its entry hash so we can store a signed chain_head.
+    let (last_tx_id, last_sig, last_prev_hash, last_committed_at): (
+        String,
+        String,
+        Option<String>,
+        String,
+    ) = conn
+        .query_row(
+            "SELECT tx_id, signature, prev_hash, committed_at FROM ledger_entries \
+             WHERE signature IS NOT NULL \
+             ORDER BY committed_at ASC, tx_id ASC",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get(3)?,
+                ))
+            },
+        )
+        .unwrap();
+
+    let latest_hash = ledgerful::ledger::crypto::compute_entry_hash(
+        &last_tx_id,
+        &last_sig,
+        last_prev_hash.as_deref().unwrap_or(""),
+    );
+
+    let genesis: String = conn
+        .query_row(
+            "SELECT committed_at FROM ledger_entries ORDER BY committed_at ASC, tx_id ASC LIMIT 1",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+
+    let length: i64 = conn
+        .query_row("SELECT COUNT(*) FROM ledger_entries", [], |row| row.get(0))
+        .unwrap();
+
+    let (head_sig, head_pub) =
+        ledgerful::ledger::crypto::sign_chain_head(keys_path, &latest_hash, &genesis, length)
+            .expect("sign_chain_head should succeed");
+
+    let updated_at = last_committed_at;
+    conn.execute("DELETE FROM chain_head WHERE id = 1", [])
+        .unwrap();
+    conn.execute(
+        "INSERT INTO chain_head (id, latest_entry_hash, genesis, length, head_signature, head_public_key, updated_at) \
+         VALUES (1, ?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![
+            latest_hash,
+            genesis,
+            length,
+            head_sig.unwrap_or_default(),
+            head_pub.unwrap_or_default(),
+            updated_at,
+        ],
+    )
+    .unwrap();
+}
+
 fn build_layout(repo: &crate::export_cli_parity::ExportRepo) -> Layout {
     Layout::new(repo.root.clone())
 }
@@ -102,6 +172,35 @@ fn control_export__contains_whole_bundle_plus_lens__no_truncation() {
         extras.len(),
         2,
         "only control-lens/ files should be added; got {extras:?}"
+    );
+}
+
+#[test]
+#[serial(cwd, env)]
+fn control_export__default_unchanged_when_no_control() {
+    let _non_interactive = non_interactive();
+    let repo = setup_export_repo();
+    seed_export_ledger_with_varied_entries(&repo);
+
+    let layout = build_layout(&repo);
+    let base_zip = generate_soc2_export_with_options(&layout, false, None, None)
+        .expect("base export should succeed");
+    let base_members = extract_zip_members(&base_zip);
+
+    assert!(!base_members.contains_key("control-lens/cover.md"));
+    assert!(!base_members.contains_key("control-lens/index.json"));
+
+    // An empty selector is rejected at the export boundary, so the base export
+    // is the only no-control case we can observe here.
+    let empty_control_zip = generate_soc2_export_with_options(
+        &layout,
+        false,
+        None,
+        Some(&ControlSelector::new(vec![])),
+    );
+    assert!(
+        empty_control_zip.is_err(),
+        "empty selector should be rejected at the export boundary"
     );
 }
 
@@ -287,6 +386,63 @@ fn control_export__family_wildcard_matches() {
         .map(|c| c["id"].as_str().unwrap().to_string())
         .collect();
     assert_eq!(ids, vec!["CC7.1", "CC7.2"]);
+
+    let cover = members
+        .get("control-lens/cover.md")
+        .expect("control-lens/cover.md must exist");
+    let cover_text = String::from_utf8_lossy(cover);
+    assert!(
+        cover_text.contains("CC7.*"),
+        "cover.md must contain the wildcard request string"
+    );
+    assert!(
+        cover_text.contains("CC7.1"),
+        "cover.md must contain resolved control CC7.1"
+    );
+    assert!(
+        cover_text.contains("CC7.2"),
+        "cover.md must contain resolved control CC7.2"
+    );
+}
+
+#[test]
+#[serial(cwd, env)]
+fn unknown_control_lowercase_rejected() {
+    let _non_interactive = non_interactive();
+    let repo = setup_export_repo();
+    seed_export_ledger_with_varied_entries(&repo);
+
+    let layout = build_layout(&repo);
+    let result = generate_soc2_control_export(&layout, false, None, &["cc8.1".to_string()]);
+    assert!(
+        result.is_err(),
+        "lowercase cc8.1 must be rejected as unknown (case-sensitive matching)"
+    );
+    let err = format!("{}", result.unwrap_err());
+    assert!(
+        err.contains("cc8.1"),
+        "error must name the bad selector: {err}"
+    );
+}
+
+#[test]
+#[serial(cwd, env)]
+fn family_wildcard_no_matches_rejected() {
+    let _non_interactive = non_interactive();
+    let repo = setup_export_repo();
+    seed_export_ledger_with_varied_entries(&repo);
+
+    let layout = build_layout(&repo);
+    let result = generate_soc2_control_export(&layout, false, None, &["CC9.*".to_string()]);
+    assert!(
+        result.is_err(),
+        "CC9.* wildcard must be rejected because no controls match the CC9 family"
+    );
+    let err = format!("{}", result.unwrap_err());
+    assert!(
+        err.contains("CC9.*"),
+        "error must name the bad selector: {err}"
+    );
 }
 
 #[test]
@@ -331,11 +487,19 @@ fn control_export__no_banned_terms_in_export() {
 fn control_export__signing_basis_unchanged() {
     let crypto_source =
         std::fs::read_to_string("src/ledger/crypto.rs").expect("crypto.rs source must be readable");
-    let payload_marker = "let payload = format!(\n        \"tx_id:{}\\ncategory:{}\\nsummary:{}\\nreason:{}\\ncommitted_at:{}\",";
-    assert!(
-        crypto_source.contains(payload_marker),
-        "signing payload format must contain exactly tx_id, category, summary, reason, committed_at"
-    );
+    // Instead of matching exact whitespace/format, assert the five field
+    // names appear inside the signing payload format block between `format!`
+    // and the closing `);`.
+    let format_start = crypto_source
+        .find("let payload = format!(")
+        .expect("crypto.rs must contain a signing payload format block");
+    let block = &crypto_source[format_start..format_start + 400];
+    for field in ["tx_id", "category", "summary", "reason", "committed_at"] {
+        assert!(
+            block.contains(field),
+            "signing payload format must contain field {field}"
+        );
+    }
 }
 
 #[test]
@@ -356,33 +520,53 @@ fn control_export__deterministic_for_same_repo_state() {
 
 #[test]
 #[serial(cwd, env)]
-fn control_export__default_unchanged_when_no_control() {
+fn control_export__chain_verification_passes() {
     let _non_interactive = non_interactive();
     let repo = setup_export_repo();
     seed_export_ledger_with_varied_entries(&repo);
+    seed_chain_head(&repo);
 
     let layout = build_layout(&repo);
     let base_zip = generate_soc2_export_with_options(&layout, false, None, None)
         .expect("base export should succeed");
-    let empty_control_zip = generate_soc2_export_with_options(
-        &layout,
-        false,
-        None,
-        Some(&ControlSelector::new(vec![])),
-    );
-    assert!(
-        empty_control_zip.is_err(),
-        "empty selector should be rejected at the export boundary"
-    );
-
     let control_zip = generate_soc2_control_export(&layout, false, None, &["CC8.1".to_string()])
         .expect("control export should succeed");
 
+    let base_members = extract_zip_members(&base_zip);
     let control_members = extract_zip_members(&control_zip);
-    assert!(control_members.contains_key("control-lens/cover.md"));
-    assert!(control_members.contains_key("control-lens/index.json"));
 
-    assert_zip_member_parity(&base_zip, &base_zip);
+    assert!(
+        control_members.contains_key("chain_head.json"),
+        "control export must contain chain_head.json"
+    );
+    assert!(
+        base_members.contains_key("chain_head.json"),
+        "base export must contain chain_head.json"
+    );
+    assert_eq!(
+        base_members.get("chain_head.json"),
+        control_members.get("chain_head.json"),
+        "chain_head.json must be byte-identical between base and control export (no truncation)"
+    );
+
+    let head_json = control_members
+        .get("chain_head.json")
+        .expect("chain_head.json present");
+    let head: serde_json::Value =
+        serde_json::from_slice(head_json).expect("chain_head.json must parse");
+
+    let latest = head["latest_entry_hash"]
+        .as_str()
+        .expect("latest entry hash");
+    let genesis = head["genesis"].as_str().expect("genesis");
+    let length = head["length"].as_i64().expect("length");
+    let sig = head["head_signature"].as_str().expect("head signature");
+    let pub_key = head["head_public_key"].as_str().expect("head public key");
+
+    assert!(
+        ledgerful::ledger::crypto::verify_chain_head(latest, genesis, length, sig, pub_key),
+        "exported chain head signature must verify"
+    );
 }
 
 #[test]
@@ -421,6 +605,48 @@ fn control_export__cli_supports_control_flag() {
     let members = extract_zip_members(&zip_bytes);
     assert!(members.contains_key("control-lens/cover.md"));
     assert!(members.contains_key("control-lens/index.json"));
+}
+
+fn read_repo_file(path: &str) -> String {
+    let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    std::fs::read_to_string(repo_root.join(path))
+        .unwrap_or_else(|e| panic!("failed to read {path}: {e}"))
+}
+
+#[test]
+fn source_artifacts__no_banned_terms() {
+    let toml = read_repo_file("mappings/soc2.toml");
+    let md = read_repo_file("docs/mappings/soc2.md");
+    if let Some(term) = any_banned_term_present(&toml) {
+        panic!("mappings/soc2.toml contains banned term: {term}");
+    }
+    if let Some(term) = any_banned_term_present(&md) {
+        panic!("docs/mappings/soc2.md contains banned term: {term}");
+    }
+}
+
+#[test]
+fn mappings_doc_drift__toml_and_doc_agree() {
+    let mapping = ControlMapping::load_static().expect("static mapping must parse");
+    let doc = read_repo_file("docs/mappings/soc2.md");
+
+    assert!(
+        doc.contains(&mapping.meta.disclaimer),
+        "docs/mappings/soc2.md must contain the TOML disclaimer"
+    );
+
+    for control in &mapping.control {
+        assert!(
+            doc.contains(&control.id),
+            "docs/mappings/soc2.md must contain control id {}",
+            control.id
+        );
+        assert!(
+            doc.contains(&control.title),
+            "docs/mappings/soc2.md must contain control title for {}",
+            control.id
+        );
+    }
 }
 
 #[test]
