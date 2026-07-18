@@ -419,6 +419,7 @@ fn is_demo_repo(layout: &crate::state::layout::Layout) -> bool {
 #[cfg(feature = "export")]
 fn dispatch_export(command: ExportCommands) -> Result<()> {
     use crate::export::soc2::generate_soc2_export_with_options;
+    use crate::export::soc2_control::generate_soc2_control_export;
     use crate::state::layout::Layout;
     use owo_colors::OwoColorize;
 
@@ -427,6 +428,7 @@ fn dispatch_export(command: ExportCommands) -> Result<()> {
             profile,
             out,
             force,
+            control,
         } => {
             if profile != "soc2" {
                 return Err(miette::miette!(
@@ -465,8 +467,11 @@ fn dispatch_export(command: ExportCommands) -> Result<()> {
 
             let validated = validate_export_evidence_path(&path, force)?;
 
-            let zip_bytes =
-                generate_soc2_export_with_options(&layout, is_demo, keys_dir.as_deref())?;
+            let zip_bytes = if control.is_empty() {
+                generate_soc2_export_with_options(&layout, is_demo, keys_dir.as_deref(), None)?
+            } else {
+                generate_soc2_control_export(&layout, is_demo, keys_dir.as_deref(), &control)?
+            };
 
             std::fs::write(&validated, &zip_bytes).into_diagnostic()?;
 

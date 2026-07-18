@@ -1,0 +1,61 @@
+# Ledgerful SOC 2 Control-Evidence Mapping
+# Draft — derived from 2017 TSC / 2022 Points of Focus.
+# Pending design-partner validation (track 0048 Phase 0).
+# This is a mapping aid, NOT a compliance attestation.
+
+[meta]
+framework = "soc2"
+version = "1"
+source = "2017 AICPA Trust Services Criteria, Revised Points of Focus (2022)"
+disclaimer = "This mapping identifies evidence a control assessment typically wants. It is NOT a certification or compliance attestation. The tool produces audit-ready evidence; the customer's auditor maps it to controls and renders an opinion."
+status = "draft-pending-validation"
+
+# Each [[control]] entry maps one SOC 2 control.
+# Fields:
+#   id = the control ID (e.g. "CC8.1")
+#   title = the control name
+#   evidence = list of Ledgerful evidence categories that support this control
+#   provenance = "why this evidence supports this control"
+#   limit = the honest limit — what this does NOT prove
+
+[[control]]
+id = "CC8.1"
+title = "Change Management"
+evidence = ["signed_ledger_entry", "verification_result", "risk_impact_analysis", "tamper_evident_chain"]
+provenance = "Signed ledger entry per change (category, intent/reason, committed_at) = documentation; verification-run outcome (tests_run, pass/fail) = tested; risk/blast-radius = impact-assessed; tamper-evident chain = integrity/continuity of the presented chain, with an independently retained head needed for rollback detection."
+limit = "Covers documentation, testing, risk-assessment, completeness. Does not by itself prove authorization/approval (who approved) — that comes from PR reviews / branch protection, which Ledgerful can reference but doesn't provide."
+
+[[control]]
+id = "CC3.4"
+title = "Assessing Changes to Internal Control"
+evidence = ["risk_score", "blast_radius", "impact_analysis"]
+provenance = "Per-change risk score + blast-radius + impact analysis from scan --impact."
+limit = "Assesses technical change impact; not enterprise-wide control-environment change."
+
+[[control]]
+id = "CC7.1"
+title = "Detect Configuration Changes / New Vulnerabilities"
+evidence = ["scan_impact", "config_diff", "security_surface_diff"]
+provenance = "scan --impact, config diff, dependency/security-surface diff."
+limit = "Detects config/surface changes; actual CVE scanning is cargo audit/deny (adjacent, not this)."
+
+[[control]]
+id = "CC7.2"
+title = "Anomaly Monitoring"
+evidence = ["hotspots", "temporal_couplings", "drift_detection"]
+provenance = "Hotspots, temporal couplings above threshold, drift detection."
+limit = "Scoped to change-pattern anomalies — not runtime/SIEM security-event monitoring."
+
+[[control]]
+id = "CC6.8"
+title = "Detect Unauthorized / Altered Software"
+evidence = ["signature_verification", "no_unsigned_entries_gate", "verify_command"]
+provenance = "Signature verification, no-unsigned-entries gate, verify --signatures."
+limit = "Detects tampering with the record + unexpected code changes; not anti-malware."
+
+[[control]]
+id = "CC4.1"
+title = "Ongoing Evaluation of Controls"
+evidence = ["continuous_verification_runs", "drift_reconciliation"]
+provenance = "Continuous verification runs + drift reconciliation across the observation period."
+limit = "Evidence of verification runs and drift reconciliation across the observation period; does not by itself establish Type II operating-period strength or validate cadence/observation window."

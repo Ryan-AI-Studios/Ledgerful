@@ -769,6 +769,9 @@ pub enum ExportCommands {
         /// Overwrite an existing file
         #[arg(short, long)]
         force: bool,
+        /// Control ID(s) to scope the export (e.g. CC8.1, CC7.*). Repeatable.
+        #[arg(long = "control")]
+        control: Vec<String>,
     },
 }
 
