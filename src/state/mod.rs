@@ -8,6 +8,7 @@ pub mod migration;
 pub mod migration_prompt;
 pub mod migrations;
 pub mod reports;
+pub mod rollup;
 pub mod storage;
 pub mod storage_cozo;
 

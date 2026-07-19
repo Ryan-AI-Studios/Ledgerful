@@ -50,4 +50,6 @@ pub struct Config {
     pub gate: super::gate::GateConfig,
     #[serde(default)]
     pub bridge: super::bridge::BridgeConfig,
+    #[serde(default)]
+    pub global_rollup: super::rollup::GlobalRollupConfig,
 }

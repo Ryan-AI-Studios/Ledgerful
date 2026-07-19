@@ -394,6 +394,15 @@ pub enum Commands {
         #[arg(long)]
         json: bool,
     },
+    /// Local-only per-command timing analysis (global rollup gated on track 0043)
+    Timings {
+        /// Aggregate command timings across all discovered repos on disk
+        #[arg(long)]
+        global: bool,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+    },
     /// Generate an interactive visualization of the knowledge graph
     Viz {
         /// Custom output path for the HTML file
@@ -650,6 +659,7 @@ impl Commands {
             Commands::Reset { .. } => "reset",
             Commands::Doctor => "doctor",
             Commands::Status => "status",
+            Commands::Timings { .. } => "timings",
             Commands::Config { command } => match command {
                 ConfigCommands::Verify { .. } => "config_verify",
                 ConfigCommands::View { .. } => "config_view",
@@ -1106,6 +1116,21 @@ pub enum LedgerCommands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Aggregate posture across all discovered repos on disk
+        #[arg(long)]
+        global: bool,
+        /// Scope the global rollup to a single repo path
+        #[arg(long, requires = "global")]
+        repo: Option<String>,
+        /// Force a fresh walk of the configured roots
+        #[arg(long, requires = "global")]
+        reindex: bool,
+        /// Disable the global rollup view in user config
+        #[arg(long, conflicts_with = "opt_in", requires = "global")]
+        opt_out: bool,
+        /// Re-enable the global rollup view in user config
+        #[arg(long, conflicts_with = "opt_out", requires = "global")]
+        opt_in: bool,
     },
     /// Register a new tech stack rule or commit validator
     Register {

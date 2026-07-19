@@ -101,6 +101,7 @@ mod policy_integration;
 mod predictor;
 mod repro_w2_extraction;
 mod risk_analysis;
+mod rollup;
 mod rust_parser_modular;
 mod scan_pr_tests;
 mod scip_integration;

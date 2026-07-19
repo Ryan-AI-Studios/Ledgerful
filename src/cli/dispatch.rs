@@ -9,7 +9,18 @@ use std::env;
 pub fn run_with(cli: Cli) -> Result<()> {
     let current_dir = env::current_dir().into_diagnostic()?;
     let layout = crate::state::layout::Layout::new(current_dir.to_string_lossy().as_ref());
-    let config = load_startup_config(&layout)?;
+
+    // Global commands must not mutate the current repository before dispatch.
+    // `load_startup_config` migrates legacy state (e.g. `.changeguard` ->
+    // `.ledgerful`) in the current working directory, which would violate the
+    // read-only invariant for `ledger status --global` and `timings --global`.
+    // For global commands we load only the user-level config; the per-repo
+    // global path does not need the current repo's config.
+    let config = if is_global_command(&cli.command) {
+        load_user_config().unwrap_or_default()
+    } else {
+        load_startup_config(&layout)?
+    };
 
     // Capture the command name for usage metrics before moving `cli.command`
     #[cfg(feature = "usage-metrics")]
@@ -199,9 +210,9 @@ pub fn run_with(cli: Cli) -> Result<()> {
             dry_run,
         ),
         Commands::Doctor => crate::commands::doctor::execute_doctor(),
-        Commands::Status => {
-            crate::commands::ledger::execute_ledger_status(None, false, false, false, false, false)
-        }
+        Commands::Status => crate::commands::ledger::execute_ledger_status(
+            None, false, false, false, false, false, false, None, false, false, false,
+        ),
         Commands::Config { command } => dispatch_config(command, cli.verbose),
         Commands::DeadCode {
             threshold,
@@ -293,6 +304,14 @@ pub fn run_with(cli: Cli) -> Result<()> {
             output,
             force,
         } => crate::commands::demo::execute_demo(keep, output, force),
+        Commands::Timings { global, json } => {
+            if global {
+                let user_config = load_user_config()?;
+                crate::state::rollup::execute_timings_global(&user_config.global_rollup, json)
+            } else {
+                crate::state::rollup::execute_timings_not_implemented()
+            }
+        }
     };
 
     // Usage metrics counter hook: increment counter and try flush
@@ -315,11 +334,51 @@ pub fn run_with(cli: Cli) -> Result<()> {
     result
 }
 
+/// Return true for commands that operate across discovered repos and must not
+/// write to the current repo before dispatch.
+fn is_global_command(cmd: &Commands) -> bool {
+    matches!(
+        cmd,
+        Commands::Ledger {
+            command: LedgerCommands::Status { global: true, .. },
+        } | Commands::Timings { global: true, .. }
+    )
+}
+
 fn load_startup_config(
     layout: &crate::state::layout::Layout,
 ) -> Result<crate::config::model::Config> {
     layout.migrate_legacy_state_dir()?;
     Ok(crate::config::load::load_config(layout).unwrap_or_default())
+}
+
+fn load_user_config() -> Result<crate::config::model::Config> {
+    // `user_config_dir()` returns the Ledgerful state directory (e.g. `~/.ledgerful`
+    // or the value of `LEDGERFUL_CONFIG_HOME`). `Layout::new` expects the repo-root
+    // equivalent — i.e. the parent of the state directory — so that it can append
+    // `.ledgerful/config.toml` itself. This assumes `LEDGERFUL_CONFIG_HOME` points
+    // to a directory whose parent acts as the user-level repo root.
+    let config_dir = crate::state::rollup::user_config_dir()?;
+    let Some(parent) = config_dir.parent() else {
+        return Err(miette::miette!(
+            "user config directory '{}' has no parent",
+            config_dir.display()
+        ));
+    };
+    let layout = crate::state::layout::Layout::new(
+        camino::Utf8Path::from_path(parent)
+            .ok_or_else(|| miette::miette!("user config directory parent is not valid UTF-8"))?,
+    );
+    match crate::config::load::load_config(&layout) {
+        Ok(cfg) => Ok(cfg),
+        Err(e) => {
+            tracing::warn!(
+                "Failed to parse global rollup config at {}: {e}. Using defaults.",
+                layout.config_file()
+            );
+            Ok(Default::default())
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -647,14 +706,43 @@ fn dispatch_ledger(command: LedgerCommands) -> Result<()> {
             exit_code,
             verify_signatures,
             json,
-        } => crate::commands::ledger::execute_ledger_status(
-            entity,
-            compact,
-            exit_code,
-            verify_signatures,
-            json,
-            all,
-        ),
+            global,
+            repo,
+            reindex,
+            opt_out,
+            opt_in,
+        } => {
+            if opt_out {
+                crate::state::rollup::set_global_rollup_enabled(false)?;
+            }
+            if opt_in {
+                crate::state::rollup::set_global_rollup_enabled(true)?;
+            }
+
+            if global {
+                let user_config = load_user_config()?;
+                crate::state::rollup::execute_ledger_status_global(
+                    &user_config.global_rollup,
+                    repo.as_deref(),
+                    reindex,
+                    json,
+                )
+            } else {
+                crate::commands::ledger::execute_ledger_status(
+                    entity,
+                    compact,
+                    exit_code,
+                    verify_signatures,
+                    json,
+                    all,
+                    false,
+                    None,
+                    false,
+                    false,
+                    false,
+                )
+            }
+        }
         LedgerCommands::Register { command } => match command {
             RegisterCommands::Rule {
                 term,

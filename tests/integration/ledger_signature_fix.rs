@@ -178,7 +178,10 @@ fn ledger_status_verify_signatures_rejects_corrupted_signature() {
         )
         .unwrap();
 
-    let err = execute_ledger_status(None, true, true, true, false, false).unwrap_err();
+    let err = execute_ledger_status(
+        None, true, true, true, false, false, false, None, false, false, false,
+    )
+    .unwrap_err();
 
     assert!(format!("{err}").contains("Ledger signature verification failed"));
 }
@@ -242,11 +245,21 @@ fn test_ledger_status_all_flag_succeeds_with_more_than_ten_entries() {
             false,
             false,
             false,
-            true
+            true,
+            false,
+            None,
+            false,
+            false,
+            false,
         )
         .is_ok()
     );
 
     // Repo-wide (no --entity): --all adds the "RECENT HISTORY" section.
-    assert!(execute_ledger_status(None, false, false, false, false, true).is_ok());
+    assert!(
+        execute_ledger_status(
+            None, false, false, false, false, true, false, None, false, false, false,
+        )
+        .is_ok()
+    );
 }

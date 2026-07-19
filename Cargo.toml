@@ -52,6 +52,7 @@ comfy-table = "7.1"
 indicatif = "0.18"
 ctrlc = "3.4"
 sysinfo = "0.39"
+
 # Daemon dependencies
 tokio = { version = "1.43", features = ["rt-multi-thread", "io-std", "macros", "sync", "time", "signal"], optional = true }
 tokio-tungstenite = { version = "0.29", optional = true }
@@ -131,6 +132,13 @@ serial_test = "3.5.0"
 proptest = "1"
 reqwest = { version = "0.13.4", features = ["rustls"] }
 ed25519-dalek = { version = "2.1.1", features = ["rand_core"] }
+filetime = "0.2"
+
+# Unix-only stdout-capture helpers for integration tests (gated by #[cfg(unix)]
+# in the test source); required so the unix test target compiles on macOS/Linux.
+[target.'cfg(unix)'.dev-dependencies]
+os_pipe = "1.2"
+libc = "0.2"
 
 [patch.crates-io]
 sqlite3-sys = { path = "./vendor/sqlite3-sys" }
