@@ -41,6 +41,11 @@ pub enum Commands {
         #[command(subcommand)]
         command: GateCommands,
     },
+    /// Evaluate declared repository policy (CI merge gate)
+    Policy {
+        #[command(subcommand)]
+        command: PolicyCommands,
+    },
     /// Guided onboarding wizard (welcome → init → doctor → first scan → success)
     Setup {
         /// Skip all prompts, accept defaults (for CI/scripted use)
@@ -568,6 +573,9 @@ impl Commands {
                     }
                 }
             },
+            Commands::Policy { command } => match command {
+                PolicyCommands::Check { .. } => "policy_check",
+            },
 
             Commands::Setup { .. } => "setup",
             Commands::Scan { .. } => "scan",
@@ -1009,6 +1017,28 @@ pub enum GateCommands {
     Mode {
         /// Set mode: observe or enforce
         mode: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum PolicyCommands {
+    /// Evaluate declared policy against PR/diff/ledger state
+    Check {
+        /// PR-style git range, e.g. `main...HEAD` or `main..HEAD`
+        #[arg(long, value_name = "RANGE")]
+        pr: Option<String>,
+        /// Risk threshold that fails the check: off | low | medium | high
+        /// (overrides config `rules.fail_on` for this run)
+        #[arg(long, value_name = "LEVEL")]
+        fail_on: Option<String>,
+        /// Trusted policy file path (org/CI). When set, this path is used
+        /// instead of base-branch or working-tree policy resolution.
+        #[arg(long, value_name = "PATH")]
+        policy: Option<PathBuf>,
+        /// Output format: `json` (machine contract) or `text` (human report).
+        /// Default: text.
+        #[arg(long, value_name = "FORMAT")]
+        format: Option<String>,
     },
 }
 
