@@ -118,8 +118,13 @@ different repos remain distinguishable in speedscope.
 
 ### JSON output (`timings --global --json`)
 
-Field names use camelCase on the envelope. Nested command summary fields match
-the local timings schema (`command`, `runs`, `p50_ms`, …).
+Field names use **camelCase on the envelope** (`schemaVersion`, `totalRepos`,
+`reposWithTimings`, …). Nested objects in `data[]` and `repos[]` use **snake_case**
+to match the local timings schema (`command`, `runs`, `p50_ms`, … / `repo_path`).
+
+`--inner` uses the same camelCase envelope; each `data[]` element is a
+`GlobalInnerAgg` with snake_case keys matching local `timings --inner`
+(`span_name`, `samples`, `total_ms`, `max_ms`).
 
 ### `GlobalTimingsSummary`
 
@@ -139,11 +144,20 @@ the local timings schema (`command`, `runs`, `p50_ms`, …).
 
 | Field | Type | Description |
 |---|---|---|
-| `repoPath` | `string` | Absolute repository root. |
+| `repo_path` | `string` | Absolute repository root. |
 | `command` | `string` | Command name. |
 | `runs` | `number` | Outer run count in this repo. |
 | `p50_ms` / `p95_ms` / `p99_ms` | `number` | Percentiles for this repo only. |
 | `total_ms` | `number` | Sum of outer durations in this repo. |
+
+### `GlobalInnerAgg` (`--inner`)
+
+| Field | Type | Description |
+|---|---|---|
+| `span_name` | `string` | Engine-internal span label (or `<unnamed>`). |
+| `samples` | `number` | Count of inner rows across repos. |
+| `total_ms` | `number` | Sum of durations. |
+| `max_ms` | `number` | Max single-sample duration. |
 
 ### Example
 
@@ -167,7 +181,7 @@ the local timings schema (`command`, `runs`, `p50_ms`, …).
   ],
   "repos": [
     {
-      "repoPath": "/home/user/dev/alpha",
+      "repo_path": "/home/user/dev/alpha",
       "command": "verify",
       "runs": 3,
       "p50_ms": 20,

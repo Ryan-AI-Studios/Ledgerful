@@ -234,8 +234,11 @@ pub struct GlobalTimingsArgs {
 }
 
 /// Per-repo command timing contribution (pooled into the global summary).
+///
+/// Nested JSON keys use snake_case (matching local `CommandTimingSummary` /
+/// `data[]`): `repo_path`, `p50_ms`, `p95_ms`, `p99_ms`, `total_ms`. The parent
+/// `GlobalTimingsSummary` envelope remains camelCase.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct RepoCommandTiming {
     pub repo_path: String,
     pub command: String,
@@ -247,8 +250,9 @@ pub struct RepoCommandTiming {
 }
 
 /// Aggregated inner-span row across repos.
+///
+/// Snake_case JSON keys match local `timings --inner` (`span_name`, `total_ms`, …).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
 pub struct GlobalInnerAgg {
     pub span_name: String,
     pub samples: u64,
