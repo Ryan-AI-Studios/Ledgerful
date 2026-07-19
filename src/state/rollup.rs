@@ -214,28 +214,706 @@ fn print_global_posture_text(output: &GlobalPostureOutput) {
     }
 }
 
-/// Gated `timings --global` entry point (Track 0044).
+/// Arguments for `timings --global` (Track 0044 Phase C).
 ///
-/// Cross-repo aggregation is intentionally thin here: when no timing rows are
-/// discoverable we print an honest message and exit 0 (no fabricated rows).
-/// Full multi-repo rollup remains 0044's responsibility.
-pub fn execute_timings_global(_config: &GlobalRollupConfig, json: bool) -> Result<()> {
-    if json {
+/// Mutating flags that write per-repo DBs (`--prune`) are refused here.
+/// `--opt-in` / `--opt-out` are handled in the CLI dispatcher before this path
+/// (they only touch user config).
+#[derive(Debug, Clone, Default)]
+pub struct GlobalTimingsArgs {
+    pub json: bool,
+    pub top: Option<u32>,
+    pub days: Option<u32>,
+    pub export: Option<PathBuf>,
+    pub inner: bool,
+    pub command: Option<String>,
+    pub flame: bool,
+    pub explain: Option<String>,
+    pub prune: bool,
+    pub older_than: Option<String>,
+}
+
+/// Per-repo command timing contribution (pooled into the global summary).
+///
+/// Nested JSON keys use snake_case (matching local `CommandTimingSummary` /
+/// `data[]`): `repo_path`, `p50_ms`, `p95_ms`, `p99_ms`, `total_ms`. The parent
+/// `GlobalTimingsSummary` envelope remains camelCase.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RepoCommandTiming {
+    pub repo_path: String,
+    pub command: String,
+    pub runs: u64,
+    pub p50_ms: i64,
+    pub p95_ms: i64,
+    pub p99_ms: i64,
+    pub total_ms: i64,
+}
+
+/// Aggregated inner-span row across repos.
+///
+/// Snake_case JSON keys match local `timings --inner` (`span_name`, `total_ms`, …).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GlobalInnerAgg {
+    pub span_name: String,
+    pub samples: u64,
+    pub total_ms: i64,
+    pub max_ms: i64,
+}
+
+/// Outer-command union summary for `timings --global`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GlobalTimingsSummary {
+    pub schema_version: u32,
+    pub total_repos: usize,
+    pub repos_with_timings: usize,
+    pub skipped_repos: usize,
+    /// Repos opened successfully but missing the `command_timings` table.
+    pub timings_absent: usize,
+    pub warnings: Vec<String>,
+    /// Honest empty-state message when `data` is empty.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+    /// Pooled outer summaries (or empty when no rows / no table).
+    pub data: Vec<crate::state::storage::timings::CommandTimingSummary>,
+    /// Per-repo breakdown for honesty (same window/filters as `data`).
+    pub repos: Vec<RepoCommandTiming>,
+}
+
+/// Entry point for `ledgerful timings --global`.
+///
+/// Discovers repos via the same roots/cache as `ledger status --global`, opens
+/// each per-repo DB read-only, unions `command_timings` rows, and never writes
+/// to those DBs. Exit 0 with an honest message when nothing is available.
+pub fn execute_timings_global(config: &GlobalRollupConfig, args: GlobalTimingsArgs) -> Result<()> {
+    if args.prune {
+        return Err(miette::miette!(
+            "`timings --global` is read-only and cannot prune per-repo databases; \
+             run `ledgerful timings --prune --older-than Nd` inside a repo"
+        ));
+    }
+
+    if !config.enabled {
+        println!("global rollup disabled — run `ledger status --global --opt-in` to re-enable");
+        return Ok(());
+    }
+
+    if let Some(ref command) = args.explain {
+        return execute_timings_global_explain(config, &args, command);
+    }
+    if args.flame {
+        return execute_timings_global_flame(config, &args);
+    }
+    if args.inner {
+        return execute_timings_global_inner(config, &args);
+    }
+
+    let summary = build_global_timings_summary(config, &args)?;
+
+    if let Some(ref path) = args.export {
+        let json = serde_json::to_string_pretty(&summary).into_diagnostic()?;
+        std::fs::write(path, json).into_diagnostic()?;
+        if !args.json {
+            println!(
+                "Exported {} command summaries across {} repo(s) to {}.",
+                summary.data.len(),
+                summary.repos_with_timings,
+                path.display()
+            );
+        }
+    }
+
+    if args.json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "schemaVersion": 1,
-                "data": [],
-                "message": "no global timing rows (use `ledgerful timings` inside a repo)"
-            }))
-            .unwrap_or_else(|_| "{\"schemaVersion\":1,\"data\":[]}".to_string())
+            serde_json::to_string_pretty(&summary).into_diagnostic()?
         );
-    } else {
+        return Ok(());
+    }
+
+    print_global_timings_text(&summary, &args);
+    Ok(())
+}
+
+/// Build the pooled outer-command summary without printing (tests + callers).
+pub fn build_global_timings_summary(
+    config: &GlobalRollupConfig,
+    args: &GlobalTimingsArgs,
+) -> Result<GlobalTimingsSummary> {
+    let days = args.days.unwrap_or(30);
+    let top = args.top.unwrap_or(20);
+    let collected = collect_global_timings(config, Some(days), args.command.as_deref())?;
+
+    // Pool outer duration samples by command across all repos.
+    let mut by_cmd: BTreeMap<String, Vec<i64>> = BTreeMap::new();
+    let mut per_repo: Vec<RepoCommandTiming> = Vec::new();
+
+    for repo in &collected.repos {
+        let mut repo_by_cmd: BTreeMap<String, Vec<i64>> = BTreeMap::new();
+        for row in &repo.outer {
+            by_cmd
+                .entry(row.command.clone())
+                .or_default()
+                .push(row.duration_ms);
+            repo_by_cmd
+                .entry(row.command.clone())
+                .or_default()
+                .push(row.duration_ms);
+        }
+        for (command, durs) in repo_by_cmd {
+            let s = crate::state::storage::timings::summarize_from_samples(command, &durs);
+            per_repo.push(RepoCommandTiming {
+                repo_path: repo.repo_path.clone(),
+                command: s.command,
+                runs: s.runs,
+                p50_ms: s.p50_ms,
+                p95_ms: s.p95_ms,
+                p99_ms: s.p99_ms,
+                total_ms: s.total_ms,
+            });
+        }
+    }
+
+    let mut data: Vec<crate::state::storage::timings::CommandTimingSummary> = by_cmd
+        .into_iter()
+        .map(|(command, durs)| {
+            crate::state::storage::timings::summarize_from_samples(command, &durs)
+        })
+        .collect();
+    data.sort_by(|a, b| {
+        b.total_ms
+            .cmp(&a.total_ms)
+            .then_with(|| a.command.cmp(&b.command))
+    });
+    data.truncate(top as usize);
+
+    per_repo.sort_by(|a, b| {
+        b.total_ms
+            .cmp(&a.total_ms)
+            .then_with(|| a.repo_path.cmp(&b.repo_path))
+            .then_with(|| a.command.cmp(&b.command))
+    });
+
+    let message = empty_timings_message(&collected, data.is_empty());
+
+    Ok(GlobalTimingsSummary {
+        schema_version: 1,
+        total_repos: collected.total_repos,
+        repos_with_timings: collected.repos_with_timings,
+        skipped_repos: collected.skipped_repos,
+        timings_absent: collected.timings_absent,
+        warnings: collected.warnings,
+        message,
+        data,
+        repos: per_repo,
+    })
+}
+
+fn print_global_timings_text(summary: &GlobalTimingsSummary, args: &GlobalTimingsArgs) {
+    let days = args.days.unwrap_or(30);
+    let top = args.top.unwrap_or(20);
+
+    if let Some(ref msg) = summary.message {
+        println!("{msg}");
+        if !summary.warnings.is_empty() {
+            for w in &summary.warnings {
+                println!("  {} {}", "⚠".yellow(), w.dimmed());
+            }
+        }
+        return;
+    }
+
+    println!("{}", "Ledgerful Global Timings".bold().underline());
+    println!(
+        "{} repo(s) with timings, {} absent table, {} skipped (last {days} day(s), top {top})",
+        summary.repos_with_timings.to_string().cyan(),
+        summary.timings_absent.to_string().yellow(),
+        summary.skipped_repos.to_string().yellow()
+    );
+    if !summary.warnings.is_empty() {
         println!(
-            "no global timing rows (per-repo table may exist; run `ledgerful timings` inside a repo)"
+            "\n{} {}",
+            "Warnings:".yellow().bold(),
+            "(per-repo failures are non-fatal)".dimmed()
+        );
+        for w in &summary.warnings {
+            println!("  {} {}", "⚠".yellow(), w.dimmed());
+        }
+    }
+
+    let mut table = crate::output::table::build_table(vec![
+        "Command", "Runs", "p50 ms", "p95 ms", "p99 ms", "Total ms",
+    ]);
+    for s in &summary.data {
+        table.add_row(vec![
+            s.command.clone(),
+            s.runs.to_string(),
+            s.p50_ms.to_string(),
+            s.p95_ms.to_string(),
+            s.p99_ms.to_string(),
+            s.total_ms.to_string(),
+        ]);
+    }
+    println!("\n{table}");
+}
+
+fn empty_timings_message(collected: &CollectedGlobalTimings, data_empty: bool) -> Option<String> {
+    if !data_empty {
+        return None;
+    }
+    if collected.repos_with_timings == 0 {
+        Some(
+            "per-repo timing not enabled (no command_timings table found; see 0043 / self-timing)"
+                .to_string(),
+        )
+    } else {
+        Some(
+            "no global timing rows (tables present but empty in window; run `ledgerful timings` inside a repo)"
+                .to_string(),
+        )
+    }
+}
+
+// ── Collection helpers ──────────────────────────────────────────────────────
+
+struct RepoTimingRows {
+    repo_path: String,
+    outer: Vec<crate::state::storage::timings::TimingRow>,
+    inner: Vec<crate::state::storage::timings::TimingRow>,
+    /// All rows (outer + inner) for flame output.
+    all: Vec<crate::state::storage::timings::TimingRow>,
+}
+
+struct CollectedGlobalTimings {
+    total_repos: usize,
+    repos_with_timings: usize,
+    skipped_repos: usize,
+    timings_absent: usize,
+    warnings: Vec<String>,
+    repos: Vec<RepoTimingRows>,
+}
+
+/// Discover repos and pull timing rows read-only. Sequential open→query→close.
+fn collect_global_timings(
+    config: &GlobalRollupConfig,
+    days: Option<u32>,
+    command: Option<&str>,
+) -> Result<CollectedGlobalTimings> {
+    let roots = resolve_roots(config)?;
+    let cache_path = global_rollup_cache_path()?;
+    ensure_parent(&cache_path)?;
+
+    let mut warnings = Vec::new();
+    let (repo_map, _cached_postures, walk_warnings) =
+        discover_repos(&roots, config.timeout_secs, &cache_path, false, config)?;
+    warnings.extend(walk_warnings);
+
+    let mut repos = Vec::new();
+    let mut skipped = 0usize;
+    let mut timings_absent = 0usize;
+    let mut repos_with_timings = 0usize;
+    let total_repos = repo_map.len();
+
+    for (repo_path, db_path) in repo_map.iter() {
+        match query_repo_timings(db_path, days, command) {
+            Ok(None) => {
+                timings_absent += 1;
+            }
+            Ok(Some(rows)) => {
+                repos_with_timings += 1;
+                repos.push(RepoTimingRows {
+                    repo_path: repo_path.to_string(),
+                    outer: rows.outer,
+                    inner: rows.inner,
+                    all: rows.all,
+                });
+            }
+            Err(e) => {
+                let msg = format!("skipped {}: {}", repo_path, e);
+                warn!("{}", msg);
+                warnings.push(msg);
+                skipped += 1;
+            }
+        }
+    }
+
+    // Deterministic order by repo path.
+    repos.sort_by(|a, b| a.repo_path.cmp(&b.repo_path));
+
+    Ok(CollectedGlobalTimings {
+        total_repos,
+        repos_with_timings,
+        skipped_repos: skipped,
+        timings_absent,
+        warnings,
+        repos,
+    })
+}
+
+struct QueriedTimings {
+    outer: Vec<crate::state::storage::timings::TimingRow>,
+    inner: Vec<crate::state::storage::timings::TimingRow>,
+    all: Vec<crate::state::storage::timings::TimingRow>,
+}
+
+/// Open one repo DB read-only. Returns `Ok(None)` when `command_timings` is absent.
+fn query_repo_timings(
+    db_path: &Path,
+    days: Option<u32>,
+    command: Option<&str>,
+) -> Result<Option<QueriedTimings>> {
+    use crate::state::storage::timings::{TimingQuery, query_timings, table_exists};
+
+    let storage = StorageManager::open_read_only_from_path(db_path)?;
+    let conn = storage.get_connection();
+
+    if !table_exists(conn)? {
+        let _ = storage.shutdown();
+        return Ok(None);
+    }
+
+    let cmd = command.map(|s| s.to_string());
+    let outer = query_timings(
+        conn,
+        &TimingQuery {
+            outer_only: true,
+            inner_only: false,
+            command: cmd.clone(),
+            days,
+            limit: None,
+        },
+    )?;
+    let inner = query_timings(
+        conn,
+        &TimingQuery {
+            outer_only: false,
+            inner_only: true,
+            command: cmd.clone(),
+            days,
+            limit: None,
+        },
+    )?;
+    let all = query_timings(
+        conn,
+        &TimingQuery {
+            outer_only: false,
+            inner_only: false,
+            command: cmd,
+            days,
+            limit: Some(5000),
+        },
+    )?;
+
+    // Close the RO connection before returning.
+    storage.shutdown()?;
+
+    Ok(Some(QueriedTimings { outer, inner, all }))
+}
+
+/// Print skipped-repo / per-repo failure warnings in human-readable modes.
+///
+/// Spec honesty: warn-and-skip must be visible for every `--global` surface,
+/// not only the default summary table.
+fn print_timings_degradation(collected: &CollectedGlobalTimings) {
+    if collected.skipped_repos == 0 && collected.warnings.is_empty() {
+        return;
+    }
+    if collected.skipped_repos > 0 {
+        println!(
+            "{} {} repo(s) skipped",
+            "⚠".yellow(),
+            collected.skipped_repos.to_string().yellow()
         );
     }
+    for w in &collected.warnings {
+        println!("  {} {}", "⚠".yellow(), w.dimmed());
+    }
+}
+
+fn execute_timings_global_inner(
+    config: &GlobalRollupConfig,
+    args: &GlobalTimingsArgs,
+) -> Result<()> {
+    let days = args.days.unwrap_or(30);
+    let collected = collect_global_timings(config, Some(days), args.command.as_deref())?;
+
+    let mut agg: BTreeMap<String, (u64, i64, i64)> = BTreeMap::new();
+    for repo in &collected.repos {
+        for r in &repo.inner {
+            let name = r
+                .span_name
+                .clone()
+                .unwrap_or_else(|| "<unnamed>".to_string());
+            let entry = agg.entry(name).or_insert((0, 0, 0));
+            entry.0 += 1;
+            entry.1 += r.duration_ms;
+            entry.2 = entry.2.max(r.duration_ms);
+        }
+    }
+
+    let mut aggs: Vec<GlobalInnerAgg> = agg
+        .into_iter()
+        .map(|(span_name, (samples, total_ms, max_ms))| GlobalInnerAgg {
+            span_name,
+            samples,
+            total_ms,
+            max_ms,
+        })
+        .collect();
+    aggs.sort_by(|a, b| {
+        b.total_ms
+            .cmp(&a.total_ms)
+            .then_with(|| a.span_name.cmp(&b.span_name))
+    });
+    if let Some(top) = args.top {
+        aggs.truncate(top as usize);
+    }
+
+    let message = empty_timings_message(&collected, aggs.is_empty());
+    let envelope = serde_json::json!({
+        "schemaVersion": 1,
+        "totalRepos": collected.total_repos,
+        "reposWithTimings": collected.repos_with_timings,
+        "skippedRepos": collected.skipped_repos,
+        "timingsAbsent": collected.timings_absent,
+        "warnings": collected.warnings,
+        "message": message,
+        "data": aggs,
+    });
+
+    if let Some(ref path) = args.export {
+        let json = serde_json::to_string_pretty(&envelope).into_diagnostic()?;
+        std::fs::write(path, json).into_diagnostic()?;
+        if !args.json {
+            println!("Exported inner-span aggregates to {}.", path.display());
+        }
+    }
+
+    if args.json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&envelope).into_diagnostic()?
+        );
+        return Ok(());
+    }
+
+    if let Some(msg) = message {
+        println!("{msg}");
+        print_timings_degradation(&collected);
+        return Ok(());
+    }
+
+    let cmd_label = args.command.as_deref().unwrap_or("all commands");
+    println!(
+        "\n{} — {cmd_label} (last {days} day(s), global)",
+        "Inner spans".bold().underline()
+    );
+    let mut table =
+        crate::output::table::build_table(vec!["Span", "Samples", "Total ms", "Max ms"]);
+    for a in &aggs {
+        table.add_row(vec![
+            a.span_name.clone(),
+            a.samples.to_string(),
+            a.total_ms.to_string(),
+            a.max_ms.to_string(),
+        ]);
+    }
+    println!("{table}");
+    print_timings_degradation(&collected);
     Ok(())
+}
+
+fn execute_timings_global_flame(
+    config: &GlobalRollupConfig,
+    args: &GlobalTimingsArgs,
+) -> Result<()> {
+    let days = args.days.unwrap_or(30);
+    let collected = collect_global_timings(config, Some(days), args.command.as_deref())?;
+
+    // Collapsed stacks with repo basename prefix for cross-repo disambiguation:
+    //   {repo_basename};{command} duration
+    //   {repo_basename};{command};{span} duration
+    let mut lines: Vec<String> = Vec::new();
+    for repo in &collected.repos {
+        let basename = Path::new(&repo.repo_path)
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or("repo");
+        for r in &repo.all {
+            if let Some(ref span) = r.span_name {
+                lines.push(format!(
+                    "{basename};{};{} {}",
+                    r.command,
+                    span,
+                    r.duration_ms.max(1)
+                ));
+            } else {
+                lines.push(format!("{basename};{} {}", r.command, r.duration_ms.max(1)));
+            }
+        }
+    }
+    lines.sort();
+    let body = lines.join("\n");
+
+    if let Some(ref path) = args.export {
+        // Export carries full honesty envelope for flame when JSON-shaped export
+        // is requested via --json; plain --export stays collapsed-stack text
+        // (speedscope-compatible) and prints degradation on stderr-style stdout.
+        std::fs::write(path, &body).into_diagnostic()?;
+        if !args.json {
+            println!("Wrote collapsed stacks to {}.", path.display());
+            print_timings_degradation(&collected);
+        }
+        return Ok(());
+    }
+
+    if args.json {
+        let message = empty_timings_message(&collected, body.is_empty());
+        let envelope = serde_json::json!({
+            "schemaVersion": 1,
+            "totalRepos": collected.total_repos,
+            "reposWithTimings": collected.repos_with_timings,
+            "skippedRepos": collected.skipped_repos,
+            "timingsAbsent": collected.timings_absent,
+            "warnings": collected.warnings,
+            "message": message,
+            "data": { "collapsed": body },
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&envelope).into_diagnostic()?
+        );
+        return Ok(());
+    }
+
+    if body.is_empty() {
+        if let Some(msg) = empty_timings_message(&collected, true) {
+            println!("{msg}");
+        } else {
+            println!("no global timing rows for flame output");
+        }
+        print_timings_degradation(&collected);
+        return Ok(());
+    }
+
+    println!("{body}");
+    print_timings_degradation(&collected);
+    Ok(())
+}
+
+fn execute_timings_global_explain(
+    config: &GlobalRollupConfig,
+    args: &GlobalTimingsArgs,
+    command: &str,
+) -> Result<()> {
+    // Single 14-day collection pass so skipped-repo / warning honesty is
+    // complete for both the recent window and the prior-week baseline
+    // (no second pass that could silently omit a different set of repos).
+    let collected = collect_global_timings(config, Some(14), Some(command))?;
+
+    let mut all_outer: Vec<crate::state::storage::timings::TimingRow> = Vec::new();
+    for repo in &collected.repos {
+        all_outer.extend(repo.outer.iter().cloned());
+    }
+
+    // ISO-8601 UTC timestamps sort lexicographically; cutoff is 7 days ago.
+    // build_explain_sentence splits prior-week from the 14d pool via run_id set.
+    let cutoff_7d = (chrono::Utc::now() - chrono::Duration::days(7))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let recent: Vec<_> = all_outer
+        .iter()
+        .filter(|r| r.ts_utc.as_str() >= cutoff_7d.as_str())
+        .cloned()
+        .collect();
+
+    let sentence = build_explain_sentence(command, &recent, &all_outer);
+
+    if args.json {
+        let message = if recent.is_empty() && collected.repos_with_timings == 0 {
+            empty_timings_message(&collected, true)
+        } else {
+            None
+        };
+        let envelope = serde_json::json!({
+            "schemaVersion": 1,
+            "totalRepos": collected.total_repos,
+            "reposWithTimings": collected.repos_with_timings,
+            "skippedRepos": collected.skipped_repos,
+            "timingsAbsent": collected.timings_absent,
+            "warnings": collected.warnings,
+            "message": message,
+            "data": { "explain": sentence },
+        });
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&envelope).into_diagnostic()?
+        );
+    } else {
+        println!("{sentence}");
+        print_timings_degradation(&collected);
+    }
+    Ok(())
+}
+
+fn build_explain_sentence(
+    command: &str,
+    recent: &[crate::state::storage::timings::TimingRow],
+    prior_14d: &[crate::state::storage::timings::TimingRow],
+) -> String {
+    if recent.is_empty() {
+        return format!(
+            "No recorded runs of `{command}` in the last 7 days across discovered repos."
+        );
+    }
+
+    let recent_avg = mean_duration_ms(recent);
+    let recent_ids: std::collections::HashSet<&str> =
+        recent.iter().map(|r| r.run_id.as_str()).collect();
+    let prior_only: Vec<&crate::state::storage::timings::TimingRow> = prior_14d
+        .iter()
+        .filter(|r| !recent_ids.contains(r.run_id.as_str()))
+        .collect();
+
+    if prior_only.is_empty() {
+        format!(
+            "`{command}` averaged {recent_avg:.0} ms over {} run(s) in the last 7 days across repos; no prior-week baseline yet.",
+            recent.len()
+        )
+    } else {
+        let prior_avg = mean_duration_ms_refs(&prior_only);
+        let delta_pct = if prior_avg > 0.0 {
+            ((recent_avg - prior_avg) / prior_avg) * 100.0
+        } else {
+            0.0
+        };
+        let direction = if delta_pct > 1.0 {
+            "up"
+        } else if delta_pct < -1.0 {
+            "down"
+        } else {
+            "flat"
+        };
+        format!(
+            "`{command}` averaged {recent_avg:.0} ms over {} run(s) this week across repos, {direction} {delta_pct:.0}% vs the prior week ({prior_avg:.0} ms).",
+            recent.len()
+        )
+    }
+}
+
+fn mean_duration_ms(rows: &[crate::state::storage::timings::TimingRow]) -> f64 {
+    if rows.is_empty() {
+        return 0.0;
+    }
+    let sum: i64 = rows.iter().map(|r| r.duration_ms).sum();
+    sum as f64 / rows.len() as f64
+}
+
+fn mean_duration_ms_refs(rows: &[&crate::state::storage::timings::TimingRow]) -> f64 {
+    if rows.is_empty() {
+        return 0.0;
+    }
+    let sum: i64 = rows.iter().map(|r| r.duration_ms).sum();
+    sum as f64 / rows.len() as f64
 }
 
 /// Returns true if the user's `--repo` filter should select `repo_path`.

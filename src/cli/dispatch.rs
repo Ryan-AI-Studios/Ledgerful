@@ -328,9 +328,40 @@ pub fn run_with(cli: Cli) -> Result<()> {
             opt_in,
             opt_out,
         } => {
-            if global {
+            // Opt-in/out write user config only — allow with or without --global.
+            if opt_in || opt_out {
+                crate::commands::timings::execute_timings(crate::commands::timings::TimingsArgs {
+                    global: false,
+                    json: false,
+                    top: None,
+                    days: None,
+                    export: None,
+                    inner: false,
+                    command: None,
+                    flame: false,
+                    explain: None,
+                    prune: false,
+                    older_than: None,
+                    opt_in,
+                    opt_out,
+                })
+            } else if global {
                 let user_config = load_user_config()?;
-                crate::state::rollup::execute_timings_global(&user_config.global_rollup, json)
+                crate::state::rollup::execute_timings_global(
+                    &user_config.global_rollup,
+                    crate::state::rollup::GlobalTimingsArgs {
+                        json,
+                        top,
+                        days,
+                        export,
+                        inner,
+                        command,
+                        flame,
+                        explain,
+                        prune,
+                        older_than,
+                    },
+                )
             } else {
                 crate::commands::timings::execute_timings(crate::commands::timings::TimingsArgs {
                     global: false,
@@ -344,8 +375,8 @@ pub fn run_with(cli: Cli) -> Result<()> {
                     explain,
                     prune,
                     older_than,
-                    opt_in,
-                    opt_out,
+                    opt_in: false,
+                    opt_out: false,
                 })
             }
         }
