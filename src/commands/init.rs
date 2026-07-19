@@ -495,6 +495,7 @@ fn print_init_status_block(gate_mode: &str) {
     println!("  Hooks:      commit-msg, post-commit, pre-push (.git/hooks/)");
     println!("  Pending tx: {}", "0".green());
     println!("  Drift:      {}", "0".green());
+    println!("  Timings:    recorded locally (opt out: ledgerful timings --opt-out)");
 
     println!("\n{}", "Next Steps".bold().underline());
     println!(

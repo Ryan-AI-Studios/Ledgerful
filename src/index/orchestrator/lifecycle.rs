@@ -126,6 +126,7 @@ pub fn full_index(indexer: &mut ProjectIndexer) -> Result<super::IndexStats> {
     let stats = collect_results(&mut indexer.storage, rx, true)?;
     pb.finish_and_clear();
     store_index_metadata(indexer)?;
+    report_indexed_repo_size_for_timing(&indexer.storage);
 
     let duration_ms = start.elapsed().as_millis() as u64;
     info!("Full index complete in {}ms", duration_ms);
@@ -166,6 +167,8 @@ pub fn incremental_index(indexer: &mut ProjectIndexer) -> Result<super::IndexSta
 
     if files_to_reindex.is_empty() {
         store_index_metadata(indexer)?;
+        // Still report existing indexed size (no new walk) when nothing changed.
+        report_indexed_repo_size_for_timing(&indexer.storage);
         return Ok(super::IndexStats {
             duration_ms: start.elapsed().as_millis() as u64,
             files_indexed: 0,
@@ -220,12 +223,33 @@ pub fn incremental_index(indexer: &mut ProjectIndexer) -> Result<super::IndexSta
     let stats = collect_results(&mut indexer.storage, rx, false)?;
     pb.finish_and_clear();
     store_index_metadata(indexer)?;
+    report_indexed_repo_size_for_timing(&indexer.storage);
 
     Ok(super::IndexStats {
         duration_ms: start.elapsed().as_millis() as u64,
         ..stats
     })
 }
+
+/// Best-effort opportunistic repo size for self-timing: sum of already-known
+/// `project_files.file_size` (populated while indexing). Never starts a new walk.
+/// File counts alone are not written — only real byte totals.
+#[cfg(feature = "self-timing")]
+fn report_indexed_repo_size_for_timing(storage: &StorageManager) {
+    let Ok(sum) = storage.get_connection().query_row(
+        "SELECT COALESCE(SUM(file_size), 0) FROM project_files WHERE parse_status != 'DELETED'",
+        [],
+        |row| row.get::<_, i64>(0),
+    ) else {
+        return;
+    };
+    if sum > 0 {
+        crate::observability::self_timing::set_current_repo_size_bytes(sum as u64);
+    }
+}
+
+#[cfg(not(feature = "self-timing"))]
+fn report_indexed_repo_size_for_timing(_storage: &StorageManager) {}
 
 pub fn collect_results(
     storage: &mut StorageManager,

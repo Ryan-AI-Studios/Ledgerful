@@ -214,13 +214,27 @@ fn print_global_posture_text(output: &GlobalPostureOutput) {
     }
 }
 
-/// Gated `timings --global` entry point. Prints an honest message if the
-/// per-repo `command_timings` table is not implemented (0043).
-pub fn execute_timings_global(_config: &GlobalRollupConfig, _json: bool) -> Result<()> {
-    // 0043 is not implemented, so the table cannot exist anywhere. We still
-    // attempt a token discovery to keep the message honest, but the spec says
-    // absent table → honest message, exit 0, no fabricated rows.
-    println!("per-repo timing not enabled (see track 0043 — self-timing facility)");
+/// Gated `timings --global` entry point (Track 0044).
+///
+/// Cross-repo aggregation is intentionally thin here: when no timing rows are
+/// discoverable we print an honest message and exit 0 (no fabricated rows).
+/// Full multi-repo rollup remains 0044's responsibility.
+pub fn execute_timings_global(_config: &GlobalRollupConfig, json: bool) -> Result<()> {
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&serde_json::json!({
+                "schemaVersion": 1,
+                "data": [],
+                "message": "no global timing rows (use `ledgerful timings` inside a repo)"
+            }))
+            .unwrap_or_else(|_| "{\"schemaVersion\":1,\"data\":[]}".to_string())
+        );
+    } else {
+        println!(
+            "no global timing rows (per-repo table may exist; run `ledgerful timings` inside a repo)"
+        );
+    }
     Ok(())
 }
 
@@ -259,13 +273,6 @@ fn normalize_filter(filter: &str) -> String {
         Ok(canonical) => normalize_path_for_match(&canonical),
         Err(_) => filter.replace('\\', "/").trim_end_matches('/').to_string(),
     }
-}
-
-/// Placeholder for the non-global `ledgerful timings` surface. Track 0043 owns
-/// the full implementation; this track only ships the gated `--global` slice.
-pub fn execute_timings_not_implemented() -> Result<()> {
-    println!("timings not implemented (see track 0043)");
-    Ok(())
 }
 
 /// Resolve configured roots, expanding leading `~` to the user's home dir.

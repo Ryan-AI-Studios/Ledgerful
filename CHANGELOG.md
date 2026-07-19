@@ -6,6 +6,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- Local self-timing facility: `ledgerful timings` surfaces which of *your*
+  commands is slow (outer summaries, inner spans, collapsed flame stacks,
+  `--explain`), with default-on capture, opt-out via `timings --opt-out`, and
+  strict privacy (no paths/argv values/network). See
+  [docs/self-timing.md](docs/self-timing.md).
+
 ## [0.1.8] - 2026-07-12
 
 ### Added

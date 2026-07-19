@@ -142,6 +142,7 @@ mod sync_hlc;
 mod sync_init;
 #[cfg(feature = "sync")]
 mod sync_transport;
+mod timings;
 mod track_ta12;
 
 #[cfg(feature = "mcp")]

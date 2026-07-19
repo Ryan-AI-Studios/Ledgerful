@@ -26,6 +26,14 @@ pub fn run_with(cli: Cli) -> Result<()> {
     #[cfg(feature = "usage-metrics")]
     let command_name = cli.command.command_name();
 
+    // Self-timing capture (Track 0043): RAII guard; drop flushes one batch.
+    #[cfg(feature = "self-timing")]
+    let timed = {
+        let name = cli.command.command_name();
+        let shape = cli.command.argv_shape();
+        crate::observability::self_timing::TimedCommand::start(name, &shape)
+    };
+
     let result = match cli.command {
         Commands::Init { force, enforce } => crate::commands::init::execute_init(force, enforce),
         Commands::Gate { command } => dispatch_gate(command),
@@ -305,12 +313,40 @@ pub fn run_with(cli: Cli) -> Result<()> {
             output,
             force,
         } => crate::commands::demo::execute_demo(keep, output, force),
-        Commands::Timings { global, json } => {
+        Commands::Timings {
+            global,
+            json,
+            top,
+            days,
+            export,
+            inner,
+            command,
+            flame,
+            explain,
+            prune,
+            older_than,
+            opt_in,
+            opt_out,
+        } => {
             if global {
                 let user_config = load_user_config()?;
                 crate::state::rollup::execute_timings_global(&user_config.global_rollup, json)
             } else {
-                crate::state::rollup::execute_timings_not_implemented()
+                crate::commands::timings::execute_timings(crate::commands::timings::TimingsArgs {
+                    global: false,
+                    json,
+                    top,
+                    days,
+                    export,
+                    inner,
+                    command,
+                    flame,
+                    explain,
+                    prune,
+                    older_than,
+                    opt_in,
+                    opt_out,
+                })
             }
         }
     };
@@ -330,6 +366,13 @@ pub fn run_with(cli: Cli) -> Result<()> {
             // should be the place to count panics.
             tracing::debug!("Usage metrics hook panicked: {:?}", e);
         }
+    }
+
+    // Finish self-timing after the host command completes (exit code 0/1).
+    #[cfg(feature = "self-timing")]
+    {
+        let code = if result.is_ok() { 0 } else { 1 };
+        timed.finish(code);
     }
 
     result

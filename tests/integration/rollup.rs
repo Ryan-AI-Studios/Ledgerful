@@ -1172,7 +1172,11 @@ fn timings_gate_absent_table_prints_honest_message() {
         let output = capture_stdout(move || {
             execute_timings_global(&config, false).unwrap();
         });
-        assert!(output.contains("per-repo timing not enabled"));
+        assert!(
+            output.contains("no global timing rows")
+                || output.contains("per-repo timing not enabled"),
+            "expected honest empty-state message, got: {output}"
+        );
     }
     #[cfg(not(unix))]
     {

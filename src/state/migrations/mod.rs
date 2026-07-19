@@ -23,6 +23,7 @@ pub mod m48_changed_files_diff_stats;
 pub mod m49_project_trend_days;
 pub mod m50_ledger_entry_observed;
 pub mod m51_ledger_chain_hash;
+pub mod m52_command_timings;
 
 use rusqlite_migration::Migrations;
 
@@ -131,6 +132,12 @@ pub fn get_migrations() -> Migrations<'static> {
     // built with different feature sets; the column and table are empty in
     // builds that do not populate them, so the surface-area leak is harmless.
     all_m.extend(m51_ledger_chain_hash::m51_ledger_chain_hash());
+    // m52 adds the local-only `command_timings` table (Track 0043). Registered
+    // unconditionally for the same backward-compat reason as m41–m51: a DB
+    // created by a binary that has run m52 would fail the rusqlite_migration
+    // pre-flight check on a binary without the migration. The table is empty
+    // when capture is disabled, so the surface-area leak is harmless.
+    all_m.extend(m52_command_timings::m52_command_timings());
 
     Migrations::new(all_m)
 }
@@ -171,6 +178,8 @@ pub fn get_migrations_count() -> usize {
     count += m50_ledger_entry_observed::m50_ledger_entry_observed().len();
     // m51 is counted unconditionally — see the matching comment in `get_migrations`.
     count += m51_ledger_chain_hash::m51_ledger_chain_hash().len();
+    // m52 is counted unconditionally — see the matching comment in `get_migrations`.
+    count += m52_command_timings::m52_command_timings().len();
 
     count
 }
@@ -238,6 +247,7 @@ mod tests {
                 "hotspot_trends",
                 "project_trend_days",
                 "chain_head",
+                "command_timings",
             ];
 
             // `sync_state` and `tx_tombstones` are registered

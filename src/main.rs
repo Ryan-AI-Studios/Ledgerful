@@ -74,10 +74,24 @@ fn run() -> Result<()> {
             meta.target() == "cli_summary"
         }));
 
-    tracing_subscriber::registry()
-        .with(normal_layer)
-        .with(summary_layer)
-        .init();
+    // Track 0043: local-only TimingLayer buffers span closes in memory;
+    // TimedCommand (in dispatch) flushes one SQLite batch on drop.
+    #[cfg(feature = "self-timing")]
+    {
+        let timing_layer = ledgerful::observability::self_timing::TimingLayer::new();
+        tracing_subscriber::registry()
+            .with(normal_layer)
+            .with(summary_layer)
+            .with(timing_layer)
+            .init();
+    }
+    #[cfg(not(feature = "self-timing"))]
+    {
+        tracing_subscriber::registry()
+            .with(normal_layer)
+            .with(summary_layer)
+            .init();
+    }
 
     // H4: Sweep for stale shadow-copy binaries left over from a prior update
     // attempt (e.g. `ledgerful.old.exe` next to the current executable).
