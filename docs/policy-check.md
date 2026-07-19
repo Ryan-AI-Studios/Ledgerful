@@ -104,7 +104,7 @@ presents a ledger artifact (or run those rules locally / in a job that has one).
 | Mode | Selection |
 |---|---|
 | Local | Latest bound run (`ORDER BY id DESC`). No bound run → violation. |
-| `--pr` | Among bound runs, prefer one whose committed ledger `entity` **covers** a changed path (`entity_covers_path`). If none cover and the change set is non-empty → violation. Empty change set → fall back to latest bound run. The selected run must have `overall_pass=true`. |
+| `--pr` | **Full change-set coverage.** Every changed path must be covered by at least one **passing** (`overall_pass=true`) bound run whose committed ledger `entity` covers that path (`entity_covers_path`). Only passing runs contribute coverage; failed bound runs never cover. Partial overlap (one of N paths covered) → violation. No bound runs → violation. Empty change set → fall back to latest bound overall_pass. |
 
 Unrelated later verifies (or verifies without `--tx-id`) cannot greenwash or
 red-wash a PR.
@@ -191,8 +191,8 @@ Mode transitions still write signed `MAINTENANCE` ledger entries via
 |---|---|---|
 | `require_signed_entries` | on | Any committed entry with missing or invalid signature/public_key → violation. **Fail-closed** if ledger DB is absent (actionable message: present artifact or disable the rule). |
 | `no_pending_tx` | on | **Local only:** pending ledger transactions → violation; also flags `pending_hook_tx` sidecar. **Skipped under `--pr`** (committed range only). |
-| `verification_must_pass` | on | Last **bound** verification run for the evaluation target must have `overall_pass=true` (see binding table above). **Fail-closed** if ledger DB is absent or no bound run exists. Unbound runs never satisfy. |
-| `max_risk_without_adr` | `high` | When risk ≥ threshold, require an ADR that covers **this evaluation's change set** (not any ADR in history). Covered when (a) a changed path is itself an ADR document (`/adr/`, `/adrs/`, `.adr.md`, `architecture-decision`), or (b) a ledger ADR entry (`entry_type=ARCHITECTURE` or `is_breaking=1`) has a non-empty `entity` that equals a changed path, is a parent scope (`path` starts with `entity/`), or is more specific under a changed tree (`entity` starts with `path/`). Empty-entity ADRs never blanket-satisfy. Fail-closed when risk is high but no covering ADR is found (including empty change sets). Set to `off` to disable. |
+| `verification_must_pass` | on | **Bound** verification for the evaluation target must pass (see binding table above). **Fail-closed** if ledger DB is absent or no bound run exists. Unbound runs never satisfy. Under `--pr`, coverage is **full change-set**: every changed path needs a passing bound run whose entity covers it — partial coverage is a violation. |
+| `max_risk_without_adr` | `high` | When risk ≥ threshold, require **full change-set ADR coverage** for **this evaluation's change set** (not any ADR in history, and not any-path overlap). **Every** changed path must be covered: (a) the path is itself an ADR document (`/adr/`, `/adrs/`, `.adr.md`, `architecture-decision`), **or** (b) a ledger ADR entry (`entry_type=ARCHITECTURE` or `is_breaking=1`) has a non-empty `entity` that equals the path, is a parent scope (`path` starts with `entity/`), or is more specific under a changed tree (`entity` starts with `path/`). An ADR that covers only one of several changed paths does **not** clear the rule. Empty-entity ADRs never blanket-satisfy. Fail-closed when risk is high but any path is uncovered (including empty change sets). Violation messages may list up to 5 uncovered paths. Set to `off` to disable. |
 | `fail_on` | `high` | When risk ≥ threshold → violation. Risk is the same deterministic level as `scan --pr`. Set to `off` to disable. |
 
 Risk thresholds compare inclusively: `fail_on = medium` fires on medium **and** high.

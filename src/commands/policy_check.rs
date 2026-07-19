@@ -499,16 +499,22 @@ impl EvalContext {
                         );
                     }
                     if risk_meets_threshold(risk.level, max_adr) {
-                        // Covering ADR for *this* change set (not any ADR in history).
-                        let has_adr = self.has_adr_for_changes(&risk.changed_paths)?;
-                        if !has_adr {
+                        // Full change-set ADR coverage (every path, not any-path overlap).
+                        if !self.has_adr_for_changes(&risk.changed_paths)? {
+                            let uncovered = self.paths_uncovered_by_adr(&risk.changed_paths)?;
+                            let uncovered_note = if risk.changed_paths.is_empty() {
+                                "; empty change set".to_string()
+                            } else {
+                                format_uncovered_paths_suffix(&uncovered)
+                            };
                             self.push_violation(
                                 "max_risk_without_adr",
                                 ".ledgerful/state/ledger.db",
                                 format!(
-                                    "risk level '{}' meets max_risk_without_adr threshold '{}' but no ADR covers the high-risk change set (changed ADR document path, or ledger ARCHITECTURE/is_breaking entry whose entity covers a changed path)",
+                                    "risk level '{}' meets max_risk_without_adr threshold '{}' but ADR does not cover the full high-risk change set (every changed path must be an ADR document or covered by a ledger ARCHITECTURE/is_breaking entity){}",
                                     risk.level,
-                                    max_adr.as_str()
+                                    max_adr.as_str(),
+                                    uncovered_note
                                 ),
                             );
                         }
@@ -663,10 +669,11 @@ impl EvalContext {
     /// commit hooks). Unbound global verifies never satisfy this rule.
     ///
     /// - **Local:** latest bound run; fail if none.
-    /// - **`--pr`:** among bound runs, prefer one whose committed ledger entity
-    ///   covers a changed path (`entity_covers_path`). If none cover and the
-    ///   change set is non-empty → fail. Zero changed paths → fall back to
-    ///   latest bound run.
+    /// - **`--pr`:** every changed path must be covered by at least one
+    ///   **passing** (`overall_pass=true`) bound run whose ledger entity covers
+    ///   that path (`entity_covers_path`). Failed bound runs never contribute
+    ///   coverage. Partial overlap (one of N paths covered) → violation. Empty
+    ///   change set → fall back to latest bound overall_pass.
     fn eval_verification_must_pass(&mut self) -> Result<()> {
         let Some(storage) = self.open_storage()? else {
             self.push_violation(
@@ -725,36 +732,8 @@ impl EvalContext {
             None => Vec::new(),
         };
 
-        // Prefer a bound run whose ledger entity covers a changed path.
-        let mut covering: Option<(bool, String)> = None;
-        for (_id, _ts, overall_pass, tx_id) in &bound {
-            if let Some(entities) = self.entities_for_tx(storage, tx_id)? {
-                let covers = entities.iter().any(|entity| {
-                    changed_paths
-                        .iter()
-                        .any(|path| entity_covers_path(entity, path))
-                });
-                if covers {
-                    covering = Some((*overall_pass, tx_id.clone()));
-                    break; // newest covering (list is id DESC)
-                }
-            }
-        }
-
-        if let Some((overall_pass, _tx_id)) = covering {
-            if !overall_pass {
-                self.push_violation(
-                    "verification_must_pass",
-                    ".ledgerful/state/ledger.db",
-                    "bound verification run covering the evaluation target change set has overall_pass=false".to_string(),
-                );
-            }
-            return Ok(());
-        }
-
-        // No covering bound run.
+        // Empty change set → fall back to latest bound overall_pass.
         if changed_paths.is_empty() {
-            // Edge: empty change set — require latest bound overall_pass.
             let (_id, _ts, overall_pass, _tx_id) = &bound[0];
             if !overall_pass {
                 self.push_violation(
@@ -763,11 +742,42 @@ impl EvalContext {
                     "latest bound verification run overall_pass is false".to_string(),
                 );
             }
-        } else {
+            return Ok(());
+        }
+
+        // Collect entities from all *passing* bound runs only. Failed runs never
+        // contribute coverage even if their entity would cover a path.
+        let mut covering_entities: Vec<String> = Vec::new();
+        for (_id, _ts, overall_pass, tx_id) in &bound {
+            if !*overall_pass {
+                continue;
+            }
+            if let Some(entities) = self.entities_for_tx(storage, tx_id)? {
+                covering_entities.extend(entities);
+            }
+        }
+        covering_entities.sort();
+        covering_entities.dedup();
+
+        let mut uncovered: Vec<String> = changed_paths
+            .iter()
+            .filter(|path| {
+                !covering_entities
+                    .iter()
+                    .any(|entity| entity_covers_path(entity, path))
+            })
+            .cloned()
+            .collect();
+        uncovered.sort();
+
+        if !uncovered.is_empty() {
             self.push_violation(
                 "verification_must_pass",
                 ".ledgerful/state/ledger.db",
-                "no bound verification run covers the evaluation target change set".to_string(),
+                format!(
+                    "bound verification runs do not cover the full evaluation target change set{}",
+                    format_uncovered_paths_suffix(&uncovered)
+                ),
             );
         }
         Ok(())
@@ -797,42 +807,46 @@ impl EvalContext {
         }
     }
 
-    /// True when an ADR covers this evaluation's change set (not any ADR in history).
+    /// True when ADR coverage is complete for **every** path in this evaluation's
+    /// change set (not any-path overlap, and not any ADR in history).
     ///
-    /// Satisfied when any of:
-    /// 1. A changed path is itself an ADR document (`/adr/`, `/adrs/`, `.adr.md`,
-    ///    `architecture-decision` — case-insensitive, forward-slash normalized).
-    /// 2. A ledger ADR entry (`get_adr_entries` / `ARCHITECTURE` / `is_breaking`)
-    ///    has a non-empty `entity` that covers a changed path:
-    ///    - entity equals path, OR
-    ///    - path starts with `entity/` (entity is a directory/module scope), OR
-    ///    - entity starts with `path/` (entity more specific under a changed tree)
+    /// Each changed path is covered when either:
+    /// 1. The path is itself an ADR document (`is_adr_document_path` — `/adr/`,
+    ///    `/adrs/`, `.adr.md`, `architecture-decision`), OR
+    /// 2. At least one ledger ADR entry (`get_adr_entries` / `ARCHITECTURE` /
+    ///    `is_breaking`) has a non-empty `entity` that covers that path via
+    ///    `entity_covers_path` (equals / parent scope / more-specific under tree).
     ///
-    /// Empty-entity ADRs never blanket-satisfy. High risk with empty
-    /// `changed_paths` and no covering ADR is fail-closed (`false`).
+    /// Empty-entity ADRs never blanket-satisfy. Empty `changed_paths` is
+    /// fail-closed (`false`). Partial coverage (one of N paths covered) → false.
     fn has_adr_for_changes(&self, changed_paths: &[String]) -> Result<bool> {
-        // (a) Changed path is itself an ADR document.
-        if changed_paths.iter().any(|p| is_adr_document_path(p)) {
-            return Ok(true);
-        }
-
-        // Collect ADR entities from the ledger (dedicated query + fallback scan).
-        let adr_entities = self.collect_adr_entities()?;
-        if adr_entities.is_empty() {
-            return Ok(false);
-        }
-
-        // Fail-closed: no changed paths means no entity can cover them.
         if changed_paths.is_empty() {
             return Ok(false);
         }
+        Ok(self.paths_uncovered_by_adr(changed_paths)?.is_empty())
+    }
 
-        // (b) Any ADR entity covers any changed path.
-        Ok(adr_entities.iter().any(|entity| {
-            changed_paths
-                .iter()
-                .any(|path| entity_covers_path(entity, path))
-        }))
+    /// Changed paths not covered by an ADR document path or a ledger ADR entity.
+    /// Sorted. Empty input yields empty (caller treats empty change set as fail).
+    fn paths_uncovered_by_adr(&self, changed_paths: &[String]) -> Result<Vec<String>> {
+        if changed_paths.is_empty() {
+            return Ok(Vec::new());
+        }
+        let adr_entities = self.collect_adr_entities()?;
+        let mut uncovered: Vec<String> = changed_paths
+            .iter()
+            .filter(|path| {
+                if is_adr_document_path(path) {
+                    return false;
+                }
+                !adr_entities
+                    .iter()
+                    .any(|entity| entity_covers_path(entity, path))
+            })
+            .cloned()
+            .collect();
+        uncovered.sort();
+        Ok(uncovered)
     }
 
     /// Entities of committed ADR entries (ARCHITECTURE / is_breaking / get_adr_entries).
@@ -981,6 +995,19 @@ pub fn entity_covers_path(entity: &str, path: &str) -> bool {
     let e_lower = e.to_ascii_lowercase();
     let p_lower = p.to_ascii_lowercase();
     p_lower.starts_with(&format!("{e_lower}/")) || e_lower.starts_with(&format!("{p_lower}/"))
+}
+
+/// Format a trailing note listing up to 5 sorted uncovered paths for violation messages.
+fn format_uncovered_paths_suffix(uncovered: &[String]) -> String {
+    if uncovered.is_empty() {
+        return String::new();
+    }
+    let listed: Vec<&str> = uncovered.iter().take(5).map(String::as_str).collect();
+    if uncovered.len() > 5 {
+        format!("; uncovered: {}, ...", listed.join(", "))
+    } else {
+        format!("; uncovered: {}", listed.join(", "))
+    }
 }
 
 fn file_changes_to_paths(changes: &[crate::git::FileChange]) -> Vec<String> {

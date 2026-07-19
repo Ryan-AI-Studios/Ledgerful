@@ -179,6 +179,22 @@ fn setup_green_repo(root: &Path) {
     let _guard = DirGuard::new(root);
     execute_init(false, false).unwrap();
     seed_passing_verification(root);
+    // Commit init side-effects (.gitignore, etc.) so later PR ranges only
+    // include intentional files — full change-set coverage requires every path.
+    git_add_and_commit_if_dirty(root, "commit init artifacts");
+}
+
+/// `git add -A` + commit only when the worktree is dirty (no-op if clean).
+fn git_add_and_commit_if_dirty(dir: &Path, msg: &str) {
+    let status = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(dir)
+        .output()
+        .expect("git status");
+    assert!(status.status.success(), "git status failed");
+    if !status.stdout.is_empty() {
+        git_add_and_commit(dir, msg);
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -676,7 +692,8 @@ fail_on = "off"
             .violations
             .iter()
             .any(|v| v.rule_id == "verification_must_pass"
-                && v.message.contains("covers the evaluation target")),
+                && v.message
+                    .contains("do not cover the full evaluation target")),
         "unrelated bound entity must not cover PR change set: {:?}",
         report.violations
     );
@@ -728,6 +745,120 @@ fail_on = "off"
             .iter()
             .any(|v| v.rule_id == "verification_must_pass"),
         "covering bound pass must satisfy: {:?}",
+        report.violations
+    );
+}
+
+/// CX3: multi-file PR — bound pass covering only one of two paths still violates.
+#[test]
+#[serial(env, cwd)]
+fn verification_must_pass_pr_partial_path_cover_violates() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "base\n").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let _ni = non_interactive();
+    {
+        let _guard = DirGuard::new(root);
+        execute_init(false, false).unwrap();
+    }
+
+    // Bound pass only for Cargo.toml — does not cover src/*.
+    let tx_id = commit_entry_return_tx(root, "Cargo.toml", "cargo-only work");
+    seed_bound_verification(root, true, &tx_id);
+
+    write_policy(
+        root,
+        r#"
+preset = "enforce"
+[rules]
+require_signed_entries = false
+no_pending_tx = false
+verification_must_pass = true
+max_risk_without_adr = "off"
+fail_on = "off"
+"#,
+    );
+    commit_policy(root, "base policy");
+
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname=\"t\"\nversion=\"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/new.rs"), "fn x() {}\n").unwrap();
+    git_add_and_commit(root, "pr multi-file");
+
+    let _guard = DirGuard::new(root);
+    let report = evaluate_policy_check(Some("HEAD~1...HEAD"), None, None).unwrap();
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "verification_must_pass"
+                && v.message
+                    .contains("do not cover the full evaluation target")
+                && v.message.contains("uncovered")),
+        "partial bound cover must violate full change-set coverage: {:?}",
+        report.violations
+    );
+}
+
+/// CX3: multi-file PR — bound passes whose entities cover every path → ok.
+#[test]
+#[serial(env, cwd)]
+fn verification_must_pass_pr_full_path_cover_passes() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "base\n").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let _ni = non_interactive();
+    {
+        let _guard = DirGuard::new(root);
+        execute_init(false, false).unwrap();
+    }
+
+    let tx_cargo = commit_entry_return_tx(root, "Cargo.toml", "cargo work");
+    seed_bound_verification(root, true, &tx_cargo);
+    let tx_src = commit_entry_return_tx(root, "src", "src module work");
+    seed_bound_verification(root, true, &tx_src);
+
+    write_policy(
+        root,
+        r#"
+preset = "enforce"
+[rules]
+require_signed_entries = false
+no_pending_tx = false
+verification_must_pass = true
+max_risk_without_adr = "off"
+fail_on = "off"
+"#,
+    );
+    commit_policy(root, "base policy");
+
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname=\"t\"\nversion=\"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/new.rs"), "fn x() {}\n").unwrap();
+    git_add_and_commit(root, "pr multi-file full cover");
+
+    let _guard = DirGuard::new(root);
+    let report = evaluate_policy_check(Some("HEAD~1...HEAD"), None, None).unwrap();
+    assert!(
+        !report
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "verification_must_pass"),
+        "full bound cover must satisfy: {:?}",
         report.violations
     );
 }
@@ -903,7 +1034,8 @@ fail_on = "off"
             .violations
             .iter()
             .any(|v| v.rule_id == "max_risk_without_adr"
-                && v.message.contains("no ADR covers the high-risk change set")),
+                && v.message
+                    .contains("does not cover the full high-risk change set")),
         "high risk without covering ADR must violate: {:?}",
         report.violations
     );
@@ -933,7 +1065,8 @@ fail_on = "off"
     );
 }
 
-/// Covering via a changed ADR document path in the same change set.
+/// ADR document path covers itself; non-ADR high-risk path still needs an entity.
+/// Full coverage: entity covers Cargo.toml + ADR doc path self-covers.
 #[test]
 #[serial(env, cwd)]
 fn max_risk_without_adr_cleared_by_changed_adr_document() {
@@ -941,7 +1074,9 @@ fn max_risk_without_adr_cleared_by_changed_adr_document() {
     let root = tmp.path();
     setup_green_repo(root);
 
-    // High-risk path + ADR document in the same commit (change set).
+    // Entity covers the high-risk non-ADR path; ADR doc path covers itself.
+    commit_adr_entry(root, "Cargo.toml");
+
     fs::write(
         root.join("Cargo.toml"),
         "[package]\nname=\"t\"\nversion=\"0.1.0\"\n",
@@ -976,7 +1111,102 @@ fail_on = "off"
             .violations
             .iter()
             .any(|v| v.rule_id == "max_risk_without_adr"),
-        "changed ADR document path must cover high-risk change set: {:?}",
+        "entity-covered Cargo.toml + ADR document path must fully cover: {:?}",
+        report.violations
+    );
+}
+
+/// CX3: multi-file — ADR entity covers only Cargo.toml; src/new.rs uncovered → still violates.
+#[test]
+#[serial(env, cwd)]
+fn max_risk_without_adr_partial_path_cover_violates() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_green_repo(root);
+
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname=\"t\"\nversion=\"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/new.rs"), "fn x() {}\n").unwrap();
+    git_add_and_commit(root, "multi-file high risk");
+
+    write_policy(
+        root,
+        r#"
+preset = "enforce"
+[rules]
+require_signed_entries = false
+no_pending_tx = false
+verification_must_pass = false
+max_risk_without_adr = "high"
+fail_on = "off"
+"#,
+    );
+
+    // ADR covers only Cargo.toml — not src/new.rs.
+    commit_adr_entry(root, "Cargo.toml");
+
+    let _ni = non_interactive();
+    let _guard = DirGuard::new(root);
+    let report = evaluate_policy_check(Some("HEAD~1...HEAD"), None, None).unwrap();
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "max_risk_without_adr"
+                && v.message
+                    .contains("does not cover the full high-risk change set")
+                && (v.message.contains("src/new.rs") || v.message.contains("uncovered"))),
+        "partial ADR cover must still violate: {:?}",
+        report.violations
+    );
+}
+
+/// CX3: multi-file — ADR entities cover every changed path → no violation.
+#[test]
+#[serial(env, cwd)]
+fn max_risk_without_adr_full_path_cover_passes() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_green_repo(root);
+
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname=\"t\"\nversion=\"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/new.rs"), "fn x() {}\n").unwrap();
+    git_add_and_commit(root, "multi-file high risk");
+
+    write_policy(
+        root,
+        r#"
+preset = "enforce"
+[rules]
+require_signed_entries = false
+no_pending_tx = false
+verification_must_pass = false
+max_risk_without_adr = "high"
+fail_on = "off"
+"#,
+    );
+
+    commit_adr_entry(root, "Cargo.toml");
+    commit_adr_entry(root, "src");
+
+    let _ni = non_interactive();
+    let _guard = DirGuard::new(root);
+    let report = evaluate_policy_check(Some("HEAD~1...HEAD"), None, None).unwrap();
+    assert!(
+        !report
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "max_risk_without_adr"),
+        "full ADR cover must satisfy: {:?}",
         report.violations
     );
 }
