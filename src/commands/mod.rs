@@ -51,6 +51,7 @@ pub mod setup;
 #[cfg(feature = "sync")]
 pub mod sync;
 pub mod test_mapping;
+pub mod timings;
 pub mod update;
 #[cfg(feature = "usage-metrics")]
 pub mod usage;

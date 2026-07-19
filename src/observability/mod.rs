@@ -1,6 +1,8 @@
 pub mod log_scanner;
 pub mod openslo;
 pub mod prometheus;
+#[cfg(feature = "self-timing")]
+pub mod self_timing;
 pub mod signal;
 
 use rusqlite::Connection;

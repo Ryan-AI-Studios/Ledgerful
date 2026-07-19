@@ -3,6 +3,7 @@ pub mod ledger;
 pub mod migrations;
 pub mod packets;
 pub mod schema;
+pub mod timings;
 pub mod verification;
 
 pub use connection::*;

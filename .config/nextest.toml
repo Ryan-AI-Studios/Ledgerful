@@ -21,6 +21,7 @@ status-level = "skip"
 # whose name ends in `__slow`. Filter expressions are combined with AND.
 default-filter = 'not (binary(compile_fail)) and not (test(/__slow$/))'
 
+
 [profile.ci]
 inherits = "default"
 fail-fast = false

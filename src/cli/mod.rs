@@ -9,30 +9,52 @@ mod tests {
     use super::*;
     use clap::{CommandFactory, Parser};
 
+    /// Run clap Command-tree work on a 32 MiB stack thread.
+    /// Windows PE default stack overflows on `Cli::command().debug_assert()`
+    /// after 0043 expanded Timings + argv_shape matching (independent of
+    /// RUST_MIN_STACK, which does not always resize the main thread).
+    fn on_large_stack<F, R>(f: F) -> R
+    where
+        F: FnOnce() -> R + Send + 'static,
+        R: Send + 'static,
+    {
+        std::thread::Builder::new()
+            .stack_size(32 * 1024 * 1024)
+            .name("clap-large-stack".into())
+            .spawn(f)
+            .expect("spawn clap test thread")
+            .join()
+            .expect("clap test thread panicked")
+    }
+
     #[test]
     fn command_debug_assert() {
         // clap baseline contract test: ensures no struct/enum definition issues
-        Cli::command().debug_assert();
+        on_large_stack(|| {
+            Cli::command().debug_assert();
+        });
     }
 
     #[test]
     fn global_help_contains_ledgerful() {
-        let mut cmd = Cli::command();
-        let mut buf = Vec::new();
-        cmd.write_help(&mut buf).unwrap();
-        let help = String::from_utf8(buf).unwrap();
-        assert!(
-            help.contains("Ledgerful"),
-            "global help must mention Ledgerful"
-        );
-        assert!(
-            help.contains("scan"),
-            "global help must list scan subcommand"
-        );
-        assert!(
-            help.contains("ledger"),
-            "global help must list ledger subcommand"
-        );
+        on_large_stack(|| {
+            let mut cmd = Cli::command();
+            let mut buf = Vec::new();
+            cmd.write_help(&mut buf).unwrap();
+            let help = String::from_utf8(buf).unwrap();
+            assert!(
+                help.contains("Ledgerful"),
+                "global help must mention Ledgerful"
+            );
+            assert!(
+                help.contains("scan"),
+                "global help must list scan subcommand"
+            );
+            assert!(
+                help.contains("ledger"),
+                "global help must list ledger subcommand"
+            );
+        });
     }
 
     #[test]

@@ -356,6 +356,13 @@ pub fn execute_doctor() -> Result<()> {
         }
     }
 
+    // Track 0043: warn on oversized / high-cardinality timing tables.
+    for w in crate::commands::timings::doctor_timing_warnings(storage.get_connection()) {
+        report
+            .index_health
+            .push(format!("Warning: {w}").yellow().to_string());
+    }
+
     print_doctor_report(&report);
     print_vram_section();
 

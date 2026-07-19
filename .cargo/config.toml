@@ -1,3 +1,9 @@
 [alias]
 ledgerful = "run --bin ledgerful"
 ldg = "run --bin ledgerful"
+
+# Windows default stack is too small for clap Command::debug_assert on the full
+# Commands tree after 0043 expanded Timings flags + argv_shape matching.
+# Applies to cargo test / nextest / run on this machine and CI.
+[env]
+RUST_MIN_STACK = "33554432"

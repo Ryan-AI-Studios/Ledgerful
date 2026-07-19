@@ -216,6 +216,19 @@ jobs:
             exit 1
           fi
           echo "PASS: no network dependencies in public export module" > no-network-result.txt
+      - name: No-network grep (self-timing)
+        shell: bash
+        run: |
+          result=$(grep -RE "ureq|reqwest|tokio_tungstenite" \
+            src/commands/timings.rs \
+            src/state/storage/timings.rs \
+            src/observability/self_timing.rs || true)
+          if [ -n "$result" ]; then
+            echo "FAIL: network dependencies found in self-timing path (0043)"
+            echo "$result"
+            exit 1
+          fi
+          echo "PASS: no network dependencies in self-timing modules" >> no-network-result.txt
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
           name: no-network-grep

@@ -24,6 +24,29 @@ pub struct EndpointsArgs {
     json: bool,
 }
 
+impl EndpointsArgs {
+    /// Long flag names that are present (values stripped). Used for `argv_hash` shape.
+    pub fn present_flag_names(&self) -> Vec<&'static str> {
+        let mut f = Vec::new();
+        if self.method.is_some() {
+            f.push("method");
+        }
+        if self.path.is_some() {
+            f.push("path");
+        }
+        if self.auth {
+            f.push("auth");
+        }
+        if self.changed {
+            f.push("changed");
+        }
+        if self.json {
+            f.push("json");
+        }
+        f
+    }
+}
+
 pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
     let layout = get_layout()?;
     let storage = StorageManager::open_read_only(&layout.root)?;

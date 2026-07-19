@@ -68,6 +68,7 @@ ledgerful ask "What should I verify next?"
 - `reset`: remove derived local state. Preserves `ledger.db` by default; use `--include-ledger` to remove provenance data.
 - `demo`: generate a synthetic invoice-service repo with real signed ledger entries and a SOC2 evidence export. Fully offline, ~15-30s; cleans up by default (`--keep` to inspect).
 - `export evidence`: export a SOC2 evidence zip from the CLI (same artifact as the dashboard button). `--profile soc2 --out <path> [--force]`.
+- `timings`: local-only command self-timing (which of *your* commands is slow, and why). See [docs/self-timing.md](docs/self-timing.md).
 
 ## Common Workflows
 
