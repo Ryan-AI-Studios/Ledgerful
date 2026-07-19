@@ -104,7 +104,7 @@ presents a ledger artifact (or run those rules locally / in a job that has one).
 | Mode | Selection |
 |---|---|
 | Local | Latest bound run (`ORDER BY id DESC`). No bound run → violation. |
-| `--pr` | **Full change-set coverage.** Every changed path must be covered by at least one **passing** (`overall_pass=true`) bound run whose committed ledger `entity` covers that path (`entity_covers_path`). Only passing runs contribute coverage; failed bound runs never cover. Partial overlap (one of N paths covered) → violation. No bound runs → violation. Empty change set → fall back to latest bound overall_pass. |
+| `--pr` | **Full change-set coverage with newest-covering-run semantics.** For each changed path, the **newest** bound verification run whose committed ledger `entity` covers that path is decisive: if that run passed, the path is covered; if it failed, the path fails (a newer fail vetoes an older pass). Paths with no covering bound run → uncovered violation. Partial overlap (one of N paths covered) → violation. No bound runs → violation. Empty change set → fall back to latest bound overall_pass. |
 
 Unrelated later verifies (or verifies without `--tx-id`) cannot greenwash or
 red-wash a PR.
