@@ -95,7 +95,8 @@ fn commit_signed_entry(root: &Path, entity: &str, summary: &str) {
         .unwrap();
 }
 
-fn commit_adr_entry(root: &Path) {
+/// Commit an Architecture / is_breaking ADR entry with the given entity scope.
+fn commit_adr_entry(root: &Path, entity: &str) {
     let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
     let db_path = layout.state_subdir().join("ledger.db");
     let mut storage = StorageManager::init(db_path.as_std_path()).unwrap();
@@ -105,7 +106,7 @@ fn commit_adr_entry(root: &Path) {
     let tx_id = tx_mgr
         .start_change(TransactionRequest {
             category: Category::Architecture,
-            entity: "docs/adr/0001.md".to_string(),
+            entity: entity.to_string(),
             ..Default::default()
         })
         .unwrap();
@@ -114,8 +115,8 @@ fn commit_adr_entry(root: &Path) {
             tx_id,
             CommitRequest {
                 change_type: ChangeType::Create,
-                summary: "ADR: accept policy gates".to_string(),
-                reason: "high-risk change requires ADR".to_string(),
+                summary: format!("ADR covering {entity}"),
+                reason: "high-risk change requires covering ADR".to_string(),
                 entry_type: Some(EntryType::Architecture),
                 is_breaking: true,
                 ..Default::default()
@@ -296,7 +297,7 @@ fail_on = "off"
 }
 
 // ---------------------------------------------------------------------------
-// no_pending_tx local (DoD-1c) — sidecar + --pr contrast
+// no_pending_tx local (DoD-1c) — sidecar + pending DB + --pr contrast
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -349,10 +350,72 @@ fail_on = "off"
     // --pr mode → committed range only; NO sidecar-based no_pending_tx violation.
     let pr = evaluate_policy_check(Some("HEAD~1...HEAD"), None, None).unwrap();
     assert!(
-        !pr.violations
+        !pr.violations.iter().any(|v| v.rule_id == "no_pending_tx"),
+        "--pr must not flag pending workspace state: {:?}",
+        pr.violations
+    );
+}
+
+/// DoD-1c / CX-P2: pending DB txs are workspace state; `--pr` skips them.
+#[test]
+#[serial(env, cwd)]
+fn no_pending_tx_db_pending_local_only_skipped_in_pr() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_green_repo(root);
+
+    write_policy(
+        root,
+        r#"
+preset = "enforce"
+[rules]
+require_signed_entries = false
+no_pending_tx = true
+verification_must_pass = false
+max_risk_without_adr = "off"
+fail_on = "off"
+"#,
+    );
+    commit_policy(root, "base policy for pending-db contrast");
+    fs::write(root.join("extra.txt"), "pr change\n").unwrap();
+    git_add_and_commit(root, "extra commit for pr range");
+
+    // Pending DB transaction (local workspace state).
+    force_pending_violation(root);
+    // Optional sidecar alongside pending DB.
+    let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
+    let sidecar = layout.state_subdir().join("pending_hook_tx");
+    fs::write(
+        sidecar.as_std_path(),
+        r#"{"tx_id":"aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee","commit_msg_hash":"deadbeef","summary":"x","reason":"y"}"#,
+    )
+    .unwrap();
+
+    let _ni = non_interactive();
+    let _guard = DirGuard::new(root);
+
+    let local = evaluate_policy_check(None, None, None).unwrap();
+    assert!(
+        local
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "no_pending_tx" && v.file.contains("ledger.db")),
+        "local mode must flag pending DB tx: {:?}",
+        local.violations
+    );
+    assert!(
+        local
+            .violations
             .iter()
             .any(|v| v.rule_id == "no_pending_tx" && v.file.contains("pending_hook_tx")),
-        "--pr must not flag pending_hook_tx sidecar: {:?}",
+        "local mode must also flag sidecar: {:?}",
+        local.violations
+    );
+
+    let pr = evaluate_policy_check(Some("HEAD~1...HEAD"), None, None).unwrap();
+    assert!(
+        !pr.violations.iter().any(|v| v.rule_id == "no_pending_tx"),
+        "--pr must skip pending DB txs and sidecar (committed range only): {:?}",
         pr.violations
     );
 }
@@ -566,26 +629,89 @@ fail_on = "off"
 
     let _ni = non_interactive();
     let _guard = DirGuard::new(root);
+
+    // 1) High risk (Cargo.toml) with NO covering ADR → violation.
     let report = evaluate_policy_check(Some("HEAD~1...HEAD"), None, None).unwrap();
     assert!(
         report
             .violations
             .iter()
-            .any(|v| v.rule_id == "max_risk_without_adr"),
-        "high risk without ADR must violate: {:?}",
+            .any(|v| v.rule_id == "max_risk_without_adr"
+                && v.message.contains("no ADR covers the high-risk change set")),
+        "high risk without covering ADR must violate: {:?}",
         report.violations
     );
 
-    // Adding an ADR clears the violation.
-    commit_adr_entry(root);
-    let report2 = evaluate_policy_check(Some("HEAD~1...HEAD"), None, None).unwrap();
+    // 2) Unrelated ADR (entity for a different path) → still violation.
+    commit_adr_entry(root, "docs/unrelated");
+    let report_unrelated = evaluate_policy_check(Some("HEAD~1...HEAD"), None, None).unwrap();
     assert!(
-        !report2
+        report_unrelated
             .violations
             .iter()
             .any(|v| v.rule_id == "max_risk_without_adr"),
-        "ADR should satisfy max_risk_without_adr: {:?}",
-        report2.violations
+        "unrelated ADR must NOT clear max_risk_without_adr: {:?}",
+        report_unrelated.violations
+    );
+
+    // 3) Covering ADR (entity matching the high-risk path) → no violation.
+    commit_adr_entry(root, "Cargo.toml");
+    let report_covered = evaluate_policy_check(Some("HEAD~1...HEAD"), None, None).unwrap();
+    assert!(
+        !report_covered
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "max_risk_without_adr"),
+        "covering ADR entity=Cargo.toml must satisfy max_risk_without_adr: {:?}",
+        report_covered.violations
+    );
+}
+
+/// Covering via a changed ADR document path in the same change set.
+#[test]
+#[serial(env, cwd)]
+fn max_risk_without_adr_cleared_by_changed_adr_document() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_green_repo(root);
+
+    // High-risk path + ADR document in the same commit (change set).
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname=\"t\"\nversion=\"0.1.0\"\n",
+    )
+    .unwrap();
+    fs::create_dir_all(root.join("docs").join("adr")).unwrap();
+    fs::write(
+        root.join("docs").join("adr").join("0001-cargo.md"),
+        "# ADR: accept Cargo.toml change\n",
+    )
+    .unwrap();
+    git_add_and_commit(root, "high risk with adr doc");
+
+    write_policy(
+        root,
+        r#"
+preset = "enforce"
+[rules]
+require_signed_entries = false
+no_pending_tx = false
+verification_must_pass = false
+max_risk_without_adr = "high"
+fail_on = "off"
+"#,
+    );
+
+    let _ni = non_interactive();
+    let _guard = DirGuard::new(root);
+    let report = evaluate_policy_check(Some("HEAD~1...HEAD"), None, None).unwrap();
+    assert!(
+        !report
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "max_risk_without_adr"),
+        "changed ADR document path must cover high-risk change set: {:?}",
+        report.violations
     );
 }
 
@@ -639,13 +765,24 @@ fn base_branch_policy_not_bypassed_by_pr_head_edit() {
     setup_git_repo(root);
     fs::write(root.join("README.md"), "base\n").unwrap();
 
-    // Base commit with enforce policy requiring no_pending_tx + verification.
+    // Base commit with enforce policy requiring verification_must_pass.
+    // (no_pending_tx is local-only under DoD-1c / CX-P2, so bypass proof uses a
+    // rule that still evaluates under --pr.)
     let _ni = non_interactive();
     {
         let _guard = DirGuard::new(root);
         execute_init(false, false).unwrap();
     }
-    seed_passing_verification(root);
+    // Seed a failing verification so base policy must flag it.
+    {
+        let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
+        layout.ensure_state_dir().unwrap();
+        let db_path = layout.state_subdir().join("ledger.db");
+        let storage = StorageManager::init(db_path.as_std_path()).unwrap();
+        storage
+            .save_verification_run(&chrono::Utc::now().to_rfc3339(), Some("[]"), false, None)
+            .unwrap();
+    }
 
     write_policy(
         root,
@@ -653,8 +790,8 @@ fn base_branch_policy_not_bypassed_by_pr_head_edit() {
 preset = "enforce"
 [rules]
 require_signed_entries = false
-no_pending_tx = true
-verification_must_pass = false
+no_pending_tx = false
+verification_must_pass = true
 max_risk_without_adr = "off"
 fail_on = "off"
 "#,
@@ -686,21 +823,6 @@ max_risk_without_adr = "off"
 fail_on = "off"
 "#,
     );
-    // Also create a pending tx that base policy must catch.
-    {
-        let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
-        let db_path = layout.state_subdir().join("ledger.db");
-        let mut storage = StorageManager::init(db_path.as_std_path()).unwrap();
-        let config = Config::default();
-        let mut tx_mgr = TransactionManager::new(&mut storage, root.to_path_buf(), config);
-        let _ = tx_mgr
-            .start_change(TransactionRequest {
-                category: Category::Feature,
-                entity: "src/bypass.rs".to_string(),
-                ..Default::default()
-            })
-            .unwrap();
-    }
     fs::write(root.join("pr.txt"), "pr change\n").unwrap();
     // Force-add the weakened policy so git has a PR-head copy (must still be ignored).
     git_cmd(root, &["add", "-f", ".ledgerful/policy.toml"]);
@@ -709,7 +831,7 @@ fail_on = "off"
 
     let _guard = DirGuard::new(root);
 
-    // Without --policy, --pr must load base-branch policy (no_pending_tx=true).
+    // Without --policy, --pr must load base-branch policy (verification_must_pass=true).
     let range = format!("{}...HEAD", base_ref);
     let report = evaluate_policy_check(Some(&range), None, None).unwrap();
 
@@ -721,8 +843,8 @@ fail_on = "off"
         report
             .violations
             .iter()
-            .any(|v| v.rule_id == "no_pending_tx"),
-        "base policy still enforces no_pending_tx despite PR disabling it: {:?}",
+            .any(|v| v.rule_id == "verification_must_pass"),
+        "base policy still enforces verification_must_pass despite PR disabling it: {:?}",
         report.violations
     );
 
@@ -749,7 +871,7 @@ fail_on = "off"
         !report2
             .violations
             .iter()
-            .any(|v| v.rule_id == "no_pending_tx"),
+            .any(|v| v.rule_id == "verification_must_pass"),
         "trusted path may disable the rule: {:?}",
         report2.violations
     );
@@ -898,7 +1020,16 @@ fn pr_mode_defaults_to_enforce_when_preset_omitted() {
         let _guard = DirGuard::new(root);
         execute_init(false, false).unwrap();
     }
-    seed_passing_verification(root);
+    // Failing verification is visible under --pr (unlike pending workspace state).
+    {
+        let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
+        layout.ensure_state_dir().unwrap();
+        let db_path = layout.state_subdir().join("ledger.db");
+        let storage = StorageManager::init(db_path.as_std_path()).unwrap();
+        storage
+            .save_verification_run(&chrono::Utc::now().to_rfc3339(), Some("[]"), false, None)
+            .unwrap();
+    }
     // Working-tree gate.mode is observe — must NOT leak into --pr preset default.
     set_gate_mode(root, "observe");
 
@@ -908,8 +1039,8 @@ fn pr_mode_defaults_to_enforce_when_preset_omitted() {
         r#"
 [rules]
 require_signed_entries = false
-no_pending_tx = true
-verification_must_pass = false
+no_pending_tx = false
+verification_must_pass = true
 max_risk_without_adr = "off"
 fail_on = "off"
 "#,
@@ -925,8 +1056,7 @@ fail_on = "off"
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
 
-    // Create a violation (pending tx) and a PR-range commit.
-    force_pending_violation(root);
+    // PR-range commit so the range is non-empty.
     fs::write(root.join("pr.txt"), "change\n").unwrap();
     git_add_and_commit(root, "pr change");
 
@@ -947,8 +1077,8 @@ fail_on = "off"
             && report
                 .violations
                 .iter()
-                .any(|v| v.rule_id == "no_pending_tx"),
-        "expected forced no_pending_tx violation: {:?}",
+                .any(|v| v.rule_id == "verification_must_pass"),
+        "expected forced verification_must_pass violation: {:?}",
         report.violations
     );
     assert!(report.violations.iter().all(|v| v.severity == "error"));
@@ -972,14 +1102,24 @@ fn pr_mode_missing_base_policy_synthesizes_enforce() {
     let _ = fs::remove_file(root.join(".ledgerful").join("policy.toml"));
     set_gate_mode(root, "observe");
 
+    // Overwrite verification so synthesized defaults (verification_must_pass=true) fail.
+    {
+        let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
+        let db_path = layout.state_subdir().join("ledger.db");
+        let storage = StorageManager::init(db_path.as_std_path()).unwrap();
+        storage
+            .save_verification_run(&chrono::Utc::now().to_rfc3339(), Some("[]"), false, None)
+            .unwrap();
+    }
+
     // Commit a second change so HEAD~1...HEAD is a valid range; base has no policy.
     fs::write(root.join("pr.txt"), "change\n").unwrap();
     git_add_and_commit(root, "pr change");
-    force_pending_violation(root);
 
     let _ni = non_interactive();
     let _guard = DirGuard::new(root);
 
+    // fail_on=off so risk from the PR change does not muddy the assertion.
     let report = evaluate_policy_check(Some("HEAD~1...HEAD"), Some("off"), None).unwrap();
     assert_eq!(report.policy_source, "synthesized");
     assert_eq!(
@@ -991,7 +1131,7 @@ fn pr_mode_missing_base_policy_synthesizes_enforce() {
             && report
                 .violations
                 .iter()
-                .any(|v| v.rule_id == "no_pending_tx"),
+                .any(|v| v.rule_id == "verification_must_pass"),
         "{:?}",
         report.violations
     );

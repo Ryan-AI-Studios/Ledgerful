@@ -457,32 +457,33 @@ impl EvalContext {
         // Risk is needed for max_risk_without_adr and fail_on.
         if max_adr != RiskThreshold::Off || fail_on != RiskThreshold::Off {
             match self.resolve_risk()? {
-                Some((level, reasons)) => {
-                    if risk_meets_threshold(level, fail_on) {
+                Some(risk) => {
+                    if risk_meets_threshold(risk.level, fail_on) {
                         self.push_violation(
                             "fail_on",
                             ".ledgerful/policy.toml",
                             format!(
                                 "risk level '{}' meets fail_on threshold '{}'{}",
-                                level,
+                                risk.level,
                                 fail_on.as_str(),
-                                if reasons.is_empty() {
+                                if risk.reasons.is_empty() {
                                     String::new()
                                 } else {
-                                    format!(" ({})", reasons.join("; "))
+                                    format!(" ({})", risk.reasons.join("; "))
                                 }
                             ),
                         );
                     }
-                    if risk_meets_threshold(level, max_adr) {
-                        let has_adr = self.has_adr_entry()?;
+                    if risk_meets_threshold(risk.level, max_adr) {
+                        // Covering ADR for *this* change set (not any ADR in history).
+                        let has_adr = self.has_adr_for_changes(&risk.changed_paths)?;
                         if !has_adr {
                             self.push_violation(
                                 "max_risk_without_adr",
                                 ".ledgerful/state/ledger.db",
                                 format!(
-                                    "risk level '{}' meets max_risk_without_adr threshold '{}' but no ADR entry found (entry_type=ARCHITECTURE or is_breaking=1)",
-                                    level,
+                                    "risk level '{}' meets max_risk_without_adr threshold '{}' but no ADR covers the high-risk change set (changed ADR document path, or ledger ARCHITECTURE/is_breaking entry whose entity covers a changed path)",
+                                    risk.level,
                                     max_adr.as_str()
                                 ),
                             );
@@ -580,7 +581,13 @@ impl EvalContext {
     }
 
     fn eval_no_pending_tx(&mut self) -> Result<()> {
-        // Pending ledger transactions (both modes).
+        // DoD-1c: `--pr` evaluates committed range only. Pending DB txs and the
+        // pending_hook_tx sidecar are workspace state that CI would not see.
+        if self.is_pr_mode {
+            return Ok(());
+        }
+
+        // Local mode: pending ledger transactions in the DB.
         if let Some(mut storage) = self.open_storage()? {
             let config = load_ledger_config(&self.layout).unwrap_or_default();
             let tx_mgr = crate::ledger::TransactionManager::new(
@@ -608,16 +615,14 @@ impl EvalContext {
             }
         }
 
-        // Local mode also inspects the pending_hook_tx sidecar (DoD-1c).
-        if !self.is_pr_mode {
-            let sidecar = self.layout.state_subdir().join("pending_hook_tx");
-            if sidecar.exists() {
-                self.push_violation(
-                    "no_pending_tx",
-                    ".ledgerful/state/pending_hook_tx",
-                    "pending_hook_tx sidecar present (uncommitted/pending workspace)".to_string(),
-                );
-            }
+        // Local mode also inspects the pending_hook_tx sidecar.
+        let sidecar = self.layout.state_subdir().join("pending_hook_tx");
+        if sidecar.exists() {
+            self.push_violation(
+                "no_pending_tx",
+                ".ledgerful/state/pending_hook_tx",
+                "pending_hook_tx sidecar present (uncommitted/pending workspace)".to_string(),
+            );
         }
         Ok(())
     }
@@ -655,37 +660,92 @@ impl EvalContext {
         Ok(())
     }
 
-    fn has_adr_entry(&self) -> Result<bool> {
-        let Some(mut storage) = self.open_storage()? else {
+    /// True when an ADR covers this evaluation's change set (not any ADR in history).
+    ///
+    /// Satisfied when any of:
+    /// 1. A changed path is itself an ADR document (`/adr/`, `/adrs/`, `.adr.md`,
+    ///    `architecture-decision` — case-insensitive, forward-slash normalized).
+    /// 2. A ledger ADR entry (`get_adr_entries` / `ARCHITECTURE` / `is_breaking`)
+    ///    has a non-empty `entity` that covers a changed path:
+    ///    - entity equals path, OR
+    ///    - path starts with `entity/` (entity is a directory/module scope), OR
+    ///    - entity starts with `path/` (entity more specific under a changed tree)
+    ///
+    /// Empty-entity ADRs never blanket-satisfy. High risk with empty
+    /// `changed_paths` and no covering ADR is fail-closed (`false`).
+    fn has_adr_for_changes(&self, changed_paths: &[String]) -> Result<bool> {
+        // (a) Changed path is itself an ADR document.
+        if changed_paths.iter().any(|p| is_adr_document_path(p)) {
+            return Ok(true);
+        }
+
+        // Collect ADR entities from the ledger (dedicated query + fallback scan).
+        let adr_entities = self.collect_adr_entities()?;
+        if adr_entities.is_empty() {
             return Ok(false);
+        }
+
+        // Fail-closed: no changed paths means no entity can cover them.
+        if changed_paths.is_empty() {
+            return Ok(false);
+        }
+
+        // (b) Any ADR entity covers any changed path.
+        Ok(adr_entities.iter().any(|entity| {
+            changed_paths
+                .iter()
+                .any(|path| entity_covers_path(entity, path))
+        }))
+    }
+
+    /// Entities of committed ADR entries (ARCHITECTURE / is_breaking / get_adr_entries).
+    /// Empty entities are dropped (they never cover).
+    fn collect_adr_entities(&self) -> Result<Vec<String>> {
+        let Some(mut storage) = self.open_storage()? else {
+            return Ok(Vec::new());
         };
         let db = crate::ledger::db::LedgerDb::new(storage.get_connection_mut());
-        // Prefer dedicated ADR query; also accept is_breaking / ARCHITECTURE entry_type.
+        let mut entities = Vec::new();
+
         let adrs = db
             .get_adr_entries(None)
             .map_err(|e| miette::miette!("Failed to read ADR entries: {}", e))?;
-        if !adrs.is_empty() {
-            return Ok(true);
+        for e in adrs {
+            let ent = normalize_repo_path(&e.entity);
+            if !ent.is_empty() {
+                entities.push(ent);
+            }
         }
-        // Fallback: scan all entries for entry_type or is_breaking.
+
+        // Fallback: scan all entries for entry_type or is_breaking (in case
+        // get_adr_entries is narrower than ARCHITECTURE / is_breaking).
         let entries = db
             .get_all_committed_ledger_entries()
             .map_err(|e| miette::miette!("Failed to read ledger entries: {}", e))?;
-        Ok(entries
-            .iter()
-            .any(|e| e.entry_type == EntryType::Architecture || e.is_breaking))
+        for e in entries {
+            if e.entry_type == EntryType::Architecture || e.is_breaking {
+                let ent = normalize_repo_path(&e.entity);
+                if !ent.is_empty() && !entities.iter().any(|x| x == &ent) {
+                    entities.push(ent);
+                }
+            }
+        }
+
+        entities.sort();
+        Ok(entities)
     }
 
-    /// Resolve risk level for the evaluation target.
+    /// Resolve risk level and changed paths for the evaluation target.
     ///
     /// - `--pr` mode: build PrScanReport from the committed range.
     /// - Local mode: use working-tree changes if the repo is available; else None.
-    fn resolve_risk(&self) -> Result<Option<(PrRiskLevel, Vec<String>)>> {
+    fn resolve_risk(&self) -> Result<Option<ResolvedRisk>> {
         let root = self.layout.root.as_std_path();
 
         if let Some(ref range) = self.pr_range {
             let (base, head, git_range) = parse_pr_range(range)?;
             let changes = files_changed_between(root, &git_range, &base)?;
+            let changed_paths = file_changes_to_paths(&changes);
             let repo = open_repo(root)?;
             let (head_hash, branch_name) = get_head_info(&repo)?;
             let report = PrScanReport::new(
@@ -697,13 +757,18 @@ impl EvalContext {
                 &changes,
                 &[],
             );
-            return Ok(Some((report.risk_level, report.risk_reasons)));
+            return Ok(Some(ResolvedRisk {
+                level: report.risk_level,
+                reasons: report.risk_reasons,
+                changed_paths,
+            }));
         }
 
         // Local / default: working-tree status.
         match open_repo(root) {
             Ok(repo) => {
                 let changes = get_repo_status(&repo).unwrap_or_default();
+                let changed_paths = file_changes_to_paths(&changes);
                 let (head_hash, branch_name) = get_head_info(&repo).unwrap_or((None, None));
                 let report = PrScanReport::new(
                     "WORKTREE".to_string(),
@@ -714,11 +779,82 @@ impl EvalContext {
                     &changes,
                     &[],
                 );
-                Ok(Some((report.risk_level, report.risk_reasons)))
+                Ok(Some(ResolvedRisk {
+                    level: report.risk_level,
+                    reasons: report.risk_reasons,
+                    changed_paths,
+                }))
             }
             Err(_) => Ok(None),
         }
     }
+}
+
+/// Risk + change-set context for `fail_on` / `max_risk_without_adr`.
+struct ResolvedRisk {
+    level: PrRiskLevel,
+    reasons: Vec<String>,
+    /// Forward-slash normalized, sorted, deduped paths.
+    changed_paths: Vec<String>,
+}
+
+// ---------------------------------------------------------------------------
+// ADR covering helpers (max_risk_without_adr)
+// ---------------------------------------------------------------------------
+
+/// Forward-slash normalize and trim leading/trailing slashes for stable compare.
+fn normalize_repo_path(path: &str) -> String {
+    path.replace('\\', "/").trim_matches('/').trim().to_string()
+}
+
+/// True when `path` looks like an ADR document (case-insensitive).
+///
+/// Matches: `/adr/` or `/adrs/` path segments, `.adr.md` suffix, or
+/// `architecture-decision` anywhere in the path.
+pub fn is_adr_document_path(path: &str) -> bool {
+    let n = normalize_repo_path(path).to_ascii_lowercase();
+    if n.is_empty() {
+        return false;
+    }
+    n.contains("/adr/")
+        || n.starts_with("adr/")
+        || n.contains("/adrs/")
+        || n.starts_with("adrs/")
+        || n.ends_with(".adr.md")
+        || n.contains("architecture-decision")
+}
+
+/// True when a non-empty ADR `entity` covers a changed `path`.
+///
+/// - entity equals path
+/// - path starts with `entity/` (entity is a directory/module scope)
+/// - entity starts with `path/` (entity more specific under a changed tree)
+///
+/// Empty entities never cover.
+pub fn entity_covers_path(entity: &str, path: &str) -> bool {
+    let e = normalize_repo_path(entity);
+    let p = normalize_repo_path(path);
+    if e.is_empty() || p.is_empty() {
+        return false;
+    }
+    if e.eq_ignore_ascii_case(&p) {
+        return true;
+    }
+    // Case-insensitive prefix checks with a path-separator boundary.
+    let e_lower = e.to_ascii_lowercase();
+    let p_lower = p.to_ascii_lowercase();
+    p_lower.starts_with(&format!("{e_lower}/")) || e_lower.starts_with(&format!("{p_lower}/"))
+}
+
+fn file_changes_to_paths(changes: &[crate::git::FileChange]) -> Vec<String> {
+    let mut paths: Vec<String> = changes
+        .iter()
+        .map(|c| normalize_repo_path(&c.path.to_string_lossy()))
+        .filter(|p| !p.is_empty())
+        .collect();
+    paths.sort();
+    paths.dedup();
+    paths
 }
 
 // ---------------------------------------------------------------------------
@@ -819,6 +955,33 @@ mod tests {
             PrRiskLevel::Medium,
             RiskThreshold::High
         ));
+    }
+
+    #[test]
+    fn is_adr_document_path_detects_known_patterns() {
+        assert!(is_adr_document_path("docs/adr/0001-policy.md"));
+        assert!(is_adr_document_path("docs/adrs/0001.md"));
+        assert!(is_adr_document_path("adr/foo.md"));
+        assert!(is_adr_document_path("docs/foo.adr.md"));
+        assert!(is_adr_document_path("docs/architecture-decision-record.md"));
+        assert!(is_adr_document_path("Docs/ADR/Upper.md")); // case-insensitive
+        assert!(!is_adr_document_path("Cargo.toml"));
+        assert!(!is_adr_document_path("src/address.rs")); // no false positive on "adr" substring alone
+        assert!(!is_adr_document_path(""));
+    }
+
+    #[test]
+    fn entity_covers_path_equality_and_scope() {
+        assert!(entity_covers_path("Cargo.toml", "Cargo.toml"));
+        assert!(entity_covers_path("src", "src/commands/policy_check.rs"));
+        assert!(entity_covers_path(
+            "src/commands/policy_check.rs",
+            "src/commands"
+        )); // entity more specific under changed tree
+        assert!(!entity_covers_path("docs/unrelated", "Cargo.toml"));
+        assert!(!entity_covers_path("", "Cargo.toml")); // empty never covers
+        assert!(!entity_covers_path("srcx", "src/foo.rs")); // not a prefix boundary
+        assert!(entity_covers_path("Src/Foo.rs", "src/foo.rs")); // case-insensitive
     }
 
     #[test]

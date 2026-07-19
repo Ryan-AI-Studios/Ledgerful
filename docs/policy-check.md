@@ -64,8 +64,18 @@ ledgerful policy check --pr origin/main...HEAD --format json
 
 | Mode | What is inspected |
 |---|---|
-| `--pr <range>` | **Committed range only** — risk from `scan --pr`-equivalent diff; ledger signatures / pending txs / verification from the repo ledger DB. Does **not** inspect the `pending_hook_tx` sidecar. |
+| `--pr <range>` | **Committed range only** — risk from `scan --pr`-equivalent diff; committed ledger signatures and verification runs from the repo ledger DB. Does **not** inspect pending DB transactions or the `pending_hook_tx` sidecar (both are workspace state CI would not see). |
 | Local / default (no `--pr`) | Ledger pending txs **and** the `pending_hook_tx` sidecar **and** working-tree risk (when evaluable). A green local check for committed content predicts CI; local mode also catches uncommitted/pending problems before push. |
+
+### Per-rule evaluation targets
+
+| Rule | `--pr` | Local / default |
+|---|---|---|
+| `require_signed_entries` | Committed ledger entries | Committed ledger entries |
+| `no_pending_tx` | **Skipped** (pending is workspace state) | Pending DB txs + `pending_hook_tx` sidecar |
+| `verification_must_pass` | Latest verification run in ledger DB | Latest verification run in ledger DB |
+| `max_risk_without_adr` | Risk + covering ADR for the committed-range change set | Risk + covering ADR for the working-tree change set |
+| `fail_on` | Risk from committed-range diff | Risk from working-tree changes |
 
 ## Config (flat TOML, no DSL)
 
@@ -125,9 +135,9 @@ Mode transitions still write signed `MAINTENANCE` ledger entries via
 | Rule id | Default | Behavior |
 |---|---|---|
 | `require_signed_entries` | on | Any committed entry with missing or invalid signature/public_key → violation. |
-| `no_pending_tx` | on | Pending ledger transactions → violation. Local mode also flags `pending_hook_tx` sidecar. |
+| `no_pending_tx` | on | **Local only:** pending ledger transactions → violation; also flags `pending_hook_tx` sidecar. **Skipped under `--pr`** (committed range only). |
 | `verification_must_pass` | on | Latest verification run must have `overall_pass=true`. **Fail-closed:** if no runs are recorded, emit a violation. |
-| `max_risk_without_adr` | `high` | When risk ≥ threshold and no ADR entry exists (`entry_type=ARCHITECTURE` or `is_breaking=1`) → violation. Set to `off` to disable. |
+| `max_risk_without_adr` | `high` | When risk ≥ threshold, require an ADR that covers **this evaluation's change set** (not any ADR in history). Covered when (a) a changed path is itself an ADR document (`/adr/`, `/adrs/`, `.adr.md`, `architecture-decision`), or (b) a ledger ADR entry (`entry_type=ARCHITECTURE` or `is_breaking=1`) has a non-empty `entity` that equals a changed path, is a parent scope (`path` starts with `entity/`), or is more specific under a changed tree (`entity` starts with `path/`). Empty-entity ADRs never blanket-satisfy. Fail-closed when risk is high but no covering ADR is found (including empty change sets). Set to `off` to disable. |
 | `fail_on` | `high` | When risk ≥ threshold → violation. Risk is the same deterministic level as `scan --pr`. Set to `off` to disable. |
 
 Risk thresholds compare inclusively: `fail_on = medium` fires on medium **and** high.
@@ -161,14 +171,14 @@ bump `schemaVersion`.
   ],
   "passed": false,
   "mode": "enforce",
-  "policySource": "base-branch",
-  "notes": []
+  "policySource": "base-branch"
 }
 ```
 
 `notes` is an additive optional array of non-blocking evaluation messages
 (e.g. risk rules skipped when risk is not evaluable). It is omitted from JSON
-when empty (`schemaVersion` stays 1).
+when empty (`skip_serializing_if`); when present it looks like
+`"notes": ["risk not evaluable: ..."]`. `schemaVersion` stays 1.
 
 Violations are sorted deterministically by `(ruleId, file, message)`.
 
