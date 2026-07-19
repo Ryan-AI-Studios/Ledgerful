@@ -3,7 +3,7 @@ use crate::state::layout::Layout;
 use crate::state::migrations::get_migrations;
 use camino::{Utf8Path, Utf8PathBuf};
 use miette::{IntoDiagnostic, Result};
-use rusqlite::Connection;
+use rusqlite::{Connection, OpenFlags};
 use std::path::Path;
 use tracing::debug;
 
@@ -177,6 +177,39 @@ impl StorageManager {
             is_read_only: false,
             root_path: Utf8PathBuf::from("."),
         }
+    }
+
+    /// Open an arbitrary `ledger.db` path read-only, without running migrations
+    /// or verifying that the schema is current. Used by the cross-repo rollup
+    /// to read foreign repo DBs: a schema mismatch there is a warn-and-skip
+    /// rather than a hard failure.
+    ///
+    /// The repo root is inferred from `db_path` as
+    /// `db_path.parent().parent().parent()` (state/ → .ledgerful/ → root).
+    /// If the path shape is unexpected, the root falls back to `.`.
+    pub fn open_read_only_from_path(db_path: &Path) -> Result<Self> {
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = Connection::open_with_flags(db_path, flags).into_diagnostic()?;
+
+        conn.execute_batch("PRAGMA busy_timeout = 2000;")
+            .into_diagnostic()?;
+
+        let root_path = db_path
+            .parent() // state/
+            .and_then(|p| p.parent()) // .ledgerful/
+            .and_then(|p| p.parent()) // root/
+            .unwrap_or(Path::new("."));
+        let root_path = Utf8PathBuf::from_path_buf(root_path.to_path_buf())
+            .map_err(|_| miette::miette!("Invalid UTF-8 in root path"))?;
+
+        Ok(Self {
+            conn,
+            cozo: None,
+            is_read_only: true,
+            root_path,
+        })
     }
 }
 

@@ -158,6 +158,11 @@ mod tests {
             verify_signatures: false,
             json: false,
             all: false,
+            global: false,
+            repo: None,
+            reindex: false,
+            opt_out: false,
+            opt_in: false,
         };
         let _: ConfigCommands = ConfigCommands::Verify {
             json: false,

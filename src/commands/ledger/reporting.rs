@@ -7,6 +7,7 @@ use miette::{IntoDiagnostic, Result};
 use owo_colors::OwoColorize;
 use serde::Serialize;
 
+#[allow(clippy::too_many_arguments)]
 pub fn execute_ledger_status(
     entity_filter: Option<String>,
     compact: bool,
@@ -14,6 +15,11 @@ pub fn execute_ledger_status(
     verify_signatures: bool,
     json: bool,
     all: bool,
+    #[allow(unused)] _global: bool,
+    #[allow(unused)] _repo_filter: Option<String>,
+    #[allow(unused)] _reindex: bool,
+    #[allow(unused)] _opt_out: bool,
+    #[allow(unused)] _opt_in: bool,
 ) -> Result<()> {
     let layout = get_layout()?;
 

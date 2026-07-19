@@ -7,6 +7,7 @@ mod gate;
 mod gemini;
 mod ledger;
 mod local_model;
+mod rollup;
 mod root;
 mod semantic;
 mod sync;
@@ -20,6 +21,7 @@ pub use self::gate::*;
 pub use self::gemini::*;
 pub use self::ledger::*;
 pub use self::local_model::*;
+pub use self::rollup::*;
 pub use self::root::*;
 pub use self::semantic::*;
 pub use self::sync::*;
@@ -34,6 +36,7 @@ pub(crate) use self::env::resolve_local_model_config;
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::path::PathBuf;
 
     // ------------------------------------------------------------------
     // Env isolation helpers
@@ -208,6 +211,46 @@ mod tests {
         assert_eq!(config.docs.chunk_tokens, 512);
         assert_eq!(config.observability.error_rate_threshold, 0.05);
         assert!(config.contracts.spec_paths.is_empty());
+    }
+
+    #[test]
+    fn test_global_rollup_config_defaults() {
+        let config = Config::default();
+        assert_eq!(config.global_rollup.roots, vec![PathBuf::from("~")]);
+        assert_eq!(config.global_rollup.timeout_secs, 30);
+        assert_eq!(config.global_rollup.staleness_secs, 3600);
+        assert!(config.global_rollup.enabled);
+        assert!(config.global_rollup.max_depth.is_none());
+    }
+
+    #[test]
+    fn test_global_rollup_config_deserialization() {
+        let toml_str = r#"
+            [global_rollup]
+            roots = ["~/dev", "~/work"]
+            timeout_secs = 10
+            staleness_secs = 7200
+            max_depth = 8
+            enabled = false
+        "#;
+        let config: Config = toml::from_str(toml_str).unwrap();
+        assert_eq!(
+            config.global_rollup.roots,
+            vec![PathBuf::from("~/dev"), PathBuf::from("~/work")]
+        );
+        assert_eq!(config.global_rollup.timeout_secs, 10);
+        assert_eq!(config.global_rollup.staleness_secs, 7200);
+        assert_eq!(config.global_rollup.max_depth, Some(8));
+        assert!(!config.global_rollup.enabled);
+    }
+
+    #[test]
+    fn test_global_rollup_config_default_when_section_missing() {
+        let config: Config = toml::from_str("").unwrap();
+        assert_eq!(config.global_rollup.roots, vec![PathBuf::from("~")]);
+        assert_eq!(config.global_rollup.timeout_secs, 30);
+        assert!(config.global_rollup.enabled);
+        assert!(config.global_rollup.max_depth.is_none());
     }
 
     #[test]
