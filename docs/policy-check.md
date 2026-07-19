@@ -64,45 +64,99 @@ ledgerful policy check --pr origin/main...HEAD --format json
 
 | Mode | What is inspected |
 |---|---|
-| `--pr <range>` | **Committed range only** — risk from `scan --pr`-equivalent diff; committed ledger signatures and verification runs from the repo ledger DB. Does **not** inspect pending DB transactions or the `pending_hook_tx` sidecar (both are workspace state CI would not see). |
+| `--pr <range>` | **Committed range only** — risk from `scan --pr`-equivalent diff; committed ledger signatures and **bound** verification runs from a *presented* ledger DB (if present). Does **not** inspect pending DB transactions or the `pending_hook_tx` sidecar (both are workspace state CI would not see). |
 | Local / default (no `--pr`) | Ledger pending txs **and** the `pending_hook_tx` sidecar **and** working-tree risk (when evaluable). A green local check for committed content predicts CI; local mode also catches uncommitted/pending problems before push. |
+
+### Git-only vs ledger-backed rules
+
+`.ledgerful/` is gitignored (state/logs stay local). Only `policy.toml` is
+typically force-added. A clean CI checkout therefore has **no** `ledger.db`
+unless your pipeline presents one as an artifact.
+
+| Rule | Needs ledger DB? | Evaluable from git alone? |
+|---|---|---|
+| `fail_on` | No | Yes (diff / risk) |
+| `max_risk_without_adr` | Partially (ledger ADR entities help; changed ADR docs also satisfy) | Risk yes; full ADR cover may need ledger |
+| `no_pending_tx` | Yes (local only; **skipped under `--pr`**) | N/A in CI |
+| `require_signed_entries` | **Yes** — fail-closed if DB absent | No |
+| `verification_must_pass` | **Yes** — fail-closed if DB absent; requires **bound** runs (`tx_id`) | No |
+
+**CI-safe defaults** (synthesized when `--pr` has no base `policy.toml`) only
+enable git-evaluable rules. Enable ledger-backed rules only when your CI
+presents a ledger artifact (or run those rules locally / in a job that has one).
 
 ### Per-rule evaluation targets
 
 | Rule | `--pr` | Local / default |
 |---|---|---|
-| `require_signed_entries` | Committed ledger entries | Committed ledger entries |
+| `require_signed_entries` | Committed ledger entries (violation if ledger DB absent) | Committed ledger entries (violation if ledger DB absent) |
 | `no_pending_tx` | **Skipped** (pending is workspace state) | Pending DB txs + `pending_hook_tx` sidecar |
-| `verification_must_pass` | Latest verification run in ledger DB | Latest verification run in ledger DB |
+| `verification_must_pass` | **Bound** verification run covering the PR change set (see below) | Latest **bound** verification run |
 | `max_risk_without_adr` | Risk + covering ADR for the committed-range change set | Risk + covering ADR for the working-tree change set |
 | `fail_on` | Risk from committed-range diff | Risk from working-tree changes |
+
+### Verification binding (`tx_id`)
+
+`verification_must_pass` never accepts an unbound global verify. A run is
+**bound** when `verification_runs.tx_id` is non-null and non-empty (written by
+`ledgerful verify --tx-id <id>` or commit-path hooks).
+
+| Mode | Selection |
+|---|---|
+| Local | Latest bound run (`ORDER BY id DESC`). No bound run → violation. |
+| `--pr` | Among bound runs, prefer one whose committed ledger `entity` **covers** a changed path (`entity_covers_path`). If none cover and the change set is non-empty → violation. Empty change set → fall back to latest bound run. The selected run must have `overall_pass=true`. |
+
+Unrelated later verifies (or verifies without `--tx-id`) cannot greenwash or
+red-wash a PR.
 
 ## Config (flat TOML, no DSL)
 
 Default path: `.ledgerful/policy.toml` in the repo (overridable with `--policy`).
 
+### CI-safe example (force-add this file)
+
+Recommended for base branch when CI does **not** present a ledger.db artifact.
+Only git-evaluable rules are on:
+
 ```toml
-# .ledgerful/policy.toml
-# CI: commit this file with preset = "enforce" so the base branch is CI-safe.
-# Local: if preset is omitted, mode is derived from gate.mode.
-# --pr: if preset is omitted (or policy is missing and synthesized), mode
-# defaults to **enforce** — never fail-open via working-tree gate.mode.
-preset = "enforce"  # or "observe"
+# .ledgerful/policy.toml  (force-add; see below)
+preset = "enforce"
+
+[rules]
+require_signed_entries = false   # needs presented ledger.db
+no_pending_tx = true             # skipped under --pr; useful locally
+verification_must_pass = false   # needs presented ledger.db + bound runs
+max_risk_without_adr = "high"    # off | low | medium | high
+fail_on = "high"                 # off | low | medium | high
+```
+
+### Full local / gate-mirroring example
+
+When a ledger is available (local dev, or CI job with a presented artifact):
+
+```toml
+preset = "enforce"
 
 [rules]
 require_signed_entries = true
 no_pending_tx = true
 verification_must_pass = true
-max_risk_without_adr = "high"   # off | low | medium | high
-fail_on = "high"                # off | low | medium | high
+max_risk_without_adr = "high"
+fail_on = "high"
 ```
 
-### Preset default rules (CI-safe)
+Notes:
+
+- If `preset` is omitted **locally**, mode is derived from `gate.mode`.
+- If `preset` is omitted under **`--pr`** (or policy is missing and synthesized),
+  mode defaults to **enforce** — never fail-open via working-tree `gate.mode`.
+
+### Preset default rules
 
 | Context | `preset` present | `preset` omitted / no policy file |
 |---|---|---|
-| Local / default | use declared preset | synthesize from working-tree `gate.mode` |
-| `--pr` | use declared preset (from base-branch or `--policy`) | **enforce** (CI-safe; does not inherit working-tree `gate.mode`) |
+| Local / default | use declared preset; rules default **all on** (full gate mirror) | synthesize from working-tree `gate.mode` with all rules on |
+| `--pr` | use declared preset (from base-branch or `--policy`) | **enforce** + **CI-safe** rule set (ledger-backed rules off) |
 
 ### Committing the policy file
 
@@ -115,11 +169,12 @@ git add -f .ledgerful/policy.toml
 git commit -m "Add ledgerful CI policy"
 ```
 
-**CI should commit a base-branch `policy.toml` with `preset = "enforce"`.**
-Without a committed base-branch policy, `--pr` mode synthesizes defaults with
-`preset=enforce` and reports `policySource: "synthesized"` (still bypass-proof —
-the PR head's working-tree copy is never used). Invalid base refs surface as
-errors rather than silent missing-policy.
+**CI should commit a base-branch `policy.toml` with `preset = "enforce"` and
+CI-safe rules** (see example above). Without a committed base-branch policy,
+`--pr` mode synthesizes the same CI-safe enforce defaults and reports
+`policySource: "synthesized"` (still bypass-proof — the PR head's working-tree
+copy is never used). Invalid base refs surface as errors rather than silent
+missing-policy.
 
 Local mode without a policy file synthesizes from `gate.mode` (0050 subsumption):
 
@@ -132,11 +187,11 @@ Mode transitions still write signed `MAINTENANCE` ledger entries via
 
 ## Built-in rules (stable ids)
 
-| Rule id | Default | Behavior |
+| Rule id | Default (local / full) | Behavior |
 |---|---|---|
-| `require_signed_entries` | on | Any committed entry with missing or invalid signature/public_key → violation. |
+| `require_signed_entries` | on | Any committed entry with missing or invalid signature/public_key → violation. **Fail-closed** if ledger DB is absent (actionable message: present artifact or disable the rule). |
 | `no_pending_tx` | on | **Local only:** pending ledger transactions → violation; also flags `pending_hook_tx` sidecar. **Skipped under `--pr`** (committed range only). |
-| `verification_must_pass` | on | Latest verification run must have `overall_pass=true`. **Fail-closed:** if no runs are recorded, emit a violation. |
+| `verification_must_pass` | on | Last **bound** verification run for the evaluation target must have `overall_pass=true` (see binding table above). **Fail-closed** if ledger DB is absent or no bound run exists. Unbound runs never satisfy. |
 | `max_risk_without_adr` | `high` | When risk ≥ threshold, require an ADR that covers **this evaluation's change set** (not any ADR in history). Covered when (a) a changed path is itself an ADR document (`/adr/`, `/adrs/`, `.adr.md`, `architecture-decision`), or (b) a ledger ADR entry (`entry_type=ARCHITECTURE` or `is_breaking=1`) has a non-empty `entity` that equals a changed path, is a parent scope (`path` starts with `entity/`), or is more specific under a changed tree (`entity` starts with `path/`). Empty-entity ADRs never blanket-satisfy. Fail-closed when risk is high but no covering ADR is found (including empty change sets). Set to `off` to disable. |
 | `fail_on` | `high` | When risk ≥ threshold → violation. Risk is the same deterministic level as `scan --pr`. Set to `off` to disable. |
 
@@ -184,17 +239,17 @@ Violations are sorted deterministically by `(ruleId, file, message)`.
 
 ## CI example (pairs with 0047 Action)
 
-Commit a base-branch policy with `preset = "enforce"` so CI never depends on
-working-tree `gate.mode`:
+Commit a **CI-safe** base-branch policy so clean runners (no ledger.db) only
+evaluate git-visible rules:
 
 ```toml
 # .ledgerful/policy.toml  (force-add; see above)
 preset = "enforce"
 
 [rules]
-require_signed_entries = true
+require_signed_entries = false
 no_pending_tx = true
-verification_must_pass = true
+verification_must_pass = false
 max_risk_without_adr = "high"
 fail_on = "high"
 ```
@@ -233,10 +288,15 @@ jobs:
 
 Notes:
 
-- Prefer a committed base-branch `policy.toml` with `preset = "enforce"`. If
-  the base has no policy file, `--pr` synthesizes **enforce** defaults
-  (`policySource: "synthesized"`) so CI does not fail-open via a local
-  `gate.mode=observe`.
+- Prefer a committed base-branch `policy.toml` with `preset = "enforce"` and
+  CI-safe rules. If the base has no policy file, `--pr` synthesizes the same
+  CI-safe enforce defaults (`policySource: "synthesized"`) so CI does not
+  fail-open via a local `gate.mode=observe` and does not fail-closed on
+  missing ledger.db for ledger-only rules.
+- To enforce `require_signed_entries` / `verification_must_pass` in CI, present
+  a ledger artifact (e.g. restore `.ledgerful/state/ledger.db` before the
+  check) **and** enable those rules in the base-branch policy. Bound verifies
+  need `verify --tx-id` / hooks.
 - `fetch-depth: 0` (or an explicit fetch of the base ref) is required; shallow
   clones cannot resolve `git show <base>:.ledgerful/policy.toml`. Invalid base
   refs fail hard (not treated as missing policy).

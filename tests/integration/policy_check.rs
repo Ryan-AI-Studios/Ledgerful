@@ -55,14 +55,57 @@ fn commit_policy(root: &Path, msg: &str) {
     git_cmd(root, &["commit", "-m", msg, "--no-verify"]);
 }
 
+/// Seed a **bound** passing verification run (non-empty tx_id).
+/// Unbound runs never satisfy `verification_must_pass`.
 fn seed_passing_verification(root: &Path) {
+    seed_bound_verification(root, true, "tx-seed-pass");
+}
+
+fn seed_bound_verification(root: &Path, overall_pass: bool, tx_id: &str) {
     let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
     layout.ensure_state_dir().unwrap();
     let db_path = layout.state_subdir().join("ledger.db");
     let storage = StorageManager::init(db_path.as_std_path()).unwrap();
     storage
-        .save_verification_run(&chrono::Utc::now().to_rfc3339(), Some("[]"), true, None)
+        .save_verification_run(
+            &chrono::Utc::now().to_rfc3339(),
+            Some("[]"),
+            overall_pass,
+            Some(tx_id),
+        )
         .unwrap();
+}
+
+/// Commit a ledger entry for `entity` and return its tx_id (for binding verifies).
+fn commit_entry_return_tx(root: &Path, entity: &str, summary: &str) -> String {
+    let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
+    layout.ensure_state_dir().unwrap();
+    let db_path = layout.state_subdir().join("ledger.db");
+    let mut storage = StorageManager::init(db_path.as_std_path()).unwrap();
+    let mut config = Config::default();
+    config.gate.mode = "enforce".to_string();
+    config.intent.require_signing = false;
+    let mut tx_mgr = TransactionManager::new(&mut storage, root.to_path_buf(), config);
+    let tx_id = tx_mgr
+        .start_change(TransactionRequest {
+            category: Category::Feature,
+            entity: entity.to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+    tx_mgr
+        .commit_change(
+            tx_id.clone(),
+            CommitRequest {
+                change_type: ChangeType::Modify,
+                summary: summary.to_string(),
+                reason: "policy_check test".to_string(),
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+    tx_id
 }
 
 fn commit_signed_entry(root: &Path, entity: &str, summary: &str) {
@@ -456,8 +499,57 @@ fail_on = "off"
             .violations
             .iter()
             .any(|v| v.rule_id == "verification_must_pass"
-                && v.message.contains("no verification run")),
+                && v.message.contains("bound to a transaction")),
         "{:?}",
+        report.violations
+    );
+}
+
+/// CX2-P1: unbound-only runs never satisfy verification_must_pass.
+#[test]
+#[serial(env, cwd)]
+fn verification_must_pass_rejects_unbound_only_runs() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "base\n").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let _ni = non_interactive();
+    let _guard = DirGuard::new(root);
+    execute_init(false, false).unwrap();
+
+    // Passing unbound run must not satisfy the rule.
+    {
+        let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
+        let db_path = layout.state_subdir().join("ledger.db");
+        let storage = StorageManager::init(db_path.as_std_path()).unwrap();
+        storage
+            .save_verification_run(&chrono::Utc::now().to_rfc3339(), Some("[]"), true, None)
+            .unwrap();
+    }
+
+    write_policy(
+        root,
+        r#"
+preset = "enforce"
+[rules]
+require_signed_entries = false
+no_pending_tx = false
+verification_must_pass = true
+max_risk_without_adr = "off"
+fail_on = "off"
+"#,
+    );
+
+    let report = evaluate_policy_check(None, None, None).unwrap();
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "verification_must_pass"
+                && v.message.contains("bound to a transaction")),
+        "unbound-only must not satisfy: {:?}",
         report.violations
     );
 }
@@ -469,13 +561,8 @@ fn verification_must_pass_fails_when_last_run_failed() {
     let root = tmp.path();
     setup_green_repo(root);
 
-    // Overwrite with a failing run.
-    let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
-    let db_path = layout.state_subdir().join("ledger.db");
-    let storage = StorageManager::init(db_path.as_std_path()).unwrap();
-    storage
-        .save_verification_run(&chrono::Utc::now().to_rfc3339(), Some("[]"), false, None)
-        .unwrap();
+    // Overwrite with a bound failing run (newer than green seed).
+    seed_bound_verification(root, false, "tx-fail-bound");
 
     write_policy(
         root,
@@ -499,6 +586,185 @@ fail_on = "off"
             .iter()
             .any(|v| v.rule_id == "verification_must_pass"
                 && v.message.contains("overall_pass is false")),
+        "{:?}",
+        report.violations
+    );
+}
+
+/// CX2-P1: bound passing run satisfies local verification_must_pass.
+#[test]
+#[serial(env, cwd)]
+fn verification_must_pass_bound_pass_succeeds() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "base\n").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let _ni = non_interactive();
+    let _guard = DirGuard::new(root);
+    execute_init(false, false).unwrap();
+    seed_bound_verification(root, true, "tx-local-pass");
+
+    write_policy(
+        root,
+        r#"
+preset = "enforce"
+[rules]
+require_signed_entries = false
+no_pending_tx = false
+verification_must_pass = true
+max_risk_without_adr = "off"
+fail_on = "off"
+"#,
+    );
+
+    let report = evaluate_policy_check(None, None, None).unwrap();
+    assert!(
+        !report
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "verification_must_pass"),
+        "bound pass must satisfy: {:?}",
+        report.violations
+    );
+}
+
+/// CX2-P1: --pr mode — bound run for unrelated entity does not cover change set.
+#[test]
+#[serial(env, cwd)]
+fn verification_must_pass_pr_unrelated_entity_does_not_cover() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "base\n").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let _ni = non_interactive();
+    {
+        let _guard = DirGuard::new(root);
+        execute_init(false, false).unwrap();
+    }
+
+    // Bound verify for an entity that will NOT cover the PR path.
+    let tx_id = commit_entry_return_tx(root, "docs/unrelated.md", "unrelated work");
+    seed_bound_verification(root, true, &tx_id);
+
+    write_policy(
+        root,
+        r#"
+preset = "enforce"
+[rules]
+require_signed_entries = false
+no_pending_tx = false
+verification_must_pass = true
+max_risk_without_adr = "off"
+fail_on = "off"
+"#,
+    );
+    commit_policy(root, "base policy");
+
+    // PR changes a high-risk-ish path not covered by the bound entity.
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/new_feature.rs"), "fn x() {}\n").unwrap();
+    git_add_and_commit(root, "pr change");
+
+    let _guard = DirGuard::new(root);
+    let report = evaluate_policy_check(Some("HEAD~1...HEAD"), None, None).unwrap();
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "verification_must_pass"
+                && v.message.contains("covers the evaluation target")),
+        "unrelated bound entity must not cover PR change set: {:?}",
+        report.violations
+    );
+}
+
+/// CX2-P1: --pr mode — bound run whose entity covers a changed path + pass → ok.
+#[test]
+#[serial(env, cwd)]
+fn verification_must_pass_pr_covering_bound_pass() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "base\n").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let _ni = non_interactive();
+    {
+        let _guard = DirGuard::new(root);
+        execute_init(false, false).unwrap();
+    }
+
+    // Entity scope "src" covers later src/* PR changes.
+    let tx_id = commit_entry_return_tx(root, "src", "src module work");
+    seed_bound_verification(root, true, &tx_id);
+
+    write_policy(
+        root,
+        r#"
+preset = "enforce"
+[rules]
+require_signed_entries = false
+no_pending_tx = false
+verification_must_pass = true
+max_risk_without_adr = "off"
+fail_on = "off"
+"#,
+    );
+    commit_policy(root, "base policy");
+
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/new_feature.rs"), "fn x() {}\n").unwrap();
+    git_add_and_commit(root, "pr change");
+
+    let _guard = DirGuard::new(root);
+    let report = evaluate_policy_check(Some("HEAD~1...HEAD"), None, None).unwrap();
+    assert!(
+        !report
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "verification_must_pass"),
+        "covering bound pass must satisfy: {:?}",
+        report.violations
+    );
+}
+
+/// CX2-P2: require_signed_entries fail-closed when ledger.db absent.
+#[test]
+#[serial(env, cwd)]
+fn require_signed_entries_fails_when_ledger_db_absent() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "base\n").unwrap();
+    git_add_and_commit(root, "initial");
+
+    // Policy only — no init / no ledger.db.
+    write_policy(
+        root,
+        r#"
+preset = "enforce"
+[rules]
+require_signed_entries = true
+no_pending_tx = false
+verification_must_pass = false
+max_risk_without_adr = "off"
+fail_on = "off"
+"#,
+    );
+
+    let _ni = non_interactive();
+    let _guard = DirGuard::new(root);
+    let report = evaluate_policy_check(None, None, None).unwrap();
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "require_signed_entries"
+                && v.message.contains("ledger DB not present")),
         "{:?}",
         report.violations
     );
@@ -1020,16 +1286,10 @@ fn pr_mode_defaults_to_enforce_when_preset_omitted() {
         let _guard = DirGuard::new(root);
         execute_init(false, false).unwrap();
     }
-    // Failing verification is visible under --pr (unlike pending workspace state).
-    {
-        let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
-        layout.ensure_state_dir().unwrap();
-        let db_path = layout.state_subdir().join("ledger.db");
-        let storage = StorageManager::init(db_path.as_std_path()).unwrap();
-        storage
-            .save_verification_run(&chrono::Utc::now().to_rfc3339(), Some("[]"), false, None)
-            .unwrap();
-    }
+    // Bound failing verification that covers the upcoming PR path (entity=pr.txt).
+    let tx_id = commit_entry_return_tx(root, "pr.txt", "prep entity for cover");
+    seed_bound_verification(root, false, &tx_id);
+
     // Working-tree gate.mode is observe — must NOT leak into --pr preset default.
     set_gate_mode(root, "observe");
 
@@ -1056,7 +1316,7 @@ fail_on = "off"
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
 
-    // PR-range commit so the range is non-empty.
+    // PR-range commit so the range is non-empty; path matches bound entity.
     fs::write(root.join("pr.txt"), "change\n").unwrap();
     git_add_and_commit(root, "pr change");
 
@@ -1091,7 +1351,7 @@ fail_on = "off"
     );
 }
 
-/// Missing base policy.toml under `--pr` synthesizes enforce, not gate.mode.
+/// Missing base policy.toml under `--pr` synthesizes CI-safe enforce (ledger rules off).
 #[test]
 #[serial(env, cwd)]
 fn pr_mode_missing_base_policy_synthesizes_enforce() {
@@ -1102,43 +1362,40 @@ fn pr_mode_missing_base_policy_synthesizes_enforce() {
     let _ = fs::remove_file(root.join(".ledgerful").join("policy.toml"));
     set_gate_mode(root, "observe");
 
-    // Overwrite verification so synthesized defaults (verification_must_pass=true) fail.
-    {
-        let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
-        let db_path = layout.state_subdir().join("ledger.db");
-        let storage = StorageManager::init(db_path.as_std_path()).unwrap();
-        storage
-            .save_verification_run(&chrono::Utc::now().to_rfc3339(), Some("[]"), false, None)
-            .unwrap();
-    }
-
-    // Commit a second change so HEAD~1...HEAD is a valid range; base has no policy.
-    fs::write(root.join("pr.txt"), "change\n").unwrap();
-    git_add_and_commit(root, "pr change");
+    // Sensitive path so fail_on=high (CI-safe default) fires when not overridden.
+    fs::create_dir_all(root.join(".github/workflows")).unwrap();
+    fs::write(root.join(".github/workflows/ci.yml"), "name: ci\n").unwrap();
+    git_add_and_commit(root, "pr change sensitive");
 
     let _ni = non_interactive();
     let _guard = DirGuard::new(root);
 
-    // fail_on=off so risk from the PR change does not muddy the assertion.
-    let report = evaluate_policy_check(Some("HEAD~1...HEAD"), Some("off"), None).unwrap();
+    let report = evaluate_policy_check(Some("HEAD~1...HEAD"), None, None).unwrap();
     assert_eq!(report.policy_source, "synthesized");
     assert_eq!(
         report.mode, "enforce",
         "--pr synthesize must be enforce even when gate.mode=observe"
     );
+    // CX2-P2: CI-safe defaults leave verification_must_pass / require_signed_entries off.
     assert!(
-        !report.passed
-            && report
-                .violations
-                .iter()
-                .any(|v| v.rule_id == "verification_must_pass"),
-        "{:?}",
+        !report
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "verification_must_pass"
+                || v.rule_id == "require_signed_entries"),
+        "CI-safe synthesize must not enable ledger-backed rules: {:?}",
+        report.violations
+    );
+    // Git-only fail_on should still fire on sensitive path.
+    assert!(
+        !report.passed && report.violations.iter().any(|v| v.rule_id == "fail_on"),
+        "expected fail_on from CI-safe defaults: {:?}",
         report.violations
     );
 
     let result = execute_policy_check(
         Some("HEAD~1...HEAD".into()),
-        Some("off".into()),
+        None,
         None,
         Some("json".into()),
     );
@@ -1234,13 +1491,18 @@ fn violations_sorted_by_rule_id_file_message() {
     let root = tmp.path();
     setup_green_repo(root);
 
-    // Multiple violations: pending + failed verify.
+    // Multiple violations: pending + bound failed verify.
     {
         let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
         let db_path = layout.state_subdir().join("ledger.db");
         let mut storage = StorageManager::init(db_path.as_std_path()).unwrap();
         storage
-            .save_verification_run(&chrono::Utc::now().to_rfc3339(), Some("[]"), false, None)
+            .save_verification_run(
+                &chrono::Utc::now().to_rfc3339(),
+                Some("[]"),
+                false,
+                Some("tx-sort-fail"),
+            )
             .unwrap();
         let config = Config::default();
         let mut tx_mgr = TransactionManager::new(&mut storage, root.to_path_buf(), config);

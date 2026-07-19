@@ -304,9 +304,11 @@ pub fn evaluate_policy_check(
 /// 1. Explicit `--policy <path>` → trusted-path
 /// 2. `--pr` mode → `git show <base>:.ledgerful/policy.toml` (base-branch);
 ///    never the working-tree PR-head copy. Missing base file → synthesize
-///    defaults with **preset=enforce** (CI-safe). Source = `synthesized`.
+///    **CI-safe** defaults (preset=enforce; ledger-backed rules off).
+///    Source = `synthesized`.
 /// 3. Local mode → working-tree `.ledgerful/policy.toml` or synthesize from
-///    `gate.mode`. Source = `local` when a file is loaded, `synthesized` when not.
+///    `gate.mode` with full rule set on. Source = `local` when a file is loaded,
+///    `synthesized` when not.
 fn resolve_policy(
     layout: &Layout,
     policy_path: Option<&Path>,
@@ -333,9 +335,10 @@ fn resolve_policy(
                 return Ok((cfg, PolicySource::BaseBranch));
             }
             None => {
-                // No policy on base branch: synthesize CI-safe enforce defaults.
+                // No policy on base branch: synthesize CI-safe git-only defaults.
+                // Ledger-backed rules stay off — clean CI has no ledger.db artifact.
                 // Do not inherit working-tree gate.mode (fail-open risk).
-                let cfg = synthesize_defaults(PolicyMode::Enforce);
+                let cfg = synthesize_pr_defaults();
                 return Ok((cfg, PolicySource::Synthesized));
             }
         }
@@ -363,10 +366,31 @@ fn synthesize_from_gate(layout: &Layout) -> PolicyConfig {
     synthesize_defaults(mode)
 }
 
+/// Local / full-gate synthesize: all named rules on (mirrors gate.mode presets).
 fn synthesize_defaults(mode: PolicyMode) -> PolicyConfig {
     PolicyConfig {
         preset: Some(mode.as_str().to_string()),
         rules: PolicyRules::default(),
+    }
+}
+
+/// CI-safe defaults for `--pr` when no base-branch `policy.toml` exists.
+///
+/// Only enables rules evaluable from git alone. Ledger-backed rules
+/// (`require_signed_entries`, `verification_must_pass`) stay off because a
+/// clean CI runner has no tracked `ledger.db`. `no_pending_tx` is on but
+/// skipped under `--pr` (workspace state). Force-add a real policy.toml on
+/// the base branch to enable ledger rules when a ledger artifact is presented.
+fn synthesize_pr_defaults() -> PolicyConfig {
+    PolicyConfig {
+        preset: Some(PolicyMode::Enforce.as_str().to_string()),
+        rules: PolicyRules {
+            require_signed_entries: false,
+            no_pending_tx: true,
+            verification_must_pass: false,
+            max_risk_without_adr: default_high(),
+            fail_on: default_high(),
+        },
     }
 }
 
@@ -552,7 +576,13 @@ impl EvalContext {
 
     fn eval_require_signed_entries(&mut self) -> Result<()> {
         let Some(mut storage) = self.open_storage()? else {
-            // Empty / uninitialized ledger: no committed entries to check.
+            // Fail-closed: rule is enabled but no ledger artifact is present
+            // (typical clean CI). Do not silently pass.
+            self.push_violation(
+                "require_signed_entries",
+                ".ledgerful/state/ledger.db",
+                "ledger DB not present; cannot evaluate require_signed_entries — present a ledger artifact or disable the rule in policy.toml".to_string(),
+            );
             return Ok(());
         };
         let db = crate::ledger::db::LedgerDb::new(storage.get_connection_mut());
@@ -627,37 +657,144 @@ impl EvalContext {
         Ok(())
     }
 
+    /// Bound verification run for the evaluation target must overall-pass.
+    ///
+    /// A "bound" run has a non-null non-empty `tx_id` (from `verify --tx-id` or
+    /// commit hooks). Unbound global verifies never satisfy this rule.
+    ///
+    /// - **Local:** latest bound run; fail if none.
+    /// - **`--pr`:** among bound runs, prefer one whose committed ledger entity
+    ///   covers a changed path (`entity_covers_path`). If none cover and the
+    ///   change set is non-empty → fail. Zero changed paths → fall back to
+    ///   latest bound run.
     fn eval_verification_must_pass(&mut self) -> Result<()> {
         let Some(storage) = self.open_storage()? else {
             self.push_violation(
                 "verification_must_pass",
                 ".ledgerful/state/ledger.db",
-                "no verification run recorded (ledger not initialized)".to_string(),
+                "ledger DB not present; cannot evaluate verification_must_pass — present a ledger artifact or disable the rule in policy.toml".to_string(),
             );
             return Ok(());
         };
-        match storage.get_latest_verification_run() {
-            Ok(Some((_id, _ts, overall_pass))) => {
+
+        if self.is_pr_mode {
+            self.eval_verification_must_pass_pr(&storage)?;
+        } else {
+            self.eval_verification_must_pass_local(&storage)?;
+        }
+        Ok(())
+    }
+
+    fn eval_verification_must_pass_local(&mut self, storage: &StorageManager) -> Result<()> {
+        match storage.get_latest_bound_verification_run()? {
+            Some((_id, _ts, overall_pass, _tx_id)) => {
                 if !overall_pass {
                     self.push_violation(
                         "verification_must_pass",
                         ".ledgerful/state/ledger.db",
-                        "latest verification run overall_pass is false".to_string(),
+                        "latest bound verification run overall_pass is false".to_string(),
                     );
                 }
             }
-            Ok(None) => {
+            None => {
                 self.push_violation(
                     "verification_must_pass",
                     ".ledgerful/state/ledger.db",
-                    "no verification run recorded".to_string(),
+                    "no verification run bound to a transaction (run verify with --tx-id or during commit hooks)".to_string(),
                 );
-            }
-            Err(e) => {
-                return Err(e);
             }
         }
         Ok(())
+    }
+
+    fn eval_verification_must_pass_pr(&mut self, storage: &StorageManager) -> Result<()> {
+        // Cap scan; bound runs are newest-first (ORDER BY id DESC).
+        const BOUND_SCAN_LIMIT: usize = 256;
+        let bound = storage.list_bound_verification_runs(BOUND_SCAN_LIMIT)?;
+        if bound.is_empty() {
+            self.push_violation(
+                "verification_must_pass",
+                ".ledgerful/state/ledger.db",
+                "no verification run bound to a transaction (run verify with --tx-id or during commit hooks)".to_string(),
+            );
+            return Ok(());
+        }
+
+        let changed_paths = match self.resolve_risk()? {
+            Some(r) => r.changed_paths,
+            None => Vec::new(),
+        };
+
+        // Prefer a bound run whose ledger entity covers a changed path.
+        let mut covering: Option<(bool, String)> = None;
+        for (_id, _ts, overall_pass, tx_id) in &bound {
+            if let Some(entities) = self.entities_for_tx(storage, tx_id)? {
+                let covers = entities.iter().any(|entity| {
+                    changed_paths
+                        .iter()
+                        .any(|path| entity_covers_path(entity, path))
+                });
+                if covers {
+                    covering = Some((*overall_pass, tx_id.clone()));
+                    break; // newest covering (list is id DESC)
+                }
+            }
+        }
+
+        if let Some((overall_pass, _tx_id)) = covering {
+            if !overall_pass {
+                self.push_violation(
+                    "verification_must_pass",
+                    ".ledgerful/state/ledger.db",
+                    "bound verification run covering the evaluation target change set has overall_pass=false".to_string(),
+                );
+            }
+            return Ok(());
+        }
+
+        // No covering bound run.
+        if changed_paths.is_empty() {
+            // Edge: empty change set — require latest bound overall_pass.
+            let (_id, _ts, overall_pass, _tx_id) = &bound[0];
+            if !overall_pass {
+                self.push_violation(
+                    "verification_must_pass",
+                    ".ledgerful/state/ledger.db",
+                    "latest bound verification run overall_pass is false".to_string(),
+                );
+            }
+        } else {
+            self.push_violation(
+                "verification_must_pass",
+                ".ledgerful/state/ledger.db",
+                "no bound verification run covers the evaluation target change set".to_string(),
+            );
+        }
+        Ok(())
+    }
+
+    /// Entities of committed ledger entries for `tx_id` (empty → None).
+    fn entities_for_tx(
+        &self,
+        storage: &StorageManager,
+        tx_id: &str,
+    ) -> Result<Option<Vec<String>>> {
+        let db = crate::ledger::db::LedgerDb::new(storage.get_connection());
+        let entries = db
+            .get_ledger_entries_for_tx(tx_id)
+            .map_err(|e| miette::miette!("Failed to read ledger entries for tx: {}", e))?;
+        let mut entities: Vec<String> = entries
+            .iter()
+            .map(|e| normalize_repo_path(&e.entity))
+            .filter(|e| !e.is_empty())
+            .collect();
+        entities.sort();
+        entities.dedup();
+        if entities.is_empty() {
+            Ok(None)
+        } else {
+            Ok(Some(entities))
+        }
     }
 
     /// True when an ADR covers this evaluation's change set (not any ADR in history).

@@ -92,6 +92,75 @@ impl StorageManager {
         }
     }
 
+    /// Latest verification run with a non-null, non-empty `tx_id` (bound run).
+    ///
+    /// Bound runs are produced by `verify --tx-id` or commit-path hooks. Unbound
+    /// runs (global repo verifies) are excluded so policy cannot be satisfied by
+    /// an unrelated later verify. Deterministic: `ORDER BY id DESC LIMIT 1`.
+    ///
+    /// Returns `(id, timestamp, overall_pass, tx_id)`.
+    pub fn get_latest_bound_verification_run(&self) -> Result<Option<(i64, String, bool, String)>> {
+        let result = self.conn.query_row(
+            "SELECT id, timestamp, overall_pass, tx_id \
+             FROM verification_runs \
+             WHERE tx_id IS NOT NULL AND TRIM(tx_id) != '' \
+             ORDER BY id DESC LIMIT 1",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get::<_, i64>(2)? != 0,
+                    row.get(3)?,
+                ))
+            },
+        );
+
+        match result {
+            Ok(row) => Ok(Some(row)),
+            Err(rusqlite::Error::QueryReturnedNoRows) => Ok(None),
+            Err(e) => Err(e).into_diagnostic(),
+        }
+    }
+
+    /// Bound verification runs newest-first (`ORDER BY id DESC`), capped at `limit`.
+    ///
+    /// Used by policy `verification_must_pass` in `--pr` mode to find a run whose
+    /// `tx_id` maps to a ledger entity covering the evaluation change set.
+    /// Returns `(id, timestamp, overall_pass, tx_id)` rows.
+    pub fn list_bound_verification_runs(
+        &self,
+        limit: usize,
+    ) -> Result<Vec<(i64, String, bool, String)>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT id, timestamp, overall_pass, tx_id \
+                 FROM verification_runs \
+                 WHERE tx_id IS NOT NULL AND TRIM(tx_id) != '' \
+                 ORDER BY id DESC \
+                 LIMIT ?1",
+            )
+            .into_diagnostic()?;
+
+        let rows = stmt
+            .query_map(rusqlite::params![limit as i64], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get::<_, i64>(2)? != 0,
+                    row.get(3)?,
+                ))
+            })
+            .into_diagnostic()?;
+
+        let mut out = Vec::new();
+        for row in rows {
+            out.push(row.into_diagnostic()?);
+        }
+        Ok(out)
+    }
+
     /// Aggregate `verification_runs` into per-date pass/fail counts over the
     /// last `days` days. Dates with no runs are omitted (deterministic: only
     /// dates that have at least one run appear, sorted ascending by date).
@@ -335,6 +404,64 @@ mod tests {
         let storage = in_memory_storage();
         let result = storage.get_latest_verification_run().unwrap();
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn test_get_latest_bound_verification_run_ignores_unbound() {
+        let storage = in_memory_storage();
+        // Unbound only → no bound run.
+        storage
+            .save_verification_run("2026-01-01T00:00:00Z", None, true, None)
+            .unwrap();
+        assert!(
+            storage
+                .get_latest_bound_verification_run()
+                .unwrap()
+                .is_none()
+        );
+
+        // Empty-string tx_id is also unbound.
+        storage
+            .save_verification_run("2026-01-01T00:00:01Z", None, true, Some(""))
+            .unwrap();
+        assert!(
+            storage
+                .get_latest_bound_verification_run()
+                .unwrap()
+                .is_none()
+        );
+
+        // Bound pass is selected even if a later unbound exists.
+        let bound_id = storage
+            .save_verification_run("2026-01-01T00:00:02Z", None, false, Some("tx-bound-1"))
+            .unwrap();
+        storage
+            .save_verification_run("2026-01-01T00:00:03Z", None, true, None)
+            .unwrap();
+        let latest = storage
+            .get_latest_bound_verification_run()
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.0, bound_id);
+        assert!(!latest.2);
+        assert_eq!(latest.3, "tx-bound-1");
+
+        // Newer bound wins.
+        let newer = storage
+            .save_verification_run("2026-01-01T00:00:04Z", None, true, Some("tx-bound-2"))
+            .unwrap();
+        let latest = storage
+            .get_latest_bound_verification_run()
+            .unwrap()
+            .unwrap();
+        assert_eq!(latest.0, newer);
+        assert!(latest.2);
+        assert_eq!(latest.3, "tx-bound-2");
+
+        let listed = storage.list_bound_verification_runs(10).unwrap();
+        assert_eq!(listed.len(), 2);
+        assert_eq!(listed[0].3, "tx-bound-2");
+        assert_eq!(listed[1].3, "tx-bound-1");
     }
 
     #[test]
