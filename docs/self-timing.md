@@ -116,6 +116,16 @@ ledgerful timings --export out.json
 ledgerful timings --opt-out
 ```
 
+## Global timings rollup
+
+`ledgerful timings --global` unions `command_timings` across discovered repos
+on disk (same roots/discovery as `ledger status --global`). It is **read-only**
+on every per-repo DB: `--prune` is refused; `--opt-in` / `--opt-out` still write
+only user config. Flame stacks prefix the repo basename for disambiguation.
+
+See [cross-repo.md — Global timings](./cross-repo.md#global-timings) for flags,
+JSON schema, and empty-state messages.
+
 ## Privacy CI
 
 CI greps the capture and query modules for `ureq|reqwest|tokio_tungstenite` and

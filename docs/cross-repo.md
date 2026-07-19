@@ -74,3 +74,110 @@ The optional `[global_rollup]` table in `~/.ledgerful/config.toml` controls the 
 ```
 
 The text table printed without `--json` contains the same values.
+
+## Global timings
+
+`ledgerful timings --global` unions per-repo `command_timings` rows across the
+same discovered repos as the posture rollup (same `[global_rollup]` roots,
+discovery walk, and derived cache for repo discovery).
+
+### Behavior
+
+- Each per-repo database is opened **read-only** (sequential open → query → close).
+- If `command_timings` is **absent** on a repo (pre-m52 / not yet migrated), that
+  repo is skipped for timings — not an error.
+- Per-repo open/query failures are **warn-and-skip** (non-fatal).
+- Outer summaries **pool raw duration samples** across repos, then recompute
+  p50/p95/p99/total/runs on the pooled set (they do **not** average per-repo
+  percentiles).
+- Sorted by `total_ms` DESC, then `command` ASC; `--top` applies after sort.
+- If no discovered repo has the table: honest message
+  `per-repo timing not enabled (… see 0043 / self-timing)` and exit 0.
+- If tables exist but the window is empty: `no global timing rows …` and exit 0.
+- No fabricated rows. No network. Signing basis is untouched.
+- Respects `global_rollup.enabled`: when disabled, prints the same style
+  one-liner as `ledger status --global` and exits 0.
+
+### Supported flags
+
+| Flag | Global behavior |
+|---|---|
+| `--json` | JSON envelope (see below) |
+| `--top N` | Cap commands after sort (default 20) |
+| `--days N` | Window for outer/inner/flame (default 30) |
+| `--export PATH` | Write JSON summary (or collapsed text with `--flame`) |
+| `--inner` | Aggregate `span_name` samples across repos |
+| `--command NAME` | Filter `--inner` / `--flame` to one command |
+| `--flame` | Collapsed stacks with `{repo_basename};{command}[;span] duration` |
+| `--explain COMMAND` | Pool last 7d + prior 7d outer samples across repos; one sentence |
+| `--opt-in` / `--opt-out` | User-config self-timing capture (same as local; works with or without `--global`) |
+| `--prune` | **Refused** — global path never writes per-repo DBs |
+
+Flame stacks prefix the **repo basename** so identical command/span names from
+different repos remain distinguishable in speedscope.
+
+### JSON output (`timings --global --json`)
+
+Field names use camelCase on the envelope. Nested command summary fields match
+the local timings schema (`command`, `runs`, `p50_ms`, …).
+
+### `GlobalTimingsSummary`
+
+| Field | Type | Description |
+|---|---|---|
+| `schemaVersion` | `number` | Always `1` for this shape. |
+| `totalRepos` | `number` | Discovered repos considered. |
+| `reposWithTimings` | `number` | Repos whose DB has `command_timings`. |
+| `skippedRepos` | `number` | Repos skipped due to open/query errors. |
+| `timingsAbsent` | `number` | Repos opened successfully but missing the table. |
+| `warnings` | `[string]` | Per-repo / walk warnings. |
+| `message` | `string \| omitted` | Honest empty-state text when `data` is empty. |
+| `data` | `[CommandTimingSummary]` | Pooled outer summaries (top-N). |
+| `repos` | `[RepoCommandTiming]` | Per-repo breakdown for honesty. |
+
+### `RepoCommandTiming`
+
+| Field | Type | Description |
+|---|---|---|
+| `repoPath` | `string` | Absolute repository root. |
+| `command` | `string` | Command name. |
+| `runs` | `number` | Outer run count in this repo. |
+| `p50_ms` / `p95_ms` / `p99_ms` | `number` | Percentiles for this repo only. |
+| `total_ms` | `number` | Sum of outer durations in this repo. |
+
+### Example
+
+```json
+{
+  "schemaVersion": 1,
+  "totalRepos": 2,
+  "reposWithTimings": 2,
+  "skippedRepos": 0,
+  "timingsAbsent": 0,
+  "warnings": [],
+  "data": [
+    {
+      "command": "verify",
+      "runs": 5,
+      "p50_ms": 30,
+      "p95_ms": 50,
+      "p99_ms": 50,
+      "total_ms": 150
+    }
+  ],
+  "repos": [
+    {
+      "repoPath": "/home/user/dev/alpha",
+      "command": "verify",
+      "runs": 3,
+      "p50_ms": 20,
+      "p95_ms": 30,
+      "p99_ms": 30,
+      "total_ms": 60
+    }
+  ]
+}
+```
+
+See also [self-timing.md](./self-timing.md) for capture semantics and the local
+`timings` surface.

@@ -236,22 +236,7 @@ pub fn summarize_outer(
 
     let mut summaries: Vec<CommandTimingSummary> = by_cmd
         .into_iter()
-        .map(|(command, mut durs)| {
-            durs.sort_unstable();
-            let runs = durs.len() as u64;
-            let total_ms: i64 = durs.iter().sum();
-            let p50_ms = percentile_sorted(&durs, 50);
-            let p95_ms = percentile_sorted(&durs, 95);
-            let p99_ms = percentile_sorted(&durs, 99);
-            CommandTimingSummary {
-                command,
-                runs,
-                p50_ms,
-                p95_ms,
-                p99_ms,
-                total_ms,
-            }
-        })
+        .map(|(command, durs)| summarize_from_samples(command, &durs))
         .collect();
 
     summaries.sort_by(|a, b| {
@@ -265,8 +250,27 @@ pub fn summarize_outer(
     Ok(summaries)
 }
 
+/// Build a summary from pooled duration samples (any source, e.g. multi-repo union).
+///
+/// Samples are sorted ascending before nearest-rank percentiles are computed.
+/// Empty samples yield runs=0 and zeroed percentiles/total.
+pub fn summarize_from_samples(command: String, durations: &[i64]) -> CommandTimingSummary {
+    let mut durs = durations.to_vec();
+    durs.sort_unstable();
+    let runs = durs.len() as u64;
+    let total_ms: i64 = durs.iter().sum();
+    CommandTimingSummary {
+        command,
+        runs,
+        p50_ms: percentile_sorted(&durs, 50),
+        p95_ms: percentile_sorted(&durs, 95),
+        p99_ms: percentile_sorted(&durs, 99),
+        total_ms,
+    }
+}
+
 /// Nearest-rank percentile for a pre-sorted non-empty slice. Empty → 0.
-fn percentile_sorted(sorted: &[i64], pct: u8) -> i64 {
+pub fn percentile_sorted(sorted: &[i64], pct: u8) -> i64 {
     if sorted.is_empty() {
         return 0;
     }
