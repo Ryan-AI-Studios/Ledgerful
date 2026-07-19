@@ -22,7 +22,7 @@ where
     {
         use std::io::{Read, Write};
         use std::os::fd::AsRawFd;
-        let mut stdout = std::io::stdout();
+        let stdout = std::io::stdout();
         let (reader, mut writer) = os_pipe::pipe().unwrap();
         stdout.flush().unwrap();
         let raw = writer.as_raw_fd();
