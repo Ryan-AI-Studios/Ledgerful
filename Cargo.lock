@@ -4265,10 +4265,12 @@ dependencies = [
  "indicatif",
  "inquire",
  "jsonc-parser",
+ "libc",
  "miette 7.6.0",
  "mime_guess",
  "nix 0.31.3",
  "notify-debouncer-full",
+ "os_pipe",
  "owo-colors 4.3.0",
  "parking_lot",
  "path-clean",
@@ -5106,6 +5108,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b7d950ca161dc355eaf28f82b11345ed76c6e1f6eb1f4f4479e0323b9e2fbd0e"
 dependencies = [
  "num-traits",
+]
+
+[[package]]
+name = "os_pipe"
+version = "1.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "7d8fae84b431384b68627d0f9b3b1245fcf9f46f6c0e3dc902e9dce64edd1967"
+dependencies = [
+ "libc",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

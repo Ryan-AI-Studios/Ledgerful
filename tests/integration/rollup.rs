@@ -20,6 +20,7 @@ where
 {
     #[cfg(unix)]
     {
+        use std::io::{Read, Write};
         use std::os::fd::AsRawFd;
         let mut stdout = std::io::stdout();
         let (mut reader, mut writer) = os_pipe::pipe().unwrap();

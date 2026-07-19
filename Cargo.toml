@@ -134,6 +134,12 @@ reqwest = { version = "0.13.4", features = ["rustls"] }
 ed25519-dalek = { version = "2.1.1", features = ["rand_core"] }
 filetime = "0.2"
 
+# Unix-only stdout-capture helpers for integration tests (gated by #[cfg(unix)]
+# in the test source); required so the unix test target compiles on macOS/Linux.
+[target.'cfg(unix)'.dev-dependencies]
+os_pipe = "1.2"
+libc = "0.2"
+
 [patch.crates-io]
 sqlite3-sys = { path = "./vendor/sqlite3-sys" }
 
