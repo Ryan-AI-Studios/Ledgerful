@@ -37,8 +37,12 @@ pub struct PolicyCheckReport {
     pub passed: bool,
     /// `observe` | `enforce`
     pub mode: String,
-    /// `base-branch` | `trusted-path` | `local`
+    /// `base-branch` | `trusted-path` | `local` | `synthesized`
     pub policy_source: String,
+    /// Non-blocking evaluation notes (e.g. skipped rules when risk not evaluable).
+    /// Omitted from JSON when empty (schemaVersion stays 1; additive optional field).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<String>,
 }
 
 /// A single policy violation.
@@ -183,6 +187,8 @@ pub enum PolicySource {
     BaseBranch,
     TrustedPath,
     Local,
+    /// Defaults synthesized because no policy.toml was loaded (not base-branch content).
+    Synthesized,
 }
 
 impl PolicySource {
@@ -191,6 +197,7 @@ impl PolicySource {
             Self::BaseBranch => "base-branch",
             Self::TrustedPath => "trusted-path",
             Self::Local => "local",
+            Self::Synthesized => "synthesized",
         }
     }
 }
@@ -261,8 +268,13 @@ pub fn evaluate_policy_check(
         config.rules.fail_on = fo.trim().to_ascii_lowercase();
     }
 
+    // Preset resolution (CI-safe):
+    // - Explicit preset wins.
+    // - `--pr` with omitted preset → enforce (never fail-open via working-tree gate.mode).
+    // - Local / default with omitted preset → working-tree gate.mode.
     let mode = match config.preset.as_deref() {
         Some(p) => PolicyMode::parse(p)?,
+        None if is_pr_mode => PolicyMode::Enforce,
         None => gate_mode,
     };
 
@@ -291,8 +303,10 @@ pub fn evaluate_policy_check(
 /// Priority:
 /// 1. Explicit `--policy <path>` → trusted-path
 /// 2. `--pr` mode → `git show <base>:.ledgerful/policy.toml` (base-branch);
-///    never the working-tree PR-head copy. Missing base file → synthesize from gate.mode.
-/// 3. Local mode → working-tree `.ledgerful/policy.toml` or synthesize from gate.mode.
+///    never the working-tree PR-head copy. Missing base file → synthesize
+///    defaults with **preset=enforce** (CI-safe). Source = `synthesized`.
+/// 3. Local mode → working-tree `.ledgerful/policy.toml` or synthesize from
+///    `gate.mode`. Source = `local` when a file is loaded, `synthesized` when not.
 fn resolve_policy(
     layout: &Layout,
     policy_path: Option<&Path>,
@@ -319,14 +333,15 @@ fn resolve_policy(
                 return Ok((cfg, PolicySource::BaseBranch));
             }
             None => {
-                // No policy on base branch: synthesize defaults from gate.mode.
-                let cfg = synthesize_from_gate(layout);
-                return Ok((cfg, PolicySource::BaseBranch));
+                // No policy on base branch: synthesize CI-safe enforce defaults.
+                // Do not inherit working-tree gate.mode (fail-open risk).
+                let cfg = synthesize_defaults(PolicyMode::Enforce);
+                return Ok((cfg, PolicySource::Synthesized));
             }
         }
     }
 
-    // Local mode: working-tree policy or synthesize.
+    // Local mode: working-tree policy or synthesize from gate.mode.
     let local_path = layout.root.join(DEFAULT_POLICY_REL);
     if local_path.exists() {
         let text = std::fs::read_to_string(local_path.as_std_path())
@@ -335,24 +350,30 @@ fn resolve_policy(
         return Ok((cfg, PolicySource::Local));
     }
 
-    Ok((synthesize_from_gate(layout), PolicySource::Local))
+    Ok((synthesize_from_gate(layout), PolicySource::Synthesized))
 }
 
 fn synthesize_from_gate(layout: &Layout) -> PolicyConfig {
     let repo_config = load_ledger_config(layout).unwrap_or_default();
     let mode = if repo_config.gate.is_enforce() {
-        "enforce"
+        PolicyMode::Enforce
     } else {
-        "observe"
+        PolicyMode::Observe
     };
+    synthesize_defaults(mode)
+}
+
+fn synthesize_defaults(mode: PolicyMode) -> PolicyConfig {
     PolicyConfig {
-        preset: Some(mode.to_string()),
+        preset: Some(mode.as_str().to_string()),
         rules: PolicyRules::default(),
     }
 }
 
 /// Load `.ledgerful/policy.toml` from a git ref via `git show`.
-/// Returns `Ok(None)` when the file does not exist at that ref.
+///
+/// Returns `Ok(None)` only when the path is known-missing at that ref.
+/// Invalid refs and other fatals return `Err` with an actionable message.
 pub fn load_policy_from_git(repo_root: &Path, base_ref: &str) -> Result<Option<String>> {
     let spec = format!("{}:{}", base_ref, DEFAULT_POLICY_REL);
     let output = Command::new("git")
@@ -363,18 +384,15 @@ pub fn load_policy_from_git(repo_root: &Path, base_ref: &str) -> Result<Option<S
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        // Missing path is expected; other failures surface.
-        if stderr.contains("does not exist")
-            || stderr.contains("exists on disk, but not in")
-            || stderr.contains("Path")
-            || stderr.contains("fatal:")
-            || output.status.code() == Some(128)
-        {
+        // Treat as missing only known path-missing messages. Invalid refs /
+        // other fatals must surface so CI does not silently fail-open.
+        if is_git_path_missing(&stderr) {
             return Ok(None);
         }
         return Err(miette::miette!(
-            "git show {} failed: {}",
+            "git show {} failed (ref or object error; check that base ref '{}' exists and is fetched): {}",
             spec,
+            base_ref,
             stderr.trim()
         ));
     }
@@ -382,6 +400,14 @@ pub fn load_policy_from_git(repo_root: &Path, base_ref: &str) -> Result<Option<S
     let text = String::from_utf8(output.stdout)
         .map_err(|e| miette::miette!("policy.toml at {} is not valid UTF-8: {}", spec, e))?;
     Ok(Some(text))
+}
+
+/// True when git stderr indicates the path is absent at the given tree-ish.
+fn is_git_path_missing(stderr: &str) -> bool {
+    let lower = stderr.to_ascii_lowercase();
+    lower.contains("does not exist")
+        || lower.contains("exists on disk, but not in")
+        || lower.contains("path does not exist")
 }
 
 pub fn parse_policy_toml(text: &str) -> Result<PolicyConfig> {
@@ -500,12 +526,15 @@ impl EvalContext {
         });
 
         let passed = self.violations.is_empty();
+        // Deterministic notes ordering for stable JSON.
+        self.notes.sort();
         Ok(PolicyCheckReport {
             schema_version: POLICY_CHECK_SCHEMA_VERSION,
             violations: self.violations,
             passed,
             mode: self.mode.as_str().to_string(),
             policy_source: self.policy_source.as_str().to_string(),
+            notes: self.notes,
         })
     }
 
@@ -714,6 +743,13 @@ fn print_human_report(report: &PolicyCheckReport) {
         }
     );
 
+    if !report.notes.is_empty() {
+        println!("\n{}:", "Notes".bold());
+        for note in &report.notes {
+            println!("  • {}", note.dimmed());
+        }
+    }
+
     if report.violations.is_empty() {
         println!("\n{}", "No policy violations.".green());
         return;
@@ -870,18 +906,35 @@ fail_on = "critical"
             passed: false,
             mode: "enforce".into(),
             policy_source: "local".into(),
+            notes: vec![],
         };
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["schemaVersion"], 1);
         assert_eq!(json["passed"], false);
         assert_eq!(json["mode"], "enforce");
         assert_eq!(json["policySource"], "local");
+        // Empty notes omitted from JSON (additive optional field).
+        assert!(json.get("notes").is_none());
         let v = &json["violations"][0];
         assert_eq!(v["ruleId"], "no_pending_tx");
         assert_eq!(v["file"], ".ledgerful/state/ledger.db");
         assert!(v["line"].is_null());
         assert_eq!(v["message"], "pending");
         assert_eq!(v["severity"], "error");
+    }
+
+    #[test]
+    fn notes_serialized_when_nonempty() {
+        let report = PolicyCheckReport {
+            schema_version: 1,
+            violations: vec![],
+            passed: true,
+            mode: "observe".into(),
+            policy_source: "local".into(),
+            notes: vec!["risk rules skipped: risk not evaluable".into()],
+        };
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["notes"][0], "risk rules skipped: risk not evaluable");
     }
 
     /// DoD-5: signing basis is exactly tx_id+category+summary+reason+committed_at.
@@ -926,12 +979,49 @@ fail_on = "critical"
             &pub_key
         ));
 
-        // Document the exact basis field set (must match crypto.rs:207-210).
+        // Pin the exact five basis fields and crypto's known payload format
+        // (must match crypto.rs sign_ledger_entry_in / verify_signature):
+        //   "tx_id:{}\ncategory:{}\nsummary:{}\nreason:{}\ncommitted_at:{}"
         let basis_fields = ["tx_id", "category", "summary", "reason", "committed_at"];
         assert_eq!(basis_fields.len(), 5);
+        assert_eq!(
+            basis_fields,
+            ["tx_id", "category", "summary", "reason", "committed_at"]
+        );
+        let known_format = format!(
+            "tx_id:{}\ncategory:{}\nsummary:{}\nreason:{}\ncommitted_at:{}",
+            tx_id, category, summary, reason, committed_at
+        );
+        // Reconstruct by joining field:value lines — same order as crypto.
+        let reconstructed = basis_fields
+            .iter()
+            .zip([tx_id, category, summary, reason, committed_at])
+            .map(|(k, v)| format!("{k}:{v}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert_eq!(reconstructed, known_format);
         assert!(!basis_fields.contains(&"policy"));
         assert!(!basis_fields.contains(&"mode"));
         assert!(!basis_fields.contains(&"gate"));
+    }
+
+    #[test]
+    fn is_git_path_missing_detects_known_messages_only() {
+        assert!(is_git_path_missing(
+            "fatal: path '.ledgerful/policy.toml' does not exist in 'main'"
+        ));
+        assert!(is_git_path_missing(
+            "fatal: path '.ledgerful/policy.toml' exists on disk, but not in 'HEAD'"
+        ));
+        assert!(is_git_path_missing("Path does not exist"));
+        // Invalid ref / other fatals must NOT be treated as missing.
+        assert!(!is_git_path_missing(
+            "fatal: invalid object name 'origin/nope'"
+        ));
+        assert!(!is_git_path_missing("fatal: bad revision 'xyz'"));
+        assert!(!is_git_path_missing(
+            "error: unknown revision or path not in the working tree."
+        ));
     }
 
     #[test]

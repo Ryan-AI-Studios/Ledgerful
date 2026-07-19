@@ -39,8 +39,9 @@ ledgerful policy check --pr origin/main...HEAD --policy /path/to/org-policy.toml
 | Source | When | `policySource` in JSON |
 |---|---|---|
 | Explicit `--policy <path>` | Always wins | `trusted-path` |
-| `git show <base>:.ledgerful/policy.toml` | `--pr` without `--policy` | `base-branch` |
-| Working-tree `.ledgerful/policy.toml` or synthesized defaults | Local / default mode | `local` |
+| `git show <base>:.ledgerful/policy.toml` | `--pr` without `--policy` **and** file exists on base | `base-branch` |
+| Working-tree `.ledgerful/policy.toml` | Local / default mode when the file exists | `local` |
+| Synthesized defaults | No policy file loaded (missing base path or local file) | `synthesized` |
 
 ## Invocation
 
@@ -72,7 +73,10 @@ Default path: `.ledgerful/policy.toml` in the repo (overridable with `--policy`)
 
 ```toml
 # .ledgerful/policy.toml
-# preset can be omitted — derived from gate.mode if absent
+# CI: commit this file with preset = "enforce" so the base branch is CI-safe.
+# Local: if preset is omitted, mode is derived from gate.mode.
+# --pr: if preset is omitted (or policy is missing and synthesized), mode
+# defaults to **enforce** — never fail-open via working-tree gate.mode.
 preset = "enforce"  # or "observe"
 
 [rules]
@@ -82,6 +86,13 @@ verification_must_pass = true
 max_risk_without_adr = "high"   # off | low | medium | high
 fail_on = "high"                # off | low | medium | high
 ```
+
+### Preset default rules (CI-safe)
+
+| Context | `preset` present | `preset` omitted / no policy file |
+|---|---|---|
+| Local / default | use declared preset | synthesize from working-tree `gate.mode` |
+| `--pr` | use declared preset (from base-branch or `--policy`) | **enforce** (CI-safe; does not inherit working-tree `gate.mode`) |
 
 ### Committing the policy file
 
@@ -94,11 +105,13 @@ git add -f .ledgerful/policy.toml
 git commit -m "Add ledgerful CI policy"
 ```
 
-Without a committed base-branch policy, `--pr` mode synthesizes defaults from
-`gate.mode` (still bypass-proof — the PR head's working-tree copy is never used).
+**CI should commit a base-branch `policy.toml` with `preset = "enforce"`.**
+Without a committed base-branch policy, `--pr` mode synthesizes defaults with
+`preset=enforce` and reports `policySource: "synthesized"` (still bypass-proof —
+the PR head's working-tree copy is never used). Invalid base refs surface as
+errors rather than silent missing-policy.
 
-If no policy file exists, defaults are synthesized from `gate.mode`
-(0050 subsumption):
+Local mode without a policy file synthesizes from `gate.mode` (0050 subsumption):
 
 - **observe** preset: all rules enabled; violations are warnings; exit 0 always
 - **enforce** preset: all rules enabled; violations block (exit nonzero)
@@ -148,13 +161,33 @@ bump `schemaVersion`.
   ],
   "passed": false,
   "mode": "enforce",
-  "policySource": "base-branch"
+  "policySource": "base-branch",
+  "notes": []
 }
 ```
+
+`notes` is an additive optional array of non-blocking evaluation messages
+(e.g. risk rules skipped when risk is not evaluable). It is omitted from JSON
+when empty (`schemaVersion` stays 1).
 
 Violations are sorted deterministically by `(ruleId, file, message)`.
 
 ## CI example (pairs with 0047 Action)
+
+Commit a base-branch policy with `preset = "enforce"` so CI never depends on
+working-tree `gate.mode`:
+
+```toml
+# .ledgerful/policy.toml  (force-add; see above)
+preset = "enforce"
+
+[rules]
+require_signed_entries = true
+no_pending_tx = true
+verification_must_pass = true
+max_risk_without_adr = "high"
+fail_on = "high"
+```
 
 ```yaml
 # .github/workflows/ledgerful-policy.yml
@@ -190,8 +223,13 @@ jobs:
 
 Notes:
 
+- Prefer a committed base-branch `policy.toml` with `preset = "enforce"`. If
+  the base has no policy file, `--pr` synthesizes **enforce** defaults
+  (`policySource: "synthesized"`) so CI does not fail-open via a local
+  `gate.mode=observe`.
 - `fetch-depth: 0` (or an explicit fetch of the base ref) is required; shallow
-  clones cannot resolve `git show <base>:.ledgerful/policy.toml`.
+  clones cannot resolve `git show <base>:.ledgerful/policy.toml`. Invalid base
+  refs fail hard (not treated as missing policy).
 - Posting check-run annotations is the **Action wrapper's** job (0047), not
   the engine. `policy check` only evaluates and exits.
 - The engine path is offline: no `ureq` / `reqwest` / network in policy code.

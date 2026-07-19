@@ -296,7 +296,7 @@ fail_on = "off"
 }
 
 // ---------------------------------------------------------------------------
-// no_pending_tx local (DoD-1c) — sidecar
+// no_pending_tx local (DoD-1c) — sidecar + --pr contrast
 // ---------------------------------------------------------------------------
 
 #[test]
@@ -306,6 +306,7 @@ fn no_pending_tx_fails_locally_on_sidecar() {
     let root = tmp.path();
     setup_green_repo(root);
 
+    // Need a committed base for --pr range, plus a second commit so HEAD~1...HEAD works.
     write_policy(
         root,
         r#"
@@ -318,6 +319,9 @@ max_risk_without_adr = "off"
 fail_on = "off"
 "#,
     );
+    commit_policy(root, "base policy for sidecar contrast");
+    fs::write(root.join("extra.txt"), "pr change\n").unwrap();
+    git_add_and_commit(root, "extra commit for pr range");
 
     // Write pending_hook_tx sidecar (local-only signal).
     let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
@@ -330,14 +334,26 @@ fail_on = "off"
 
     let _ni = non_interactive();
     let _guard = DirGuard::new(root);
-    let report = evaluate_policy_check(None, None, None).unwrap();
+
+    // Local mode → must flag sidecar.
+    let local = evaluate_policy_check(None, None, None).unwrap();
     assert!(
-        report
+        local
             .violations
             .iter()
             .any(|v| v.rule_id == "no_pending_tx" && v.file.contains("pending_hook_tx")),
         "local mode must flag sidecar: {:?}",
-        report.violations
+        local.violations
+    );
+
+    // --pr mode → committed range only; NO sidecar-based no_pending_tx violation.
+    let pr = evaluate_policy_check(Some("HEAD~1...HEAD"), None, None).unwrap();
+    assert!(
+        !pr.violations
+            .iter()
+            .any(|v| v.rule_id == "no_pending_tx" && v.file.contains("pending_hook_tx")),
+        "--pr must not flag pending_hook_tx sidecar: {:?}",
+        pr.violations
     );
 }
 
@@ -740,8 +756,37 @@ fail_on = "off"
 }
 
 // ---------------------------------------------------------------------------
-// Synthesized defaults from gate.mode
+// Synthesized defaults from gate.mode (DoD-3 / 0050 subsumption)
 // ---------------------------------------------------------------------------
+
+fn set_gate_mode(root: &Path, mode: &str) {
+    let config_path = root.join(".ledgerful").join("config.toml");
+    let mut cfg = fs::read_to_string(&config_path).unwrap_or_default();
+    if !cfg.contains("[gate]") {
+        cfg.push_str(&format!("\n[gate]\nmode = \"{mode}\"\n"));
+    } else if cfg.contains("mode = \"observe\"") || cfg.contains("mode = \"enforce\"") {
+        cfg = cfg.replace("mode = \"observe\"", &format!("mode = \"{mode}\""));
+        cfg = cfg.replace("mode = \"enforce\"", &format!("mode = \"{mode}\""));
+    } else {
+        cfg.push_str(&format!("mode = \"{mode}\"\n"));
+    }
+    fs::write(&config_path, cfg).unwrap();
+}
+
+fn force_pending_violation(root: &Path) {
+    let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
+    let db_path = layout.state_subdir().join("ledger.db");
+    let mut storage = StorageManager::init(db_path.as_std_path()).unwrap();
+    let config = Config::default();
+    let mut tx_mgr = TransactionManager::new(&mut storage, root.to_path_buf(), config);
+    let _ = tx_mgr
+        .start_change(TransactionRequest {
+            category: Category::Feature,
+            entity: "src/pending.rs".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+}
 
 #[test]
 #[serial(env, cwd)]
@@ -753,27 +798,215 @@ fn missing_policy_file_synthesizes_from_gate_mode() {
     let policy = root.join(".ledgerful").join("policy.toml");
     let _ = fs::remove_file(&policy);
 
-    // Set gate.mode=enforce via config.
-    let config_path = root.join(".ledgerful").join("config.toml");
-    let mut cfg = fs::read_to_string(&config_path).unwrap_or_default();
-    if !cfg.contains("[gate]") {
-        cfg.push_str("\n[gate]\nmode = \"enforce\"\n");
-    } else {
-        cfg = cfg.replace("mode = \"observe\"", "mode = \"enforce\"");
-        if !cfg.contains("mode =") {
-            cfg.push_str("mode = \"enforce\"\n");
-        }
-    }
-    fs::write(&config_path, cfg).unwrap();
+    set_gate_mode(root, "enforce");
 
     let _ni = non_interactive();
     let _guard = DirGuard::new(root);
     let report = evaluate_policy_check(None, Some("off"), None).unwrap();
-    // With synthesized enforce + verification already seeded + fail_on overridden off,
-    // require_signed_entries may still fire if init wrote unsigned entries — just
-    // assert mode is enforce and source is local.
+    // Synthesized (no file loaded) → policySource=synthesized; mode from gate.mode.
     assert_eq!(report.mode, "enforce");
-    assert_eq!(report.policy_source, "local");
+    assert_eq!(report.policy_source, "synthesized");
+}
+
+/// DoD-3: no policy.toml + gate.mode=observe → synthesize observe; never exit nonzero.
+#[test]
+#[serial(env, cwd)]
+fn no_policy_gate_observe_never_exits_nonzero_on_violations() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_green_repo(root);
+    let _ = fs::remove_file(root.join(".ledgerful").join("policy.toml"));
+    set_gate_mode(root, "observe");
+    force_pending_violation(root);
+
+    let _ni = non_interactive();
+    let _guard = DirGuard::new(root);
+
+    let report = evaluate_policy_check(None, Some("off"), None).unwrap();
+    assert_eq!(report.mode, "observe");
+    assert_eq!(report.policy_source, "synthesized");
+    assert!(
+        !report.passed,
+        "pending tx must produce violations: {:?}",
+        report.violations
+    );
+    assert!(
+        report.violations.iter().all(|v| v.severity == "warn"),
+        "observe severities must be warn: {:?}",
+        report.violations
+    );
+
+    let result = execute_policy_check(None, Some("off".into()), None, Some("json".into()));
+    assert!(
+        result.is_ok(),
+        "observe synthesize must never exit nonzero: {:?}",
+        result.err()
+    );
+}
+
+/// DoD-3: no policy.toml + gate.mode=enforce → synthesize enforce; exit nonzero on violations.
+#[test]
+#[serial(env, cwd)]
+fn no_policy_gate_enforce_exits_nonzero_on_violations() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_green_repo(root);
+    let _ = fs::remove_file(root.join(".ledgerful").join("policy.toml"));
+    set_gate_mode(root, "enforce");
+    force_pending_violation(root);
+
+    let _ni = non_interactive();
+    let _guard = DirGuard::new(root);
+
+    let report = evaluate_policy_check(None, Some("off"), None).unwrap();
+    assert_eq!(report.mode, "enforce");
+    assert_eq!(report.policy_source, "synthesized");
+    assert!(!report.passed);
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "no_pending_tx"),
+        "{:?}",
+        report.violations
+    );
+    assert!(report.violations.iter().all(|v| v.severity == "error"));
+
+    let result = execute_policy_check(None, Some("off".into()), None, Some("json".into()));
+    assert!(
+        result.is_err(),
+        "enforce synthesize must exit nonzero on violations"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// R1-P1: --pr CI-safe defaults when preset omitted / policy missing
+// ---------------------------------------------------------------------------
+
+/// Base policy with rules but no `preset`; working-tree gate.mode=observe;
+/// `--pr` with a forced violation must use enforce and exit nonzero.
+#[test]
+#[serial(env, cwd)]
+fn pr_mode_defaults_to_enforce_when_preset_omitted() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "base\n").unwrap();
+
+    let _ni = non_interactive();
+    {
+        let _guard = DirGuard::new(root);
+        execute_init(false, false).unwrap();
+    }
+    seed_passing_verification(root);
+    // Working-tree gate.mode is observe — must NOT leak into --pr preset default.
+    set_gate_mode(root, "observe");
+
+    // Base policy: rules present, preset intentionally omitted.
+    write_policy(
+        root,
+        r#"
+[rules]
+require_signed_entries = false
+no_pending_tx = true
+verification_must_pass = false
+max_risk_without_adr = "off"
+fail_on = "off"
+"#,
+    );
+    commit_policy(root, "base policy without preset");
+
+    let base_ref = {
+        let out = Command::new("git")
+            .args(["rev-parse", "--abbrev-ref", "HEAD"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+
+    // Create a violation (pending tx) and a PR-range commit.
+    force_pending_violation(root);
+    fs::write(root.join("pr.txt"), "change\n").unwrap();
+    git_add_and_commit(root, "pr change");
+
+    let _guard = DirGuard::new(root);
+    let range = format!("{base_ref}...HEAD");
+    let report = evaluate_policy_check(Some(&range), None, None).unwrap();
+
+    assert_eq!(
+        report.policy_source, "base-branch",
+        "base policy.toml was loaded via git show"
+    );
+    assert_eq!(
+        report.mode, "enforce",
+        "--pr with omitted preset must default to enforce, not working-tree gate.mode=observe"
+    );
+    assert!(
+        !report.passed
+            && report
+                .violations
+                .iter()
+                .any(|v| v.rule_id == "no_pending_tx"),
+        "expected forced no_pending_tx violation: {:?}",
+        report.violations
+    );
+    assert!(report.violations.iter().all(|v| v.severity == "error"));
+
+    let result = execute_policy_check(Some(range), None, None, Some("json".into()));
+    assert!(
+        result.is_err(),
+        "--pr omitted-preset must exit nonzero on violations (CI-safe enforce): {:?}",
+        result.err()
+    );
+}
+
+/// Missing base policy.toml under `--pr` synthesizes enforce, not gate.mode.
+#[test]
+#[serial(env, cwd)]
+fn pr_mode_missing_base_policy_synthesizes_enforce() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_green_repo(root);
+    // No policy.toml anywhere.
+    let _ = fs::remove_file(root.join(".ledgerful").join("policy.toml"));
+    set_gate_mode(root, "observe");
+
+    // Commit a second change so HEAD~1...HEAD is a valid range; base has no policy.
+    fs::write(root.join("pr.txt"), "change\n").unwrap();
+    git_add_and_commit(root, "pr change");
+    force_pending_violation(root);
+
+    let _ni = non_interactive();
+    let _guard = DirGuard::new(root);
+
+    let report = evaluate_policy_check(Some("HEAD~1...HEAD"), Some("off"), None).unwrap();
+    assert_eq!(report.policy_source, "synthesized");
+    assert_eq!(
+        report.mode, "enforce",
+        "--pr synthesize must be enforce even when gate.mode=observe"
+    );
+    assert!(
+        !report.passed
+            && report
+                .violations
+                .iter()
+                .any(|v| v.rule_id == "no_pending_tx"),
+        "{:?}",
+        report.violations
+    );
+
+    let result = execute_policy_check(
+        Some("HEAD~1...HEAD".into()),
+        Some("off".into()),
+        None,
+        Some("json".into()),
+    );
+    assert!(
+        result.is_err(),
+        "synthesized --pr enforce must exit nonzero: {:?}",
+        result.err()
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -919,8 +1152,19 @@ fn policy_check_report_roundtrip() {
         passed: true,
         mode: "observe".into(),
         policy_source: "local".into(),
+        notes: vec![],
     };
     let json = serde_json::to_string(&report).unwrap();
     let back: PolicyCheckReport = serde_json::from_str(&json).unwrap();
     assert_eq!(report, back);
+
+    // Non-empty notes round-trip too.
+    let with_notes = PolicyCheckReport {
+        notes: vec!["partial evaluation note".into()],
+        ..report
+    };
+    let json2 = serde_json::to_string(&with_notes).unwrap();
+    let back2: PolicyCheckReport = serde_json::from_str(&json2).unwrap();
+    assert_eq!(with_notes, back2);
+    assert!(json2.contains("\"notes\""));
 }
