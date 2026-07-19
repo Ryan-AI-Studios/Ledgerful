@@ -610,6 +610,26 @@ fn query_repo_timings(
     Ok(Some(QueriedTimings { outer, inner, all }))
 }
 
+/// Print skipped-repo / per-repo failure warnings in human-readable modes.
+///
+/// Spec honesty: warn-and-skip must be visible for every `--global` surface,
+/// not only the default summary table.
+fn print_timings_degradation(collected: &CollectedGlobalTimings) {
+    if collected.skipped_repos == 0 && collected.warnings.is_empty() {
+        return;
+    }
+    if collected.skipped_repos > 0 {
+        println!(
+            "{} {} repo(s) skipped",
+            "⚠".yellow(),
+            collected.skipped_repos.to_string().yellow()
+        );
+    }
+    for w in &collected.warnings {
+        println!("  {} {}", "⚠".yellow(), w.dimmed());
+    }
+}
+
 fn execute_timings_global_inner(
     config: &GlobalRollupConfig,
     args: &GlobalTimingsArgs,
@@ -679,6 +699,7 @@ fn execute_timings_global_inner(
 
     if let Some(msg) = message {
         println!("{msg}");
+        print_timings_degradation(&collected);
         return Ok(());
     }
 
@@ -698,6 +719,7 @@ fn execute_timings_global_inner(
         ]);
     }
     println!("{table}");
+    print_timings_degradation(&collected);
     Ok(())
 }
 
@@ -734,9 +756,13 @@ fn execute_timings_global_flame(
     let body = lines.join("\n");
 
     if let Some(ref path) = args.export {
+        // Export carries full honesty envelope for flame when JSON-shaped export
+        // is requested via --json; plain --export stays collapsed-stack text
+        // (speedscope-compatible) and prints degradation on stderr-style stdout.
         std::fs::write(path, &body).into_diagnostic()?;
         if !args.json {
             println!("Wrote collapsed stacks to {}.", path.display());
+            print_timings_degradation(&collected);
         }
         return Ok(());
     }
@@ -766,10 +792,12 @@ fn execute_timings_global_flame(
         } else {
             println!("no global timing rows for flame output");
         }
+        print_timings_degradation(&collected);
         return Ok(());
     }
 
     println!("{body}");
+    print_timings_degradation(&collected);
     Ok(())
 }
 
@@ -778,40 +806,41 @@ fn execute_timings_global_explain(
     args: &GlobalTimingsArgs,
     command: &str,
 ) -> Result<()> {
-    // Pool last 7d + prior 7d outer samples for the command across all repos.
-    let collected_14d = collect_global_timings(config, Some(14), Some(command))?;
+    // Single 14-day collection pass so skipped-repo / warning honesty is
+    // complete for both the recent window and the prior-week baseline
+    // (no second pass that could silently omit a different set of repos).
+    let collected = collect_global_timings(config, Some(14), Some(command))?;
 
-    let mut recent: Vec<crate::state::storage::timings::TimingRow> = Vec::new();
-    let mut prior_all: Vec<crate::state::storage::timings::TimingRow> = Vec::new();
-    for repo in &collected_14d.repos {
-        for row in &repo.outer {
-            prior_all.push(row.clone());
-        }
+    let mut all_outer: Vec<crate::state::storage::timings::TimingRow> = Vec::new();
+    for repo in &collected.repos {
+        all_outer.extend(repo.outer.iter().cloned());
     }
 
-    // Re-collect 7d for the recent window (SQLite day filter is relative to now).
-    let collected_7d = collect_global_timings(config, Some(7), Some(command))?;
-    for repo in &collected_7d.repos {
-        for row in &repo.outer {
-            recent.push(row.clone());
-        }
-    }
+    // ISO-8601 UTC timestamps sort lexicographically; cutoff is 7 days ago.
+    // build_explain_sentence splits prior-week from the 14d pool via run_id set.
+    let cutoff_7d = (chrono::Utc::now() - chrono::Duration::days(7))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let recent: Vec<_> = all_outer
+        .iter()
+        .filter(|r| r.ts_utc.as_str() >= cutoff_7d.as_str())
+        .cloned()
+        .collect();
 
-    let sentence = build_explain_sentence(command, &recent, &prior_all);
+    let sentence = build_explain_sentence(command, &recent, &all_outer);
 
     if args.json {
-        let message = if recent.is_empty() && collected_7d.repos_with_timings == 0 {
-            empty_timings_message(&collected_7d, true)
+        let message = if recent.is_empty() && collected.repos_with_timings == 0 {
+            empty_timings_message(&collected, true)
         } else {
             None
         };
         let envelope = serde_json::json!({
             "schemaVersion": 1,
-            "totalRepos": collected_7d.total_repos,
-            "reposWithTimings": collected_7d.repos_with_timings,
-            "skippedRepos": collected_7d.skipped_repos,
-            "timingsAbsent": collected_7d.timings_absent,
-            "warnings": collected_7d.warnings,
+            "totalRepos": collected.total_repos,
+            "reposWithTimings": collected.repos_with_timings,
+            "skippedRepos": collected.skipped_repos,
+            "timingsAbsent": collected.timings_absent,
+            "warnings": collected.warnings,
             "message": message,
             "data": { "explain": sentence },
         });
@@ -821,6 +850,7 @@ fn execute_timings_global_explain(
         );
     } else {
         println!("{sentence}");
+        print_timings_degradation(&collected);
     }
     Ok(())
 }
