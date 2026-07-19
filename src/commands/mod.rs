@@ -37,6 +37,9 @@ pub mod mcp;
 pub mod observability;
 #[cfg(any(feature = "viz-server", feature = "web"))]
 pub mod pid;
+/// CI policy gate (`ledgerful policy check`). Distinct from `crate::policy`
+/// (tech-stack `rules.toml` matching).
+pub mod policy_check;
 pub mod reset;
 pub mod scan;
 pub mod scan_pr;

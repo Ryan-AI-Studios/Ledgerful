@@ -1,6 +1,6 @@
 use crate::cli::args::{
     Cli, Commands, ConfigCommands, ExportCommands, FederateCommands, GateCommands, IntentCommands,
-    InternalCommands, LedgerCommands, RegisterCommands, ServiceSubcommands,
+    InternalCommands, LedgerCommands, PolicyCommands, RegisterCommands, ServiceSubcommands,
 };
 use crate::commands::search::SearchArgs;
 use miette::{IntoDiagnostic, Result};
@@ -29,6 +29,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
     let result = match cli.command {
         Commands::Init { force, enforce } => crate::commands::init::execute_init(force, enforce),
         Commands::Gate { command } => dispatch_gate(command),
+        Commands::Policy { command } => dispatch_policy(command),
         Commands::Setup { yes, skip_scan } => crate::commands::setup::execute_setup(yes, skip_scan),
         Commands::Scan {
             impact,
@@ -1504,6 +1505,17 @@ fn dispatch_gate(command: GateCommands) -> Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+fn dispatch_policy(command: PolicyCommands) -> Result<()> {
+    match command {
+        PolicyCommands::Check {
+            pr,
+            fail_on,
+            policy,
+            format,
+        } => crate::commands::policy_check::execute_policy_check(pr, fail_on, policy, format),
     }
 }
 

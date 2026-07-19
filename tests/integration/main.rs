@@ -97,6 +97,7 @@ mod path_security;
 mod persistence;
 mod platform_windows;
 mod platform_wsl;
+mod policy_check;
 mod policy_integration;
 mod predictor;
 mod repro_w2_extraction;

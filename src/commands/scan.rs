@@ -182,7 +182,7 @@ fn files_changed_since(repo_root: &std::path::Path, base_ref: &str) -> Result<Ve
 
 /// Collect changed files by running `git diff --name-status <range>`.
 /// `base_ref_for_errors` is used when formatting the missing-base-commit hint.
-fn files_changed_between(
+pub(crate) fn files_changed_between(
     repo_root: &std::path::Path,
     range: &str,
     base_ref_for_errors: &str,
@@ -219,7 +219,7 @@ fn files_changed_between(
 /// `A..B` diffs A against B directly while `A...B` diffs merge-base(A,B)
 /// against B. For PR risk assessment three-dot is always correct: two-dot
 /// can include base-branch changes that are not part of the PR.
-fn parse_pr_range(range: &str) -> Result<(String, String, String)> {
+pub(crate) fn parse_pr_range(range: &str) -> Result<(String, String, String)> {
     let trimmed = range.trim();
     if trimmed.is_empty() {
         return Err(miette::miette!("--pr range must not be empty"));
