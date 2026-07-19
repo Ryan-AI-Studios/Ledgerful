@@ -745,30 +745,41 @@ impl EvalContext {
             return Ok(());
         }
 
-        // Collect entities from all *passing* bound runs only. Failed runs never
-        // contribute coverage even if their entity would cover a path.
-        let mut covering_entities: Vec<String> = Vec::new();
+        // Precompute entities per bound run (newest-first). For each changed
+        // path, the *newest* covering bound run is decisive: a newer failure
+        // vetoes an older pass for that path (stale-pass bypass closed).
+        let mut run_entities: Vec<(bool, Vec<String>)> = Vec::with_capacity(bound.len());
         for (_id, _ts, overall_pass, tx_id) in &bound {
-            if !*overall_pass {
-                continue;
+            let entities = self.entities_for_tx(storage, tx_id)?.unwrap_or_default();
+            run_entities.push((*overall_pass, entities));
+        }
+
+        let mut uncovered: Vec<String> = Vec::new();
+        let mut failed_cover: Vec<String> = Vec::new();
+        for path in &changed_paths {
+            let mut decided = false;
+            for (overall_pass, entities) in &run_entities {
+                let covers = entities
+                    .iter()
+                    .any(|entity| entity_covers_path(entity, path));
+                if !covers {
+                    continue;
+                }
+                // Newest covering run for this path.
+                if *overall_pass {
+                    decided = true;
+                } else {
+                    failed_cover.push(path.clone());
+                    decided = true;
+                }
+                break;
             }
-            if let Some(entities) = self.entities_for_tx(storage, tx_id)? {
-                covering_entities.extend(entities);
+            if !decided {
+                uncovered.push(path.clone());
             }
         }
-        covering_entities.sort();
-        covering_entities.dedup();
-
-        let mut uncovered: Vec<String> = changed_paths
-            .iter()
-            .filter(|path| {
-                !covering_entities
-                    .iter()
-                    .any(|entity| entity_covers_path(entity, path))
-            })
-            .cloned()
-            .collect();
         uncovered.sort();
+        failed_cover.sort();
 
         if !uncovered.is_empty() {
             self.push_violation(
@@ -777,6 +788,16 @@ impl EvalContext {
                 format!(
                     "bound verification runs do not cover the full evaluation target change set{}",
                     format_uncovered_paths_suffix(&uncovered)
+                ),
+            );
+        }
+        if !failed_cover.is_empty() {
+            self.push_violation(
+                "verification_must_pass",
+                ".ledgerful/state/ledger.db",
+                format!(
+                    "newest bound verification run covering path(s) has overall_pass=false{}",
+                    format_uncovered_paths_suffix(&failed_cover)
                 ),
             );
         }

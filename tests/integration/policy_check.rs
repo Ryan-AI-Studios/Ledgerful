@@ -863,6 +863,62 @@ fail_on = "off"
     );
 }
 
+/// CX4: newer failing bound run for a path vetoes an older pass for that path.
+#[test]
+#[serial(env, cwd)]
+fn verification_must_pass_pr_newer_fail_vetoes_older_pass() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "base\n").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let _ni = non_interactive();
+    {
+        let _guard = DirGuard::new(root);
+        execute_init(false, false).unwrap();
+    }
+
+    // Older pass for Cargo.toml, then a newer fail for the same entity scope.
+    let tx_pass = commit_entry_return_tx(root, "Cargo.toml", "older pass work");
+    seed_bound_verification(root, true, &tx_pass);
+    let tx_fail = commit_entry_return_tx(root, "Cargo.toml", "newer fail work");
+    seed_bound_verification(root, false, &tx_fail);
+
+    write_policy(
+        root,
+        r#"
+preset = "enforce"
+[rules]
+require_signed_entries = false
+no_pending_tx = false
+verification_must_pass = true
+max_risk_without_adr = "off"
+fail_on = "off"
+"#,
+    );
+    commit_policy(root, "base policy");
+
+    fs::write(
+        root.join("Cargo.toml"),
+        "[package]\nname=\"t\"\nversion=\"0.1.0\"\n",
+    )
+    .unwrap();
+    git_add_and_commit(root, "pr cargo change");
+
+    let _guard = DirGuard::new(root);
+    let report = evaluate_policy_check(Some("HEAD~1...HEAD"), None, None).unwrap();
+    assert!(
+        report
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "verification_must_pass"
+                && v.message.contains("overall_pass=false")),
+        "newer fail must veto older pass: {:?}",
+        report.violations
+    );
+}
+
 /// CX2-P2: require_signed_entries fail-closed when ledger.db absent.
 #[test]
 #[serial(env, cwd)]
