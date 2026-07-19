@@ -67,19 +67,10 @@ fn outer(run_id: &str, command: &str, duration_ms: i64, argv_hash: Option<&str>)
 
 fn with_isolated_config_home<F: FnOnce()>(f: F) {
     let tmp = tempdir().unwrap();
-    let prev = std::env::var_os("LEDGERFUL_CONFIG_HOME");
-    // SAFETY: process-local env for test isolation; nextest runs integration
-    // tests in separate processes by default; restore on exit anyway.
-    unsafe {
-        std::env::set_var("LEDGERFUL_CONFIG_HOME", tmp.path());
-    }
+    // Test inject — no process env mutation (Semgrep blocks unsafe set_var).
+    let prev = ledgerful::state::rollup::set_test_config_home(Some(tmp.path().to_path_buf()));
     f();
-    unsafe {
-        match prev {
-            Some(v) => std::env::set_var("LEDGERFUL_CONFIG_HOME", v),
-            None => std::env::remove_var("LEDGERFUL_CONFIG_HOME"),
-        }
-    }
+    ledgerful::state::rollup::set_test_config_home(prev);
 }
 
 #[test]
@@ -561,8 +552,8 @@ fn opt_out_config_round_trip() {
     with_isolated_config_home(|| {
         set_self_timing_enabled(false).unwrap();
         assert!(!is_self_timing_enabled());
-        let home = std::env::var_os("LEDGERFUL_CONFIG_HOME").unwrap();
-        let content = fs::read_to_string(std::path::Path::new(&home).join("config.toml")).unwrap();
+        let home = ledgerful::state::rollup::user_config_dir().unwrap();
+        let content = fs::read_to_string(home.join("config.toml")).unwrap();
         assert!(content.contains("self_timing") && content.contains("false"));
 
         set_self_timing_enabled(true).unwrap();

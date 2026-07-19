@@ -318,12 +318,28 @@ fn global_rollup_cache_path() -> Result<PathBuf> {
 /// Return the Ledgerful user config directory (`~/.ledgerful`), respecting
 /// `LEDGERFUL_CONFIG_HOME` for tests and relocated installs.
 pub fn user_config_dir() -> Result<PathBuf> {
+    // Integration/unit tests may inject a path without mutating process env.
+    if let Ok(guard) = TEST_CONFIG_HOME.lock()
+        && let Some(ref path) = *guard
+    {
+        return Ok(path.clone());
+    }
     if let Some(env_path) = std::env::var_os("LEDGERFUL_CONFIG_HOME") {
         return Ok(PathBuf::from(env_path));
     }
     let home =
         dirs::home_dir().ok_or_else(|| miette::miette!("could not determine home directory"))?;
     Ok(home.join(".ledgerful"))
+}
+
+/// Test inject for `user_config_dir()` (no process-env mutation — avoids
+/// `unsafe` `set_var` / Semgrep). Production never calls this; default is None.
+static TEST_CONFIG_HOME: std::sync::Mutex<Option<PathBuf>> = std::sync::Mutex::new(None);
+
+/// Install a test config home; returns the previous value for restoration.
+pub fn set_test_config_home(path: Option<PathBuf>) -> Option<PathBuf> {
+    let mut guard = TEST_CONFIG_HOME.lock().unwrap_or_else(|e| e.into_inner());
+    std::mem::replace(&mut *guard, path)
 }
 
 fn ensure_parent(path: &Path) -> Result<()> {

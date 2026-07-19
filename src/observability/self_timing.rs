@@ -92,11 +92,24 @@ fn take_current_ledger_tx_id() -> Option<String> {
         .and_then(|mut g| g.take())
 }
 
+/// Test inject for min span; `u64::MAX` means “use env / default”.
+/// Production never writes this (default remains MAX).
+static TEST_MIN_SPAN_MS: AtomicU64 = AtomicU64::new(u64::MAX);
+
 fn min_span_ms() -> u64 {
+    let override_ms = TEST_MIN_SPAN_MS.load(Ordering::Relaxed);
+    if override_ms != u64::MAX {
+        return override_ms;
+    }
     match std::env::var("LEDGERFUL_TIMING_MIN_SPAN_MS") {
         Ok(s) => s.parse::<u64>().unwrap_or(DEFAULT_MIN_SPAN_MS),
         Err(_) => DEFAULT_MIN_SPAN_MS,
     }
+}
+
+/// Test inject: set min span ms (`u64::MAX` clears).
+pub fn set_test_min_span_ms(ms: u64) {
+    TEST_MIN_SPAN_MS.store(ms, Ordering::Relaxed);
 }
 
 /// Hash a canonicalized argv shape (subcommand + sorted flag names, values stripped).
@@ -491,35 +504,17 @@ mod tests {
 
     fn with_isolated_config_home<F: FnOnce()>(f: F) {
         let tmp = tempfile::tempdir().unwrap();
-        let prev = std::env::var_os("LEDGERFUL_CONFIG_HOME");
-        // SAFETY: process-local test isolation; nextest runs unit tests in-process
-        // but this helper restores the env on exit.
-        unsafe {
-            std::env::set_var("LEDGERFUL_CONFIG_HOME", tmp.path());
-        }
+        // Prefer test inject over process env (no `unsafe` set_var — Semgrep blocks it).
+        let prev = crate::state::rollup::set_test_config_home(Some(tmp.path().to_path_buf()));
         f();
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var("LEDGERFUL_CONFIG_HOME", v),
-                None => std::env::remove_var("LEDGERFUL_CONFIG_HOME"),
-            }
-        }
+        crate::state::rollup::set_test_config_home(prev);
     }
 
-    /// Override `LEDGERFUL_TIMING_MIN_SPAN_MS` for the duration of `f` (restored after).
-    fn with_min_span_ms<F: FnOnce()>(ms: &str, f: F) {
-        let prev = std::env::var_os("LEDGERFUL_TIMING_MIN_SPAN_MS");
-        // SAFETY: process-local test isolation; restored on exit.
-        unsafe {
-            std::env::set_var("LEDGERFUL_TIMING_MIN_SPAN_MS", ms);
-        }
+    /// Override min span ms for the duration of `f` (restored after).
+    fn with_min_span_ms<F: FnOnce()>(ms: u64, f: F) {
+        let prev = TEST_MIN_SPAN_MS.swap(ms, Ordering::Relaxed);
         f();
-        unsafe {
-            match prev {
-                Some(v) => std::env::set_var("LEDGERFUL_TIMING_MIN_SPAN_MS", v),
-                None => std::env::remove_var("LEDGERFUL_TIMING_MIN_SPAN_MS"),
-            }
-        }
+        TEST_MIN_SPAN_MS.store(prev, Ordering::Relaxed);
     }
 
     #[test]
@@ -574,7 +569,7 @@ mod tests {
         use tracing_subscriber::registry;
 
         with_isolated_config_home(|| {
-            with_min_span_ms("0", || {
+            with_min_span_ms(0, || {
                 assert!(is_self_timing_enabled());
                 let (tmp, db_path) = temp_repo_db();
                 let _guard = DirGuard::new(tmp.path());
