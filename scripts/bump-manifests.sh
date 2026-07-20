@@ -110,11 +110,14 @@ read_sha256() {
 }
 
 # Bash 3.2 compatible: store hashes in flat KEY=value file, no associative arrays.
+# NOTE: do not put `read_sha256` inside $(...) on the same line as another command —
+# bash `set -e` does not always exit on failed command substitutions used as args.
 HASH_TABLE="$(mktemp)"
 trap 'rm -f "$HASH_TABLE"' EXIT
 for asset in "${REQUIRED_ASSETS[@]}"; do
   sha_path="${CHECKSUMS_DIR}/${asset}.sha256"
-  printf '%s=%s\n' "$asset" "$(read_sha256 "$sha_path")" >>"$HASH_TABLE"
+  h="$(read_sha256 "$sha_path")" || exit 1
+  printf '%s=%s\n' "$asset" "$h" >>"$HASH_TABLE"
 done
 
 hash_for() {
