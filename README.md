@@ -17,11 +17,16 @@ iwr https://raw.githubusercontent.com/Ryan-AI-Studios/Ledgerful/main/install/ins
 ```bash
 curl -fsSL https://raw.githubusercontent.com/Ryan-AI-Studios/Ledgerful/main/install/install.sh | sh
 ```
-*(Homebrew and Apt packages coming soon).*
 
+**cargo-binstall** (prebuilt GitHub release binary; no crates.io, no full compile when assets match):
+```bash
+cargo binstall --git https://github.com/Ryan-AI-Studios/Ledgerful
+```
 
+**Package managers (rolling out):**
+- Homebrew tap / Scoop bucket / winget — manifests and release-time bump automation live in-engine under [`packaging/`](packaging/) and [`docs/package-distribution.md`](docs/package-distribution.md). External tap/bucket/winget-pkgs seeding is separate; until those channels are live, use the one-line installer or `cargo binstall` above. Apt and other distro packages are not planned here.
 
-Manual install from a checkout:
+Manual install from a checkout (compiles from source):
 
 ```powershell
 cargo install --path .
@@ -33,7 +38,7 @@ The LSP daemon is behind an optional feature:
 cargo install --path . --features daemon
 ```
 
-See [docs/installation.md](docs/installation.md) for installer options, release assets, and agent bootstrap instructions.
+See [docs/installation.md](docs/installation.md) for installer options, release assets, package managers, and agent bootstrap instructions.
 
 ## Quickstart
 

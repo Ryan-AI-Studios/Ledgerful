@@ -1,0 +1,29 @@
+{
+  "version": "0.1.8",
+  "description": "Local-first change intelligence CLI for impact analysis and verification",
+  "homepage": "https://github.com/Ryan-AI-Studios/Ledgerful",
+  "license": {
+    "identifier": "LicenseRef-PolyForm-Noncommercial-1.0.0",
+    "url": "https://polyformproject.org/licenses/noncommercial/1.0.0"
+  },
+  "architecture": {
+    "64bit": {
+      "url": "https://github.com/Ryan-AI-Studios/Ledgerful/releases/download/v0.1.8/ledgerful-x86_64-pc-windows-msvc.zip",
+      "hash": "0f285af485ac979883ac03cb2a8fabb0d394041b2e34a8f25fe3558d858e5397"
+    }
+  },
+  "bin": "ledgerful.exe",
+  "checkver": {
+    "github": "https://github.com/Ryan-AI-Studios/Ledgerful"
+  },
+  "autoupdate": {
+    "architecture": {
+      "64bit": {
+        "url": "https://github.com/Ryan-AI-Studios/Ledgerful/releases/download/v$version/ledgerful-x86_64-pc-windows-msvc.zip",
+        "hash": {
+          "url": "$url.sha256"
+        }
+      }
+    }
+  }
+}

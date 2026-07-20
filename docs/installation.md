@@ -27,6 +27,32 @@ curl -fsSL https://raw.githubusercontent.com/Ryan-AI-Studios/Ledgerful/main/inst
 
 The installer tries to download a prebuilt GitHub release binary first. If no release asset exists for the platform, it falls back to `cargo install --git`.
 
+## Package managers
+
+### cargo-binstall (live when release assets match)
+
+Ledgerful ships `[package.metadata.binstall]` in `Cargo.toml` mapping to the same GitHub release archives as the one-line installer. This installs a **prebuilt** binary (no full workspace compile) and does **not** require a crates.io publish:
+
+```bash
+cargo binstall --git https://github.com/Ryan-AI-Studios/Ledgerful
+```
+
+Requires [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall) on the machine. If no matching prebuilt asset exists, binstall can fall back to compiling from source (quick-install mirrors are disabled in metadata).
+
+### Homebrew / Scoop / winget (coming)
+
+In-engine templates and release bump automation live under `packaging/` and `scripts/bump-manifests.*`. External repos (`Ryan-AI-Studios/homebrew-tap`, `Ryan-AI-Studios/scoop-bucket`) and the first winget-pkgs submission are seeded separately. Until those channels are published and verified, prefer the one-line installer or `cargo binstall`. Architecture and secrets: [package-distribution.md](package-distribution.md).
+
+### macOS Gatekeeper / quarantine (interim)
+
+Release macOS binaries are **not** currently Apple-codesigned or notarized. A plain Homebrew *formula* install usually avoids browser quarantine, but if Gatekeeper reports "developer cannot be verified" on first run of a downloaded binary:
+
+```bash
+xattr -d com.apple.quarantine "$(which ledgerful)"
+```
+
+The durable fix is codesign + notarize in the release pipeline; the `xattr` path is an interim workaround only.
+
 ## Requirements
 
 For release binaries:

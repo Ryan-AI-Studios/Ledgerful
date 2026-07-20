@@ -439,3 +439,112 @@ jobs:
             dist/*.sig
             dist/*.pem
             dist/*.bundle
+
+  # 0051-PackageManagerDistribution: bump brew/scoop manifests from published .sha256
+  # files. Always validates the bump script (dry-run + write to workspace). Pushing
+  # to Ryan-AI-Studios/homebrew-tap and Ryan-AI-Studios/scoop-bucket is gated on
+  # MANIFEST_PUSH_TOKEN (fine-grained PAT with contents:write on those repos).
+  bump-manifests:
+    name: Bump package manifests
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Compute version
+        id: version
+        shell: bash
+        run: echo "value=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+      - name: Download published checksums
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          mkdir -p checksums
+          # Prefer the just-published tag's .sha256 assets (authoritative).
+          gh release download "${GITHUB_REF_NAME}" \
+            --repo "${{ github.repository }}" \
+            --pattern "*.sha256" \
+            --dir checksums \
+            --clobber
+          ls -la checksums
+      - name: Validate bump (always — DoD-4 fixture path in CI)
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/bump-manifests.sh
+          # Dry-run proves parse + fail-closed against live checksums
+          scripts/bump-manifests.sh \
+            --version "${{ steps.version.outputs.value }}" \
+            --checksums-dir checksums \
+            --packaging-dir packaging \
+            --dry-run
+          # Materialize outputs for optional push
+          scripts/bump-manifests.sh \
+            --version "${{ steps.version.outputs.value }}" \
+            --checksums-dir checksums \
+            --packaging-dir packaging \
+            --out-dir bumped
+          echo "---- homebrew/ledgerful.rb (head) ----"
+          head -n 40 bumped/homebrew/ledgerful.rb
+          echo "---- scoop/ledgerful.json ----"
+          cat bumped/scoop/ledgerful.json
+      - name: Push to homebrew-tap + scoop-bucket
+        if: ${{ secrets.MANIFEST_PUSH_TOKEN != '' }}
+        shell: bash
+        env:
+          MANIFEST_PUSH_TOKEN: ${{ secrets.MANIFEST_PUSH_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${{ steps.version.outputs.value }}"
+          push_one() {
+            local repo="$1"
+            local src="$2"
+            local dest_path="$3"
+            local scratch
+            scratch="$(mktemp -d)"
+            git clone --depth 1 "https://x-access-token:${MANIFEST_PUSH_TOKEN}@github.com/${repo}.git" "$scratch"
+            mkdir -p "$(dirname "$scratch/$dest_path")"
+            cp "$src" "$scratch/$dest_path"
+            git -C "$scratch" config user.name "ledgerful-release[bot]"
+            git -C "$scratch" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git -C "$scratch" add "$dest_path"
+            if git -C "$scratch" diff --cached --quiet; then
+              echo "${repo}: no changes for v${version}"
+            else
+              git -C "$scratch" commit -m "chore: bump ledgerful to v${version}"
+              git -C "$scratch" push origin HEAD
+              echo "${repo}: pushed v${version}"
+            fi
+          }
+          # Tap dest is root-only ledgerful.rb (not Formula/ledgerful.rb).
+          push_one "Ryan-AI-Studios/homebrew-tap" "bumped/homebrew/ledgerful.rb" "ledgerful.rb"
+          push_one "Ryan-AI-Studios/scoop-bucket" "bumped/scoop/ledgerful.json" "ledgerful.json"
+      - name: Skip push (no MANIFEST_PUSH_TOKEN)
+        if: ${{ secrets.MANIFEST_PUSH_TOKEN == '' }}
+        shell: bash
+        run: |
+          echo "skip push (no MANIFEST_PUSH_TOKEN secret) — bump validation above still ran"
+
+  # 0051 winget: subsequent version bumps via SHA-pinned winget-releaser.
+  # First-time package submission must exist in microsoft/winget-pkgs first
+  # (manual wingetcreate / PR); this action requires ≥1 version already present.
+  winget-release:
+    name: Submit winget package update
+    needs: publish
+    if: ${{ secrets.WINGET_TOKEN != '' }}
+    runs-on: windows-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: WinGet Releaser
+        uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e # v2
+        with:
+          identifier: Ledgerful.Ledgerful
+          # Portable Windows zip from release.yml (not msi/exe installer)
+          installers-regex: 'ledgerful-x86_64-pc-windows-msvc\.zip$'
+          token: ${{ secrets.WINGET_TOKEN }}
