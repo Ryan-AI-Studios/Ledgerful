@@ -475,11 +475,9 @@ pub fn resolve_default_test_command(
         let nextest_config_content =
             std::fs::read_to_string(repo_root.join(".config/nextest.toml")).unwrap_or_default();
 
-        let has_ci = if let Ok(parsed) = nextest_config_content.parse::<toml::Value>() {
-            parsed.get("profile").and_then(|p| p.get("ci")).is_some()
-        } else {
-            false
-        };
+        // Use toml::from_str — str::parse::<toml::Value>() fails under toml 1.x on
+        // multi-table nextest configs, which silently disabled profile detection.
+        let has_ci = nextest_has_profile(&nextest_config_content, "ci");
 
         if has_ci {
             "cargo nextest run --workspace --all-features --profile ci".to_string()
@@ -652,6 +650,21 @@ fn build_plan_with_scope(
     }
 }
 
+/// Parse nextest.toml content and report whether `[profile.<name>]` exists.
+///
+/// Prefer `toml::from_str` over `str::parse::<toml::Value>()`: under `toml` 1.x the
+/// `FromStr` impl rejects multi-document / multi-table files that `from_str` accepts,
+/// which previously left `has_ci` / `has_slow` permanently false.
+fn nextest_has_profile(content: &str, profile_name: &str) -> bool {
+    match toml::from_str::<toml::Value>(content) {
+        Ok(parsed) => parsed
+            .get("profile")
+            .and_then(|p| p.get(profile_name))
+            .is_some(),
+        Err(_) => false,
+    }
+}
+
 /// Ensures a full-scope plan contains the slow and doctest tier commands,
 /// deduplicated against any commands already present.
 fn append_full_tier_commands(
@@ -674,11 +687,7 @@ fn append_full_tier_commands(
         let nextest_config_content =
             std::fs::read_to_string(repo_root.join(".config/nextest.toml")).unwrap_or_default();
 
-        let has_slow = if let Ok(parsed) = nextest_config_content.parse::<toml::Value>() {
-            parsed.get("profile").and_then(|p| p.get("slow")).is_some()
-        } else {
-            false
-        };
+        let has_slow = nextest_has_profile(&nextest_config_content, "slow");
 
         if has_slow {
             let cmd = "cargo nextest run --workspace --all-features --profile slow";
@@ -1140,6 +1149,77 @@ mod tests {
         assert!(check_step.description.contains("From rules"));
         assert!(check_step.description.contains("Predicted impact"));
         assert!(check_step.description.contains(" | "));
+    }
+
+    #[test]
+    fn test_nextest_has_profile_multi_table_nextest_toml_detects_ci_and_slow() {
+        // Regression for 0067/codex P1: str::parse::<toml::Value> failed on real
+        // nextest.toml (multi-table), so profile probes were permanently false.
+        let content = r#"
+[profile.default]
+slow-timeout = { period = "60s", terminate-after = 1 }
+
+[profile.ci]
+retries = 1
+
+[profile.slow]
+default-filter = 'test(/__slow$/)'
+"#;
+        assert!(nextest_has_profile(content, "ci"));
+        assert!(nextest_has_profile(content, "slow"));
+        assert!(!nextest_has_profile(content, "compile-fail"));
+        assert!(!nextest_has_profile("not toml {{{", "ci"));
+    }
+
+    #[test]
+    fn test_resolve_default_test_command_with_ci_profile_uses_profile_ci() {
+        if !crate::verify::engine::probe_nextest() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_dir = dir.path().join(".config");
+        std::fs::create_dir_all(&config_dir).expect("mkdir .config");
+        std::fs::write(
+            config_dir.join("nextest.toml"),
+            "[profile.ci]\nretries = 1\n",
+        )
+        .expect("write nextest.toml");
+        let cmd = resolve_default_test_command(Some(true), dir.path());
+        assert_eq!(
+            cmd, "cargo nextest run --workspace --all-features --profile ci",
+            "must detect [profile.ci] via toml::from_str"
+        );
+    }
+
+    #[test]
+    fn test_append_full_tier_commands_emits_slow_and_doctest_not_compile_fail() {
+        if !crate::verify::engine::probe_nextest() {
+            return;
+        }
+        let dir = tempfile::tempdir().expect("tempdir");
+        let config_dir = dir.path().join(".config");
+        std::fs::create_dir_all(&config_dir).expect("mkdir .config");
+        std::fs::write(
+            config_dir.join("nextest.toml"),
+            "[profile.ci]\nretries = 1\n\n[profile.slow]\ndefault-filter = 'test(/__slow$/)'\n",
+        )
+        .expect("write nextest.toml");
+
+        let mut steps = Vec::new();
+        append_full_tier_commands(&mut steps, Some(true), true, dir.path());
+        let cmds: Vec<&str> = steps.iter().map(|s| s.command.as_str()).collect();
+        assert!(
+            cmds.contains(&"cargo nextest run --workspace --all-features --profile slow"),
+            "full tier must emit slow profile: {cmds:?}"
+        );
+        assert!(
+            cmds.contains(&"cargo test --workspace --all-features --doc"),
+            "full tier must emit doctests: {cmds:?}"
+        );
+        assert!(
+            cmds.iter().all(|c| !c.contains("compile-fail")),
+            "full tier must not emit compile-fail after 0067: {cmds:?}"
+        );
     }
 
     #[test]
