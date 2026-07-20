@@ -4,6 +4,13 @@ on:
   push:
     tags:
       - "v*"
+  # Allow re-running a release for an existing tag without retagging (ops recovery).
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to release (e.g. v0.1.9). Must already exist on the repo."
+        required: true
+        type: string
 
 permissions:
   contents: write
@@ -532,16 +539,30 @@ jobs:
   # 0051 winget: subsequent version bumps via SHA-pinned winget-releaser.
   # First-time package submission must exist in microsoft/winget-pkgs first
   # (manual wingetcreate / PR); this action requires ≥1 version already present.
+  # NOTE: do not use `if: secrets.*` at job level — that has caused 0-job workflow
+  # failures on tag pushes. Gate inside the step with an env-presence check instead.
   winget-release:
     name: Submit winget package update
     needs: publish
-    if: ${{ secrets.WINGET_TOKEN != '' }}
     runs-on: windows-latest
     timeout-minutes: 30
     permissions:
       contents: read
     steps:
+      - name: Detect WINGET_TOKEN
+        id: winget_token
+        shell: bash
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+        run: |
+          if [ -n "${WINGET_TOKEN}" ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "skip winget-release (no WINGET_TOKEN secret) — leave unset until Ledgerful.Ledgerful exists on winget-pkgs"
+          fi
       - name: WinGet Releaser
+        if: steps.winget_token.outputs.present == 'true'
         uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e # v2
         with:
           identifier: Ledgerful.Ledgerful
