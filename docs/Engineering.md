@@ -102,6 +102,16 @@ Recommendation:
 
 **Pass with conditions.** The plan is structurally good, but should add stricter module role statements to reduce implementation drift.
 
+### Module facades and public surface
+
+Packet and config-model keep private submodules behind `pub use` facades. Do not
+promote internal helpers (serialization, env resolvers) to `pub mod` without a
+clear reason. Product-stable surfaces are **OpenAPI** (`docs/api/openapi.json` +
+drift test), **`scan --pr` `PrScanReport` JSON**, **policy-check JSON**, the
+**public-ledger export allowlist**, and the **CLI** — not Rust `pub mod` paths.
+Integration tests may deep-import `ledgerful::…`; that does not make those paths
+a supported external library API. Enforcement is PR review.
+
 ---
 
 ## 2. Idiomatic Rust Review
@@ -400,11 +410,12 @@ to separate fast PR feedback from heavy/nightly validation.
 
 | Tier | Profile | What it runs | Target | When |
 |---|---|---|---|---|
-| 1 | `default` | Fast unit + integration tests, excludes `compile_fail` and `__slow` tests | `<60s` wall | Every PR, local dev |
+| 1 | `default` | Fast unit + integration tests, excludes `__slow` tests | `<60s` wall | Every PR, local dev |
 | 2 | `ci` | Same as `default`, with retries (`count=2`) and 60s slow-timeout | `<60s` wall | CI / pre-push gate |
 | 3 | `slow` | Only tests whose name ends in `__slow`; 300s slow-timeout | nightly | On-demand / nightly / pre-release |
-| 4 | `compile-fail` | Only the `compile_fail` trybuild crate | ~60s | Separate CI job |
-| 5 | doctests | `cargo test --workspace --all-features --doc` | seconds | Every PR |
+| 4 | doctests | `cargo test --workspace --all-features --doc` | seconds | Every PR |
+
+Note: compile-fail tier removed in 0067; `--profile compile-fail` no longer exists.
 
 ### Naming convention
 
@@ -419,23 +430,19 @@ it silently re-enters the fast tier and breaks the `<60s` PR target.
 ### Running tiers locally
 
 ```bash
-# Fast PR loop (excludes slow + trybuild)
+# Fast PR loop (excludes slow)
 cargo nextest run --workspace --all-features --profile default
 
 # CI gate (retries, 60s timeout)
 cargo nextest run --workspace --all-features --profile ci
 
-# Slow tier only
-# Note: 11 tests are quarantined here (10 top slowest + 1 trybuild-spawn helper).
+# Slow tier only (13 tests marked __slow)
 cargo nextest run --workspace --all-features --profile slow
-
-# Trybuild only
-cargo nextest run --workspace --all-features --profile compile-fail
 
 # Doctests (nextest cannot run doctests on stable)
 cargo test --workspace --all-features --doc
 
-# Full local suite (ci + slow + compile-fail + doctests)
+# Full local suite (ci + slow + doctests)
 ledgerful verify --scope full
 ```
 
@@ -447,12 +454,10 @@ ledgerful verify --scope full
 cargo nextest run --workspace --all-features --profile ci
 ```
 
-`ledgerful verify --scope full` adds the slow, compile-fail, and doctest
-commands to the plan:
+`ledgerful verify --scope full` adds the slow and doctest commands to the plan:
 
 ```
 cargo nextest run --workspace --all-features --profile slow
-cargo nextest run --workspace --all-features --profile compile-fail
 cargo test --workspace --all-features --doc
 ```
 

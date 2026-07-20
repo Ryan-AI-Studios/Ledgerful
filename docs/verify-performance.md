@@ -6,8 +6,8 @@ their safe combinations.
 ## Fast vs full scope boundary
 
 - `ledgerful verify --scope full` is the **authoritative gate**. It always runs
-the complete suite (fmt, clippy, tests, doctests, slow/compile-fail tiers). CI
-uses this scope.
+the complete suite (fmt, clippy, tests, doctests, slow tier). CI uses this
+scope.
 - `ledgerful verify --scope fast` is the **local convenience gate**. It uses
 `test_mapping` to run only the tests that cover changed files, falling back to
 the full suite when shared infrastructure is touched or the mapping is empty.
