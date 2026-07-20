@@ -499,13 +499,19 @@ jobs:
           head -n 40 bumped/homebrew/ledgerful.rb
           echo "---- scoop/ledgerful.json ----"
           cat bumped/scoop/ledgerful.json
-      - name: Push to homebrew-tap + scoop-bucket
-        if: ${{ secrets.MANIFEST_PUSH_TOKEN != '' }}
+      # NOTE: secrets context is NOT allowed in `if:` expressions (causes
+      # "Unrecognized named-value: 'secrets'" and 0-job workflow failures).
+      # Gate push vs skip inside the shell with env presence.
+      - name: Push to homebrew-tap + scoop-bucket (or skip)
         shell: bash
         env:
           MANIFEST_PUSH_TOKEN: ${{ secrets.MANIFEST_PUSH_TOKEN }}
         run: |
           set -euo pipefail
+          if [ -z "${MANIFEST_PUSH_TOKEN}" ]; then
+            echo "skip push (no MANIFEST_PUSH_TOKEN secret) — bump validation above still ran"
+            exit 0
+          fi
           version="${{ steps.version.outputs.value }}"
           push_one() {
             local repo="$1"
@@ -530,11 +536,6 @@ jobs:
           # Tap dest is root-only ledgerful.rb (not Formula/ledgerful.rb).
           push_one "Ryan-AI-Studios/homebrew-tap" "bumped/homebrew/ledgerful.rb" "ledgerful.rb"
           push_one "Ryan-AI-Studios/scoop-bucket" "bumped/scoop/ledgerful.json" "ledgerful.json"
-      - name: Skip push (no MANIFEST_PUSH_TOKEN)
-        if: ${{ secrets.MANIFEST_PUSH_TOKEN == '' }}
-        shell: bash
-        run: |
-          echo "skip push (no MANIFEST_PUSH_TOKEN secret) — bump validation above still ran"
 
   # 0051 winget: subsequent version bumps via SHA-pinned winget-releaser.
   # First-time package submission must exist in microsoft/winget-pkgs first
