@@ -91,13 +91,13 @@ jobs:
 
       - name: Run fast tier (default + integration)
         shell: bash
-        # Uses `.config/nextest.toml` profile `ci` (excludes `__slow` tests
-        # and the `compile_fail` trybuild crate). `-j 4` on Windows: bounded
-        # parallelism (4 vCPU / 16 GB runner). Phase-0 of track 0062 found the
-        # old `-j 1` was guarding test-runtime OOM, not compile (no build-jobs
-        # cap exists). Full-parallel local run: 2134 passed, 0 flakes.
-        # `#[serial(cwd/env)]` are no-ops under nextest's process-per-test model
-        # (serial_test 3.5.0, no file_locks). If CI OOMs at -j 4, drop to -j 2.
+        # Uses `.config/nextest.toml` profile `ci` (excludes `__slow` tests).
+        # `-j 4` on Windows: bounded parallelism (4 vCPU / 16 GB runner).
+        # Phase-0 of track 0062 found the old `-j 1` was guarding test-runtime
+        # OOM, not compile (no build-jobs cap exists). Full-parallel local run:
+        # 2134 passed, 0 flakes. `#[serial(cwd/env)]` are no-ops under
+        # nextest's process-per-test model (serial_test 3.5.0, no file_locks).
+        # If CI OOMs at -j 4, drop to -j 2.
         # See `.config/nextest.toml` [test-groups.serial] for confirmed contenders.
         run: |
           if [ "$RUNNER_OS" = "Windows" ]; then
@@ -140,38 +140,6 @@ jobs:
             cargo nextest run -j 4 --workspace --all-features --profile slow
           else
             cargo nextest run --workspace --all-features --profile slow
-          fi
-
-  test-compile-fail:
-    needs: [web-build, clippy]
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, windows-latest]
-    steps:
-      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
-        with:
-          name: ledgerful-web-spa
-          path: ../ledgerful-frontend/out
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
-        with:
-          toolchain: stable
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
-      - name: Install cargo-nextest
-        uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2
-
-      - name: Run compile-fail tier (trybuild)
-        shell: bash
-        # `-j 4` on Windows: bounded parallelism for the 4 vCPU / 16 GB runner.
-        # See the `test` job and `.config/nextest.toml` [test-groups.serial].
-        run: |
-          if [ "$RUNNER_OS" = "Windows" ]; then
-            cargo nextest run -j 4 --workspace --all-features --profile compile-fail
-          else
-            cargo nextest run --workspace --all-features --profile compile-fail
           fi
 
   audit:

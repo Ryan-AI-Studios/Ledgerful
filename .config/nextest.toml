@@ -9,17 +9,15 @@
 #   default      fast unit + integration tests, PR loop
 #   ci           default + retries, CI/PR gate
 #   slow         heavy integration tests, nightly / on-demand
-#   compile-fail trybuild compile_fail crate, separate CI job
 #   doctests     `cargo test --doc` (nextest doesn't run doctests on stable)
 
 [profile.default]
-# Fast local/PR loop — excludes slow and trybuild tests.
+# Fast local/PR loop — excludes slow tests.
 fail-fast = false
 slow-timeout = "30s"
 status-level = "skip"
-# Default filter expression: exclude the compile_fail binary and any test
-# whose name ends in `__slow`. Filter expressions are combined with AND.
-default-filter = 'not (binary(compile_fail)) and not (test(/__slow$/))'
+# Default filter expression: exclude any test whose name ends in `__slow`.
+default-filter = 'not (test(/__slow$/))'
 
 
 [profile.ci]
@@ -33,11 +31,6 @@ inherits = "ci"
 slow-timeout = "300s"
 # Only tests whose name ends in `__slow`.
 default-filter = 'test(/__slow$/)'
-
-[profile.compile-fail]
-inherits = "ci"
-# Only runs the compile_fail trybuild crate.
-default-filter = 'binary(compile_fail)'
 
 # Serial test-group (track 0062). max-threads = 1 means tests in this group run
 # one at a time, while the rest of the suite runs in parallel around them.

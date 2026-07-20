@@ -462,8 +462,7 @@ impl VerificationPlan {
 /// When `prefer_nextest` is `Some(false)`, always falls back to `cargo test`.
 ///
 /// The nextest variant uses the `ci` profile so the pre-push/verify gate
-/// respects the test-tier policy: it excludes the `compile_fail` trybuild
-/// crate and `__slow` tests.
+/// respects the test-tier policy: it excludes `__slow` tests.
 pub fn resolve_default_test_command(
     prefer_nextest: Option<bool>,
     repo_root: &std::path::Path,
@@ -625,9 +624,9 @@ fn build_plan_with_scope(
     }
 
     // For full scope with nextest, ensure the plan contains the complete tier
-    // policy: ci profile (already present as the default), slow profile,
-    // compile-fail profile, and doctests. This only applies when there were
-    // explicit rules/config that prevented the default path from doing it.
+    // policy: ci profile (already present as the default), slow profile, and
+    // doctests. This only applies when there were explicit rules/config that
+    // prevented the default path from doing it.
     if scope == VerifyScope::Full {
         let has_rust = profile.rust.is_some();
         append_full_tier_commands(
@@ -653,8 +652,8 @@ fn build_plan_with_scope(
     }
 }
 
-/// Ensures a full-scope plan contains the slow, compile-fail, and doctest
-/// tier commands, deduplicated against any commands already present.
+/// Ensures a full-scope plan contains the slow and doctest tier commands,
+/// deduplicated against any commands already present.
 fn append_full_tier_commands(
     steps: &mut Vec<VerificationStep>,
     prefer_nextest: Option<bool>,
@@ -675,16 +674,11 @@ fn append_full_tier_commands(
         let nextest_config_content =
             std::fs::read_to_string(repo_root.join(".config/nextest.toml")).unwrap_or_default();
 
-        let (has_slow, has_compile_fail) =
-            if let Ok(parsed) = nextest_config_content.parse::<toml::Value>() {
-                let p = parsed.get("profile");
-                (
-                    p.and_then(|p| p.get("slow")).is_some(),
-                    p.and_then(|p| p.get("compile-fail")).is_some(),
-                )
-            } else {
-                (false, false)
-            };
+        let has_slow = if let Ok(parsed) = nextest_config_content.parse::<toml::Value>() {
+            parsed.get("profile").and_then(|p| p.get("slow")).is_some()
+        } else {
+            false
+        };
 
         if has_slow {
             let cmd = "cargo nextest run --workspace --all-features --profile slow";
@@ -698,17 +692,6 @@ fn append_full_tier_commands(
             }
         }
 
-        if has_compile_fail {
-            let cmd = "cargo nextest run --workspace --all-features --profile compile-fail";
-            if !existing.contains(cmd) {
-                extra.push(VerificationStep {
-                    command: cmd.to_string(),
-                    timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
-                    description: "Tier: compile-fail tests".to_string(),
-                    shell: false,
-                });
-            }
-        }
         let doctest = "cargo test --workspace --all-features --doc";
         if !existing.contains(doctest) {
             extra.push(VerificationStep {
