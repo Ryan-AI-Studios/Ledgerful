@@ -1,8 +1,29 @@
 [package]
 name = "ledgerful"
-version = "0.1.8"
+version = "0.1.9"
 edition = "2024"
 license-file = "LICENSE"
+description = "Local-first change intelligence CLI for deterministic impact analysis and verification"
+homepage = "https://github.com/Ryan-AI-Studios/Ledgerful"
+repository = "https://github.com/Ryan-AI-Studios/Ledgerful"
+readme = "README.md"
+
+# Prebuilt install via `cargo binstall --git https://github.com/Ryan-AI-Studios/Ledgerful`
+# Maps to the same GitHub release archives used by brew/scoop/winget (no crates.io publish).
+[package.metadata.binstall]
+# Unix assets: ledgerful-{target}.tar.gz containing ledgerful-{target}/ledgerful
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.tar.gz"
+bin-dir = "{ name }-{ target }/{ bin }{ binary-ext }"
+pkg-fmt = "tgz"
+# Keep compile as fallback; skip third-party quickinstall mirrors.
+disabled-strategies = ["quick-install"]
+
+# Windows release asset is a portable .zip with ledgerful.exe at archive root
+# (see release.yml Compress-Archive of dist/{asset}/* contents).
+[package.metadata.binstall.overrides.x86_64-pc-windows-msvc]
+pkg-url = "{ repo }/releases/download/v{ version }/{ name }-{ target }.zip"
+pkg-fmt = "zip"
+bin-dir = "{ bin }{ binary-ext }"
 
 [dependencies]
 clap = { version = "4.6.1", features = ["derive"] }
