@@ -37,12 +37,12 @@ packaging/
   scoop/ledgerful.json    # scoop manifest (64bit zip + autoupdate)
 scripts/
   bump-manifests.ps1      # Primary local path on Windows (pwsh)
-  bump-manifests.sh       # Ubuntu release CI — requires Bash 4+ (declare -A)
+  bump-manifests.sh       # release CI + macOS (Bash 3.2+ compatible)
 tests/fixtures/package-manifests/v0.1.8/
   *.sha256                # real published v0.1.8 hashes (fixture)
 ```
 
-**Script runtimes:** On Windows, use `pwsh -File scripts/bump-manifests.ps1` as the primary local path. `scripts/bump-manifests.sh` requires **Bash 4+** (associative arrays) and is the path used by Ubuntu release CI.
+**Script runtimes:** On Windows, use `pwsh -File scripts/bump-manifests.ps1` as the primary local path. `scripts/bump-manifests.sh` is **Bash 3.2+** compatible (macOS `/bin/bash`) and is the path used by Ubuntu release CI.
 
 ## Bump automation
 

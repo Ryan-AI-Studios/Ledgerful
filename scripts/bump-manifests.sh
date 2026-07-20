@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Bump Homebrew formula + Scoop manifest version/hashes from published .sha256 files.
 #
-# Requires: Bash 4+ (associative arrays via declare -A). On Windows, prefer the
-# primary local path: pwsh -File scripts/bump-manifests.ps1 …
+# Bash 3.2+ compatible (macOS /bin/bash). On Windows, prefer:
+#   pwsh -File scripts/bump-manifests.ps1 …
 #
 # Reads checksums ONLY from published/fixture *.sha256 files (never recomputes).
 # Required assets:
@@ -15,11 +15,6 @@
 #   scripts/bump-manifests.sh --version 0.1.8 --checksums-dir path/to/sha256s \
 #     [--packaging-dir packaging] [--out-dir DIR] [--dry-run]
 set -euo pipefail
-
-if ((BASH_VERSINFO[0] < 4)); then
-  echo "error: Bash 4+ required (found ${BASH_VERSION:-unknown}); use bump-manifests.ps1 on Windows" >&2
-  exit 1
-fi
 
 VERSION=""
 CHECKSUMS_DIR=""
@@ -114,11 +109,25 @@ read_sha256() {
   printf '%s' "$token"
 }
 
-declare -A HASHES=()
+# Bash 3.2 compatible: store hashes in flat KEY=value file, no associative arrays.
+HASH_TABLE="$(mktemp)"
+trap 'rm -f "$HASH_TABLE"' EXIT
 for asset in "${REQUIRED_ASSETS[@]}"; do
   sha_path="${CHECKSUMS_DIR}/${asset}.sha256"
-  HASHES["$asset"]="$(read_sha256 "$sha_path")"
+  printf '%s=%s\n' "$asset" "$(read_sha256 "$sha_path")" >>"$HASH_TABLE"
 done
+
+hash_for() {
+  # Usage: hash_for <asset-name>
+  local asset="$1"
+  local line
+  line="$(grep -F "${asset}=" "$HASH_TABLE" | head -n 1)" || true
+  if [[ -z "$line" ]]; then
+    echo "error: no hash recorded for asset: $asset" >&2
+    return 1
+  fi
+  printf '%s' "${line#*=}"
+}
 
 HOMEBREW_SRC="${PACKAGING_DIR}/homebrew/ledgerful.rb"
 SCOOP_SRC="${PACKAGING_DIR}/scoop/ledgerful.json"
@@ -132,7 +141,7 @@ if [[ ! -f "$SCOOP_SRC" ]]; then
 fi
 
 WORKDIR="$(mktemp -d)"
-trap 'rm -rf "$WORKDIR"' EXIT
+trap 'rm -rf "$WORKDIR"; rm -f "$HASH_TABLE"' EXIT
 
 # Normalize source to LF for deterministic rewrites
 tr -d '\r' <"$HOMEBREW_SRC" >"${WORKDIR}/formula.in"
@@ -179,7 +188,7 @@ for asset in \
   "ledgerful-x86_64-apple-darwin.tar.gz" \
   "ledgerful-x86_64-unknown-linux-gnu.tar.gz"
 do
-  hash="${HASHES[$asset]}"
+  hash="$(hash_for "$asset")"
   if ! grep -Fq "$asset" "${WORKDIR}/formula.work"; then
     echo "error: Homebrew formula has no url for asset: $asset" >&2
     exit 1
@@ -214,7 +223,7 @@ cp "${WORKDIR}/formula.work" "${WORKDIR}/formula.out"
 
 # --- Scoop ---
 WIN_ASSET="ledgerful-x86_64-pc-windows-msvc.zip"
-WIN_HASH="${HASHES[$WIN_ASSET]}"
+WIN_HASH="$(hash_for "$WIN_ASSET")"
 
 awk -v ver="$VERSION_NORM" -v prev="${PREV_VERSION:-}" -v win_asset="$WIN_ASSET" -v win_hash="$WIN_HASH" '
 BEGIN { seen_url = 0; hash_done = 0 }
@@ -257,20 +266,24 @@ done
 echo "bump-manifests: version=${VERSION_NORM}"
 echo "checksums-dir=${CHECKSUMS_DIR}"
 for asset in "${REQUIRED_ASSETS[@]}"; do
-  echo "  ${asset} = ${HASHES[$asset]}"
+  echo "  ${asset} = $(hash_for "$asset")"
 done
 
-changed=()
+changed_list=""
 if ! cmp -s "${WORKDIR}/formula.out" "${WORKDIR}/formula.in"; then
-  changed+=("homebrew/ledgerful.rb")
+  changed_list="homebrew/ledgerful.rb"
 fi
 if ! cmp -s "${WORKDIR}/scoop.out" "${WORKDIR}/scoop.in"; then
-  changed+=("scoop/ledgerful.json")
+  if [[ -n "$changed_list" ]]; then
+    changed_list="${changed_list} scoop/ledgerful.json"
+  else
+    changed_list="scoop/ledgerful.json"
+  fi
 fi
-if [[ ${#changed[@]} -eq 0 ]]; then
+if [[ -z "$changed_list" ]]; then
   echo "No content changes (already at target version/hashes)."
 else
-  echo "Changed: ${changed[*]}"
+  echo "Changed: ${changed_list}"
 fi
 
 if [[ "$DRY_RUN" -eq 1 ]]; then
