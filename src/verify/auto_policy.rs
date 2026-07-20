@@ -41,10 +41,11 @@ pub fn build_auto_policy(
             let nextest_config_content =
                 std::fs::read_to_string(repo_root.join(".config/nextest.toml")).unwrap_or_default();
 
-            let has_ci = if let Ok(parsed) = nextest_config_content.parse::<toml::Value>() {
-                parsed.get("profile").and_then(|p| p.get("ci")).is_some()
-            } else {
-                false
+            // toml::from_str — str::parse fails under toml 1.x on multi-table configs
+            // (same bug as plan.rs; would leave has_ci permanently false).
+            let has_ci = match toml::from_str::<toml::Value>(&nextest_config_content) {
+                Ok(parsed) => parsed.get("profile").and_then(|p| p.get("ci")).is_some(),
+                Err(_) => false,
             };
 
             let command = if has_ci {
