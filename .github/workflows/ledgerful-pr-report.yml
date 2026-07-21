@@ -27,7 +27,7 @@ jobs:
 
       - name: Post risk summary
         # Same action pin as Workflow A (full commit SHA; no mutable tag yet).
-        uses: Ryan-AI-Studios/ledgerful-action@e07581756cf76ee13f35b5c7efbb5b7c7e3ff84c
+        uses: Ryan-AI-Studios/ledgerful-action@2c8dacbc89dafae7d13735d1d19b89062de105a3
         with:
           github-token: ${{ github.token }}
           report-path: ledgerful-pr-report.json

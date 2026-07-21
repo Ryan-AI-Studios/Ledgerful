@@ -27,7 +27,7 @@ jobs:
       - name: Run Ledgerful PR risk scan
         id: ledgerful-scan
         # Pin ledgerful-action to a full commit SHA (no mutable tag yet).
-        uses: Ryan-AI-Studios/ledgerful-action@e07581756cf76ee13f35b5c7efbb5b7c7e3ff84c
+        uses: Ryan-AI-Studios/ledgerful-action@2c8dacbc89dafae7d13735d1d19b89062de105a3
         with:
           ledgerful-version: v0.1.9
           # ledgerful-x86_64-unknown-linux-gnu.tar.gz from v0.1.9 published .sha256 sidecar
