@@ -717,6 +717,8 @@ fn needs_sync(schema_exists: bool, generated_at: &str, commit_mtime: Option<Syst
 /// whole group is killed and reaped so no grandchild (e.g. git) leaks; the
 /// error is non-fatal so the caller can continue to the next sibling.
 fn run_federate_export(sibling_root: &Utf8Path, sync_timeout: Duration) -> Result<()> {
+    // Legitimate: re-exec this binary for sibling federate export subprocess.
+    // nosemgrep: rust.lang.security.current-exe.current-exe
     let current_exe = std::env::current_exe().into_diagnostic()?;
     let mut command = std::process::Command::new(current_exe);
     command
@@ -742,6 +744,8 @@ fn run_federate_export(sibling_root: &Utf8Path, sync_timeout: Duration) -> Resul
         // NOTE: `wait_timeout` only reaps the IMMEDIATE child. The wrapper's
         // own `wait()` (called below) is what reaps the whole process group
         // (Unix: `waitpid(-pgid)`) or Job Object (Windows: `wait_on_job`).
+        // Legitimate: process-wrap API requires unsafe to access inner Child.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe { child.inner_child_mut() },
         sync_timeout,
     )
@@ -1696,6 +1700,8 @@ mod timeout_tests {
         let mut child = command.spawn().expect("spawn");
         let start = Instant::now();
         let status = wait_timeout::ChildExt::wait_timeout(
+            // Legitimate: test accesses process-wrap inner Child for wait_timeout.
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             unsafe { child.inner_child_mut() },
             Duration::from_millis(500),
         )
@@ -1749,6 +1755,8 @@ mod timeout_tests {
         }
         let mut child = command.spawn().expect("spawn");
         let status = wait_timeout::ChildExt::wait_timeout(
+            // Legitimate: test accesses process-wrap inner Child for wait_timeout.
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             unsafe { child.inner_child_mut() },
             Duration::from_secs(2),
         )

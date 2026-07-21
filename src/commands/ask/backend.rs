@@ -323,11 +323,14 @@ mod tests {
     fn resolve_provider_priority_env_var_invalid_fails_fast() {
         clear_provider_env();
         let key = "LEDGERFUL_ASK_PROVIDER_1";
+        // Legitimate: test-only env mutation (edition-2024 set_var is unsafe).
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe {
             std::env::set_var(key, "typo_cloud");
         }
         let config = Config::default();
         let result = resolve_provider_priority(&config, None);
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe {
             std::env::remove_var(key);
         }
@@ -365,6 +368,8 @@ mod tests {
         use crate::gemini::modes::GeminiMode;
 
         fn clear_gemini_model_env() {
+            // Legitimate: test-only env cleanup (edition-2024 remove_var is unsafe).
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             unsafe {
                 std::env::remove_var("GEMINI_FAST_MODEL");
                 std::env::remove_var("GEMINI_DEEP_MODEL");
@@ -407,6 +412,8 @@ mod tests {
             assert_eq!(model, "custom");
 
             // 3. Env Overrides
+            // Legitimate: test-only env mutation (edition-2024 set_var is unsafe).
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             unsafe {
                 std::env::set_var("GEMINI_FAST_MODEL", "env-fast");
                 std::env::set_var("GEMINI_DEEP_MODEL", "env-deep");

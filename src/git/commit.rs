@@ -254,12 +254,16 @@ mod tests {
     #[test]
     fn test_git_binary_env_override() {
         let original = std::env::var("GIT_BINARY").ok();
+        // Legitimate: test-only env mutation (edition-2024 set_var is unsafe).
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe { std::env::set_var("GIT_BINARY", "my-mock-git") };
         assert_eq!(git_binary(), "my-mock-git");
         // Cleanup
         if let Some(orig) = original {
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             unsafe { std::env::set_var("GIT_BINARY", orig) };
         } else {
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             unsafe { std::env::remove_var("GIT_BINARY") };
         }
     }
