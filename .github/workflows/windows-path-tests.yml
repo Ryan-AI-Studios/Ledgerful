@@ -23,7 +23,11 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2
+        # Pin mainline v2 release SHA (not per-tool tags). Dependabot cannot
+        # resolve diverged convenience commits (error: no such commit).
+        uses: taiki-e/install-action@a6b2e2dcd845ddd7f509ce4f3ed3d922b80cc5d9 # v2.84.0
+        with:
+          tool: nextest
       - name: Run path regression tests
         run: >-
           cargo nextest run -j 1 --workspace --all-features --profile ci
