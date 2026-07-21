@@ -1,0 +1,42 @@
+# Workflow A — Ledgerful PR Scan (engine dogfood)
+# Track 0068 / 0047: two-workflow fork-PR pattern. This workflow is read-only.
+# Untrusted PR code only runs here (scan). Workflow B posts the comment/check-run
+# and never checks out or executes PR code.
+#
+# Pin: Ryan-AI-Studios/ledgerful-action@0d74d8ac… (no mutable release tag yet —
+# strategy B). Engine binary: v0.1.9 + published Linux archive checksum.
+# Never reintroduce inline `./action`.
+
+name: Ledgerful PR Scan
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout PR (full history required for diff)
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          fetch-depth: 0
+
+      - name: Run Ledgerful PR risk scan
+        id: ledgerful-scan
+        # Pin ledgerful-action to a full commit SHA (no mutable tag yet).
+        uses: Ryan-AI-Studios/ledgerful-action@0d74d8ac4a86f9345a2c50daba71067b06856ea0
+        with:
+          ledgerful-version: v0.1.9
+          # ledgerful-x86_64-unknown-linux-gnu.tar.gz from v0.1.9 published .sha256 sidecar
+          ledgerful-checksum: ab203f8de80597dcd8294c3e87a2198113428c7a5d39cecaf8a37ce36f1a01ff
+        env:
+          LEDGERFUL_NO_NETWORK: "1"
+
+      - name: Upload JSON report
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: ledgerful-pr-report
+          path: ledgerful-pr-report.json
