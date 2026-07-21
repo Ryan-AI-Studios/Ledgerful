@@ -30,11 +30,11 @@ pub fn seal(
     aad: &[u8],
 ) -> Result<(Vec<u8>, [u8; 16]), String> {
     let cipher = XChaCha20Poly1305::new(key.into());
-    let nonce = XNonce::from_slice(nonce);
+    let nonce = XNonce::from(*nonce);
 
     let ciphertext_with_tag = cipher
         .encrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: plaintext,
                 aad,
@@ -64,14 +64,14 @@ pub fn open(
     aad: &[u8],
 ) -> Result<Zeroizing<Vec<u8>>, String> {
     let cipher = XChaCha20Poly1305::new(key.into());
-    let nonce = XNonce::from_slice(nonce);
+    let nonce = XNonce::from(*nonce);
 
     let mut full_ciphertext = ciphertext.to_vec();
     full_ciphertext.extend_from_slice(tag);
 
     let decrypted = cipher
         .decrypt(
-            nonce,
+            &nonce,
             Payload {
                 msg: &full_ciphertext,
                 aad,
