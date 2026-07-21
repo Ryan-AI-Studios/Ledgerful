@@ -3,7 +3,7 @@
 # Untrusted PR code only runs here (scan). Workflow B posts the comment/check-run
 # and never checks out or executes PR code.
 #
-# Pin: Ryan-AI-Studios/ledgerful-action@f900ead… (main after #4; no mutable tag —
+# Pin: Ryan-AI-Studios/ledgerful-action@2c8dacbc… (main after action #3–#5; no mutable tag —
 # strategy B). Engine binary: v0.1.9 + published Linux archive checksum.
 # Never reintroduce inline `./action`.
 
