@@ -714,10 +714,13 @@ mod tests {
     #[test]
     fn test_cloud_fallback_env_blank() {
         let key = "NONEXISTENT_BLANK_KEY_TEST";
+        // Legitimate: test-only env mutation (edition-2024 set_var is unsafe).
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe {
             std::env::set_var(key, "   ");
         }
         assert!(cloud_fallback_env(key).is_none());
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe {
             std::env::remove_var(key);
         }
@@ -731,6 +734,8 @@ mod tests {
     fn test_config(base_url: &str) -> LocalModelConfig {
         // Isolate from this repo's real `.env` (which may have real OpenRouter/Gemini
         // keys for manual use) so cloud_fallback_env() can't make these tests flaky.
+        // Legitimate: chdir to OS temp so tests ignore the repo's real .env.
+        // nosemgrep: rust.lang.security.temp-dir.temp-dir
         if let Ok(tmp) = std::env::temp_dir().canonicalize() {
             let _ = std::env::set_current_dir(tmp);
         }

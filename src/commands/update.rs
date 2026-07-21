@@ -77,6 +77,8 @@ fn execute_migration(_fast: bool, dry_run: bool) -> Result<()> {
 }
 
 fn execute_binary_update(force: bool, force_unlock: bool, dry_run: bool) -> Result<()> {
+    // Legitimate: self-path for in-place binary update of this install.
+    // nosemgrep: rust.lang.security.current-exe.current-exe
     let bin_path = env::current_exe().unwrap_or_else(|e| {
         tracing::warn!(
             "Failed to get current executable path: {}. Falling back to 'ledgerful'.",
@@ -176,6 +178,8 @@ fn cargo_install_command() -> Command {
 }
 
 fn shadow_copy_current_exe() -> Option<std::path::PathBuf> {
+    // Legitimate: Windows rename of running self so cargo install can replace it.
+    // nosemgrep: rust.lang.security.current-exe.current-exe
     if let Ok(bin_path) = env::current_exe() {
         let mut old_path = bin_path.clone();
         let stem = bin_path.file_stem()?.to_string_lossy();

@@ -22,6 +22,8 @@ fn run() -> Result<()> {
     // Intercept "help" and "version" subcommands ONLY if they are the first
     // positional argument to unify behavior without breaking legitimate
     // positional values or subcommand args later in the string.
+    // Legitimate: CLI argv for help/version rewrite only — not an auth boundary.
+    // nosemgrep: rust.lang.security.args.args
     let args: Vec<String> = std::env::args().collect();
     let mut transformed = Vec::with_capacity(args.len());
 
@@ -109,6 +111,8 @@ fn run() -> Result<()> {
 /// Errors are silently ignored — this is best-effort cleanup.
 #[cfg(target_os = "windows")]
 fn sweep_stale_old_binaries() {
+    // Legitimate: self-path for sweeping leftover update shadow-copy binaries.
+    // nosemgrep: rust.lang.security.current-exe.current-exe
     if let Ok(current) = std::env::current_exe()
         && let Some(dir) = current.parent()
         && let Ok(entries) = std::fs::read_dir(dir)

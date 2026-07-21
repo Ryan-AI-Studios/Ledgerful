@@ -114,6 +114,8 @@ mod tests {
             let original = std::env::var(key).ok();
             // SAFETY: nextest isolates each test in its own process, so there
             // is no concurrent mutation of the environment within a process.
+            // Legitimate: TempEnv RAII for edition-2024 set_var in tests.
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             unsafe { std::env::set_var(key, value) };
             Self { key, original }
         }
@@ -122,6 +124,8 @@ mod tests {
     impl Drop for EnvVarGuard {
         fn drop(&mut self) {
             // SAFETY: see `set` above.
+            // Legitimate: restore env on Drop (edition-2024 set_var/remove_var).
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             unsafe {
                 match &self.original {
                     Some(v) => std::env::set_var(self.key, v),

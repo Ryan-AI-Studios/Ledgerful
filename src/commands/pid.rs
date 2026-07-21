@@ -95,11 +95,14 @@ impl PidFile {
             OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION,
         };
         // SAFETY: OpenProcess accepts a valid PID and standard access rights.
+        // Legitimate: Windows process liveness probe for our own daemon PIDs.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let handle = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid) };
         if handle.is_null() {
             return false;
         }
         // SAFETY: handle was returned by OpenProcess and is non-null.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe {
             let _ = CloseHandle(handle);
         }
@@ -142,9 +145,12 @@ impl PidFile {
         };
 
         // SAFETY: OpenProcess accepts a valid PID and standard access rights.
+        // Legitimate: Windows process terminate for our own daemon PIDs only.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let handle = unsafe { OpenProcess(PROCESS_TERMINATE, FALSE, pid) };
         if handle.is_null() {
             // SAFETY: GetLastError has no preconditions.
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             let err = unsafe { GetLastError() };
             if err == ERROR_INVALID_PARAMETER {
                 // Process already exited; not a hard failure.
@@ -159,15 +165,18 @@ impl PidFile {
 
         // SAFETY: handle is non-null and was returned by OpenProcess with
         // PROCESS_TERMINATE access.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         let terminated = unsafe { TerminateProcess(handle, Self::u32_exit_code(1)) };
         let terminate_err = if terminated == 0 {
             // SAFETY: GetLastError has no preconditions.
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             Some(unsafe { GetLastError() })
         } else {
             None
         };
 
         // SAFETY: handle was returned by OpenProcess and is non-null.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe {
             let _ = CloseHandle(handle);
         }
@@ -192,6 +201,8 @@ impl PidFile {
     /// Verify that the process with the given PID belongs to this executable.
     #[cfg(target_os = "windows")]
     pub fn verify_is_our_process(pid: u32) -> bool {
+        // Legitimate: compare PID image name to this binary for self-ownership.
+        // nosemgrep: rust.lang.security.current-exe.current-exe
         let Some(expected_image) = std::env::current_exe().ok().and_then(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())
@@ -227,6 +238,8 @@ impl PidFile {
     /// self-checks against `cargo test`'s hash-suffixed binary names.
     #[cfg(target_os = "linux")]
     pub fn verify_is_our_process(pid: u32) -> bool {
+        // Legitimate: compare /proc/<pid>/exe to this binary for self-ownership.
+        // nosemgrep: rust.lang.security.current-exe.current-exe
         let Ok(expected_exe) = std::env::current_exe() else {
             return false;
         };
@@ -239,6 +252,8 @@ impl PidFile {
     /// Verify that the process with the given PID belongs to this executable.
     #[cfg(not(any(target_os = "windows", target_os = "linux")))]
     pub fn verify_is_our_process(pid: u32) -> bool {
+        // Legitimate: compare process comm to this binary for self-ownership.
+        // nosemgrep: rust.lang.security.current-exe.current-exe
         let Some(expected_image) = std::env::current_exe().ok().and_then(|p| {
             p.file_name()
                 .and_then(|n| n.to_str())

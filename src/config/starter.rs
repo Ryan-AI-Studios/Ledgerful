@@ -144,6 +144,8 @@ fn publish_no_replace(stage: &Path, destination: &Path) -> std::io::Result<()> {
         .encode_wide()
         .chain(Some(0))
         .collect();
+    // Legitimate: Windows MoveFileExW for atomic no-replace publish of starter config.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let success = unsafe {
         MoveFileExW(
             source.as_ptr(),

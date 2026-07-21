@@ -4,6 +4,15 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    # Delay version-update PRs after a crate is published so yank/compromise
+    # windows are less likely to auto-PR same-day (supply-chain hygiene).
+    # Security updates are not delayed by cooldown.
+    cooldown:
+      # Semgrep package_managers.dependabot-missing-cooldown requires default-days: 7
+      default-days: 7
+      semver-major-days: 14
+      semver-minor-days: 7
+      semver-patch-days: 7
     groups:
       minor-and-patch:
         patterns:
@@ -16,3 +25,5 @@ updates:
     directory: /
     schedule:
       interval: weekly
+    cooldown:
+      default-days: 7

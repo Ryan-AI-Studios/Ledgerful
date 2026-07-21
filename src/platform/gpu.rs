@@ -17,6 +17,8 @@ pub struct VramInfo {
 pub fn query_vram_usage() -> Result<VramInfo, String> {
     use windows::Win32::Graphics::Dxgi::*;
     use windows::core::Interface;
+    // Legitimate: DXGI VRAM probe via Win32 COM APIs (read-only GPU budget).
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     unsafe {
         let factory: IDXGIFactory4 = CreateDXGIFactory2(DXGI_CREATE_FACTORY_FLAGS(0))
             .map_err(|e| e.message().to_string())?;

@@ -78,6 +78,8 @@ fn get_repo_root() -> Result<Utf8PathBuf> {
 }
 
 fn resolve_ledgerful_binary() -> Result<Utf8PathBuf> {
+    // Legitimate: schedule jobs re-exec this binary, not an untrusted path.
+    // nosemgrep: rust.lang.security.current-exe.current-exe
     let current_exe = env::current_exe().into_diagnostic()?;
     Utf8PathBuf::from_path_buf(current_exe)
         .map_err(|_| miette::miette!("Current executable path is not valid UTF-8"))

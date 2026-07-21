@@ -134,6 +134,8 @@ fn set_repo_local_git_config(root: &Path) -> Result<()> {
 }
 
 fn ledgerful_binary() -> String {
+    // Legitimate: re-exec this binary for demo verify subprocesses.
+    // nosemgrep: rust.lang.security.current-exe.current-exe
     std::env::current_exe()
         .ok()
         .map(|p| p.to_string_lossy().to_string())
@@ -264,6 +266,8 @@ impl DemoHomeGuard {
         // is intentionally visible to spawned subprocesses (git, ledgerful)
         // so they resolve keys/config relative to the demo directory. The
         // guard restores state on drop.
+        // Legitimate: demo RAII isolates HOME/USERPROFILE for subprocesses.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe {
             std::env::set_var("HOME", &demo_dir);
             std::env::set_var("USERPROFILE", &demo_dir);
@@ -282,12 +286,17 @@ impl DemoHomeGuard {
 impl Drop for DemoHomeGuard {
     fn drop(&mut self) {
         let _ = std::env::set_current_dir(&self.original_cwd);
+        // Legitimate: restore demo HOME/USERPROFILE env on Drop (edition-2024 set_var).
         match &self.original_home {
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             Some(v) => unsafe { std::env::set_var("HOME", v) },
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             None => unsafe { std::env::remove_var("HOME") },
         }
         match &self.original_userprofile {
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             Some(v) => unsafe { std::env::set_var("USERPROFILE", v) },
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             None => unsafe { std::env::remove_var("USERPROFILE") },
         }
     }

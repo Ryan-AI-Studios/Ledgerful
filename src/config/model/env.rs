@@ -185,10 +185,14 @@ mod tests {
             // SAFETY: only used in tests under `cargo nextest` (one process per test)
             // or under `cargo test` when tests are run sequentially in the same process.
             // The guard restores the original value immediately after the closure.
+            // Legitimate: TempEnv RAII for edition-2024 set_var/remove_var in tests.
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             unsafe { std::env::set_var(key, value) };
             let result = f();
             match previous {
+                // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
                 Some(prev) => unsafe { std::env::set_var(key, prev) },
+                // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
                 None => unsafe { std::env::remove_var(key) },
             }
             result

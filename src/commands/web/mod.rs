@@ -106,6 +106,8 @@ fn spawn_background_server(
 
     // Double-fork via nix::unistd::daemon. The current process exits; the
     // daemon continues as the server.
+    // Legitimate: Unix double-fork to daemonize the web server process.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     match unsafe { nix::unistd::fork() } {
         Ok(nix::unistd::ForkResult::Parent { .. }) => {
             // Parent exits immediately after the child is launched. The child
@@ -115,6 +117,7 @@ fn spawn_background_server(
         Ok(nix::unistd::ForkResult::Child) => {
             // Detach from controlling terminal and continue as the daemon.
             let _ = nix::unistd::setsid();
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             match unsafe { nix::unistd::fork() } {
                 Ok(nix::unistd::ForkResult::Parent { .. }) => {
                     std::process::exit(0);
@@ -122,6 +125,8 @@ fn spawn_background_server(
                 Ok(nix::unistd::ForkResult::Child) => {
                     // SAFETY: single-threaded child process after double-fork,
                     // no other threads can observe the env mutation.
+                    // Legitimate: pass auth token to daemonized child via env.
+                    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
                     unsafe {
                         std::env::set_var(TOKEN_ENV_VAR, token);
                     }
@@ -176,6 +181,8 @@ fn spawn_background_server(
     let pid_path = layout.web_pid_file();
     PidFile::remove(&pid_path);
 
+    // Legitimate: Windows re-exec of this binary as a detached web daemon.
+    // nosemgrep: rust.lang.security.current-exe.current-exe
     let current_exe = std::env::current_exe()
         .into_diagnostic()
         .map_err(|e| miette!("Failed to locate current executable: {}", e))?;

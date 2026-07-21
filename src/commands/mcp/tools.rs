@@ -8,6 +8,8 @@ const MCP_TOOL_TIMEOUT_SECS: u64 = 120;
 const MCP_SUBPROCESS_OUTPUT_MAX: usize = 4 * 1024 * 1024;
 
 fn get_ledgerful_exe() -> std::path::PathBuf {
+    // Legitimate: re-exec this binary for MCP tool subprocesses.
+    // nosemgrep: rust.lang.security.current-exe.current-exe
     std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("ledgerful"))
 }
 
