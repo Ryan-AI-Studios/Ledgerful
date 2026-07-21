@@ -289,7 +289,10 @@ fn demo__stdout_contains_demo_marker_and_export_path() {
         &["demo", "--keep", "--output", "demo-output-test"],
         tmp.path(),
     );
-    assert!(success, "demo should succeed");
+    assert!(
+        success,
+        "demo should succeed:\nstdout:\n{stdout}\nstderr:\n{_stderr}"
+    );
 
     assert!(
         stdout.contains("[DEMO]"),
@@ -306,6 +309,54 @@ fn demo__stdout_contains_demo_marker_and_export_path() {
     assert!(
         stdout.contains("verify"),
         "stdout must contain a verify instruction; got:\n{stdout}"
+    );
+}
+
+/// Track 0070 DoD-3: cryptographic VALID beat on the automated path; suite
+/// noise demoted; evidence kept with --keep.
+#[test]
+#[serial(cwd, env)]
+fn demo__crypto_valid_beat_on_automated_path() {
+    let _ni = non_interactive();
+    let tmp = tempdir().unwrap();
+
+    let (stdout, stderr, success) = run_demo(
+        &["demo", "--keep", "--output", "demo-crypto-valid"],
+        tmp.path(),
+    );
+    assert!(
+        success,
+        "demo --keep must succeed with crypto beat:\nstdout:\n{stdout}\nstderr:\n{stderr}"
+    );
+
+    assert!(
+        stdout.contains("CRYPTO VALID") && stdout.contains("signatures + chain"),
+        "stdout must show signatures+chain CRYPTO VALID; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("CRYPTO VALID") && stdout.contains("retained DEMO export"),
+        "stdout must show against-export CRYPTO VALID; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("Optional project checks"),
+        "suite-scope verify must be relabeled as optional project checks; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("disposable keys") || stdout.contains("not your production keyring"),
+        "stdout must carry disposable-key honesty; got:\n{stdout}"
+    );
+    assert!(
+        stdout.contains("ledgerful demo --keep"),
+        "stdout must print golden-path canonical steps; got:\n{stdout}"
+    );
+
+    let export_path = tmp
+        .path()
+        .join("demo-crypto-valid")
+        .join("ledgerful-DEMO-evidence.zip");
+    assert!(
+        export_path.exists(),
+        "openable DEMO evidence zip must be kept at {export_path:?}"
     );
 }
 

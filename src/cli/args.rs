@@ -569,9 +569,9 @@ pub enum Commands {
     #[cfg(any(feature = "openapi", feature = "web"))]
     Openapi,
 
-    /// Generate a disposable demonstration repo with signed ledger entries and a SOC2 evidence export
+    /// Generate a disposable demonstration repo with signed ledger entries, cryptographic VALID proof, and a DEMO evidence export (see docs/golden-path.md)
     Demo {
-        /// Keep the demo repo after completion (default: clean up)
+        /// Keep the demo repo and openable DEMO evidence zip after completion (required for the golden-path walkthrough; default: clean up)
         #[arg(short, long)]
         keep: bool,
         /// Output directory for the demo repo (default: ./ledgerful-demo)
