@@ -84,7 +84,7 @@ jobs:
         with:
           toolchain: stable
           targets: ${{ matrix.target }}
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Install cargo-auditable + cargo-audit
         shell: bash
         run: |
@@ -144,7 +144,7 @@ jobs:
         # this step is skipped while ledgerful remains private and will activate automatically when the repository becomes public.
         # Uses actions/attest in default SLSA build-provenance mode (no custom predicate-type/predicate needed).
         if: github.event.repository.visibility == 'public' || github.event.repository.visibility == 'internal'
-        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6
         with:
           subject-path: dist/${{ matrix.asset }}.${{ matrix.archive == 'tar' && 'tar.gz' || 'zip' }}
       - name: Attest build provenance (private repo fallback)
@@ -181,7 +181,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - run: cargo build --bin ledgerful --locked --no-default-features --features mcp,export
       - run: npm ci
         working-directory: mcp-server
@@ -213,7 +213,7 @@ jobs:
         # Gated on public repo/Enterprise Cloud. actions/attest needs a public repo or GitHub Enterprise Cloud;
         # this step is skipped while ledgerful remains private and will activate automatically when the repository becomes public.
         if: github.event.repository.visibility == 'public' || github.event.repository.visibility == 'internal'
-        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6
         with:
           subject-path: mcp-server/dist/*.tgz
       - name: Attest MCP package provenance (private repo fallback)
@@ -242,7 +242,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: stable
-      - uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 22
