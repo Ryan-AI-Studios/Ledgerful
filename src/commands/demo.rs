@@ -1,6 +1,7 @@
 //! `ledgerful demo` — build a synthetic invoice-service repo, run it through
-//! the real Ledgerful hook flow, and produce a self-identifying DEMO SOC2
-//! evidence export.
+//! the real Ledgerful hook flow, produce a cryptographic VALID beat
+//! (signatures + chain + against-export), and emit a self-identifying DEMO
+//! signed evidence export (not a compliance attestation).
 //!
 //! The command never touches the user's production `~/.ledgerful/keys/`. All
 //! keys live inside the demo repo's own `.ledgerful/keys/` directory by
@@ -13,6 +14,32 @@ use std::process::Command;
 
 const DEFAULT_DEMO_DIR: &str = "ledgerful-demo";
 const DEMO_EVIDENCE_FILE: &str = "ledgerful-DEMO-evidence.zip";
+
+/// Canonical golden-path steps (Track 0070). Mirrored byte-for-byte intent in
+/// `docs/golden-path.md` — keep both in sync (unit test guards argv substrings).
+///
+/// Success criterion: human-visible cryptographic VALID + openable DEMO zip.
+/// Not `demo` exit 0 alone.
+pub const GOLDEN_PATH_CANONICAL_STEPS: &str = r#"# Golden path (already-installed → VALID + openable bundle)
+
+# 1. Synthetic signed demo repo + DEMO evidence zip (kept)
+ledgerful demo --keep --output ./ledgerful-demo
+
+# 2. HOME/CWD were restored after demo — crypto follow-ups must run IN the kept dir:
+cd ./ledgerful-demo
+
+# 3. Cryptographic VALID beat (signatures + chain) — brand moment
+ledgerful verify --signatures --chain
+# expect: exit 0; summary includes VALID entries and/or "Chain verified"
+
+# 4. Retained-head proof (live head matches export)
+ledgerful verify --signatures --against-export ./ledgerful-DEMO-evidence.zip
+# expect: exit 0 (live chain head matches retained export)
+
+# Honesty: synthetic invoice-service · disposable keys (not production keyring) ·
+# observe mode (warns, does not enforce) · same crypto as production · not real
+# business-risk data · not a compliance verdict.
+"#;
 
 /// One scripted commit cycle.
 struct DemoCycle {
@@ -142,36 +169,93 @@ fn ledgerful_binary() -> String {
         .unwrap_or_else(|| crate::BINARY_NAME.to_string())
 }
 
-fn run_ledger_verify_fast(root: &Path) -> Result<()> {
+/// Optional project-suite check (`verify --scope fast`). This is **not** the
+/// cryptographic brand moment — suite health may WARN/FAIL on a synthetic
+/// invoice-service repo. Output is demoted: one banner + quiet result summary.
+/// The run is still recorded so `verification_history.csv` is non-empty.
+fn run_optional_project_checks(root: &Path) -> Result<()> {
     use owo_colors::OwoColorize;
+    println!(
+        "{} Optional project checks ({} — suite health, not cryptographic proof)",
+        "[DEMO]".cyan().bold(),
+        "verify --scope fast".yellow()
+    );
     let output = Command::new(ledgerful_binary())
         .args(["verify", "--scope", "fast"])
         .current_dir(root)
         .env("LEDGERFUL_NON_INTERACTIVE", "1")
         .output()
         .into_diagnostic()?;
-    // Print the verify output with a [DEMO] prefix so the verification
-    // surface self-identifies as synthetic.
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    for line in stdout.lines() {
-        if !line.is_empty() {
-            println!("{} {}", "[DEMO]".cyan().bold(), line);
-        }
-    }
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    for line in stderr.lines() {
-        if !line.is_empty() {
-            eprintln!("{} {}", "[DEMO]".cyan().bold(), line);
-        }
-    }
     if output.status.code().is_none() {
-        return Err(miette::miette!("ledger verify --scope fast was killed"));
+        return Err(miette::miette!(
+            "optional project checks (verify --scope fast) were killed"
+        ));
     }
-    // The synthetic demo repo won't pass all verification steps (e.g. cargo
-    // clippy on dummy Rust files), but the run is still recorded in
-    // verification_history.csv — which is the spec's goal ("so
-    // verification_history.csv is non-empty"). We accept any non-killed exit
-    // status so the demo can proceed to export.
+    // Demote noise: do not stream every clippy/nextest line. A synthetic repo
+    // often fails suite steps; that is expected and must not overshadow VALID.
+    let code = output.status.code().unwrap_or(-1);
+    if code == 0 {
+        println!(
+            "{} Optional project checks finished (exit 0).",
+            "[DEMO]".cyan().bold()
+        );
+    } else {
+        println!(
+            "{} Optional project checks finished with exit {} — ignored for the demo proof (synthetic suite may WARN/FAIL).",
+            "[DEMO]".cyan().bold(),
+            code
+        );
+    }
+    Ok(())
+}
+
+/// Cryptographic brand moment (Track 0070 DoD-3): signatures + chain (B/C),
+/// then against-export (D). Uses the in-process verify API against the demo
+/// layout so HOME-redirected keys and the just-written export bind correctly.
+/// Always runs on the automated path (before optional cleanup).
+fn run_crypto_proof_beat(root: &Path, export_path: &Path) -> Result<()> {
+    use crate::commands::verify::verify_ledger_signatures_with_options;
+    use crate::state::layout::Layout;
+    use camino::Utf8PathBuf;
+    use owo_colors::OwoColorize;
+
+    let root_utf8 = Utf8PathBuf::from_path_buf(root.to_path_buf())
+        .map_err(|_| miette::miette!("demo root path is not valid UTF-8"))?;
+    let layout = Layout::new(root_utf8);
+
+    println!(
+        "{} Cryptographic proof: {} (signatures + chain)",
+        "[DEMO]".cyan().bold(),
+        "verify --signatures --chain".yellow().bold()
+    );
+    verify_ledger_signatures_with_options(&layout, true, true, None)?;
+    println!(
+        "{} {}",
+        "[DEMO]".cyan().bold(),
+        "CRYPTO VALID — all signatures + chain verified"
+            .green()
+            .bold()
+    );
+
+    println!(
+        "{} Cryptographic proof: {} (retained export)",
+        "[DEMO]".cyan().bold(),
+        format!(
+            "verify --signatures --against-export {}",
+            DEMO_EVIDENCE_FILE
+        )
+        .yellow()
+        .bold()
+    );
+    verify_ledger_signatures_with_options(&layout, true, true, Some(export_path))?;
+    println!(
+        "{} {}",
+        "[DEMO]".cyan().bold(),
+        "CRYPTO VALID — live chain head matches retained DEMO export"
+            .green()
+            .bold()
+    );
+
     Ok(())
 }
 
@@ -374,11 +458,8 @@ pub fn execute_demo(keep: bool, output: Option<PathBuf>, force: bool) -> Result<
         )?;
     }
 
-    println!(
-        "{} Running ledgerful verify --scope fast",
-        "[DEMO]".cyan().bold()
-    );
-    run_ledger_verify_fast(&demo_dir)?;
+    // Suite health is optional noise for the sales pitch — not the brand moment.
+    run_optional_project_checks(&demo_dir)?;
 
     let export_path = demo_dir.join(DEMO_EVIDENCE_FILE);
     println!(
@@ -387,6 +468,10 @@ pub fn execute_demo(keep: bool, output: Option<PathBuf>, force: bool) -> Result<
         export_path.display()
     );
     run_export(&demo_dir, &export_path)?;
+
+    // DoD-3: cryptographic VALID beat on the automated path (B/C then D).
+    // Must run while the demo layout + export still exist (before cleanup).
+    run_crypto_proof_beat(&demo_dir, &export_path)?;
 
     let export_path_str = export_path.to_string_lossy().to_string();
 
@@ -401,27 +486,37 @@ pub fn execute_demo(keep: bool, output: Option<PathBuf>, force: bool) -> Result<
             export_path_str
         );
         println!(
-            "{} Verify it offline with the public key in the export: {}",
+            "{} Re-verify offline from the kept dir: {}",
             "Verifier:".cyan().bold(),
             format!(
-                "cd {} && ledgerful verify --signatures --against-export {}",
+                "cd {} && ledgerful verify --signatures --chain && ledgerful verify --signatures --against-export {}",
                 demo_dir.display(),
-                export_path_str
+                DEMO_EVIDENCE_FILE
             )
             .cyan()
         );
         println!(
-            "{} Open the demo repo in the dashboard: {}",
+            "{} Optional dashboard (not required for the proof): {}",
             "Dashboard:".cyan().bold(),
             format!("cd {} && ledgerful web start", demo_dir.display()).cyan()
         );
+        println!(
+            "{} Demo repo kept at: {}",
+            "[DEMO]".cyan().bold(),
+            demo_dir.display()
+        );
+        println!(
+            "\n{} Canonical golden path (also in docs/golden-path.md):\n{}",
+            "[DEMO]".cyan().bold(),
+            GOLDEN_PATH_CANONICAL_STEPS.trim()
+        );
     } else {
         println!(
-            "\n{} Demo completed. Export was generated and cleaned up.",
+            "\n{} Demo completed. CRYPTO VALID was shown; export was then cleaned up.",
             "SUCCESS:".green().bold()
         );
         println!(
-            "{} Re-run with {} to inspect or verify the export.",
+            "{} Re-run with {} to keep the openable DEMO zip (golden-path walkthrough requires it).",
             "[DEMO]".cyan().bold(),
             "--keep".yellow().bold()
         );
@@ -431,14 +526,12 @@ pub fn execute_demo(keep: bool, output: Option<PathBuf>, force: bool) -> Result<
         "Notice:".yellow().bold(),
         "observe".yellow().bold()
     );
+    println!(
+        "{} Honesty: synthetic invoice-service · disposable keys (not your production keyring) · observe mode · same crypto as production · not real business-risk data · not a compliance verdict.",
+        "Notice:".yellow().bold()
+    );
 
-    if keep {
-        println!(
-            "{} Demo repo kept at: {}",
-            "[DEMO]".cyan().bold(),
-            demo_dir.display()
-        );
-    } else {
+    if !keep {
         println!(
             "{} Cleaning up demo repo at {}",
             "[DEMO]".cyan().bold(),
@@ -493,5 +586,67 @@ mod tests {
         let resolved = resolve_demo_dir(Some(dir.clone()), true, tmp.path()).unwrap();
         assert_eq!(resolved, dir);
         assert!(!dir.join("file.txt").exists());
+    }
+
+    /// DoD-7 structural guard: canonical steps must name the crypto beats + keep.
+    #[test]
+    fn golden_path_canonical_steps_include_crypto_beats_and_keep() {
+        let steps = GOLDEN_PATH_CANONICAL_STEPS;
+        assert!(
+            steps.contains("ledgerful demo --keep"),
+            "golden path must keep the evidence zip"
+        );
+        assert!(
+            steps.contains("verify --signatures --chain"),
+            "golden path must include signatures+chain VALID beat"
+        );
+        assert!(
+            steps.contains("against-export"),
+            "golden path must close on against-export retained-head proof"
+        );
+        assert!(
+            steps.contains(DEMO_EVIDENCE_FILE),
+            "golden path must name the DEMO evidence zip"
+        );
+        assert!(
+            !steps.contains("verify --scope fast"),
+            "golden path brand moment must not headline suite-scope verify"
+        );
+    }
+
+    /// Single-source narration drift guard: docs/golden-path.md mirrors the const.
+    #[test]
+    fn golden_path_doc_mirrors_canonical_argv() {
+        let doc = include_str!("../../docs/golden-path.md");
+        for needle in [
+            "ledgerful demo --keep",
+            "verify --signatures --chain",
+            "against-export",
+            DEMO_EVIDENCE_FILE,
+        ] {
+            assert!(
+                doc.contains(needle),
+                "docs/golden-path.md must contain {needle:?} (single-source narration)"
+            );
+        }
+        // Honesty markers (DoD honesty / no SOC2 compliance claim)
+        assert!(
+            doc.contains("disposable") || doc.contains("DEMO"),
+            "docs must carry DEMO/disposable honesty"
+        );
+        let lower = doc.to_lowercase();
+        // Ban affirmative compliance claims; negations still must not use the
+        // banned marketing phrases as the product claim.
+        for banned in [
+            "you are compliant",
+            "soc 2 compliant",
+            "soc2 compliant",
+            "is a compliance attestation",
+        ] {
+            assert!(
+                !lower.contains(banned),
+                "golden path must not contain banned claim phrase {banned:?}"
+            );
+        }
     }
 }
