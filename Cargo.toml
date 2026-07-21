@@ -176,6 +176,10 @@ path = "tests/integration/main.rs"
 name = "ci"
 path = "tests/ci/allowlist.rs"
 
+[[test]]
+name = "install_docs_truth"
+path = "tests/ci/install_docs_truth.rs"
+
 [[bin]]
 name = "ledgerful"
 path = "src/main.rs"

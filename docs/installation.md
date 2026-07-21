@@ -39,9 +39,22 @@ cargo binstall --git https://github.com/Ryan-AI-Studios/Ledgerful
 
 Requires [`cargo-binstall`](https://github.com/cargo-bins/cargo-binstall) on the machine. If no matching prebuilt asset exists, binstall can fall back to compiling from source (quick-install mirrors are disabled in metadata).
 
-### Homebrew / Scoop / winget (coming)
+### Homebrew
 
-In-engine templates and release bump automation live under `packaging/` and `scripts/bump-manifests.*`. External repos (`Ryan-AI-Studios/homebrew-tap`, `Ryan-AI-Studios/scoop-bucket`) and the first winget-pkgs submission are seeded separately. Until those channels are published and verified, prefer the one-line installer or `cargo binstall`. Architecture and secrets: [package-distribution.md](package-distribution.md).
+```bash
+brew install Ryan-AI-Studios/tap/ledgerful
+```
+
+### Scoop
+
+```powershell
+scoop bucket add ledgerful https://github.com/Ryan-AI-Studios/scoop-bucket
+scoop install ledgerful
+```
+
+### winget
+
+winget is pending Microsoft review (PR open against `microsoft/winget-pkgs`). No install command is published yet. Until approved, use Homebrew, Scoop, the one-line installer, or `cargo binstall` above. Architecture and secrets: [package-distribution.md](package-distribution.md).
 
 ### macOS Gatekeeper / quarantine (interim)
 
@@ -80,6 +93,50 @@ macOS/Linux default:
 
 The installer updates the user PATH when possible. Open a new terminal after installation if `ledgerful` is not immediately found.
 
+## PATH / version FAQ (multiple install channels)
+
+Ledgerful can land in more than one directory depending on how you install it (one-line installer, Homebrew, Scoop, `cargo install` / `cargo binstall`). When several copies exist, `PATH` order picks a winner — often a **stale shim** older than the release you just installed.
+
+### Diagnose which binary runs
+
+Check the resolved version first:
+
+```bash
+ledgerful --version
+```
+
+Then list every `ledgerful` on `PATH`:
+
+**macOS / Linux:**
+
+```bash
+which -a ledgerful
+type -a ledgerful
+```
+
+**Windows (PowerShell / cmd):**
+
+```powershell
+Get-Command ledgerful -All
+where.exe ledgerful
+```
+
+Typical install directories (examples, not exhaustive):
+
+| Channel | Common install location |
+|---|---|
+| One-line installer | `~/.local/bin` (Unix) · `%USERPROFILE%\.ledgerful\bin` (Windows) |
+| Homebrew | Homebrew's `bin` (e.g. `/opt/homebrew/bin`, `/usr/local/bin`) |
+| Scoop | Scoop's `shims` directory |
+| Cargo / cargo-binstall | `~/.cargo/bin` |
+
+### Fix stale or shadowed installs
+
+1. **Prefer a single install channel.** Pick one (Homebrew, Scoop, installer, or cargo) and stick with it.
+2. **Remove or rename the rest** so only one `ledgerful` remains on `PATH` (delete/rename the older binary, or uninstall the unused channel).
+3. **Open a new shell** after any PATH change — existing terminals keep the old lookup cache.
+4. Re-check with `ledgerful --version` and the diagnose commands above until the version and path match the channel you intended.
+
 ## Verifying your install
 
 After installation, verify it works and the telemetry identifies your platform correctly:
@@ -87,7 +144,7 @@ After installation, verify it works and the telemetry identifies your platform c
 **Windows**:
 ```powershell
 > ledgerful --version
-ledgerful 0.1.8
+ledgerful <version>
 
 > ledgerful doctor
 Ledgerful Doctor - Environment Health Check
@@ -101,7 +158,7 @@ LEDGERFUL_PLATFORM: os=windows, arch=x86_64, family=windows, target_triple=x86_6
 **macOS**:
 ```bash
 $ ledgerful --version
-ledgerful 0.1.8
+ledgerful <version>
 
 $ ledgerful doctor
 Ledgerful Doctor - Environment Health Check
@@ -115,7 +172,7 @@ LEDGERFUL_PLATFORM: os=macos, arch=aarch64, family=unix, target_triple=aarch64-a
 **Linux**:
 ```bash
 $ ledgerful --version
-ledgerful 0.1.8
+ledgerful <version>
 
 $ ledgerful doctor
 Ledgerful Doctor - Environment Health Check
@@ -229,8 +286,8 @@ Tagged releases publish these binary assets:
 Create a release by pushing a tag:
 
 ```bash
-git tag v0.1.8
-git push origin v0.1.8
+git tag vX.Y.Z
+git push origin vX.Y.Z
 ```
 If `LEDGERFUL_DEFAULT_CONFIG` names a file that does not exist, initialization
 preserves the historical contract and uses the built-in starter template. It
