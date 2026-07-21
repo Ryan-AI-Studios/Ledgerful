@@ -90,7 +90,12 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2
+        # Pin mainline v2 release SHA (not per-tool tags). Dependabot shallow-
+        # clones cannot resolve diverged nextest/cargo-llvm-cov/cargo-mutants
+        # convenience commits (error: no such commit).
+        uses: taiki-e/install-action@a6b2e2dcd845ddd7f509ce4f3ed3d922b80cc5d9 # v2.84.0
+        with:
+          tool: nextest
 
       - name: Run fast tier (default + integration)
         shell: bash
@@ -132,7 +137,9 @@ jobs:
           toolchain: stable
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2
+        uses: taiki-e/install-action@a6b2e2dcd845ddd7f509ce4f3ed3d922b80cc5d9 # v2.84.0
+        with:
+          tool: nextest
 
       - name: Run slow tier
         shell: bash
@@ -215,8 +222,9 @@ jobs:
         with:
           toolchain: stable
           components: llvm-tools-preview
-      - uses: taiki-e/install-action@e2ba4a39dc7bf116c8a572366d98fadc69b818f5
-      - uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2
+      - uses: taiki-e/install-action@a6b2e2dcd845ddd7f509ce4f3ed3d922b80cc5d9 # v2.84.0
+        with:
+          tool: cargo-llvm-cov,nextest
       - run: cargo llvm-cov nextest --workspace --all-features --html --output-dir coverage/
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
@@ -232,8 +240,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: stable
-      - uses: taiki-e/install-action@18124c74391878d932c447fcd1687a5fa1058c01
-      - uses: taiki-e/install-action@83a8c001de7da72527da9df53f6ef9d3a1f5b3e2
+      - uses: taiki-e/install-action@a6b2e2dcd845ddd7f509ce4f3ed3d922b80cc5d9 # v2.84.0
+        with:
+          tool: cargo-mutants,nextest
       - run: cargo mutants --workspace --in-place --file 'src/ledger/**' --file 'src/impact/**' --file 'src/verify/**'
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
