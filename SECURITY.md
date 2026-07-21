@@ -8,7 +8,7 @@ branch and the most recent tagged release.
 | Version | Supported |
 |---------|----------|
 | latest `main` | yes |
-| latest tag (currently `v0.1.8`) | yes |
+| latest published tag | yes |
 | older tags | no |
 
 When a release branch policy is introduced, this table will be updated.

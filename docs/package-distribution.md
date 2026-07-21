@@ -8,9 +8,9 @@ How Ledgerful reaches package managers. Distribution only — no engine runtime,
 |---|---|---|
 | One-line installer (`install/install.{ps1,sh}`) | Live | Downloads release zip/tar.gz + checksum verify |
 | `cargo binstall --git …` | Engine-ready | `[package.metadata.binstall]` in `Cargo.toml`; uses release assets |
-| Homebrew tap | Templates + bump automation in-engine; tap repo seeded separately | Formula (CLI), not cask; tap-first (not homebrew-core) |
-| Scoop bucket | Templates + bump automation in-engine; bucket repo seeded separately | 64-bit portable `.zip` only |
-| winget (`Ledgerful.Ledgerful`) | CI job wired; first submission is manual | Subsequent bumps via SHA-pinned `winget-releaser` |
+| Homebrew tap | Live | Formula (CLI), not cask; tap-first (not homebrew-core); auto-bumped on each release |
+| Scoop bucket | Live | 64-bit portable `.zip` only; auto-bumped on each release |
+| winget (`Ledgerful.Ledgerful`) | Pending Microsoft review | First submission PR open; subsequent bumps via SHA-pinned `winget-releaser` |
 | crates.io `cargo install ledgerful` | **Not pursued** for distribution | Heavy native graph; prebuilt path preferred |
 
 ## Release artifacts (canonical)
