@@ -154,7 +154,12 @@ fn chain__two_sequential_commits__linear_no_fork() {
     while let Some(hash) = walk_hash {
         let prev = entries
             .iter()
-            .find(|e| ledgerful::ledger::crypto::compute_entry_hash_for_entry(e) == hash)
+            .find(|e| {
+                ledgerful::ledger::crypto::compute_entry_hash_for_entry(e)
+                    .ok()
+                    .as_ref()
+                    == Some(&hash)
+            })
             .expect("head hash must resolve to a chained entry");
         visited += 1;
         walk_hash = prev.prev_hash.clone();

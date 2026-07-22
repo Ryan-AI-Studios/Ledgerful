@@ -122,6 +122,7 @@ fn published_fields_are_expected() {
         "public_key",
         "reason",
         "risk_level",
+        "sig_version",
         "signature",
         "summary",
         "tx_id",

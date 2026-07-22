@@ -31,11 +31,29 @@ impl ChainWalk {
     }
 
     pub fn tail_hash(&self) -> Option<String> {
-        self.ordered.last().map(compute_entry_hash_for_entry)
+        self.ordered
+            .last()
+            .and_then(|e| compute_entry_hash_for_entry(e).ok())
     }
 
     pub fn genesis_committed_at(&self) -> Option<&str> {
         self.ordered.first().map(|e| e.committed_at.as_str())
+    }
+}
+
+/// Hash an entry for chain walks. Encode failures yield a deterministic
+/// non-empty marker (never an empty digest that could silently collide).
+fn hash_for_walk(entry: &LedgerEntry) -> String {
+    match compute_entry_hash_for_entry(entry) {
+        Ok(h) => h,
+        Err(err) => {
+            tracing::error!(
+                tx_id = %entry.tx_id,
+                error = %err,
+                "entry hash encode failed during chain walk"
+            );
+            format!("!encode_fail!{}", entry.tx_id)
+        }
     }
 }
 
@@ -64,7 +82,7 @@ pub fn iter_local_chain(entries: &[LedgerEntry]) -> ChainWalk {
     let mut hash_of: BTreeMap<String, String> = BTreeMap::new(); // tx_id → entry_hash
     let mut by_tx: BTreeMap<String, LedgerEntry> = BTreeMap::new();
     for e in &local {
-        let h = compute_entry_hash_for_entry(e);
+        let h = hash_for_walk(e);
         hash_of.insert(e.tx_id.clone(), h);
         by_tx.insert(e.tx_id.clone(), e.clone());
     }
@@ -118,7 +136,7 @@ pub fn iter_local_chain(entries: &[LedgerEntry]) -> ChainWalk {
             let cur_hash = hash_of
                 .get(&current.tx_id)
                 .cloned()
-                .unwrap_or_else(|| compute_entry_hash_for_entry(&current));
+                .unwrap_or_else(|| hash_for_walk(&current));
             ordered.push(current);
             match children.get(&cur_hash) {
                 Some(kids) if !kids.is_empty() => {
@@ -188,7 +206,7 @@ pub fn check_chain_links(ordered: &[LedgerEntry]) -> Option<String> {
                 entry.tx_id
             ));
         }
-        prev_hash = Some(compute_entry_hash_for_entry(entry));
+        prev_hash = Some(hash_for_walk(entry));
     }
     None
 }
@@ -230,7 +248,7 @@ mod tests {
     #[test]
     fn federated_rows_are_skipped() {
         let a = entry("tx1", None, "LOCAL");
-        let a_hash = compute_entry_hash_for_entry(&a);
+        let a_hash = compute_entry_hash_for_entry(&a).expect("hash");
         let b = entry("tx2", Some(&a_hash), "LOCAL");
         let fed = entry("txf", None, "SIBLING");
         let walk = iter_local_chain(&[a, b, fed]);

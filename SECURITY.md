@@ -154,8 +154,10 @@ covered, the exact commands to run, and the honest gaps.
   with `cargo audit bin <path>`.
 
 Artifact signing is **independent** of the product's ledger signing. The
-Ed25519 ledger signing basis in `src/ledger/crypto.rs` is unchanged; artifact
-signing proves provenance of the download, not validity of ledger transactions.
+Ed25519 ledger signing basis in `src/ledger/crypto.rs` (v2 provenance payload
+for new commits; v1 dual-verify for historical rows) is separate from artifact
+signing, which proves provenance of the download, not validity of ledger
+transactions.
 
 ### Verification commands
 

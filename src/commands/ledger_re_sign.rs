@@ -260,32 +260,66 @@ pub fn execute_ledger_re_sign_with_keys_dir(
         }
     }
 
-    // Rebuild chain links for the entries whose signatures changed. Because each
-    // entry hash depends on the previous head, a single re-signed entry forces
-    // a new chain suffix from the genesis point forward.
+    // Rebuild chain links for LOCAL entries only, ordered by prev_hash linkage
+    // (shared iterator — RT-C4). Federated rows are excluded from the local
+    // chain; forks/orphans surface as hard errors.
     let (new_chain_length, new_genesis, new_tail_hash) = {
         let db = LedgerDb::new(&sqlite_tx);
-        let mut entries = db
+        let entries = db
             .get_all_committed_ledger_entries()
             .map_err(|e| miette!("Failed to read ledger entries for chain rebuild: {}", e))?;
-        entries.sort_by(|a, b| {
-            a.committed_at
-                .cmp(&b.committed_at)
-                .then_with(|| a.tx_id.cmp(&b.tx_id))
-        });
 
-        // Re-sign creates a fresh chain segment from the earliest existing entry
-        // through the new maintenance tail. The old genesis is intentionally
-        // replaced because the signatures (and therefore entry hashes) changed,
-        // so any entries committed before the previous genesis boundary are now
-        // part of the re-established chain.
-        let genesis = entries
+        let walk = crate::ledger::chain_iter::iter_local_chain(&entries);
+        if !walk.forks.is_empty() {
+            return Err(miette!(
+                "CHAIN_BREAK: cannot re-sign while local chain has {} fork(s) (first parent hash {}). Resolve forks before re-sign.",
+                walk.forks.len(),
+                walk.forks[0].0
+            ));
+        }
+        if !walk.orphans.is_empty() {
+            return Err(miette!(
+                "CHAIN_BREAK: cannot re-sign while {} orphan LOCAL entr(y/ies) are unlinked (first: {}).",
+                walk.orphans.len(),
+                walk.orphans[0].tx_id
+            ));
+        }
+        if !walk.extra_genesis.is_empty() {
+            return Err(miette!(
+                "CHAIN_BREAK: cannot re-sign with {} additional genesis entr(y/ies) (first: {}).",
+                walk.extra_genesis.len(),
+                walk.extra_genesis[0].tx_id
+            ));
+        }
+
+        // Prefer the LOCAL walk order. When the ledger is pre-chain (no prev_hash
+        // links yet), fall back to a deterministic committed_at/tx_id order over
+        // LOCAL rows only so re-sign can establish the first chain segment.
+        let rebuild_order: Vec<LedgerEntry> = if walk.ordered.is_empty() {
+            let mut local: Vec<LedgerEntry> = entries
+                .into_iter()
+                .filter(|e| e.origin == "LOCAL")
+                .collect();
+            local.sort_by(|a, b| {
+                a.committed_at
+                    .cmp(&b.committed_at)
+                    .then_with(|| a.tx_id.cmp(&b.tx_id))
+            });
+            local
+        } else {
+            walk.ordered
+        };
+
+        // Re-sign creates a fresh chain segment from the earliest LOCAL entry
+        // through the new maintenance tail. Signatures (and therefore entry
+        // hashes) changed, so prev_hash links are rewritten in walk order.
+        let genesis = rebuild_order
             .first()
             .map(|e| e.committed_at.clone())
             .unwrap_or_else(|| now.clone());
         let mut chain_length: i64 = 0;
         let mut prev_hash: Option<String> = None;
-        for entry in &entries {
+        for entry in &rebuild_order {
             let prev = prev_hash.as_deref().unwrap_or("");
             if prev.is_empty() {
                 db.update_ledger_entry_prev_hash(&entry.tx_id, None)
@@ -316,9 +350,15 @@ pub fn execute_ledger_re_sign_with_keys_dir(
             } else {
                 Some(prev.to_string())
             };
-            prev_hash = Some(crate::ledger::crypto::compute_entry_hash_for_entry(
-                &for_hash,
-            ));
+            prev_hash = Some(
+                crate::ledger::crypto::compute_entry_hash_for_entry(&for_hash).map_err(|e| {
+                    miette!(
+                        "Failed to compute entry hash for {} during re-sign rebuild: {}",
+                        for_hash.tx_id,
+                        e
+                    )
+                })?,
+            );
         }
         (chain_length, genesis, prev_hash)
     };
@@ -372,7 +412,8 @@ pub fn execute_ledger_re_sign_with_keys_dir(
             .map_err(|e| miette!("Failed to insert maintenance ledger entry: {}", e))?;
 
         let new_latest_hash =
-            crate::ledger::crypto::compute_entry_hash_for_entry(&signed_maintenance_entry);
+            crate::ledger::crypto::compute_entry_hash_for_entry(&signed_maintenance_entry)
+                .map_err(|e| miette!("Failed to compute maintenance entry hash: {e}"))?;
 
         let (head_sig, head_pub) = match crate::ledger::crypto::sign_chain_head(
             &keys_dir,

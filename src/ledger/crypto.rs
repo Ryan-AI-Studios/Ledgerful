@@ -497,24 +497,25 @@ pub fn compute_entry_hash_versioned(
 }
 
 /// Compute entry hash from a full entry (encodes payload for content_digest).
-pub fn compute_entry_hash_for_entry(entry: &LedgerEntry) -> String {
+///
+/// v2 encode failures (forbidden control chars, etc.) return `Err` — never an
+/// empty digest that would silently collide under chain linkage.
+pub fn compute_entry_hash_for_entry(entry: &LedgerEntry) -> Result<String, SignatureVerifyError> {
     let sig_hex = entry.signature.as_deref().unwrap_or("");
     let prev = entry.prev_hash.as_deref().unwrap_or("");
     if entry.sig_version <= LEDGER_SIG_VERSION_V1 {
-        return compute_entry_hash(&entry.tx_id, sig_hex, prev);
+        return Ok(compute_entry_hash(&entry.tx_id, sig_hex, prev));
     }
     let input = LedgerSignInput::from_entry(entry);
-    let digest = match encode_v2_payload(&input) {
-        Ok(payload) => content_digest_hex(payload.as_bytes()),
-        Err(_) => String::new(),
-    };
-    compute_entry_hash_versioned(
+    let payload = encode_v2_payload(&input)?;
+    let digest = content_digest_hex(payload.as_bytes());
+    Ok(compute_entry_hash_versioned(
         entry.sig_version,
         &entry.tx_id,
         Some(&digest),
         sig_hex,
         prev,
-    )
+    ))
 }
 
 /// Canonical chain-head signing payload, shared between signing and
@@ -1199,5 +1200,122 @@ mod tests {
         let payload = encode_v2_payload(&input).unwrap();
         assert!(payload.contains("summary:line1 line2"));
         assert_eq!(payload.lines().count(), 14);
+    }
+
+    /// Residual columns (not in the v2 basis) may mutate without invalidating
+    /// the entry signature — documents the honest residual surface.
+    #[test]
+    fn residual_columns_mutation_still_valid() {
+        let (_temp, keys_dir) = temp_keys_dir();
+        let input = sample_v2_input();
+        let (sig, pub_key) = sign_ledger_entry_in_v2(&keys_dir, &input).unwrap();
+        let sig = sig.unwrap();
+        let pub_key = pub_key.unwrap();
+
+        let mut entry = LedgerEntry {
+            id: 1,
+            tx_id: input.tx_id.clone(),
+            category: Category::Feature,
+            entry_type: EntryType::Implementation,
+            entity: input.entity.clone(),
+            entity_normalized: input.entity_normalized.clone(),
+            change_type: ChangeType::Modify,
+            summary: input.summary.clone(),
+            reason: input.reason.clone(),
+            is_breaking: false,
+            committed_at: input.committed_at.clone(),
+            verification_status: None,
+            verification_basis: None,
+            outcome_notes: None,
+            origin: input.origin.clone(),
+            trace_id: None,
+            signature: Some(sig.clone()),
+            public_key: Some(pub_key.clone()),
+            risk: Some(input.risk.clone()),
+            related_tickets: Some(input.related_tickets.clone()),
+            author: input.author.clone(),
+            observed: None,
+            prev_hash: None,
+            sig_version: 2,
+        };
+        assert!(verify_ledger_entry_signature(&entry));
+
+        // Mutate residual columns only — signature must remain VALID.
+        entry.verification_status = Some(crate::ledger::types::VerificationStatus::Verified);
+        entry.verification_basis = Some(crate::ledger::types::VerificationBasis::ManualInspection);
+        entry.outcome_notes = Some("mutated notes".into());
+        entry.observed = Some(true);
+        entry.trace_id = Some("trace-mutated".into());
+        entry.id = 999;
+        entry.prev_hash = Some("not-in-basis".into());
+        assert!(
+            verify_ledger_entry_signature(&entry),
+            "mutating residual columns must leave the entry signature VALID"
+        );
+    }
+
+    /// RT-C3: client-supplied signatures must verify against the v2 basis.
+    #[test]
+    fn supplied_v2_signature_good_accepted_bad_rejected() {
+        let (_temp, keys_dir) = temp_keys_dir();
+        let input = sample_v2_input();
+        let (sig, pub_key) = sign_ledger_entry_in_v2(&keys_dir, &input).unwrap();
+        let sig = sig.unwrap();
+        let pub_key = pub_key.unwrap();
+
+        assert!(
+            verify_entry_signature(&input, &sig, &pub_key),
+            "good supplied v2 signature must verify"
+        );
+
+        let bad_sig = "00".repeat(64);
+        assert!(
+            !verify_entry_signature(&input, &bad_sig, &pub_key),
+            "bad supplied signature must be rejected"
+        );
+
+        // Mutated payload under good sig → reject.
+        let mut mutated = input.clone();
+        mutated.entity = "src/evil.rs".into();
+        mutated.entity_normalized = "src/evil.rs".into();
+        assert!(
+            !verify_entry_signature(&mutated, &sig, &pub_key),
+            "good sig over wrong provenance must be rejected"
+        );
+    }
+
+    #[test]
+    fn compute_entry_hash_for_entry_fails_loudly_on_encode_error() {
+        let mut input = sample_v2_input();
+        // BEL is a forbidden control char → encode_v2_payload fails.
+        input.summary = "bad\u{0007}summary".into();
+        let entry = LedgerEntry {
+            id: 1,
+            tx_id: input.tx_id.clone(),
+            category: Category::Feature,
+            entry_type: EntryType::Implementation,
+            entity: input.entity.clone(),
+            entity_normalized: input.entity_normalized.clone(),
+            change_type: ChangeType::Modify,
+            summary: input.summary.clone(),
+            reason: input.reason.clone(),
+            is_breaking: false,
+            committed_at: input.committed_at.clone(),
+            verification_status: None,
+            verification_basis: None,
+            outcome_notes: None,
+            origin: input.origin.clone(),
+            trace_id: None,
+            signature: Some("ab".repeat(32)),
+            public_key: Some("cd".repeat(32)),
+            risk: None,
+            related_tickets: None,
+            author: input.author.clone(),
+            observed: None,
+            prev_hash: None,
+            sig_version: 2,
+        };
+        let err = compute_entry_hash_for_entry(&entry).unwrap_err();
+        assert_eq!(err, SignatureVerifyError::ForbiddenControlChar);
     }
 }

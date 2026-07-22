@@ -33,7 +33,9 @@ use std::path::{Path, PathBuf};
 
 const PUBLISHER: &str = "ledgerful-ledger-bot";
 const SIGNATURE_ALGORITHM: &str = "Ed25519";
-const ALLOWLIST_VERSION: u32 = 1;
+/// Allowlist v2: adds non-sensitive `sig_version` so offline verifiers can
+/// dual-path v1 full-sig verify vs v2 honesty fence (redacted provenance).
+const ALLOWLIST_VERSION: u32 = 2;
 const BOT_KEY_SEED_FILE: &str = "ledgerful-ledger-bot.key";
 const BOT_KEY_PUB_FILE: &str = "ledgerful-ledger-bot.pub";
 const PSEUDONYM_SECRET_FILE: &str = "pseudonym-secret.key";
@@ -350,6 +352,9 @@ struct PublicEntry {
     public_key: Option<String>,
     reason: String,
     risk_level: Option<String>,
+    /// Signature codec version (1 = legacy five-field; 2 = full provenance).
+    /// Non-sensitive; required so offline verifiers dual-path honestly.
+    sig_version: u32,
     signature: Option<String>,
     summary: String,
     tx_id: String,
@@ -366,14 +371,18 @@ impl PublicEntry {
             VerificationStatus::Unverified => "UNVERIFIED".to_string(),
         });
 
+        let entry_hash = crate::ledger::crypto::compute_entry_hash_for_entry(entry)
+            .map_err(|e| miette!("Failed to compute entry_hash for public export: {e}"))?;
+
         Ok(Self {
             author_pseudonym,
             category: entry.category.to_string(),
             committed_at: entry.committed_at.clone(),
-            entry_hash: crate::ledger::crypto::compute_entry_hash_for_entry(entry),
+            entry_hash,
             public_key: entry.public_key.clone(),
             reason: entry.reason.clone(),
             risk_level: entry.risk.clone(),
+            sig_version: entry.sig_version,
             signature: entry.signature.clone(),
             summary: entry.summary.clone(),
             tx_id: entry.tx_id.clone(),
@@ -397,6 +406,10 @@ impl PublicEntry {
         map.insert("public_key".to_string(), self.public_key.clone().into());
         map.insert("reason".to_string(), self.reason.clone().into());
         map.insert("risk_level".to_string(), self.risk_level.clone().into());
+        map.insert(
+            "sig_version".to_string(),
+            serde_json::Value::from(self.sig_version),
+        );
         map.insert("signature".to_string(), self.signature.clone().into());
         map.insert("summary".to_string(), self.summary.clone().into());
         map.insert("tx_id".to_string(), self.tx_id.clone().into());
@@ -430,7 +443,7 @@ fn build_entries_ndjson(entries: &[PublicEntry]) -> Result<Vec<u8>> {
 }
 
 fn honest_ceiling_text() -> String {
-    "This bundle proves each entry's Ed25519 signature and the manifest signature. It does not prove the order or set of entries (that's the chain head) or the identity behind the key (out-of-band fingerprint comparison).".to_string()
+    "This bundle proves the manifest signature and the integrity of entries.ndjson. Legacy v1 entry signatures (sig_version=1) can be re-verified offline over the published five-field payload. v2 entry signatures (sig_version>=2) bind redacted provenance fields (entity, author, origin, …) that are not published — offline entry-sig re-verify is intentionally not claimed for v2; use `ledgerful verify --signatures` against the local ledger. Chain head (when present) is a rollback checkpoint, not a full offline chain walk (prev_hash is redacted). Key identity requires out-of-band fingerprint comparison.".to_string()
 }
 
 fn build_index_html(entries: &[PublicEntry]) -> String {
@@ -498,14 +511,17 @@ body { font-family: system-ui, -apple-system, sans-serif; margin: 2rem; }
 .valid { color: green; }
 .invalid { color: red; }
 .unsigned { color: gray; }
+.v2fence { color: #856404; }
 pre { background: #f5f5f5; padding: 1rem; overflow-x: auto; }
 table { border-collapse: collapse; width: 100%; }
 th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
+.note { background: #fff8e1; border: 1px solid #ffe082; padding: 0.75rem 1rem; margin: 1rem 0; }
 </style>
 </head>
 <body>
 <h1>Ledgerful Public Ledger Verifier</h1>
-<p>This page verifies the bundle's manifest signature and each entry's Ed25519 signature using WebCrypto. It works offline; no external resources are loaded.</p>
+<p>This page verifies the bundle's manifest signature and entry integrity using WebCrypto. It works offline; no external resources are loaded.</p>
+<p><strong>Honesty fence:</strong> v1 entries (sig_version missing or 1) re-verify Ed25519 over the published five-field payload. v2 entries (sig_version ≥ 2) bind redacted provenance fields and are <em>not</em> re-verified offline here — use <code>ledgerful verify --signatures</code> on the local ledger.</p>
 <p id="status">Loading bundle files...</p>
 <div id="results"></div>
 <script>
@@ -522,12 +538,6 @@ th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
     const res = await fetch(name);
     if (!res.ok) throw new Error('Failed to load ' + name + ': ' + res.status);
     return res.text();
-  }
-  async function loadBytes(name) {
-    const res = await fetch(name);
-    if (!res.ok) throw new Error('Failed to load ' + name + ': ' + res.status);
-    const buf = await res.arrayBuffer();
-    return new Uint8Array(buf);
   }
   function hexToBytes(hex) {
     const bytes = new Uint8Array(hex.length / 2);
@@ -616,6 +626,17 @@ th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
     }
     resultsEl.appendChild(manifestStatus);
 
+    if (manifest.chainHead) {
+      const chainP = document.createElement('p');
+      const chainStrong = document.createElement('strong');
+      chainStrong.textContent = 'Chain head:';
+      chainP.appendChild(chainStrong);
+      appendText(chainP, ' present (length=');
+      appendText(chainP, String(manifest.chainHead.length != null ? manifest.chainHead.length : '?'));
+      appendText(chainP, '). Full prev_hash walk is not re-verified offline (prev_hash redacted).');
+      resultsEl.appendChild(chainP);
+    }
+
     const entriesText = await loadText('entries.ndjson');
     const expectedEntriesHash = manifest.entriesSha256;
     const actualEntriesHash = await sha256Hex(new TextEncoder().encode(entriesText));
@@ -642,12 +663,17 @@ th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
     }
     resultsEl.appendChild(entriesStatus);
 
+    const note = document.createElement('div');
+    note.className = 'note';
+    note.textContent = 'SIGNATURE: v2 rows are not re-verified offline (v2 provenance fields redacted; verify with local ledgerful verify --signatures). v1 rows use the legacy five-field basis.';
+    resultsEl.appendChild(note);
+
     const lines = entriesText.split('\n').filter(line => line.trim());
 
     const table = document.createElement('table');
     const thead = document.createElement('thead');
     const headRow = document.createElement('tr');
-    for (const h of ['tx_id', 'category', 'summary', 'status']) {
+    for (const h of ['tx_id', 'category', 'summary', 'sig_version', 'status']) {
       const th = document.createElement('th');
       th.textContent = h;
       headRow.appendChild(th);
@@ -660,25 +686,36 @@ th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
       const entry = JSON.parse(line);
       const key = entry.public_key ? hexToBytes(entry.public_key) : null;
       const sig = entry.signature ? hexToBytes(entry.signature) : null;
-      // VERIFY-ON-RAW: basis uses raw entry fields for signature verification.
-      // Display uses textContent only — never merge escaping into this basis.
-      const basis = `tx_id:${entry.tx_id}\ncategory:${entry.category}\nsummary:${entry.summary}\nreason:${entry.reason}\ncommitted_at:${entry.committed_at}`;
-      const payload = new TextEncoder().encode(basis);
-      let entryValid = false;
+      // Dual-path by sig_version (default 1 when missing = historical bundles).
+      const sigVersion = (entry.sig_version == null) ? 1 : Number(entry.sig_version);
       let label = 'UNSIGNED';
+      let cls = 'unsigned';
       if (key && sig) {
-        try {
-          entryValid = await verifyEd25519(key, sig, payload);
-          label = entryValid ? 'VALID' : 'INVALID';
-        } catch (e) {
-          label = 'INVALID';
+        if (sigVersion >= 2) {
+          // Honesty fence: full v2 payload fields are redacted from the public
+          // allowlist; do not claim crypto verify of the free-text provenance.
+          label = 'SIGNATURE: not re-verified offline (v2 provenance fields redacted; verify with local ledgerful verify --signatures)';
+          cls = 'v2fence';
+        } else {
+          // VERIFY-ON-RAW: legacy five-field basis uses raw published fields.
+          // Display uses textContent only — never merge escaping into this basis.
+          const basis = `tx_id:${entry.tx_id}\ncategory:${entry.category}\nsummary:${entry.summary}\nreason:${entry.reason}\ncommitted_at:${entry.committed_at}`;
+          const payload = new TextEncoder().encode(basis);
+          try {
+            const entryValid = await verifyEd25519(key, sig, payload);
+            label = entryValid ? 'VALID' : 'INVALID';
+            cls = entryValid ? 'valid' : 'invalid';
+          } catch (e) {
+            label = 'INVALID';
+            cls = 'invalid';
+          }
         }
       }
-      const cls = label === 'VALID' ? 'valid' : label === 'INVALID' ? 'invalid' : 'unsigned';
       const tr = document.createElement('tr');
       appendCell(tr, entry.tx_id);
       appendCell(tr, entry.category);
       appendCell(tr, entry.summary || '');
+      appendCell(tr, String(sigVersion));
       appendStatusCell(tr, label, cls);
       tbody.appendChild(tr);
     }
@@ -713,8 +750,9 @@ engine's own signed ledger entries.
   fields.
 - `index.html` — static browse page (no JavaScript).
 - `verifier.html` — standalone offline WebCrypto verifier. Open this file in a
-  modern browser to verify the manifest signature and every entry's Ed25519
-  signature without network access.
+  modern browser to verify the manifest signature, entries.ndjson integrity,
+  and (for v1 rows only) entry Ed25519 signatures. v2 entry signatures require
+  unredacted provenance fields and are verified with the local CLI.
 - `README.md` — this file.
 
 ## Allowlist
@@ -730,6 +768,7 @@ Each published entry includes only:
 - `verification_result`
 - `risk_level`
 - `entry_hash`
+- `sig_version` (1 = legacy five-field; 2 = full provenance)
 - `signature`
 - `public_key`
 
@@ -739,8 +778,11 @@ trace ID, related tickets, raw author, observed flag, and previous chain hash.
 
 ## Verification
 
-1. Open `verifier.html` in a browser, or
-2. Use the CLI: `ledgerful ledger export-public --output <dir> --sign`
+1. Open `verifier.html` in a browser (manifest + entries hash always; v1 entry
+   sigs offline; v2 entry sigs honesty-fenced), or
+2. Full entry + chain verify against the source ledger:
+   `ledgerful verify --signatures --chain`
+3. Export: `ledgerful ledger export-public --output <dir> --sign`
 
 If signed, the bundle also contains:
 
@@ -838,6 +880,7 @@ mod tests {
             public_key: None,
             reason: "r".to_string(),
             risk_level: None,
+            sig_version: 2,
             signature: None,
             summary: "s".to_string(),
             tx_id: "tx".to_string(),
@@ -879,6 +922,7 @@ mod tests {
             public_key: None,
             reason: "r".to_string(),
             risk_level: None,
+            sig_version: 2,
             signature: None,
             summary: "<script>alert(1)</script>".to_string(),
             tx_id: "tx".to_string(),

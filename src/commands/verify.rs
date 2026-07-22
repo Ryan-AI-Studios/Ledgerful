@@ -14,7 +14,19 @@ use std::path::Path;
 use tracing::{info, warn};
 
 /// Exit codes for signature / chain verification (0072 frozen table).
+///
+/// | Condition | Status | Exit |
+/// |---|---|---|
+/// | All signed rows valid; no hard policy failure | VALID (trusted/unknown) | **0** |
+/// | INVALID signature / wrong version / entity_normalized / chain break | INVALID / CHAIN_BREAK | **1** |
+/// | Crypto-valid unknown key when trusted-only policy requires pins (reserved) | VALID (unknown key) policy fail | **2** |
+/// | Unsigned present under `require_signing` or `--strict-signatures` | UNSIGNED | **3** |
+///
+/// CLI wiring: `request_exit` + `take_requested_exit_code` so `main` can exit
+/// with the distinct code without a full `ExitCode` refactor of every path.
 pub mod sig_exit {
+    use std::sync::atomic::{AtomicI32, Ordering};
+
     /// All signed rows valid; no hard policy failure.
     pub const OK: i32 = 0;
     /// INVALID signature, wrong version, entity_normalized mismatch, or chain break.
@@ -23,6 +35,21 @@ pub mod sig_exit {
     pub const POLICY: i32 = 2;
     /// Unsigned present under require_signing or --strict-signatures.
     pub const UNSIGNED: i32 = 3;
+
+    static REQUESTED: AtomicI32 = AtomicI32::new(0);
+
+    /// Record a non-zero exit code for the CLI process (idempotent max-severity).
+    pub fn request_exit(code: i32) {
+        // Prefer more specific failures: 1 (invalid) wins over 3 (unsigned) when both.
+        // For pure unsigned → 3; pure invalid → 1.
+        let _ = REQUESTED.compare_exchange(0, code, Ordering::SeqCst, Ordering::SeqCst);
+    }
+
+    /// Take the requested exit code (if any) and reset. Used by `main`.
+    pub fn take_requested_exit_code() -> Option<i32> {
+        let c = REQUESTED.swap(0, Ordering::SeqCst);
+        if c == 0 { None } else { Some(c) }
+    }
 }
 
 pub fn verify_ledger_signatures(layout: &Layout) -> Result<()> {
@@ -194,12 +221,15 @@ pub fn verify_ledger_signatures_with_options(
         );
         Ok(())
     } else if unsigned_fail > 0 && invalid_count == unsigned_fail {
+        // Distinct exit 3 for pure unsigned failures under strict/require.
+        sig_exit::request_exit(sig_exit::UNSIGNED);
         Err(miette::miette!(
             "Ledger signature verification failed: {} unsigned entries (exit {}).",
             unsigned_fail,
             sig_exit::UNSIGNED
         ))
     } else {
+        sig_exit::request_exit(sig_exit::INVALID_OR_CHAIN);
         Err(miette::miette!(
             "Ledger signature verification failed: {} entries have invalid or missing signatures.",
             invalid_count
@@ -244,8 +274,9 @@ pub fn enumerate_invalid_ledger_entries_with_policy(
     invalid
 }
 
-fn compute_entry_hash_for_verify(entry: &crate::ledger::types::LedgerEntry) -> String {
+fn compute_entry_hash_for_verify(entry: &crate::ledger::types::LedgerEntry) -> Result<String> {
     crate::ledger::crypto::compute_entry_hash_for_entry(entry)
+        .map_err(|e| miette::miette!("Failed to compute entry hash for TX {}: {e}", entry.tx_id))
 }
 
 fn verify_chain_integrity(
@@ -279,6 +310,7 @@ fn verify_chain_integrity(
         );
     }
     if !walk.forks.is_empty() {
+        sig_exit::request_exit(sig_exit::INVALID_OR_CHAIN);
         return Err(miette::miette!(
             "CHAIN_BREAK: detected {} fork(s) in local chain (first parent hash {}).",
             walk.forks.len(),
@@ -301,6 +333,7 @@ fn verify_chain_integrity(
     // Multiple null-prev genesis rows are only a break once a chain exists.
     // Pre-chain ledgers legitimately have many null-prev entries.
     if should_walk_chain && !walk.extra_genesis.is_empty() {
+        sig_exit::request_exit(sig_exit::INVALID_OR_CHAIN);
         return Err(miette::miette!(
             "Chain break: {} additional genesis entr(y/ies) with null prev_hash after chain started (first: {}).",
             walk.extra_genesis.len(),
@@ -308,6 +341,7 @@ fn verify_chain_integrity(
         ));
     }
     if should_walk_chain && !walk.orphans.is_empty() {
+        sig_exit::request_exit(sig_exit::INVALID_OR_CHAIN);
         return Err(miette::miette!(
             "Chain break: {} orphan LOCAL entr(y/ies) not linked by prev_hash (first: {}).",
             walk.orphans.len(),
@@ -330,15 +364,18 @@ fn verify_chain_integrity(
             );
             match status {
                 crate::ledger::crypto::SignatureTrustStatus::Invalid => {
+                    sig_exit::request_exit(sig_exit::INVALID_OR_CHAIN);
                     return Err(miette::miette!(
                         "Signature verification failed for TX {} (chain break).",
                         entry.tx_id
                     ));
                 }
                 crate::ledger::crypto::SignatureTrustStatus::Unsigned if signing_required => {
+                    sig_exit::request_exit(sig_exit::UNSIGNED);
                     return Err(miette::miette!(
-                        "TX {} is missing a signature (chain-required-after-genesis).",
-                        entry.tx_id
+                        "TX {} is missing a signature (chain-required-after-genesis; exit {}).",
+                        entry.tx_id,
+                        sig_exit::UNSIGNED
                     ));
                 }
                 _ => {}
@@ -373,10 +410,11 @@ fn verify_chain_integrity(
             break;
         }
         chain_length += 1;
-        prev_hash = Some(compute_entry_hash_for_verify(entry));
+        prev_hash = Some(compute_entry_hash_for_verify(entry)?);
     }
 
     if let Some(msg) = chain_break {
+        sig_exit::request_exit(sig_exit::INVALID_OR_CHAIN);
         return Err(miette::miette!("{}", msg));
     }
 

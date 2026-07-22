@@ -482,29 +482,41 @@ fn build_mode_disclosure(
 /// `chain_head.json` for rollback detection, even for legacy ledgers or
 /// rows inserted outside the normal append path.
 ///
-/// The genesis is the hash of the chronologically first entry; the latest
-/// entry hash is the hash of the last entry. Length is the entry count.
-/// Signature fields are `None` because no signed singleton exists.
+/// Uses the shared LOCAL chain iterator (RT-C4/C5): federated rows are
+/// excluded; walk order follows `prev_hash` linkage (not committed_at/tx_id
+/// alone). Signature fields are `None` because no signed singleton exists.
 pub fn synthesize_chain_head(entries: &[crate::ledger::types::LedgerEntry]) -> Option<ChainHead> {
     if entries.is_empty() {
         return None;
     }
-    let mut sorted = entries.to_vec();
-    sorted.sort_by(|a, b| {
-        a.committed_at
-            .cmp(&b.committed_at)
-            .then_with(|| a.tx_id.cmp(&b.tx_id))
-    });
-    let first = sorted.first()?;
-    let last = sorted.last()?;
+    let walk = crate::ledger::chain_iter::iter_local_chain(entries);
+    // Prefer the LOCAL prev_hash walk. Pre-chain ledgers (no links yet) fall
+    // back to a deterministic LOCAL sort so synthesis still produces a head.
+    let ordered: Vec<&crate::ledger::types::LedgerEntry> = if !walk.ordered.is_empty() {
+        walk.ordered.iter().collect()
+    } else {
+        let mut local: Vec<&crate::ledger::types::LedgerEntry> =
+            entries.iter().filter(|e| e.origin == "LOCAL").collect();
+        if local.is_empty() {
+            return None;
+        }
+        local.sort_by(|a, b| {
+            a.committed_at
+                .cmp(&b.committed_at)
+                .then_with(|| a.tx_id.cmp(&b.tx_id))
+        });
+        local
+    };
+    let first = ordered.first()?;
+    let last = ordered.last()?;
     // genesis is the ISO-8601 timestamp of the first in-chain entry, matching
     // the normal append path and verify_chain_integrity.
     let genesis = first.committed_at.clone();
-    let latest = crate::ledger::crypto::compute_entry_hash_for_entry(last);
+    let latest = crate::ledger::crypto::compute_entry_hash_for_entry(last).ok()?;
     Some(ChainHead {
         latest_entry_hash: latest,
         genesis,
-        length: sorted.len() as i64,
+        length: ordered.len() as i64,
         head_signature: None,
         head_public_key: None,
         updated_at: chrono::Utc::now().to_rfc3339(),

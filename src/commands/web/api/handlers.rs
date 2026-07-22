@@ -881,12 +881,12 @@ fn fetch_compliance_summary(layout: &Layout) -> Result<ComplianceSummaryResponse
     let storage = StorageManager::open_read_only_sqlite_only(&layout.root)?;
     let conn = storage.get_connection();
 
-    // Load config to determine whether signing is required (mirrors
-    // `verify_ledger_signatures` in `src/commands/verify.rs`).
-    let require_signing = load_config(layout)
-        .unwrap_or_default()
-        .intent
-        .require_signing;
+    // Load config to determine whether signing is required and pin list
+    // (mirrors `verify_ledger_signatures` in `src/commands/verify.rs`).
+    let intent = load_config(layout).unwrap_or_default().intent;
+    let require_signing = intent.require_signing;
+    let trusted_keys = intent.trusted_public_keys.as_slice();
+    let min_sig_version = intent.min_sig_version;
 
     // `get_all_committed_ledger_entries` returns entries ordered
     // `committed_at ASC, tx_id ASC` (see `src/ledger/db/transactions.rs:349`).
@@ -908,7 +908,7 @@ fn fetch_compliance_summary(layout: &Layout) -> Result<ComplianceSummaryResponse
     let mut last_audit_at: Option<String> = None;
 
     for entry in &entries {
-        let status = classify_signature(entry, require_signing);
+        let status = classify_signature(entry, require_signing, trusted_keys, min_sig_version);
         if entry.signature.is_some() && entry.public_key.is_some() {
             total_signed += 1;
         }
@@ -968,10 +968,10 @@ fn fetch_compliance_signatures(layout: &Layout) -> Result<Vec<ComplianceSignatur
 
     let storage = StorageManager::open_read_only_sqlite_only(&layout.root)?;
     let conn = storage.get_connection();
-    let require_signing = load_config(layout)
-        .unwrap_or_default()
-        .intent
-        .require_signing;
+    let intent = load_config(layout).unwrap_or_default().intent;
+    let require_signing = intent.require_signing;
+    let trusted_keys = intent.trusted_public_keys.as_slice();
+    let min_sig_version = intent.min_sig_version;
 
     // `get_all_committed_ledger_entries` returns `committed_at ASC, tx_id ASC`
     // (`src/ledger/db/transactions.rs:349`). Sort into DESC order so the
@@ -993,7 +993,7 @@ fn fetch_compliance_signatures(layout: &Layout) -> Result<Vec<ComplianceSignatur
         .into_iter()
         .take(COMPLIANCE_SIGNATURES_LIMIT)
         .map(|entry| {
-            let status = classify_signature(&entry, require_signing);
+            let status = classify_signature(&entry, require_signing, trusted_keys, min_sig_version);
             ComplianceSignatureEntry {
                 tx_id: entry.tx_id,
                 entity: display_entity(&entry.entity),
@@ -1008,7 +1008,7 @@ fn fetch_compliance_signatures(layout: &Layout) -> Result<Vec<ComplianceSignatur
 }
 
 /// Classification of a ledger entry's signature status, mirroring
-/// `verify_ledger_signatures` in `src/commands/verify.rs:43-91`.
+/// `verify_ledger_signatures` in `src/commands/verify.rs`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SignatureStatus {
     Valid,
@@ -1026,10 +1026,15 @@ impl SignatureStatus {
     }
 }
 
-fn classify_signature(entry: &LedgerEntry, require_signing: bool) -> SignatureStatus {
+fn classify_signature(
+    entry: &LedgerEntry,
+    require_signing: bool,
+    trusted_keys: &[String],
+    min_sig_version: u32,
+) -> SignatureStatus {
     use crate::ledger::crypto::{SignatureTrustStatus, classify_entry_signature};
     // Dashboard still surfaces VALID|INVALID|SKIPPED; map trusted/unknown → VALID.
-    match classify_entry_signature(entry, &[], 1) {
+    match classify_entry_signature(entry, trusted_keys, min_sig_version) {
         SignatureTrustStatus::ValidTrusted | SignatureTrustStatus::ValidUnknownKey => {
             SignatureStatus::Valid
         }

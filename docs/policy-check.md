@@ -312,5 +312,7 @@ Notes:
 | `enforce` | enforce | block on pending/unsigned/… | block on rule violations |
 
 Policy generalizes 0050 with per-rule knobs; it does **not** replace or break
-`gate.mode`. Signing basis (`tx_id`, `category`, `summary`, `reason`,
-`committed_at`) is untouched — policy/mode never enter the signed payload.
+`gate.mode`. The Ed25519 signing basis is independent of policy/mode: new
+commits use the v2 provenance payload (`sig_version:2` — entity, author, risk,
+origin, change_type, entry_type, is_breaking, related_tickets in addition to the
+legacy five fields). Policy/mode never enter the signed payload.

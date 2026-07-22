@@ -1731,7 +1731,7 @@ fail_on = "off"
 // ---------------------------------------------------------------------------
 
 #[test]
-fn signing_basis_intact_five_fields_only() {
+fn signing_basis_intact_v2_provenance_fields() {
     // Document and assert the v2 signing basis (must not include policy/mode).
     use ledgerful::ledger::crypto::{
         LedgerSignInput, sign_ledger_entry_in_v2, verify_entry_signature,

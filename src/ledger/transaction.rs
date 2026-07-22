@@ -1160,7 +1160,8 @@ fn append_to_chain_with_cas(
         } else {
             Some(prev_chain_hash.to_string())
         };
-        let entry_hash = crate::ledger::crypto::compute_entry_hash_for_entry(entry);
+        let entry_hash = crate::ledger::crypto::compute_entry_hash_for_entry(entry)
+            .map_err(|e| miette::miette!("Failed to compute entry hash for chain append: {e}"))?;
 
         let head_after = db
             .get_chain_head()
