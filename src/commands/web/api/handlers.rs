@@ -1027,23 +1027,14 @@ impl SignatureStatus {
 }
 
 fn classify_signature(entry: &LedgerEntry, require_signing: bool) -> SignatureStatus {
-    match (&entry.signature, &entry.public_key) {
-        (Some(sig), Some(pub_key)) => {
-            if crate::ledger::crypto::verify_signature(
-                &entry.tx_id,
-                &entry.category.to_string(),
-                &entry.summary,
-                &entry.reason,
-                &entry.committed_at,
-                sig,
-                pub_key,
-            ) {
-                SignatureStatus::Valid
-            } else {
-                SignatureStatus::Invalid
-            }
+    use crate::ledger::crypto::{SignatureTrustStatus, classify_entry_signature};
+    // Dashboard still surfaces VALID|INVALID|SKIPPED; map trusted/unknown → VALID.
+    match classify_entry_signature(entry, &[], 1) {
+        SignatureTrustStatus::ValidTrusted | SignatureTrustStatus::ValidUnknownKey => {
+            SignatureStatus::Valid
         }
-        _ => {
+        SignatureTrustStatus::Invalid => SignatureStatus::Invalid,
+        SignatureTrustStatus::Unsigned => {
             if require_signing {
                 SignatureStatus::Invalid
             } else {

@@ -946,38 +946,39 @@ mod tests {
 
     #[test]
     fn signing_basis_string_shape_untouched() {
-        // Guard: crypto signing payload remains the fixed 5-field form in
-        // `ledger::crypto::sign_ledger_entry_in` (`format!(...)` with tx_id,
-        // category, summary, reason, committed_at). Timing columns (duration_ms,
-        // command_timings, argv_hash, span_name) must never enter that basis.
-        // We do not call crypto.rs; we assert the production format! template
-        // and the basis field list by source inspection + local format mirror.
+        // Guard (0072): production signs v2 provenance basis. Timing columns
+        // (duration_ms, command_timings, argv_hash, span_name) must never enter
+        // that basis. v1 encode remains for dual-verify of historical rows only.
         let crypto = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ledger/crypto.rs"));
-        // Source text stores the format! string with `\n` escapes (two chars),
-        // not raw newlines — match the source form.
-        let template_src = "tx_id:{}\\ncategory:{}\\nsummary:{}\\nreason:{}\\ncommitted_at:{}";
         assert!(
-            crypto.contains(template_src),
-            "crypto format! must still be exactly 5 fields"
+            crypto.contains("CURRENT_LEDGER_SIG_VERSION"),
+            "crypto must export CURRENT_LEDGER_SIG_VERSION"
         );
-        assert_eq!(template_src.matches("{}").count(), 5);
-        assert!(crypto.contains("tx_id:{}"));
-        assert!(crypto.contains("category:{}"));
-        assert!(crypto.contains("summary:{}"));
-        assert!(crypto.contains("reason:{}"));
-        assert!(crypto.contains("committed_at:{}"));
+        assert!(
+            crypto.contains("sig_version:2"),
+            "v2 payload must domain-separate with sig_version:2"
+        );
+        assert!(crypto.contains("entity:{}"));
+        assert!(crypto.contains("origin:{}"));
+        assert!(crypto.contains("author:{}"));
         assert!(!crypto.contains("command_timings"));
         assert!(!crypto.contains("duration_ms"));
         assert!(!crypto.contains("argv_hash"));
         assert!(!crypto.contains("span_name"));
-
-        // Mirror the production payload construction (same 5 fields).
-        let basis = format!(
-            "tx_id:{}\ncategory:{}\nsummary:{}\nreason:{}\ncommitted_at:{}",
-            "X", "Y", "Z", "R", "T"
+        // v1 dual-verify template still present for historical rows.
+        let v1_template = "tx_id:{}\\ncategory:{}\\nsummary:{}\\nreason:{}\\ncommitted_at:{}";
+        assert!(
+            crypto.contains(v1_template),
+            "v1 encode must remain for dual-verify"
         );
-        assert_eq!(basis.lines().count(), 5);
-        assert!(basis.starts_with("tx_id:"));
+
+        // Mirror the v2 field count (14 lines).
+        let basis = format!(
+            "sig_version:2\ntx_id:{}\ncategory:{}\nsummary:{}\nreason:{}\ncommitted_at:{}\nentity:{}\nchange_type:{}\nentry_type:{}\nauthor:{}\nrisk:{}\nis_breaking:{}\nrelated_tickets:{}\norigin:{}",
+            "X", "Y", "Z", "R", "T", "E", "MODIFY", "IMPLEMENTATION", "A", "", "false", "", "LOCAL"
+        );
+        assert_eq!(basis.lines().count(), 14);
+        assert!(basis.starts_with("sig_version:2"));
         assert!(!basis.contains("duration_ms"));
         assert!(!basis.contains("command_timings"));
     }

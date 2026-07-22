@@ -13,14 +13,27 @@ use std::env;
 use std::path::Path;
 use tracing::{info, warn};
 
+/// Exit codes for signature / chain verification (0072 frozen table).
+pub mod sig_exit {
+    /// All signed rows valid; no hard policy failure.
+    pub const OK: i32 = 0;
+    /// INVALID signature, wrong version, entity_normalized mismatch, or chain break.
+    pub const INVALID_OR_CHAIN: i32 = 1;
+    /// Policy: crypto-valid unknown key when trusted keys are required (reserved).
+    pub const POLICY: i32 = 2;
+    /// Unsigned present under require_signing or --strict-signatures.
+    pub const UNSIGNED: i32 = 3;
+}
+
 pub fn verify_ledger_signatures(layout: &Layout) -> Result<()> {
-    verify_ledger_signatures_with_options(layout, true, false, None)
+    verify_ledger_signatures_with_options(layout, true, false, false, None)
 }
 
 pub fn verify_ledger_signatures_with_options(
     layout: &Layout,
     verify_signatures: bool,
     verify_chain: bool,
+    strict_signatures: bool,
     against_export: Option<&Path>,
 ) -> Result<()> {
     let db_path = layout.state_subdir().join("ledger.db");
@@ -28,7 +41,9 @@ pub fn verify_ledger_signatures_with_options(
     let db = crate::ledger::db::LedgerDb::new(storage.get_connection_mut());
 
     let config = crate::config::load::load_config(layout).unwrap_or_default();
-    let signing_required = config.intent.require_signing;
+    let signing_required = config.intent.require_signing || strict_signatures;
+    let trusted_keys = &config.intent.trusted_public_keys;
+    let min_sig_version = config.intent.min_sig_version;
 
     let entries = db
         .get_all_committed_ledger_entries()
@@ -54,6 +69,8 @@ pub fn verify_ledger_signatures_with_options(
             against_export,
             verify_signatures,
             signing_required,
+            trusted_keys,
+            min_sig_version,
         )?;
         return Ok(());
     }
@@ -65,11 +82,17 @@ pub fn verify_ledger_signatures_with_options(
 
     tracing::info!(
         target: "cli_summary",
-        "Verifying signatures for {} ledger entries (require_signing={})...",
+        "Verifying signatures for {} ledger entries (require_signing={}, min_sig_version={})...",
         entries.len(),
-        signing_required
+        signing_required,
+        min_sig_version
     );
-    let invalid = enumerate_invalid_ledger_entries(&entries, signing_required);
+    let invalid = enumerate_invalid_ledger_entries_with_policy(
+        &entries,
+        signing_required,
+        trusted_keys,
+        min_sig_version,
+    );
     let invalid_count = invalid.len();
     let all_valid = invalid_count == 0;
 
@@ -77,40 +100,61 @@ pub fn verify_ledger_signatures_with_options(
         invalid.iter().map(|(tx_id, _, _)| tx_id.as_str()).collect();
     let mut valid_count = 0usize;
     let mut skipped_count = 0usize;
+    let mut federated_skip = 0usize;
+    let mut unsigned_fail = 0usize;
 
     for entry in &entries {
-        match (&entry.signature, &entry.public_key) {
-            (Some(_sig), Some(pub_key)) => {
+        if entry.origin != "LOCAL" {
+            federated_skip += 1;
+            continue;
+        }
+        let status =
+            crate::ledger::crypto::classify_entry_signature(entry, trusted_keys, min_sig_version);
+        let short = if entry.tx_id.len() >= 8 {
+            &entry.tx_id[..8]
+        } else {
+            &entry.tx_id
+        };
+        match status {
+            crate::ledger::crypto::SignatureTrustStatus::ValidTrusted
+            | crate::ledger::crypto::SignatureTrustStatus::ValidUnknownKey => {
                 if invalid_tx_ids.contains(entry.tx_id.as_str()) {
                     eprintln!(
                         "  [{}] TX {} signature verification FAILED!",
                         "INVALID".red(),
-                        &entry.tx_id[..8]
+                        short
                     );
                 } else {
                     tracing::info!(
                         target: "cli_summary",
-                        "  [{}] TX {} signed by {}",
-                        "VALID".green(),
-                        &entry.tx_id[..8],
-                        &pub_key[..8]
+                        "  [{}] TX {}",
+                        status.as_str().green(),
+                        short
                     );
                     valid_count += 1;
                 }
             }
-            _ => {
+            crate::ledger::crypto::SignatureTrustStatus::Invalid => {
+                eprintln!(
+                    "  [{}] TX {} signature verification FAILED!",
+                    "INVALID".red(),
+                    short
+                );
+            }
+            crate::ledger::crypto::SignatureTrustStatus::Unsigned => {
                 if signing_required {
                     eprintln!(
                         "  [{}] TX {} has no signature — treating as verification failure.",
                         "UNSIGNED".yellow(),
-                        &entry.tx_id[..8]
+                        short
                     );
+                    unsigned_fail += 1;
                 } else {
                     tracing::info!(
                         target: "cli_summary",
                         "  [{}] TX {} has no signature (signing not required, skipping).",
                         "SKIP".yellow(),
-                        &entry.tx_id[..8]
+                        short
                     );
                     skipped_count += 1;
                 }
@@ -118,16 +162,26 @@ pub fn verify_ledger_signatures_with_options(
         }
     }
 
+    if federated_skip > 0 {
+        tracing::info!(
+            target: "cli_summary",
+            "  [{}]: {}",
+            "SKIP (federated)".yellow(),
+            federated_skip
+        );
+    }
+
     tracing::info!(
         target: "cli_summary",
-        "\nSignature verification summary: {} valid, {} invalid, {} skipped.",
+        "\nSignature verification summary: {} valid, {} invalid, {} skipped, {} federated-skip.",
         valid_count.green(),
         if invalid_count > 0 {
             invalid_count.red().to_string()
         } else {
             invalid_count.to_string()
         },
-        skipped_count.yellow()
+        skipped_count.yellow(),
+        federated_skip
     );
 
     if all_valid {
@@ -139,6 +193,12 @@ pub fn verify_ledger_signatures_with_options(
                 .bold()
         );
         Ok(())
+    } else if unsigned_fail > 0 && invalid_count == unsigned_fail {
+        Err(miette::miette!(
+            "Ledger signature verification failed: {} unsigned entries (exit {}).",
+            unsigned_fail,
+            sig_exit::UNSIGNED
+        ))
     } else {
         Err(miette::miette!(
             "Ledger signature verification failed: {} entries have invalid or missing signatures.",
@@ -151,40 +211,41 @@ pub fn enumerate_invalid_ledger_entries(
     entries: &[crate::ledger::types::LedgerEntry],
     signing_required: bool,
 ) -> Vec<(String, String, String)> {
+    enumerate_invalid_ledger_entries_with_policy(entries, signing_required, &[], 1)
+}
+
+pub fn enumerate_invalid_ledger_entries_with_policy(
+    entries: &[crate::ledger::types::LedgerEntry],
+    signing_required: bool,
+    trusted_keys: &[String],
+    min_sig_version: u32,
+) -> Vec<(String, String, String)> {
     let mut invalid = Vec::new();
     for entry in entries {
-        match (&entry.signature, &entry.public_key) {
-            (Some(sig), Some(pub_key)) => {
-                let valid = crate::ledger::crypto::verify_signature(
-                    &entry.tx_id,
-                    &entry.category.to_string(),
-                    &entry.summary,
-                    &entry.reason,
-                    &entry.committed_at,
-                    sig,
-                    pub_key,
-                );
-                if !valid {
-                    invalid.push((entry.tx_id.clone(), sig.clone(), pub_key.clone()));
-                }
+        if entry.origin != "LOCAL" {
+            continue;
+        }
+        let status =
+            crate::ledger::crypto::classify_entry_signature(entry, trusted_keys, min_sig_version);
+        match status {
+            crate::ledger::crypto::SignatureTrustStatus::Invalid => {
+                invalid.push((
+                    entry.tx_id.clone(),
+                    entry.signature.clone().unwrap_or_default(),
+                    entry.public_key.clone().unwrap_or_default(),
+                ));
             }
-            _ => {
-                if signing_required {
-                    // Missing signatures are treated as invalid when signing is required,
-                    // but we have no old signature/key fingerprint to record. We still include
-                    // them with empty placeholders so callers can decide how to surface them.
-                    invalid.push((entry.tx_id.clone(), String::new(), String::new()));
-                }
+            crate::ledger::crypto::SignatureTrustStatus::Unsigned if signing_required => {
+                invalid.push((entry.tx_id.clone(), String::new(), String::new()));
             }
+            _ => {}
         }
     }
     invalid
 }
 
 fn compute_entry_hash_for_verify(entry: &crate::ledger::types::LedgerEntry) -> String {
-    let sig_hex = entry.signature.as_deref().unwrap_or("");
-    let prev = entry.prev_hash.as_deref().unwrap_or("");
-    crate::ledger::crypto::compute_entry_hash(&entry.tx_id, sig_hex, prev)
+    crate::ledger::crypto::compute_entry_hash_for_entry(entry)
 }
 
 fn verify_chain_integrity(
@@ -193,6 +254,8 @@ fn verify_chain_integrity(
     against_export: Option<&Path>,
     verify_signatures: bool,
     signing_required: bool,
+    trusted_keys: &[String],
+    min_sig_version: u32,
 ) -> Result<()> {
     // Distinguish a real stored chain head from one we will synthesize for
     // pre-chain/legacy ledgers. The integrity check that binds the computed
@@ -205,66 +268,85 @@ fn verify_chain_integrity(
     let mut prev_hash: Option<String> = None;
     let mut chain_length: i64 = 0;
 
-    // The chain link check operates on the whole ledger when there is a real
+    // Shared chain iterator (RT-C4): walk by prev_hash linkage; exclude federated.
+    let walk = crate::ledger::chain_iter::iter_local_chain(entries);
+    if walk.federated_skipped > 0 {
+        tracing::info!(
+            target: "cli_summary",
+            "  [{}]: {}",
+            "SKIP (federated)".yellow(),
+            walk.federated_skipped
+        );
+    }
+    if !walk.forks.is_empty() {
+        return Err(miette::miette!(
+            "CHAIN_BREAK: detected {} fork(s) in local chain (first parent hash {}).",
+            walk.forks.len(),
+            walk.forks[0].0
+        ));
+    }
+    // The chain link check operates on the LOCAL walk when there is a real
     // stored head OR when entries already contain prev_hash links.  A real
     // stored head's genesis is the timestamp of the first in-chain entry.  If
     // there is no stored head and no entries have prev_hash, the ledger is
     // pre-chain/benign: verify standalone signatures if requested, but do not
     // walk a non-existent chain. The export comparison below uses a synthesized
     // head for that case.
-    let has_any_prev_link = entries.iter().any(|e| e.prev_hash.is_some());
+    let has_any_prev_link = walk.ordered.iter().any(|e| e.prev_hash.is_some())
+        || entries
+            .iter()
+            .any(|e| e.origin == "LOCAL" && e.prev_hash.is_some());
     let should_walk_chain = head_is_real || has_any_prev_link;
 
-    for entry in entries {
-        if !should_walk_chain {
-            if verify_signatures {
-                if let (Some(sig), Some(pub_key)) = (&entry.signature, &entry.public_key) {
-                    if !crate::ledger::crypto::verify_signature(
-                        &entry.tx_id,
-                        &entry.category.to_string(),
-                        &entry.summary,
-                        &entry.reason,
-                        &entry.committed_at,
-                        sig,
-                        pub_key,
-                    ) {
-                        return Err(miette::miette!(
-                            "Signature verification failed for TX {} (chain break).",
-                            entry.tx_id
-                        ));
-                    }
-                } else if signing_required {
-                    return Err(miette::miette!(
-                        "TX {} is missing a signature (chain-required-after-genesis).",
-                        entry.tx_id
-                    ));
-                }
-            }
-            continue;
-        }
+    // Multiple null-prev genesis rows are only a break once a chain exists.
+    // Pre-chain ledgers legitimately have many null-prev entries.
+    if should_walk_chain && !walk.extra_genesis.is_empty() {
+        return Err(miette::miette!(
+            "Chain break: {} additional genesis entr(y/ies) with null prev_hash after chain started (first: {}).",
+            walk.extra_genesis.len(),
+            walk.extra_genesis[0].tx_id
+        ));
+    }
+    if should_walk_chain && !walk.orphans.is_empty() {
+        return Err(miette::miette!(
+            "Chain break: {} orphan LOCAL entr(y/ies) not linked by prev_hash (first: {}).",
+            walk.orphans.len(),
+            walk.orphans[0].tx_id
+        ));
+    }
+    let chain_entries: &[crate::ledger::types::LedgerEntry] = if should_walk_chain {
+        &walk.ordered
+    } else {
+        // Pre-chain: verify LOCAL entries only, in stable order.
+        &walk.ordered
+    };
 
+    for entry in chain_entries {
         if verify_signatures {
-            if let (Some(sig), Some(pub_key)) = (&entry.signature, &entry.public_key) {
-                if !crate::ledger::crypto::verify_signature(
-                    &entry.tx_id,
-                    &entry.category.to_string(),
-                    &entry.summary,
-                    &entry.reason,
-                    &entry.committed_at,
-                    sig,
-                    pub_key,
-                ) {
+            let status = crate::ledger::crypto::classify_entry_signature(
+                entry,
+                trusted_keys,
+                min_sig_version,
+            );
+            match status {
+                crate::ledger::crypto::SignatureTrustStatus::Invalid => {
                     return Err(miette::miette!(
                         "Signature verification failed for TX {} (chain break).",
                         entry.tx_id
                     ));
                 }
-            } else if signing_required {
-                return Err(miette::miette!(
-                    "TX {} is missing a signature (chain-required-after-genesis).",
-                    entry.tx_id
-                ));
+                crate::ledger::crypto::SignatureTrustStatus::Unsigned if signing_required => {
+                    return Err(miette::miette!(
+                        "TX {} is missing a signature (chain-required-after-genesis).",
+                        entry.tx_id
+                    ));
+                }
+                _ => {}
             }
+        }
+
+        if !should_walk_chain {
+            continue;
         }
 
         if let Some(expected_prev) = prev_hash.as_ref() {

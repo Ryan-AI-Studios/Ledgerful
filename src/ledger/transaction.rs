@@ -310,17 +310,57 @@ impl<'a> TransactionManager<'a> {
                 }
             });
 
+            // Capture author from git config at commit time (needed for v2 basis)
+            let author = capture_git_author(&self.repo_root);
+            let related_tickets = req.related_tickets.clone().or(req.issue_ref.clone());
+            let origin = "LOCAL".to_string();
+
             let mut outcome_notes = req.outcome_notes;
             let (signature, pub_key) = if req.signature.is_some() {
-                (req.signature, req.public_key)
-            } else {
-                match crate::ledger::crypto::sign_ledger_entry(
+                // RT-C3: verify supplied signatures against the v2 basis before insert.
+                let sig = req.signature.clone().unwrap_or_default();
+                let pk = req.public_key.clone().unwrap_or_default();
+                let input = crate::ledger::crypto::LedgerSignInput::for_new_commit(
                     &tx_id,
-                    &tx.category.to_string(),
+                    tx.category,
                     &req.summary,
                     &req.reason,
                     &now,
-                ) {
+                    &tx.entity,
+                    &tx.entity_normalized,
+                    req.change_type,
+                    entry_type,
+                    &author,
+                    req.risk.as_deref(),
+                    req.is_breaking,
+                    related_tickets.as_deref(),
+                    &origin,
+                );
+                if !crate::ledger::crypto::verify_entry_signature(&input, &sig, &pk) {
+                    return Err(LedgerError::Validation(
+                        "Supplied signature does not verify against the v2 provenance basis"
+                            .to_string(),
+                    ));
+                }
+                (req.signature, req.public_key)
+            } else {
+                let input = crate::ledger::crypto::LedgerSignInput::for_new_commit(
+                    &tx_id,
+                    tx.category,
+                    &req.summary,
+                    &req.reason,
+                    &now,
+                    &tx.entity,
+                    &tx.entity_normalized,
+                    req.change_type,
+                    entry_type,
+                    &author,
+                    req.risk.as_deref(),
+                    req.is_breaking,
+                    related_tickets.as_deref(),
+                    &origin,
+                );
+                match crate::ledger::crypto::sign_ledger_entry_v2(&input) {
                     Ok(res) => res,
                     Err(e) => {
                         let err_msg = format!("Cryptographic signing failed: {}", e);
@@ -340,9 +380,6 @@ impl<'a> TransactionManager<'a> {
                 }
             };
 
-            // Capture author from git config at commit time
-            let author = capture_git_author(&self.repo_root);
-
             let mut entry = LedgerEntry {
                 id: 0, // DB will assign
                 tx_id: tx_id.clone(),
@@ -358,12 +395,12 @@ impl<'a> TransactionManager<'a> {
                 verification_status: req.verification_status,
                 verification_basis: req.verification_basis,
                 outcome_notes,
-                origin: "LOCAL".to_string(),
+                origin,
                 trace_id: None,
                 signature,
                 public_key: pub_key,
                 risk: req.risk,
-                related_tickets: req.related_tickets.or(req.issue_ref),
+                related_tickets,
                 author,
                 observed: if self.observe_warned {
                     Some(true)
@@ -371,6 +408,7 @@ impl<'a> TransactionManager<'a> {
                     req.observed
                 },
                 prev_hash: None,
+                sig_version: crate::ledger::crypto::CURRENT_LEDGER_SIG_VERSION,
             };
 
             let keys_dir = crate::ledger::crypto::get_keys_dir().map_err(|e| {
@@ -496,13 +534,27 @@ impl<'a> TransactionManager<'a> {
             }
 
             // 2. Insert auditable entry
-            let (signature, pub_key) = match crate::ledger::crypto::sign_ledger_entry(
+            let author = capture_git_author(&self.repo_root);
+            let origin = "LOCAL".to_string();
+            let summary_text = "Transaction Rolled Back".to_string();
+            let risk = Some("TRIVIAL".to_string());
+            let input = crate::ledger::crypto::LedgerSignInput::for_new_commit(
                 &tx_id,
-                &tx.category.to_string(),
-                "Transaction Rolled Back",
+                tx.category,
+                &summary_text,
                 &reason,
                 &now,
-            ) {
+                &tx.entity,
+                &tx.entity_normalized,
+                ChangeType::Modify,
+                EntryType::Rollback,
+                &author,
+                risk.as_deref(),
+                false,
+                tx.issue_ref.as_deref(),
+                &origin,
+            );
+            let (signature, pub_key) = match crate::ledger::crypto::sign_ledger_entry_v2(&input) {
                 Ok(res) => res,
                 Err(e) => {
                     let err_msg = format!("Cryptographic signing failed: {}", e);
@@ -523,22 +575,23 @@ impl<'a> TransactionManager<'a> {
                 entity: tx.entity,
                 entity_normalized: tx.entity_normalized,
                 change_type: ChangeType::Modify,
-                summary: "Transaction Rolled Back".to_string(),
+                summary: summary_text,
                 reason,
                 is_breaking: false,
                 committed_at: now,
                 verification_status: None,
                 verification_basis: None,
                 outcome_notes: None,
-                origin: "LOCAL".to_string(),
+                origin,
                 trace_id: None,
                 signature,
                 public_key: pub_key,
-                risk: Some("TRIVIAL".to_string()),
+                risk,
                 related_tickets: tx.issue_ref,
-                author: capture_git_author(&self.repo_root),
+                author,
                 observed: None,
                 prev_hash: None,
+                sig_version: crate::ledger::crypto::CURRENT_LEDGER_SIG_VERSION,
             };
             append_to_chain_with_cas(
                 &db,
@@ -630,13 +683,27 @@ impl<'a> TransactionManager<'a> {
             for tx in to_reconcile {
                 let summary_text = format!("Reconciled drift ({} changes)", tx.drift_count);
                 let mut outcome_notes = None;
-                let (signature, pub_key) = match crate::ledger::crypto::sign_ledger_entry(
+                let author = capture_git_author(&self.repo_root);
+                let origin = "LOCAL".to_string();
+                let risk = Some("TRIVIAL".to_string());
+                let input = crate::ledger::crypto::LedgerSignInput::for_new_commit(
                     &tx.tx_id,
-                    &tx.category.to_string(),
+                    tx.category,
                     &summary_text,
                     &reason,
                     &now,
-                ) {
+                    &tx.entity,
+                    &tx.entity_normalized,
+                    ChangeType::Modify,
+                    EntryType::Reconciliation,
+                    &author,
+                    risk.as_deref(),
+                    false,
+                    None,
+                    &origin,
+                );
+                let (signature, pub_key) = match crate::ledger::crypto::sign_ledger_entry_v2(&input)
+                {
                     Ok(res) => res,
                     Err(e) => {
                         let err_msg = format!("Cryptographic signing failed: {}", e);
@@ -665,15 +732,16 @@ impl<'a> TransactionManager<'a> {
                     verification_status: None,
                     verification_basis: None,
                     outcome_notes,
-                    origin: "LOCAL".to_string(),
+                    origin,
                     trace_id: None,
                     signature,
                     public_key: pub_key,
-                    risk: Some("TRIVIAL".to_string()),
+                    risk,
                     related_tickets: None,
-                    author: capture_git_author(&self.repo_root),
+                    author,
                     observed: None,
                     prev_hash: None,
+                    sig_version: crate::ledger::crypto::CURRENT_LEDGER_SIG_VERSION,
                 };
                 append_to_chain_with_cas(
                     &db,
@@ -1076,7 +1144,6 @@ fn append_to_chain_with_cas(
 ) -> Result<(), miette::Error> {
     const MAX_RETRIES: usize = 3;
 
-    let sig_hex = entry.signature.as_deref().unwrap_or("");
     let mut attempt = 0usize;
 
     loop {
@@ -1087,8 +1154,13 @@ fn append_to_chain_with_cas(
             .as_ref()
             .map(|h| h.latest_entry_hash.as_str())
             .unwrap_or("");
-        let entry_hash =
-            crate::ledger::crypto::compute_entry_hash(&entry.tx_id, sig_hex, prev_chain_hash);
+        // Set prev_hash before hashing so versioned entry_hash matches stored linkage.
+        entry.prev_hash = if prev_chain_hash.is_empty() {
+            None
+        } else {
+            Some(prev_chain_hash.to_string())
+        };
+        let entry_hash = crate::ledger::crypto::compute_entry_hash_for_entry(entry);
 
         let head_after = db
             .get_chain_head()

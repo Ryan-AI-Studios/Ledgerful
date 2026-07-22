@@ -411,6 +411,33 @@ pub fn execute_doctor() -> Result<()> {
             .to_string(),
         );
     }
+    // 0072 M2: enforce without require_signing is CRITICAL.
+    if config.gate.is_enforce() && !config.intent.require_signing {
+        critical_count += 1;
+        report.index_health.push(
+            "CRITICAL [sig-require]: gate.mode=enforce but intent.require_signing=false. Unsigned rows will not fail verify --signatures."
+                .red()
+                .to_string(),
+        );
+    }
+    // Soft pin warn when no trusted keys are configured.
+    if config.intent.trusted_public_keys.is_empty() {
+        report.index_health.push(
+            "Warning [sig-pin]: no intent.trusted_public_keys pinned; crypto-valid signatures report VALID (unknown key). Pin keys after init or re-sign."
+                .yellow()
+                .to_string(),
+        );
+    }
+    if config.intent.min_sig_version < 2 {
+        report.index_health.push(
+            format!(
+                "Warning [sig-version]: intent.min_sig_version={} still accepts legacy v1 signatures. After `ledger re-sign --all`, set min_sig_version=2 to close the downgrade path.",
+                config.intent.min_sig_version
+            )
+            .yellow()
+            .to_string(),
+        );
+    }
     // Legacy phantom Verified without a bound verification run (forward-only flag).
     if let Ok(count) = count_phantom_verified(storage.get_connection())
         && count > 0

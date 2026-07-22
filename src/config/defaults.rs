@@ -76,6 +76,9 @@ hnsw_rebuild_threshold = 500
 required = "always"
 tui_enabled = true
 require_signing = false
+# Hex Ed25519 public keys (64 chars). Empty = soft pin (VALID unknown key).
+# trusted_public_keys = []
+min_sig_version = 1
 
 [gate]
 mode = "observe"

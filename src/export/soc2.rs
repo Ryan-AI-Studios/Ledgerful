@@ -27,7 +27,7 @@ use crate::export::control_mapping::{
     ControlMapping, ControlSelector, generate_control_lens_files,
 };
 use crate::ledger::adr::{generate_madr_content, slugify_summary};
-use crate::ledger::crypto::{compute_entry_hash, get_or_create_keys};
+use crate::ledger::crypto::get_or_create_keys;
 use crate::ledger::db::LedgerDb;
 use crate::ledger::types::ChainHead;
 use crate::state::layout::Layout;
@@ -500,11 +500,7 @@ pub fn synthesize_chain_head(entries: &[crate::ledger::types::LedgerEntry]) -> O
     // genesis is the ISO-8601 timestamp of the first in-chain entry, matching
     // the normal append path and verify_chain_integrity.
     let genesis = first.committed_at.clone();
-    let latest = compute_entry_hash(
-        &last.tx_id,
-        last.signature.as_deref().unwrap_or(""),
-        last.prev_hash.as_deref().unwrap_or(""),
-    );
+    let latest = crate::ledger::crypto::compute_entry_hash_for_entry(last);
     Some(ChainHead {
         latest_entry_hash: latest,
         genesis,
@@ -651,6 +647,7 @@ mod tests {
             author: "Test".to_string(),
             observed: Some(true),
             prev_hash: None,
+            sig_version: 1,
         };
         let csv = build_ledger_csv(&[entry]);
         let s = std::str::from_utf8(&csv).unwrap();

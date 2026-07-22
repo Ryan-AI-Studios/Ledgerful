@@ -570,7 +570,7 @@ pub fn render_mapping_doc(mapping: &ControlMapping) -> String {
         "* `signed_ledger_entry` — entry has a non-blank `signature` and a non-blank `public_key`."
             .to_string(),
     );
-    lines.push("* `signature_verification` — entry has a non-blank `signature` AND the signature verifies against the entry's `public_key` using the 5-field signing basis (tx_id, category, summary, reason, committed_at).".to_string());
+    lines.push("* `signature_verification` — entry has a non-blank `signature` AND the signature verifies against the entry's `public_key` using the versioned signing basis (v1: tx_id/category/summary/reason/committed_at; v2: full provenance including entity, author, risk, origin, change_type, entry_type, is_breaking, related_tickets).".to_string());
     lines
         .push("* `verification_result` — entry has a non-empty `verification_status`.".to_string());
     lines.push(
@@ -791,6 +791,7 @@ mod tests {
             author: "Test".to_string(),
             observed: None,
             prev_hash: None,
+            sig_version: 1,
         };
 
         assert!(matches_evidence_keyword(&entry, "signed_ledger_entry"));
@@ -827,6 +828,7 @@ mod tests {
             author: "Test".to_string(),
             observed: None,
             prev_hash: None,
+            sig_version: 1,
         };
 
         assert!(!matches_evidence_keyword(&entry, "signature_verification"));
@@ -860,6 +862,7 @@ mod tests {
             author: "Test".to_string(),
             observed: None,
             prev_hash: None,
+            sig_version: 1,
         };
 
         assert!(!matches_evidence_keyword(&entry, "signature_verification"));
@@ -895,6 +898,7 @@ mod tests {
             author: "Test".to_string(),
             observed: None,
             prev_hash: None,
+            sig_version: 1,
         };
 
         assert!(!matches_evidence_keyword(&entry, "signed_ledger_entry"));
@@ -931,6 +935,7 @@ mod tests {
             author: "Test".to_string(),
             observed: None,
             prev_hash: None,
+            sig_version: 1,
         };
 
         assert!(!matches_evidence_keyword(&entry, "signed_ledger_entry"));
@@ -969,6 +974,7 @@ mod tests {
             author: "Test".to_string(),
             observed: None,
             prev_hash: None,
+            sig_version: 1,
         };
 
         assert!(matches_evidence_keyword(&entry, "signed_ledger_entry"));
@@ -1003,6 +1009,7 @@ mod tests {
             author: "Test".to_string(),
             observed: None,
             prev_hash: None,
+            sig_version: 1,
         };
 
         assert!(!matches_evidence_keyword(&entry, "signed_ledger_entry"));
@@ -1036,6 +1043,7 @@ mod tests {
             author: "Test".to_string(),
             observed: None,
             prev_hash: None,
+            sig_version: 1,
         };
 
         assert!(!matches_evidence_keyword(&entry, "signed_ledger_entry"));
@@ -1096,6 +1104,7 @@ mod tests {
             author: "Test".to_string(),
             observed: None,
             prev_hash: None,
+            sig_version: 1,
         };
 
         assert!(matches_evidence_keyword(&entry, "signed_ledger_entry"));

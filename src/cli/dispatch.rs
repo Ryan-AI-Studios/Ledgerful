@@ -159,6 +159,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
             signatures,
             chain,
             against_export,
+            strict_signatures,
             dry_run,
             scope,
             auto_index,
@@ -174,6 +175,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
             signatures,
             chain,
             against_export,
+            strict_signatures,
             dry_run,
             scope,
             auto_index,
@@ -1483,6 +1485,7 @@ fn dispatch_verify(
     signatures: bool,
     chain: bool,
     against_export: Option<std::path::PathBuf>,
+    strict_signatures: bool,
     dry_run: bool,
     scope: crate::verify::plan::VerifyScope,
     auto_index: bool,
@@ -1492,6 +1495,7 @@ fn dispatch_verify(
             layout,
             signatures,
             chain,
+            strict_signatures,
             against_export.as_deref(),
         )
     } else {

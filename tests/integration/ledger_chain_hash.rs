@@ -3,7 +3,6 @@
 use ledgerful::commands::init::execute_init;
 use ledgerful::commands::verify::verify_ledger_signatures_with_options;
 use ledgerful::config::model::Config;
-use ledgerful::ledger::crypto::sign_ledger_entry_in;
 use ledgerful::ledger::db::LedgerDb;
 use ledgerful::ledger::*;
 use ledgerful::state::layout::Layout;
@@ -66,26 +65,6 @@ fn setup_initialized_repo() -> RepoSetup {
     }
 }
 
-fn sign_in_dir(
-    dir: &camino::Utf8Path,
-    tx_id: &str,
-    category: &Category,
-    summary: &str,
-    reason: &str,
-    committed_at: &str,
-) -> (Option<String>, Option<String>) {
-    let keys = dir.join(".ledgerful").join("keys");
-    sign_ledger_entry_in(
-        keys.as_std_path(),
-        tx_id,
-        &category.to_string(),
-        summary,
-        reason,
-        committed_at,
-    )
-    .unwrap()
-}
-
 #[test]
 #[serial(cwd, env)]
 fn chain__two_sequential_commits__linear_no_fork() {
@@ -124,14 +103,7 @@ fn chain__two_sequential_commits__linear_no_fork() {
         for (offset, entity) in entities.iter().enumerate() {
             let tx_id = tx_ids[offset].clone();
             let committed_at = format!("2026-07-11T10:00:0{offset}Z");
-            let (sig, pub_key) = sign_in_dir(
-                root.as_path(),
-                &tx_id,
-                &Category::Feature,
-                &format!("sequential commit for {entity}"),
-                "test",
-                &committed_at,
-            );
+            // Production path signs v2 at commit (no client-supplied sig).
             tx_mgr
                 .commit_change(
                     tx_id,
@@ -140,8 +112,8 @@ fn chain__two_sequential_commits__linear_no_fork() {
                         summary: format!("sequential commit for {entity}"),
                         reason: "test".to_string(),
                         committed_at: Some(committed_at),
-                        signature: sig,
-                        public_key: pub_key,
+                        signature: None,
+                        public_key: None,
                         ..Default::default()
                     },
                     false,
@@ -182,13 +154,7 @@ fn chain__two_sequential_commits__linear_no_fork() {
     while let Some(hash) = walk_hash {
         let prev = entries
             .iter()
-            .find(|e| {
-                ledgerful::ledger::crypto::compute_entry_hash(
-                    &e.tx_id,
-                    e.signature.as_deref().unwrap_or(""),
-                    e.prev_hash.as_deref().unwrap_or(""),
-                ) == hash
-            })
+            .find(|e| ledgerful::ledger::crypto::compute_entry_hash_for_entry(e) == hash)
             .expect("head hash must resolve to a chained entry");
         visited += 1;
         walk_hash = prev.prev_hash.clone();
@@ -200,7 +166,7 @@ fn chain__two_sequential_commits__linear_no_fork() {
 
     // The public API must report the chain as valid.
     let layout = Layout::new(root.as_str());
-    verify_ledger_signatures_with_options(&layout, true, true, None).unwrap();
+    verify_ledger_signatures_with_options(&layout, true, true, false, None).unwrap();
 }
 
 #[test]
@@ -232,14 +198,7 @@ fn chain__downgrade_deletes_head__verify_chain_fails_closed() {
                 })
                 .unwrap();
             let committed_at = format!("2026-07-11T10:00:0{committed_at_offset}Z");
-            let (sig, pub_key) = sign_in_dir(
-                root.as_path(),
-                &tx_id,
-                &Category::Feature,
-                summary,
-                "test",
-                &committed_at,
-            );
+            // Production path signs v2 at commit (no client-supplied sig).
             tx_mgr
                 .commit_change(
                     tx_id,
@@ -248,8 +207,8 @@ fn chain__downgrade_deletes_head__verify_chain_fails_closed() {
                         summary: summary.to_string(),
                         reason: "test".to_string(),
                         committed_at: Some(committed_at),
-                        signature: sig,
-                        public_key: pub_key,
+                        signature: None,
+                        public_key: None,
                         ..Default::default()
                     },
                     false,
@@ -266,7 +225,7 @@ fn chain__downgrade_deletes_head__verify_chain_fails_closed() {
     drop(conn);
 
     let layout = Layout::new(root.as_str());
-    let err = verify_ledger_signatures_with_options(&layout, true, true, None).unwrap_err();
+    let err = verify_ledger_signatures_with_options(&layout, true, true, false, None).unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("downgrade") || msg.contains("No chain head") || msg.contains("missing"),
@@ -303,14 +262,7 @@ fn chain__delete_all_entries_leave_head__verify_chain_fails_orphan_head() {
                 })
                 .unwrap();
             let committed_at = format!("2026-07-11T10:00:0{committed_at_offset}Z");
-            let (sig, pub_key) = sign_in_dir(
-                root.as_path(),
-                &tx_id,
-                &Category::Feature,
-                summary,
-                "test",
-                &committed_at,
-            );
+            // Production path signs v2 at commit (no client-supplied sig).
             tx_mgr
                 .commit_change(
                     tx_id,
@@ -319,8 +271,8 @@ fn chain__delete_all_entries_leave_head__verify_chain_fails_orphan_head() {
                         summary: summary.to_string(),
                         reason: "test".to_string(),
                         committed_at: Some(committed_at),
-                        signature: sig,
-                        public_key: pub_key,
+                        signature: None,
+                        public_key: None,
                         ..Default::default()
                     },
                     false,
@@ -337,7 +289,7 @@ fn chain__delete_all_entries_leave_head__verify_chain_fails_orphan_head() {
     drop(conn);
 
     let layout = Layout::new(root.as_str());
-    let err = verify_ledger_signatures_with_options(&layout, true, true, None).unwrap_err();
+    let err = verify_ledger_signatures_with_options(&layout, true, true, false, None).unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("Chain head exists but no ledger entries found"),
@@ -370,7 +322,7 @@ fn chain__pre_chain_entries_without_prev_hash__verify_chain_is_benign() {
     drop(conn);
 
     let layout = Layout::new(root.as_str());
-    verify_ledger_signatures_with_options(&layout, false, true, None)
+    verify_ledger_signatures_with_options(&layout, false, true, false, None)
         .expect("pre-chain ledger (no prev_hash, no head) must not report downgrade");
 }
 
@@ -424,7 +376,7 @@ fn chain__pre_chain_entries_without_prev_hash__against_export_of_same_ledger_pas
 
     // The local ledger exactly matches the export, so --against-export should
     // pass even though there is no stored chain head.
-    verify_ledger_signatures_with_options(&layout, false, true, Some(export_path.as_path()))
+    verify_ledger_signatures_with_options(&layout, false, true, false, Some(export_path.as_path()))
         .expect("verify --against-export must pass for pre-chain ledger matching its own export");
 }
 
@@ -454,14 +406,7 @@ fn chain__delete_middle_entry__verify_chain_fails_localized() {
                     ..Default::default()
                 })
                 .unwrap();
-            let (sig, pub_key) = sign_in_dir(
-                root.as_path(),
-                &tx_id,
-                &Category::Feature,
-                &format!("entry {i}"),
-                "test",
-                &format!("2026-07-11T10:00:0{i}Z"),
-            );
+            // Production path signs v2 at commit (no client-supplied sig).
             tx_mgr
                 .commit_change(
                     tx_id.clone(),
@@ -470,8 +415,8 @@ fn chain__delete_middle_entry__verify_chain_fails_localized() {
                         summary: format!("entry {i}"),
                         reason: "test".to_string(),
                         committed_at: Some(format!("2026-07-11T10:00:0{i}Z")),
-                        signature: sig,
-                        public_key: pub_key,
+                        signature: None,
+                        public_key: None,
                         ..Default::default()
                     },
                     false,
@@ -491,7 +436,7 @@ fn chain__delete_middle_entry__verify_chain_fails_localized() {
     drop(conn);
 
     let layout = Layout::new(root.as_str());
-    let err = verify_ledger_signatures_with_options(&layout, true, true, None).unwrap_err();
+    let err = verify_ledger_signatures_with_options(&layout, true, true, false, None).unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("Chain break")
@@ -527,14 +472,7 @@ fn chain__reorder_entries__verify_chain_fails() {
                     ..Default::default()
                 })
                 .unwrap();
-            let (sig, pub_key) = sign_in_dir(
-                root.as_path(),
-                &tx_id,
-                &Category::Feature,
-                &format!("entry {i}"),
-                "test",
-                &format!("2026-07-11T10:00:0{i}Z"),
-            );
+            // Production path signs v2 at commit (no client-supplied sig).
             tx_mgr
                 .commit_change(
                     tx_id.clone(),
@@ -543,8 +481,8 @@ fn chain__reorder_entries__verify_chain_fails() {
                         summary: format!("entry {i}"),
                         reason: "test".to_string(),
                         committed_at: Some(format!("2026-07-11T10:00:0{i}Z")),
-                        signature: sig,
-                        public_key: pub_key,
+                        signature: None,
+                        public_key: None,
                         ..Default::default()
                     },
                     false,
@@ -571,7 +509,7 @@ fn chain__reorder_entries__verify_chain_fails() {
     let layout = Layout::new(root.as_str());
     // Reordering invalidates the per-entry signatures (basis includes
     // committed_at), so verify the chain linkage only, not the signatures.
-    let err = verify_ledger_signatures_with_options(&layout, false, true, None).unwrap_err();
+    let err = verify_ledger_signatures_with_options(&layout, false, true, false, None).unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("Chain break")
@@ -607,14 +545,7 @@ fn chain__insert_unlinked_entry__verify_chain_fails() {
                     ..Default::default()
                 })
                 .unwrap();
-            let (sig, pub_key) = sign_in_dir(
-                root.as_path(),
-                &tx_id,
-                &Category::Feature,
-                &format!("entry {i}"),
-                "test",
-                &format!("2026-07-11T10:00:0{i}Z"),
-            );
+            // Production path signs v2 at commit (no client-supplied sig).
             tx_mgr
                 .commit_change(
                     tx_id.clone(),
@@ -623,8 +554,8 @@ fn chain__insert_unlinked_entry__verify_chain_fails() {
                         summary: format!("entry {i}"),
                         reason: "test".to_string(),
                         committed_at: Some(format!("2026-07-11T10:00:0{i}Z")),
-                        signature: sig,
-                        public_key: pub_key,
+                        signature: None,
+                        public_key: None,
                         ..Default::default()
                     },
                     false,
@@ -651,7 +582,7 @@ fn chain__insert_unlinked_entry__verify_chain_fails() {
     drop(conn);
 
     let layout = Layout::new(root.as_str());
-    let err = verify_ledger_signatures_with_options(&layout, true, true, None).unwrap_err();
+    let err = verify_ledger_signatures_with_options(&layout, true, true, false, None).unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("Chain break")
@@ -687,14 +618,7 @@ fn chain__export_contains_chain_head_json__valid_head_data() {
                 ..Default::default()
             })
             .unwrap();
-        let (sig, pub_key) = sign_in_dir(
-            root.as_path(),
-            &tx_id,
-            &Category::Feature,
-            "export chain head test",
-            "test",
-            "2026-07-11T10:00:00Z",
-        );
+        // Production path signs v2 at commit (no client-supplied sig).
         tx_mgr
             .commit_change(
                 tx_id,
@@ -703,8 +627,8 @@ fn chain__export_contains_chain_head_json__valid_head_data() {
                     summary: "export chain head test".to_string(),
                     reason: "test".to_string(),
                     committed_at: Some("2026-07-11T10:00:00Z".to_string()),
-                    signature: sig,
-                    public_key: pub_key,
+                    signature: None,
+                    public_key: None,
                     ..Default::default()
                 },
                 false,
@@ -775,14 +699,7 @@ fn chain__against_export_after_rollback__detects_rollback() {
                     ..Default::default()
                 })
                 .unwrap();
-            let (sig, pub_key) = sign_in_dir(
-                root.as_path(),
-                &tx_id,
-                &Category::Feature,
-                &format!("export entry {i}"),
-                "test",
-                &format!("2026-07-11T10:00:0{i}Z"),
-            );
+            // Production path signs v2 at commit (no client-supplied sig).
             tx_mgr
                 .commit_change(
                     tx_id.clone(),
@@ -791,8 +708,8 @@ fn chain__against_export_after_rollback__detects_rollback() {
                         summary: format!("export entry {i}"),
                         reason: "test".to_string(),
                         committed_at: Some(format!("2026-07-11T10:00:0{i}Z")),
-                        signature: sig,
-                        public_key: pub_key,
+                        signature: None,
+                        public_key: None,
                         ..Default::default()
                     },
                     false,
@@ -845,9 +762,14 @@ fn chain__against_export_after_rollback__detects_rollback() {
     .unwrap();
     drop(conn);
 
-    let err =
-        verify_ledger_signatures_with_options(&layout, true, true, Some(export_path.as_path()))
-            .unwrap_err();
+    let err = verify_ledger_signatures_with_options(
+        &layout,
+        true,
+        true,
+        false,
+        Some(export_path.as_path()),
+    )
+    .unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("rollback")
@@ -885,14 +807,7 @@ fn chain__against_export_missing_head_with_links__fails_closed_downgrade() {
                     ..Default::default()
                 })
                 .unwrap();
-            let (sig, pub_key) = sign_in_dir(
-                root.as_path(),
-                &tx_id,
-                &Category::Feature,
-                &format!("downgrade export entry {i}"),
-                "test",
-                &format!("2026-07-11T10:00:0{i}Z"),
-            );
+            // Production path signs v2 at commit (no client-supplied sig).
             tx_mgr
                 .commit_change(
                     tx_id,
@@ -901,8 +816,8 @@ fn chain__against_export_missing_head_with_links__fails_closed_downgrade() {
                         summary: format!("downgrade export entry {i}"),
                         reason: "test".to_string(),
                         committed_at: Some(format!("2026-07-11T10:00:0{i}Z")),
-                        signature: sig,
-                        public_key: pub_key,
+                        signature: None,
+                        public_key: None,
                         ..Default::default()
                     },
                     false,
@@ -923,9 +838,14 @@ fn chain__against_export_missing_head_with_links__fails_closed_downgrade() {
     conn.execute("DELETE FROM chain_head", []).unwrap();
     drop(conn);
 
-    let err =
-        verify_ledger_signatures_with_options(&layout, true, true, Some(export_path.as_path()))
-            .unwrap_err();
+    let err = verify_ledger_signatures_with_options(
+        &layout,
+        true,
+        true,
+        false,
+        Some(export_path.as_path()),
+    )
+    .unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("Chain head is missing but entries have chain links (downgrade detected)"),
@@ -962,14 +882,7 @@ fn chain__against_export_tail_deleted_with_head_unchanged__fails_local_truncatio
                     ..Default::default()
                 })
                 .unwrap();
-            let (sig, pub_key) = sign_in_dir(
-                root.as_path(),
-                &tx_id,
-                &Category::Feature,
-                &format!("tail delete entry {i}"),
-                "test",
-                &format!("2026-07-11T10:00:0{i}Z"),
-            );
+            // Production path signs v2 at commit (no client-supplied sig).
             tx_mgr
                 .commit_change(
                     tx_id.clone(),
@@ -978,8 +891,8 @@ fn chain__against_export_tail_deleted_with_head_unchanged__fails_local_truncatio
                         summary: format!("tail delete entry {i}"),
                         reason: "test".to_string(),
                         committed_at: Some(format!("2026-07-11T10:00:0{i}Z")),
-                        signature: sig,
-                        public_key: pub_key,
+                        signature: None,
+                        public_key: None,
                         ..Default::default()
                     },
                     false,
@@ -1006,9 +919,14 @@ fn chain__against_export_tail_deleted_with_head_unchanged__fails_local_truncatio
     .unwrap();
     drop(conn);
 
-    let err =
-        verify_ledger_signatures_with_options(&layout, true, true, Some(export_path.as_path()))
-            .unwrap_err();
+    let err = verify_ledger_signatures_with_options(
+        &layout,
+        true,
+        true,
+        false,
+        Some(export_path.as_path()),
+    )
+    .unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("Chain length mismatch") || msg.contains("Chain head mismatch"),

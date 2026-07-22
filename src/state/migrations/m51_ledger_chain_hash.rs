@@ -3,10 +3,11 @@ use rusqlite_migration::{HookError, M, MigrationHook};
 
 /// Adds the additive ledger chain hash schema (m51, Track 0046).
 ///
-/// The chain lives entirely outside the 5-field Ed25519 signing basis in
-/// `src/ledger/crypto.rs`: a per-entry `prev_hash` column links entries, and a
-/// separate signed `chain_head` row binds the latest entry hash, genesis
-/// boundary, and chain length. The existing entry signature is never modified.
+/// The chain lives outside the per-entry Ed25519 signing basis in
+/// `src/ledger/crypto.rs` (v1 five-field or v2 provenance payload): a per-entry
+/// `prev_hash` column links entries, and a separate signed `chain_head` row
+/// binds the latest entry hash, genesis boundary, and chain length. The entry
+/// signature domain does not include prev_hash (0046 Option A).
 ///
 /// `ledger_entries.prev_hash` is nullable. The first post-genesis entry stores
 /// `NULL` (empty prev hash); every subsequent entry stores the previous head's

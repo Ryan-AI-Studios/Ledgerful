@@ -987,6 +987,7 @@ fn evidence_predicate__matches_expected_entry_characteristics() {
         author: "Test".to_string(),
         observed: None,
         prev_hash: None,
+        sig_version: 1,
     };
 
     assert!(matches_evidence_keyword(
@@ -1033,6 +1034,7 @@ fn evidence_predicate__matches_expected_entry_characteristics() {
         author: "Test".to_string(),
         observed: None,
         prev_hash: None,
+        sig_version: 1,
     };
 
     assert!(!matches_evidence_keyword(

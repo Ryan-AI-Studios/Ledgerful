@@ -16,7 +16,7 @@
 //! are not modified by this export.
 
 use crate::commands::helpers::get_layout;
-use crate::ledger::crypto::compute_entry_hash;
+
 use crate::ledger::db::LedgerDb;
 use crate::ledger::types::{ChainHead, LedgerEntry, VerificationStatus};
 use crate::state::storage::StorageManager;
@@ -370,11 +370,7 @@ impl PublicEntry {
             author_pseudonym,
             category: entry.category.to_string(),
             committed_at: entry.committed_at.clone(),
-            entry_hash: compute_entry_hash(
-                &entry.tx_id,
-                entry.signature.as_deref().unwrap_or(""),
-                entry.prev_hash.as_deref().unwrap_or(""),
-            ),
+            entry_hash: crate::ledger::crypto::compute_entry_hash_for_entry(entry),
             public_key: entry.public_key.clone(),
             reason: entry.reason.clone(),
             risk_level: entry.risk.clone(),

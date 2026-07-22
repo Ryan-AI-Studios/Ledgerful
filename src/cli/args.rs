@@ -266,6 +266,9 @@ pub enum Commands {
         /// Compare the live chain head against a previously exported SOC2 zip
         #[arg(long, value_name = "PATH")]
         against_export: Option<std::path::PathBuf>,
+        /// Treat unsigned LOCAL rows as failures even when require_signing is false
+        #[arg(long = "strict-signatures")]
+        strict_signatures: bool,
         /// Show the verification plan without executing any commands
         #[arg(long)]
         dry_run: bool,
@@ -935,6 +938,7 @@ impl Commands {
                 signatures,
                 chain,
                 against_export,
+                strict_signatures,
                 dry_run,
                 auto_index,
                 // `scope` always present (default full) — include name only when not default
@@ -972,6 +976,9 @@ impl Commands {
                 }
                 if against_export.is_some() {
                     f.push("against_export");
+                }
+                if *strict_signatures {
+                    f.push("strict_signatures");
                 }
                 if *dry_run {
                     f.push("dry_run");

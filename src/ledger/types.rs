@@ -160,6 +160,18 @@ pub enum ChangeType {
     Delete,
 }
 
+impl std::fmt::Display for ChangeType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            ChangeType::Create => "CREATE",
+            ChangeType::Modify => "MODIFY",
+            ChangeType::Deprecate => "DEPRECATE",
+            ChangeType::Delete => "DELETE",
+        };
+        write!(f, "{}", s)
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, ValueEnum)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 #[value(rename_all = "SCREAMING_SNAKE_CASE")]
@@ -170,6 +182,20 @@ pub enum EntryType {
     Reconciliation,
     Rollback,
     Maintenance,
+}
+
+impl std::fmt::Display for EntryType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let s = match self {
+            EntryType::Implementation => "IMPLEMENTATION",
+            EntryType::Architecture => "ARCHITECTURE",
+            EntryType::Lesson => "LESSON",
+            EntryType::Reconciliation => "RECONCILIATION",
+            EntryType::Rollback => "ROLLBACK",
+            EntryType::Maintenance => "MAINTENANCE",
+        };
+        write!(f, "{}", s)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ValueEnum)]
@@ -292,6 +318,14 @@ pub struct LedgerEntry {
     /// marks the genesis entry. Stored outside the Ed25519 signing basis.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub prev_hash: Option<String>,
+    /// Ed25519 payload version: `1` = legacy five-field basis, `2` = full
+    /// provenance basis (0072). Dual-verify is keyed on this stored value only.
+    #[serde(default = "default_sig_version")]
+    pub sig_version: u32,
+}
+
+fn default_sig_version() -> u32 {
+    1
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

@@ -228,7 +228,7 @@ fn run_crypto_proof_beat(root: &Path, export_path: &Path) -> Result<()> {
         "[DEMO]".cyan().bold(),
         "verify --signatures --chain".yellow().bold()
     );
-    verify_ledger_signatures_with_options(&layout, true, true, None)?;
+    verify_ledger_signatures_with_options(&layout, true, true, false, None)?;
     println!(
         "{} {}",
         "[DEMO]".cyan().bold(),
@@ -247,7 +247,7 @@ fn run_crypto_proof_beat(root: &Path, export_path: &Path) -> Result<()> {
         .yellow()
         .bold()
     );
-    verify_ledger_signatures_with_options(&layout, true, true, Some(export_path))?;
+    verify_ledger_signatures_with_options(&layout, true, true, false, Some(export_path))?;
     println!(
         "{} {}",
         "[DEMO]".cyan().bold(),

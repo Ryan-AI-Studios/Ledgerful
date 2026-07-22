@@ -139,6 +139,47 @@ pub fn validate_config(config: &Config) -> Result<()> {
         .into());
     }
 
+    // Normalize + validate trusted public keys (hex Ed25519, 64 chars).
+    let mut normalized_keys = Vec::with_capacity(config.intent.trusted_public_keys.len());
+    for (i, raw) in config.intent.trusted_public_keys.iter().enumerate() {
+        match crate::ledger::crypto::normalize_trusted_public_key(raw) {
+            Ok(hex) => normalized_keys.push(hex),
+            Err(reason) => {
+                return Err(ConfigError::ValidationFailed {
+                    reason: format!("intent.trusted_public_keys[{i}]: {reason}"),
+                }
+                .into());
+            }
+        }
+    }
+    // Note: validate_config takes &Config so we cannot mutate in place;
+    // callers that need normalized keys should re-normalize on read.
+    // Reject duplicates for clarity.
+    let mut seen = std::collections::BTreeSet::new();
+    for k in &normalized_keys {
+        if !seen.insert(k.clone()) {
+            return Err(ConfigError::ValidationFailed {
+                reason: format!(
+                    "intent.trusted_public_keys contains duplicate key {}",
+                    &k[..8]
+                ),
+            }
+            .into());
+        }
+    }
+
+    if config.intent.min_sig_version == 0 || config.intent.min_sig_version > 2 {
+        return Err(ConfigError::ValidationFailed {
+            reason: format!(
+                "intent.min_sig_version must be 1 or 2, got {}",
+                config.intent.min_sig_version
+            ),
+        }
+        .into());
+    }
+
+    let _ = normalized_keys; // validated above
+
     Ok(())
 }
 

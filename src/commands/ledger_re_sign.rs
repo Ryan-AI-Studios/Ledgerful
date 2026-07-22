@@ -218,21 +218,23 @@ pub fn execute_ledger_re_sign_with_keys_dir(
                 .next()
                 .ok_or_else(|| miette!("Ledger entry for {} disappeared during re-sign", tx_id))?;
 
-            let (new_sig_opt, new_pub_opt) = crate::ledger::crypto::sign_ledger_entry_in(
-                &keys_dir,
-                &entry.tx_id,
-                &entry.category.to_string(),
-                &entry.summary,
-                &entry.reason,
-                &entry.committed_at,
-            )
-            .map_err(|e| miette!("Signing failed for {}: {}", tx_id, e))?;
+            let mut sign_input = crate::ledger::crypto::LedgerSignInput::from_entry(&entry);
+            sign_input.sig_version = crate::ledger::crypto::CURRENT_LEDGER_SIG_VERSION;
+            let (new_sig_opt, new_pub_opt) =
+                crate::ledger::crypto::sign_ledger_entry_in_v2(&keys_dir, &sign_input)
+                    .map_err(|e| miette!("Signing failed for {}: {}", tx_id, e))?;
 
             let new_sig = new_sig_opt.ok_or_else(|| {
-                miette!("sign_ledger_entry_in returned no signature for {}", tx_id)
+                miette!(
+                    "sign_ledger_entry_in_v2 returned no signature for {}",
+                    tx_id
+                )
             })?;
             let new_pub = new_pub_opt.ok_or_else(|| {
-                miette!("sign_ledger_entry_in returned no public key for {}", tx_id)
+                miette!(
+                    "sign_ledger_entry_in_v2 returned no public key for {}",
+                    tx_id
+                )
             })?;
 
             let updated = db
@@ -301,11 +303,21 @@ pub fn execute_ledger_re_sign_with_keys_dir(
                     })?;
             }
             chain_length += 1;
-            let sig_hex = entry.signature.as_deref().unwrap_or("");
-            prev_hash = Some(crate::ledger::crypto::compute_entry_hash(
-                &entry.tx_id,
-                sig_hex,
-                prev,
+            // Re-read after signature update so sig_version/signature are current.
+            let refreshed = db
+                .get_ledger_entries_for_tx(&entry.tx_id)
+                .map_err(|e| miette!("Failed to re-read entry {}: {}", entry.tx_id, e))?
+                .into_iter()
+                .next()
+                .unwrap_or_else(|| entry.clone());
+            let mut for_hash = refreshed;
+            for_hash.prev_hash = if prev.is_empty() {
+                None
+            } else {
+                Some(prev.to_string())
+            };
+            prev_hash = Some(crate::ledger::crypto::compute_entry_hash_for_entry(
+                &for_hash,
             ));
         }
         (chain_length, genesis, prev_hash)
@@ -338,17 +350,15 @@ pub fn execute_ledger_re_sign_with_keys_dir(
         // is required.
         let mut signed_maintenance_entry = maintenance_entry.clone();
         if signing_required {
-            let (maint_sig, maint_pub) = crate::ledger::crypto::sign_ledger_entry_in(
-                &keys_dir,
-                &signed_maintenance_entry.tx_id,
-                &signed_maintenance_entry.category.to_string(),
-                &signed_maintenance_entry.summary,
-                &signed_maintenance_entry.reason,
-                &signed_maintenance_entry.committed_at,
-            )
-            .map_err(|e| miette!("Failed to sign maintenance entry: {}", e))?;
+            let maint_input =
+                crate::ledger::crypto::LedgerSignInput::from_entry(&signed_maintenance_entry);
+            let (maint_sig, maint_pub) =
+                crate::ledger::crypto::sign_ledger_entry_in_v2(&keys_dir, &maint_input)
+                    .map_err(|e| miette!("Failed to sign maintenance entry: {}", e))?;
             signed_maintenance_entry.signature = maint_sig;
             signed_maintenance_entry.public_key = maint_pub;
+            signed_maintenance_entry.sig_version =
+                crate::ledger::crypto::CURRENT_LEDGER_SIG_VERSION;
         }
 
         let maint_prev = new_tail_hash.as_deref().unwrap_or("");
@@ -361,12 +371,8 @@ pub fn execute_ledger_re_sign_with_keys_dir(
         db.insert_ledger_entry(&signed_maintenance_entry)
             .map_err(|e| miette!("Failed to insert maintenance ledger entry: {}", e))?;
 
-        let maint_sig_hex = signed_maintenance_entry.signature.as_deref().unwrap_or("");
-        let new_latest_hash = crate::ledger::crypto::compute_entry_hash(
-            &signed_maintenance_entry.tx_id,
-            maint_sig_hex,
-            maint_prev,
-        );
+        let new_latest_hash =
+            crate::ledger::crypto::compute_entry_hash_for_entry(&signed_maintenance_entry);
 
         let (head_sig, head_pub) = match crate::ledger::crypto::sign_chain_head(
             &keys_dir,
@@ -529,6 +535,7 @@ fn build_maintenance_entry(
         author: author.to_string(),
         observed: None,
         prev_hash: None,
+        sig_version: crate::ledger::crypto::CURRENT_LEDGER_SIG_VERSION,
     }
 }
 
@@ -733,7 +740,8 @@ mod tests {
                 related_tickets TEXT,
                 author TEXT NOT NULL DEFAULT 'unknown',
                 observed INTEGER,
-                prev_hash TEXT
+                prev_hash TEXT,
+                sig_version INTEGER NOT NULL DEFAULT 1
             );",
         )
         .unwrap();
@@ -769,6 +777,7 @@ mod tests {
             author: "test".to_string(),
             observed: None,
             prev_hash: None,
+            sig_version: 1,
         }
     }
 
