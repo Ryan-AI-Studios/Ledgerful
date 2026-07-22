@@ -565,6 +565,27 @@ th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
     const digest = await window.crypto.subtle.digest('SHA-256', data);
     return Array.from(new Uint8Array(digest)).map(b => b.toString(16).padStart(2, '0')).join('');
   }
+  // DOM-safe helpers: free-text fields always go through textContent, never innerHTML.
+  function appendCell(tr, v) {
+    const td = document.createElement('td');
+    td.textContent = v == null ? '' : String(v);
+    tr.appendChild(td);
+  }
+  function appendStatusCell(tr, label, cls) {
+    const td = document.createElement('td');
+    td.textContent = label;
+    td.className = cls;
+    tr.appendChild(td);
+  }
+  function appendText(parent, text) {
+    parent.appendChild(document.createTextNode(text));
+  }
+  function appendStatusLabel(parent, label, cls) {
+    const span = document.createElement('span');
+    span.textContent = label;
+    span.className = cls;
+    parent.appendChild(span);
+  }
 
   try {
     const manifestText = await loadText('manifest.json');
@@ -586,7 +607,17 @@ th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
     }
 
     const manifestStatus = document.createElement('p');
-    manifestStatus.innerHTML = '<strong>Manifest:</strong> ' + (manifestValid ? '<span class="valid">VALID</span>' : sigHex ? '<span class="invalid">INVALID</span>' : '<span class="unsigned">UNSIGNED</span>');
+    const manifestStrong = document.createElement('strong');
+    manifestStrong.textContent = 'Manifest:';
+    manifestStatus.appendChild(manifestStrong);
+    appendText(manifestStatus, ' ');
+    if (manifestValid) {
+      appendStatusLabel(manifestStatus, 'VALID', 'valid');
+    } else if (sigHex) {
+      appendStatusLabel(manifestStatus, 'INVALID', 'invalid');
+    } else {
+      appendStatusLabel(manifestStatus, 'UNSIGNED', 'unsigned');
+    }
     resultsEl.appendChild(manifestStatus);
 
     const entriesText = await loadText('entries.ndjson');
@@ -594,14 +625,38 @@ th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
     const actualEntriesHash = await sha256Hex(new TextEncoder().encode(entriesText));
     const entriesHashMatch = expectedEntriesHash && expectedEntriesHash === actualEntriesHash;
     const entriesStatus = document.createElement('p');
-    entriesStatus.innerHTML = '<strong>Entries:</strong> ' + (entriesHashMatch ? '<span class="valid">MATCH</span> (' + actualEntriesHash + ')' : expectedEntriesHash ? '<span class="invalid">MISMATCH</span> (expected ' + expectedEntriesHash + ', got ' + actualEntriesHash + ')' : '<span class="unsigned">NO HASH</span>');
+    const entriesStrong = document.createElement('strong');
+    entriesStrong.textContent = 'Entries:';
+    entriesStatus.appendChild(entriesStrong);
+    appendText(entriesStatus, ' ');
+    if (entriesHashMatch) {
+      appendStatusLabel(entriesStatus, 'MATCH', 'valid');
+      appendText(entriesStatus, ' (');
+      appendText(entriesStatus, actualEntriesHash);
+      appendText(entriesStatus, ')');
+    } else if (expectedEntriesHash) {
+      appendStatusLabel(entriesStatus, 'MISMATCH', 'invalid');
+      appendText(entriesStatus, ' (expected ');
+      appendText(entriesStatus, expectedEntriesHash);
+      appendText(entriesStatus, ', got ');
+      appendText(entriesStatus, actualEntriesHash);
+      appendText(entriesStatus, ')');
+    } else {
+      appendStatusLabel(entriesStatus, 'NO HASH', 'unsigned');
+    }
     resultsEl.appendChild(entriesStatus);
 
     const lines = entriesText.split('\n').filter(line => line.trim());
 
     const table = document.createElement('table');
     const thead = document.createElement('thead');
-    thead.innerHTML = '<tr><th>tx_id</th><th>category</th><th>summary</th><th>status</th></tr>';
+    const headRow = document.createElement('tr');
+    for (const h of ['tx_id', 'category', 'summary', 'status']) {
+      const th = document.createElement('th');
+      th.textContent = h;
+      headRow.appendChild(th);
+    }
+    thead.appendChild(headRow);
     table.appendChild(thead);
     const tbody = document.createElement('tbody');
 
@@ -609,6 +664,8 @@ th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
       const entry = JSON.parse(line);
       const key = entry.public_key ? hexToBytes(entry.public_key) : null;
       const sig = entry.signature ? hexToBytes(entry.signature) : null;
+      // VERIFY-ON-RAW: basis uses raw entry fields for signature verification.
+      // Display uses textContent only — never merge escaping into this basis.
       const basis = `tx_id:${entry.tx_id}\ncategory:${entry.category}\nsummary:${entry.summary}\nreason:${entry.reason}\ncommitted_at:${entry.committed_at}`;
       const payload = new TextEncoder().encode(basis);
       let entryValid = false;
@@ -623,7 +680,10 @@ th, td { border: 1px solid #ccc; padding: 0.5rem; text-align: left; }
       }
       const cls = label === 'VALID' ? 'valid' : label === 'INVALID' ? 'invalid' : 'unsigned';
       const tr = document.createElement('tr');
-      tr.innerHTML = '<td>' + entry.tx_id + '</td><td>' + entry.category + '</td><td>' + (entry.summary || '') + '</td><td class="' + cls + '">' + label + '</td>';
+      appendCell(tr, entry.tx_id);
+      appendCell(tr, entry.category);
+      appendCell(tr, entry.summary || '');
+      appendStatusCell(tr, label, cls);
       tbody.appendChild(tr);
     }
     table.appendChild(tbody);
@@ -812,5 +872,153 @@ mod tests {
         assert_eq!(a, b);
         let c = compute_author_pseudonym(secret, "bob@example.com").unwrap();
         assert_ne!(a, c);
+    }
+
+    fn sample_malicious_entry() -> PublicEntry {
+        PublicEntry {
+            author_pseudonym: "p".to_string(),
+            category: "<img onerror=x>".to_string(),
+            committed_at: "2026-07-14T12:00:00Z".to_string(),
+            entry_hash: "h".to_string(),
+            public_key: None,
+            reason: "r".to_string(),
+            risk_level: None,
+            signature: None,
+            summary: "<script>alert(1)</script>".to_string(),
+            tx_id: "tx".to_string(),
+            verification_result: None,
+        }
+    }
+
+    /// index.html must HTML-escape free-text fields (good-path micro-regression).
+    #[test]
+    fn build_index_html_escapes_malicious_summary_and_category() {
+        let html = build_index_html(&[sample_malicious_entry()]);
+        assert!(
+            html.contains("&lt;script&gt;alert(1)&lt;/script&gt;"),
+            "summary must be HTML-escaped"
+        );
+        assert!(
+            html.contains("&lt;img onerror=x&gt;"),
+            "category must be HTML-escaped"
+        );
+        assert!(
+            !html.contains("<script>alert(1)</script>"),
+            "raw script tag must not appear unescaped"
+        );
+        assert!(
+            !html.contains("<img onerror=x>"),
+            "raw img tag must not appear unescaped"
+        );
+    }
+
+    /// Emitted verifier.html must use DOM-safe row/status rendering (0075 XSS hotfix).
+    #[test]
+    fn build_verifier_html_uses_dom_safe_patterns() {
+        let html = build_verifier_html();
+
+        assert!(
+            html.contains("function appendCell(tr, v)"),
+            "verifier must define appendCell helper"
+        );
+        assert!(
+            html.contains("function appendStatusCell(tr, label, cls)"),
+            "verifier must define appendStatusCell helper"
+        );
+        assert!(
+            html.contains("td.textContent"),
+            "verifier must assign cell text via textContent"
+        );
+        assert!(
+            html.contains("appendCell(tr, entry.tx_id)"),
+            "tx_id must be rendered via appendCell"
+        );
+        assert!(
+            html.contains("appendCell(tr, entry.category)"),
+            "category must be rendered via appendCell"
+        );
+        assert!(
+            html.contains("appendCell(tr, entry.summary || '')"),
+            "summary must be rendered via appendCell"
+        );
+        assert!(
+            html.contains("appendStatusCell(tr, label, cls)"),
+            "status label must be rendered via appendStatusCell"
+        );
+        assert!(
+            html.contains("VERIFY-ON-RAW"),
+            "verifier must pin VERIFY-ON-RAW comment so basis stays on raw fields"
+        );
+        assert!(
+            html.contains(
+                "const basis = `tx_id:${entry.tx_id}\\ncategory:${entry.category}\\nsummary:${entry.summary}\\nreason:${entry.reason}\\ncommitted_at:${entry.committed_at}`"
+            ),
+            "signature basis must still use raw entry fields"
+        );
+
+        // Row sink must not return: no tr.innerHTML of entry free-text.
+        assert!(
+            !html.contains("tr.innerHTML"),
+            "tr.innerHTML must not appear in verifier template"
+        );
+        for field in [
+            "entry.tx_id",
+            "entry.category",
+            "entry.summary",
+            "entry.reason",
+        ] {
+            let needle_patterns = [
+                format!("innerHTML = '<td>' + {field}"),
+                format!("innerHTML = \"<td>\" + {field}"),
+                format!("innerHTML += {field}"),
+                format!("innerHTML = {field}"),
+            ];
+            for needle in &needle_patterns {
+                assert!(
+                    !html.contains(needle.as_str()),
+                    "must not concatenate {field} into innerHTML (found {needle})"
+                );
+            }
+        }
+
+        // Status lines must not interpolate hashes into innerHTML.
+        assert!(
+            !html.contains("actualEntriesHash")
+                || !html
+                    .lines()
+                    .any(|line| line.contains("innerHTML") && line.contains("actualEntriesHash")),
+            "actualEntriesHash must not be interpolated into an innerHTML assignment"
+        );
+        assert!(
+            !html.contains("expectedEntriesHash")
+                || !html.lines().any(|line| {
+                    line.contains("innerHTML") && line.contains("expectedEntriesHash")
+                }),
+            "expectedEntriesHash must not be interpolated into an innerHTML assignment"
+        );
+        assert!(
+            html.contains("appendText(entriesStatus, actualEntriesHash)")
+                || html.contains("appendText(entriesStatus, expectedEntriesHash)"),
+            "hash values must be appended as text nodes"
+        );
+    }
+
+    /// Source-level structural guard: no innerHTML concatenation with entry free-text fields.
+    #[test]
+    fn public_export_source_has_no_innerhtml_entry_field_sink() {
+        let source = include_str!("public_export.rs");
+        // Look only at the verifier template body for the classic sink patterns.
+        let re_row = regex::Regex::new(r"tr\.innerHTML\s*=").expect("valid regex");
+        let re_entry =
+            regex::Regex::new(r"innerHTML\s*[+]?=\s*.*entry\.(summary|tx_id|category|reason)")
+                .expect("valid regex");
+        assert!(
+            !re_row.is_match(source),
+            "source must not assign tr.innerHTML"
+        );
+        assert!(
+            !re_entry.is_match(source),
+            "source must not concatenate entry free-text fields into innerHTML"
+        );
     }
 }
