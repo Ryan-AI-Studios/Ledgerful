@@ -7,6 +7,7 @@ use ledgerful::ledger::types::{Category, ChangeType, EntryType, LedgerEntry, Tra
 use ledgerful::state::layout::Layout;
 use rusqlite::Connection;
 
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
@@ -41,12 +42,15 @@ async fn spawn_server_with_spa_dir(
     spa_dir: Option<camino::Utf8PathBuf>,
 ) -> (String, String, tokio::task::JoinHandle<()>) {
     let token = generate_token();
-    let state = Arc::new(AppState::new(layout, token.clone(), spa_dir));
+    let state = Arc::new(AppState::new(layout, token.clone(), spa_dir, None));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
     let app = router(state);
-    let serve = axum::serve(listener, app);
+    let serve = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    );
     let handle = tokio::spawn(async move {
         let _ = serve.await;
     });
@@ -1089,7 +1093,10 @@ async fn test_spa_index_served_at_root() {
     )
     .unwrap();
 
-    let (url, _token, handle) = spawn_server_with_spa_dir(guard.layout(), Some(spa_dir)).await;
+    // Containment must accept a temp SPA with dashboard marker (unit path).
+    let validated = ledgerful::commands::web::spa_dir::validate_spa_dir(&spa_dir)
+        .expect("temp SPA with marker must pass containment");
+    let (url, _token, handle) = spawn_server_with_spa_dir(guard.layout(), Some(validated)).await;
 
     let root_url = url.clone();
     let body = tokio::task::spawn_blocking(move || {

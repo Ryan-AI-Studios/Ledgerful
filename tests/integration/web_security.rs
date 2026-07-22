@@ -4,6 +4,7 @@ use ledgerful::commands::web::server::router;
 use ledgerful::commands::web::state::AppState;
 use ledgerful::state::layout::Layout;
 use reqwest::header::{AUTHORIZATION, HOST, ORIGIN};
+use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
@@ -26,12 +27,15 @@ fn temp_layout() -> LayoutGuard {
 
 async fn spawn_server(layout: Layout) -> (String, String, tokio::task::JoinHandle<()>) {
     let token = generate_token();
-    let state = Arc::new(AppState::new(layout, token.clone(), None));
+    let state = Arc::new(AppState::new(layout, token.clone(), None, None));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
     let app = router(state);
-    let serve = axum::serve(listener, app);
+    let serve = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    );
     let handle = tokio::spawn(async move {
         let _ = serve.await;
     });
@@ -149,6 +153,68 @@ async fn token_required_via_authorization_header() {
 
     assert_eq!(no_auth, 403);
     assert_eq!(with_auth, 200);
+    handle.abort();
+}
+
+#[tokio::test]
+async fn blank_bearer_token_returns_403() {
+    let guard = temp_layout();
+    let (url, _token, handle) = spawn_server(guard.layout()).await;
+
+    let blank = client()
+        .get(format!("{}/api/snapshot", url))
+        .header(AUTHORIZATION, "Bearer ")
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16();
+
+    let whitespace = client()
+        .get(format!("{}/api/status", url))
+        .header(AUTHORIZATION, "Bearer    ")
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16();
+
+    assert_eq!(blank, 403, "blank Bearer must not authenticate");
+    assert_eq!(whitespace, 403, "whitespace Bearer must not authenticate");
+    handle.abort();
+}
+
+#[tokio::test]
+async fn empty_expected_token_never_authenticates() {
+    // Defense-in-depth: even if AppState were constructed with an empty token
+    // (bypassing resolve_session_token), no Authorization / blank Bearer → 403.
+    use ledgerful::commands::web::auth::validate_token;
+    assert!(validate_token(None, "").is_err());
+    assert!(validate_token(Some(String::new()), "").is_err());
+    assert!(validate_token(Some("   ".into()), "   ").is_err());
+
+    let guard = temp_layout();
+    let state = Arc::new(AppState::new(guard.layout(), String::new(), None, None));
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = router(state);
+    let serve = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<SocketAddr>(),
+    );
+    let handle = tokio::spawn(async move {
+        let _ = serve.await;
+    });
+    let url = format!("http://{}", addr);
+
+    let status = client()
+        .get(format!("{}/api/snapshot", url))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16();
+    assert_eq!(status, 403);
     handle.abort();
 }
 

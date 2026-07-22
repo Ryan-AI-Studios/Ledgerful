@@ -298,11 +298,14 @@ async fn export_evidence__web_matches_direct_call__same_unzipped_members() {
     let direct_zip = generate_soc2_export(&layout).expect("direct export should succeed");
 
     let token = generate_token();
-    let state = std::sync::Arc::new(AppState::new(layout, token.clone(), None));
+    let state = std::sync::Arc::new(AppState::new(layout, token.clone(), None, None));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let app = router(state);
-    let serve = axum::serve(listener, app);
+    let serve = axum::serve(
+        listener,
+        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+    );
     let handle = tokio::spawn(async move {
         let _ = serve.await;
     });
