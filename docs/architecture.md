@@ -43,6 +43,12 @@ CLI
 - `daemon` is optional and feature-gated behind `--features daemon`.
 - `reset` removes derived state without touching files outside `.ledgerful/`.
 - `web` starts the optional local dashboard (feature-gated behind `web`).
+  Auth uses an ephemeral Bearer token (auto-generated, or `LEDGERFUL_WEB_TOKEN` /
+  hidden `--token` for daemonize). Prefer env or `--print-token=false` (writes
+  `.ledgerful/web-session-token`) over shell history. Empty/short explicit tokens
+  refuse start. `--spa-dir` is canonicalized and contained (allow-root /
+  dashboard marker). `--allow-public` requires `LEDGERFUL_WEB_PEER_ALLOWLIST`.
+  Host validation is a DNS-rebinding defense only, not a network ACL.
 - `mcp` starts the optional MCP stdio server for AI-agent integration.
 - `search` runs regex/semantic code search over the Tantivy + CozoDB index.
 - `ask` invokes Gemini or a local LLM for analysis, suggestions, and narrative reporting.
