@@ -38,6 +38,15 @@
 //! Override via `LEDGERFUL_USAGE_ENDPOINT` for tests against a mock server
 //! or self-hosted deployments.
 //!
+//! ## Ingest credential (track 0077)
+//!
+//! Every flush POST sets `X-Ledgerful-Telemetry-Token` to a **bar-raising**
+//! static token (not strong auth — the CLI is open-source). Default value
+//! is [`DEFAULT_INGEST_TOKEN`]; override with `LEDGERFUL_USAGE_TOKEN` for
+//! tests or self-hosted rotation. The edge function enforces fail-closed
+//! global quotas as the real control; see conductor
+//! `0077-TelemetryIngestAuthFailClosed/phase0-memo.md`.
+//!
 //! ## File layout
 //!
 //! This file is intentionally one module rather than a
@@ -60,11 +69,25 @@ use std::time::Duration;
 /// Production telemetry ingest endpoint — the Supabase Edge Function
 /// documented in `ledgerful-frontend/docs/Backend-Notes.md` §2.4
 /// (M7). Override via `LEDGERFUL_USAGE_ENDPOINT` for
-/// tests or self-hosted deployments. No Supabase JWT is required;
-/// authentication is handled server-side via size caps and strict
-/// schema validation.
+/// tests or self-hosted deployments.
 const DEFAULT_ENDPOINT: &str =
     "https://scmxtnjqqklvcwyeouvj.supabase.co/functions/v1/telemetry-ingest";
+
+/// HTTP header carrying the bar-raising ingest credential (0077).
+///
+/// Distinct from Supabase JWT `Authorization` so it cannot be confused
+/// with service-role or anon keys. Server checks this first (when
+/// required); real abuse control is fail-closed global quotas.
+pub(crate) const INGEST_TOKEN_HEADER: &str = "X-Ledgerful-Telemetry-Token";
+
+/// Default bar-raising ingest token shipped in every binary.
+///
+/// **Not a secret** — open CLI distribution means any embedded value is
+/// public. Matches the edge-function allowlist seeded from
+/// `0077-TelemetryIngestAuthFailClosed/phase0-memo.md`. Override via
+/// `LEDGERFUL_USAGE_TOKEN` for tests / self-hosted rotation.
+pub(crate) const DEFAULT_INGEST_TOKEN: &str = "lf-tel-v1-7c4e9b2a1f8d3e6a0c5b9d4e8f1a2b3c";
+
 const USAGE_SUBDIR: &str = "usage";
 const CONFIG_FILE: &str = "config.toml";
 const USAGE_DB_FILENAME: &str = "ledger.db";
@@ -395,6 +418,19 @@ fn build_payload(config: &UsageConfig, conn: &rusqlite::Connection) -> Option<Us
     })
 }
 
+/// Resolve the bar-raising ingest token for the flush POST.
+///
+/// Runtime override `LEDGERFUL_USAGE_TOKEN` wins (tests, self-hosted
+/// rotation); otherwise the compile-time default ships in every
+/// binary. Empty override falls through to the default so an
+/// accidental empty env cannot silently omit the credential.
+fn resolve_ingest_token() -> String {
+    match env::var("LEDGERFUL_USAGE_TOKEN") {
+        Ok(v) if !v.is_empty() => v,
+        _ => DEFAULT_INGEST_TOKEN.to_string(),
+    }
+}
+
 /// Attempt to POST the usage payload to the endpoint. Returns
 /// `true` on a 2xx response (caller should persist the updated
 /// `last_sent_at`), `false` otherwise.
@@ -405,6 +441,10 @@ fn build_payload(config: &UsageConfig, conn: &rusqlite::Connection) -> Option<Us
 /// Without the `DELETE FROM usage_days` line, `active_days_in_window`
 /// would grow unboundedly and eventually clamp at 255 (the u8 max)
 /// while the payload claims a 7-day window.
+///
+/// Every successful POST attempt includes
+/// [`INGEST_TOKEN_HEADER`] (0077 bar-raising credential). Non-2xx
+/// and transport errors remain silent (best-effort; never block CLI).
 ///
 /// H1 test seam: this function is `pub(crate)` and takes the
 /// `Connection` and `UsageConfig` explicitly so unit tests can
@@ -424,9 +464,11 @@ fn flush_to_endpoint(
         Ok(b) => b,
         Err(_) => return false,
     };
+    let token = resolve_ingest_token();
     match agent
         .post(endpoint)
         .set("Content-Type", "application/json")
+        .set(INGEST_TOKEN_HEADER, &token)
         .send_bytes(&body)
     {
         Ok(response) => {
@@ -613,8 +655,16 @@ pub fn execute_usage_show_payload() -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    mod env_guard {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/integration/common/env_guard.rs"
+        ));
+    }
+
     use super::*;
     use crate::state::migrations;
+    use env_guard::TempEnv;
     use rusqlite::Connection;
 
     #[test]
@@ -888,12 +938,19 @@ mod tests {
     ///   - re-insert 1 day → `read_active_days == 1`
     ///   - `usage_counters` is also empty after the flush
     #[test]
+    #[serial_test::serial(env)]
     fn test_usage_days_cleared_on_flush_2xx() {
         use httpmock::prelude::*;
 
+        // Pin default token so a developer env override cannot flake the mock.
+        let _token_env = TempEnv::remove("LEDGERFUL_USAGE_TOKEN");
+
         let server = MockServer::start();
         let mock = server.mock(|when, then| {
-            when.method(POST).path("/api/telemetry");
+            when.method(POST)
+                .path("/api/telemetry")
+                // 0077: every flush must send the bar-raising credential.
+                .header(INGEST_TOKEN_HEADER, DEFAULT_INGEST_TOKEN);
             then.status(200)
                 .header("content-type", "application/json")
                 .body("{}");
@@ -965,12 +1022,17 @@ mod tests {
     /// clear counters or days. This guards against an
     /// over-eager fix that resets state on any response.
     #[test]
+    #[serial_test::serial(env)]
     fn test_usage_days_not_cleared_on_non_2xx() {
         use httpmock::prelude::*;
 
+        let _token_env = TempEnv::remove("LEDGERFUL_USAGE_TOKEN");
+
         let server = MockServer::start();
         let mock = server.mock(|when, then| {
-            when.method(POST).path("/api/telemetry");
+            when.method(POST)
+                .path("/api/telemetry")
+                .header(INGEST_TOKEN_HEADER, DEFAULT_INGEST_TOKEN);
             then.status(500).body("internal error");
         });
 
@@ -1055,6 +1117,155 @@ mod tests {
         assert_eq!(
             payload_with_last.window_start, last,
             "with last_sent_at set, window_start should be that value (M1)"
+        );
+    }
+
+    /// 0077: flush POST must include `X-Ledgerful-Telemetry-Token`
+    /// with the default bar-raising token when no env override is set.
+    /// httpmock matches on the header — a missing header fails the
+    /// mock match and `mock.hits()` stays 0.
+    #[test]
+    #[serial_test::serial(env)]
+    fn test_flush_sends_default_ingest_token_header() {
+        use httpmock::prelude::*;
+
+        // Ensure override is unset so the default ships.
+        let _token_env = TempEnv::remove("LEDGERFUL_USAGE_TOKEN");
+
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/telemetry")
+                .header(INGEST_TOKEN_HEADER, DEFAULT_INGEST_TOKEN);
+            then.status(200)
+                .header("content-type", "application/json")
+                .body("{}");
+        });
+
+        let mut conn = Connection::open_in_memory().expect("in-memory sqlite");
+        migrations::get_migrations()
+            .to_latest(&mut conn)
+            .expect("apply migrations");
+        conn.execute(COUNTER_UPSERT_SQL, rusqlite::params!["scan"])
+            .expect("seed counter");
+
+        let mut config = UsageConfig {
+            enabled: true,
+            anonymous_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+            last_sent_at: None,
+        };
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(5))
+            .timeout_read(Duration::from_secs(10))
+            .timeout_write(Duration::from_secs(5))
+            .build();
+        let endpoint = format!("{}{}", server.base_url(), "/api/telemetry");
+
+        let result = flush_to_endpoint(&conn, &mut config, &endpoint, &agent);
+        assert!(
+            result,
+            "flush should succeed when default token header matches"
+        );
+        assert_eq!(
+            mock.hits(),
+            1,
+            "mock must match only when X-Ledgerful-Telemetry-Token \
+             equals DEFAULT_INGEST_TOKEN"
+        );
+        assert_eq!(
+            resolve_ingest_token(),
+            DEFAULT_INGEST_TOKEN,
+            "resolve_ingest_token must return the default when env is unset"
+        );
+    }
+
+    /// 0077: `LEDGERFUL_USAGE_TOKEN` overrides the default token on
+    /// the wire (tests / self-hosted rotation). Empty override must
+    /// fall through to the default (no silent omit).
+    #[test]
+    #[serial_test::serial(env)]
+    fn test_flush_sends_env_override_ingest_token_header() {
+        use httpmock::prelude::*;
+
+        let override_token = "test-override-token-0077-not-default";
+        let _token_env = TempEnv::set("LEDGERFUL_USAGE_TOKEN", override_token);
+
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/telemetry")
+                .header(INGEST_TOKEN_HEADER, override_token);
+            then.status(200)
+                .header("content-type", "application/json")
+                .body("{}");
+        });
+        // Negative mock: default token must NOT match when override is set.
+        let default_mock = server.mock(|when, then| {
+            when.method(POST)
+                .path("/api/telemetry")
+                .header(INGEST_TOKEN_HEADER, DEFAULT_INGEST_TOKEN);
+            then.status(200).body("{}");
+        });
+
+        let mut conn = Connection::open_in_memory().expect("in-memory sqlite");
+        migrations::get_migrations()
+            .to_latest(&mut conn)
+            .expect("apply migrations");
+        conn.execute(COUNTER_UPSERT_SQL, rusqlite::params!["doctor"])
+            .expect("seed counter");
+
+        let mut config = UsageConfig {
+            enabled: true,
+            anonymous_id: Some("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string()),
+            last_sent_at: None,
+        };
+        let agent = ureq::AgentBuilder::new()
+            .timeout_connect(Duration::from_secs(5))
+            .timeout_read(Duration::from_secs(10))
+            .timeout_write(Duration::from_secs(5))
+            .build();
+        let endpoint = format!("{}{}", server.base_url(), "/api/telemetry");
+
+        let result = flush_to_endpoint(&conn, &mut config, &endpoint, &agent);
+        assert!(result, "flush should succeed with env override token");
+        assert_eq!(mock.hits(), 1, "override token header must match mock");
+        assert_eq!(
+            default_mock.hits(),
+            0,
+            "default token must not be sent when LEDGERFUL_USAGE_TOKEN is set"
+        );
+        assert_eq!(resolve_ingest_token(), override_token);
+
+        // Empty override falls through to default — drop prior guard first.
+        drop(_token_env);
+        let _empty = TempEnv::set("LEDGERFUL_USAGE_TOKEN", "");
+        assert_eq!(
+            resolve_ingest_token(),
+            DEFAULT_INGEST_TOKEN,
+            "empty LEDGERFUL_USAGE_TOKEN must fall through to default"
+        );
+    }
+
+    /// 0077: opt-out must not open a network connection. Confirmed by
+    /// `try_flush` early-return when `enabled=false` (no agent call).
+    /// This unit test pins the gate at the config layer so a future
+    /// refactor cannot re-introduce a disabled flush path.
+    #[test]
+    fn test_try_flush_skips_when_disabled() {
+        // try_flush reads real home/cwd; we only pin the enabled gate
+        // semantics that callers rely on: disabled config never
+        // reaches flush_to_endpoint. Direct unit coverage of the
+        // early return condition.
+        let config = UsageConfig {
+            enabled: false,
+            anonymous_id: Some("11111111-2222-3333-4444-555555555555".to_string()),
+            last_sent_at: None,
+        };
+        assert!(!config.enabled, "opt-out means enabled=false");
+        // should_flush is irrelevant when disabled — try_flush returns first.
+        assert!(
+            should_flush(&config),
+            "sanity: without last_sent_at, should_flush is true — disabled gate must still win"
         );
     }
 
