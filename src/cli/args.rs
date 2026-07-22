@@ -2020,6 +2020,9 @@ impl Commands {
                     if args.background {
                         f.push("background");
                     }
+                    if !args.print_token {
+                        f.push("print_token");
+                    }
                     if args.token.is_some() {
                         f.push("token");
                     }
@@ -2157,14 +2160,20 @@ pub struct WebStartArgs {
     /// Open the dashboard in the default browser
     #[arg(long)]
     pub open: bool,
-    /// Allow binding to non-loopback addresses
+    /// Allow binding to non-loopback addresses (requires LEDGERFUL_WEB_PEER_ALLOWLIST)
     #[arg(long)]
     pub allow_public: bool,
     /// Run the server in the background
     #[arg(long)]
     pub background: bool,
-    /// Pre-generated session token (used when daemonizing so the parent and
-    /// child share the same authenticated URL).
+    /// Print the session token to stdout (default true). Use `--print-token=false`
+    /// to write the token to `.ledgerful/web-session-token` instead and print only
+    /// the path (reduces shell-history / screen-share leakage).
+    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    pub print_token: bool,
+    /// Pre-generated session token (hidden; used when daemonizing so the parent
+    /// and child share the same token). Prefer `LEDGERFUL_WEB_TOKEN` or the
+    /// session token file for operator-supplied secrets.
     #[arg(long, hide = true)]
     pub token: Option<String>,
 }

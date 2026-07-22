@@ -41,12 +41,15 @@ async fn spawn_server_with_spa_dir(
     spa_dir: Option<camino::Utf8PathBuf>,
 ) -> (String, String, tokio::task::JoinHandle<()>) {
     let token = generate_token();
-    let state = Arc::new(AppState::new(layout, token.clone(), spa_dir));
+    let state = Arc::new(AppState::new(layout, token.clone(), spa_dir, None));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
     let app = router(state);
-    let serve = axum::serve(listener, app);
+    let serve = axum::serve(
+        listener,
+        ledgerful::commands::web::server::make_connect_info_service(app),
+    );
     let handle = tokio::spawn(async move {
         let _ = serve.await;
     });
@@ -1089,7 +1092,13 @@ async fn test_spa_index_served_at_root() {
     )
     .unwrap();
 
-    let (url, _token, handle) = spawn_server_with_spa_dir(guard.layout(), Some(spa_dir)).await;
+    // Temp SPAs usually sit under $HOME — inject allow-root covering the SPA
+    // so containment matches production LEDGERFUL_SPA_ROOT operator path.
+    let allow_root = spa_dir.clone();
+    let validated =
+        ledgerful::commands::web::spa_dir::validate_spa_dir_with_roots(&spa_dir, &[allow_root])
+            .expect("temp SPA under dedicated allow-root must pass containment");
+    let (url, _token, handle) = spawn_server_with_spa_dir(guard.layout(), Some(validated)).await;
 
     let root_url = url.clone();
     let body = tokio::task::spawn_blocking(move || {

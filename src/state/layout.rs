@@ -91,6 +91,12 @@ impl Layout {
         self.tmp_dir().join("web.pid")
     }
 
+    /// Path of the optional web session token file (written when
+    /// `ledgerful web start --print-token=false`).
+    pub fn web_session_token_file(&self) -> Utf8PathBuf {
+        self.state_dir.join("web-session-token")
+    }
+
     pub fn ensure_state_dir(&self) -> Result<()> {
         self.migrate_legacy_state_dir()?;
         self.ensure_dir(&self.state_dir)?;
