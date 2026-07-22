@@ -6,7 +6,6 @@
 //! [`crate::platform::process_policy::check_policy`] with `strict: true`.
 
 use crate::platform::process_policy::{ProcessPolicy, ProcessPolicyError, check_policy};
-use std::path::Path;
 
 /// Allowed basenames for bridge provider_command (case-insensitive on Windows).
 const ALLOWED_BASENAMES: &[&str] = &["ai-brains", "ai-brains.exe"];
@@ -21,12 +20,16 @@ pub fn bridge_provider_process_policy() -> ProcessPolicy {
     }
 }
 
-/// Extract basename of a command path (handles `/` and `\` on Windows).
+/// Extract basename of a command path (handles `/` and `\` on all platforms).
+///
+/// Config may store Windows-style paths; CI also runs on Unix where `\` is not a
+/// path separator, so we split on both separators rather than using `Path` alone.
 pub fn provider_command_basename(command: &str) -> &str {
     let trimmed = command.trim().trim_matches('"');
-    Path::new(trimmed)
-        .file_name()
-        .and_then(|s| s.to_str())
+    trimmed
+        .rsplit(['\\', '/'])
+        .next()
+        .filter(|s| !s.is_empty())
         .unwrap_or(trimmed)
 }
 
