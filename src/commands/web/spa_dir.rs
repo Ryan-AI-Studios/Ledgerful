@@ -90,9 +90,15 @@ pub fn validate_spa_dir_with_roots(
 }
 
 fn is_under_any_root(canonical: &Utf8Path, allow_roots: &[Utf8PathBuf]) -> bool {
-    allow_roots
-        .iter()
-        .any(|root| path_is_under(canonical.as_std_path(), root.as_std_path()))
+    allow_roots.iter().any(|root| {
+        // Canonicalize roots so Windows verbatim/case/short-path forms match
+        // the already-canonical SPA path (tests often inject non-canonical temps).
+        let root_canon = std::fs::canonicalize(root.as_std_path())
+            .ok()
+            .map(|p| strip_verbatim_prefix(&p))
+            .unwrap_or_else(|| root.as_std_path().to_path_buf());
+        path_is_under(canonical.as_std_path(), root_canon.as_path())
+    })
 }
 
 fn spa_allow_roots() -> Result<Vec<Utf8PathBuf>> {
