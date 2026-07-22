@@ -124,6 +124,10 @@ fn spa_allow_roots() -> Result<Vec<Utf8PathBuf>> {
     {
         roots.push(p);
     }
+    // Heuristic only (not security identity): optional package-dir allow-root
+    // when LEDGERFUL_SPA_ROOT is unset. Path is re-validated via canonicalize
+    // containment; not used as an auth decision.
+    // nosemgrep: rust.lang.security.current-exe.current-exe
     if let Ok(exe) = std::env::current_exe()
         && let Some(parent) = exe.parent()
         && let Ok(canon) = std::fs::canonicalize(parent)
@@ -396,7 +400,7 @@ mod tests {
         symlink(secret.as_std_path(), &link_path).unwrap();
         let link_utf8 = Utf8Path::from_path(&link_path).expect("utf8 link");
 
-        let result = validate_spa_dir_with_roots(link_utf8, &[allow.clone()]);
+        let result = validate_spa_dir_with_roots(link_utf8, std::slice::from_ref(&allow));
         assert!(
             result.is_err(),
             "symlink escape without marker must refuse; got {result:?}"
