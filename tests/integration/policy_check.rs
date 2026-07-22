@@ -9,7 +9,7 @@ use ledgerful::commands::policy_check::{
     parse_policy_toml,
 };
 use ledgerful::config::model::Config;
-use ledgerful::ledger::crypto::sign_ledger_entry_in;
+
 use ledgerful::ledger::transaction::TransactionManager;
 use ledgerful::ledger::types::{
     Category, ChangeType, CommitRequest, EntryType, TransactionRequest,
@@ -1731,27 +1731,35 @@ fail_on = "off"
 // ---------------------------------------------------------------------------
 
 #[test]
-fn signing_basis_intact_five_fields_only() {
-    // Document and assert the signing basis used by crypto (must not include policy/mode).
+fn signing_basis_intact_v2_provenance_fields() {
+    // Document and assert the v2 signing basis (must not include policy/mode).
+    use ledgerful::ledger::crypto::{
+        LedgerSignInput, sign_ledger_entry_in_v2, verify_entry_signature,
+    };
     let tmp = tempdir().unwrap();
     let keys = tmp.path().join("keys");
     fs::create_dir_all(&keys).unwrap();
 
-    let (sig, pk) = sign_ledger_entry_in(
-        &keys,
-        "tx1",
-        "FEATURE",
-        "summary",
-        "reason",
-        "2026-01-01T00:00:00Z",
-    )
-    .unwrap();
-    assert!(ledgerful::ledger::crypto::verify_signature(
-        "tx1",
-        "FEATURE",
-        "summary",
-        "reason",
-        "2026-01-01T00:00:00Z",
+    let input = LedgerSignInput {
+        sig_version: 2,
+        tx_id: "tx1".into(),
+        category: "FEATURE".into(),
+        summary: "summary".into(),
+        reason: "reason".into(),
+        committed_at: "2026-01-01T00:00:00Z".into(),
+        entity: "src/x.rs".into(),
+        change_type: "MODIFY".into(),
+        entry_type: "IMPLEMENTATION".into(),
+        author: "tester".into(),
+        risk: String::new(),
+        is_breaking: false,
+        related_tickets: String::new(),
+        origin: "LOCAL".into(),
+        entity_normalized: "src/x.rs".into(),
+    };
+    let (sig, pk) = sign_ledger_entry_in_v2(&keys, &input).unwrap();
+    assert!(verify_entry_signature(
+        &input,
         sig.as_ref().unwrap(),
         pk.as_ref().unwrap(),
     ));

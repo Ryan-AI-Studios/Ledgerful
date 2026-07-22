@@ -301,6 +301,33 @@ pub fn execute_init(no_gitignore: bool, enforce: bool) -> Result<()> {
             contents.push_str(gate_mode);
             contents.push_str("\"\n");
         }
+        // Enforce init defaults require_signing=true (0072 M2).
+        if enforce {
+            if contents.contains("require_signing") {
+                contents = contents.replace("require_signing = false", "require_signing = true");
+            } else if contents.contains("[intent]") {
+                contents = contents.replacen("[intent]", "[intent]\nrequire_signing = true", 1);
+            } else {
+                contents.push_str("\n[intent]\nrequire_signing = true\n");
+            }
+        }
+        // Auto-pin freshly generated public key into trusted_public_keys (0072 pin C).
+        if let Ok(keys_dir) = crate::ledger::crypto::get_keys_dir() {
+            let _ = crate::ledger::crypto::get_or_create_keys_in(&keys_dir);
+            if let Ok(Some(pub_hex)) = crate::ledger::crypto::read_public_key_hex(&keys_dir) {
+                let pin_line = format!("trusted_public_keys = [\"{}\"]\n", pub_hex);
+                if contents.contains("[intent]") {
+                    if contents.contains("trusted_public_keys") {
+                        // leave explicit template alone
+                    } else {
+                        contents =
+                            contents.replacen("[intent]", &format!("[intent]\n{}", pin_line), 1);
+                    }
+                } else {
+                    contents.push_str(&format!("\n[intent]\n{}", pin_line));
+                }
+            }
+        }
         let created = publish_starter_config(config_path.as_std_path(), &contents)?;
         if created {
             if !starter.removed_secret_paths.is_empty() {

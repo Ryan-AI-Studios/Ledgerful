@@ -450,22 +450,16 @@ fn doctor_cardinality_warning_fires() {
 
 #[test]
 fn signing_basis_crypto_untouched() {
-    // Source inspection: crypto.rs still uses the fixed 5-field basis
-    // (`tx_id`, `category`, `summary`, `reason`, `committed_at`). Timing
-    // columns must never enter Ed25519 signing. Do not edit crypto fields.
+    // Source inspection (0072): production uses v2 provenance basis; v1 encode
+    // remains for dual-verify. Timing columns must never enter Ed25519 signing.
     let crypto = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/src/ledger/crypto.rs"));
-    // Source stores `\n` as two characters (escape sequence), not a raw newline.
-    let template_src = "tx_id:{}\\ncategory:{}\\nsummary:{}\\nreason:{}\\ncommitted_at:{}";
-    assert!(
-        crypto.contains(template_src),
-        "format! must remain exactly 5 fields"
-    );
-    assert_eq!(template_src.matches("{}").count(), 5);
-    assert!(crypto.contains("tx_id:{}"));
-    assert!(crypto.contains("category:{}"));
-    assert!(crypto.contains("summary:{}"));
-    assert!(crypto.contains("reason:{}"));
-    assert!(crypto.contains("committed_at:{}"));
+    assert!(crypto.contains("CURRENT_LEDGER_SIG_VERSION"));
+    assert!(crypto.contains("sig_version:2"));
+    assert!(crypto.contains("entity:{}"));
+    assert!(crypto.contains("origin:{}"));
+    // v1 dual-verify template still present.
+    let v1_template = "tx_id:{}\\ncategory:{}\\nsummary:{}\\nreason:{}\\ncommitted_at:{}";
+    assert!(crypto.contains(v1_template));
     // command_timings / duration_ms must never appear in the signing module.
     assert!(!crypto.contains("command_timings"));
     assert!(!crypto.contains("duration_ms"));
@@ -491,56 +485,42 @@ fn signing_basis_crypto_untouched() {
     assert_eq!(chain_before, chain_after);
     assert_eq!(count_timings(&conn).unwrap(), 1);
 
-    // Crypto path still works after timings exist in the same DB (temp keys).
-    // Proves timings do not break sign/verify; basis remains the 5 fields.
+    // Crypto path still works after timings exist (v2 production sign).
     let keys_dir = tempdir().unwrap();
-    let tx_id = "tx-timing-sig";
-    let category = "BUGFIX";
-    let summary = "timing isolation";
-    let reason = "prove signing basis";
-    let committed_at = "2026-07-19T12:00:00.000Z";
-    let (sig, pub_key) = ledgerful::ledger::crypto::sign_ledger_entry_in(
-        keys_dir.path(),
-        tx_id,
-        category,
-        summary,
-        reason,
-        committed_at,
-    )
-    .expect("sign after timings insert");
+    let input = ledgerful::ledger::crypto::LedgerSignInput {
+        sig_version: 2,
+        tx_id: "tx-timing-sig".into(),
+        category: "BUGFIX".into(),
+        summary: "timing isolation".into(),
+        reason: "prove signing basis".into(),
+        committed_at: "2026-07-19T12:00:00.000Z".into(),
+        entity: "src/lib.rs".into(),
+        change_type: "MODIFY".into(),
+        entry_type: "IMPLEMENTATION".into(),
+        author: "tester".into(),
+        risk: String::new(),
+        is_breaking: false,
+        related_tickets: String::new(),
+        origin: "LOCAL".into(),
+        entity_normalized: "src/lib.rs".into(),
+    };
+    let (sig, pub_key) =
+        ledgerful::ledger::crypto::sign_ledger_entry_in_v2(keys_dir.path(), &input)
+            .expect("sign after timings insert");
     let sig = sig.expect("signature present");
     let pub_key = pub_key.expect("public key present");
     assert!(
-        ledgerful::ledger::crypto::verify_signature(
-            tx_id,
-            category,
-            summary,
-            reason,
-            committed_at,
-            &sig,
-            &pub_key,
-        ),
-        "verify_signature must succeed with the 5-field basis after timings exist"
+        ledgerful::ledger::crypto::verify_entry_signature(&input, &sig, &pub_key),
+        "verify_entry_signature must succeed with the v2 basis after timings exist"
     );
-    // Corrupt category → verification fails (basis is still exactly those fields).
+    let mut corrupted = input.clone();
+    corrupted.category = "FEATURE".into();
     assert!(
-        !ledgerful::ledger::crypto::verify_signature(
-            tx_id,
-            "FEATURE",
-            summary,
-            reason,
-            committed_at,
-            &sig,
-            &pub_key,
-        ),
+        !ledgerful::ledger::crypto::verify_entry_signature(&corrupted, &sig, &pub_key),
         "verify must fail when category is corrupted"
     );
-    // Expected payload string (mirrors production format!) — 5 lines only.
-    let expected_payload = format!(
-        "tx_id:{}\ncategory:{}\nsummary:{}\nreason:{}\ncommitted_at:{}",
-        tx_id, category, summary, reason, committed_at
-    );
-    assert_eq!(expected_payload.lines().count(), 5);
+    let expected_payload = ledgerful::ledger::crypto::encode_v2_payload(&input).unwrap();
+    assert_eq!(expected_payload.lines().count(), 14);
     assert!(!expected_payload.contains("duration_ms"));
     assert!(!expected_payload.contains("command_timings"));
     assert!(!expected_payload.contains("argv_hash"));

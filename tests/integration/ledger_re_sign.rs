@@ -2,7 +2,7 @@ use ledgerful::commands::init::execute_init;
 use ledgerful::commands::ledger::execute_ledger_status;
 use ledgerful::commands::ledger_re_sign::execute_ledger_re_sign_with_keys_dir;
 use ledgerful::config::model::Config;
-use ledgerful::ledger::crypto::{sign_ledger_entry_in, verify_signature};
+use ledgerful::ledger::crypto::{LedgerSignInput, sign_ledger_entry_in_v2};
 use ledgerful::ledger::*;
 use ledgerful::state::storage::StorageManager;
 use serial_test::serial;
@@ -14,6 +14,37 @@ use crate::common::{DirGuard, non_interactive, setup_git_repo};
 
 fn keys_dir(dir: &std::path::Path) -> std::path::PathBuf {
     dir.join(".ledgerful").join("keys")
+}
+fn sign_v2_for_commit(
+    keys: &std::path::Path,
+    tx_id: &str,
+    category: Category,
+    summary: &str,
+    reason: &str,
+    committed_at: &str,
+    entity: &str,
+) -> (Option<String>, Option<String>) {
+    let input = LedgerSignInput::for_new_commit(
+        tx_id,
+        category,
+        summary,
+        reason,
+        committed_at,
+        entity,
+        entity,
+        ChangeType::Modify,
+        if category == Category::Architecture {
+            EntryType::Architecture
+        } else {
+            EntryType::Implementation
+        },
+        "Test User",
+        None,
+        false,
+        None,
+        "LOCAL",
+    );
+    sign_ledger_entry_in_v2(keys, &input).unwrap()
 }
 
 fn hash_file(path: &std::path::Path) -> u64 {
@@ -73,15 +104,15 @@ fn corrupted_ledger_re_sign_all_invalid_repairs_to_valid() {
             })
             .unwrap();
         let committed_at = "2026-06-03T00:00:00Z";
-        let (sig, pub_key) = sign_ledger_entry_in(
+        let (sig, pub_key) = sign_v2_for_commit(
             &keys,
             &tx_id,
-            &Category::Feature.to_string(),
+            Category::Feature,
             &format!("entry {i}"),
             "reason",
             committed_at,
-        )
-        .unwrap();
+            "src/main.rs",
+        );
         tx_mgr
             .commit_change(
                 tx_id.clone(),
@@ -137,16 +168,14 @@ fn corrupted_ledger_re_sign_all_invalid_repairs_to_valid() {
     );
     for entry in &repaired {
         assert!(
-            verify_signature(
-                &entry.tx_id,
-                &entry.category.to_string(),
-                &entry.summary,
-                &entry.reason,
-                &entry.committed_at,
-                entry.signature.as_ref().unwrap(),
-                entry.public_key.as_ref().unwrap(),
-            ),
-            "re-signed entry {} must verify",
+            ledgerful::ledger::crypto::verify_ledger_entry_signature(entry),
+            "re-signed entry {} must verify under stored sig_version={}",
+            entry.tx_id,
+            entry.sig_version
+        );
+        assert_eq!(
+            entry.sig_version, 2,
+            "re-sign must upgrade to v2 for {}",
             entry.tx_id
         );
     }
@@ -175,15 +204,15 @@ fn dry_run_does_not_mutate_db() {
         .unwrap();
     let keys = keys_dir(root.as_std_path());
     let committed_at = "2026-06-03T00:00:00Z";
-    let (sig, pub_key) = sign_ledger_entry_in(
+    let (sig, pub_key) = sign_v2_for_commit(
         &keys,
         &tx_id,
-        &Category::Feature.to_string(),
+        Category::Feature,
         "dry run test",
         "reason",
         committed_at,
-    )
-    .unwrap();
+        "src/main.rs",
+    );
     tx_mgr
         .commit_change(
             tx_id.clone(),
@@ -248,15 +277,15 @@ fn batch_re_sign_emits_one_maintenance_entry() {
             })
             .unwrap();
         let committed_at = "2026-06-03T00:00:00Z";
-        let (sig, pub_key) = sign_ledger_entry_in(
+        let (sig, pub_key) = sign_v2_for_commit(
             &keys,
             &tx_id,
-            &Category::Feature.to_string(),
+            Category::Feature,
             &format!("entry {i}"),
             "reason",
             committed_at,
-        )
-        .unwrap();
+            "src/main.rs",
+        );
         tx_mgr
             .commit_change(
                 tx_id.clone(),
@@ -337,15 +366,15 @@ fn re_sign_creates_backup_and_aborts_if_backup_fails() {
         .unwrap();
     let keys = keys_dir(root.as_std_path());
     let committed_at = "2026-06-03T00:00:00Z";
-    let (sig, pub_key) = sign_ledger_entry_in(
+    let (sig, pub_key) = sign_v2_for_commit(
         &keys,
         &tx_id,
-        &Category::Feature.to_string(),
+        Category::Feature,
         "backup test",
         "reason",
         committed_at,
-    )
-    .unwrap();
+        "src/main.rs",
+    );
     tx_mgr
         .commit_change(
             tx_id.clone(),
@@ -426,15 +455,15 @@ fn dry_run_does_not_create_key_store() {
         .unwrap();
     let keys = keys_dir(root.as_std_path());
     let committed_at = "2026-06-03T00:00:00Z";
-    let (sig, pub_key) = sign_ledger_entry_in(
+    let (sig, pub_key) = sign_v2_for_commit(
         &keys,
         &tx_id,
-        &Category::Feature.to_string(),
+        Category::Feature,
         "dry run key test",
         "reason",
         committed_at,
-    )
-    .unwrap();
+        "src/main.rs",
+    );
     tx_mgr
         .commit_change(
             tx_id.clone(),
@@ -516,15 +545,15 @@ fn maintenance_entry_is_signed_when_signing_required() {
         .unwrap();
     let keys = keys_dir(root.as_std_path());
     let committed_at = "2026-06-03T00:00:00Z";
-    let (sig, pub_key) = sign_ledger_entry_in(
+    let (sig, pub_key) = sign_v2_for_commit(
         &keys,
         &tx_id,
-        &Category::Feature.to_string(),
+        Category::Feature,
         "signed maintenance test",
         "reason",
         committed_at,
-    )
-    .unwrap();
+        "src/main.rs",
+    );
     tx_mgr
         .commit_change(
             tx_id.clone(),
@@ -582,16 +611,12 @@ fn maintenance_entry_is_signed_when_signing_required() {
         "maintenance entry must be signed when signing is required"
     );
     assert!(
-        verify_signature(
-            &maint.tx_id,
-            &maint.category.to_string(),
-            &maint.summary,
-            &maint.reason,
-            &maint.committed_at,
-            maint.signature.as_ref().unwrap(),
-            maint.public_key.as_ref().unwrap(),
-        ),
-        "maintenance entry signature must verify"
+        ledgerful::ledger::crypto::verify_ledger_entry_signature(maint),
+        "maintenance entry signature must verify under v2"
+    );
+    assert_eq!(
+        maint.sig_version, 2,
+        "maintenance entry must be signed as v2"
     );
 }
 
@@ -620,15 +645,15 @@ fn re_sign_then_verify_chain_passes() {
             })
             .unwrap();
         let committed_at = "2026-06-03T00:00:00Z";
-        let (sig, pub_key) = sign_ledger_entry_in(
+        let (sig, pub_key) = sign_v2_for_commit(
             &keys,
             &tx_id,
-            &Category::Feature.to_string(),
+            Category::Feature,
             &format!("entry {i}"),
             "reason",
             committed_at,
-        )
-        .unwrap();
+            "src/main.rs",
+        );
         tx_mgr
             .commit_change(
                 tx_id.clone(),
@@ -664,6 +689,8 @@ fn re_sign_then_verify_chain_passes() {
     // After re-signing, verify --chain must PASS, proving the maintenance entry
     // links to the correct new tail hash and the genesis prev_hash is None.
     let layout = ledgerful::state::layout::Layout::new(root.as_str());
-    ledgerful::commands::verify::verify_ledger_signatures_with_options(&layout, true, true, None)
-        .expect("verify --chain must pass after re-sign");
+    ledgerful::commands::verify::verify_ledger_signatures_with_options(
+        &layout, true, true, false, None,
+    )
+    .expect("verify --chain must pass after re-sign");
 }

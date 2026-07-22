@@ -1116,7 +1116,7 @@ fn print_human_report(report: &PolicyCheckReport) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::ledger::crypto::{sign_ledger_entry_in, verify_signature};
+    // crypto imports are local to the basis test that needs them
     use crate::state::layout::Layout;
     use camino::Utf8PathBuf;
 
@@ -1285,72 +1285,77 @@ fail_on = "critical"
         assert_eq!(json["notes"][0], "risk rules skipped: risk not evaluable");
     }
 
-    /// DoD-5: signing basis is exactly tx_id+category+summary+reason+committed_at.
-    /// Policy/mode never enter the signed payload.
+    /// DoD-5 (0072): v2 signing basis binds provenance fields; policy/mode never enter.
     #[test]
     fn signing_basis_fields_unchanged_by_policy() {
+        use crate::ledger::crypto::{
+            CURRENT_LEDGER_SIG_VERSION, LedgerSignInput, encode_v2_payload,
+            sign_ledger_entry_in_v2, verify_entry_signature,
+        };
+
         let tmp = tempfile::tempdir().unwrap();
         let keys = tmp.path().join("keys");
         std::fs::create_dir_all(&keys).unwrap();
 
-        let tx_id = "tx-policy-basis";
-        let category = "FEATURE";
-        let summary = "basis check";
-        let reason = "DoD-5";
-        let committed_at = "2026-07-19T00:00:00Z";
+        let input = LedgerSignInput {
+            sig_version: CURRENT_LEDGER_SIG_VERSION,
+            tx_id: "tx-policy-basis".into(),
+            category: "FEATURE".into(),
+            summary: "basis check".into(),
+            reason: "DoD-5".into(),
+            committed_at: "2026-07-19T00:00:00Z".into(),
+            entity: "src/main.rs".into(),
+            change_type: "MODIFY".into(),
+            entry_type: "IMPLEMENTATION".into(),
+            author: "Ada".into(),
+            risk: "LOW".into(),
+            is_breaking: false,
+            related_tickets: String::new(),
+            origin: "LOCAL".into(),
+            entity_normalized: "src/main.rs".into(),
+        };
 
-        let (sig, pub_key) =
-            sign_ledger_entry_in(&keys, tx_id, category, summary, reason, committed_at).unwrap();
+        let (sig, pub_key) = sign_ledger_entry_in_v2(&keys, &input).unwrap();
         let sig = sig.unwrap();
         let pub_key = pub_key.unwrap();
+        assert!(verify_entry_signature(&input, &sig, &pub_key));
 
-        // Canonical five-field basis verifies.
-        assert!(verify_signature(
-            tx_id,
-            category,
-            summary,
-            reason,
-            committed_at,
-            &sig,
-            &pub_key
-        ));
+        // Injecting policy into a signed free-text field must break verification.
+        let mut mutated = input.clone();
+        mutated.summary = "basis check [policy=enforce]".into();
+        assert!(!verify_entry_signature(&mutated, &sig, &pub_key));
 
-        // Injecting policy/mode into any signed field must break verification —
-        // proving those fields are part of the basis and policy is not a sixth field.
-        assert!(!verify_signature(
-            tx_id,
-            category,
-            "basis check [policy=enforce]",
-            reason,
-            committed_at,
-            &sig,
-            &pub_key
-        ));
-
-        // Pin the exact five basis fields and crypto's known payload format
-        // (must match crypto.rs sign_ledger_entry_in / verify_signature):
-        //   "tx_id:{}\ncategory:{}\nsummary:{}\nreason:{}\ncommitted_at:{}"
-        let basis_fields = ["tx_id", "category", "summary", "reason", "committed_at"];
-        assert_eq!(basis_fields.len(), 5);
-        assert_eq!(
-            basis_fields,
-            ["tx_id", "category", "summary", "reason", "committed_at"]
-        );
-        let known_format = format!(
-            "tx_id:{}\ncategory:{}\nsummary:{}\nreason:{}\ncommitted_at:{}",
-            tx_id, category, summary, reason, committed_at
-        );
-        // Reconstruct by joining field:value lines — same order as crypto.
-        let reconstructed = basis_fields
-            .iter()
-            .zip([tx_id, category, summary, reason, committed_at])
-            .map(|(k, v)| format!("{k}:{v}"))
-            .collect::<Vec<_>>()
-            .join("\n");
-        assert_eq!(reconstructed, known_format);
+        // Frozen v2 field order (0072 phase0 codec).
+        let basis_fields = [
+            "sig_version",
+            "tx_id",
+            "category",
+            "summary",
+            "reason",
+            "committed_at",
+            "entity",
+            "change_type",
+            "entry_type",
+            "author",
+            "risk",
+            "is_breaking",
+            "related_tickets",
+            "origin",
+        ];
+        assert_eq!(basis_fields.len(), 14);
+        let payload = encode_v2_payload(&input).unwrap();
+        let lines: Vec<&str> = payload.lines().collect();
+        assert_eq!(lines.len(), 14);
+        for (i, name) in basis_fields.iter().enumerate() {
+            assert!(
+                lines[i].starts_with(&format!("{name}:")),
+                "line {i} must start with {name}:"
+            );
+        }
         assert!(!basis_fields.contains(&"policy"));
         assert!(!basis_fields.contains(&"mode"));
         assert!(!basis_fields.contains(&"gate"));
+        assert_eq!(CURRENT_LEDGER_SIG_VERSION, 2);
     }
 
     #[test]

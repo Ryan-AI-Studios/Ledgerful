@@ -97,6 +97,7 @@ mod tests {
             author: "Test User".to_string(),
             observed: None,
             prev_hash: None,
+            sig_version: 1,
         };
 
         let content = generate_madr_content(&entry);

@@ -717,14 +717,22 @@ fn control_export__no_banned_terms_in_export() {
 #[test]
 #[serial(cwd, env)]
 fn control_export__signing_basis_unchanged() {
+    // Lock the v2 canonical codec (14-line payload) in encode_v2_payload.
+    // entity/origin/author/risk/etc. are intentionally in the signed basis
+    // (0072); residual fields (observed, prev_hash, verification_*, …) must not.
     let crypto_source =
         std::fs::read_to_string("src/ledger/crypto.rs").expect("crypto.rs source must be readable");
-    // Restrict the check to the format! string literal so that variable names
-    // and other code outside the signing basis cannot create false positives.
-    let format_start = crypto_source
-        .find("let payload = format!(")
-        .expect("crypto.rs must contain a signing payload format block");
-    let after_format = &crypto_source[format_start + "let payload = format!".len()..];
+
+    let fn_start = crypto_source
+        .find("pub fn encode_v2_payload")
+        .expect("crypto.rs must define encode_v2_payload");
+    let fn_body = &crypto_source[fn_start..];
+    // First format! inside encode_v2_payload is the frozen codec.
+    let format_marker = "Ok(format!(";
+    let format_start = fn_body
+        .find(format_marker)
+        .expect("encode_v2_payload must contain Ok(format!(...))");
+    let after_format = &fn_body[format_start + format_marker.len()..];
     let open_quote = after_format
         .find('"')
         .expect("format! string literal must start with a double quote");
@@ -734,38 +742,57 @@ fn control_export__signing_basis_unchanged() {
         .expect("format! string literal must end with a double quote");
     let literal = &literal_body[..close_quote];
 
-    for field in ["tx_id", "category", "summary", "reason", "committed_at"] {
+    let required = [
+        "sig_version:2",
+        "tx_id:",
+        "category:",
+        "summary:",
+        "reason:",
+        "committed_at:",
+        "entity:",
+        "change_type:",
+        "entry_type:",
+        "author:",
+        "risk:",
+        "is_breaking:",
+        "related_tickets:",
+        "origin:",
+    ];
+    for field in required {
         assert!(
             literal.contains(field),
-            "signing payload format string must contain field {field}"
+            "v2 signing payload format string must contain field token {field}"
         );
     }
 
+    // Exactly 13 `{}` placeholders after the fixed `sig_version:2` line.
     let placeholder_count = literal.matches("{}").count();
     assert_eq!(
-        placeholder_count, 5,
-        "signing payload format string must contain exactly 5 field placeholders, found {placeholder_count}"
+        placeholder_count, 13,
+        "v2 signing payload format string must contain exactly 13 field placeholders, found {placeholder_count}"
+    );
+
+    // 14 lines when expanded (sig_version + 13 fields).
+    let line_count = literal.matches("\\n").count() + 1;
+    assert_eq!(
+        line_count, 14,
+        "v2 signing payload must be a 14-line codec, found {line_count} lines in template"
     );
 
     let forbidden = [
-        "entity",
-        "origin",
         "trace_id",
-        "risk",
-        "author",
         "observed",
         "prev_hash",
         "public_key",
         "signature",
         "verification",
-        "change_type",
-        "is_breaking",
-        "entry_type",
+        "entity_normalized",
+        "outcome_notes",
     ];
     for field in forbidden {
         assert!(
             !literal.contains(field),
-            "signing payload format string must not contain forbidden field {field}"
+            "v2 signing payload format string must not contain residual/forbidden field {field}"
         );
     }
 }
@@ -987,6 +1014,7 @@ fn evidence_predicate__matches_expected_entry_characteristics() {
         author: "Test".to_string(),
         observed: None,
         prev_hash: None,
+        sig_version: 1,
     };
 
     assert!(matches_evidence_keyword(
@@ -1033,6 +1061,7 @@ fn evidence_predicate__matches_expected_entry_characteristics() {
         author: "Test".to_string(),
         observed: None,
         prev_hash: None,
+        sig_version: 1,
     };
 
     assert!(!matches_evidence_keyword(

@@ -24,6 +24,7 @@ pub mod m49_project_trend_days;
 pub mod m50_ledger_entry_observed;
 pub mod m51_ledger_chain_hash;
 pub mod m52_command_timings;
+pub mod m53_ledger_sig_version;
 
 use rusqlite_migration::Migrations;
 
@@ -138,6 +139,10 @@ pub fn get_migrations() -> Migrations<'static> {
     // pre-flight check on a binary without the migration. The table is empty
     // when capture is disabled, so the surface-area leak is harmless.
     all_m.extend(m52_command_timings::m52_command_timings());
+    // m53 adds `ledger_entries.sig_version` (Track 0072). Registered
+    // unconditionally so schema_version stays monotonic across binaries;
+    // existing rows default to 1 (legacy five-field signatures).
+    all_m.extend(m53_ledger_sig_version::m53_ledger_sig_version());
 
     Migrations::new(all_m)
 }
@@ -180,6 +185,8 @@ pub fn get_migrations_count() -> usize {
     count += m51_ledger_chain_hash::m51_ledger_chain_hash().len();
     // m52 is counted unconditionally — see the matching comment in `get_migrations`.
     count += m52_command_timings::m52_command_timings().len();
+    // m53 is counted unconditionally — see the matching comment in `get_migrations`.
+    count += m53_ledger_sig_version::m53_ledger_sig_version().len();
 
     count
 }

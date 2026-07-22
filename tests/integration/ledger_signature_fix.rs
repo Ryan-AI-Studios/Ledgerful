@@ -1,7 +1,9 @@
 use ledgerful::commands::init::execute_init;
 use ledgerful::commands::ledger::execute_ledger_status;
 use ledgerful::config::model::Config;
-use ledgerful::ledger::crypto::{sign_ledger_entry_in, verify_signature};
+use ledgerful::ledger::crypto::{
+    LedgerSignInput, sign_ledger_entry_in_v2, verify_ledger_entry_signature,
+};
 use ledgerful::ledger::*;
 use ledgerful::state::storage::StorageManager;
 use serial_test::serial;
@@ -45,20 +47,44 @@ fn test_timestamp_preservation_and_signature_validity() {
         })
         .expect("Should start transaction");
 
-    // Pre-calculate signature with a fixed timestamp
+    // Pre-calculate v2 signature with a fixed timestamp (RT-C3 path).
     let summary = "Fixed timestamp commit";
     let reason = "TDD signature fix";
     let committed_at = "2024-06-01T10:00:00Z";
+    let entity_normalized = tx_mgr.entity_normalized(entity).expect("normalize entity");
+    // Match production `capture_git_author` so RT-C3 supplied-sig verify succeeds.
+    let author = std::process::Command::new("git")
+        .args(["config", "user.name"])
+        .current_dir(&repo_root)
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if s.is_empty() { None } else { Some(s) }
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "unknown".to_string());
 
-    let (sig, pub_key) = sign_ledger_entry_in(
-        &keys_dir,
+    let sign_input = LedgerSignInput::for_new_commit(
         &tx_id,
-        &category.to_string(),
+        category,
         summary,
         reason,
         committed_at,
-    )
-    .expect("Signing failed");
+        entity,
+        &entity_normalized,
+        ChangeType::Modify,
+        EntryType::Implementation,
+        &author,
+        None,
+        false,
+        None,
+        "LOCAL",
+    );
+    let (sig, pub_key) = sign_ledger_entry_in_v2(&keys_dir, &sign_input).expect("Signing failed");
 
     let sig_str = sig.expect("No signature");
     let pub_str = pub_key.expect("No public key");
@@ -90,20 +116,10 @@ fn test_timestamp_preservation_and_signature_validity() {
         "Timestamp was not preserved in database"
     );
 
-    // Verify signature remains valid using the DB entry
+    // Verify signature remains valid using the DB entry (dual-verify by version).
     let entry = &entries[0];
-    let is_valid = verify_signature(
-        &entry.tx_id,
-        &entry.category.to_string(),
-        &entry.summary,
-        &entry.reason,
-        &entry.committed_at,
-        entry.signature.as_ref().unwrap(),
-        entry.public_key.as_ref().unwrap(),
-    );
-
     assert!(
-        is_valid,
+        verify_ledger_entry_signature(entry),
         "Signature validation failed because timestamp drifted or was ignored"
     );
 }
@@ -143,15 +159,40 @@ fn ledger_status_verify_signatures_rejects_corrupted_signature() {
     let summary = "Signed commit";
     let reason = "Exercise ledger status signature verification";
     let committed_at = "2026-06-03T00:00:00Z";
-    let (sig, public_key) = sign_ledger_entry_in(
-        &keys_dir,
+    let entity_normalized = tx_mgr
+        .entity_normalized("src/main.rs")
+        .expect("normalize entity");
+    let author = std::process::Command::new("git")
+        .args(["config", "user.name"])
+        .current_dir(&root)
+        .output()
+        .ok()
+        .and_then(|o| {
+            if o.status.success() {
+                let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                if s.is_empty() { None } else { Some(s) }
+            } else {
+                None
+            }
+        })
+        .unwrap_or_else(|| "unknown".to_string());
+    let sign_input = LedgerSignInput::for_new_commit(
         &tx_id,
-        &category.to_string(),
+        category,
         summary,
         reason,
         committed_at,
-    )
-    .unwrap();
+        "src/main.rs",
+        &entity_normalized,
+        ChangeType::Modify,
+        EntryType::Implementation,
+        &author,
+        None,
+        false,
+        None,
+        "LOCAL",
+    );
+    let (sig, public_key) = sign_ledger_entry_in_v2(&keys_dir, &sign_input).unwrap();
 
     tx_mgr
         .commit_change(

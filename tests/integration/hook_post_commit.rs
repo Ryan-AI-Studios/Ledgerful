@@ -316,47 +316,12 @@ fn latest_committed_tx_id(root: &std::path::Path) -> Option<String> {
 fn verify_latest_signature(root: &std::path::Path) -> bool {
     let repo_root = Utf8Path::from_path(root).unwrap();
     let storage = StorageManager::open_read_only_sqlite_only(repo_root).unwrap();
-    let conn = storage.get_connection();
-    let (tx_id, category, summary, reason, committed_at, signature, public_key): (
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-        String,
-    ) = conn
-        .query_row(
-            "SELECT t.tx_id, t.category, le.summary, le.reason, le.committed_at, le.signature, le.public_key
-             FROM transactions t
-             JOIN ledger_entries le ON le.tx_id = t.tx_id
-             WHERE t.status = 'COMMITTED'
-             ORDER BY t.rowid DESC LIMIT 1",
-            [],
-            |row| {
-                Ok((
-                    row.get(0)?,
-                    row.get(1)?,
-                    row.get(2)?,
-                    row.get(3)?,
-                    row.get(4)?,
-                    row.get(5)?,
-                    row.get(6)?,
-                ))
-            },
-        )
-        .unwrap();
-
-    use ledgerful::ledger::crypto::verify_signature;
-    verify_signature(
-        &tx_id,
-        &category,
-        &summary,
-        &reason,
-        &committed_at,
-        &signature,
-        &public_key,
-    )
+    let db = ledgerful::ledger::db::LedgerDb::new(storage.get_connection());
+    let tx_id = latest_committed_tx_id(root).expect("committed tx");
+    let entries = db.get_ledger_entries_for_tx(&tx_id).expect("entries");
+    let entry = entries.into_iter().next().expect("one entry");
+    // Dual-verify by stored sig_version (v2 for new hook commits).
+    ledgerful::ledger::crypto::verify_ledger_entry_signature(&entry)
 }
 
 #[test]

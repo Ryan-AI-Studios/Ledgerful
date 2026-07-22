@@ -262,8 +262,9 @@ pub fn insert_ledger_entry(conn: &Connection, entry: &LedgerEntry) -> Result<(),
             tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
             verification_status, verification_basis, outcome_notes,
-            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash
-         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22)",
+            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash,
+            sig_version
+         ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23)",
         params![
             entry.tx_id,
             serde_json::to_string(&entry.category)
@@ -307,6 +308,7 @@ pub fn insert_ledger_entry(conn: &Connection, entry: &LedgerEntry) -> Result<(),
             entry.author,
             entry.observed.map(|v| v as i32),
             entry.prev_hash,
+            entry.sig_version as i64,
         ],
     )?;
     Ok(())
@@ -320,7 +322,7 @@ pub fn get_ledger_entries_for_tx(
         "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
             verification_status, verification_basis, outcome_notes,
-            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash
+            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash, sig_version
      FROM ledger_entries WHERE tx_id = ?1",
     )?;
 
@@ -343,7 +345,7 @@ pub fn get_ledger_entries_by_entity_paginated(
         "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
             verification_status, verification_basis, outcome_notes,
-            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash
+            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash, sig_version
      FROM ledger_entries WHERE entity_normalized = ?1
      ORDER BY committed_at DESC
      LIMIT ?2 OFFSET ?3",
@@ -368,7 +370,7 @@ pub fn get_all_committed_ledger_entries(
         "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
             verification_status, verification_basis, outcome_notes,
-            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash
+            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash, sig_version
      FROM ledger_entries ORDER BY committed_at ASC, tx_id ASC",
     )?;
 
@@ -387,11 +389,27 @@ pub fn update_ledger_entry_signature(
     signature: &str,
     public_key: &str,
 ) -> Result<usize, LedgerError> {
+    update_ledger_entry_signature_versioned(
+        conn,
+        tx_id,
+        signature,
+        public_key,
+        crate::ledger::crypto::CURRENT_LEDGER_SIG_VERSION,
+    )
+}
+
+pub fn update_ledger_entry_signature_versioned(
+    conn: &Connection,
+    tx_id: &str,
+    signature: &str,
+    public_key: &str,
+    sig_version: u32,
+) -> Result<usize, LedgerError> {
     let count = conn.execute(
         "UPDATE ledger_entries
-         SET signature = ?1, public_key = ?2
-         WHERE tx_id = ?3",
-        params![signature, public_key, tx_id],
+         SET signature = ?1, public_key = ?2, sig_version = ?3
+         WHERE tx_id = ?4",
+        params![signature, public_key, sig_version as i64, tx_id],
     )?;
     Ok(count)
 }
@@ -497,7 +515,7 @@ pub fn get_committed_ledger_entries_paginated(
         "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
             verification_status, verification_basis, outcome_notes,
-            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash
+            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash, sig_version
          FROM ledger_entries
          WHERE category = ?1
          ORDER BY committed_at ASC, tx_id ASC
@@ -506,7 +524,7 @@ pub fn get_committed_ledger_entries_paginated(
         "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
             verification_status, verification_basis, outcome_notes,
-            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash
+            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash, sig_version
          FROM ledger_entries
          ORDER BY committed_at ASC, tx_id ASC
          LIMIT ?1 OFFSET ?2"
@@ -585,7 +603,8 @@ mod tests {
                 related_tickets TEXT,
                 author TEXT NOT NULL DEFAULT 'unknown',
                 observed INTEGER,
-                prev_hash TEXT
+                prev_hash TEXT,
+                sig_version INTEGER NOT NULL DEFAULT 1
             );",
         )
         .unwrap();
@@ -687,6 +706,7 @@ mod tests {
             author: "Test User".to_string(),
             observed: None,
             prev_hash: None,
+            sig_version: 1,
         };
         insert_ledger_entry(&conn, &entry).unwrap();
 

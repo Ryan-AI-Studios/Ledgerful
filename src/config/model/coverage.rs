@@ -127,6 +127,14 @@ pub struct IntentConfig {
     pub tui_enabled: bool,
     #[serde(default = "default_require_signing")]
     pub require_signing: bool,
+    /// Hex Ed25519 public keys (64 hex chars, normalized lowercase on load).
+    /// Empty list = soft pin: crypto-valid keys report `VALID (unknown key)`.
+    #[serde(default)]
+    pub trusted_public_keys: Vec<String>,
+    /// Reject rows with `sig_version < min_sig_version` during verify.
+    /// Default 1 accepts historical v1 rows; set 2 after re-sign --all.
+    #[serde(default = "default_min_sig_version")]
+    pub min_sig_version: u32,
 }
 
 fn default_intent_required() -> String {
@@ -141,12 +149,18 @@ fn default_require_signing() -> bool {
     false
 }
 
+fn default_min_sig_version() -> u32 {
+    1
+}
+
 impl Default for IntentConfig {
     fn default() -> Self {
         Self {
             required: default_intent_required(),
             tui_enabled: default_tui_enabled(),
             require_signing: default_require_signing(),
+            trusted_public_keys: Vec::new(),
+            min_sig_version: default_min_sig_version(),
         }
     }
 }

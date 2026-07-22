@@ -54,6 +54,7 @@ Each published entry contains only these fields:
 * `verification_result`
 * `risk_level`
 * `entry_hash`
+* `sig_version` (1 = legacy five-field; 2 = full provenance — non-sensitive)
 * `signature`
 * `public_key`
 
@@ -79,7 +80,12 @@ The following fields are intentionally redacted because they carry internal-only
 
 ## 6. The honest ceiling
 
-This bundle proves each entry's Ed25519 signature and the manifest signature. It does NOT prove the order/set of entries (that's the chain head's role) or the identity behind the key (out-of-band fingerprint comparison).
+This bundle proves the manifest signature and the integrity of `entries.ndjson`.
+
+* **v1 entries** (`sig_version` missing or `1`): offline verifiers can re-check Ed25519 over the published five-field payload (`tx_id`, `category`, `summary`, `reason`, `committed_at`).
+* **v2 entries** (`sig_version >= 2`): the signature binds redacted provenance fields (entity, author, origin, change_type, …) that are intentionally not published. Offline entry-signature re-verify is **not** claimed for v2; use `ledgerful verify --signatures` against the local ledger.
+* Chain head (when present) is a rollback checkpoint. Full `prev_hash` walks are not re-verified offline (prev_hash is redacted).
+* Key identity still requires out-of-band fingerprint comparison.
 
 ---
 
@@ -108,14 +114,14 @@ The `export-public` command imports no network crates. The public export module 
 
 You can verify a bundle in two ways:
 
-1. Open `verifier.html` in a modern browser. It loads `manifest.json` and `entries.ndjson` from the same directory, verifies the manifest signature with WebCrypto, checks that the SHA-256 of `entries.ndjson` matches the `entriesSha256` field in the manifest, and verifies every entry's Ed25519 signature. It works offline.
-2. Use the CLI against the source ledger:
+1. Open `verifier.html` in a modern browser. It loads `manifest.json` and `entries.ndjson` from the same directory, verifies the manifest signature with WebCrypto, checks that the SHA-256 of `entries.ndjson` matches the `entriesSha256` field in the manifest, and dual-paths entry signatures by `sig_version` (full offline Ed25519 for v1; honesty fence for v2). It works offline.
+2. Use the CLI against the source ledger for full v2 entry + chain verification:
 
    ```bash
-   ledgerful verify --signatures
+   ledgerful verify --signatures --chain
    ```
 
-   This checks the source ledger's chain and entry signatures, which the public export is derived from.
+   This checks the source ledger's chain and entry signatures (including redacted provenance fields), which the public export is derived from.
 
 ---
 

@@ -55,7 +55,7 @@ Each control entry declares which Ledgerful evidence keywords it wants, why that
 These keywords return `true` for an individual ledger entry when the described predicate is satisfied.
 
 * `signed_ledger_entry` — entry has a non-blank `signature` and a non-blank `public_key`.
-* `signature_verification` — entry has a non-blank `signature` AND the signature verifies against the entry's `public_key` using the 5-field signing basis (tx_id, category, summary, reason, committed_at).
+* `signature_verification` — entry has a non-blank `signature` AND the signature verifies against the entry's `public_key` using the versioned signing basis (v1: tx_id/category/summary/reason/committed_at; v2: full provenance including entity, author, risk, origin, change_type, entry_type, is_breaking, related_tickets).
 * `verification_result` — entry has a non-empty `verification_status`.
 * `continuous_verification_runs` — entry has a non-empty `verification_status`.
 * `risk_score` — entry has a non-empty `risk` field.

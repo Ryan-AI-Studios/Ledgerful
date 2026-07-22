@@ -1,4 +1,4 @@
-﻿use camino::Utf8Path;
+use camino::Utf8Path;
 use ledgerful::commands::web::auth::generate_token;
 use ledgerful::commands::web::server::router;
 use ledgerful::commands::web::state::AppState;
@@ -110,7 +110,8 @@ fn seed_ledger_entry(
             related_tickets TEXT,
             author TEXT NOT NULL DEFAULT 'unknown',
             observed INTEGER,
-            prev_hash TEXT
+            prev_hash TEXT,
+            sig_version INTEGER NOT NULL DEFAULT 1
         );",
     )
     .unwrap();
@@ -161,6 +162,7 @@ fn seed_ledger_entry(
         author: "Test User".to_string(),
         observed: None,
         prev_hash: None,
+        sig_version: 1,
     };
 
     db.insert_ledger_entry(&entry).unwrap();

@@ -65,6 +65,7 @@ fn test_search_basic() {
         author: "Test User".to_string(),
         observed: None,
         prev_hash: None,
+        sig_version: 1,
     };
 
     let entry2 = LedgerEntry {
@@ -91,6 +92,7 @@ fn test_search_basic() {
         author: "Test User".to_string(),
         observed: None,
         prev_hash: None,
+        sig_version: 1,
     };
 
     db.insert_ledger_entry(&entry1).unwrap();
@@ -142,6 +144,7 @@ fn test_search_filters() {
         author: "Test User".to_string(),
         observed: None,
         prev_hash: None,
+        sig_version: 1,
     };
 
     let entry2 = LedgerEntry {
@@ -168,6 +171,7 @@ fn test_search_filters() {
         author: "Test User".to_string(),
         observed: None,
         prev_hash: None,
+        sig_version: 1,
     };
 
     db.insert_ledger_entry(&entry1).unwrap();
@@ -218,6 +222,7 @@ fn test_search_ranking() {
         author: "Test User".to_string(),
         observed: None,
         prev_hash: None,
+        sig_version: 1,
     };
 
     let entry2 = LedgerEntry {
@@ -244,6 +249,7 @@ fn test_search_ranking() {
         author: "Test User".to_string(),
         observed: None,
         prev_hash: None,
+        sig_version: 1,
     };
 
     db.insert_ledger_entry(&entry1).unwrap();
@@ -325,6 +331,7 @@ fn test_search_days_filtering() {
         author: "Test User".to_string(),
         observed: None,
         prev_hash: None,
+        sig_version: 1,
     };
 
     let entry2 = LedgerEntry {
@@ -351,6 +358,7 @@ fn test_search_days_filtering() {
         author: "Test User".to_string(),
         observed: None,
         prev_hash: None,
+        sig_version: 1,
     };
 
     db.insert_ledger_entry(&entry1).unwrap();

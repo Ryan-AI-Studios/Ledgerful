@@ -13,7 +13,7 @@ pub fn search_ledger(
     let mut sql = "SELECT l.id, l.tx_id, l.category, l.entry_type, l.entity, l.entity_normalized,
             l.change_type, l.summary, l.reason, l.is_breaking, l.committed_at,
             l.verification_status, l.verification_basis, l.outcome_notes,
-            l.origin, l.trace_id, l.signature, l.public_key, l.risk, l.related_tickets, l.author, l.observed, l.prev_hash
+            l.origin, l.trace_id, l.signature, l.public_key, l.risk, l.related_tickets, l.author, l.observed, l.prev_hash, l.sig_version
      FROM ledger_entries l
      JOIN ledger_fts f ON f.rowid = l.id
      WHERE ledger_fts MATCH ?1"

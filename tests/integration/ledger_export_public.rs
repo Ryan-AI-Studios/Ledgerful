@@ -437,7 +437,27 @@ fn run_ledgerful_verify_signatures(dir: &Path) -> Vec<u8> {
     captured
 }
 
-fn verify_entry_signature(entry: &serde_json::Value) {
+/// Dual-path offline check matching the public verifier honesty fence.
+///
+/// - v1 (sig_version missing or 1): full Ed25519 over the published five-field basis.
+/// - v2 (sig_version >= 2): provenance fields are redacted — offline re-verify is
+///   not claimed; assert `sig_version` + signature material are present instead.
+fn verify_public_entry_honesty(entry: &serde_json::Value) {
+    let sig_version = entry["sig_version"].as_u64().unwrap_or(1);
+    assert!(
+        entry["signature"].is_string() && entry["public_key"].is_string(),
+        "signed public entry must publish signature + public_key"
+    );
+    assert!(
+        entry["entry_hash"].as_str().is_some_and(|h| !h.is_empty()),
+        "signed public entry must publish entry_hash"
+    );
+
+    if sig_version >= 2 {
+        // Honesty fence: cannot reconstruct v2 payload from allowlisted fields.
+        return;
+    }
+
     let public_key_hex = entry["public_key"]
         .as_str()
         .expect("entry must have a public_key to verify");
@@ -454,6 +474,7 @@ fn verify_entry_signature(entry: &serde_json::Value) {
     let sig_array: [u8; 64] = sig_bytes.try_into().expect("signature must be 64 bytes");
     let signature = Signature::from_bytes(&sig_array);
 
+    // Legacy five-field basis (v1 dual-verify only).
     let payload = format!(
         "tx_id:{}\ncategory:{}\nsummary:{}\nreason:{}\ncommitted_at:{}",
         entry["tx_id"].as_str().unwrap_or(""),
@@ -465,13 +486,13 @@ fn verify_entry_signature(entry: &serde_json::Value) {
 
     verifying_key
         .verify_strict(payload.as_bytes(), &signature)
-        .expect("entry signature must verify against reconstructed signing payload");
+        .expect("v1 entry signature must verify against reconstructed five-field payload");
 }
 
 #[test]
 #[serial(env, cwd)]
 #[allow(non_snake_case)]
-fn export_public__signed_output__entry_signature_verifies_with_public_key() {
+fn export_public__signed_output__entry_signature_honesty_by_sig_version() {
     let _env_non_interactive = non_interactive();
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -495,18 +516,53 @@ fn export_public__signed_output__entry_signature_verifies_with_public_key() {
     ))
     .unwrap();
 
-    let mut verified_count = 0;
+    let readme = String::from_utf8(read_bundle_file(
+        tmp.path(),
+        "bundle-entry-sig",
+        "README.md",
+    ))
+    .unwrap();
+    assert!(
+        readme.contains("sig_version") || readme.contains("v2"),
+        "README must document v2 / sig_version honesty"
+    );
+
+    let verifier = String::from_utf8(read_bundle_file(
+        tmp.path(),
+        "bundle-entry-sig",
+        "verifier.html",
+    ))
+    .unwrap();
+    assert!(
+        verifier.contains("not re-verified offline")
+            || verifier.contains("provenance fields redacted"),
+        "verifier.html must honesty-fence v2 entry signatures"
+    );
+
+    let mut checked = 0;
+    let mut saw_v2 = false;
     for line in entries_text.lines().filter(|l| !l.trim().is_empty()) {
         let entry: serde_json::Value = serde_json::from_str(line).unwrap();
         if entry["signature"].is_string() && entry["public_key"].is_string() {
-            verify_entry_signature(&entry);
-            verified_count += 1;
+            assert!(
+                entry.get("sig_version").is_some(),
+                "public entry must export sig_version"
+            );
+            if entry["sig_version"].as_u64().unwrap_or(1) >= 2 {
+                saw_v2 = true;
+            }
+            verify_public_entry_honesty(&entry);
+            checked += 1;
         }
     }
 
     assert!(
-        verified_count >= 1,
-        "at least one entry signature must verify; found {verified_count}"
+        checked >= 1,
+        "at least one signed public entry must be honesty-checked; found {checked}"
+    );
+    assert!(
+        saw_v2,
+        "new commits sign as v2; expected at least one sig_version>=2 row in public export"
     );
 }
 

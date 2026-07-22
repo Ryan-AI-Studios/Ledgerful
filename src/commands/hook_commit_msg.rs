@@ -5,7 +5,8 @@ use crate::commands::hook_sidecar::{
     hash_message, head_message_hash, is_gc_eligible, write_pending_sidecar,
 };
 use crate::config::model::Config;
-use crate::ledger::crypto::sign_ledger_entry;
+use crate::ledger::crypto::{LedgerSignInput, sign_ledger_entry_v2};
+use crate::ledger::types::{ChangeType, EntryType};
 use crate::ledger::{Category, TransactionManager, TransactionRequest};
 use crate::state::storage::StorageManager;
 use crate::ui::intent_tui::{IntentState, run_tui};
@@ -588,13 +589,59 @@ fn silently_record_ledger(args: SilentRecordArgs) -> Result<()> {
 
     let committed_at = chrono::Utc::now().to_rfc3339();
 
-    let sign_result = sign_ledger_entry(
+    let tickets = args.related.join(", ");
+    let combined_related = if tickets.is_empty() {
+        args.related_files.to_string()
+    } else {
+        format!("{} | {}", tickets, args.related_files)
+    };
+
+    // Match commit_change basis: author from git, origin LOCAL, entry_type from category.
+    let author = {
+        let read = |key: &str| -> Option<String> {
+            std::process::Command::new("git")
+                .args(["config", key])
+                .current_dir(layout.root.as_std_path())
+                .output()
+                .ok()
+                .and_then(|o| {
+                    if o.status.success() {
+                        let s = String::from_utf8_lossy(&o.stdout).trim().to_string();
+                        if s.is_empty() { None } else { Some(s) }
+                    } else {
+                        None
+                    }
+                })
+        };
+        read("user.name")
+            .or_else(|| read("user.email"))
+            .unwrap_or_else(|| "unknown".to_string())
+    };
+    let entity_normalized = tx_mgr
+        .entity_normalized(args.entity)
+        .unwrap_or_else(|_| args.entity.to_string());
+    let entry_type = if category == Category::Architecture {
+        EntryType::Architecture
+    } else {
+        EntryType::Implementation
+    };
+    let sign_input = LedgerSignInput::for_new_commit(
         &tx_id,
-        &category.to_string(),
+        category,
         args.what,
         args.why,
         &committed_at,
+        args.entity,
+        &entity_normalized,
+        ChangeType::Modify,
+        entry_type,
+        &author,
+        Some(args.risk),
+        false,
+        Some(&combined_related),
+        "LOCAL",
     );
+    let sign_result = sign_ledger_entry_v2(&sign_input);
     let (signature, pub_key) = match sign_result {
         Ok(keys) => keys,
         Err(e) => {
@@ -611,13 +658,6 @@ fn silently_record_ledger(args: SilentRecordArgs) -> Result<()> {
                 (None, None)
             }
         }
-    };
-
-    let tickets = args.related.join(", ");
-    let combined_related = if tickets.is_empty() {
-        args.related_files.to_string()
-    } else {
-        format!("{} | {}", tickets, args.related_files)
     };
 
     // SKIPPED under enforce: observed false/None. Observe soft-skip does not reach here.

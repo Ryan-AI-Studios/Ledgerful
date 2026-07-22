@@ -9,7 +9,7 @@ pub fn get_adr_entries(
     let mut sql = "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
             change_type, summary, reason, is_breaking, committed_at,
             verification_status, verification_basis, outcome_notes,
-            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash
+            origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash, sig_version
      FROM ledger_entries WHERE (entry_type = 'ARCHITECTURE' OR is_breaking = 1)"
         .to_string();
 

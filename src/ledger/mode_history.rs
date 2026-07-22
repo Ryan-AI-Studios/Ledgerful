@@ -118,6 +118,7 @@ mod tests {
             author: "test".to_string(),
             observed: None,
             prev_hash: None,
+            sig_version: 1,
         };
         (tx, entry)
     }

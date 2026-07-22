@@ -324,7 +324,7 @@ impl<'a> LedgerDb<'a> {
             "SELECT id, tx_id, category, entry_type, entity, entity_normalized,
                 change_type, summary, reason, is_breaking, committed_at,
                 verification_status, verification_basis, outcome_notes,
-                origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash
+                origin, trace_id, signature, public_key, risk, related_tickets, author, observed, prev_hash, sig_version
              FROM ledger_entries
              WHERE entity_normalized LIKE ?1
              ORDER BY committed_at DESC
@@ -431,6 +431,9 @@ pub(crate) fn map_ledger_entry(row: &rusqlite::Row) -> rusqlite::Result<LedgerEn
         _ => None,
     };
     let prev_hash: Option<String> = row.get(22)?;
+    // sig_version added in m53; default 1 for defensive mapping if column missing
+    // is not expected post-migration.
+    let sig_version: u32 = row.get::<_, i64>(23).unwrap_or(1).max(0) as u32;
 
     Ok(LedgerEntry {
         id: row.get(0)?,
@@ -456,5 +459,6 @@ pub(crate) fn map_ledger_entry(row: &rusqlite::Row) -> rusqlite::Result<LedgerEn
         author: row.get(20)?,
         observed,
         prev_hash,
+        sig_version,
     })
 }
