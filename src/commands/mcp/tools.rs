@@ -34,7 +34,9 @@ where
 
     // 0073: every MCP tool child inherits Forbidden cloud policy (unless host
     // LEDGERFUL_MCP_ALLOW_CLOUD_EGRESS) + NON_INTERACTIVE so cloud fallbacks
-    // and interactive degrade→Gemini cannot run.
+    // and interactive degrade→Gemini cannot run. When allow-cloud is set,
+    // explicitly remove LEDGERFUL_CLOUD_POLICY so an inherited Forbidden
+    // marker cannot stick on the child.
     let mut command = Command::new(&exe);
     command
         .args(args)
@@ -42,6 +44,9 @@ where
         .stderr(Stdio::piped());
     for (key, value) in crate::local_model::cloud_policy::mcp_tool_spawn_env() {
         command.env(key, value);
+    }
+    for key in crate::local_model::cloud_policy::mcp_tool_spawn_env_removes() {
+        command.env_remove(key);
     }
 
     let mut child = command
@@ -453,7 +458,7 @@ mod tests {
         }
         use crate::local_model::cloud_policy::{
             CLOUD_POLICY_ENV, CLOUD_POLICY_FORBIDDEN_VALUE, MCP_ALLOW_CLOUD_EGRESS_ENV,
-            mcp_tool_spawn_env,
+            mcp_tool_spawn_env, mcp_tool_spawn_env_removes,
         };
         use env_guard::TempEnv;
 
@@ -466,6 +471,33 @@ mod tests {
         assert!(
             env.iter()
                 .any(|(k, v)| k == CLOUD_POLICY_ENV && v == CLOUD_POLICY_FORBIDDEN_VALUE)
+        );
+        assert!(mcp_tool_spawn_env_removes().is_empty());
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn mcp_tool_spawn_env_allow_cloud_removes_forbidden_marker() {
+        mod env_guard {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/integration/common/env_guard.rs"
+            ));
+        }
+        use crate::local_model::cloud_policy::{
+            CLOUD_POLICY_ENV, MCP_ALLOW_CLOUD_EGRESS_ENV, mcp_tool_spawn_env,
+            mcp_tool_spawn_env_removes,
+        };
+        use env_guard::TempEnv;
+
+        let _a = TempEnv::set(MCP_ALLOW_CLOUD_EGRESS_ENV, "1");
+        let env = mcp_tool_spawn_env();
+        assert!(!env.iter().any(|(k, _)| k == CLOUD_POLICY_ENV));
+        assert!(
+            mcp_tool_spawn_env_removes()
+                .iter()
+                .any(|k| k == CLOUD_POLICY_ENV),
+            "allow-cloud must explicitly remove inherited Forbidden marker"
         );
     }
 

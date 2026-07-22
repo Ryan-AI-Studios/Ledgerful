@@ -1780,6 +1780,95 @@ mod tests {
         mock.assert_hits(0);
     }
 
+    /// 0073 Codex R1: priority chain listing cloud backends must resolve
+    /// Local-only under Forbidden, and complete must emit zero cloud HTTP.
+    #[test]
+    #[serial_test::serial(env)]
+    fn priority_chain_forbidden_zero_http_to_cloud_mock() {
+        use crate::commands::ask::{Backend, resolve_provider_entries};
+        use crate::config::model::{Config, Provider, ProviderEntry, ProvidersConfig};
+
+        let cloud = MockServer::start();
+        let mock = cloud.mock(|when, then| {
+            when.any_request();
+            then.status(200)
+                .header("Content-Type", "application/json")
+                .json_body(serde_json::json!({
+                    "choices": [{ "message": { "content": "should never see this" } }]
+                }));
+        });
+
+        let _guards = forbidden_cloud_isolation();
+        let _or_url = TempEnv::set("OPENROUTER_BASE_URL", &cloud.base_url());
+        let _or_key = TempEnv::set("OPENROUTER_API_KEY", "sk-or-v1-test-not-real");
+
+        let mut config = Config::default();
+        config.local_model.base_url = "http://127.0.0.1:1".to_string();
+        config.local_model.generation_model = "test-model".to_string();
+        config.local_model.timeout_secs = 5;
+        config.local_model.ollama_cloud_url = Some(cloud.base_url());
+        config.local_model.ollama_cloud_api_key = Some("ollama-key".to_string());
+        config.local_model.ollama_cloud_model = Some("model:cloud".to_string());
+        config.ask.providers = ProvidersConfig {
+            priority: vec![
+                ProviderEntry {
+                    backend: Provider::OpenRouter,
+                    model: Some("or-model".to_string()),
+                    timeout_secs: Some(5),
+                    api_key_env: Some("OPENROUTER_API_KEY".to_string()),
+                    base_url: Some(cloud.base_url()),
+                },
+                ProviderEntry {
+                    backend: Provider::OllamaCloud,
+                    model: Some("model:cloud".to_string()),
+                    timeout_secs: Some(5),
+                    api_key_env: None,
+                    base_url: Some(cloud.base_url()),
+                },
+                ProviderEntry {
+                    backend: Provider::Gemini,
+                    model: None,
+                    timeout_secs: Some(5),
+                    api_key_env: None,
+                    base_url: None,
+                },
+                ProviderEntry {
+                    backend: Provider::Local,
+                    model: Some("test-model".to_string()),
+                    timeout_secs: Some(5),
+                    api_key_env: None,
+                    base_url: Some("http://127.0.0.1:1".to_string()),
+                },
+            ],
+        };
+
+        let entries =
+            resolve_provider_entries(&config, Some(Backend::Local)).expect("resolve must succeed");
+        assert!(
+            entries.iter().all(|e| e.backend == Provider::Local),
+            "Forbidden priority chain must be pure Local-only, got: {entries:?}"
+        );
+        assert!(!entries.is_empty());
+
+        // complete path that would be used after priority truncation
+        let err = complete(
+            &config.local_model,
+            &test_messages(),
+            &CompletionOptions::default(),
+            Some(3),
+        )
+        .expect_err("Forbidden + local-down must not hit cloud via priority chain");
+        assert!(
+            err.contains(CLOUD_POLICY_FORBIDDEN_CODE),
+            "error must name cloud_policy_forbidden, got: {err}"
+        );
+        assert!(
+            err.contains(MCP_ALLOW_CLOUD_EGRESS_ENV),
+            "error must name opt-in env, got: {err}"
+        );
+        mock.assert_hits(0);
+    }
+
     #[test]
     #[serial_test::serial(env)]
     fn gemini_complete_blocked_under_forbidden() {

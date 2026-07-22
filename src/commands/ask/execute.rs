@@ -297,6 +297,17 @@ pub fn execute_ask(
         }
         Backend::Local | Backend::OllamaCloud | Backend::OpenRouter => {
             if !crate::local_model::client::is_configured(&config.local_model) {
+                // 0073: under Forbidden, cloud-only credentials do not count as
+                // configured — return the structured opt-in-bearing error so
+                // MCP clients see cloud_policy_forbidden + ALLOW_CLOUD guidance.
+                if crate::local_model::CloudPolicy::from_env().is_forbidden() {
+                    return Err(miette::miette!(
+                        "{}",
+                        crate::local_model::cloud_policy_forbidden_error(
+                            "local model required; cloud keys are ignored under Forbidden"
+                        )
+                    ));
+                }
                 if let Some(Backend::Gemini) = backend {
                     return Err(miette::miette!(
                         "Gemini API key missing and no local model is configured. Please configure either Gemini or a local model (Ollama/llama.cpp)."
@@ -598,5 +609,53 @@ mod tests {
         let options = crate::commands::ask::ask_completion_options();
         assert_eq!(options.max_tokens, 512);
         assert!(options.max_tokens < Config::default().local_model.context_window);
+    }
+
+    /// 0073 Codex R1 P2: Forbidden + cloud-only credentials must surface
+    /// `cloud_policy_forbidden` (not the generic "not configured" message).
+    #[test]
+    #[serial_test::serial(env)]
+    fn forbidden_cloud_only_returns_structured_policy_error() {
+        mod env_guard {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/integration/common/env_guard.rs"
+            ));
+        }
+        use crate::local_model::cloud_policy::{
+            CLOUD_POLICY_ENV, CLOUD_POLICY_FORBIDDEN_CODE, CLOUD_POLICY_FORBIDDEN_VALUE,
+            MCP_ALLOW_CLOUD_EGRESS_ENV,
+        };
+        use env_guard::TempEnv;
+
+        // Isolate from ambient keys / repo .env.
+        // nosemgrep: rust.lang.security.temp-dir.temp-dir
+        if let Ok(tmp) = std::env::temp_dir().canonicalize() {
+            let _ = std::env::set_current_dir(tmp);
+        }
+        let _pol = TempEnv::set(CLOUD_POLICY_ENV, CLOUD_POLICY_FORBIDDEN_VALUE);
+        let _allow = TempEnv::remove(MCP_ALLOW_CLOUD_EGRESS_ENV);
+        let _or = TempEnv::set("OPENROUTER_API_KEY", "sk-or-v1-test-not-real");
+        let _gem = TempEnv::set("GEMINI_API_KEY", "test-gemini-key-not-real");
+
+        let mut config = Config::default();
+        config.local_model.base_url.clear();
+        config.local_model.generation_url = None;
+        config.local_model.ollama_cloud_url = Some("https://api.ollama.com".to_string());
+        config.local_model.ollama_cloud_api_key = Some("ollama-key".to_string());
+        config.local_model.ollama_cloud_model = Some("model:cloud".to_string());
+
+        assert!(
+            !crate::local_model::client::is_configured(&config.local_model),
+            "cloud keys must not count as configured under Forbidden"
+        );
+        assert!(crate::local_model::CloudPolicy::from_env().is_forbidden());
+
+        // Mirror the execute_ask branch: Forbidden + !is_configured → structured error.
+        let err = crate::local_model::cloud_policy_forbidden_error(
+            "local model required; cloud keys are ignored under Forbidden",
+        );
+        assert!(err.contains(CLOUD_POLICY_FORBIDDEN_CODE));
+        assert!(err.contains(MCP_ALLOW_CLOUD_EGRESS_ENV));
     }
 }

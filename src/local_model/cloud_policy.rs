@@ -79,6 +79,10 @@ pub fn mcp_allow_cloud_egress_from_env() -> bool {
 ///
 /// Always sets `LEDGERFUL_NON_INTERACTIVE=1`. Sets
 /// `LEDGERFUL_CLOUD_POLICY=forbidden` unless host allow-cloud opt-in is true.
+///
+/// When allow-cloud is set, callers must also apply
+/// [`mcp_tool_spawn_env_removes`] (or equivalent `Command::env_remove`) so a
+/// pre-existing inherited Forbidden marker cannot stick on the child.
 pub fn mcp_tool_spawn_env() -> Vec<(String, String)> {
     let mut env = vec![("LEDGERFUL_NON_INTERACTIVE".to_string(), "1".to_string())];
     if !mcp_allow_cloud_egress_from_env() {
@@ -88,6 +92,19 @@ pub fn mcp_tool_spawn_env() -> Vec<(String, String)> {
         ));
     }
     env
+}
+
+/// Env vars that MCP tool spawns must **remove** from the child environment.
+///
+/// When host `LEDGERFUL_MCP_ALLOW_CLOUD_EGRESS` is set, the Forbidden marker is
+/// omitted from set-pairs; it must also be explicitly removed so inheritance
+/// cannot leave `LEDGERFUL_CLOUD_POLICY=forbidden` on the child.
+pub fn mcp_tool_spawn_env_removes() -> Vec<String> {
+    if mcp_allow_cloud_egress_from_env() {
+        vec![CLOUD_POLICY_ENV.to_string()]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Build a structured Forbidden error naming the opt-in env var.
@@ -159,6 +176,12 @@ mod tests {
                 .any(|(k, v)| k == "LEDGERFUL_NON_INTERACTIVE" && v == "1")
         );
         assert!(!env.iter().any(|(k, _)| k == CLOUD_POLICY_ENV));
+        // When allow-cloud, child must also remove any inherited Forbidden marker.
+        let removes = mcp_tool_spawn_env_removes();
+        assert!(
+            removes.iter().any(|k| k == CLOUD_POLICY_ENV),
+            "allow-cloud must env_remove LEDGERFUL_CLOUD_POLICY"
+        );
     }
 
     #[test]
@@ -167,6 +190,14 @@ mod tests {
         let _a = TempEnv::set(MCP_ALLOW_CLOUD_EGRESS_ENV, "TRUE");
         let env = mcp_tool_spawn_env();
         assert!(!env.iter().any(|(k, _)| k == CLOUD_POLICY_ENV));
+        assert!(mcp_tool_spawn_env_removes().contains(&CLOUD_POLICY_ENV.to_string()));
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn mcp_spawn_env_removes_empty_when_forbidden() {
+        let _a = TempEnv::remove(MCP_ALLOW_CLOUD_EGRESS_ENV);
+        assert!(mcp_tool_spawn_env_removes().is_empty());
     }
 
     #[test]
