@@ -31,7 +31,7 @@ pub const INVENTORY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         name: "ask",
-        description: "Conceptual and semantic natural language queries about the codebase.",
+        description: "Conceptual and semantic natural language queries about the codebase. Uses a local model by default; MCP children run with LEDGERFUL_CLOUD_POLICY=forbidden (zero cloud egress) unless the host sets LEDGERFUL_MCP_ALLOW_CLOUD_EGRESS=1. Repo config cannot clear Forbidden.",
         schema_json: r#"{
             "type": "object",
             "properties": {
