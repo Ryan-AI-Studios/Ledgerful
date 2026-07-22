@@ -1093,9 +1093,12 @@ async fn test_spa_index_served_at_root() {
     )
     .unwrap();
 
-    // Containment must accept a temp SPA with dashboard marker (unit path).
-    let validated = ledgerful::commands::web::spa_dir::validate_spa_dir(&spa_dir)
-        .expect("temp SPA with marker must pass containment");
+    // Temp SPAs usually sit under $HOME — inject allow-root covering the SPA
+    // so containment matches production LEDGERFUL_SPA_ROOT operator path.
+    let allow_root = spa_dir.clone();
+    let validated =
+        ledgerful::commands::web::spa_dir::validate_spa_dir_with_roots(&spa_dir, &[allow_root])
+            .expect("temp SPA under dedicated allow-root must pass containment");
     let (url, _token, handle) = spawn_server_with_spa_dir(guard.layout(), Some(validated)).await;
 
     let root_url = url.clone();
