@@ -550,10 +550,18 @@ fn test_usage_flush_posts_expected_json_shape() {
     // (mock server default 404 for unmatched), and `mock.hits()`
     // would be 0. This makes the test falsifiable against the
     // actual wire payload, not just "a POST happened".
+    //
+    // 0077: also require `X-Ledgerful-Telemetry-Token` with the
+    // default bar-raising token (integration path through real CLI).
+    let _token_clear = TempEnv::remove("LEDGERFUL_USAGE_TOKEN");
     let server = MockServer::start();
     let mock = server.mock(|when, then| {
         when.method(POST)
             .path("/api/telemetry")
+            .header(
+                "X-Ledgerful-Telemetry-Token",
+                "lf-tel-v1-7c4e9b2a1f8d3e6a0c5b9d4e8f1a2b3c",
+            )
             // Seeded anonymous_id — proves the right config is in use.
             .body_contains("11111111-2222-3333-4444-555555555555")
             // All 10 required fields from the spec schema.
