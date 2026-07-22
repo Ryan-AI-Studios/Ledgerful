@@ -3,8 +3,8 @@
 use crate::commands::web::api;
 use crate::commands::web::server::handlers;
 use crate::commands::web::server::middleware::{
-    csp_header_middleware, host_validation_layer, local_cors, rate_limit_layer,
-    server_header_middleware, token_layer,
+    csp_header_middleware, host_validation_layer, local_cors, peer_allowlist_layer,
+    rate_limit_layer, server_header_middleware, token_layer,
 };
 use crate::commands::web::state::AppState;
 use axum::Router;
@@ -87,6 +87,11 @@ pub fn router(state: Arc<AppState>) -> Router {
                 ),
         )
         .layer(local_cors())
+        // Peer allowlist (public mode) then Host rebinding defense.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            peer_allowlist_layer,
+        ))
         .layer(middleware::from_fn(host_validation_layer))
         .with_state(state)
 }

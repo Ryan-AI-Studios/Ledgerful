@@ -6,6 +6,9 @@ use std::path::Path;
 use tokio::net::TcpListener;
 
 /// Bind a TCP listener and serve the router until SIGINT.
+///
+/// Uses `into_make_service_with_connect_info` so middleware can attribute
+/// rate limits and peer allowlist checks to the real peer IP (RT-W3).
 pub async fn serve(router: axum::Router, bind: String, port: u16) -> Result<()> {
     let addr = SocketAddr::new(
         bind.parse()
@@ -16,10 +19,13 @@ pub async fn serve(router: axum::Router, bind: String, port: u16) -> Result<()> 
     let listener = TcpListener::bind(addr).await.into_diagnostic()?;
     tracing::info!("ledgerful web listening on {}", addr);
 
-    axum::serve(listener, router)
-        .with_graceful_shutdown(shutdown_signal())
-        .await
-        .into_diagnostic()?;
+    axum::serve(
+        listener,
+        router.into_make_service_with_connect_info::<SocketAddr>(),
+    )
+    .with_graceful_shutdown(shutdown_signal())
+    .await
+    .into_diagnostic()?;
 
     Ok(())
 }
