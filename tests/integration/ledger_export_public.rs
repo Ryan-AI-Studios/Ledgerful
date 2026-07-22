@@ -509,3 +509,84 @@ fn export_public__signed_output__entry_signature_verifies_with_public_key() {
         "at least one entry signature must verify; found {verified_count}"
     );
 }
+
+/// Exported verifier.html must not reintroduce the XSS row/status sinks (0075).
+#[test]
+#[serial(env, cwd)]
+#[allow(non_snake_case)]
+fn export_public__verifier_html__dom_safe_no_innerhtml_entry_fields() {
+    let _env_non_interactive = non_interactive();
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+
+    let _guard = DirGuard::from_utf8(root);
+    run_ledgerful_binary(tmp.path(), &["init"]);
+
+    fs::write(tmp.path().join("a.txt"), "hello").unwrap();
+    crate::common::git_add_and_commit_no_verify(tmp.path(), "initial commit");
+
+    export_public_in_repo(tmp.path(), "bundle-verifier-xss", false);
+
+    let verifier = String::from_utf8(read_bundle_file(
+        tmp.path(),
+        "bundle-verifier-xss",
+        "verifier.html",
+    ))
+    .expect("verifier.html must be UTF-8");
+
+    assert!(
+        verifier.contains("function appendCell(tr, v)"),
+        "exported verifier.html must include appendCell helper"
+    );
+    assert!(
+        verifier.contains("td.textContent"),
+        "exported verifier.html must use textContent for cell values"
+    );
+    assert!(
+        verifier.contains("VERIFY-ON-RAW"),
+        "exported verifier.html must pin VERIFY-ON-RAW on the signature basis"
+    );
+    assert!(
+        !verifier.contains("tr.innerHTML"),
+        "exported verifier.html must not assign tr.innerHTML"
+    );
+
+    // Structural: no innerHTML concatenated with entry free-text fields.
+    let re_entry =
+        regex::Regex::new(r"innerHTML\s*[+]?=\s*.*entry\.(summary|tx_id|category|reason)")
+            .expect("valid regex");
+    assert!(
+        !re_entry.is_match(&verifier),
+        "exported verifier.html must not concatenate entry free-text into innerHTML"
+    );
+
+    // Status hashes must not land in innerHTML assignments.
+    for line in verifier.lines() {
+        if line.contains("innerHTML") {
+            assert!(
+                !line.contains("actualEntriesHash") && !line.contains("expectedEntriesHash"),
+                "hash values must not appear in innerHTML lines: {line}"
+            );
+            assert!(
+                !line.contains("entry.tx_id")
+                    && !line.contains("entry.category")
+                    && !line.contains("entry.summary")
+                    && !line.contains("entry.reason"),
+                "entry free-text must not appear in innerHTML lines: {line}"
+            );
+        }
+    }
+
+    // index.html good path: HTML-escaped fields (if any free-text present).
+    let index = String::from_utf8(read_bundle_file(
+        tmp.path(),
+        "bundle-verifier-xss",
+        "index.html",
+    ))
+    .expect("index.html must be UTF-8");
+    assert!(
+        index.contains("<table>") && index.contains("</table>"),
+        "index.html must contain the browse table"
+    );
+}
