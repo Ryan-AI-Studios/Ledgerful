@@ -488,6 +488,14 @@ fn print_public_warning(bind: &str) {
 mod tests {
     use super::*;
 
+    mod env_guard {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/integration/common/env_guard.rs"
+        ));
+    }
+    use env_guard::TempEnv;
+
     #[test]
     fn peer_allowlist_required_for_public_non_loopback() {
         // Pure parse tests — env-dependent refuse is covered by parse emptiness.
@@ -520,7 +528,11 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn public_non_loopback_without_allowlist_refuses() {
+        // Isolate process env so a developer/CI LEDGERFUL_WEB_PEER_ALLOWLIST
+        // cannot turn this refuse path into a false pass.
+        let _clear = TempEnv::remove(PEER_ALLOWLIST_ENV);
         // Combined with DoD-1 (blank token refuse), the 0.0.0.0 + Host:127.0.0.1
         // + blank-token footgun is closed: public bind needs allowlist, blank
         // token never starts.
@@ -530,6 +542,15 @@ mod tests {
         );
         assert!(resolve_peer_allowlist(false, "0.0.0.0").is_ok());
         assert!(resolve_peer_allowlist(true, "127.0.0.1").is_ok());
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn public_non_loopback_with_allowlist_accepts() {
+        let _set = TempEnv::set(PEER_ALLOWLIST_ENV, "203.0.113.10");
+        let set = resolve_peer_allowlist(true, "0.0.0.0").unwrap();
+        let set = set.expect("allowlist present");
+        assert!(set.contains(&"203.0.113.10".parse().unwrap()));
     }
 
     #[test]
@@ -546,8 +567,10 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn combined_footgun_blank_token_and_public_both_refuse() {
         // DoD-1 + DoD-3: neither blank token nor public-without-allowlist starts.
+        let _clear = TempEnv::remove(PEER_ALLOWLIST_ENV);
         assert!(resolve_session_token(Some(String::new()), None).is_err());
         assert!(resolve_session_token(None, Some(String::new())).is_err());
         assert!(resolve_peer_allowlist(true, "0.0.0.0").is_err());
