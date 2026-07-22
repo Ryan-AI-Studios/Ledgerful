@@ -691,6 +691,7 @@ impl Commands {
                 LedgerCommands::ExportProvenance { .. } => "ledger_export_provenance",
                 LedgerCommands::ExportPublic { .. } => "ledger_export_public",
                 LedgerCommands::HookRepair { .. } => "ledger_hook_repair",
+                LedgerCommands::RecoverOrphan { .. } => "ledger_recover_orphan",
             },
             Commands::Verify { .. } => "verify",
             Commands::Ask { .. } => "ask",
@@ -1309,6 +1310,7 @@ impl Commands {
                     entity,
                     compact,
                     exit_code,
+                    strict_observe_signal,
                     verify_signatures,
                     json,
                     global,
@@ -1328,6 +1330,9 @@ impl Commands {
                     }
                     if *exit_code {
                         f.push("exit_code");
+                    }
+                    if *strict_observe_signal {
+                        f.push("strict_observe_signal");
                     }
                     if *verify_signatures {
                         f.push("verify_signatures");
@@ -1575,6 +1580,21 @@ impl Commands {
                 LedgerCommands::HookRepair { force } => {
                     if *force {
                         f.push("force");
+                    }
+                }
+                LedgerCommands::RecoverOrphan {
+                    promote,
+                    abandon,
+                    reason,
+                } => {
+                    if *promote {
+                        f.push("promote");
+                    }
+                    if *abandon {
+                        f.push("abandon");
+                    }
+                    if reason.is_some() {
+                        f.push("reason");
                     }
                 }
             },
@@ -2448,9 +2468,12 @@ pub enum LedgerCommands {
         /// Output a compact view
         #[arg(short, long)]
         compact: bool,
-        /// Exit with 1 if there is unaudited drift
+        /// Exit non-zero on would-block conditions (enforce: 1; observe: 0 unless --strict-observe-signal)
         #[arg(long)]
         exit_code: bool,
+        /// In observe mode with --exit-code, exit 2 for would-block conditions (distinct from enforce's 1)
+        #[arg(long = "strict-observe-signal")]
+        strict_observe_signal: bool,
         /// Perform signature verification and exit with 1 if signatures are invalid
         #[arg(long = "verify-signatures")]
         verify_signatures: bool,
@@ -2472,6 +2495,18 @@ pub enum LedgerCommands {
         /// Re-enable the global rollup view in user config
         #[arg(long, conflicts_with = "opt_out", requires = "global")]
         opt_in: bool,
+    },
+    /// Recover a promote-failed or HEAD-matching orphan sidecar
+    RecoverOrphan {
+        /// Promote the PENDING orphan to COMMITTED (Unverified) and drop the sidecar
+        #[arg(long, conflicts_with = "abandon")]
+        promote: bool,
+        /// Abandon the orphan: write a MAINTENANCE row with --reason, rollback pending, drop sidecar
+        #[arg(long, conflicts_with = "promote")]
+        abandon: bool,
+        /// Required with --abandon: durable reason (never silent delete)
+        #[arg(long, short)]
+        reason: Option<String>,
     },
     /// Register a new tech stack rule or commit validator
     Register {

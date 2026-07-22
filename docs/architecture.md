@@ -50,6 +50,10 @@ CLI
 - `viz-server` serves a WebSocket-fed arc diagram of the Knowledge Graph.
 - `ledger` manages the transactional provenance ledger (start, commit, search, audit, re-sign, graph).
 - `gate` manages observe/enforce mode transitions with signed audit entries.
+  Enforce lifecycle integrity (trail retention on promote failure, HEAD-covered
+  heuristic, no phantom Verified on promote) is documented in
+  [lifecycle-integrity.md](lifecycle-integrity.md). Client hooks remain
+  bypassable (`--no-verify` / `core.hooksPath`); hard shared enforcement needs CI.
 - `demo` creates a synthetic repo and drives it through the real hook flow.
 - `export` produces SOC2 evidence ZIPs outside the `web` feature.
 - `schedule` installs cross-platform nightly indexing tasks.

@@ -239,6 +239,150 @@ pub fn execute_ledger_rollback(tx_id: Option<String>, reason: String) -> Result<
     Ok(())
 }
 
+/// Recover a promote-failed / HEAD-matching orphan sidecar.
+///
+/// `--promote`: commit the PENDING row as COMMITTED with `Unverified` status,
+/// then drop the sidecar.
+/// `--abandon --reason`: write a durable MAINTENANCE entry with the reason,
+/// rollback the pending tx, drop the sidecar. Never silent delete without reason.
+pub fn execute_ledger_recover_orphan(
+    promote: bool,
+    abandon: bool,
+    reason: Option<String>,
+) -> Result<()> {
+    use crate::commands::hook_sidecar::{RECOVER_HINT, read_pending_sidecar};
+    use owo_colors::OwoColorize;
+
+    if promote == abandon {
+        return Err(miette::miette!(
+            "Specify exactly one of --promote or --abandon. {}",
+            RECOVER_HINT
+        ));
+    }
+    if abandon && reason.as_ref().is_none_or(|r| r.trim().is_empty()) {
+        return Err(miette::miette!(
+            "--abandon requires a non-empty --reason (never silent delete of promote-fail trail)"
+        ));
+    }
+
+    let layout = get_layout()?;
+    let sidecar_path = layout.state_subdir().join("pending_hook_tx");
+    let pending = match read_pending_sidecar(sidecar_path.as_std_path())? {
+        Some(p) => p,
+        None => {
+            return Err(miette::miette!(
+                "No pending hook sidecar found — nothing to recover."
+            ));
+        }
+    };
+
+    let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
+    let config = load_ledger_config(&layout)?;
+    let mut tx_mgr =
+        TransactionManager::new(&mut storage, layout.root.clone().into(), config.clone());
+
+    if promote {
+        let risk = pending.risk.clone();
+        let is_skipped_coverage = pending.summary.starts_with("[SKIPPED]");
+        let verification_status = if is_skipped_coverage {
+            Some(VerificationStatus::Unverified)
+        } else if risk.as_deref() == Some("TRIVIAL") {
+            None
+        } else {
+            Some(VerificationStatus::Unverified)
+        };
+        tx_mgr
+            .commit_change(
+                pending.tx_id.clone(),
+                CommitRequest {
+                    change_type: ChangeType::Modify,
+                    summary: pending.summary.clone(),
+                    reason: pending.reason.clone(),
+                    is_breaking: false,
+                    committed_at: pending.committed_at.clone(),
+                    verification_status,
+                    verification_basis: None,
+                    signature: pending.signature.clone(),
+                    public_key: pending.public_key.clone(),
+                    risk,
+                    related_tickets: pending.related_tickets.clone(),
+                    snapshot_id: pending.snapshot_id,
+                    observed: pending.observed,
+                    ..Default::default()
+                },
+                false,
+            )
+            .map_err(|e| miette::miette!("recover-orphan --promote failed: {}", e))?;
+
+        let _ = std::fs::remove_file(&sidecar_path);
+        println!(
+            "{} Promote orphan {} committed as Unverified (coverage restored).",
+            "SUCCESS:".green().bold(),
+            pending.tx_id.cyan()
+        );
+        return Ok(());
+    }
+
+    // abandon path
+    let abandon_reason = reason.unwrap_or_default();
+    let abandon_summary = format!(
+        "[ABANDONED] promote orphan {} — {}",
+        pending.tx_id, abandon_reason
+    );
+
+    // Durable MAINTENANCE row via atomic path so the abandon is on the chain.
+    let abandon_tx = tx_mgr
+        .start_change(TransactionRequest {
+            category: Category::Chore,
+            entity: "ledger-recovery".to_string(),
+            planned_action: Some(abandon_summary.clone()),
+            ..Default::default()
+        })
+        .map_err(|e| miette::miette!("{}", e))?;
+
+    tx_mgr
+        .commit_change(
+            abandon_tx.clone(),
+            CommitRequest {
+                change_type: ChangeType::Modify,
+                summary: abandon_summary,
+                reason: abandon_reason.clone(),
+                is_breaking: false,
+                entry_type: Some(EntryType::Maintenance),
+                verification_status: Some(VerificationStatus::Unverified),
+                verification_basis: None,
+                outcome_notes: Some(format!(
+                    "Abandoned promote orphan pending tx {}; original summary: {}",
+                    pending.tx_id, pending.summary
+                )),
+                ..Default::default()
+            },
+            true, // force: abandon must not be blocked by verify_to_commit
+        )
+        .map_err(|e| miette::miette!("failed to write abandon MAINTENANCE entry: {}", e))?;
+
+    // Rollback the original pending (best-effort if already gone).
+    if let Err(e) = tx_mgr.rollback_change(
+        pending.tx_id.clone(),
+        format!("Abandoned via recover-orphan: {abandon_reason}"),
+    ) {
+        tracing::warn!(
+            "recover-orphan: rollback of pending {} returned: {} (continuing to drop sidecar)",
+            pending.tx_id,
+            e
+        );
+    }
+
+    let _ = std::fs::remove_file(&sidecar_path);
+    println!(
+        "{} Promote orphan {} abandoned with MAINTENANCE entry {}.",
+        "SUCCESS:".green().bold(),
+        pending.tx_id.cyan(),
+        abandon_tx.cyan()
+    );
+    Ok(())
+}
+
 pub fn execute_ledger_atomic(
     entity: &str,
     category: &str,

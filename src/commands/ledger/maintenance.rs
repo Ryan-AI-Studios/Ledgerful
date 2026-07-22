@@ -106,6 +106,58 @@ pub fn execute_ledger_adopt(
     Ok(())
 }
 
+/// Tx IDs protected by the pending_hook_tx sidecar GC policy (promote_failed
+/// and/or HEAD-matching orphan). Shared with commit-msg via `is_gc_eligible`.
+fn gc_protected_sidecar_tx(
+    layout: &crate::state::layout::Layout,
+) -> Option<(String, &'static str)> {
+    use crate::commands::hook_sidecar::{
+        GcContext, head_message_hash, is_gc_eligible, read_pending_sidecar,
+    };
+
+    let sidecar_path = layout.state_subdir().join("pending_hook_tx");
+    let pending = read_pending_sidecar(sidecar_path.as_std_path())
+        .ok()
+        .flatten()?;
+    let head_hash = head_message_hash(layout.root.as_std_path());
+    let ctx = GcContext {
+        head_msg_hash: head_hash.as_deref(),
+        editmsg_hash: None,
+    };
+    if is_gc_eligible(&pending, &ctx) {
+        return None;
+    }
+    let reason = if pending.is_promote_failed() {
+        "promote_failed"
+    } else {
+        "HEAD-matching orphan"
+    };
+    Some((pending.tx_id, reason))
+}
+
+fn refuse_gc_protected(
+    id: &str,
+    protected: &Option<(String, &'static str)>,
+    dry_run: bool,
+) -> bool {
+    use crate::commands::hook_sidecar::{CODE_PROMOTE_ORPHAN, RECOVER_HINT};
+
+    let Some((prot_id, reason)) = protected else {
+        return false;
+    };
+    if id != prot_id {
+        return false;
+    }
+    let verb = if dry_run { "Would refuse" } else { "Refusing" };
+    let msg = format!(
+        "[Ledgerful] CRITICAL [{CODE_PROMOTE_ORPHAN}]: {verb} to GC {reason} orphan tx {id}. \
+         Use recover-orphan — never silent-delete promote-fail trails. {RECOVER_HINT}"
+    );
+    eprintln!("{msg}");
+    tracing::error!(target: "cli_summary", "{msg}");
+    true
+}
+
 pub fn execute_ledger_gc(
     stale: bool,
     orphans: bool,
@@ -132,6 +184,7 @@ pub fn execute_ledger_gc(
     }
 
     let layout = get_layout()?;
+    let protected = gc_protected_sidecar_tx(&layout);
     let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
     let config = load_ledger_config(&layout)?;
 
@@ -180,7 +233,12 @@ pub fn execute_ledger_gc(
 
         let mut count = 0;
         let mut failures = 0;
+        let mut refused = 0;
         for id in stale_ids {
+            if refuse_gc_protected(&id, &protected, dry_run) {
+                refused += 1;
+                continue;
+            }
             if dry_run {
                 println!("Would rollback PENDING transaction {}", id);
                 count += 1;
@@ -211,6 +269,13 @@ pub fn execute_ledger_gc(
                     count
                 );
             }
+        }
+
+        if refused > 0 && count == 0 && failures == 0 {
+            return Err(miette::miette!(
+                "GC refused to clean {} promote-fail/HEAD-matching orphan(s). Use: ledgerful ledger recover-orphan --promote  OR  --abandon --reason \"...\"",
+                refused
+            ));
         }
 
         if failures > 0 {
@@ -272,7 +337,12 @@ pub fn execute_ledger_gc(
 
         let mut count = 0;
         let mut failures = 0;
+        let mut refused = 0;
         for id in stale_ids {
+            if refuse_gc_protected(&id, &protected, dry_run) {
+                refused += 1;
+                continue;
+            }
             if dry_run {
                 println!("Would rollback PENDING transaction {}", id);
                 count += 1;
@@ -303,6 +373,13 @@ pub fn execute_ledger_gc(
                     count
                 );
             }
+        }
+
+        if refused > 0 && count == 0 && failures == 0 {
+            return Err(miette::miette!(
+                "GC refused to clean {} promote-fail/HEAD-matching orphan(s). Use: ledgerful ledger recover-orphan --promote  OR  --abandon --reason \"...\"",
+                refused
+            ));
         }
 
         if failures > 0 {
@@ -370,6 +447,30 @@ pub fn execute_ledger_hook_repair(force: bool) -> Result<()> {
         pending.commit_msg_hash
     );
     println!("  Current HEAD commit message hash: {}", current_hash);
+
+    // Shared GC policy: promote_failed (and HEAD-match) orphans must not be
+    // destroyed via hook-repair — recovery owns the trail.
+    use crate::commands::hook_sidecar::{
+        CODE_PROMOTE_ORPHAN, GcContext, RECOVER_HINT, is_gc_eligible,
+    };
+    let ctx = GcContext {
+        head_msg_hash: Some(current_hash.as_str()),
+        editmsg_hash: None,
+    };
+    if !is_gc_eligible(&pending, &ctx) {
+        let reason = if pending.is_promote_failed() {
+            "promote_failed"
+        } else {
+            "HEAD-matching / GC-ineligible"
+        };
+        return Err(miette::miette!(
+            "[{}] Refusing hook-repair of {} orphan (tx {}). Use recover-orphan — never silent-delete promote-fail trails. {}",
+            CODE_PROMOTE_ORPHAN,
+            reason,
+            pending.tx_id,
+            RECOVER_HINT
+        ));
+    }
 
     if force {
         println!("Repairing hook state (force)...");
@@ -518,6 +619,8 @@ mod tests {
             public_key: None,
             snapshot_id: None,
             observed: None,
+            promote_failed: None,
+            promote_error: None,
         };
         let sidecar_path = root
             .join(".ledgerful")
