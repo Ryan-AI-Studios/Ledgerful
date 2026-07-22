@@ -266,12 +266,15 @@ pub fn execute_ask(
                 content,
             } = record.payload
             {
+                // 0073 / RT-A2+A3: fence + size-cap bridge insights as data
+                // (they re-enter ask context via the impact packet user prompt).
+                let fenced = crate::ai::fence_bridge_insight(&content);
                 latest_packet
                     .ai_insights
                     .push(crate::impact::packet::AiInsight {
                         memory_id,
                         relevance,
-                        content,
+                        content: fenced,
                     });
             }
         }

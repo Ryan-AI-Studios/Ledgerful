@@ -1,3 +1,4 @@
+use crate::ai::escape_code_chunk;
 use crate::config::model::{GeminiConfig, LocalModelConfig};
 use crate::local_model::client::{
     ChatMessage, CompletionOptions, complete_with_first_byte_timeout, gemini_complete,
@@ -666,14 +667,6 @@ fn parse_llm_response(response: &str, path: &Path, chunk_index: usize) -> ParseR
     }
 
     Ok((nodes, edges, warnings))
-}
-
-fn escape_code_chunk(chunk: &str) -> String {
-    // Replace every backtick with U+02CB (modifier letter grave accent) so the
-    // untrusted repository content can never form a Markdown code fence inside
-    // the prompt's own ``` block. The escaped content remains visually
-    // recognizable while preventing prompt-injection breakouts.
-    chunk.replace('`', "\u{02CB}")
 }
 
 fn chunk_content(content: &str, max_chars: usize, overlap_chars: usize) -> Vec<String> {
