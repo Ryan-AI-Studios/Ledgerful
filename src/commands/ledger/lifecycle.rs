@@ -276,6 +276,33 @@ pub fn execute_ledger_recover_orphan(
         }
     };
 
+    // --promote must only commit a recoverable orphan for *current* HEAD
+    // (message-hash heuristic). Stale sidecars must use --abandon --reason.
+    if promote {
+        use crate::commands::hook_sidecar::head_message_hash;
+        let head_hash = head_message_hash(layout.root.as_std_path()).ok_or_else(|| {
+            miette::miette!(
+                "Cannot read HEAD commit message for recover-orphan --promote (message-hash bind)."
+            )
+        })?;
+        let matches_head = pending.commit_msg_hash == head_hash;
+        let is_orphan = pending.is_promote_failed() || matches_head;
+        if !is_orphan {
+            return Err(miette::miette!(
+                "Sidecar {} is not a recoverable orphan for current HEAD (hash mismatch and not promote_failed). Use --abandon --reason \"...\" for true-stale trails. {}",
+                pending.tx_id,
+                RECOVER_HINT
+            ));
+        }
+        if !matches_head {
+            return Err(miette::miette!(
+                "Sidecar {} is promote_failed but does not match current HEAD message-hash. Re-checkout/recreate the bind or use --abandon --reason \"...\". {}",
+                pending.tx_id,
+                RECOVER_HINT
+            ));
+        }
+    }
+
     let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
     let config = load_ledger_config(&layout)?;
     let mut tx_mgr =

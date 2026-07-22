@@ -481,6 +481,48 @@ fn recover_orphan_promote_clears_orphan() {
 
 #[test]
 #[serial(env)]
+fn recover_orphan_promote_rejects_stale_non_head_sidecar() {
+    let repo = setup_repo();
+    let root = repo.path();
+    set_gate_mode(root, "enforce");
+
+    // Sidecar hash does not match HEAD and is not a current-HEAD orphan.
+    let _tx_id =
+        write_pending_sidecar_for_msg(root, "feat: stale non-head message\n\nBody.", "HIGH");
+    let mut pending: PendingHookTx =
+        serde_json::from_str(&fs::read_to_string(sidecar_path(root)).unwrap()).unwrap();
+    // Explicitly not promote_failed, and hash is not HEAD's.
+    pending.promote_failed = None;
+    fs::write(sidecar_path(root), serde_json::to_string(&pending).unwrap()).unwrap();
+
+    let recover = Command::new(ledgerful_bin())
+        .args(["ledger", "recover-orphan", "--promote"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        !recover.status.success(),
+        "recover-orphan --promote must reject stale non-HEAD sidecars"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&recover.stdout),
+        String::from_utf8_lossy(&recover.stderr)
+    );
+    assert!(
+        combined.contains("not a recoverable orphan")
+            || combined.contains("hash mismatch")
+            || combined.contains("--abandon"),
+        "expected stale-reject messaging: {combined}"
+    );
+    assert!(
+        sidecar_path(root).exists(),
+        "sidecar must remain after rejected --promote"
+    );
+}
+
+#[test]
+#[serial(env)]
 fn intent_never_under_enforce_hard_fails() {
     let repo = setup_repo();
     let root = repo.path();
