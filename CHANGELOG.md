@@ -20,6 +20,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `ledger status --exit-code` HEAD-uncovered / promote-orphan signals with
   observe opt-in `--strict-observe-signal` (exit 2). See
   [docs/lifecycle-integrity.md](docs/lifecycle-integrity.md).
+- **MCP cloud-egress hard-fail (0073):** `CloudPolicy::Forbidden` propagates via
+  spawn env `LEDGERFUL_CLOUD_POLICY=forbidden` on every MCP tool child (unless
+  host `LEDGERFUL_MCP_ALLOW_CLOUD_EGRESS=1|true`) plus `LEDGERFUL_NON_INTERACTIVE=1`.
+  Under Forbidden: provider chain truncates to Local-only, `complete*` skips all
+  cloud fallbacks, direct Gemini is blocked, structured error
+  `cloud_policy_forbidden` names the opt-in. Universal `sanitize_for_egress`,
+  DATA-fence for retrieved chunks, bridge `provider_command` allowlist
+  (`ai-brains` only), MCP `search` `--` separator (RT-A4).
 
 ### Changed
 
@@ -27,6 +35,23 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   green). Non-TRIVIAL promote → `Unverified`; only bound `verify --tx-id` sets
   `Verified`. Export `Verified→PASS` mapping unchanged but no longer fed by
   promote phantoms.
+- **Honesty correction (0031 residual):** Track 0031 claimed MCP `ask`
+  `--backend local` made cloud egress "explicit/opt-in on every path including
+  MCP." That was incomplete — `--backend local` only reordered the provider
+  chain; cloud fallbacks inside local completion and priority tails still
+  egressed. **0073** closes that gap with process-level Forbidden policy.
+  Interactive CLI `ask --backend local` remains **Allowed-with-fallback**
+  (human operator path); only MCP spawn / explicit Forbidden forces zero-cloud.
+- MCP `ask` tool blurb documents Forbidden + host opt-in (not "forces local"
+  alone).
+
+### Security
+
+- **0073 residuals (not closed here):** RT-A5 tool *results* are not
+  secret-redacted (MCP can still leak repo secrets to the agent); RT-A7 full
+  semantic-extract cloud closure beyond Forbidden-env paths; RT-A8 tool DoS /
+  limit clamps; Forbidden blocks known cloud providers, not arbitrary
+  non-loopback HTTP to a misconfigured local `base_url`.
 
 ## [0.1.8] - 2026-07-12
 

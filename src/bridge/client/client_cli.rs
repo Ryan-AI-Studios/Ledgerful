@@ -24,6 +24,18 @@ pub fn query_external_cli(query: &str) -> Result<Vec<BridgeRecord>> {
 
     let command_name = provider_command();
 
+    // 0073 / RT-A3: reject evil repo-config provider_command before spawn
+    // (basename allowlist: ai-brains / ai-brains.exe only).
+    if let Err(e) = crate::bridge::allowlist::check_bridge_provider_command(&command_name) {
+        tracing::warn!(
+            "Bridge provider_command '{}' denied by allowlist before spawn: {}. \
+             Only ai-brains is permitted (0073).",
+            command_name,
+            e
+        );
+        return Ok(Vec::new());
+    }
+
     let mut child = match Command::new(&command_name)
         .args([
             "sync",

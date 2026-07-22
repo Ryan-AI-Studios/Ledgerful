@@ -226,6 +226,27 @@ mod tests {
             prompt.contains("Impact Packet:"),
             "DiffTask prompt must contain an `Impact Packet:` block: {prompt}"
         );
+        assert!(
+            prompt.contains("DATA (untrusted repository content"),
+            "DiffTask packet must be DATA-framed: {prompt}"
+        );
+    }
+
+    #[test]
+    fn diff_task_prompt_escapes_ai_insights_with_backticks() {
+        let query = "what did I just change";
+        let mut packet = ImpactPacket::default();
+        packet.ai_insights.push(crate::impact::packet::AiInsight {
+            memory_id: "disk-insight".to_string(),
+            relevance: 0.5,
+            content: "```evil```".to_string(),
+        });
+        let prompt = build_ask_user_prompt(query, false, false, &packet);
+        assert!(
+            !prompt.contains('`'),
+            "ai_insights backticks must be escaped"
+        );
+        assert!(prompt.contains("DATA (untrusted repository content"));
     }
 
     #[test]

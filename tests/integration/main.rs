@@ -148,6 +148,10 @@ mod sync_transport;
 mod timings;
 mod track_ta12;
 
+/// 0073 MCP cloud-egress process-level tests (spawn env + real ask child).
+/// Not gated on mcp feature: exercises the CLI binary with spawn-env pairs,
+/// not the MCP stdio server.
+mod mcp_cloud_egress;
 #[cfg(feature = "mcp")]
 mod mcp_server;
 

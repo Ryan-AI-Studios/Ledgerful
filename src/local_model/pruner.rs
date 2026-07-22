@@ -209,14 +209,14 @@ pub fn format_pruned_packet(pruned: &PrunedPacket<'_>) -> String {
 
     if !pruned.ai_insights.is_empty() {
         out.push_str(&format!(
-            "\nExternal Context ({}):\n",
+            "\nExternal Context / DATA (untrusted bridge insights, {}):\n",
             pruned.ai_insights.len()
         ));
         for insight in pruned.ai_insights {
-            out.push_str(&format!(
-                "- [{:.2}] {}\n",
-                insight.relevance, insight.content
-            ));
+            // Content is already fenced/size-capped at import (execute.rs);
+            // re-escape for defense in depth when formatting into user prompt.
+            let fenced = crate::ai::fence_bridge_insight(&insight.content);
+            out.push_str(&format!("- [{:.2}] {}\n", insight.relevance, fenced));
         }
     }
 

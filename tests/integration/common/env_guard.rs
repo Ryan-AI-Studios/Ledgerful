@@ -34,6 +34,7 @@ impl TempEnv {
     }
 
     /// Remove an environment variable for the lifetime of the guard.
+    #[allow(dead_code)]
     pub fn remove(key: &str) -> Self {
         let original = std::env::var_os(key);
         // SAFETY: env mutation is serialized via #[serial(env)] on callers.
