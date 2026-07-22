@@ -304,7 +304,7 @@ async fn export_evidence__web_matches_direct_call__same_unzipped_members() {
     let app = router(state);
     let serve = axum::serve(
         listener,
-        app.into_make_service_with_connect_info::<std::net::SocketAddr>(),
+        ledgerful::commands::web::server::make_connect_info_service(app),
     );
     let handle = tokio::spawn(async move {
         let _ = serve.await;

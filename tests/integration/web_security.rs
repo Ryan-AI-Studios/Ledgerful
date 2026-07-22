@@ -1,10 +1,9 @@
 use camino::Utf8Path;
 use ledgerful::commands::web::auth::generate_token;
-use ledgerful::commands::web::server::router;
+use ledgerful::commands::web::server::{make_connect_info_service, router};
 use ledgerful::commands::web::state::AppState;
 use ledgerful::state::layout::Layout;
 use reqwest::header::{AUTHORIZATION, HOST, ORIGIN};
-use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
@@ -32,10 +31,7 @@ async fn spawn_server(layout: Layout) -> (String, String, tokio::task::JoinHandl
     let addr = listener.local_addr().unwrap();
 
     let app = router(state);
-    let serve = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    );
+    let serve = axum::serve(listener, make_connect_info_service(app));
     let handle = tokio::spawn(async move {
         let _ = serve.await;
     });
@@ -198,10 +194,7 @@ async fn empty_expected_token_never_authenticates() {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let app = router(state);
-    let serve = axum::serve(
-        listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
-    );
+    let serve = axum::serve(listener, make_connect_info_service(app));
     let handle = tokio::spawn(async move {
         let _ = serve.await;
     });

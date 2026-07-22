@@ -351,15 +351,17 @@ mod tests {
             return;
         }
         let (_allow_tmp, allow) = dedicated_allow_root();
-        // Exact home.
+        // Exact home — must refuse (hard assert; silent Ok would pass the old test).
         let result = validate_spa_dir_with_roots(&home_path, std::slice::from_ref(&allow));
-        if let Err(e) = result {
-            let msg = format!("{e:?}");
-            assert!(
-                msg.contains("home") || msg.contains("HOME") || msg.contains("Refusing"),
-                "{msg}"
-            );
-        }
+        assert!(
+            result.is_err(),
+            "exact $HOME as --spa-dir must refuse when not under allow-root"
+        );
+        let msg = format!("{:?}", result.unwrap_err());
+        assert!(
+            msg.contains("home") || msg.contains("HOME") || msg.contains("Refusing"),
+            "{msg}"
+        );
         // Under-home path without allow covering it: use a subdir of home if
         // present (Documents / itself already covered). Prefer a real child.
         let child = home_path.join("Documents");

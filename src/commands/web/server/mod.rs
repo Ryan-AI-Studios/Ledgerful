@@ -14,4 +14,4 @@ pub use handlers::{
     __path_status_handler, __path_sync_status_handler,
 };
 pub use router::router;
-pub use startup::serve;
+pub use startup::{make_connect_info_service, serve};

@@ -7,7 +7,6 @@ use ledgerful::ledger::types::{Category, ChangeType, EntryType, LedgerEntry, Tra
 use ledgerful::state::layout::Layout;
 use rusqlite::Connection;
 
-use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::net::TcpListener;
 
@@ -49,7 +48,7 @@ async fn spawn_server_with_spa_dir(
     let app = router(state);
     let serve = axum::serve(
         listener,
-        app.into_make_service_with_connect_info::<SocketAddr>(),
+        ledgerful::commands::web::server::make_connect_info_service(app),
     );
     let handle = tokio::spawn(async move {
         let _ = serve.await;

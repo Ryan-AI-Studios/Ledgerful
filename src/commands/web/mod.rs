@@ -130,13 +130,24 @@ fn start_web(args: WebStartArgs) -> Result<()> {
     Ok(())
 }
 
+/// Format the operator-facing token notice (DoD-5). Pure so tests can assert
+/// redaction without capturing process stdout.
+///
+/// When `print_token` is true the full token is included (legacy default).
+/// When false, only the path is mentioned — the token value must never appear.
+fn format_token_notice(token: &str, print_token: bool, token_file: Option<&Utf8Path>) -> String {
+    if print_token {
+        format!("Auth token: {token}")
+    } else if let Some(path) = token_file {
+        format!("Auth token written to {path}")
+    } else {
+        "Auth token suppressed (--print-token=false); no token file path available.".to_string()
+    }
+}
+
 /// Print the token or only the file path (DoD-5).
 fn emit_token_notice(token: &str, print_token: bool, token_file: Option<&Utf8Path>) {
-    if print_token {
-        println!("Auth token: {}", token);
-    } else if let Some(path) = token_file {
-        println!("Auth token written to {}", path);
-    }
+    println!("{}", format_token_notice(token, print_token, token_file));
 }
 
 /// Write the session token to a user-only file under the state dir.
@@ -564,6 +575,67 @@ mod tests {
         assert!(path.as_str().ends_with("web-session-token"));
         let read = std::fs::read_to_string(path.as_std_path()).unwrap();
         assert_eq!(read, token);
+    }
+
+    #[test]
+    fn format_token_notice_print_true_includes_token() {
+        let token = "a".repeat(64);
+        let notice = format_token_notice(&token, true, None);
+        assert!(notice.contains(&token), "default print must show token");
+        assert!(notice.starts_with("Auth token:"));
+    }
+
+    #[test]
+    fn format_token_notice_print_false_redacts_token_and_shows_path() {
+        let token = "b".repeat(64);
+        let path = Utf8Path::new("/tmp/.ledgerful/web-session-token");
+        let notice = format_token_notice(&token, false, Some(path));
+        assert!(
+            !notice.contains(&token),
+            "print-token=false must not include the token value: {notice}"
+        );
+        assert!(
+            notice.contains("web-session-token"),
+            "print-token=false must report the file path: {notice}"
+        );
+        assert!(notice.contains("Auth token written to"));
+    }
+
+    #[test]
+    fn format_token_notice_print_false_without_path_still_redacts() {
+        let token = "c".repeat(64);
+        let notice = format_token_notice(&token, false, None);
+        assert!(!notice.contains(&token));
+        assert!(!notice.contains("Auth token: c"));
+    }
+
+    #[test]
+    fn open_path_message_reports_token_file_when_suppressed() {
+        // Mirrors the --open branch in start_web when print_token is false.
+        let path = Utf8Path::new("C:\\repo\\.ledgerful\\web-session-token");
+        let msg = format!(
+            "Open {} in your browser. Sign in with the token from {}.",
+            "http://127.0.0.1:52001/", path
+        );
+        assert!(msg.contains("web-session-token"));
+        assert!(!msg.contains("Auth token:"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn write_session_token_file_sets_0600() {
+        use std::os::unix::fs::PermissionsExt;
+        let tmp = tempfile::tempdir().unwrap();
+        let layout =
+            crate::state::layout::Layout::new(camino::Utf8Path::from_path(tmp.path()).unwrap());
+        std::fs::create_dir_all(layout.state_dir.as_std_path()).unwrap();
+        let path = write_session_token_file(&layout, &"d".repeat(64)).unwrap();
+        let mode = std::fs::metadata(path.as_std_path())
+            .unwrap()
+            .permissions()
+            .mode()
+            & 0o777;
+        assert_eq!(mode, 0o600, "Unix token file must be user-only 0600");
     }
 
     #[test]
