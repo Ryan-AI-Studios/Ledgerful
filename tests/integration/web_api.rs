@@ -110,7 +110,8 @@ fn seed_ledger_entry(
             related_tickets TEXT,
             author TEXT NOT NULL DEFAULT 'unknown',
             observed INTEGER,
-            prev_hash TEXT
+            prev_hash TEXT,
+            sig_version INTEGER NOT NULL DEFAULT 1
         );",
     )
     .unwrap();

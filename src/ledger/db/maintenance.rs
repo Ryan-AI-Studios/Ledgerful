@@ -134,6 +134,7 @@ mod tests {
             );",
         )
         .unwrap();
+        // sig_version already in CREATE above (m53)
         conn
     }
 
