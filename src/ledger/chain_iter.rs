@@ -31,9 +31,18 @@ impl ChainWalk {
     }
 
     pub fn tail_hash(&self) -> Option<String> {
-        self.ordered
-            .last()
-            .and_then(|e| compute_entry_hash_for_entry(e).ok())
+        let last = self.ordered.last()?;
+        match compute_entry_hash_for_entry(last) {
+            Ok(h) => Some(h),
+            Err(err) => {
+                tracing::error!(
+                    tx_id = %last.tx_id,
+                    error = %err,
+                    "chain_iter::tail_hash encode failed"
+                );
+                None
+            }
+        }
     }
 
     pub fn genesis_committed_at(&self) -> Option<&str> {
