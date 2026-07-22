@@ -1415,3 +1415,67 @@ pub fn explain_test_mappings(
         TestMappingState::Mapped(mapped)
     }
 }
+
+#[cfg(test)]
+mod sig_exit_tests {
+    use super::sig_exit;
+
+    /// Drain any leftover code from a prior test in the same process (defensive;
+    /// nextest runs tests in separate processes by default).
+    fn drain() {
+        let _ = sig_exit::take_requested_exit_code();
+    }
+
+    #[test]
+    fn pure_unsigned_sets_exit_3() {
+        drain();
+        sig_exit::request_exit(sig_exit::UNSIGNED);
+        assert_eq!(
+            sig_exit::take_requested_exit_code(),
+            Some(sig_exit::UNSIGNED)
+        );
+        assert_eq!(sig_exit::UNSIGNED, 3);
+        // Take resets so main sees the code once.
+        assert_eq!(sig_exit::take_requested_exit_code(), None);
+    }
+
+    #[test]
+    fn invalid_or_chain_sets_exit_1() {
+        drain();
+        sig_exit::request_exit(sig_exit::INVALID_OR_CHAIN);
+        assert_eq!(
+            sig_exit::take_requested_exit_code(),
+            Some(sig_exit::INVALID_OR_CHAIN)
+        );
+        assert_eq!(sig_exit::INVALID_OR_CHAIN, 1);
+        assert_eq!(sig_exit::take_requested_exit_code(), None);
+    }
+
+    #[test]
+    fn take_when_empty_is_none() {
+        drain();
+        assert_eq!(sig_exit::take_requested_exit_code(), None);
+    }
+
+    #[test]
+    fn request_is_first_write_wins() {
+        // Production call sites only request once per failure path; first code
+        // sticks so mixed invalid+unsigned paths that request INVALID first
+        // keep exit 1, while pure-unsigned paths request 3 only.
+        drain();
+        sig_exit::request_exit(sig_exit::UNSIGNED);
+        sig_exit::request_exit(sig_exit::INVALID_OR_CHAIN);
+        assert_eq!(
+            sig_exit::take_requested_exit_code(),
+            Some(sig_exit::UNSIGNED)
+        );
+    }
+
+    #[test]
+    fn constants_match_0072_frozen_table() {
+        assert_eq!(sig_exit::OK, 0);
+        assert_eq!(sig_exit::INVALID_OR_CHAIN, 1);
+        assert_eq!(sig_exit::POLICY, 2);
+        assert_eq!(sig_exit::UNSIGNED, 3);
+    }
+}
