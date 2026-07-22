@@ -45,6 +45,10 @@ pub(crate) fn is_loopback_host(host: &str) -> bool {
 }
 
 /// Layer that requires a valid session token for all nested routes.
+///
+/// Failed auth is recorded on a dedicated [`AppState::auth_fail_limiter`] map
+/// (separate from the general request rate limiter). Exceeding the auth-fail
+/// window returns 429; otherwise failures remain 403. Bearer wire is unchanged.
 pub(crate) async fn token_layer(
     State(state): State<std::sync::Arc<AppState>>,
     request: Request,
@@ -52,7 +56,29 @@ pub(crate) async fn token_layer(
 ) -> Result<Response, WebError> {
     let parts = request.into_parts();
     let provided = extract_token_header(&parts.0);
-    validate_token(provided, &state.token)?;
+    if validate_token(provided, &state.token).is_err() {
+        let ip = parts
+            .0
+            .extensions
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|ci| ci.ip())
+            .unwrap_or_else(|| IpAddr::from([127, 0, 0, 1]));
+        let path = parts.0.uri.path().to_string();
+        let now = Instant::now();
+        let mut map = state.auth_fail_limiter.lock().await;
+        // Separate auth-fail budget: 429 only when this map is saturated.
+        record_rate_limit(
+            &mut map,
+            ip,
+            path,
+            now,
+            RATE_LIMIT_MAX_KEYS,
+            RATE_LIMIT_WINDOW,
+            RATE_LIMIT_MAX,
+        )?;
+        drop(map);
+        return Err(WebError::Forbidden);
+    }
 
     let request = Request::from_parts(parts.0, parts.1);
     Ok(next.run(request).await)
@@ -130,14 +156,14 @@ pub(crate) async fn server_header_middleware(request: Request, next: Next) -> Re
 const RATE_LIMIT_WINDOW: Duration = Duration::from_secs(60);
 const RATE_LIMIT_MAX: usize = 60;
 
-/// Per-IP, per-path sliding-window rate limiter. Bursts up to the configured
-/// limit are allowed; exceeding the window returns 429. Keying by path prevents a
-/// single noisy endpoint from starving the rest of the dashboard.
+/// Per-IP, per-path sliding-window rate limiter for **all** traffic. Bursts up
+/// to the configured limit are allowed; exceeding the window returns 429.
+/// Keying by path prevents a single noisy endpoint from starving the rest of
+/// the dashboard.
 ///
-/// Auth failures share this per-(IP, path) bucket — there is no separate
-/// auth-failure limiter (document residual: a dedicated auth-failure bucket
-/// can be added later if needed; today a bad-token flood on `/api/*` is already
-/// bounded by the same window).
+/// Failed authentication is tracked separately on
+/// [`AppState::auth_fail_limiter`] inside [`token_layer`] so auth-fail floods
+/// do not share counts with the general path budget (and vice versa).
 ///
 /// The map is hard-capped at [`RATE_LIMIT_MAX_KEYS`] with eviction of expired
 /// window entries before insert and drop of excess keys when still at capacity.
@@ -326,5 +352,61 @@ mod tests {
         .unwrap();
         assert!(!map.contains_key(&(IpAddr::V4(Ipv4Addr::LOCALHOST), "/old".into())));
         assert_eq!(map.len(), 1);
+    }
+
+    #[test]
+    fn auth_fail_and_general_rate_maps_are_independent() {
+        // Separate maps must not share counts: saturating the auth-fail map
+        // leaves the general path budget intact (and vice versa).
+        let mut general = RateLimitMap::new();
+        let mut auth_fail = RateLimitMap::new();
+        let now = Instant::now();
+        let ip = IpAddr::V4(Ipv4Addr::new(10, 0, 0, 9));
+        let path = "/api/snapshot".to_string();
+        let max = 5usize;
+
+        for _ in 0..max {
+            record_rate_limit(
+                &mut auth_fail,
+                ip,
+                path.clone(),
+                now,
+                RATE_LIMIT_MAX_KEYS,
+                RATE_LIMIT_WINDOW,
+                max,
+            )
+            .unwrap();
+        }
+        assert!(
+            record_rate_limit(
+                &mut auth_fail,
+                ip,
+                path.clone(),
+                now,
+                RATE_LIMIT_MAX_KEYS,
+                RATE_LIMIT_WINDOW,
+                max,
+            )
+            .is_err(),
+            "auth-fail map must saturate"
+        );
+        // General map for the same (ip, path) still has full budget.
+        assert!(
+            record_rate_limit(
+                &mut general,
+                ip,
+                path.clone(),
+                now,
+                RATE_LIMIT_MAX_KEYS,
+                RATE_LIMIT_WINDOW,
+                max,
+            )
+            .is_ok(),
+            "general map must not share auth-fail counts"
+        );
+        assert_eq!(auth_fail.len(), 1);
+        assert_eq!(general.len(), 1);
+        assert_eq!(general.get(&(ip, path.clone())).map(|v| v.len()), Some(1));
+        assert_eq!(auth_fail.get(&(ip, path)).map(|v| v.len()), Some(max));
     }
 }

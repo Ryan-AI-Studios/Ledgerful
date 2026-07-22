@@ -27,6 +27,9 @@ pub struct AppState {
     pub start_time: Instant,
     pub kg_cache: Arc<Mutex<KgCacheEntry>>,
     pub rate_limiter: Arc<Mutex<RateLimitMap>>,
+    /// Separate sliding-window map for failed auth attempts (DoD-4).
+    /// Keyed by (IP, path); does not share counts with [`Self::rate_limiter`].
+    pub auth_fail_limiter: Arc<Mutex<RateLimitMap>>,
     /// When set (public bind mode), only these peer IPs may connect.
     /// `None` means no peer filter (loopback bind / private mode).
     pub peer_allowlist: Option<HashSet<IpAddr>>,
@@ -50,6 +53,7 @@ impl AppState {
             start_time: Instant::now(),
             kg_cache: Arc::new(Mutex::new(None)),
             rate_limiter: Arc::new(Mutex::new(HashMap::new())),
+            auth_fail_limiter: Arc::new(Mutex::new(HashMap::new())),
             peer_allowlist,
             git_meta_cache: Arc::new(Mutex::new(None)),
         }
