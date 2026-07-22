@@ -77,6 +77,7 @@ ledgerful verify --signatures --against-export ./ledgerful-DEMO-evidence.zip
 - An openable zip: `ledgerful-DEMO-evidence.zip` (kept with `--keep`)
 - Gate mode notice: **observe**
 - Follow-up manual `verify --signatures --chain` / `--against-export` exit 0
+- **Honesty:** promoted DEMO ledger entries are **Unverified** (hook promote never sets Verified). `CRYPTO VALID` = signatures + chain integrity, not `verification_status = Verified`.
 
 ## What the automated `demo` already does
 

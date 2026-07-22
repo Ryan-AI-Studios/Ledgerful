@@ -113,7 +113,7 @@ fn corrupted_ledger_re_sign_all_invalid_repairs_to_valid() {
     }
 
     let err = execute_ledger_status(
-        None, true, true, true, false, false, false, None, false, false, false,
+        None, true, true, true, false, false, false, None, false, false, false, false,
     )
     .unwrap_err();
     assert!(format!("{err}").contains("Ledger signature verification failed"));

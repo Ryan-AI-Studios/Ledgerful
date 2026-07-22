@@ -1,5 +1,9 @@
 use crate::ai::intent_drafter::draft_intent;
 use crate::commands::helpers::{get_layout, load_ledger_config};
+use crate::commands::hook_sidecar::{
+    CODE_INTENT_NEVER_UNDER_ENFORCE, CODE_PROMOTE_ORPHAN, GcContext, RECOVER_HINT, editmsg_hash,
+    hash_message, head_message_hash, is_gc_eligible, write_pending_sidecar,
+};
 use crate::config::model::Config;
 use crate::ledger::crypto::sign_ledger_entry;
 use crate::ledger::{Category, TransactionManager, TransactionRequest};
@@ -11,45 +15,13 @@ use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// Re-export for tests / historical imports.
+pub use crate::commands::hook_sidecar::PendingHookTx;
+
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
 struct SkipHistory {
     consecutive_skips: u32,
     bypass_remaining: u32,
-}
-
-#[derive(serde::Serialize, serde::Deserialize, Debug)]
-pub struct PendingHookTx {
-    pub tx_id: String,
-    pub commit_msg_hash: String,
-    pub summary: String,
-    pub reason: String,
-    pub committed_at: Option<String>,
-    pub risk: Option<String>,
-    pub related_tickets: Option<String>,
-    pub signature: Option<String>,
-    pub public_key: Option<String>,
-    pub snapshot_id: Option<i64>,
-    /// Carried from the commit-msg hook through the pending sidecar so the
-    /// post-commit hook can record whether the commit happened under observe
-    /// mode. Stored as unsigned ledger metadata.
-    pub observed: Option<bool>,
-}
-
-fn write_pending_sidecar(
-    layout: &crate::state::layout::Layout,
-    pending: &PendingHookTx,
-) -> Result<()> {
-    let sidecar_path = layout.state_subdir().join("pending_hook_tx");
-    let content = serde_json::to_string(pending).into_diagnostic()?;
-    fs::write(sidecar_path, content).into_diagnostic()?;
-    Ok(())
-}
-
-fn hash_message(msg: &str) -> String {
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(msg.as_bytes());
-    hex::encode(hasher.finalize())
 }
 
 pub fn extract_trailers(msg: &str) -> String {
@@ -124,56 +96,85 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
     let layout = get_layout()?;
     let config = load_ledger_config(&layout)?;
 
-    // 1. If required is "never", skip hook processing entirely
+    // 1. intent.required=never under enforce → hard-fail + doctor CRITICAL code
     if config.intent.required == "never" {
+        if config.gate.is_enforce() {
+            return Err(miette::miette!(
+                "[{}] intent.required=never is not allowed under gate mode enforce. \
+                 Set intent.required to \"always\" or switch gate mode to observe. \
+                 Doctor will flag this as CRITICAL.",
+                CODE_INTENT_NEVER_UNDER_ENFORCE
+            ));
+        }
         return Ok(());
     }
 
     let repo_root = layout.root.as_std_path();
 
-    // Proactive GC: clean up any pre-existing sidecar before writing a new one.
-    // A new commit-msg invocation implies any old sidecar is stale, UNLESS it matches HEAD.
+    // Proactive GC: clean up true-stale sidecars only (shared policy with 0035/0074).
+    // Promote-failed and HEAD-matching orphans are GC-ineligible.
     let sidecar_path = layout.state_subdir().join("pending_hook_tx");
     if sidecar_path.exists() {
         match fs::read_to_string(&sidecar_path) {
             Ok(content) => match serde_json::from_str::<PendingHookTx>(&content) {
                 Ok(pending) => {
-                    let mut matches_head = false;
-                    let mut matches_editmsg = false;
-                    let editmsg_path = repo_root.join(".git").join("COMMIT_EDITMSG");
+                    let head_hash = head_message_hash(repo_root);
+                    let edit_hash = editmsg_hash(repo_root);
+                    let ctx = GcContext {
+                        head_msg_hash: head_hash.as_deref(),
+                        editmsg_hash: edit_hash.as_deref(),
+                    };
 
-                    if let Ok(output) = std::process::Command::new("git")
-                        .args(["log", "-1", "--format=%B"])
-                        .current_dir(repo_root)
-                        .output()
-                        && output.status.success()
-                    {
-                        let head_msg = String::from_utf8_lossy(&output.stdout).to_string();
-                        let cleaned = crate::util::text::clean_commit_msg(&head_msg);
-                        let current_hash = hash_message(&cleaned);
-                        matches_head = current_hash == pending.commit_msg_hash;
-                    }
+                    let matches_editmsg = edit_hash
+                        .as_deref()
+                        .is_some_and(|h| h == pending.commit_msg_hash);
+                    let matches_head = head_hash
+                        .as_deref()
+                        .is_some_and(|h| h == pending.commit_msg_hash);
+                    let promote_failed = pending.is_promote_failed();
 
-                    // matches_editmsg: the active COMMIT_EDITMSG hash matches the sidecar.
-                    // We do NOT require index.lock here — this hook is only ever invoked by git
-                    // during an active commit, so COMMIT_EDITMSG existing and matching our sidecar
-                    // hash is sufficient proof that this is an amend/re-run (not a stale sidecar).
-                    if editmsg_path.exists()
-                        && let Ok(edit_msg) = std::fs::read_to_string(&editmsg_path)
-                    {
-                        let cleaned = crate::util::text::clean_commit_msg(&edit_msg);
-                        matches_editmsg = hash_message(&cleaned) == pending.commit_msg_hash;
-                    }
-
-                    if matches_editmsg {
-                        // Sidecar matches the active commit-msg and an active commit is in flight (index.lock).
-                        // Do not garbage collect it. This is expected if the hook is re-run (e.g. from an amended commit or pre-commit hook calling it).
+                    if matches_editmsg && !promote_failed {
+                        // Sidecar matches the active commit-msg (amend/re-run). Keep it.
                         return Ok(());
-                    } else if matches_head {
-                        return Err(miette::miette!(
-                            "A pending commit sidecar exists that matches HEAD. The previous commit succeeded but its post-commit hook failed or was skipped. Please recover it by running 'ledgerful ledger commit' or manually remove the sidecar."
-                        ));
-                    } else {
+                    }
+
+                    if promote_failed || matches_head {
+                        // Orphan: previous commit succeeded but promote failed/skipped.
+                        let detail = if promote_failed {
+                            pending.promote_error.as_deref().unwrap_or("promote failed")
+                        } else {
+                            "HEAD-matching pending without successful promote"
+                        };
+                        if config.gate.is_enforce() {
+                            return Err(miette::miette!(
+                                "[{}] Promote orphan retained (tx {}): {}. \
+                                 Next commit blocked under enforce until recovery. \
+                                 Recover with: {}",
+                                CODE_PROMOTE_ORPHAN,
+                                pending.tx_id,
+                                detail,
+                                RECOVER_HINT
+                            ));
+                        }
+                        eprintln!(
+                            "[Ledgerful] WARNING [{}]: promote orphan retained (tx {}): {}. \
+                             Recover with: {}",
+                            CODE_PROMOTE_ORPHAN, pending.tx_id, detail, RECOVER_HINT
+                        );
+                        tracing::warn!(
+                            target: "cli_summary",
+                            "[Ledgerful] WARNING [{}]: promote orphan (tx {}): {}",
+                            CODE_PROMOTE_ORPHAN,
+                            pending.tx_id,
+                            detail
+                        );
+                        // Observe: do not GC; continue so the new commit can proceed with a banner.
+                        // Still block writing a second concurrent sidecar — hard-fail only under enforce.
+                        // Under observe we return Ok early so we don't clobber the orphan.
+                        return Ok(());
+                    }
+
+                    if is_gc_eligible(&pending, &ctx) {
                         tracing::warn!(
                             "Found stale pending sidecar (does not match HEAD). Rolling back pending transaction and cleaning up."
                         );
@@ -211,6 +212,7 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
                     }
                 }
                 Err(e) => {
+                    // Unparseable sidecars are still removable (cannot recover).
                     tracing::warn!("Failed to parse pending hook sidecar for GC: {}", e);
                     if let Err(e) = fs::remove_file(&sidecar_path) {
                         tracing::warn!("Failed to remove unparseable sidecar file: {}", e);
@@ -261,8 +263,23 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
         if is_trivial {
             history.bypass_remaining -= 1;
             save_skip_history(&skip_history_path, &history);
+            if config.gate.is_enforce() {
+                // Enforce: durable SKIPPED row (coverage, never Verified).
+                tracing::info!(
+                    target: "cli_summary",
+                    "[Ledgerful] Auto-accepting trivial commit under enforce — recording durable [SKIPPED] row."
+                );
+                record_enforce_skipped(RecordEnforceSkippedArgs {
+                    config: &config,
+                    entity: &entity,
+                    related_files: &related_files,
+                    raw_commit_msg: &raw_commit_msg,
+                    why: "Adaptive trivial bypass under enforce (acknowledged non-coverage)",
+                    snapshot_id: snapshot_capture.as_ref().map(|s| s.snapshot_id),
+                })?;
+                return Ok(());
+            }
             tracing::info!(target: "cli_summary", "[Ledgerful] Auto-accepting trivial commit (consecutive skips bypass).");
-
             return Ok(());
         } else {
             // Reset bypass on non-trivial commit
@@ -392,6 +409,7 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
             related_files: &related_files,
             raw_commit_msg: &final_commit_msg,
             snapshot_id: snapshot_capture.as_ref().map(|s| s.snapshot_id),
+            skipped: false,
         })?;
 
         // Reset skips
@@ -411,13 +429,29 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
     );
 
     if let Some(final_state) = run_tui(initial_state).into_diagnostic()? {
-        if final_state.risk == "TRIVIAL" && final_state.what == "Skipped intent entry" {
+        if is_tui_skip_disposition(&final_state.risk, &final_state.what) {
             // User hit 's' (Skip) in TUI
             history.consecutive_skips += 1;
             if history.consecutive_skips >= 2 {
                 history.bypass_remaining = 2;
             }
             save_skip_history(&skip_history_path, &history);
+            if config.gate.is_enforce() {
+                // Enforce: durable SKIPPED row (counts as coverage, never Verified).
+                tracing::info!(
+                    target: "cli_summary",
+                    "[Ledgerful] Intent entry skipped under enforce — recording durable [SKIPPED] row."
+                );
+                record_enforce_skipped(RecordEnforceSkippedArgs {
+                    config: &config,
+                    entity: &entity,
+                    related_files: &related_files,
+                    raw_commit_msg: &raw_commit_msg,
+                    why: "TUI Skip under enforce (acknowledged non-coverage / non-material)",
+                    snapshot_id: snapshot_capture.as_ref().map(|s| s.snapshot_id),
+                })?;
+                return Ok(());
+            }
             tracing::info!(target: "cli_summary", "[Ledgerful] Intent entry skipped.");
             return Ok(());
         } else {
@@ -449,6 +483,7 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
             related_files: &related_files,
             raw_commit_msg: &updated_msg,
             snapshot_id: snapshot_capture.as_ref().map(|s| s.snapshot_id),
+            skipped: false,
         })?;
 
         Ok(())
@@ -469,11 +504,70 @@ struct SilentRecordArgs<'a> {
     related_files: &'a str,
     raw_commit_msg: &'a str,
     snapshot_id: Option<i64>,
+    /// When true, summary is already `[SKIPPED]`-prefixed; observed=false under enforce.
+    skipped: bool,
+}
+
+/// Risk for durable `[SKIPPED]` coverage rows under enforce.
+///
+/// Non-TRIVIAL so post-commit promote sets `verification_status = Unverified`
+/// (phase0: SKIPPED is never Verified and never silent None-as-green).
+pub const SKIPPED_COVERAGE_RISK: &str = "MEDIUM";
+
+/// Prefix for durable skip coverage summaries.
+pub const SKIPPED_SUMMARY_PREFIX: &str = "[SKIPPED]";
+
+/// Build a durable SKIPPED summary line from a commit subject.
+pub fn skipped_coverage_summary(subject_line: &str) -> String {
+    format!("{SKIPPED_SUMMARY_PREFIX} {subject_line}")
+}
+
+/// True when a TUI final state represents the Skip (`s`) disposition.
+pub fn is_tui_skip_disposition(risk: &str, what: &str) -> bool {
+    risk == "TRIVIAL" && what == "Skipped intent entry"
+}
+
+pub(crate) struct RecordEnforceSkippedArgs<'a> {
+    pub config: &'a Config,
+    pub entity: &'a str,
+    pub related_files: &'a str,
+    pub raw_commit_msg: &'a str,
+    pub why: &'a str,
+    pub snapshot_id: Option<i64>,
+}
+
+/// Write a durable PENDING + `[SKIPPED]` sidecar under enforce.
+///
+/// Shared by adaptive trivial bypass and TUI Skip so both paths produce the
+/// same coverage model (CHORE category, MEDIUM risk → Unverified on promote).
+pub(crate) fn record_enforce_skipped(args: RecordEnforceSkippedArgs<'_>) -> Result<()> {
+    let subject = args
+        .raw_commit_msg
+        .lines()
+        .next()
+        .unwrap_or("skipped")
+        .trim();
+    silently_record_ledger(SilentRecordArgs {
+        config: args.config,
+        entity: args.entity,
+        what: &skipped_coverage_summary(subject),
+        why: args.why,
+        risk: SKIPPED_COVERAGE_RISK,
+        related: Vec::new(),
+        related_files: args.related_files,
+        raw_commit_msg: args.raw_commit_msg,
+        snapshot_id: args.snapshot_id,
+        skipped: true,
+    })
 }
 
 fn silently_record_ledger(args: SilentRecordArgs) -> Result<()> {
     let layout = get_layout()?;
-    let category = parse_category_from_message(args.what);
+    let category = if args.skipped {
+        Category::Chore
+    } else {
+        parse_category_from_message(args.what)
+    };
     let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
     let mut tx_mgr = TransactionManager::new(
         &mut storage,
@@ -526,6 +620,19 @@ fn silently_record_ledger(args: SilentRecordArgs) -> Result<()> {
         format!("{} | {}", tickets, args.related_files)
     };
 
+    // SKIPPED under enforce: observed false/None. Observe soft-skip does not reach here.
+    let observed = if args.skipped {
+        if args.config.gate.is_observe() {
+            Some(true)
+        } else {
+            None
+        }
+    } else if observe_warned {
+        Some(true)
+    } else {
+        None
+    };
+
     let pending = PendingHookTx {
         tx_id,
         commit_msg_hash: hash_message(&crate::util::text::clean_commit_msg(args.raw_commit_msg)),
@@ -537,10 +644,13 @@ fn silently_record_ledger(args: SilentRecordArgs) -> Result<()> {
         signature,
         public_key: pub_key,
         snapshot_id: args.snapshot_id,
-        observed: if observe_warned { Some(true) } else { None },
+        observed,
+        promote_failed: None,
+        promote_error: None,
     };
 
-    write_pending_sidecar(&layout, &pending)?;
+    let sidecar_path = layout.state_subdir().join("pending_hook_tx");
+    write_pending_sidecar(sidecar_path.as_std_path(), &pending)?;
 
     Ok(())
 }
@@ -721,5 +831,30 @@ pub fn risk_from_category(cat: Category) -> &'static str {
         | Category::Security => "HIGH",
         Category::Refactor | Category::Tooling => "MEDIUM",
         Category::Docs | Category::Chore => "TRIVIAL",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skipped_coverage_summary_prefixed() {
+        let s = skipped_coverage_summary("chore: fmt");
+        assert!(s.starts_with(SKIPPED_SUMMARY_PREFIX));
+        assert!(s.contains("chore: fmt"));
+    }
+
+    #[test]
+    fn skipped_coverage_risk_is_not_trivial() {
+        // Promote maps TRIVIAL → verification_status None; SKIPPED must be Unverified.
+        assert_ne!(SKIPPED_COVERAGE_RISK, "TRIVIAL");
+    }
+
+    #[test]
+    fn tui_skip_disposition_matches_s_key() {
+        assert!(is_tui_skip_disposition("TRIVIAL", "Skipped intent entry"));
+        assert!(!is_tui_skip_disposition("MEDIUM", "Skipped intent entry"));
+        assert!(!is_tui_skip_disposition("TRIVIAL", "something else"));
     }
 }

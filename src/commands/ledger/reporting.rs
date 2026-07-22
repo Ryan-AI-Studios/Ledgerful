@@ -1,4 +1,8 @@
 use crate::commands::helpers::{get_layout, load_ledger_config};
+use crate::commands::hook_sidecar::{
+    CODE_HEAD_UNCOVERED, CODE_PROMOTE_ORPHAN, PendingHookTx, RECOVER_HINT, head_message_hash,
+    read_pending_sidecar,
+};
 use crate::ledger::*;
 use crate::state::storage::StorageManager;
 use crate::util::clock::{Clock, SystemClock};
@@ -6,6 +10,106 @@ use chrono::{DateTime, Utc};
 use miette::{IntoDiagnostic, Result};
 use owo_colors::OwoColorize;
 use serde::Serialize;
+
+/// Lifecycle integrity signals for status / exit-code.
+#[derive(Debug, Clone, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LifecycleSignals {
+    pub promote_orphan: bool,
+    pub head_uncovered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub promote_orphan_tx_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub promote_error: Option<String>,
+}
+
+/// Inspect the pending_hook_tx sidecar for promote-fail / HEAD-match coverage gaps.
+///
+/// **Honest minimum:** `head_uncovered` is co-set with orphan/sidecar detection
+/// only. There is no independent scan of COMMITTED/SKIPPED rows against HEAD
+/// when the sidecar is absent. See `docs/lifecycle-integrity.md`.
+pub fn detect_lifecycle_signals(layout: &crate::state::layout::Layout) -> LifecycleSignals {
+    let mut signals = LifecycleSignals::default();
+    let sidecar_path = layout.state_subdir().join("pending_hook_tx");
+    let Ok(Some(pending)) = read_pending_sidecar(sidecar_path.as_std_path()) else {
+        return signals;
+    };
+
+    let head_hash = head_message_hash(layout.root.as_std_path());
+    let matches_head = head_hash
+        .as_deref()
+        .is_some_and(|h| h == pending.commit_msg_hash);
+
+    if pending.is_promote_failed() {
+        signals.promote_orphan = true;
+        signals.promote_orphan_tx_id = Some(pending.tx_id.clone());
+        signals.promote_error = pending.promote_error.clone();
+        // Promote-failed orphans also mean HEAD is not covered by a COMMITTED row.
+        signals.head_uncovered = true;
+    } else if matches_head {
+        // HEAD-matching pending without successful promote → uncovered trail.
+        signals.promote_orphan = true;
+        signals.head_uncovered = true;
+        signals.promote_orphan_tx_id = Some(pending.tx_id.clone());
+    }
+
+    signals
+}
+
+fn would_block(pending_count: usize, unaudited_count: usize, signals: &LifecycleSignals) -> bool {
+    pending_count > 0 || unaudited_count > 0 || signals.promote_orphan || signals.head_uncovered
+}
+
+/// Apply --exit-code policy per phase0 observe matrix.
+///
+/// - enforce: exit 1 on would-block
+/// - observe default: exit 0 + banner WARN
+/// - observe + strict_observe_signal (or LEDGERFUL_STRICT_OBSERVE_SIGNAL=1): exit 2
+fn apply_exit_code(
+    config: &crate::config::model::Config,
+    exit_code: bool,
+    strict_observe_signal: bool,
+    pending_count: usize,
+    unaudited_count: usize,
+    signals: &LifecycleSignals,
+) {
+    if !exit_code || !would_block(pending_count, unaudited_count, signals) {
+        return;
+    }
+
+    let strict_env = std::env::var("LEDGERFUL_STRICT_OBSERVE_SIGNAL")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false);
+    let strict = strict_observe_signal || strict_env;
+
+    if config.gate.is_enforce() {
+        std::process::exit(1);
+    }
+
+    tracing::warn!(
+        target: "cli_summary",
+        "Gate is observe: status would block in enforce mode (pending={}, unaudited={}, promote_orphan={}, head_uncovered={})",
+        pending_count,
+        unaudited_count,
+        signals.promote_orphan,
+        signals.head_uncovered
+    );
+    eprintln!(
+        "[Ledgerful] WARNING: observe mode would-block (pending={}, unaudited={}, promote_orphan={}, head_uncovered={}). {}",
+        pending_count,
+        unaudited_count,
+        signals.promote_orphan,
+        signals.head_uncovered,
+        if signals.promote_orphan {
+            RECOVER_HINT
+        } else {
+            "Set gate to enforce for blocking exit codes, or pass --strict-observe-signal for exit 2."
+        }
+    );
+    if strict {
+        std::process::exit(2);
+    }
+}
 
 #[allow(clippy::too_many_arguments)]
 pub fn execute_ledger_status(
@@ -20,6 +124,7 @@ pub fn execute_ledger_status(
     #[allow(unused)] _reindex: bool,
     #[allow(unused)] _opt_out: bool,
     #[allow(unused)] _opt_in: bool,
+    strict_observe_signal: bool,
 ) -> Result<()> {
     let layout = get_layout()?;
 
@@ -32,6 +137,7 @@ pub fn execute_ledger_status(
     let stale_threshold = config.ledger.stale_threshold_hours as i64;
     let tx_mgr = TransactionManager::new(&mut storage, layout.root.clone().into(), config.clone());
     let clock = SystemClock;
+    let signals = detect_lifecycle_signals(&layout);
 
     if config.gate.is_observe() && !compact && !json {
         println!(
@@ -57,6 +163,12 @@ pub fn execute_ledger_status(
             unaudited_count: usize,
             pending_tx_ids: Vec<String>,
             unaudited_file_count: usize,
+            promote_orphan: bool,
+            head_uncovered: bool,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            promote_orphan_tx_id: Option<String>,
+            #[serde(skip_serializing_if = "Option::is_none")]
+            promote_error: Option<String>,
         }
 
         let status = StatusJson {
@@ -64,6 +176,10 @@ pub fn execute_ledger_status(
             unaudited_count: unaudited.len(),
             pending_tx_ids,
             unaudited_file_count: unaudited.iter().map(|u| u.drift_count as usize).sum(),
+            promote_orphan: signals.promote_orphan,
+            head_uncovered: signals.head_uncovered,
+            promote_orphan_tx_id: signals.promote_orphan_tx_id.clone(),
+            promote_error: signals.promote_error.clone(),
         };
 
         println!(
@@ -71,16 +187,14 @@ pub fn execute_ledger_status(
             serde_json::to_string_pretty(&status).into_diagnostic()?
         );
 
-        if exit_code && (status.pending_count > 0 || status.unaudited_count > 0) {
-            if config.gate.is_enforce() {
-                std::process::exit(1);
-            }
-            tracing::warn!(
-                "Gate is observe: status would block in enforce mode (pending={}, unaudited={})",
-                status.pending_count,
-                status.unaudited_count
-            );
-        }
+        apply_exit_code(
+            &config,
+            exit_code,
+            strict_observe_signal,
+            status.pending_count,
+            status.unaudited_count,
+            &signals,
+        );
         return Ok(());
     }
 
@@ -152,21 +266,37 @@ pub fn execute_ledger_status(
         let unaudited_count = unaudited.len();
 
         if compact {
-            println!(
+            let mut line = format!(
                 "Ledger: {} pending, {} unaudited drift.",
                 pending_count.to_string().yellow(),
                 unaudited_count.to_string().red()
             );
-            if exit_code && (pending_count > 0 || unaudited_count > 0) {
-                if config.gate.is_enforce() {
-                    std::process::exit(1);
-                }
-                tracing::warn!(
-                    "Gate is observe: status would block in enforce mode (pending={}, unaudited={})",
-                    pending_count,
-                    unaudited_count
-                );
+            if signals.promote_orphan {
+                line.push_str(&format!(
+                    " {}[{}]",
+                    "CRITICAL ".red().bold(),
+                    CODE_PROMOTE_ORPHAN.red()
+                ));
             }
+            if signals.head_uncovered {
+                line.push_str(&format!(
+                    " {}[{}]",
+                    "CRITICAL ".red().bold(),
+                    CODE_HEAD_UNCOVERED.red()
+                ));
+            }
+            println!("{line}");
+            if signals.promote_orphan {
+                eprintln!("  Recover with: {RECOVER_HINT}");
+            }
+            apply_exit_code(
+                &config,
+                exit_code,
+                strict_observe_signal,
+                pending_count,
+                unaudited_count,
+                &signals,
+            );
             return Ok(());
         }
 
@@ -209,6 +339,31 @@ pub fn execute_ledger_status(
             println!("Impact Report: {}", freshness_str);
         }
 
+        if signals.promote_orphan || signals.head_uncovered {
+            println!(
+                "\n{} {}",
+                "CRITICAL".red().bold(),
+                "LIFECYCLE INTEGRITY".red().bold()
+            );
+            if signals.promote_orphan {
+                println!(
+                    "  [{}] Promote orphan retained (tx={}). Recover with: {}",
+                    CODE_PROMOTE_ORPHAN.red(),
+                    signals.promote_orphan_tx_id.as_deref().unwrap_or("unknown"),
+                    RECOVER_HINT
+                );
+                if let Some(ref err) = signals.promote_error {
+                    println!("    promote_error: {err}");
+                }
+            }
+            if signals.head_uncovered {
+                println!(
+                    "  [{}] HEAD uncovered via promote-fail/HEAD-matching pending sidecar (message-hash heuristic; not a full material-HEAD-without-row scan).",
+                    CODE_HEAD_UNCOVERED.red()
+                );
+            }
+        }
+
         println!(
             "\n{} {}",
             get_status_icon(LedgerStatus::Pending),
@@ -218,27 +373,20 @@ pub fn execute_ledger_status(
         let sidecar_path = layout.state_subdir().join("pending_hook_tx");
         if sidecar_path.exists() {
             match std::fs::read_to_string(&sidecar_path) {
-                Ok(content) => match serde_json::from_str::<
-                    crate::commands::hook_post_commit::PendingHookTx,
-                >(&content)
-                {
+                Ok(content) => match serde_json::from_str::<PendingHookTx>(&content) {
                     Ok(pending_sidecar) => {
                         let mut matches_head = false;
-                        if let Ok(output) = std::process::Command::new("git")
-                            .args(["log", "-1", "--format=%B"])
-                            .current_dir(layout.root.as_std_path())
-                            .output()
-                            && output.status.success()
-                        {
-                            let head_msg = String::from_utf8_lossy(&output.stdout).to_string();
-                            let cleaned = crate::util::text::clean_commit_msg(&head_msg);
-                            use sha2::{Digest, Sha256};
-                            let mut hasher = Sha256::new();
-                            hasher.update(cleaned.as_bytes());
-                            let current_hash = hex::encode(hasher.finalize());
+                        if let Some(current_hash) = head_message_hash(layout.root.as_std_path()) {
                             matches_head = current_hash == pending_sidecar.commit_msg_hash;
                         }
-                        if matches_head {
+                        if pending_sidecar.is_promote_failed() {
+                            println!(
+                                "  {} [Sidecar] PROMOTE_FAILED orphan (tx {}) — do not GC; {}",
+                                "󰀦".red(),
+                                pending_sidecar.tx_id,
+                                RECOVER_HINT
+                            );
+                        } else if matches_head {
                             println!(
                                 "  {} [Sidecar] Pending commit sidecar message hash matches HEAD",
                                 "󰀦".yellow()
@@ -258,10 +406,8 @@ pub fn execute_ledger_status(
                                 && let Ok(edit_msg) = std::fs::read_to_string(&editmsg_path)
                             {
                                 let cleaned = crate::util::text::clean_commit_msg(&edit_msg);
-                                use sha2::{Digest, Sha256};
-                                let mut hasher = Sha256::new();
-                                hasher.update(cleaned.as_bytes());
-                                let edit_hash = hex::encode(hasher.finalize());
+                                let edit_hash =
+                                    crate::commands::hook_sidecar::hash_message(&cleaned);
                                 matches_editmsg = edit_hash == pending_sidecar.commit_msg_hash;
                             }
 
@@ -379,16 +525,14 @@ pub fn execute_ledger_status(
             }
         }
 
-        if exit_code && (pending_count > 0 || unaudited_count > 0) {
-            if config.gate.is_enforce() {
-                std::process::exit(1);
-            }
-            tracing::warn!(
-                "Gate is observe: status would block in enforce mode (pending={}, unaudited={})",
-                pending_count,
-                unaudited_count
-            );
-        }
+        apply_exit_code(
+            &config,
+            exit_code,
+            strict_observe_signal,
+            pending_count,
+            unaudited_count,
+            &signals,
+        );
     }
 
     Ok(())

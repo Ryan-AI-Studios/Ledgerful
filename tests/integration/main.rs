@@ -91,6 +91,7 @@ mod ledger_provenance;
 mod ledger_re_sign;
 mod ledger_search;
 mod ledger_signature_fix;
+mod lifecycle_integrity;
 mod m33_migration;
 mod milestone_j_remediation;
 mod narrative_golden;

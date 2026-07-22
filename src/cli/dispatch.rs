@@ -220,7 +220,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
         ),
         Commands::Doctor => crate::commands::doctor::execute_doctor(),
         Commands::Status => crate::commands::ledger::execute_ledger_status(
-            None, false, false, false, false, false, false, None, false, false, false,
+            None, false, false, false, false, false, false, None, false, false, false, false,
         ),
         Commands::Config { command } => dispatch_config(command, cli.verbose),
         Commands::DeadCode {
@@ -779,6 +779,7 @@ fn dispatch_ledger(command: LedgerCommands) -> Result<()> {
             entity,
             compact,
             exit_code,
+            strict_observe_signal,
             verify_signatures,
             json,
             global,
@@ -815,9 +816,15 @@ fn dispatch_ledger(command: LedgerCommands) -> Result<()> {
                     false,
                     false,
                     false,
+                    strict_observe_signal,
                 )
             }
         }
+        LedgerCommands::RecoverOrphan {
+            promote,
+            abandon,
+            reason,
+        } => crate::commands::ledger::execute_ledger_recover_orphan(promote, abandon, reason),
         LedgerCommands::Register { command } => match command {
             RegisterCommands::Rule {
                 term,

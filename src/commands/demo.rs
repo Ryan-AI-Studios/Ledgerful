@@ -530,6 +530,10 @@ pub fn execute_demo(keep: bool, output: Option<PathBuf>, force: bool) -> Result<
         "{} Honesty: synthetic invoice-service · disposable keys (not your production keyring) · observe mode · same crypto as production · not real business-risk data · not a compliance verdict.",
         "Notice:".yellow().bold()
     );
+    println!(
+        "{} Honesty: promoted DEMO entries are Unverified until bound `verify --tx-id`; CRYPTO VALID proves signatures/chain, not ledger verification_status Verified.",
+        "Notice:".yellow().bold()
+    );
 
     if !keep {
         println!(

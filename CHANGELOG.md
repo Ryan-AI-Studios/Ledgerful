@@ -13,6 +13,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `--explain`), with default-on capture, opt-out via `timings --opt-out`, and
   strict privacy (no paths/argv values/network). See
   [docs/self-timing.md](docs/self-timing.md).
+- **Enforce lifecycle integrity (0074):** promote failure under enforce retains
+  PENDING+sidecar (`promote_failed`); shared GC policy never deletes promote-fail
+  / HEAD-matching orphans; `ledger recover-orphan --promote|--abandon`; doctor
+  CRITICAL codes `PROMOTE_ORPHAN`, `HEAD_UNCOVERED`, `INTENT_NEVER_UNDER_ENFORCE`;
+  `ledger status --exit-code` HEAD-uncovered / promote-orphan signals with
+  observe opt-in `--strict-observe-signal` (exit 2). See
+  [docs/lifecycle-integrity.md](docs/lifecycle-integrity.md).
+
+### Changed
+
+- Post-commit promote no longer sets `Verified`/`ManualInspection` (phantom
+  green). Non-TRIVIAL promote → `Unverified`; only bound `verify --tx-id` sets
+  `Verified`. Export `Verified→PASS` mapping unchanged but no longer fed by
+  promote phantoms.
 
 ## [0.1.8] - 2026-07-12
 

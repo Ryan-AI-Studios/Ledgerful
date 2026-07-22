@@ -177,6 +177,7 @@ mod tests {
             entity: None,
             compact: false,
             exit_code: false,
+            strict_observe_signal: false,
             verify_signatures: false,
             json: false,
             all: false,

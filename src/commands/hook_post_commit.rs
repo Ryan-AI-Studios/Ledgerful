@@ -1,40 +1,23 @@
 use crate::commands::helpers::{get_layout, load_ledger_config};
+use crate::commands::hook_sidecar::{RECOVER_HINT, hash_message, mark_promote_failed};
+// Re-export so existing `hook_post_commit::PendingHookTx` / `read_pending_sidecar`
+// call sites keep working.
+pub use crate::commands::hook_sidecar::{PendingHookTx, read_pending_sidecar};
 use crate::git::numstat::per_file_numstat;
 use crate::git::repo::{get_head_info, open_repo};
 use crate::impact::hotspots::normalize_score;
 use crate::impact::hotspots::{HotspotQuery, calculate_hotspots};
 use crate::impact::packet::Hotspot;
 use crate::impact::temporal::GixHistoryProvider;
-use crate::ledger::{
-    ChangeType, CommitRequest, TransactionManager, VerificationBasis, VerificationStatus,
-};
+use crate::ledger::{ChangeType, CommitRequest, TransactionManager, VerificationStatus};
 use crate::state::storage::StorageManager;
 use chrono::{Duration as ChronoDuration, Utc};
 use miette::{IntoDiagnostic, Result, miette};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs;
 use std::sync::mpsc;
 use std::thread;
 use std::time::Duration;
-
-#[derive(Serialize, Deserialize, Debug)]
-pub struct PendingHookTx {
-    pub tx_id: String,
-    pub commit_msg_hash: String,
-    pub summary: String,
-    pub reason: String,
-    pub committed_at: Option<String>,
-    pub risk: Option<String>,
-    pub related_tickets: Option<String>,
-    pub signature: Option<String>,
-    pub public_key: Option<String>,
-    pub snapshot_id: Option<i64>,
-    /// Carried from the commit-msg hook through the pending sidecar so the
-    /// post-commit hook can record whether the commit happened under observe
-    /// mode. Stored as unsigned ledger metadata.
-    pub observed: Option<bool>,
-}
 
 /// Entry point for the `internal hook-post-commit` command. This is invoked by
 /// the git `post-commit` hook and must never block or fail the commit: any
@@ -53,10 +36,16 @@ pub fn execute_hook_post_commit() -> Result<()> {
 
 pub fn execute_hook_post_commit_for_layout(layout: &crate::state::layout::Layout) -> Result<()> {
     // First, run the existing ledger-promotion sidecar logic synchronously so
-    // pending transactions are committed immediately. Any failure here is also
-    // swallowed so the git commit is never blocked.
+    // pending transactions are committed immediately. Git must never be blocked
+    // (always return Ok). Under enforce, promote failures retain PENDING+sidecar
+    // with promote_failed and emit CRITICAL (not debug-only).
     if let Err(e) = promote_pending_ledger_tx(layout) {
-        tracing::debug!("Post-commit hook: ledger promotion failed: {}", e);
+        let msg = format!(
+            "[Ledgerful] CRITICAL: post-commit promote failed (trail retained): {}. Recover with: {}",
+            e, RECOVER_HINT
+        );
+        eprintln!("{msg}");
+        tracing::error!(target: "cli_summary", "{msg}");
     }
 
     // Then, in a detached thread, record hotspot trends. The thread has a
@@ -109,16 +98,6 @@ pub fn execute_hook_post_commit_for_layout(layout: &crate::state::layout::Layout
     Ok(())
 }
 
-/// Read the pending sidecar file if it exists.
-pub fn read_pending_sidecar(path: &std::path::Path) -> Result<Option<PendingHookTx>> {
-    if !path.exists() {
-        return Ok(None);
-    }
-    let content = fs::read_to_string(path).into_diagnostic()?;
-    let pending: PendingHookTx = serde_json::from_str(&content).into_diagnostic()?;
-    Ok(Some(pending))
-}
-
 /// Promote a pending ledger sidecar transaction if one exists and matches the
 /// current HEAD commit message hash.
 fn promote_pending_ledger_tx(layout: &crate::state::layout::Layout) -> Result<()> {
@@ -129,10 +108,12 @@ fn promote_pending_ledger_tx(layout: &crate::state::layout::Layout) -> Result<()
         return Ok(());
     }
 
-    let sidecar_content = fs::read_to_string(&sidecar_path).into_diagnostic()?;
-    let pending: PendingHookTx = serde_json::from_str(&sidecar_content).into_diagnostic()?;
+    let mut pending = match read_pending_sidecar(sidecar_path.as_std_path())? {
+        Some(p) => p,
+        None => return Ok(()),
+    };
 
-    // Verify commit hash
+    // Verify commit hash (message-hash heuristic; not git oid).
     let repo_root = layout.root.clone();
     let output = std::process::Command::new("git")
         .args(["log", "-1", "--format=%B"])
@@ -142,25 +123,38 @@ fn promote_pending_ledger_tx(layout: &crate::state::layout::Layout) -> Result<()
 
     let current_commit_msg = String::from_utf8_lossy(&output.stdout).to_string();
     let cleaned_msg = crate::util::text::clean_commit_msg(&current_commit_msg);
-
-    use sha2::{Digest, Sha256};
-    let mut hasher = Sha256::new();
-    hasher.update(cleaned_msg.as_bytes());
-    let current_hash = hex::encode(hasher.finalize());
+    let current_hash = hash_message(&cleaned_msg);
 
     if pending.commit_msg_hash != current_hash {
+        // Never discard a promote-failed orphan on hash mismatch — recovery owns it.
+        if pending.is_promote_failed() {
+            tracing::warn!(
+                target: "cli_summary",
+                "[Ledgerful] Promote-failed orphan {} does not match HEAD message-hash; retaining for recovery. {}",
+                pending.tx_id,
+                RECOVER_HINT
+            );
+            return Ok(());
+        }
         tracing::info!(
             target: "cli_summary",
             "[Ledgerful] Pending transaction {} was for a different commit; discarding sidecar.",
             pending.tx_id
         );
-        let _ = fs::remove_file(sidecar_path);
+        let _ = fs::remove_file(&sidecar_path);
         return Ok(());
     }
-    let verification_status = if pending.risk.as_deref() == Some("TRIVIAL") {
+
+    // RT-H3: promote never sets Verified/ManualInspection. Only bound
+    // `ledgerful verify --tx-id` may set Verified. TRIVIAL stays None/None.
+    // Durable [SKIPPED] rows always promote as Unverified (phase0 ceiling).
+    let is_skipped_coverage = pending.summary.starts_with("[SKIPPED]");
+    let verification_status = if is_skipped_coverage {
+        Some(VerificationStatus::Unverified)
+    } else if pending.risk.as_deref() == Some("TRIVIAL") {
         None
     } else {
-        Some(VerificationStatus::Verified)
+        Some(VerificationStatus::Unverified)
     };
 
     let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
@@ -168,19 +162,19 @@ fn promote_pending_ledger_tx(layout: &crate::state::layout::Layout) -> Result<()
         TransactionManager::new(&mut storage, layout.root.clone().into(), config.clone());
 
     let req = CommitRequest {
-        summary: pending.summary,
-        reason: pending.reason,
+        summary: pending.summary.clone(),
+        reason: pending.reason.clone(),
         change_type: ChangeType::Modify,
         is_breaking: false,
-        committed_at: pending.committed_at,
+        committed_at: pending.committed_at.clone(),
         verification_status,
-        verification_basis: Some(VerificationBasis::ManualInspection),
+        verification_basis: None,
         outcome_notes: None,
         issue_ref: None,
-        signature: pending.signature,
-        public_key: pending.public_key,
-        risk: pending.risk,
-        related_tickets: pending.related_tickets,
+        signature: pending.signature.clone(),
+        public_key: pending.public_key.clone(),
+        risk: pending.risk.clone(),
+        related_tickets: pending.related_tickets.clone(),
         snapshot_id: pending.snapshot_id,
         observed: pending.observed,
         ..Default::default()
@@ -207,27 +201,40 @@ fn promote_pending_ledger_tx(layout: &crate::state::layout::Layout) -> Result<()
                     e
                 );
             }
-            let _ = fs::remove_file(sidecar_path);
+            let _ = fs::remove_file(&sidecar_path);
             Ok(())
         }
         Err(e) => {
-            if config.gate.is_enforce() {
-                eprintln!(
-                    "[Ledgerful] Post-commit hook failed to promote ledger entry: {}",
-                    e
+            // RT-H1: never destroy the trail. Keep PENDING + sidecar, mark
+            // promote_failed. Do not rollback. Git still exits 0 (outer Ok).
+            let err_str = e.to_string();
+            if let Err(mark_err) =
+                mark_promote_failed(sidecar_path.as_std_path(), &mut pending, &err_str)
+            {
+                tracing::error!(
+                    target: "cli_summary",
+                    "[Ledgerful] CRITICAL: failed to mark promote_failed on sidecar: {}",
+                    mark_err
                 );
-                let _ = tx_mgr.rollback_change(
-                    committed_tx_id,
-                    "Rollback due to promotion failure".to_string(),
-                );
-                let _ = fs::remove_file(sidecar_path);
-                return Err(miette!("{}", e));
             }
+
+            if config.gate.is_enforce() {
+                // Single CRITICAL surface is the outer handler
+                // (`execute_hook_post_commit_for_layout`) — do not double-print here.
+                return Err(miette!(
+                    "post-commit promote failed for {} (PENDING+sidecar retained): {}",
+                    committed_tx_id,
+                    err_str
+                ));
+            }
+
             tracing::warn!(
                 target: "cli_summary",
-                "[Ledgerful] Post-commit hook failed to promote ledger entry (observe mode, continuing): {}",
-                e
+                "[Ledgerful] Post-commit hook failed to promote ledger entry (observe mode, trail retained): {}",
+                err_str
             );
+            // Observe: keep trail without hard-failing the promote path; still Ok
+            // so the outer hook stays quiet beyond the warn.
             Ok(())
         }
     }

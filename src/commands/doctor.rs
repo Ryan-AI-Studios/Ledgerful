@@ -363,6 +363,69 @@ pub fn execute_doctor() -> Result<()> {
             .push(format!("Warning: {w}").yellow().to_string());
     }
 
+    // Track 0074: lifecycle integrity CRITICAL / WARN codes.
+    let mut critical_count: u64 = 0;
+    let lifecycle = crate::commands::ledger::detect_lifecycle_signals(&layout);
+    if lifecycle.promote_orphan {
+        critical_count += 1;
+        report.index_health.push(
+            format!(
+                "CRITICAL [{}]: promote-failed or HEAD-matching orphan retained (tx={}). Recover with: {}",
+                crate::commands::hook_sidecar::CODE_PROMOTE_ORPHAN,
+                lifecycle
+                    .promote_orphan_tx_id
+                    .as_deref()
+                    .unwrap_or("unknown"),
+                crate::commands::hook_sidecar::RECOVER_HINT
+            )
+            .red()
+            .to_string(),
+        );
+    }
+    if lifecycle.head_uncovered && config.gate.is_enforce() {
+        // Surface HEAD_UNCOVERED even when promote_orphan also applies; count once
+        // only if promote_orphan did not already increment.
+        // Honesty: minimum signal = promote_failed OR HEAD-matching pending
+        // sidecar — not a full material-HEAD-without-row scan.
+        if !lifecycle.promote_orphan {
+            critical_count += 1;
+        }
+        report.index_health.push(
+            format!(
+                "CRITICAL [{}]: HEAD uncovered via promote-fail/HEAD-matching pending sidecar under enforce (message-hash heuristic; not a full material-HEAD-without-row scan). Recover with: {}",
+                crate::commands::hook_sidecar::CODE_HEAD_UNCOVERED,
+                crate::commands::hook_sidecar::RECOVER_HINT
+            )
+            .red()
+            .to_string(),
+        );
+    }
+    if config.gate.is_enforce() && config.intent.required == "never" {
+        critical_count += 1;
+        report.index_health.push(
+            format!(
+                "CRITICAL [{}]: intent.required=never is incompatible with gate mode enforce.",
+                crate::commands::hook_sidecar::CODE_INTENT_NEVER_UNDER_ENFORCE
+            )
+            .red()
+            .to_string(),
+        );
+    }
+    // Legacy phantom Verified without a bound verification run (forward-only flag).
+    if let Ok(count) = count_phantom_verified(storage.get_connection())
+        && count > 0
+    {
+        report.index_health.push(
+            format!(
+                "Warning [{}]: {} committed row(s) have verification_status=Verified with no bound verification_results row (legacy promote phantoms; forward-only).",
+                crate::commands::hook_sidecar::CODE_PHANTOM_PROMOTED_WITHOUT_VERIFY,
+                count
+            )
+            .yellow()
+            .to_string(),
+        );
+    }
+
     print_doctor_report(&report);
     print_vram_section();
 
@@ -382,7 +445,33 @@ pub fn execute_doctor() -> Result<()> {
 
     print_sccache_hint();
 
+    // DoD-6: doctor exit non-zero when any CRITICAL present.
+    if critical_count > 0 {
+        eprintln!(
+            "\n{} {} CRITICAL finding(s). Exit 1.",
+            "Doctor:".red().bold(),
+            critical_count
+        );
+        std::process::exit(1);
+    }
+
     Ok(())
+}
+
+/// Count committed ledger entries marked Verified without a verification_results row.
+fn count_phantom_verified(conn: &rusqlite::Connection) -> Result<i64> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM ledger_entries le
+             WHERE le.verification_status = 'verified'
+               AND NOT EXISTS (
+                   SELECT 1 FROM verification_results vr WHERE vr.tx_id = le.tx_id
+               )",
+            [],
+            |row| row.get(0),
+        )
+        .into_diagnostic()?;
+    Ok(count)
 }
 
 /// Optional informational hint: suggest sccache for cold/CI builds when no
@@ -450,6 +539,7 @@ fn count_doctor_failures(report: &crate::output::human::DoctorReport) -> u64 {
             || line.contains("Missing")
             || line.contains("STALE")
             || line.contains("Load failed")
+            || line.contains("CRITICAL")
         {
             failures += 1;
         }
