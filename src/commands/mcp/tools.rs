@@ -187,13 +187,18 @@ fn handle_scan(_params: Value) -> Value {
     text_response(&text)
 }
 
+/// Build CLI args for MCP `search` (RT-A4: `--` before the untrusted query).
+fn build_search_args<'a>(query: &'a str, limit: &'a str) -> Vec<&'a str> {
+    vec!["search", "--json", "--limit", limit, "--", query]
+}
+
 fn handle_search(params: Value) -> Value {
     let query = params["query"].as_str().unwrap_or_default();
     let limit = params["limit"].as_u64().unwrap_or(50).to_string();
 
     // RT-A4: `--` separator prevents a query starting with `-` / `--flag`
     // from being parsed as a search CLI option (same confused-deputy class as ask).
-    let out = match run_ledgerful_tool(["search", "--json", "--limit", &limit, "--", query]) {
+    let out = match run_ledgerful_tool(build_search_args(query, &limit)) {
         Ok(o) => o,
         Err(e) => return error_response(&e),
     };
@@ -418,10 +423,21 @@ mod tests {
 
     #[test]
     fn handle_search_args_include_double_dash_separator() {
-        // Mirror the arg vector constructed in handle_search (RT-A4).
+        // F-004: exercise the pure helper used by handle_search (RT-A4).
         let query = "--limit 999 injection";
-        let limit = "50".to_string();
-        let args = ["search", "--json", "--limit", &limit, "--", query];
+        let limit = "50";
+        let args = build_search_args(query, limit);
+        assert_eq!(
+            args,
+            vec![
+                "search",
+                "--json",
+                "--limit",
+                "50",
+                "--",
+                "--limit 999 injection"
+            ]
+        );
         assert_eq!(args[args.len() - 2], "--");
         assert_eq!(args[args.len() - 1], query);
     }

@@ -1633,6 +1633,83 @@ mod tests {
         mock.assert_hits(0);
     }
 
+    /// F-002: compose MCP spawn-env helper + complete under the inherited
+    /// Forbidden marker (keystone path without spawning a real binary).
+    #[test]
+    #[serial_test::serial(env)]
+    fn mcp_spawn_env_inherited_forbidden_zero_http_to_cloud_mock() {
+        use crate::local_model::cloud_policy::{
+            CLOUD_POLICY_ENV, MCP_ALLOW_CLOUD_EGRESS_ENV, mcp_tool_spawn_env,
+        };
+
+        let cloud = MockServer::start();
+        let mock = cloud.mock(|when, then| {
+            when.any_request();
+            then.status(200)
+                .header("Content-Type", "application/json")
+                .json_body(serde_json::json!({
+                    "choices": [{ "message": { "content": "should never see this" } }]
+                }));
+        });
+
+        // Parent MCP host: no allow-cloud opt-in → spawn env includes Forbidden.
+        let _allow = TempEnv::remove(MCP_ALLOW_CLOUD_EGRESS_ENV);
+        let spawn_env = mcp_tool_spawn_env();
+        assert!(
+            spawn_env
+                .iter()
+                .any(|(k, v)| k == CLOUD_POLICY_ENV && v == "forbidden"),
+            "MCP spawn must set Forbidden marker"
+        );
+        assert!(
+            spawn_env
+                .iter()
+                .any(|(k, v)| k == "LEDGERFUL_NON_INTERACTIVE" && v == "1")
+        );
+
+        // Child inherits spawn env (apply the same pairs the parent would set).
+        let mut env_guards: Vec<TempEnv> = Vec::new();
+        env_guards.push(TempEnv::remove("OPENROUTER_API_KEY"));
+        env_guards.push(TempEnv::remove("GEMINI_API_KEY"));
+        // Legitimate: chdir to OS temp so repo .env is ignored.
+        // nosemgrep: rust.lang.security.temp-dir.temp-dir
+        if let Ok(tmp) = std::env::temp_dir().canonicalize() {
+            let _ = std::env::set_current_dir(tmp);
+        }
+        for (k, v) in &spawn_env {
+            env_guards.push(TempEnv::set(k, v));
+        }
+        assert!(CloudPolicy::from_env().is_forbidden());
+
+        let config = LocalModelConfig {
+            base_url: "http://127.0.0.1:1".to_string(),
+            generation_model: "test-model".to_string(),
+            timeout_secs: 5,
+            ollama_cloud_url: Some(cloud.base_url()),
+            ollama_cloud_api_key: Some("ollama-key".to_string()),
+            ollama_cloud_model: Some("model:cloud".to_string()),
+            ..LocalModelConfig::default()
+        };
+
+        let err = complete(
+            &config,
+            &test_messages(),
+            &CompletionOptions::default(),
+            Some(3),
+        )
+        .expect_err("MCP-inherited Forbidden + local-down must not hit cloud");
+        assert!(
+            err.contains(CLOUD_POLICY_FORBIDDEN_CODE),
+            "error must name cloud_policy_forbidden, got: {err}"
+        );
+        assert!(
+            err.contains(MCP_ALLOW_CLOUD_EGRESS_ENV),
+            "error must name opt-in env, got: {err}"
+        );
+        mock.assert_hits(0);
+        drop(env_guards);
+    }
+
     #[test]
     #[serial_test::serial(env)]
     fn complete_forbidden_zero_http_to_openrouter_mock() {
@@ -1721,9 +1798,17 @@ mod tests {
     #[serial_test::serial(env)]
     fn openrouter_sanitize_redacts_api_key_shaped_strings() {
         // Allowed policy: OpenRouter arm receives sanitized bodies.
-        // Capture the request body and assert the raw key never appears.
+        // A body_contains(secret) mock must see zero hits; the general mock gets the call.
         let server = MockServer::start();
-        let mock = server.mock(|when, then| {
+        let secret = "AKIAIOSFODNN7EXAMPLE";
+        // Register the leak detector first so it is evaluated when matching.
+        let secret_leak_mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/v1/chat/completions")
+                .body_contains(secret);
+            then.status(500).body("secret leaked into request body");
+        });
+        let ok_mock = server.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/v1/chat/completions");
             then.status(200)
@@ -1742,7 +1827,6 @@ mod tests {
             let _ = std::env::set_current_dir(tmp);
         }
 
-        let secret = "AKIAIOSFODNN7EXAMPLE";
         let config = LocalModelConfig {
             base_url: "http://127.0.0.1:1".to_string(),
             generation_model: "test".to_string(),
@@ -1756,20 +1840,16 @@ mod tests {
         let result = complete(&config, &messages, &CompletionOptions::default(), Some(5));
         assert!(
             result.is_ok(),
-            "OpenRouter mock should succeed under Allowed; got: {result:?}"
+            "OpenRouter mock should succeed under Allowed with sanitized body; got: {result:?}"
         );
-        mock.assert();
-        // Inspect recorded request body: raw secret must not appear.
-        let hits = mock.hits();
-        assert!(hits >= 1, "expected at least one OpenRouter call");
-        // httpmock records calls; verify via sanitize unit that the same content
-        // is redacted, and that complete path used sanitize (no raw secret in
-        // success path is implied by sanitize_messages_for_egress before send).
-        let sanitized =
-            crate::gemini::sanitize::sanitize_for_egress(&format!("api_key = \"{secret}\""));
+        assert_eq!(
+            secret_leak_mock.hits(),
+            0,
+            "OpenRouter request body must not contain the raw API-key-shaped secret"
+        );
         assert!(
-            !sanitized.sanitized.contains(secret),
-            "sanitize_for_egress must redact API-key-shaped strings"
+            ok_mock.hits() >= 1,
+            "expected at least one sanitized OpenRouter call"
         );
     }
 }
