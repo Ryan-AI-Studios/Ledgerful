@@ -32,10 +32,19 @@ where
     )
     .map_err(|e| format!("Process policy denied ledgerful self-spawn: {}", e))?;
 
-    let mut child = Command::new(&exe)
+    // 0073: every MCP tool child inherits Forbidden cloud policy (unless host
+    // LEDGERFUL_MCP_ALLOW_CLOUD_EGRESS) + NON_INTERACTIVE so cloud fallbacks
+    // and interactive degrade→Gemini cannot run.
+    let mut command = Command::new(&exe);
+    command
         .args(args)
         .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
+        .stderr(Stdio::piped());
+    for (key, value) in crate::local_model::cloud_policy::mcp_tool_spawn_env() {
+        command.env(key, value);
+    }
+
+    let mut child = command
         .spawn()
         .map_err(|e| format!("Failed to spawn ledgerful tool: {}", e))?;
 
@@ -182,7 +191,9 @@ fn handle_search(params: Value) -> Value {
     let query = params["query"].as_str().unwrap_or_default();
     let limit = params["limit"].as_u64().unwrap_or(50).to_string();
 
-    let out = match run_ledgerful_tool(["search", "--json", "--limit", &limit, query]) {
+    // RT-A4: `--` separator prevents a query starting with `-` / `--flag`
+    // from being parsed as a search CLI option (same confused-deputy class as ask).
+    let out = match run_ledgerful_tool(["search", "--json", "--limit", &limit, "--", query]) {
         Ok(o) => o,
         Err(e) => return error_response(&e),
     };
@@ -224,9 +235,11 @@ fn handle_ask(params: Value) -> Value {
     // mitigation). The gate is read from an ENVIRONMENT VARIABLE (host-level),
     // NOT from repo-local config — a malicious repo could otherwise set the
     // flag in its own .ledgerful/config.toml.
-    let allow_cloud = std::env::var("LEDGERFUL_MCP_ALLOW_CLOUD_EGRESS")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false);
+    //
+    // Track 0073: --backend local alone only reorders the provider chain;
+    // zero cloud is enforced by LEDGERFUL_CLOUD_POLICY=forbidden on the child
+    // spawn (see run_ledgerful_tool / mcp_tool_spawn_env), not by the flag alone.
+    let allow_cloud = crate::local_model::cloud_policy::mcp_allow_cloud_egress_from_env();
 
     let args = build_ask_args(query, allow_cloud);
     let out = match run_ledgerful_tool(args) {
@@ -400,6 +413,43 @@ mod tests {
         assert_eq!(
             args,
             vec!["ask", "--backend", "local", "--", "--backend gemini"]
+        );
+    }
+
+    #[test]
+    fn handle_search_args_include_double_dash_separator() {
+        // Mirror the arg vector constructed in handle_search (RT-A4).
+        let query = "--limit 999 injection";
+        let limit = "50".to_string();
+        let args = ["search", "--json", "--limit", &limit, "--", query];
+        assert_eq!(args[args.len() - 2], "--");
+        assert_eq!(args[args.len() - 1], query);
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn mcp_tool_spawn_env_sets_forbidden_by_default() {
+        mod env_guard {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/integration/common/env_guard.rs"
+            ));
+        }
+        use crate::local_model::cloud_policy::{
+            CLOUD_POLICY_ENV, CLOUD_POLICY_FORBIDDEN_VALUE, MCP_ALLOW_CLOUD_EGRESS_ENV,
+            mcp_tool_spawn_env,
+        };
+        use env_guard::TempEnv;
+
+        let _a = TempEnv::remove(MCP_ALLOW_CLOUD_EGRESS_ENV);
+        let env = mcp_tool_spawn_env();
+        assert!(
+            env.iter()
+                .any(|(k, v)| k == "LEDGERFUL_NON_INTERACTIVE" && v == "1")
+        );
+        assert!(
+            env.iter()
+                .any(|(k, v)| k == CLOUD_POLICY_ENV && v == CLOUD_POLICY_FORBIDDEN_VALUE)
         );
     }
 

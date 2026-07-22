@@ -1,5 +1,6 @@
 use crate::config::model::GeminiConfig;
 use crate::local_model::client::types::{ChatMessage, CompletionOptions};
+use crate::local_model::cloud_policy::deny_if_forbidden;
 use std::time::Duration;
 
 const GEMINI_API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
@@ -7,11 +8,34 @@ const GEMINI_FAST_MODEL: &str = "gemini-3.1-flash-lite";
 
 /// Lightweight Gemini completion that returns the response text.
 /// Used by the semantic extractor's `--fast` mode to bypass the local model.
+///
+/// Sanitizes message bodies once before the network call. Blocked under
+/// `CloudPolicy::Forbidden` (`cloud_policy_forbidden`).
 pub fn gemini_complete(
     config: &GeminiConfig,
     messages: &[ChatMessage],
     options: &CompletionOptions,
 ) -> Result<String, String> {
+    deny_if_forbidden("direct gemini_complete blocked")?;
+    let sanitized: Vec<ChatMessage> = messages
+        .iter()
+        .map(|m| ChatMessage {
+            role: m.role.clone(),
+            content: crate::gemini::sanitize::sanitize_for_egress(&m.content).sanitized,
+        })
+        .collect();
+    gemini_complete_unsanitized(config, &sanitized, options)
+}
+
+/// Gemini completion when the caller has already sanitized messages
+/// (avoids double-mangle on the complete() cloud-fallback path).
+pub fn gemini_complete_unsanitized(
+    config: &GeminiConfig,
+    messages: &[ChatMessage],
+    options: &CompletionOptions,
+) -> Result<String, String> {
+    deny_if_forbidden("direct gemini_complete blocked")?;
+
     let api_key = config
         .api_key
         .clone()
