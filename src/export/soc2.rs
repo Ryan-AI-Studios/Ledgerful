@@ -512,7 +512,18 @@ pub fn synthesize_chain_head(entries: &[crate::ledger::types::LedgerEntry]) -> O
     // genesis is the ISO-8601 timestamp of the first in-chain entry, matching
     // the normal append path and verify_chain_integrity.
     let genesis = first.committed_at.clone();
-    let latest = crate::ledger::crypto::compute_entry_hash_for_entry(last).ok()?;
+    // Fail closed on encode errors (never drop the head silently).
+    let latest = match crate::ledger::crypto::compute_entry_hash_for_entry(last) {
+        Ok(h) => h,
+        Err(err) => {
+            tracing::error!(
+                tx_id = %last.tx_id,
+                error = %err,
+                "synthesize_chain_head: entry hash encode failed"
+            );
+            return None;
+        }
+    };
     Some(ChainHead {
         latest_entry_hash: latest,
         genesis,

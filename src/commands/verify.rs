@@ -38,10 +38,8 @@ pub mod sig_exit {
 
     static REQUESTED: AtomicI32 = AtomicI32::new(0);
 
-    /// Record a non-zero exit code for the CLI process (idempotent max-severity).
+    /// Record a non-zero exit code for the CLI process (first-write-wins).
     pub fn request_exit(code: i32) {
-        // Prefer more specific failures: 1 (invalid) wins over 3 (unsigned) when both.
-        // For pure unsigned → 3; pure invalid → 1.
         let _ = REQUESTED.compare_exchange(0, code, Ordering::SeqCst, Ordering::SeqCst);
     }
 
@@ -49,6 +47,30 @@ pub mod sig_exit {
     pub fn take_requested_exit_code() -> Option<i32> {
         let c = REQUESTED.swap(0, Ordering::SeqCst);
         if c == 0 { None } else { Some(c) }
+    }
+
+    /// Pure exit-code decision for the signature path (0072 DoD-4 matrix).
+    ///
+    /// - `invalid_count` = rows that fail crypto / min_sig_version / consistency
+    /// - `unsigned_fail` = unsigned rows counted only when signing is required
+    /// - Chain breaks are reported via `invalid_count`-style path with exit 1
+    ///   (callers set `chain_break=true`).
+    pub fn decide_signature_exit(
+        invalid_count: usize,
+        unsigned_fail: usize,
+        chain_break: bool,
+    ) -> i32 {
+        if chain_break {
+            return INVALID_OR_CHAIN;
+        }
+        if invalid_count == 0 {
+            return OK;
+        }
+        if unsigned_fail > 0 && invalid_count == unsigned_fail {
+            UNSIGNED
+        } else {
+            INVALID_OR_CHAIN
+        }
     }
 }
 
@@ -220,20 +242,21 @@ pub fn verify_ledger_signatures_with_options(
                 .bold()
         );
         Ok(())
-    } else if unsigned_fail > 0 && invalid_count == unsigned_fail {
-        // Distinct exit 3 for pure unsigned failures under strict/require.
-        sig_exit::request_exit(sig_exit::UNSIGNED);
-        Err(miette::miette!(
-            "Ledger signature verification failed: {} unsigned entries (exit {}).",
-            unsigned_fail,
-            sig_exit::UNSIGNED
-        ))
     } else {
-        sig_exit::request_exit(sig_exit::INVALID_OR_CHAIN);
-        Err(miette::miette!(
-            "Ledger signature verification failed: {} entries have invalid or missing signatures.",
-            invalid_count
-        ))
+        let code = sig_exit::decide_signature_exit(invalid_count, unsigned_fail, false);
+        sig_exit::request_exit(code);
+        if code == sig_exit::UNSIGNED {
+            Err(miette::miette!(
+                "Ledger signature verification failed: {} unsigned entries (exit {}).",
+                unsigned_fail,
+                sig_exit::UNSIGNED
+            ))
+        } else {
+            Err(miette::miette!(
+                "Ledger signature verification failed: {} entries have invalid or missing signatures.",
+                invalid_count
+            ))
+        }
     }
 }
 
@@ -1477,5 +1500,46 @@ mod sig_exit_tests {
         assert_eq!(sig_exit::INVALID_OR_CHAIN, 1);
         assert_eq!(sig_exit::POLICY, 2);
         assert_eq!(sig_exit::UNSIGNED, 3);
+    }
+
+    #[test]
+    fn decide_matrix_valid_invalid_unsigned_chain() {
+        // All good → 0
+        assert_eq!(sig_exit::decide_signature_exit(0, 0, false), sig_exit::OK);
+        // Pure INVALID → 1
+        assert_eq!(
+            sig_exit::decide_signature_exit(2, 0, false),
+            sig_exit::INVALID_OR_CHAIN
+        );
+        // Pure UNSIGNED under require/strict → 3
+        assert_eq!(
+            sig_exit::decide_signature_exit(3, 3, false),
+            sig_exit::UNSIGNED
+        );
+        // Mixed invalid + unsigned → 1 (invalid wins)
+        assert_eq!(
+            sig_exit::decide_signature_exit(3, 1, false),
+            sig_exit::INVALID_OR_CHAIN
+        );
+        // Chain break → 1
+        assert_eq!(
+            sig_exit::decide_signature_exit(0, 0, true),
+            sig_exit::INVALID_OR_CHAIN
+        );
+    }
+
+    #[test]
+    fn status_vocabulary_frozen_for_0072() {
+        use crate::ledger::crypto::SignatureTrustStatus;
+        assert_eq!(
+            SignatureTrustStatus::ValidTrusted.as_str(),
+            "VALID (trusted)"
+        );
+        assert_eq!(
+            SignatureTrustStatus::ValidUnknownKey.as_str(),
+            "VALID (unknown key)"
+        );
+        assert_eq!(SignatureTrustStatus::Invalid.as_str(), "INVALID");
+        assert_eq!(SignatureTrustStatus::Unsigned.as_str(), "UNSIGNED");
     }
 }

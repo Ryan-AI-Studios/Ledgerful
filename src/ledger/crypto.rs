@@ -379,18 +379,39 @@ pub fn content_digest_hex(payload_bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
+/// Derive `entity_normalized` the same way transaction commit does, for verify.
+///
+/// Uses [`crate::util::path::normalize_relative_path`] against a fixed synthetic
+/// repo root so verify does not need a live layout. Accepts both exact and
+/// ASCII-lowercased forms (Windows case-insensitive repos lower the path at
+/// commit time).
+pub fn derive_entity_normalized(entity: &str) -> Option<String> {
+    let nfc_entity = nfc_normalize(entity);
+    // Synthetic absolute root so lexical cleanup works without a real tree.
+    #[cfg(windows)]
+    let root = Path::new(r"C:\__ledgerful_verify_root__");
+    #[cfg(not(windows))]
+    let root = Path::new("/__ledgerful_verify_root__");
+    crate::util::path::normalize_relative_path(root, &nfc_entity).ok()
+}
+
 /// Consistency check for `entity_normalized` (not signed; derive-at-verify).
 ///
-/// Accepts common path-normalizer outputs (slash form, case folding). A
-/// mutated garbage value fails.
+/// Recomputes with the production path normalizer (phase0). Case-only differences
+/// are accepted when either side is the ASCII-lowercase of the derived form
+/// (matches `TransactionManager::entity_normalized` on case-insensitive FS).
+/// A mutated garbage value fails.
 pub fn entity_normalized_consistent(entity: &str, entity_normalized: &str) -> bool {
-    let nfc_entity = nfc_normalize(entity);
-    let entity_slash = nfc_entity.replace('\\', "/");
+    let Some(derived) = derive_entity_normalized(entity) else {
+        // Entity cannot be path-normalized (escape/UNC). Fall back to strict
+        // NFC slash equality only — never ignore_case alone (codex P1).
+        let nfc_entity = nfc_normalize(entity);
+        let entity_slash = nfc_entity.replace('\\', "/");
+        let norm_slash = entity_normalized.replace('\\', "/");
+        return entity_slash == norm_slash;
+    };
     let norm_slash = entity_normalized.replace('\\', "/");
-    entity_slash == norm_slash
-        || entity_slash.eq_ignore_ascii_case(&norm_slash)
-        || nfc_entity == entity_normalized
-        || nfc_entity.eq_ignore_ascii_case(entity_normalized)
+    derived == norm_slash || derived.eq_ignore_ascii_case(&norm_slash)
 }
 
 /// Sign a new production ledger entry as v2.
@@ -1024,15 +1045,10 @@ mod tests {
         for (name, mutate) in mutators {
             let mut mutated = base.clone();
             mutate(&mut mutated);
-            // Keep entity_normalized consistent when entity is not the mutator
-            // so we isolate the signed-field failure.
-            if name != "entity" {
-                mutated.entity_normalized = mutated.entity.clone();
-            } else {
-                // When entity mutates, also update entity_normalized so the
-                // failure is signature mismatch, not consistency.
-                mutated.entity_normalized = mutated.entity.clone();
-            }
+            // Keep entity_normalized consistent (production path normalizer)
+            // so we isolate the signed-field failure, not the consistency check.
+            mutated.entity_normalized =
+                derive_entity_normalized(&mutated.entity).unwrap_or_else(|| mutated.entity.clone());
             assert!(
                 !verify_entry_signature(&mutated, &sig, &pub_key),
                 "mutating {name} must fail verify"
@@ -1049,6 +1065,25 @@ mod tests {
         let pub_key = pub_key.unwrap();
         input.entity_normalized = "TAMPERED/path.rs".to_string();
         assert!(!verify_entry_signature(&input, &sig, &pub_key));
+    }
+
+    #[test]
+    fn entity_normalized_uses_production_path_normalizer() {
+        // Phase0: derive-at-verify with the same normalizer as commit.
+        assert!(entity_normalized_consistent(
+            "./src/../src/main.rs",
+            "src/main.rs"
+        ));
+        assert!(entity_normalized_consistent("src\\main.rs", "src/main.rs"));
+        // Case-only differences accepted (case-insensitive FS lowercases at commit).
+        assert!(entity_normalized_consistent("Src/Main.rs", "src/main.rs"));
+        // Garbage normalized value must fail even if it shares a prefix.
+        assert!(!entity_normalized_consistent(
+            "src/main.rs",
+            "TAMPERED/path.rs"
+        ));
+        // Case-only mismatch on a different path must fail.
+        assert!(!entity_normalized_consistent("src/main.rs", "src/other.rs"));
     }
 
     #[test]
