@@ -192,6 +192,13 @@ fn run_gemini_synthesis_with(
     truncated: bool,
     model_override: Option<&str>,
 ) -> Result<()> {
+    // 0073: hard-block direct Gemini under CloudPolicy::Forbidden.
+    if let Err(e) =
+        crate::local_model::cloud_policy::deny_if_forbidden("run_gemini_synthesis blocked")
+    {
+        return Err(miette::miette!("{e}"));
+    }
+
     eprintln!("Using Gemini...");
 
     let budget_tokens = config.gemini.context_window;
@@ -229,7 +236,8 @@ fn run_gemini_synthesis_with(
         final_usr_prompt.push_str(&user_prompt);
     }
 
-    let sanitize_result = crate::gemini::sanitize::sanitize_for_gemini(&final_usr_prompt);
+    // Single sanitize pass (sanitize_for_egress); no second pass in run_query.
+    let sanitize_result = crate::gemini::sanitize::sanitize_for_egress(&final_usr_prompt);
     let sanitized_user_prompt = sanitize_result.sanitized;
 
     let model = model_override
@@ -294,14 +302,19 @@ pub(crate) fn degrade_to_context(
 /// Gate predicate for the interactive Gemini-switch prompt inside
 /// `degrade_to_context`. Extracted as a pure helper so the gate condition is
 /// unit-testable without driving the full degrade path (which would require
-/// capturing stdout/stderr and an `inquire` prompt). Behavior-preserving: this
-/// is exactly the `is_interactive() && config.gemini.api_key.is_some()` check
-/// that previously lived inline in `degrade_to_context`.
+/// capturing stdout/stderr and an `inquire` prompt).
+///
+/// Under `CloudPolicy::Forbidden` always returns false (0073 — non-interactive
+/// MCP and Forbidden never degrade→Gemini). Otherwise:
+/// `interactive && config.gemini.api_key.is_some()`.
 ///
 /// `interactive` is passed in (rather than read from `util::term` inside) so
 /// tests can inject a deterministic value without mutating process env or
 /// depending on whether stdin is a tty.
 pub(crate) fn should_prompt_for_cloud(config: &Config, interactive: bool) -> bool {
+    if crate::local_model::CloudPolicy::from_env().is_forbidden() {
+        return false;
+    }
     interactive && config.gemini.api_key.is_some()
 }
 
@@ -364,6 +377,13 @@ pub(crate) fn format_retrieved_context_body(chunks: &[pruner::RankedChunk]) -> S
 /// Degradable errors fall back to rendering retrieved context; non-degradable keep
 /// the existing hard-fail behavior.
 pub(crate) fn is_degradable_error(err: &str) -> bool {
+    // cloud_policy_forbidden may embed "unreachable" in the message; treat it
+    // as non-degradable for the interactive Gemini arm (context-only degrade
+    // still happens when callers choose it, but we must not treat policy as a
+    // soft transport failure that re-opens cloud paths).
+    if err.contains(crate::local_model::CLOUD_POLICY_FORBIDDEN_CODE) {
+        return false;
+    }
     let lower = err.to_lowercase();
     lower.contains("unreachable")
         || lower.contains("timed out")
@@ -419,6 +439,9 @@ mod tests {
         assert!(!is_degradable_error("429 Too Many Requests"));
         assert!(!is_degradable_error("500 server error (internal)"));
         assert!(!is_degradable_error("cloud returned 500: boom"));
+        assert!(!is_degradable_error(
+            "cloud_policy_forbidden: local model at http://127.0.0.1:1 unreachable; cloud fallback denied"
+        ));
     }
 
     #[test]
@@ -517,5 +540,26 @@ mod tests {
         let config = Config::default();
         assert!(!should_prompt_for_cloud(&config, true));
         assert!(!should_prompt_for_cloud(&config, false));
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn should_prompt_for_cloud_gate_skips_under_forbidden() {
+        mod env_guard {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/integration/common/env_guard.rs"
+            ));
+        }
+        use crate::local_model::cloud_policy::{CLOUD_POLICY_ENV, CLOUD_POLICY_FORBIDDEN_VALUE};
+        use env_guard::TempEnv;
+
+        let _pol = TempEnv::set(CLOUD_POLICY_ENV, CLOUD_POLICY_FORBIDDEN_VALUE);
+        let mut config = Config::default();
+        config.gemini.api_key = Some("test-key".to_string());
+        assert!(
+            !should_prompt_for_cloud(&config, true),
+            "Forbidden must never prompt for Gemini degrade"
+        );
     }
 }

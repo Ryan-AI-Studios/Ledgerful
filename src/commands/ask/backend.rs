@@ -111,6 +111,21 @@ pub fn resolve_provider_entries(
         }
     }
 
+    // 0073: under CloudPolicy::Forbidden the resolved list is pure Local-only
+    // (truncate priority cloud tail + ignore LEDGERFUL_ASK_PROVIDER_* cloud slots).
+    if crate::local_model::CloudPolicy::from_env().is_forbidden() {
+        entries.retain(|e| e.backend == Provider::Local);
+        if entries.is_empty() {
+            entries.push(ProviderEntry {
+                backend: Provider::Local,
+                model: Some(config.local_model.generation_model.clone()),
+                timeout_secs: Some(config.local_model.timeout_secs),
+                api_key_env: None,
+                base_url: Some(config.local_model.base_url.clone()),
+            });
+        }
+    }
+
     Ok(entries)
 }
 
@@ -316,6 +331,79 @@ mod tests {
 
         let providers = resolve_provider_priority(&config, Some(Backend::Local)).unwrap();
         assert_eq!(providers[0], Provider::Local);
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn resolve_provider_entries_forbidden_truncates_to_local_only() {
+        use crate::config::model::{Provider, ProviderEntry, ProvidersConfig};
+        use crate::local_model::cloud_policy::{CLOUD_POLICY_ENV, CLOUD_POLICY_FORBIDDEN_VALUE};
+
+        clear_provider_env();
+        let _pol = TempEnv::set(CLOUD_POLICY_ENV, CLOUD_POLICY_FORBIDDEN_VALUE);
+        let mut config = Config::default();
+        config.ask.providers = ProvidersConfig {
+            priority: vec![
+                ProviderEntry {
+                    backend: Provider::Local,
+                    model: None,
+                    timeout_secs: None,
+                    api_key_env: None,
+                    base_url: None,
+                },
+                ProviderEntry {
+                    backend: Provider::Gemini,
+                    model: None,
+                    timeout_secs: None,
+                    api_key_env: None,
+                    base_url: None,
+                },
+                ProviderEntry {
+                    backend: Provider::OpenRouter,
+                    model: None,
+                    timeout_secs: None,
+                    api_key_env: None,
+                    base_url: None,
+                },
+                ProviderEntry {
+                    backend: Provider::OllamaCloud,
+                    model: None,
+                    timeout_secs: None,
+                    api_key_env: None,
+                    base_url: None,
+                },
+            ],
+        };
+
+        let entries = resolve_provider_entries(&config, Some(Backend::Local)).unwrap();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].backend, Provider::Local);
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn resolve_provider_entries_forbidden_ignores_cloud_env_slots() {
+        use crate::config::model::{Provider, ProviderEntry, ProvidersConfig};
+        use crate::local_model::cloud_policy::{CLOUD_POLICY_ENV, CLOUD_POLICY_FORBIDDEN_VALUE};
+
+        clear_provider_env();
+        let _pol = TempEnv::set(CLOUD_POLICY_ENV, CLOUD_POLICY_FORBIDDEN_VALUE);
+        let _p1 = TempEnv::set("LEDGERFUL_ASK_PROVIDER_1", "gemini");
+        let _p2 = TempEnv::set("LEDGERFUL_ASK_PROVIDER_2", "openrouter");
+        let mut config = Config::default();
+        config.ask.providers = ProvidersConfig {
+            priority: vec![ProviderEntry {
+                backend: Provider::Local,
+                model: None,
+                timeout_secs: None,
+                api_key_env: None,
+                base_url: None,
+            }],
+        };
+
+        let entries = resolve_provider_entries(&config, None).unwrap();
+        assert!(entries.iter().all(|e| e.backend == Provider::Local));
+        assert!(!entries.is_empty());
     }
 
     #[test]
