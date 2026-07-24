@@ -593,16 +593,30 @@ mod tests {
         let marker = "# ledgerful-nightly:test";
         let entry = unix_cron_line(&binary, &root, &log, marker).unwrap();
         let schedule_line = entry.lines().nth(1).expect("schedule line");
-        // shlex quoting must keep the space/path specials inside quotes —
-        // no unquoted breakout of `$` or space into shell words.
+        // Assert shlex-quoted forms (not raw fragments) so `$` / spaces cannot break out.
+        let root_q = shlex::try_quote(root.as_str()).unwrap();
+        let binary_q = shlex::try_quote(binary.as_str()).unwrap();
+        let log_q = shlex::try_quote(log.as_str()).unwrap();
         assert!(
-            schedule_line.contains("proj") && schedule_line.contains("my tools"),
-            "got: {schedule_line}"
+            schedule_line.contains(root_q.as_ref()),
+            "expected quoted root {root_q} in: {schedule_line}"
+        );
+        assert!(
+            schedule_line.contains(binary_q.as_ref()),
+            "expected quoted binary {binary_q} in: {schedule_line}"
+        );
+        assert!(
+            schedule_line.contains(log_q.as_ref()),
+            "expected quoted log {log_q} in: {schedule_line}"
         );
         // Embedded double-quote path is quoted safely.
-        let binary_q = Utf8PathBuf::from(r#"/opt/led"gerful"#);
-        let entry2 = unix_cron_line(&binary_q, &root, &log, marker).unwrap();
-        assert!(entry2.contains("schedule run-nightly"), "got: {entry2}");
+        let binary_dq = Utf8PathBuf::from(r#"/opt/led"gerful"#);
+        let entry2 = unix_cron_line(&binary_dq, &root, &log, marker).unwrap();
+        let binary_dq_q = shlex::try_quote(binary_dq.as_str()).unwrap();
+        assert!(
+            entry2.contains(binary_dq_q.as_ref()),
+            "expected quoted binary-with-quote in: {entry2}"
+        );
         // NUL is refused.
         let bad = Utf8PathBuf::from("/opt/led\0gerful");
         assert!(unix_cron_line(&bad, &root, &log, marker).is_err());

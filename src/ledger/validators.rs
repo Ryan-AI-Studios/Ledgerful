@@ -143,23 +143,6 @@ mod tests {
         }
     }
 
-    fn cwd_policy() -> ProcessPolicy {
-        // Allow the platform helpers used by cwd / echo fixtures.
-        ProcessPolicy {
-            allowed_commands: vec![
-                "cmd".to_string(),
-                "cmd.exe".to_string(),
-                "sh".to_string(),
-                "pwd".to_string(),
-                "echo".to_string(),
-                "echo.exe".to_string(),
-            ],
-            denied_commands: Vec::new(),
-            default_timeout_secs: 300,
-            strict: true,
-        }
-    }
-
     #[test]
     fn rejects_null_byte_in_entity_path() {
         let temp = tempfile::tempdir().unwrap();
@@ -307,55 +290,69 @@ mod tests {
     fn cwd_is_repo_root() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path();
-        let marker = root.join("cwd_marker.txt");
-        std::fs::write(&marker, "here").unwrap();
         let entity = root.join("entity.txt");
         std::fs::write(&entity, "x").unwrap();
+        let root_canon = dunce::canonicalize(root).unwrap_or_else(|_| root.to_path_buf());
+        let entity_str = entity.to_string_lossy().to_string();
 
-        // Platform command that prints cwd. On Windows use powershell would be
-        // rejected — use cmd is also rejected. Create a tiny script is heavy;
-        // instead assert that running a non-shell allowlisted binary with
-        // relative path arg succeeds when file exists in repo root.
-        // Use `git` which is on the built-in allowlist if present, or skip.
-        if crate::util::which::which("git").is_none() {
-            return;
-        }
-        let policy = ProcessPolicy::default();
+        // Non-shell-interpreter fixtures that print cwd (shells are rejected).
+        #[cfg(windows)]
+        let (executable, args, allow) = {
+            // .cmd basename is not a shell-interpreter entry; CreateProcess runs it.
+            let script = root.join("print_cwd.cmd");
+            std::fs::write(&script, "@echo off\r\ncd\r\n").unwrap();
+            let script_str = script.to_string_lossy().to_string();
+            (
+                script_str.clone(),
+                Vec::<String>::new(),
+                vec!["print_cwd.cmd".to_string(), script_str],
+            )
+        };
+        #[cfg(unix)]
+        let (executable, args, allow) = {
+            (
+                "/bin/pwd".to_string(),
+                Vec::<String>::new(),
+                vec!["pwd".to_string(), "/bin/pwd".to_string()],
+            )
+        };
+
+        let policy = ProcessPolicy {
+            allowed_commands: allow,
+            denied_commands: Vec::new(),
+            default_timeout_secs: 30,
+            strict: true,
+        };
+
         let result = ValidatorRunner::run(
             "cwd-test".to_string(),
-            "git",
-            &["rev-parse".to_string(), "--is-inside-work-tree".to_string()],
+            &executable,
+            &args,
             root,
-            &entity.to_string_lossy(),
+            &entity_str,
             5000,
             ValidationLevel::Error,
             &policy,
+        )
+        .unwrap_or_else(|e| panic!("cwd fixture failed to run: {e}"));
+
+        assert!(
+            result.success,
+            "cwd printer should succeed: stdout={} stderr={}",
+            result.stdout, result.stderr
         );
-        // Non-git temp dir: git may fail with not-a-repo; that still proves spawn+cwd worked.
-        match result {
-            Ok(r) => {
-                // Either success (if somehow a repo) or stderr about not a git repo.
-                assert!(
-                    r.success
-                        || r.stderr
-                            .to_ascii_lowercase()
-                            .contains("not a git repository")
-                        || r.stderr.to_ascii_lowercase().contains("not a git repo")
-                        || !r.success,
-                    "unexpected: stdout={} stderr={}",
-                    r.stdout,
-                    r.stderr
-                );
-            }
-            Err(e) => {
-                // Spawn failure is ok if git missing mid-flight; policy denial is not.
-                let msg = format!("{e}");
-                assert!(
-                    !msg.contains("blocked by policy"),
-                    "git should be allowlisted: {msg}"
-                );
-            }
-        }
-        let _ = cwd_policy(); // keep helper referenced for future fixtures
+        let printed = result.stdout.lines().next().unwrap_or("").trim();
+        assert!(
+            !printed.is_empty(),
+            "expected cwd on stdout, got stdout={:?} stderr={:?}",
+            result.stdout,
+            result.stderr
+        );
+        let printed_canon =
+            dunce::canonicalize(printed).unwrap_or_else(|_| std::path::PathBuf::from(printed));
+        assert_eq!(
+            printed_canon, root_canon,
+            "validator cwd must be repo_root; printed={printed}"
+        );
     }
 }

@@ -371,6 +371,62 @@ mod tests {
 
     #[test]
     #[serial]
+    fn git_env_hardening_strips_exec_path_poison() {
+        // `git --exec-path` prints GIT_EXEC_PATH when set. Unhardened spawns
+        // would echo the poison path; hardened git_command() must strip it
+        // and report the real install path instead.
+        let poison = if cfg!(windows) {
+            r"C:\nonexistent\ledgerful-git-exec-poison-0079"
+        } else {
+            "/nonexistent/ledgerful-git-exec-poison-0079"
+        };
+        let original = std::env::var("GIT_EXEC_PATH").ok();
+        // Legitimate: test-only env mutation.
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+        unsafe { std::env::set_var("GIT_EXEC_PATH", poison) };
+
+        // Control: unhardened spawn inherits the poison.
+        let unhardened = Command::new("git")
+            .args(["--exec-path"])
+            .output()
+            .expect("unhardened git --exec-path");
+        let unhardened_out = String::from_utf8_lossy(&unhardened.stdout);
+        assert!(
+            unhardened_out.contains("ledgerful-git-exec-poison-0079"),
+            "control: unhardened git should see poison GIT_EXEC_PATH, got: {unhardened_out}"
+        );
+
+        // Hardened: poison must not appear.
+        let hardened = git_command()
+            .args(["--exec-path"])
+            .output()
+            .expect("hardened git --exec-path");
+        assert!(
+            hardened.status.success(),
+            "hardened git --exec-path failed: {}",
+            String::from_utf8_lossy(&hardened.stderr)
+        );
+        let hardened_out = String::from_utf8_lossy(&hardened.stdout);
+        assert!(
+            !hardened_out.contains("ledgerful-git-exec-poison-0079"),
+            "harden_git_env must strip GIT_EXEC_PATH; got: {hardened_out}"
+        );
+        assert!(
+            !hardened_out.trim().is_empty(),
+            "expected real exec-path output"
+        );
+
+        if let Some(orig) = original {
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+            unsafe { std::env::set_var("GIT_EXEC_PATH", orig) };
+        } else {
+            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+            unsafe { std::env::remove_var("GIT_EXEC_PATH") };
+        }
+    }
+
+    #[test]
+    #[serial]
     fn git_env_hardening_strips_ssh_command() {
         let original = std::env::var("GIT_SSH_COMMAND").ok();
         // Legitimate: test-only env mutation.
@@ -393,13 +449,6 @@ mod tests {
             stdout.to_ascii_lowercase().contains("git version"),
             "unexpected version output: {stdout}"
         );
-
-        // Confirm the hardened command does not inherit the poison.
-        let mut probe = Command::new("git");
-        harden_git_env(&mut probe);
-        // We can't easily introspect env_remove, but the successful --version
-        // under a nonexistent GIT_SSH_COMMAND proves the strip worked for
-        // git_command() (which calls harden_git_env).
 
         if let Some(orig) = original {
             // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
