@@ -310,11 +310,7 @@ mod tests {
         let hashes = vec!["sha256-abc=".to_string(), "sha256-def=".to_string()];
         let csp = build_hash_csp(&hashes);
         assert!(csp.contains("script-src 'self' 'sha256-abc=' 'sha256-def='"));
-        assert!(!csp.contains("script-src 'self' 'unsafe-inline'"));
-        assert!(
-            !csp.contains("'unsafe-inline'; script-src")
-                || csp.contains("style-src 'self' 'unsafe-inline'")
-        );
+        assert!(csp.contains("style-src 'self' 'unsafe-inline'"));
         // script-src must not include unsafe-inline
         let script_part = csp
             .split("script-src ")
@@ -331,6 +327,26 @@ mod tests {
         assert!(csp.contains("base-uri 'self'"));
         assert!(csp.contains("frame-ancestors 'none'"));
         assert!(csp.contains("connect-src 'self'"));
+    }
+
+    #[test]
+    fn embedded_csp_uses_vendored_hashes_not_unsafe_inline() {
+        let csp = embedded_csp();
+        assert!(
+            csp.contains("sha256-"),
+            "embedded CSP must include vendored script hashes"
+        );
+        let script_part = csp
+            .split("script-src ")
+            .nth(1)
+            .unwrap()
+            .split(';')
+            .next()
+            .unwrap();
+        assert!(
+            !script_part.contains("unsafe-inline"),
+            "embedded script-src must not use unsafe-inline: {script_part}"
+        );
     }
 
     #[test]

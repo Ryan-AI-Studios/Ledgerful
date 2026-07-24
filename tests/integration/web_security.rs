@@ -309,8 +309,11 @@ fn assert_security_headers(headers: &reqwest::header::HeaderMap) {
         .and_then(|v| v.to_str().ok())
         .expect("CSP header required");
     assert!(csp.contains("default-src 'self'"));
+    assert!(csp.contains("connect-src 'self'"));
     assert!(csp.contains("object-src 'none'"));
+    assert!(csp.contains("base-uri 'self'"));
     assert!(csp.contains("frame-ancestors 'none'"));
+    assert!(csp.contains("style-src 'self' 'unsafe-inline'"));
 }
 
 #[tokio::test]
@@ -344,8 +347,8 @@ async fn health_response_has_security_headers_and_no_hsts() {
         "embedded CSP script-src must not include unsafe-inline: {script_part}"
     );
     assert!(
-        script_part.contains("sha256-") || script_part.trim() == "'self'",
-        "embedded CSP should include hashes or at least 'self': {script_part}"
+        script_part.contains("sha256-"),
+        "embedded CSP must include hash tokens from the vendored manifest: {script_part}"
     );
 
     handle.abort();
