@@ -2,12 +2,14 @@
 
 use crate::commands::web::auth::{extract_token_header, validate_token};
 use crate::commands::web::error::WebError;
+use crate::commands::web::server::csp::PERMISSIONS_POLICY;
 use crate::commands::web::state::{AppState, RATE_LIMIT_MAX_KEYS, RateLimitMap};
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{HeaderValue, header};
 use axum::middleware::Next;
 use axum::response::Response;
 use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
@@ -134,16 +136,51 @@ pub(crate) async fn peer_allowlist_layer(
     Ok(next.run(request).await)
 }
 
-pub(crate) async fn csp_header_middleware(request: Request, next: Next) -> Response {
+/// Attach the process-resolved Content-Security-Policy from [`AppState`].
+///
+/// Never sets `Strict-Transport-Security` — the daemon serves loopback HTTP.
+pub(crate) async fn csp_header_middleware(
+    State(state): State<Arc<AppState>>,
+    request: Request,
+    next: Next,
+) -> Response {
     let mut response = next.run(request).await;
-    let value = HeaderValue::from_static(
-        "default-src 'self'; connect-src 'self'; img-src 'self' data:; \
-         style-src 'self' 'unsafe-inline'; script-src 'self'",
-    );
     response
         .headers_mut()
-        .insert(header::CONTENT_SECURITY_POLICY, value);
+        .insert(header::CONTENT_SECURITY_POLICY, state.csp_header.clone());
     response
+}
+
+/// Modern security headers shared with the Vercel-hosted SPA (DoD-3).
+///
+/// Explicitly does **not** set `Strict-Transport-Security` on any daemon path.
+pub(crate) async fn security_headers_middleware(request: Request, next: Next) -> Response {
+    let mut response = next.run(request).await;
+    apply_security_headers(response.headers_mut());
+    response
+}
+
+/// Insert the daemon security-header set into a header map (testable pure helper).
+///
+/// Does **not** insert `Strict-Transport-Security`.
+pub(crate) fn apply_security_headers(headers: &mut axum::http::HeaderMap) {
+    headers.insert(
+        header::X_CONTENT_TYPE_OPTIONS,
+        HeaderValue::from_static("nosniff"),
+    );
+    headers.insert(header::X_FRAME_OPTIONS, HeaderValue::from_static("DENY"));
+    headers.insert(
+        header::REFERRER_POLICY,
+        HeaderValue::from_static("strict-origin-when-cross-origin"),
+    );
+    headers.insert(
+        header::HeaderName::from_static("permissions-policy"),
+        HeaderValue::from_static(PERMISSIONS_POLICY),
+    );
+    headers.insert(
+        header::HeaderName::from_static("cross-origin-opener-policy"),
+        HeaderValue::from_static("same-origin"),
+    );
 }
 
 pub(crate) async fn server_header_middleware(request: Request, next: Next) -> Response {
@@ -244,7 +281,55 @@ pub(crate) fn evict_expired_rate_limit_keys(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::http::HeaderMap;
     use std::net::Ipv4Addr;
+
+    #[test]
+    fn security_headers_present_with_expected_values() {
+        let mut headers = HeaderMap::new();
+        apply_security_headers(&mut headers);
+
+        assert_eq!(
+            headers
+                .get(header::X_CONTENT_TYPE_OPTIONS)
+                .and_then(|v| v.to_str().ok()),
+            Some("nosniff")
+        );
+        assert_eq!(
+            headers
+                .get(header::X_FRAME_OPTIONS)
+                .and_then(|v| v.to_str().ok()),
+            Some("DENY")
+        );
+        assert_eq!(
+            headers
+                .get(header::REFERRER_POLICY)
+                .and_then(|v| v.to_str().ok()),
+            Some("strict-origin-when-cross-origin")
+        );
+        assert_eq!(
+            headers
+                .get("permissions-policy")
+                .and_then(|v| v.to_str().ok()),
+            Some(PERMISSIONS_POLICY)
+        );
+        assert_eq!(
+            headers
+                .get("cross-origin-opener-policy")
+                .and_then(|v| v.to_str().ok()),
+            Some("same-origin")
+        );
+    }
+
+    #[test]
+    fn security_headers_never_set_hsts() {
+        let mut headers = HeaderMap::new();
+        apply_security_headers(&mut headers);
+        assert!(
+            headers.get(header::STRICT_TRANSPORT_SECURITY).is_none(),
+            "daemon must never set Strict-Transport-Security"
+        );
+    }
 
     #[test]
     fn loopback_authority_parsing_accepts_ipv6_forms() {

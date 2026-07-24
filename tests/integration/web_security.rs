@@ -1,4 +1,4 @@
-use camino::Utf8Path;
+use camino::{Utf8Path, Utf8PathBuf};
 use ledgerful::commands::web::auth::generate_token;
 use ledgerful::commands::web::server::{make_connect_info_service, router};
 use ledgerful::commands::web::state::AppState;
@@ -25,8 +25,15 @@ fn temp_layout() -> LayoutGuard {
 }
 
 async fn spawn_server(layout: Layout) -> (String, String, tokio::task::JoinHandle<()>) {
+    spawn_server_with_spa(layout, None).await
+}
+
+async fn spawn_server_with_spa(
+    layout: Layout,
+    spa_dir: Option<Utf8PathBuf>,
+) -> (String, String, tokio::task::JoinHandle<()>) {
     let token = generate_token();
-    let state = Arc::new(AppState::new(layout, token.clone(), None, None));
+    let state = Arc::new(AppState::new(layout, token.clone(), spa_dir, None));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -257,6 +264,254 @@ async fn token_not_in_query_string() {
     assert!(
         !body.contains(&token),
         "response body must not echo the token"
+    );
+    handle.abort();
+}
+
+/// Expected Permissions-Policy value (must match engine csp::PERMISSIONS_POLICY).
+const EXPECTED_PERMISSIONS_POLICY: &str = "camera=(), microphone=(), geolocation=(), payment=(), \
+usb=(), display-capture=(), accelerometer=(), gyroscope=(), magnetometer=(), \
+browsing-topics=()";
+
+fn assert_security_headers(headers: &reqwest::header::HeaderMap) {
+    assert_eq!(
+        headers
+            .get("x-content-type-options")
+            .and_then(|v| v.to_str().ok()),
+        Some("nosniff")
+    );
+    assert_eq!(
+        headers.get("x-frame-options").and_then(|v| v.to_str().ok()),
+        Some("DENY")
+    );
+    assert_eq!(
+        headers.get("referrer-policy").and_then(|v| v.to_str().ok()),
+        Some("strict-origin-when-cross-origin")
+    );
+    assert_eq!(
+        headers
+            .get("permissions-policy")
+            .and_then(|v| v.to_str().ok()),
+        Some(EXPECTED_PERMISSIONS_POLICY)
+    );
+    assert_eq!(
+        headers
+            .get("cross-origin-opener-policy")
+            .and_then(|v| v.to_str().ok()),
+        Some("same-origin")
+    );
+    assert!(
+        headers.get("strict-transport-security").is_none(),
+        "daemon must never set Strict-Transport-Security"
+    );
+    let csp = headers
+        .get("content-security-policy")
+        .and_then(|v| v.to_str().ok())
+        .expect("CSP header required");
+    assert!(csp.contains("default-src 'self'"));
+    assert!(csp.contains("connect-src 'self'"));
+    assert!(csp.contains("object-src 'none'"));
+    assert!(csp.contains("base-uri 'self'"));
+    assert!(csp.contains("frame-ancestors 'none'"));
+    assert!(csp.contains("style-src 'self' 'unsafe-inline'"));
+}
+
+#[tokio::test]
+async fn health_response_has_security_headers_and_no_hsts() {
+    let guard = temp_layout();
+    let (url, _token, handle) = spawn_server(guard.layout()).await;
+
+    let resp = client()
+        .get(format!("{}/health", url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_security_headers(resp.headers());
+
+    // Embedded path uses vendored hash CSP (no script-src unsafe-inline).
+    let csp = resp
+        .headers()
+        .get("content-security-policy")
+        .and_then(|v| v.to_str().ok())
+        .unwrap();
+    let script_part = csp
+        .split("script-src ")
+        .nth(1)
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap();
+    assert!(
+        !script_part.contains("unsafe-inline"),
+        "embedded CSP script-src must not include unsafe-inline: {script_part}"
+    );
+    assert!(
+        script_part.contains("sha256-"),
+        "embedded CSP must include hash tokens from the vendored manifest: {script_part}"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn api_response_has_security_headers_and_no_hsts() {
+    let guard = temp_layout();
+    let (url, token, handle) = spawn_server(guard.layout()).await;
+
+    let resp = client()
+        .get(format!("{}/api/snapshot", url))
+        .header(AUTHORIZATION, format!("Bearer {}", token))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_security_headers(resp.headers());
+    handle.abort();
+}
+
+/// Valid `sha256-` token: base64 of 32 zero bytes (real digest length).
+fn integration_sha256_token() -> String {
+    use base64::Engine;
+    use base64::engine::general_purpose::STANDARD;
+    format!("sha256-{}", STANDARD.encode([0u8; 32]))
+}
+
+#[tokio::test]
+async fn spa_dir_with_sidecar_manifest_uses_hash_csp() {
+    let guard = temp_layout();
+    let tmp = tempfile::tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    let spa = root.join("out");
+    let csp_dir = root.join(".csp");
+    std::fs::create_dir_all(spa.as_std_path()).unwrap();
+    std::fs::create_dir_all(csp_dir.as_std_path()).unwrap();
+    // Minimal SPA marker for ServeDir (index.html)
+    std::fs::write(
+        spa.join("index.html").as_std_path(),
+        "<!doctype html><html><body>spa-sidecar</body></html>",
+    )
+    .unwrap();
+    let token = integration_sha256_token();
+    let manifest = format!(
+        r#"{{
+            "routes": {{ "/": ["{token}"] }},
+            "union": ["{token}"]
+        }}"#
+    );
+    std::fs::write(
+        csp_dir.join("csp-script-hashes.json").as_std_path(),
+        manifest,
+    )
+    .unwrap();
+
+    let (url, _token, handle) = spawn_server_with_spa(guard.layout(), Some(spa)).await;
+
+    // SPA document path (not just /health) must carry security headers + hash CSP.
+    let resp = client().get(format!("{}/", url)).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_security_headers(resp.headers());
+    let body = resp.text().await.unwrap();
+    assert!(
+        body.contains("spa-sidecar"),
+        "expected SPA index body, got: {body}"
+    );
+
+    // Re-fetch for headers after body consume — headers already checked above;
+    // assert CSP hash on a second SPA request.
+    let resp2 = client()
+        .get(format!("{}/index.html", url))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(resp2.status().as_u16(), 200);
+    assert_security_headers(resp2.headers());
+    let csp = resp2
+        .headers()
+        .get("content-security-policy")
+        .and_then(|v| v.to_str().ok())
+        .unwrap();
+    assert!(csp.contains(&format!("'{token}'")));
+    let script_part = csp
+        .split("script-src ")
+        .nth(1)
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap();
+    assert!(!script_part.contains("unsafe-inline"));
+    handle.abort();
+}
+
+#[tokio::test]
+async fn spa_dir_without_sidecar_falls_back_to_unsafe_inline() {
+    let guard = temp_layout();
+    let tmp = tempfile::tempdir().unwrap();
+    let spa = Utf8Path::from_path(tmp.path()).unwrap().join("out");
+    std::fs::create_dir_all(spa.as_std_path()).unwrap();
+    std::fs::write(
+        spa.join("index.html").as_std_path(),
+        "<!doctype html><html><body>spa-fallback</body></html>",
+    )
+    .unwrap();
+
+    let (url, _token, handle) = spawn_server_with_spa(guard.layout(), Some(spa)).await;
+    // Prove headers on the SPA document path (ServeDir), not only /health.
+    let resp = client().get(format!("{}/", url)).send().await.unwrap();
+    assert_eq!(resp.status().as_u16(), 200);
+    assert_security_headers(resp.headers());
+    let body = resp.text().await.unwrap();
+    assert!(body.contains("spa-fallback"), "expected SPA body: {body}");
+
+    let resp2 = client().get(format!("{}/", url)).send().await.unwrap();
+    let csp = resp2
+        .headers()
+        .get("content-security-policy")
+        .and_then(|v| v.to_str().ok())
+        .unwrap();
+    let script_part = csp
+        .split("script-src ")
+        .nth(1)
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap();
+    assert!(
+        script_part.contains("unsafe-inline"),
+        "missing sidecar must fall back to unsafe-inline: {script_part}"
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn embedded_fallback_response_has_security_headers_and_no_hsts() {
+    // Debug builds serve a stub for embedded SPA (no --spa-dir). Middleware
+    // still wraps that fallback — prove headers + hash CSP + no HSTS on the
+    // SPA route itself (not only /health).
+    let guard = temp_layout();
+    let (url, _token, handle) = spawn_server(guard.layout()).await;
+    let resp = client().get(format!("{}/", url)).send().await.unwrap();
+    // Debug: 404 stub; release: 200 SPA. Either way headers must apply.
+    assert_security_headers(resp.headers());
+    let csp = resp
+        .headers()
+        .get("content-security-policy")
+        .and_then(|v| v.to_str().ok())
+        .unwrap();
+    let script_part = csp
+        .split("script-src ")
+        .nth(1)
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap();
+    assert!(
+        !script_part.contains("unsafe-inline"),
+        "embedded path must not use script-src unsafe-inline: {script_part}"
+    );
+    assert!(
+        script_part.contains("sha256-"),
+        "embedded path must ship vendored hashes: {script_part}"
     );
     handle.abort();
 }

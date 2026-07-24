@@ -2,7 +2,9 @@
 
 use crate::commands::web::api::KnowledgeGraphResponse;
 use crate::commands::web::git_meta::GitMetaCacheEntry;
+use crate::commands::web::server::csp::{embedded_csp, resolve_csp_for_spa_dir};
 use crate::state::layout::Layout;
+use axum::http::HeaderValue;
 use camino::Utf8PathBuf;
 use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
@@ -24,6 +26,9 @@ pub struct AppState {
     pub layout: Layout,
     pub token: String,
     pub spa_dir: Option<Utf8PathBuf>,
+    /// Resolved Content-Security-Policy for this process instance.
+    /// Embedded SPA → vendored hash manifest; `--spa-dir` → sidecar or fallback.
+    pub csp_header: HeaderValue,
     pub start_time: Instant,
     pub kg_cache: Arc<Mutex<KgCacheEntry>>,
     pub rate_limiter: Arc<Mutex<RateLimitMap>>,
@@ -40,16 +45,36 @@ pub struct AppState {
 }
 
 impl AppState {
+    /// Construct application state.
+    ///
+    /// Constructor signature is unchanged for call sites: CSP is resolved from
+    /// `spa_dir` (sidecar when `Some`, embedded vendored manifest when `None`).
     pub fn new(
         layout: Layout,
         token: String,
         spa_dir: Option<Utf8PathBuf>,
         peer_allowlist: Option<HashSet<IpAddr>>,
     ) -> Self {
+        let csp_string = match &spa_dir {
+            Some(dir) => resolve_csp_for_spa_dir(dir),
+            None => embedded_csp().to_string(),
+        };
+        let csp_header = HeaderValue::from_str(&csp_string).unwrap_or_else(|_| {
+            // HeaderValue rejects only a narrow set of control chars; fall back
+            // to a minimal safe CSP rather than panicking at startup.
+            tracing::error!("Resolved CSP header value is invalid; using script-src 'self' only");
+            HeaderValue::from_static(
+                "default-src 'self'; connect-src 'self'; img-src 'self' data:; \
+                 style-src 'self' 'unsafe-inline'; script-src 'self'; \
+                 object-src 'none'; base-uri 'self'; frame-ancestors 'none'",
+            )
+        });
+
         Self {
             layout,
             token,
             spa_dir,
+            csp_header,
             start_time: Instant::now(),
             kg_cache: Arc::new(Mutex::new(None)),
             rate_limiter: Arc::new(Mutex::new(HashMap::new())),
