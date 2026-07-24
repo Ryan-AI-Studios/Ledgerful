@@ -134,9 +134,14 @@ fn setup_windows(
 
     // Route through the pure syntax helper so production and tests share one
     // code path (M3 from Claude cross-review).
-    let arg_strings = windows_schtasks_args(binary, &log_path, &task_name);
+    let arg_strings = windows_schtasks_args(binary, &log_path, &task_name)?;
     let args: Vec<&str> = arg_strings.iter().map(|s| s.as_str()).collect();
-    let task_command = format!("\"{}\" schedule run-nightly >\"{}\" 2>&1", binary, log_path);
+    let task_command = arg_strings
+        .iter()
+        .position(|a| a == "/TR")
+        .and_then(|i| arg_strings.get(i + 1))
+        .cloned()
+        .unwrap_or_default();
 
     if dry_run {
         println!("DRY-RUN: schtasks.exe {}", args.join(" "));
@@ -198,7 +203,7 @@ fn setup_unix(
     let marker = cron_marker(root);
     // Route through the pure syntax helper so production and tests share one
     // code path (M3 from Claude cross-review).
-    let cron_line = unix_cron_line(binary, root, &log_path, &marker);
+    let cron_line = unix_cron_line(binary, root, &log_path, &marker)?;
 
     if uninstall {
         return remove_cron_line(&marker, &cron_line, dry_run);
@@ -399,19 +404,44 @@ fn append_log(path: &Utf8PathBuf, message: &str) -> std::io::Result<()> {
 
 // ── Pure syntax helpers for deterministic dry-run testing ────────────────────
 
+/// Characters that are hostile under `cmd.exe` interpretation of the `/TR`
+/// value (which contains `>` / `2>&1` redirection and is therefore routed
+/// through `cmd.exe /c` by Task Scheduler). Spaces are intentionally allowed.
+const CMD_HOSTILE_CHARS: &[char] = &[
+    '%', '!', '^', '&', '|', '<', '>', '"', '\'', '`', '\r', '\n',
+];
+
+/// Refuse paths/names containing `cmd.exe`-hostile characters rather than
+/// attempting to escape them (hand-rolled cmd quoting is not safe here).
+pub fn refuse_cmd_hostile(value: &str, field: &str) -> Result<()> {
+    if let Some(ch) = value.chars().find(|c| CMD_HOSTILE_CHARS.contains(c)) {
+        return Err(miette::miette!(
+            "schedule {field} contains cmd.exe-hostile character {ch:?}: {value}\n\
+             Install/checkout paths for the nightly schedule must not include \
+             % ! ^ & | < > \" ' ` or CR/LF. Move the install or choose a different path."
+        ));
+    }
+    Ok(())
+}
+
 /// Build the `schtasks /Create` argument vector for the current repo.
 ///
 /// This is kept pure (no OS calls, no env beyond the inputs) so tests can
 /// assert the generated syntax on every platform. The `task_name` is
 /// repo-scoped by the caller (see `task_name(root)`) so multiple repos on
 /// the same machine do not collide.
+///
+/// Refuses `cmd.exe`-hostile characters in path inputs rather than escaping.
 pub fn windows_schtasks_args(
     binary: &Utf8PathBuf,
     log_path: &Utf8PathBuf,
     task_name: &str,
-) -> Vec<String> {
+) -> Result<Vec<String>> {
+    refuse_cmd_hostile(binary.as_str(), "binary")?;
+    refuse_cmd_hostile(log_path.as_str(), "log_path")?;
+    refuse_cmd_hostile(task_name, "task_name")?;
     let task_command = format!("\"{}\" schedule run-nightly >\"{}\" 2>&1", binary, log_path);
-    vec![
+    Ok(vec![
         "/Create".to_string(),
         "/TN".to_string(),
         task_name.to_string(),
@@ -422,23 +452,32 @@ pub fn windows_schtasks_args(
         "/ST".to_string(),
         SCHEDULE_HOUR.to_string(),
         "/F".to_string(),
-    ]
+    ])
 }
 
 /// Build the Unix crontab line for the current repo. The `marker` is a
 /// repo-scoped comment (`# ledgerful-nightly:<hash>`) placed on the line
 /// above the schedule line so `install_cron_line` / `remove_cron_line` can
 /// identify *this repo's* entry without touching other repos' lines.
+///
+/// Paths are quoted with `shlex::try_quote` (NUL is refused).
 pub fn unix_cron_line(
     binary: &Utf8PathBuf,
     root: &Utf8PathBuf,
     log_path: &Utf8PathBuf,
     marker: &str,
-) -> String {
-    format!(
-        "{}\n{} cd {} && \"{}\" schedule run-nightly >>\"{}\" 2>&1",
-        marker, CRON_SCHEDULE, root, binary, log_path
-    )
+) -> Result<String> {
+    let quote = |s: &str, field: &str| -> Result<String> {
+        shlex::try_quote(s)
+            .map(|c| c.into_owned())
+            .map_err(|e| miette::miette!("schedule {field} cannot be shell-quoted ({e}): {s}"))
+    };
+    let root_q = quote(root.as_str(), "root")?;
+    let binary_q = quote(binary.as_str(), "binary")?;
+    let log_q = quote(log_path.as_str(), "log_path")?;
+    Ok(format!(
+        "{marker}\n{CRON_SCHEDULE} cd {root_q} && {binary_q} schedule run-nightly >>{log_q} 2>&1"
+    ))
 }
 
 #[cfg(test)]
@@ -460,7 +499,7 @@ mod tests {
         .unwrap();
         let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
         let task_name = task_name(&root);
-        let args = windows_schtasks_args(&binary, &log, &task_name);
+        let args = windows_schtasks_args(&binary, &log, &task_name).unwrap();
 
         assert_eq!(args[0], "/Create");
         assert_eq!(args[1], "/TN");
@@ -489,7 +528,7 @@ mod tests {
         )
         .unwrap();
         let marker = cron_marker(&root);
-        let entry = unix_cron_line(&binary, &root, &log, &marker);
+        let entry = unix_cron_line(&binary, &root, &log, &marker).unwrap();
 
         // The entry is a marker comment followed by the schedule line.
         assert!(entry.starts_with(&marker));
@@ -498,12 +537,75 @@ mod tests {
         assert!(schedule_line.starts_with("0 2 * * * "));
         assert!(schedule_line.contains("cd "));
         assert!(
-            schedule_line.contains("ledgerful\" schedule run-nightly"),
+            schedule_line.contains("ledgerful") && schedule_line.contains("schedule run-nightly"),
             "got: {}",
             schedule_line
         );
-        assert!(schedule_line.contains(">>\""));
+        assert!(schedule_line.contains(">>"));
         assert!(schedule_line.contains("2>&1"));
+    }
+
+    #[test]
+    fn windows_schtasks_refuses_hostile_chars() {
+        let binary = Utf8PathBuf::from(r"C:\tools\ledgerful.exe");
+        let log = Utf8PathBuf::from(r"C:\logs\nightly.log");
+        for (field_binary, field_log, field_name) in [
+            (
+                Utf8PathBuf::from(r"C:\tools\led%gerful.exe"),
+                log.clone(),
+                "ok",
+            ),
+            (
+                binary.clone(),
+                Utf8PathBuf::from(r"C:\logs\nightly!.log"),
+                "ok",
+            ),
+            (binary.clone(), log.clone(), "bad&name"),
+            (
+                Utf8PathBuf::from(r#"C:\tools\led"gerful.exe"#),
+                log.clone(),
+                "ok",
+            ),
+            (
+                Utf8PathBuf::from("C:\\tools\\led\ngerful.exe"),
+                log.clone(),
+                "ok",
+            ),
+        ] {
+            let err = windows_schtasks_args(&field_binary, &field_log, field_name).unwrap_err();
+            let text = format!("{err}");
+            assert!(
+                text.contains("hostile") || text.contains("cmd.exe"),
+                "expected hostile refusal, got {text}"
+            );
+        }
+        // Spaces are allowed (not on the refusal list).
+        let spaced = Utf8PathBuf::from(r"C:\Program Files\ledgerful\ledgerful.exe");
+        let log_ok = Utf8PathBuf::from(r"C:\Program Files\ledgerful\logs\nightly.log");
+        assert!(windows_schtasks_args(&spaced, &log_ok, "LedgerfulNightlyIndex-abc").is_ok());
+    }
+
+    #[test]
+    fn unix_cron_line_quotes_hostile_paths_safely() {
+        let binary = Utf8PathBuf::from("/opt/my tools/ledgerful");
+        let root = Utf8PathBuf::from("/repos/proj$ect");
+        let log = Utf8PathBuf::from("/var/log/nightly.log");
+        let marker = "# ledgerful-nightly:test";
+        let entry = unix_cron_line(&binary, &root, &log, marker).unwrap();
+        let schedule_line = entry.lines().nth(1).expect("schedule line");
+        // shlex quoting must keep the space/path specials inside quotes —
+        // no unquoted breakout of `$` or space into shell words.
+        assert!(
+            schedule_line.contains("proj") && schedule_line.contains("my tools"),
+            "got: {schedule_line}"
+        );
+        // Embedded double-quote path is quoted safely.
+        let binary_q = Utf8PathBuf::from(r#"/opt/led"gerful"#);
+        let entry2 = unix_cron_line(&binary_q, &root, &log, marker).unwrap();
+        assert!(entry2.contains("schedule run-nightly"), "got: {entry2}");
+        // NUL is refused.
+        let bad = Utf8PathBuf::from("/opt/led\0gerful");
+        assert!(unix_cron_line(&bad, &root, &log, marker).is_err());
     }
 
     #[test]

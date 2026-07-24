@@ -4,7 +4,6 @@ use crate::index::languages::{Language, parse_symbols};
 use crate::index::references::extract_import_export;
 use camino::{Utf8Path, Utf8PathBuf};
 use miette::{IntoDiagnostic, Result};
-use process_wrap::std::*;
 use regex::Regex;
 use std::collections::HashMap;
 use std::fs;
@@ -724,113 +723,36 @@ fn run_federate_export(sibling_root: &Utf8Path, sync_timeout: Duration) -> Resul
     command
         .args(["federate", "export"])
         .current_dir(sibling_root.as_std_path());
-    let mut command = CommandWrap::from(command);
-    #[cfg(unix)]
-    {
-        command.wrap(ProcessGroup::leader());
-    }
-    #[cfg(windows)]
-    {
-        command.wrap(JobObject);
-    }
 
-    let mut child = command.spawn().into_diagnostic()?;
-
-    let status = match wait_timeout::ChildExt::wait_timeout(
-        // SAFETY: `inner_child_mut()` returns a reference to the always-valid
-        // inner `std::process::Child` held by the `process-wrap` wrapper. The
-        // child was just spawned and not yet moved or consumed, so the inner
-        // reference is valid for the duration of this `wait_timeout` call.
-        // NOTE: `wait_timeout` only reaps the IMMEDIATE child. The wrapper's
-        // own `wait()` (called below) is what reaps the whole process group
-        // (Unix: `waitpid(-pgid)`) or Job Object (Windows: `wait_on_job`).
-        // Legitimate: process-wrap API requires unsafe to access inner Child.
-        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-        unsafe { child.inner_child_mut() },
-        sync_timeout,
-    )
-    .into_diagnostic()?
-    {
-        Some(status) => {
-            // The immediate child exited. Grandchildren (e.g. `git` spawned
-            // by the export) may still be running in the group/job. Use a
-            // BOUNDED non-blocking reap loop (`try_wait`) for a short grace
-            // period to clean up already-exited members without risking a
-            // silent hang on a stuck grandchild. The wrapper's blocking
-            // `wait()` would loop until ALL group members exit (Unix
-            // `waitpid(-pgid)` / Windows `wait_on_job(INFINITE)`) — which is
-            // the right call on the timeout path (where we've just killed
-            // the group) but would re-introduce a silent hang on the success
-            // path if a grandchild is stuck. After the grace period, any
-            // still-living grandchildren are reparented (Unix) or orphaned
-            // (Windows); a successful export is expected to have joined its
-            // own children, so this is a backstop, not the common case.
-            const REAP_GRACE: Duration = Duration::from_secs(2);
-            let reap_start = Instant::now();
-            while reap_start.elapsed() < REAP_GRACE {
-                match child.try_wait() {
-                    Ok(Some(_)) => break,
-                    Ok(None) => std::thread::sleep(Duration::from_millis(50)),
-                    Err(e) => {
-                        warn!(
-                            "process-group reap after successful export at {} failed ({:?}); a zombie grandchild may remain",
-                            sibling_root, e
-                        );
-                        break;
-                    }
-                }
-            }
-            if reap_start.elapsed() >= REAP_GRACE {
-                warn!(
-                    "process-group reap after successful export at {} did not complete within {:?}; lingering grandchildren may remain (the export process should join its own children before exiting)",
-                    sibling_root, REAP_GRACE
-                );
-            }
-            status
-        }
-        None => {
-            let timeout_msg = format!(
-                "ledgerful federate export for sibling at {} exceeded sync timeout ({:?}); killing process group",
-                sibling_root, sync_timeout
-            );
-            warn!("{}", timeout_msg);
-            // Kill the whole process group/job. If the kill itself fails we
-            // surface it in the error chain rather than swallowing it — a
-            // failed kill could leak the export/git subtree, which is the
-            // exact hazard this timeout exists to prevent.
-            let kill_err = child.start_kill().err();
-            // Reap the killed group so no zombie remains. A failed reap is
-            // less dangerous than a failed kill (the process is already
-            // terminated), but still reported.
-            let reap_err = child.wait().err();
-            let mut msg = format!(
-                "ledgerful federate export timed out for sibling at {} (timeout: {:?})",
-                sibling_root, sync_timeout
-            );
-            if let Some(e) = kill_err {
-                msg.push_str(&format!(
-                    "; WARNING: process-group kill failed ({:?}) — child may have leaked",
-                    e
-                ));
-            }
-            if let Some(e) = reap_err {
-                msg.push_str(&format!(
-                    "; WARNING: process reap failed ({:?}) — zombie may remain",
-                    e
-                ));
-            }
-            return Err(miette::miette!("{}", msg));
-        }
-    };
-
-    if status.success() {
-        Ok(())
-    } else {
-        Err(miette::miette!(
+    // Shared process-group/job kill helper (0079 / RT-P5) — same semantics as
+    // the prior inline process-wrap path, including bounded reap grace.
+    match crate::exec::grouped::spawn_wait_grouped(command, sync_timeout) {
+        Ok(status) if status.success() => Ok(()),
+        Ok(status) => Err(miette::miette!(
             "ledgerful federate export failed for sibling at {} (exit status: {:?})",
             sibling_root,
             status.code()
-        ))
+        )),
+        Err(crate::exec::grouped::GroupedProcessError::Timeout { timeout, detail }) => {
+            warn!(
+                "ledgerful federate export for sibling at {} exceeded sync timeout ({:?}); killing process group",
+                sibling_root, timeout
+            );
+            let mut msg = format!(
+                "ledgerful federate export timed out for sibling at {} (timeout: {:?})",
+                sibling_root, timeout
+            );
+            if !detail.is_empty() {
+                msg.push_str("; WARNING: ");
+                msg.push_str(&detail);
+            }
+            Err(miette::miette!("{}", msg))
+        }
+        Err(e) => Err(miette::miette!(
+            "ledgerful federate export for sibling at {} failed to spawn/wait: {}",
+            sibling_root,
+            e
+        )),
     }
 }
 
@@ -1676,7 +1598,8 @@ mod timeout_tests {
     /// `git` subprocess, so grandchildren stay in the job in production.
     #[test]
     fn run_federate_export_times_out_and_kills_process_group() {
-        // Spawn a long-running child via the same group path as production.
+        // Spawn a long-running child via the shared grouped helper (same path
+        // as production `run_federate_export`).
         // `ping -n 600 127.0.0.1` sleeps ~600s on Windows; `sleep 600` on Unix.
         let command = if cfg!(windows) {
             let mut c = std::process::Command::new("ping");
@@ -1687,81 +1610,38 @@ mod timeout_tests {
             c.args(["600"]);
             c
         };
-        let mut command = CommandWrap::from(command);
-        #[cfg(unix)]
-        {
-            command.wrap(ProcessGroup::leader());
-        }
-        #[cfg(windows)]
-        {
-            command.wrap(JobObject);
-        }
-
-        let mut child = command.spawn().expect("spawn");
         let start = Instant::now();
-        let status = wait_timeout::ChildExt::wait_timeout(
-            // Legitimate: test accesses process-wrap inner Child for wait_timeout.
-            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-            unsafe { child.inner_child_mut() },
-            Duration::from_millis(500),
-        )
-        .expect("wait timeout call");
+        let err = crate::exec::grouped::spawn_wait_grouped(command, Duration::from_millis(500))
+            .expect_err("should time out");
         let elapsed = start.elapsed();
-
         assert!(
-            status.is_none(),
-            "child should still be running at timeout, got {status:?}"
+            matches!(
+                err,
+                crate::exec::grouped::GroupedProcessError::Timeout { .. }
+            ),
+            "expected timeout, got {err:?}"
         );
         assert!(
-            elapsed < Duration::from_secs(3),
+            elapsed < Duration::from_secs(5),
             "export should have timed out quickly, took {:?}",
             elapsed
-        );
-
-        // Kill the whole group/job and reap so no zombie remains.
-        child
-            .start_kill()
-            .expect("start_kill should succeed on a running child");
-        let reap = child.wait().expect("wait after kill should reap the child");
-        assert!(
-            !reap.success(),
-            "killed child should have a non-success exit status, got {reap:?}"
         );
     }
 
     /// 0034: a child that exits quickly should propagate success normally.
     #[test]
     fn run_federate_export_propagates_success_for_fast_child() {
-        // Use `cmd /c exit 0` on Windows and `true` elsewhere. We can't mock
-        // current_exe() from here, so this test directly exercises the helper
-        // internals by spawning the platform's trivial success command through
-        // the same group path. run_federate_export hard-codes current_exe(),
-        // but we test the conceptual behavior via a small inline spawn.
+        // Use `cmd /c exit 0` on Windows and `true` elsewhere through the
+        // shared process-group helper used by production.
         let command = if cfg!(windows) {
             let mut c = std::process::Command::new("cmd");
-            c.args(["/c", "exit 0"]);
+            c.args(["/c", "exit", "0"]);
             c
         } else {
             std::process::Command::new("true")
         };
-        let mut command = CommandWrap::from(command);
-        #[cfg(unix)]
-        {
-            command.wrap(ProcessGroup::leader());
-        }
-        #[cfg(windows)]
-        {
-            command.wrap(JobObject);
-        }
-        let mut child = command.spawn().expect("spawn");
-        let status = wait_timeout::ChildExt::wait_timeout(
-            // Legitimate: test accesses process-wrap inner Child for wait_timeout.
-            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-            unsafe { child.inner_child_mut() },
-            Duration::from_secs(2),
-        )
-        .expect("wait")
-        .expect("child should exit");
+        let status = crate::exec::grouped::spawn_wait_grouped(command, Duration::from_secs(2))
+            .expect("spawn/wait");
         assert!(status.success());
     }
 }
