@@ -1221,7 +1221,7 @@ dependencies = [
  "pest_derive",
  "priority-queue",
  "quadrature",
- "rand 0.8.6",
+ "rand 0.8.7",
  "rayon",
  "regex",
  "rmp",
@@ -4261,7 +4261,7 @@ dependencies = [
  "proptest",
  "protobuf",
  "pulldown-cmark",
- "rand 0.8.6",
+ "rand 0.10.2",
  "ratatui",
  "rayon",
  "regex",
@@ -5328,7 +5328,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3c80231409c20246a13fddb31776fb942c38553c51e871f8cbd687a4cfb5843d"
 dependencies = [
  "phf_shared 0.11.3",
- "rand 0.8.6",
+ "rand 0.8.7",
 ]
 
 [[package]]
@@ -5722,9 +5722,9 @@ checksum = "f8dcc9c7d52a811697d2151c701e0d08956f92b0e24136cf4cf27b57a6a0d9bf"
 
 [[package]]
 name = "rand"
-version = "0.8.6"
+version = "0.8.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "5ca0ecfa931c29007047d1bc58e623ab12e5590e8c7cc53200d5202b69266d8a"
+checksum = "22f6172bdec972074665ed81ed53b71da00bfc44b65a753cfde883ec4c702a1a"
 dependencies = [
  "libc",
  "rand_chacha 0.3.1",
@@ -7874,7 +7874,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "97fee6b57c6a41524a810daee9286c02d7752c4253064d0b05472833a438f675"
 dependencies = [
  "cfg-if",
- "rand 0.8.6",
+ "rand 0.8.7",
  "static_assertions",
 ]
 
