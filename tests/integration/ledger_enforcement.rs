@@ -309,70 +309,85 @@ fn test_tech_stack_enforcement_at_start() {
     assert!(result_ok.is_ok());
 }
 
-fn get_failing_validator() -> (String, Vec<String>) {
-    if cfg!(windows) {
-        (
-            "powershell".to_string(),
-            vec!["-Command".to_string(), "exit 1".to_string()],
-        )
-    } else {
-        (
-            "sh".to_string(),
-            vec!["-c".to_string(), "exit 1".to_string()],
-        )
+/// Write a non-shell-interpreter validator script under `dir` and return its absolute path.
+///
+/// 0079 default-strict rejects shell interpreters (`sh`/`powershell`/…) as validator
+/// executables, so integration fixtures must be dedicated scripts (basename not on that list)
+/// and allowlisted via `verify.allowed_commands`.
+fn write_validator_script(dir: &Path, name: &str, body: &str) -> PathBuf {
+    #[cfg(windows)]
+    {
+        let path = dir.join(format!("{name}.cmd"));
+        std::fs::write(&path, body).unwrap();
+        path
+    }
+    #[cfg(not(windows))]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let path = dir.join(name);
+        std::fs::write(&path, body).unwrap();
+        let mut perms = std::fs::metadata(&path).unwrap().permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&path, perms).unwrap();
+        path
     }
 }
 
-fn get_timeout_validator() -> (String, Vec<String>) {
-    if cfg!(windows) {
-        (
-            "powershell".to_string(),
-            vec!["-Command".to_string(), "Start-Sleep -Seconds 2".to_string()],
-        )
-    } else {
-        ("sleep".to_string(), vec!["2".to_string()])
-    }
+fn get_failing_validator(dir: &Path) -> (String, Vec<String>) {
+    #[cfg(windows)]
+    let body = "@echo off\r\nexit /b 1\r\n";
+    #[cfg(not(windows))]
+    let body = "#!/bin/sh\nexit 1\n";
+    let path = write_validator_script(dir, "exit_one", body);
+    (path.to_string_lossy().to_string(), vec![])
 }
 
-fn get_path_validator() -> (String, Vec<String>) {
-    if cfg!(windows) {
-        (
-            "powershell".to_string(),
-            vec![
-                "-NoProfile".to_string(),
-                "-Command".to_string(),
-                "Write-Output $args[0]; exit 1".to_string(),
-                "{entity}".to_string(),
-            ],
-        )
-    } else {
-        (
-            "sh".to_string(),
-            vec![
-                "-c".to_string(),
-                "echo $0; exit 1".to_string(),
-                "{entity}".to_string(),
-            ],
-        )
-    }
+fn get_timeout_validator(dir: &Path) -> (String, Vec<String>) {
+    // Sleep longer than the 100ms validator timeout used by tests.
+    #[cfg(windows)]
+    let body = "@echo off\r\nping -n 5 127.0.0.1 >nul\r\n";
+    #[cfg(not(windows))]
+    let body = "#!/bin/sh\nsleep 2\n";
+    let path = write_validator_script(dir, "sleep_long", body);
+    (path.to_string_lossy().to_string(), vec![])
+}
+
+fn get_path_validator(dir: &Path) -> (String, Vec<String>) {
+    // Echo the entity path argument then fail so the path appears in ValidatorFailed.
+    #[cfg(windows)]
+    let body = "@echo off\r\necho %1\r\nexit /b 1\r\n";
+    #[cfg(not(windows))]
+    let body = "#!/bin/sh\necho \"$1\"\nexit 1\n";
+    let path = write_validator_script(dir, "echo_path", body);
+    (
+        path.to_string_lossy().to_string(),
+        vec!["{entity}".to_string()],
+    )
+}
+
+/// Config for enforce-mode commits that must run fixture validator scripts.
+fn enforce_config_with_validator(exe: &str) -> Config {
+    let mut cfg = Config::default();
+    cfg.gate.mode = "enforce".to_string();
+    cfg.verify.allowed_commands = vec![exe.to_string()];
+    cfg
 }
 
 #[test]
 fn test_commit_validator_blocking() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("ledger.db");
+    let (exe, args) = get_failing_validator(dir.path());
     // 1. Register a failing ERROR validator for FEATURE
     {
         let storage = StorageManager::init(&db_path).unwrap();
         let conn = storage.get_connection();
         let db = LedgerDb::new(conn);
 
-        let (exe, args) = get_failing_validator();
-
         db.insert_commit_validator(&CommitValidator {
             category: "FEATURE".to_string(),
             name: "fail-validator".to_string(),
-            executable: exe,
+            executable: exe.clone(),
             args,
             validation_level: ValidationLevel::Error,
             enabled: true,
@@ -382,11 +397,11 @@ fn test_commit_validator_blocking() {
     }
 
     let mut storage_mut = StorageManager::init(&db_path).unwrap();
-    let mut manager = TransactionManager::new(&mut storage_mut, dir.path().to_path_buf(), {
-        let mut cfg = Config::default();
-        cfg.gate.mode = "enforce".to_string();
-        cfg
-    });
+    let mut manager = TransactionManager::new(
+        &mut storage_mut,
+        dir.path().to_path_buf(),
+        enforce_config_with_validator(&exe),
+    );
 
     std::fs::write(dir.path().join("main.rs"), "").unwrap();
 
@@ -421,17 +436,16 @@ fn test_commit_validator_blocking() {
 fn test_commit_validator_warning() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("ledger.db");
+    let (exe, args) = get_failing_validator(dir.path());
     // 1. Register a failing WARNING validator
     {
         let storage = StorageManager::init(&db_path).unwrap();
         let db = LedgerDb::new(storage.get_connection());
 
-        let (exe, args) = get_failing_validator();
-
         db.insert_commit_validator(&CommitValidator {
             category: "FEATURE".to_string(),
             name: "warn-validator".to_string(),
-            executable: exe,
+            executable: exe.clone(),
             args,
             validation_level: ValidationLevel::Warning,
             enabled: true,
@@ -441,11 +455,11 @@ fn test_commit_validator_warning() {
     }
 
     let mut storage_mut = StorageManager::init(&db_path).unwrap();
-    let mut manager = TransactionManager::new(&mut storage_mut, dir.path().to_path_buf(), {
-        let mut cfg = Config::default();
-        cfg.gate.mode = "enforce".to_string();
-        cfg
-    });
+    let mut manager = TransactionManager::new(
+        &mut storage_mut,
+        dir.path().to_path_buf(),
+        enforce_config_with_validator(&exe),
+    );
 
     std::fs::write(dir.path().join("main.rs"), "").unwrap();
 
@@ -474,17 +488,16 @@ fn test_commit_validator_warning() {
 fn test_commit_validator_timeout() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("ledger.db");
+    let (exe, args) = get_timeout_validator(dir.path());
     // 1. Register a timeout validator
     {
         let storage = StorageManager::init(&db_path).unwrap();
         let db = LedgerDb::new(storage.get_connection());
 
-        let (exe, args) = get_timeout_validator();
-
         db.insert_commit_validator(&CommitValidator {
             category: "FEATURE".to_string(),
             name: "timeout-validator".to_string(),
-            executable: exe,
+            executable: exe.clone(),
             args,
             timeout_ms: 100, // Very short timeout
             validation_level: ValidationLevel::Error,
@@ -495,11 +508,11 @@ fn test_commit_validator_timeout() {
     }
 
     let mut storage_mut = StorageManager::init(&db_path).unwrap();
-    let mut manager = TransactionManager::new(&mut storage_mut, dir.path().to_path_buf(), {
-        let mut cfg = Config::default();
-        cfg.gate.mode = "enforce".to_string();
-        cfg
-    });
+    let mut manager = TransactionManager::new(
+        &mut storage_mut,
+        dir.path().to_path_buf(),
+        enforce_config_with_validator(&exe),
+    );
 
     std::fs::write(dir.path().join("main.rs"), "").unwrap();
 
@@ -537,17 +550,16 @@ fn test_commit_validator_timeout() {
 fn test_commit_validator_absolute_path() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("ledger.db");
+    let (exe, args) = get_path_validator(dir.path());
     // 1. Register a validator that prints its argument (the entity path)
     {
         let storage = StorageManager::init(&db_path).unwrap();
         let db = LedgerDb::new(storage.get_connection());
 
-        let (exe, args) = get_path_validator();
-
         db.insert_commit_validator(&CommitValidator {
             category: "FEATURE".to_string(),
             name: "path-validator".to_string(),
-            executable: exe,
+            executable: exe.clone(),
             args,
             validation_level: ValidationLevel::Error,
             enabled: true,
@@ -558,11 +570,11 @@ fn test_commit_validator_absolute_path() {
 
     let mut storage_mut = StorageManager::init(&db_path).unwrap();
     let repo_root = dir.path().to_path_buf();
-    let mut manager = TransactionManager::new(&mut storage_mut, repo_root.clone(), {
-        let mut cfg = Config::default();
-        cfg.gate.mode = "enforce".to_string();
-        cfg
-    });
+    let mut manager = TransactionManager::new(
+        &mut storage_mut,
+        repo_root.clone(),
+        enforce_config_with_validator(&exe),
+    );
 
     std::fs::write(dir.path().join("main.rs"), "").unwrap();
 
@@ -609,17 +621,16 @@ fn test_commit_validator_absolute_path() {
 fn test_all_category_validators() {
     let dir = tempdir().unwrap();
     let db_path = dir.path().join("ledger.db");
+    let (exe, args) = get_failing_validator(dir.path());
     // 1. Register an 'ALL' category validator
     {
         let storage = StorageManager::init(&db_path).unwrap();
         let db = LedgerDb::new(storage.get_connection());
 
-        let (exe, args) = get_failing_validator();
-
         db.insert_commit_validator(&CommitValidator {
             category: "ALL".to_string(),
             name: "global-validator".to_string(),
-            executable: exe,
+            executable: exe.clone(),
             args,
             validation_level: ValidationLevel::Error,
             enabled: true,
@@ -629,11 +640,11 @@ fn test_all_category_validators() {
     }
 
     let mut storage_mut = StorageManager::init(&db_path).unwrap();
-    let mut manager = TransactionManager::new(&mut storage_mut, dir.path().to_path_buf(), {
-        let mut cfg = Config::default();
-        cfg.gate.mode = "enforce".to_string();
-        cfg
-    });
+    let mut manager = TransactionManager::new(
+        &mut storage_mut,
+        dir.path().to_path_buf(),
+        enforce_config_with_validator(&exe),
+    );
 
     std::fs::write(dir.path().join("main.rs"), "").unwrap();
 

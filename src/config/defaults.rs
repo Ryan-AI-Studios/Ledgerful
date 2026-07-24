@@ -29,8 +29,15 @@ limit = 10
 [verify]
 mode = "auto"
 # default_timeout_secs = 300
+# Process policy (default-strict with a built-in cargo/npm/pytest/git allowlist).
+# allowed_commands extends the built-in list (does not replace it):
+# allowed_commands = ["my-custom-tool"]
+# denied_commands = ["curl"]
+# strict = true
+# allow_shell_steps = false
 # Steps to run when `ledgerful verify` is invoked without -c.
-# Each step has a description, command, and optional timeout_secs (defaults to 300).
+# Each step has a description, command, optional timeout_secs (defaults to 300),
+# and optional shell = true (requires allow_shell_steps = true).
 # [[verify.steps]]
 # description = "Run project tests"
 # command = "cargo nextest run --workspace --all-features --profile ci"

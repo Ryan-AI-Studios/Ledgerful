@@ -2,7 +2,6 @@ use crate::config::model::Config;
 use crate::exec::ExecutionResult;
 use crate::impact::packet::ImpactPacket;
 use crate::output::human::print_verify_result;
-use crate::platform::process_policy::ProcessPolicy;
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use crate::verify::plan::{VerificationPlan, VerificationStep};
@@ -93,13 +92,13 @@ impl VerifyEngine {
     ) -> Result<VerificationReport> {
         let mut persisted_results = Vec::new();
         let mut overall_success = true;
-        let policy = ProcessPolicy::default();
+        let policy = ctx.config.verify.effective_process_policy();
 
         for step in steps {
             let prepared = if manual_requested {
                 prepare_manual_step(step)
             } else {
-                prepare_rule_step(step)?
+                prepare_rule_step(step, ctx.config.verify.allow_shell_steps, &policy)?
             };
             info!(
                 "Running verification command via {:?}: {}",

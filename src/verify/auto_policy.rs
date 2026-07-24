@@ -14,11 +14,13 @@ pub fn build_auto_policy(
         description: "Check for whitespace errors in working tree".to_string(),
         command: "git diff --check".to_string(),
         timeout_secs: None,
+        shell: false,
     });
     steps.push(VerifyStep {
         description: "Check for whitespace errors in staging area".to_string(),
         command: "git diff --cached --check".to_string(),
         timeout_secs: None,
+        shell: false,
     });
 
     // 1. Rust
@@ -27,11 +29,13 @@ pub fn build_auto_policy(
             description: "Check formatting".to_string(),
             command: "cargo fmt --all -- --check".to_string(),
             timeout_secs: None,
+            shell: false,
         });
         steps.push(VerifyStep {
             description: "Lint".to_string(),
             command: "cargo clippy --all-targets --all-features -- -D warnings".to_string(),
             timeout_secs: None,
+            shell: false,
         });
         let use_nextest = match config.prefer_nextest {
             Some(false) => false,
@@ -58,12 +62,14 @@ pub fn build_auto_policy(
                 description: "Test".to_string(),
                 command,
                 timeout_secs: None,
+                shell: false,
             });
         } else {
             steps.push(VerifyStep {
                 description: "Test".to_string(),
                 command: "cargo test --workspace --all-features".to_string(),
                 timeout_secs: None,
+                shell: false,
             });
         }
 
@@ -73,6 +79,7 @@ pub fn build_auto_policy(
                 description: "Doc tests".to_string(),
                 command: "cargo test --workspace --all-features --doc".to_string(),
                 timeout_secs: None,
+                shell: false,
             });
         }
     }
@@ -96,6 +103,7 @@ pub fn build_auto_policy(
                         description: format!("Run {}", target),
                         command: format!("{} {}", runner, target),
                         timeout_secs: None,
+                        shell: false,
                     });
                     return true;
                 }
@@ -116,12 +124,14 @@ pub fn build_auto_policy(
                 description: "Run fmt task".to_string(),
                 command: "deno task fmt".to_string(),
                 timeout_secs: None,
+                shell: false,
             });
         } else if !deno.workspaces_declared {
             steps.push(VerifyStep {
                 description: "Check formatting".to_string(),
                 command: "deno fmt --check".to_string(),
                 timeout_secs: None,
+                shell: false,
             });
         }
 
@@ -131,12 +141,14 @@ pub fn build_auto_policy(
                 description: "Run lint task".to_string(),
                 command: "deno task lint".to_string(),
                 timeout_secs: None,
+                shell: false,
             });
         } else if !deno.workspaces_declared {
             steps.push(VerifyStep {
                 description: "Lint".to_string(),
                 command: "deno lint".to_string(),
                 timeout_secs: None,
+                shell: false,
             });
         }
 
@@ -146,12 +158,14 @@ pub fn build_auto_policy(
                 description: "Run test:ci task".to_string(),
                 command: "deno task test:ci".to_string(),
                 timeout_secs: None,
+                shell: false,
             });
         } else if !deno.workspaces_declared {
             steps.push(VerifyStep {
                 description: "Test".to_string(),
                 command: "deno test --cached-only".to_string(),
                 timeout_secs: None,
+                shell: false,
             });
         }
 
@@ -161,6 +175,7 @@ pub fn build_auto_policy(
                 description: "Run build task".to_string(),
                 command: "deno task build".to_string(),
                 timeout_secs: None,
+                shell: false,
             });
         }
     }

