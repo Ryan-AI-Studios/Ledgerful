@@ -1,5 +1,6 @@
 //! Web dashboard axum router and server submodules.
 
+pub mod csp;
 pub mod git;
 pub mod handlers;
 pub mod health;

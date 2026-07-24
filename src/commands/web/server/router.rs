@@ -4,7 +4,7 @@ use crate::commands::web::api;
 use crate::commands::web::server::handlers;
 use crate::commands::web::server::middleware::{
     csp_header_middleware, host_validation_layer, local_cors, peer_allowlist_layer,
-    rate_limit_layer, server_header_middleware, token_layer,
+    rate_limit_layer, security_headers_middleware, server_header_middleware, token_layer,
 };
 use crate::commands::web::state::AppState;
 use axum::Router;
@@ -67,31 +67,37 @@ pub fn router(state: Arc<AppState>) -> Router {
         app = app.fallback(get(handlers::embedded_spa_handler));
     }
 
-    app.layer(middleware::from_fn(csp_header_middleware))
-        .layer(middleware::from_fn(server_header_middleware))
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            rate_limit_layer,
-        ))
-        .layer(
-            TraceLayer::new_for_http()
-                .make_span_with(
-                    DefaultMakeSpan::new()
-                        .level(Level::INFO)
-                        .include_headers(false),
-                )
-                .on_response(
-                    DefaultOnResponse::new()
-                        .level(Level::INFO)
-                        .include_headers(false),
-                ),
-        )
-        .layer(local_cors())
-        // Peer allowlist (public mode) then Host rebinding defense.
-        .layer(middleware::from_fn_with_state(
-            state.clone(),
-            peer_allowlist_layer,
-        ))
-        .layer(middleware::from_fn(host_validation_layer))
-        .with_state(state)
+    // CSP is state-aware (embedded hashes vs --spa-dir sidecar/fallback).
+    // Security headers never include HSTS on the daemon path.
+    app.layer(middleware::from_fn_with_state(
+        state.clone(),
+        csp_header_middleware,
+    ))
+    .layer(middleware::from_fn(security_headers_middleware))
+    .layer(middleware::from_fn(server_header_middleware))
+    .layer(middleware::from_fn_with_state(
+        state.clone(),
+        rate_limit_layer,
+    ))
+    .layer(
+        TraceLayer::new_for_http()
+            .make_span_with(
+                DefaultMakeSpan::new()
+                    .level(Level::INFO)
+                    .include_headers(false),
+            )
+            .on_response(
+                DefaultOnResponse::new()
+                    .level(Level::INFO)
+                    .include_headers(false),
+            ),
+    )
+    .layer(local_cors())
+    // Peer allowlist (public mode) then Host rebinding defense.
+    .layer(middleware::from_fn_with_state(
+        state.clone(),
+        peer_allowlist_layer,
+    ))
+    .layer(middleware::from_fn(host_validation_layer))
+    .with_state(state)
 }
