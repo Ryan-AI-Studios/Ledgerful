@@ -101,7 +101,7 @@ scip = "0.8.1"
 protobuf = "3.7"
 ratatui = "0.30.0"
 crossterm = "0.29.0"
-ed25519-dalek = { version = "2.1.1", features = ["rand_core"] }
+ed25519-dalek = { version = "3.0.0", features = ["rand_core"] }
 rand = "0.8"
 ignore = "0.4.25"
 inquire = "0.9.4"
@@ -156,7 +156,7 @@ rstest = "0.26.1"
 serial_test = "3.5.0"
 proptest = "1"
 reqwest = { version = "0.13.4", features = ["rustls"] }
-ed25519-dalek = { version = "2.1.1", features = ["rand_core"] }
+ed25519-dalek = { version = "3.0.0", features = ["rand_core"] }
 filetime = "0.2"
 
 # Unix-only stdout-capture helpers for integration tests (gated by #[cfg(unix)]
