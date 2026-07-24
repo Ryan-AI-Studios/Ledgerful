@@ -46,19 +46,25 @@ pub enum GitStateError {
     CommandFailed(String),
 }
 
-/// Validate a `GIT_BINARY` override: absolute path whose basename is `git` /
-/// `git.exe` (case-insensitive), or the bare names `git` / `git.exe` for PATH
-/// lookup. Anything else warns and falls back to `"git"`.
+/// Validate a `GIT_BINARY` override: **absolute** path whose basename is
+/// `git` / `git.exe` (case-insensitive). Bare names and relative paths are
+/// rejected (they enable PATH redirection) with warn + fallback to plain
+/// `"git"`. Unset env continues to use PATH `"git"` intentionally.
 pub fn validate_git_binary(value: &str) -> String {
     let trimmed = value.trim();
     if trimmed.is_empty() {
         return "git".to_string();
     }
 
-    let base = Path::new(trimmed)
-        .file_name()
-        .and_then(|s| s.to_str())
-        .unwrap_or(trimmed);
+    let path = Path::new(trimmed);
+    if !path.is_absolute() {
+        tracing::warn!(
+            "GIT_BINARY override {trimmed:?} rejected (must be an absolute path to git/git.exe; bare names enable PATH redirection); falling back to \"git\""
+        );
+        return "git".to_string();
+    }
+
+    let base = path.file_name().and_then(|s| s.to_str()).unwrap_or(trimmed);
 
     let base_ok = base.eq_ignore_ascii_case("git") || base.eq_ignore_ascii_case("git.exe");
     if !base_ok {
@@ -68,20 +74,7 @@ pub fn validate_git_binary(value: &str) -> String {
         return "git".to_string();
     }
 
-    let path = Path::new(trimmed);
-    // Bare "git" / "git.exe" → PATH lookup is intentional.
-    if path.components().count() == 1 {
-        return trimmed.to_string();
-    }
-
-    if path.is_absolute() {
-        return trimmed.to_string();
-    }
-
-    tracing::warn!(
-        "GIT_BINARY override {trimmed:?} rejected (must be absolute or bare git/git.exe); falling back to \"git\""
-    );
-    "git".to_string()
+    trimmed.to_string()
 }
 
 /// Returns the path to the git binary, respecting a validated `GIT_BINARY`
@@ -325,14 +318,16 @@ mod tests {
     }
 
     #[test]
-    fn validate_git_binary_accepts_bare_and_absolute() {
-        assert_eq!(validate_git_binary("git"), "git");
-        assert_eq!(validate_git_binary("git.exe"), "git.exe");
+    fn validate_git_binary_accepts_absolute_git_only() {
         #[cfg(windows)]
         {
             assert_eq!(
                 validate_git_binary(r"C:\Program Files\Git\cmd\git.exe"),
                 r"C:\Program Files\Git\cmd\git.exe"
+            );
+            assert_eq!(
+                validate_git_binary(r"C:\Program Files\Git\cmd\git"),
+                r"C:\Program Files\Git\cmd\git"
             );
         }
         #[cfg(unix)]
@@ -342,10 +337,16 @@ mod tests {
     }
 
     #[test]
-    fn validate_git_binary_rejects_evil() {
-        assert_eq!(validate_git_binary(r"C:\evil\notgit.exe"), "git");
+    fn validate_git_binary_rejects_bare_and_relative_path_redirection() {
+        // Bare names enable PATH redirection — DoD-6 requires absolute only.
+        // Fallback is always the plain PATH name "git", never the bare override.
+        assert_eq!(validate_git_binary("git"), "git");
+        assert_eq!(validate_git_binary("git.exe"), "git");
         assert_eq!(validate_git_binary("my-mock-git"), "git");
         assert_eq!(validate_git_binary("relative/path/git"), "git");
+        assert_eq!(validate_git_binary(r"C:\evil\notgit.exe"), "git");
+        assert_eq!(validate_git_binary("./git"), "git");
+        assert_eq!(validate_git_binary(""), "git");
     }
 
     #[test]
@@ -356,8 +357,12 @@ mod tests {
         // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe { std::env::set_var("GIT_BINARY", "my-mock-git") };
         assert_eq!(git_binary(), "git"); // rejected → fallback
+        // Bare PATH override must also fall back (no PATH redirection).
         // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
         unsafe { std::env::set_var("GIT_BINARY", "git") };
+        assert_eq!(git_binary(), "git");
+        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+        unsafe { std::env::set_var("GIT_BINARY", "git.exe") };
         assert_eq!(git_binary(), "git");
         // Cleanup
         if let Some(orig) = original {

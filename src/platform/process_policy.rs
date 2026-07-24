@@ -10,8 +10,8 @@ use thiserror::Error;
 /// basename variants so path-resolved shims still match.
 pub fn builtin_allowed_commands() -> Vec<String> {
     const BASES: &[&str] = &[
-        "cargo", "npm", "pnpm", "yarn", "npx", "node", "python", "python3", "pytest", "pip", "go",
-        "make", "git",
+        "cargo", "npm", "pnpm", "yarn", "npx", "node", "bun", "deno", "python", "python3",
+        "pytest", "pip", "go", "make", "git",
     ];
     let mut out = Vec::with_capacity(BASES.len() * 4);
     for base in BASES {
@@ -236,6 +236,11 @@ mod tests {
         assert!(check_policy("npm", &policy).is_ok());
         assert!(check_policy("pytest", &policy).is_ok());
         assert!(check_policy("git", &policy).is_ok());
+        // Auto-policy generates bun/deno steps; must not break under default-strict.
+        assert!(check_policy("bun", &policy).is_ok());
+        assert!(check_policy("deno", &policy).is_ok());
+        assert!(check_policy("bun.exe", &policy).is_ok());
+        assert!(check_policy("deno.cmd", &policy).is_ok());
         assert!(check_policy("curl", &policy).is_err());
     }
 

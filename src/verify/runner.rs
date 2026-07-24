@@ -23,9 +23,16 @@ pub struct PreparedStep {
     pub execution_mode: ExecutionMode,
 }
 
-/// Prepare an interactive / manual `-c` step. Always uses shell mode and is
-/// **exempt** from `allow_shell_steps` and shell inner-command inspection
-/// (operator-typed, same-user trusted input — not repo content).
+/// Prepare an interactive / manual `-c` step.
+///
+/// **Full process-policy exemption (intentional, Codex R1 / DoD-2 residual):**
+/// always uses shell mode and is exempt from (1) `allow_shell_steps`,
+/// (2) shell inner-command inspection, and (3) execute-time `check_policy`
+/// (because `ExecutionMode::Shell` skips the allowlist — see
+/// [`execute_step_with_command`]). Spec parenthetical "still subject to
+/// allowlist" is **not** product behavior: `-c` is operator-typed,
+/// same-user, same-moment input (not repo content). Gating it would break
+/// ad-hoc `ledgerful verify -c "…"` under default-strict for zero A1 gain.
 pub fn prepare_manual_step(step: &VerificationStep) -> PreparedStep {
     shell_step(step)
 }
@@ -89,10 +96,17 @@ pub fn execute_step_with_command(
     policy: &ProcessPolicy,
     command_override: Option<std::process::Command>,
 ) -> Result<ExecutionResult> {
-    // Shell mode: the literal "cmd"/"sh" wrapper is an implementation detail of
-    // shell_step(); the real gate is prepare_rule_step's inner-command check
-    // (config-declared) plus the allowlist for Direct mode. Manual -c is
-    // intentionally exempt from inner-command inspection.
+    // Direct mode: allowlist/deny check on the real executable.
+    //
+    // Shell mode: skip check_policy on the literal "cmd"/"sh" wrapper
+    // (implementation detail of shell_step). For *config-declared* shell
+    // steps the real gate is prepare_rule_step's allow_shell_steps flag +
+    // inner-command chain inspection. Manual `-c` also lands here as Shell
+    // and is **fully exempt** from allowlist/deny by design (trusted operator
+    // input — see prepare_manual_step docs); do not re-introduce wrapper
+    // allowlisting of cmd/sh (that would either break shell steps or, if
+    // "fixed" by allowlisting cmd/sh, defeat the allowlist for every shell
+    // step).
     if step.execution_mode == ExecutionMode::Direct {
         check_policy(&step.executable, policy).into_diagnostic()?;
     }
@@ -459,7 +473,10 @@ mod tests {
 
     #[test]
     fn manual_step_exempt_from_allow_shell_steps_and_inner_check() {
-        // Manual -c hardcodes shell:true and must work with no config flags.
+        // Full exemption contract (DoD-2 residual / threat model A1):
+        // interactive `-c` is operator-typed trusted input, not repo content.
+        // It must run under default-strict ProcessPolicy with no config flags,
+        // no allow_shell_steps, and no allowlist membership for cmd/sh/echo.
         let step = VerificationStep {
             description: "manual".to_string(),
             command: "echo hello".to_string(),
@@ -468,8 +485,7 @@ mod tests {
         };
         let prepared = prepare_manual_step(&step);
         assert_eq!(prepared.execution_mode, ExecutionMode::Shell);
-        // execute_step skips check_policy for Shell mode — works under default-strict
-        // even though "cmd"/"sh"/"echo" may not be on the built-in allowlist.
+        // execute_step skips check_policy for Shell mode under default-strict.
         let result = execute_step(&prepared, &default_strict_policy()).unwrap();
         assert_eq!(result.exit_code, 0);
         assert!(result.stdout.to_ascii_lowercase().contains("hello"));
