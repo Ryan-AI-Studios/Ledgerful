@@ -151,7 +151,7 @@ path = "src/lib.rs"
 
 [dev-dependencies]
 tempfile = "3"
-httpmock = "0.7"
+httpmock = "0.8"
 rstest = "0.26.1"
 serial_test = "3.5.0"
 proptest = "1"
