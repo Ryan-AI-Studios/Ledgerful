@@ -45,26 +45,38 @@ pub fn basename_is_allowed(command: &str) -> bool {
 ///
 /// Checks basename allowlist first (fast fail for `powershell` / `cmd`), then
 /// process_policy strict allowlist (covers absolute paths when resolvable).
+/// Bridge-only remediation: provider_command is not controlled by `verify.allowed_commands`.
+fn bridge_denied(command: &str, reason: &str) -> ProcessPolicyError {
+    ProcessPolicyError::denied_with_fix(
+        command,
+        reason,
+        "bridge.provider_command must resolve to basename 'ai-brains' (or 'ai-brains.exe'); \
+         see bridge config (not verify.allowed_commands)",
+    )
+}
+
 pub fn check_bridge_provider_command(command: &str) -> Result<(), ProcessPolicyError> {
     let trimmed = command.trim();
     if trimmed.is_empty() {
-        return Err(ProcessPolicyError::denied(
-            trimmed,
-            "not in allowed_commands",
-        ));
+        return Err(bridge_denied(trimmed, "empty provider_command"));
     }
 
     // Fast basename gate — process_policy path resolution can be slow / miss
     // non-existent absolute shell paths; we still deny by basename.
     if !basename_is_allowed(trimmed) {
-        return Err(ProcessPolicyError::denied(
+        return Err(bridge_denied(
             trimmed,
-            "not in allowed_commands",
+            "basename not on bridge provider allowlist (ai-brains only)",
         ));
     }
 
     // Strict process_policy: basename or resolved absolute path must match.
-    check_policy(trimmed, &bridge_provider_process_policy())
+    // Map generic verify-style diagnostics to bridge-specific remediation.
+    check_policy(trimmed, &bridge_provider_process_policy()).map_err(|e| match e {
+        ProcessPolicyError::Denied {
+            command, reason, ..
+        } => bridge_denied(&command, &reason),
+    })
 }
 
 #[cfg(test)]
@@ -82,6 +94,24 @@ mod tests {
         assert!(check_bridge_provider_command("powershell").is_err());
         assert!(check_bridge_provider_command("powershell.exe").is_err());
         assert!(check_bridge_provider_command("PowerShell").is_err());
+    }
+
+    #[test]
+    fn bridge_denial_does_not_suggest_verify_allowed_commands() {
+        let err = check_bridge_provider_command("powershell").unwrap_err();
+        let msg = err.to_string();
+        assert!(
+            !msg.contains("[verify]"),
+            "bridge denial must not point at verify.allowed_commands: {msg}"
+        );
+        assert!(
+            !msg.contains("allowed_commands = [\"powershell\"]"),
+            "bridge denial must not suggest allowlisting the denied binary via verify: {msg}"
+        );
+        assert!(
+            msg.contains("bridge.provider_command") || msg.contains("ai-brains"),
+            "bridge denial must name bridge remediation: {msg}"
+        );
     }
 
     #[test]

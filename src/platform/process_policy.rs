@@ -62,7 +62,7 @@ pub enum ProcessPolicyError {
 }
 
 impl ProcessPolicyError {
-    /// Build a denial for an un-allowlisted / denied executable.
+    /// Build a denial for an un-allowlisted / denied executable (verify path).
     pub fn denied(command: impl Into<String>, reason: impl Into<String>) -> Self {
         let command = command.into();
         let reason = reason.into();
@@ -71,6 +71,19 @@ impl ProcessPolicyError {
             command,
             reason,
             fix_snippet,
+        }
+    }
+
+    /// Build a denial with an explicit remediation snippet (non-verify surfaces).
+    pub fn denied_with_fix(
+        command: impl Into<String>,
+        reason: impl Into<String>,
+        fix_snippet: impl Into<String>,
+    ) -> Self {
+        Self::Denied {
+            command: command.into(),
+            reason: reason.into(),
+            fix_snippet: fix_snippet.into(),
         }
     }
 
