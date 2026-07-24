@@ -17,6 +17,8 @@
 use std::collections::BTreeSet;
 use std::sync::OnceLock;
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use camino::Utf8Path;
 use serde_json::Value;
 
@@ -147,18 +149,97 @@ fn normalize_hash_token(raw: &str) -> Result<String, String> {
             "CSP hash token must start with sha256- (got {raw:?})"
         ));
     }
-    // Basic sanity: base64 alphabet after prefix
+    // Strict: payload must be standard base64 that decodes to exactly 32 bytes
+    // (SHA-256 digest length). Rejects alphabet-only placeholders that are not
+    // real digests so a malformed --spa-dir sidecar falls back honestly.
     let b64 = &trimmed["sha256-".len()..];
-    if b64.is_empty()
-        || !b64
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || c == '+' || c == '/' || c == '=')
-    {
+    if b64.is_empty() {
+        return Err(format!("CSP hash token has empty base64 payload: {raw:?}"));
+    }
+    let decoded = BASE64_STANDARD
+        .decode(b64)
+        .map_err(|e| format!("CSP hash token base64 decode failed ({e}); token={raw:?}"))?;
+    if decoded.len() != 32 {
         return Err(format!(
-            "CSP hash token has invalid base64 payload: {raw:?}"
+            "CSP hash token must decode to 32-byte SHA-256 digest (got {} bytes): {raw:?}",
+            decoded.len()
         ));
     }
     Ok(trimmed.to_string())
+}
+
+/// Result of resolving CSP for an operator-supplied `--spa-dir`.
+///
+/// When [`Self::fallback_reason`] is `Some`, production code must log a warning
+/// and use the fallback CSP (DoD-3 honesty contract).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SpaDirCspResolve {
+    pub csp: String,
+    /// Human-readable reason the strict hash path was not used (testable).
+    pub fallback_reason: Option<String>,
+}
+
+/// Resolve CSP for `--spa-dir` without logging (pure for unit tests).
+///
+/// Looks for `{spa_dir.parent()}/.csp/csp-script-hashes.json`. On success
+/// returns a strict hash CSP; on missing/invalid returns the `'unsafe-inline'`
+/// fallback with a non-empty [`SpaDirCspResolve::fallback_reason`].
+pub fn resolve_csp_for_spa_dir_detailed(spa_dir: &Utf8Path) -> SpaDirCspResolve {
+    let sidecar = spa_dir
+        .parent()
+        .map(|p| p.join(".csp").join("csp-script-hashes.json"));
+
+    let Some(path) = sidecar else {
+        return SpaDirCspResolve {
+            csp: build_fallback_csp(),
+            fallback_reason: Some(
+                "CSP hash manifest unavailable (--spa-dir has no parent); \
+                 falling back to script-src 'self' 'unsafe-inline' for this instance"
+                    .to_string(),
+            ),
+        };
+    };
+
+    if !path.is_file() {
+        return SpaDirCspResolve {
+            csp: build_fallback_csp(),
+            fallback_reason: Some(format!(
+                "CSP hash manifest missing for --spa-dir at {path}; \
+                 falling back to script-src 'self' 'unsafe-inline' for this instance. \
+                 Place a valid .csp/csp-script-hashes.json next to the SPA root to enable strict hashes."
+            )),
+        };
+    }
+
+    match std::fs::read_to_string(path.as_std_path()) {
+        Ok(json) => match parse_csp_manifest(&json) {
+            Ok(hashes) if !hashes.is_empty() => SpaDirCspResolve {
+                csp: build_hash_csp(&hashes),
+                fallback_reason: None,
+            },
+            Ok(_) => SpaDirCspResolve {
+                csp: build_fallback_csp(),
+                fallback_reason: Some(format!(
+                    "CSP hash manifest is empty at {path}; \
+                     falling back to script-src 'self' 'unsafe-inline'"
+                )),
+            },
+            Err(e) => SpaDirCspResolve {
+                csp: build_fallback_csp(),
+                fallback_reason: Some(format!(
+                    "CSP hash manifest invalid at {path}: {e}; \
+                     falling back to script-src 'self' 'unsafe-inline' for this instance"
+                )),
+            },
+        },
+        Err(e) => SpaDirCspResolve {
+            csp: build_fallback_csp(),
+            fallback_reason: Some(format!(
+                "Failed to read CSP hash manifest at {path}: {e}; \
+                 falling back to script-src 'self' 'unsafe-inline' for this instance"
+            )),
+        },
+    }
 }
 
 /// Resolve CSP for an operator-supplied `--spa-dir`.
@@ -167,65 +248,16 @@ fn normalize_hash_token(raw: &str) -> Result<String, String> {
 /// returns a strict hash CSP; on missing/invalid logs a warning and returns
 /// the `'unsafe-inline'` fallback.
 pub fn resolve_csp_for_spa_dir(spa_dir: &Utf8Path) -> String {
-    let sidecar = spa_dir
-        .parent()
-        .map(|p| p.join(".csp").join("csp-script-hashes.json"));
-
-    let Some(path) = sidecar else {
-        tracing::warn!(
+    let resolved = resolve_csp_for_spa_dir_detailed(spa_dir);
+    if let Some(reason) = &resolved.fallback_reason {
+        tracing::warn!(spa_dir = %spa_dir, "{reason}");
+    } else {
+        tracing::info!(
             spa_dir = %spa_dir,
-            "CSP hash manifest unavailable (--spa-dir has no parent); \
-             falling back to script-src 'self' 'unsafe-inline' for this instance"
+            "Loaded CSP script hashes from --spa-dir sidecar manifest"
         );
-        return build_fallback_csp();
-    };
-
-    if !path.is_file() {
-        tracing::warn!(
-            path = %path,
-            spa_dir = %spa_dir,
-            "CSP hash manifest missing for --spa-dir; \
-             falling back to script-src 'self' 'unsafe-inline' for this instance. \
-             Place a valid .csp/csp-script-hashes.json next to the SPA root to enable strict hashes."
-        );
-        return build_fallback_csp();
     }
-
-    match std::fs::read_to_string(path.as_std_path()) {
-        Ok(json) => match parse_csp_manifest(&json) {
-            Ok(hashes) if !hashes.is_empty() => {
-                tracing::info!(
-                    path = %path,
-                    hash_count = hashes.len(),
-                    "Loaded CSP script hashes from --spa-dir sidecar manifest"
-                );
-                build_hash_csp(&hashes)
-            }
-            Ok(_) => {
-                tracing::warn!(
-                    path = %path,
-                    "CSP hash manifest is empty; falling back to script-src 'self' 'unsafe-inline'"
-                );
-                build_fallback_csp()
-            }
-            Err(e) => {
-                tracing::warn!(
-                    path = %path,
-                    error = %e,
-                    "CSP hash manifest invalid; falling back to script-src 'self' 'unsafe-inline' for this instance"
-                );
-                build_fallback_csp()
-            }
-        },
-        Err(e) => {
-            tracing::warn!(
-                path = %path,
-                error = %e,
-                "Failed to read CSP hash manifest; falling back to script-src 'self' 'unsafe-inline' for this instance"
-            );
-            build_fallback_csp()
-        }
-    }
+    resolved.csp
 }
 
 /// Embedded (default) CSP header string from the vendored manifest.
@@ -257,59 +289,71 @@ mod tests {
     use super::*;
     use tempfile::tempdir;
 
+    /// Token for a synthetic 32-byte digest (`byte` repeated).
+    fn digest_token(byte: u8) -> String {
+        format!("sha256-{}", BASE64_STANDARD.encode([byte; 32]))
+    }
+
     #[test]
     fn parse_preferred_manifest_with_union() {
-        let json = r#"{
-            "routes": {
-                "/": ["sha256-abc123=", "sha256-def456="],
-                "/other": ["sha256-def456=", "sha256-ghi789="]
-            },
-            "union": ["sha256-abc123=", "sha256-def456=", "sha256-ghi789="]
-        }"#;
-        let hashes = parse_csp_manifest(json).unwrap();
-        assert_eq!(
-            hashes,
-            vec![
-                "sha256-abc123=".to_string(),
-                "sha256-def456=".to_string(),
-                "sha256-ghi789=".to_string(),
-            ]
+        let a = digest_token(1);
+        let b = digest_token(2);
+        let c = digest_token(3);
+        let json = format!(
+            r#"{{
+            "routes": {{
+                "/": ["{a}", "{b}"],
+                "/other": ["{b}", "{c}"]
+            }},
+            "union": ["{a}", "{b}", "{c}"]
+        }}"#
         );
+        let hashes = parse_csp_manifest(&json).unwrap();
+        assert_eq!(hashes, vec![a, b, c]);
     }
 
     #[test]
     fn parse_flat_manifest_computes_union() {
-        let json = r#"{
-            "/": ["sha256-zzz=", "sha256-aaa="],
-            "/x": ["sha256-aaa="]
-        }"#;
-        let hashes = parse_csp_manifest(json).unwrap();
-        assert_eq!(
-            hashes,
-            vec!["sha256-aaa=".to_string(), "sha256-zzz=".to_string()]
+        let aaa = digest_token(10);
+        let zzz = digest_token(20);
+        let json = format!(
+            r#"{{
+            "/": ["{zzz}", "{aaa}"],
+            "/x": ["{aaa}"]
+        }}"#
         );
+        let hashes = parse_csp_manifest(&json).unwrap();
+        // BTreeSet sorts lexicographically by token string
+        let mut expected = vec![aaa, zzz];
+        expected.sort();
+        assert_eq!(hashes, expected);
     }
 
     #[test]
     fn parse_routes_only_without_union() {
-        let json = r#"{
-            "routes": {
-                "/": ["sha256-one="],
-                "/two": ["sha256-two=", "sha256-one="]
-            }
-        }"#;
-        let hashes = parse_csp_manifest(json).unwrap();
-        assert_eq!(
-            hashes,
-            vec!["sha256-one=".to_string(), "sha256-two=".to_string()]
+        let one = digest_token(30);
+        let two = digest_token(40);
+        let json = format!(
+            r#"{{
+            "routes": {{
+                "/": ["{one}"],
+                "/two": ["{two}", "{one}"]
+            }}
+        }}"#
         );
+        let hashes = parse_csp_manifest(&json).unwrap();
+        let mut expected = vec![one, two];
+        expected.sort();
+        assert_eq!(hashes, expected);
     }
 
     #[test]
     fn build_hash_csp_includes_hashes_without_unsafe_inline() {
-        let hashes = vec!["sha256-abc=".to_string(), "sha256-def=".to_string()];
+        let abc = digest_token(50);
+        let def = digest_token(60);
+        let hashes = vec![abc.clone(), def.clone()];
         let csp = build_hash_csp(&hashes);
-        assert!(csp.contains("script-src 'self' 'sha256-abc=' 'sha256-def='"));
+        assert!(csp.contains(&format!("script-src 'self' '{abc}' '{def}'")));
         assert!(csp.contains("style-src 'self' 'unsafe-inline'"));
         // script-src must not include unsafe-inline
         let script_part = csp
@@ -386,13 +430,20 @@ mod tests {
         assert!(!script_part.contains("unsafe-inline"));
     }
 
+    /// Real base64 of 32 zero bytes (valid SHA-256 digest length).
+    fn sample_sha256_token() -> String {
+        let digest = [0u8; 32];
+        format!("sha256-{}", BASE64_STANDARD.encode(digest))
+    }
+
     #[test]
     fn resolve_spa_dir_missing_manifest_falls_back() {
         let tmp = tempdir().unwrap();
         let spa = Utf8Path::from_path(tmp.path()).unwrap().join("out");
         std::fs::create_dir_all(spa.as_std_path()).unwrap();
-        let csp = resolve_csp_for_spa_dir(&spa);
-        let script_part = csp
+        let resolved = resolve_csp_for_spa_dir_detailed(&spa);
+        let script_part = resolved
+            .csp
             .split("script-src ")
             .nth(1)
             .unwrap()
@@ -400,6 +451,13 @@ mod tests {
             .next()
             .unwrap();
         assert!(script_part.contains("unsafe-inline"));
+        let reason = resolved
+            .fallback_reason
+            .expect("missing sidecar must surface a fallback reason for warn");
+        assert!(
+            reason.contains("missing") || reason.contains("unavailable"),
+            "reason should explain missing sidecar: {reason}"
+        );
     }
 
     #[test]
@@ -410,19 +468,28 @@ mod tests {
         let csp_dir = root.join(".csp");
         std::fs::create_dir_all(spa.as_std_path()).unwrap();
         std::fs::create_dir_all(csp_dir.as_std_path()).unwrap();
-        let manifest = r#"{
-            "routes": { "/": ["sha256-TestHashValue1234567890abcd="] },
-            "union": ["sha256-TestHashValue1234567890abcd="]
-        }"#;
+        let token = sample_sha256_token();
+        let manifest = format!(
+            r#"{{
+            "routes": {{ "/": ["{token}"] }},
+            "union": ["{token}"]
+        }}"#
+        );
         std::fs::write(
             csp_dir.join("csp-script-hashes.json").as_std_path(),
             manifest,
         )
         .unwrap();
 
-        let csp = resolve_csp_for_spa_dir(&spa);
-        assert!(csp.contains("'sha256-TestHashValue1234567890abcd='"));
-        let script_part = csp
+        let resolved = resolve_csp_for_spa_dir_detailed(&spa);
+        assert!(
+            resolved.fallback_reason.is_none(),
+            "valid sidecar must not fall back: {:?}",
+            resolved.fallback_reason
+        );
+        assert!(resolved.csp.contains(&format!("'{token}'")));
+        let script_part = resolved
+            .csp
             .split("script-src ")
             .nth(1)
             .unwrap()
@@ -445,13 +512,53 @@ mod tests {
             "not-json{{",
         )
         .unwrap();
-        let csp = resolve_csp_for_spa_dir(&spa);
-        assert!(csp.contains("unsafe-inline"));
+        let resolved = resolve_csp_for_spa_dir_detailed(&spa);
+        assert!(resolved.csp.contains("unsafe-inline"));
+        let reason = resolved
+            .fallback_reason
+            .expect("invalid JSON must surface a fallback reason");
+        assert!(
+            reason.contains("invalid"),
+            "reason should note invalid manifest: {reason}"
+        );
+    }
+
+    #[test]
+    fn resolve_spa_dir_placeholder_hash_falls_back() {
+        // Alphabet-looking but not a real 32-byte digest — must not be treated
+        // as a valid strict sidecar (DoD-3 honesty).
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let spa = root.join("out");
+        let csp_dir = root.join(".csp");
+        std::fs::create_dir_all(spa.as_std_path()).unwrap();
+        std::fs::create_dir_all(csp_dir.as_std_path()).unwrap();
+        let manifest = r#"{
+            "union": ["sha256-TestHashValue1234567890abcd="]
+        }"#;
+        std::fs::write(
+            csp_dir.join("csp-script-hashes.json").as_std_path(),
+            manifest,
+        )
+        .unwrap();
+        let resolved = resolve_csp_for_spa_dir_detailed(&spa);
+        assert!(
+            resolved.fallback_reason.is_some(),
+            "placeholder hash must fall back"
+        );
+        assert!(resolved.csp.contains("unsafe-inline"));
     }
 
     #[test]
     fn parse_rejects_non_sha256_token() {
         let json = r#"{ "union": ["md5-nope"] }"#;
+        assert!(parse_csp_manifest(json).is_err());
+    }
+
+    #[test]
+    fn parse_rejects_non_digest_length_base64() {
+        // Valid base64 of 1 byte, not 32.
+        let json = r#"{ "union": ["sha256-AQ=="] }"#;
         assert!(parse_csp_manifest(json).is_err());
     }
 }
