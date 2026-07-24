@@ -748,7 +748,7 @@ pub fn build_plan_from_config(config: &VerifyConfig) -> Option<VerificationPlan>
             } else {
                 step.description.clone()
             },
-            shell: false,
+            shell: step.shell,
         })
         .collect();
 
@@ -1264,16 +1264,19 @@ default-filter = 'test(/__slow$/)'
                     description: "Run tests".to_string(),
                     command: "cargo test".to_string(),
                     timeout_secs: Some(60),
+                    shell: false,
                 },
                 crate::config::model::VerifyStep {
                     description: String::new(),
                     command: "cargo fmt --check".to_string(),
                     timeout_secs: None, // uses default_timeout_secs
+                    shell: false,
                 },
             ],
             default_timeout_secs: 120,
             semantic_weight: 0.3,
             prefer_nextest: None,
+            ..Default::default()
         };
         let plan = build_plan_from_config(&config).unwrap();
         assert_eq!(plan.steps.len(), 2);

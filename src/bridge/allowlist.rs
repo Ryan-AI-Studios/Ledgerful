@@ -48,17 +48,19 @@ pub fn basename_is_allowed(command: &str) -> bool {
 pub fn check_bridge_provider_command(command: &str) -> Result<(), ProcessPolicyError> {
     let trimmed = command.trim();
     if trimmed.is_empty() {
-        return Err(ProcessPolicyError::Denied {
-            command: trimmed.to_string(),
-        });
+        return Err(ProcessPolicyError::denied(
+            trimmed,
+            "not in allowed_commands",
+        ));
     }
 
     // Fast basename gate — process_policy path resolution can be slow / miss
     // non-existent absolute shell paths; we still deny by basename.
     if !basename_is_allowed(trimmed) {
-        return Err(ProcessPolicyError::Denied {
-            command: trimmed.to_string(),
-        });
+        return Err(ProcessPolicyError::denied(
+            trimmed,
+            "not in allowed_commands",
+        ));
     }
 
     // Strict process_policy: basename or resolved absolute path must match.

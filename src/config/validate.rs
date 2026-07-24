@@ -67,6 +67,40 @@ pub fn validate_config(config: &Config) -> Result<()> {
         .into());
     }
 
+    // Process-policy lists: reject empty strings and dual allow+deny membership.
+    for (i, cmd) in config.verify.allowed_commands.iter().enumerate() {
+        if cmd.trim().is_empty() {
+            return Err(ConfigError::ValidationFailed {
+                reason: format!("verify.allowed_commands[{i}] must not be empty"),
+            }
+            .into());
+        }
+    }
+    for (i, cmd) in config.verify.denied_commands.iter().enumerate() {
+        if cmd.trim().is_empty() {
+            return Err(ConfigError::ValidationFailed {
+                reason: format!("verify.denied_commands[{i}] must not be empty"),
+            }
+            .into());
+        }
+    }
+    for allowed in &config.verify.allowed_commands {
+        let allowed_trim = allowed.trim();
+        if config
+            .verify
+            .denied_commands
+            .iter()
+            .any(|d| d.trim().eq_ignore_ascii_case(allowed_trim))
+        {
+            return Err(ConfigError::ValidationFailed {
+                reason: format!(
+                    "verify command '{allowed_trim}' cannot appear in both allowed_commands and denied_commands"
+                ),
+            }
+            .into());
+        }
+    }
+
     match (&config.verify.mode, config.verify.steps.is_empty()) {
         (Some(crate::config::model::VerifyMode::Auto), false) => {
             return Err(ConfigError::ValidationFailed {
@@ -299,6 +333,7 @@ mod tests {
                 default_timeout_secs: 300,
                 semantic_weight: 0.3,
                 prefer_nextest: None,
+                ..Default::default()
             },
             ..Default::default()
         }
@@ -312,10 +347,12 @@ mod tests {
                     description: "Missing command".to_string(),
                     command: "   ".to_string(),
                     timeout_secs: Some(60),
+                    shell: false,
                 }],
                 default_timeout_secs: 300,
                 semantic_weight: 0.3,
                 prefer_nextest: None,
+                ..Default::default()
             },
             ..Default::default()
         }
@@ -329,10 +366,12 @@ mod tests {
                     description: "Bad timeout".to_string(),
                     command: "cargo test".to_string(),
                     timeout_secs: Some(0),
+                    shell: false,
                 }],
                 default_timeout_secs: 300,
                 semantic_weight: 0.3,
                 prefer_nextest: None,
+                ..Default::default()
             },
             ..Default::default()
         }
@@ -346,10 +385,12 @@ mod tests {
                     description: "Run tests".to_string(),
                     command: "cargo test".to_string(),
                     timeout_secs: Some(60),
+                    shell: false,
                 }],
                 default_timeout_secs: 0,
                 semantic_weight: 0.3,
                 prefer_nextest: None,
+                ..Default::default()
             },
             ..Default::default()
         }
@@ -485,10 +526,12 @@ mod tests {
                     description: "Test".to_string(),
                     command: "cargo test".to_string(),
                     timeout_secs: None,
+                    shell: false,
                 }],
                 default_timeout_secs: 300,
                 semantic_weight: 0.3,
                 prefer_nextest: None,
+                ..Default::default()
             },
             ..Default::default()
         }
@@ -502,6 +545,7 @@ mod tests {
                 default_timeout_secs: 300,
                 semantic_weight: 0.3,
                 prefer_nextest: None,
+                ..Default::default()
             },
             ..Default::default()
         }
@@ -512,6 +556,36 @@ mod tests {
         let config = Config::default();
         let result = validate_config(&config);
         assert!(result.is_ok(), "default config should validate: {result:?}");
+    }
+
+    #[test]
+    fn rejects_empty_allowed_command() {
+        let config = Config {
+            verify: VerifyConfig {
+                allowed_commands: vec!["cargo".to_string(), "  ".to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let err = validate_config(&config).unwrap_err();
+        assert!(format!("{err}").contains("allowed_commands"));
+    }
+
+    #[test]
+    fn rejects_dual_allow_and_deny() {
+        let config = Config {
+            verify: VerifyConfig {
+                allowed_commands: vec!["curl".to_string()],
+                denied_commands: vec!["curl".to_string()],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let err = validate_config(&config).unwrap_err();
+        assert!(
+            format!("{err}").contains("both allowed_commands and denied_commands"),
+            "got {err}"
+        );
     }
 
     #[rstest]

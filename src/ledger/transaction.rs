@@ -12,7 +12,6 @@ use crate::ledger::provenance::{ProvenanceAction, TokenProvenance};
 use crate::ledger::session::get_session_id;
 use crate::ledger::types::*;
 use crate::ledger::validators::ValidatorRunner;
-use crate::platform::process_policy::ProcessPolicy;
 
 pub struct TransactionManager<'a> {
     storage: &'a mut crate::state::storage::StorageManager,
@@ -203,11 +202,8 @@ impl<'a> TransactionManager<'a> {
 
         let validators = db.get_commit_validators(Some(&cat_str))?;
         if !validators.is_empty() {
-            // Build process policy from config
-            let policy = ProcessPolicy {
-                default_timeout_secs: self.config.verify.default_timeout_secs,
-                ..Default::default()
-            };
+            // Build process policy from config (extend-not-replace allowlist).
+            let policy = self.config.verify.effective_process_policy();
 
             for v in validators {
                 if !v.enabled {
