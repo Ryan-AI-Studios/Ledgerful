@@ -505,13 +505,22 @@ jobs:
       - name: Push to homebrew-tap + scoop-bucket (or skip)
         shell: bash
         env:
+          # Keep MANIFEST_PUSH_TOKEN for the presence skip-check below.
+          # GH_TOKEN at step level + `gh auth setup-git` so clone and later
+          # `git push` authenticate without embedding the PAT in a URL (0082 RT-X9).
           MANIFEST_PUSH_TOKEN: ${{ secrets.MANIFEST_PUSH_TOKEN }}
+          GH_TOKEN: ${{ secrets.MANIFEST_PUSH_TOKEN }}
         run: |
           set -euo pipefail
           if [ -z "${MANIFEST_PUSH_TOKEN}" ]; then
             echo "skip push (no MANIFEST_PUSH_TOKEN secret) — bump validation above still ran"
             exit 0
           fi
+          # Configure git to use gh as credential helper for the whole step
+          # (clone + later `git push`). GH_TOKEN alone authenticates `gh`
+          # commands; setup-git is required for plain `git` (0082 RT-X9 / codex P2).
+          # Do not embed the PAT in any clone URL (would land in .git/config).
+          gh auth setup-git
           version="${{ steps.version.outputs.value }}"
           push_one() {
             local repo="$1"
@@ -519,7 +528,7 @@ jobs:
             local dest_path="$3"
             local scratch
             scratch="$(mktemp -d)"
-            git clone --depth 1 "https://x-access-token:${MANIFEST_PUSH_TOKEN}@github.com/${repo}.git" "$scratch"
+            gh repo clone "$repo" "$scratch" -- --depth 1
             mkdir -p "$(dirname "$scratch/$dest_path")"
             cp "$src" "$scratch/$dest_path"
             git -C "$scratch" config user.name "ledgerful-release[bot]"

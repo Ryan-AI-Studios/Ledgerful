@@ -30,6 +30,10 @@ impl ImpactOrchestrator {
     /// a legitimate non-AI mode). Returns a warning string when the model is
     /// configured but unreachable, so impact output can annotate that AI
     /// enrichment was skipped instead of silently degrading.
+    ///
+    /// When `LEDGERFUL_NO_NETWORK` is truthy (Action CI / offline honesty, track
+    /// 0082 RT-X3), skips the reachability probe entirely — no `TcpStream` —
+    /// and annotates that enrichment was skipped for the env policy.
     fn ai_enrichment_status(config: &Config) -> Option<String> {
         let lm = &config.local_model;
         let url = lm
@@ -39,6 +43,10 @@ impl ImpactOrchestrator {
             .or(Some(lm.base_url.as_str()))?;
         if url.is_empty() {
             return None;
+        }
+        // RT-X3: honor Action's LEDGERFUL_NO_NETWORK=1 before any socket open.
+        if crate::util::network::network_disabled_from_env() {
+            return Some("AI enrichment skipped: LEDGERFUL_NO_NETWORK is set".to_string());
         }
         if !crate::util::network::is_url_reachable(url, Duration::from_millis(500)) {
             return Some(format!(
@@ -336,8 +344,18 @@ mod tests {
         assert!(added.old_path.is_none());
     }
 
+    mod env_guard {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/integration/common/env_guard.rs"
+        ));
+    }
+    use env_guard::TempEnv;
+
     #[test]
+    #[serial_test::serial(env)]
     fn test_ai_enrichment_status_unreachable_annotates() {
+        let _no_net = TempEnv::remove(crate::util::network::NO_NETWORK_ENV);
         let mut config = Config::default();
         config.local_model.base_url = "http://127.0.0.1:1".to_string();
 
@@ -355,7 +373,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn test_ai_enrichment_status_empty_url_is_none() {
+        let _no_net = TempEnv::remove(crate::util::network::NO_NETWORK_ENV);
         let config = Config::default();
         assert!(
             ImpactOrchestrator::ai_enrichment_status(&config).is_none(),
@@ -363,8 +383,60 @@ mod tests {
         );
     }
 
+    /// DoD-4 (0082 RT-X3): with `LEDGERFUL_NO_NETWORK=1` and a configured
+    /// `base_url`, enrichment annotates the env policy and never enters
+    /// `is_url_reachable` (zero probe / TcpStream).
     #[test]
+    #[serial_test::serial(env)]
+    fn test_ai_enrichment_status_no_network_skips_probe() {
+        let _no_net = TempEnv::set(crate::util::network::NO_NETWORK_ENV, "1");
+        let mut config = Config::default();
+        // DEFAULT_CONFIG-style URL: would normally trigger a reachability probe.
+        config.local_model.base_url = "http://127.0.0.1:8081".to_string();
+        config.local_model.embedding_url = Some("http://127.0.0.1:8083".to_string());
+
+        crate::util::network::reset_reachability_probe_call_count();
+        let before = crate::util::network::reachability_probe_call_count();
+
+        let status = ImpactOrchestrator::ai_enrichment_status(&config);
+        let after = crate::util::network::reachability_probe_call_count();
+
+        assert_eq!(
+            before, after,
+            "is_url_reachable must not be entered when LEDGERFUL_NO_NETWORK is set"
+        );
+        let msg = status.expect("expected skip annotation under LEDGERFUL_NO_NETWORK");
+        assert!(
+            msg.contains("LEDGERFUL_NO_NETWORK"),
+            "expected env-policy annotation, got: {msg}"
+        );
+        assert!(
+            !msg.contains("unreachable"),
+            "must not claim model unreachable when probe was skipped: {msg}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn test_ai_enrichment_status_no_network_true_case_insensitive() {
+        let _no_net = TempEnv::set(crate::util::network::NO_NETWORK_ENV, "True");
+        let mut config = Config::default();
+        config.local_model.base_url = "http://127.0.0.1:8081".to_string();
+        crate::util::network::reset_reachability_probe_call_count();
+        let status = ImpactOrchestrator::ai_enrichment_status(&config);
+        assert_eq!(crate::util::network::reachability_probe_call_count(), 0);
+        assert!(
+            status
+                .as_deref()
+                .is_some_and(|m| m.contains("LEDGERFUL_NO_NETWORK")),
+            "got: {status:?}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
     fn test_orchestrator_annotates_ai_unavailable_and_continues() {
+        let _no_net = TempEnv::remove(crate::util::network::NO_NETWORK_ENV);
         let mut conn = rusqlite::Connection::open_in_memory().unwrap();
         crate::state::migrations::get_migrations()
             .to_latest(&mut conn)
