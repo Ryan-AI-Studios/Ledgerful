@@ -22,11 +22,16 @@ jobs:
     permissions:
       contents: read
     steps:
-      # Public frontend repo — no PAT required for checkout.
+      # Public frontend repo — no PAT required for checkout. Pinned (not `main`) so a release build is
+      # reproducible and not a moving target. Bumped 2026-07-25 (0087) from 4a1df7e2 (track 0054,
+      # 2026-07-13) — that pin had never been updated since it was introduced (0042 R3), so every
+      # release since v0.1.9 embedded a 12-day-stale SPA missing 0076/0077/0080/0081/0083's fixes.
+      # Every future engine release cut MUST re-verify this SHA is current `ledgerful-frontend` main
+      # before tagging (`git rev-parse main` in that repo) — do not assume it's still fresh.
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           repository: Ryan-AI-Studios/ledgerful-frontend
-          ref: 4a1df7e2be68bb1136a18c52f1ba420801858c89
+          ref: 346df6027a8b3dda1a10350080ff115bfde52929 # 0083, 2026-07-25
           path: ledgerful-frontend
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
