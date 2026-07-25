@@ -130,7 +130,7 @@ impl<'a> RouteExtractor<'a> {
                 .push((*sym_id, *file_id));
         }
 
-        // 4. Iterate over source files (Rust, TypeScript, Python)
+        // 4. Iterate over source files (Rust, TypeScript, Python, Go)
         let mut total_routes = 0usize;
         let mut files_processed = 0usize;
         let mut frameworks: HashSet<String> = HashSet::new();
@@ -140,7 +140,11 @@ impl<'a> RouteExtractor<'a> {
             // Skip non-source language files
             if !matches!(
                 language.as_deref(),
-                Some("Rust") | Some("TypeScript") | Some("JavaScript") | Some("Python")
+                Some("Rust")
+                    | Some("TypeScript")
+                    | Some("JavaScript")
+                    | Some("Python")
+                    | Some("Go")
             ) {
                 continue;
             }
