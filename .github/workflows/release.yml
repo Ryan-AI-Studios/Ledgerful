@@ -17,16 +17,19 @@ permissions:
 
 jobs:
   web-build:
-    # windows-latest, not ubuntu-latest: ledgerful-frontend's own ci.yml only ever runs `npm run
-    # build` (the CSP script-hash-manifest generation/check) on windows-latest — there is no Linux
-    # job that builds and validates it there, despite build-with-csp.mjs / linux-csp-refresh.sh's
-    # own comments claiming "Linux CI parity" as the target. That claim has never actually been
-    # CI-enforced. Discovered 2026-07-25 (0087): after fixing the stale frontend ref pin and then
-    # the Node 22->24 mismatch, this job *still* failed on ubuntu-latest with the same CSP-drift
-    # error — verified via `gh run list` that frontend CI (windows-latest `build` job) passed clean
-    # on this exact commit, and reproduced a clean match locally on Windows/Node 24. Switching this
-    # job to windows-latest matches the only environment this manifest has ever actually been
-    # proven against. The frontend-repo-side "Linux parity" claim vs. actual Windows-only CI
+    # windows-latest, not ubuntu-latest: ledgerful-frontend's gating ci.yml only ever runs `npm run
+    # build` (the CSP script-hash-manifest generation/check) on windows-latest. A separate, non-gating
+    # bundle-scan.yml also runs `npm run build` on ubuntu-latest (weekly cron + manual dispatch only)
+    # — but its last recorded run (2026-07-20) predates 0081's CSP-hash mechanism (landed 2026-07-24),
+    # so there is zero empirical evidence this manifest has ever built cleanly on Linux under the
+    # current code, despite build-with-csp.mjs / linux-csp-refresh.sh's own comments claiming "Linux
+    # CI parity" as the target (confirmed via `gh run list --repo ledgerful-frontend
+    # --workflow=bundle-scan.yml` — 2026-07-25). Discovered here (0087): after fixing the stale
+    # frontend ref pin and then the Node 22->24 mismatch, this job *still* failed on ubuntu-latest with
+    # the same CSP-drift error — verified via `gh run list` that frontend CI's windows-latest `build`
+    # job passed clean on this exact commit, and reproduced a clean match locally on Windows/Node 24.
+    # Switching this job to windows-latest matches the only environment this manifest has ever
+    # actually been proven against. The frontend-side "Linux parity" claim vs. no gating Linux
     # enforcement is a real cross-repo gap, logged to deferred.md — not fixed here.
     runs-on: windows-latest
     timeout-minutes: 15
