@@ -2,9 +2,7 @@ use tree_sitter::Node;
 
 /// Extract a UTF-8 string from a node, returning empty on failure.
 pub fn node_text(node: Node, content: &str) -> String {
-    node.utf8_text(content.as_bytes())
-        .unwrap_or("")
-        .to_string()
+    node.utf8_text(content.as_bytes()).unwrap_or("").to_string()
 }
 
 /// Whether a Go identifier is exported (starts with an uppercase letter).
@@ -39,11 +37,7 @@ fn type_identifier_from_type_node(node: Node, content: &str) -> Option<String> {
     match node.kind() {
         "type_identifier" => {
             let name = node_text(node, content);
-            if name.is_empty() {
-                None
-            } else {
-                Some(name)
-            }
+            if name.is_empty() { None } else { Some(name) }
         }
         "pointer_type" => {
             let mut cursor = node.walk();
@@ -87,7 +81,10 @@ pub fn extract_selector_field(node: Node, content: &str) -> String {
     let mut cursor = node.walk();
     let mut last = String::new();
     for child in node.children(&mut cursor) {
-        if matches!(child.kind(), "identifier" | "field_identifier" | "type_identifier") {
+        if matches!(
+            child.kind(),
+            "identifier" | "field_identifier" | "type_identifier"
+        ) {
             last = node_text(child, content);
         }
     }

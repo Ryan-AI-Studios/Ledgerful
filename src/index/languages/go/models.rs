@@ -146,18 +146,12 @@ type Plain struct {
 
     #[test]
     fn parse_json_tag_variants() {
-        assert_eq!(
-            parse_json_tag(r#"`json:"id"`"#).as_deref(),
-            Some("id")
-        );
+        assert_eq!(parse_json_tag(r#"`json:"id"`"#).as_deref(), Some("id"));
         assert_eq!(
             parse_json_tag(r#"`json:"name,omitempty"`"#).as_deref(),
             Some("name")
         );
         assert_eq!(parse_json_tag(r#"`json:"-"`"#), None);
-        assert_eq!(
-            parse_json_tag(r#"`db:"x" json:"y"`"#).as_deref(),
-            Some("y")
-        );
+        assert_eq!(parse_json_tag(r#"`db:"x" json:"y"`"#).as_deref(), Some("y"));
     }
 }

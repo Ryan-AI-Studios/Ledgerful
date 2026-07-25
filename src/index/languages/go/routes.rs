@@ -10,7 +10,9 @@ const HTTP_VERBS: &[&str] = &[
     "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "TRACE", "CONNECT",
 ];
 
-const GIN_METHODS: &[&str] = &["GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "Any"];
+const GIN_METHODS: &[&str] = &[
+    "GET", "POST", "PUT", "DELETE", "PATCH", "HEAD", "OPTIONS", "Any",
+];
 
 pub fn extract_routes(content: &str, _symbols: &[Symbol]) -> Result<Vec<ExtractedRoute>> {
     let mut parser = Parser::new();
@@ -171,12 +173,7 @@ fn extract_nethttp_route(
     let mut cursor = args.walk();
     let arg_nodes: Vec<Node> = args
         .children(&mut cursor)
-        .filter(|n| {
-            !matches!(
-                n.kind(),
-                "(" | ")" | "," | "comment"
-            )
-        })
+        .filter(|n| !matches!(n.kind(), "(" | ")" | "," | "comment"))
         .collect();
 
     if arg_nodes.is_empty() {
@@ -242,12 +239,7 @@ fn extract_gin_route(
     let mut cursor = args.walk();
     let arg_nodes: Vec<Node> = args
         .children(&mut cursor)
-        .filter(|n| {
-            !matches!(
-                n.kind(),
-                "(" | ")" | "," | "comment"
-            )
-        })
+        .filter(|n| !matches!(n.kind(), "(" | ")" | "," | "comment"))
         .collect();
 
     if arg_nodes.is_empty() {
@@ -293,10 +285,7 @@ fn string_literal_value(node: Node, content: &str) -> Option<String> {
     match node.kind() {
         "interpreted_string_literal" | "raw_string_literal" => {
             let t = node_text(node, content);
-            let trimmed = t
-                .trim_matches('"')
-                .trim_matches('`')
-                .to_string();
+            let trimmed = t.trim_matches('"').trim_matches('`').to_string();
             if trimmed.is_empty() {
                 None
             } else {

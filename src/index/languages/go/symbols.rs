@@ -185,9 +185,7 @@ fn extract_methods(
                 .child_by_field_name("receiver")
                 .and_then(|r| extract_receiver_type(r, content));
 
-            let qualified_name = receiver_type
-                .as_ref()
-                .map(|t| format!("{t}.{name}"));
+            let qualified_name = receiver_type.as_ref().map(|t| format!("{t}.{name}"));
 
             symbols.push(Symbol {
                 name: name.clone(),

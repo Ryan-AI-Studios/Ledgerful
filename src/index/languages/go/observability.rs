@@ -121,7 +121,8 @@ fn collect_go_logging(
                 });
             }
             // zerolog package is often imported as "log" — require zerolog import path.
-            if has_zerolog && (operand == "log" || operand == "zerolog" || operand.starts_with("zerolog."))
+            if has_zerolog
+                && (operand == "log" || operand == "zerolog" || operand.starts_with("zerolog."))
             {
                 let line_start = node.start_position().row as i32 + 1;
                 let in_test = is_in_go_test(node, content);
@@ -165,11 +166,7 @@ pub fn extract_error_handling(content: &str) -> Result<Vec<ErrorHandlingPattern>
     Ok(patterns)
 }
 
-fn collect_go_error_handling(
-    node: Node,
-    content: &str,
-    patterns: &mut Vec<ErrorHandlingPattern>,
-) {
+fn collect_go_error_handling(node: Node, content: &str, patterns: &mut Vec<ErrorHandlingPattern>) {
     if node.kind() == "call_expression"
         && let Some(function) = node.child_by_field_name("function")
     {

@@ -71,8 +71,7 @@ mod fixture_tests {
         );
 
         // --- models: struct with json tags ---
-        let models = extract_data_models(&user_src, "pkg/user.go", &user_symbols)
-            .expect("models");
+        let models = extract_data_models(&user_src, "pkg/user.go", &user_symbols).expect("models");
         let user_model = models
             .iter()
             .find(|m| m.model_name == "User")
@@ -147,11 +146,7 @@ mod fixture_tests {
         // --- complexity on a fixture .go path ---
         let scorer = NativeComplexityScorer::new();
         let scored = scorer
-            .score_file(
-                Utf8Path::new("pkg/user.go"),
-                &user_src,
-                Language::Go,
-            )
+            .score_file(Utf8Path::new("pkg/user.go"), &user_src, Language::Go)
             .expect("score user.go");
         assert!(
             scored
