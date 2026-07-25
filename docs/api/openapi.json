@@ -167,6 +167,31 @@
         }
       }
     },
+    "/api/events": {
+      "get": {
+        "tags": [
+          "events"
+        ],
+        "summary": "`GET /api/events` — authenticated SSE stream of [`DaemonEvent`].",
+        "description": "Wire format:\n- `event: daemon`\n- `data: <json DaemonEvent camelCase>`\n- Keep-alive comments every [`SSE_KEEPALIVE`]\n\nAuth: inherits `token_layer` (Bearer). Missing/invalid token → 403 before\nthe stream opens.",
+        "operationId": "getEvents",
+        "responses": {
+          "200": {
+            "description": "SSE stream of DaemonEvent frames (event name `daemon`)",
+            "content": {
+              "text/event-stream": {
+                "schema": {
+                  "$ref": "#/components/schemas/DaemonEvent"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing or invalid Bearer token"
+          }
+        }
+      }
+    },
     "/api/hotspots": {
       "get": {
         "tags": [
@@ -1055,6 +1080,32 @@
           }
         }
       },
+      "DaemonEvent": {
+        "type": "object",
+        "description": "Narrow daemon status event pushed over `GET /api/events` (SSE).\n\nDrift counts + readiness only — deliberately excludes `model_reachable`\nprobes and `is_demo` (constant for a daemon session). See track 0085.",
+        "required": [
+          "pendingTransactions",
+          "unauditedDrift",
+          "indexReady",
+          "graphReady"
+        ],
+        "properties": {
+          "graphReady": {
+            "type": "boolean"
+          },
+          "indexReady": {
+            "type": "boolean"
+          },
+          "pendingTransactions": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "unauditedDrift": {
+            "type": "integer",
+            "minimum": 0
+          }
+        }
+      },
       "HotspotResponse": {
         "type": "object",
         "description": "Frontend-facing hotspot DTO decoupled from the internal `Hotspot` domain\nstruct. The internal struct (`intelligence::Hotspot`) is coupled to the\nimpact math module; this DTO gives the API a stable contract that the\nfrontend can rely on even if the internal struct changes.\n\nBackward-compat fields (`displayScore`, `score`, `complexity`, `frequency`,\n`centrality`) are included temporarily until the frontend PR merges. They\nwill be removed once the frontend consumes the new fields directly.",
@@ -1923,6 +1974,10 @@
     {
       "name": "status",
       "description": "Daemon health status"
+    },
+    {
+      "name": "events",
+      "description": "Authenticated SSE push channel for daemon status / ledger drift"
     },
     {
       "name": "projects",

@@ -6,6 +6,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Authenticated SSE push channel (0085 engine):** `GET /api/events` streams
+  narrow `DaemonEvent` snapshots (`pendingTransactions`, `unauditedDrift`,
+  `indexReady`, `graphReady`) over Server-Sent Events with Bearer auth (no
+  query token). A change detector polls SQLite `PRAGMA data_version` every
+  500 ms in autocommit and publishes only on cross-process ledger commits;
+  streams terminate on graceful shutdown so Ctrl+C does not hang with a live
+  dashboard tab. See `coordination.md` §3.2.
+
 ## [0.2.0] - 2026-07-25
 
 ### Added

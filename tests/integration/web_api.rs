@@ -1,6 +1,7 @@
 use camino::Utf8Path;
 use ledgerful::commands::web::auth::generate_token;
 use ledgerful::commands::web::server::router;
+use ledgerful::commands::web::server::sse::{DETECTOR_TICK, spawn_change_detector};
 use ledgerful::commands::web::state::AppState;
 use ledgerful::ledger::db::LedgerDb;
 use ledgerful::ledger::types::{Category, ChangeType, EntryType, LedgerEntry, Transaction};
@@ -8,7 +9,9 @@ use ledgerful::state::layout::Layout;
 use rusqlite::Connection;
 
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
+use tokio::sync::oneshot;
 
 fn authed_get(url: &str, token: &str, path: &str) -> ureq::Request {
     ureq::get(&format!("{}{}", url, path)).set("Authorization", &format!("Bearer {}", token))
@@ -42,6 +45,13 @@ async fn spawn_server_with_spa_dir(
 ) -> (String, String, tokio::task::JoinHandle<()>) {
     let token = generate_token();
     let state = Arc::new(AppState::new(layout, token.clone(), spa_dir, None));
+    // Mirror production: detector publishes DaemonEvent on ledger data_version change.
+    let _detector = spawn_change_detector(
+        state.layout.clone(),
+        state.event_tx.clone(),
+        state.shutdown_rx(),
+        DETECTOR_TICK,
+    );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -56,6 +66,46 @@ async fn spawn_server_with_spa_dir(
 
     let url = format!("http://{}", addr);
     (url, token, handle)
+}
+
+/// Spawn with graceful-shutdown oneshot (DoD-6). Detector + shutdown watch wired.
+async fn spawn_server_graceful(
+    layout: Layout,
+) -> (
+    String,
+    String,
+    tokio::task::JoinHandle<()>,
+    oneshot::Sender<()>,
+) {
+    let token = generate_token();
+    let state = Arc::new(AppState::new(layout, token.clone(), None, None));
+    let _detector = spawn_change_detector(
+        state.layout.clone(),
+        state.event_tx.clone(),
+        state.shutdown_rx(),
+        DETECTOR_TICK,
+    );
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    let app = router(state.clone());
+    let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
+
+    let handle = tokio::spawn(async move {
+        let state_for_shutdown = state.clone();
+        let serve = axum::serve(
+            listener,
+            ledgerful::commands::web::server::make_connect_info_service(app),
+        )
+        .with_graceful_shutdown(async move {
+            let _ = shutdown_rx.await;
+            state_for_shutdown.signal_shutdown();
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        });
+        let _ = serve.await;
+    });
+
+    let url = format!("http://{}", addr);
+    (url, token, handle, shutdown_tx)
 }
 
 fn seed_ledger_entry(
@@ -3309,4 +3359,240 @@ async fn test_soc2_export_tampered_manifest_fails_signature_verification() {
         "tampered manifest.json must FAIL Ed25519 signature verification"
     );
     handle.abort();
+}
+
+// ---------------------------------------------------------------------------
+// Track 0085 — GET /api/events (SSE) DoD-1 / DoD-3 / DoD-5 / DoD-6
+// ---------------------------------------------------------------------------
+
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpStream as TokioTcpStream;
+
+/// Connect via raw TCP HTTP/1.1 (reqwest is built without the `stream` feature).
+/// Returns (stream, status, headers, body_prefix_already_read).
+async fn sse_handshake(
+    base_url: &str,
+    token: Option<&str>,
+) -> (TokioTcpStream, u16, String, String) {
+    let hostport = base_url.trim_start_matches("http://");
+    let mut stream = TokioTcpStream::connect(hostport)
+        .await
+        .expect("connect to test server");
+    let auth = match token {
+        Some(t) => format!("Authorization: Bearer {t}\r\n"),
+        None => String::new(),
+    };
+    let req = format!(
+        "GET /api/events HTTP/1.1\r\nHost: {hostport}\r\nAccept: text/event-stream\r\nConnection: keep-alive\r\n{auth}\r\n"
+    );
+    stream.write_all(req.as_bytes()).await.unwrap();
+
+    let mut buf = vec![0u8; 8192];
+    let mut collected = Vec::new();
+    let header_end = loop {
+        let n = tokio::time::timeout(Duration::from_secs(3), stream.read(&mut buf))
+            .await
+            .expect("header read timed out")
+            .expect("header read failed");
+        assert!(n > 0, "connection closed before headers");
+        collected.extend_from_slice(&buf[..n]);
+        if let Some(pos) = collected.windows(4).position(|w| w == b"\r\n\r\n") {
+            break pos + 4;
+        }
+        assert!(collected.len() < 64 * 1024, "headers too large");
+    };
+    let headers = String::from_utf8_lossy(&collected[..header_end]).to_string();
+    let status = headers
+        .lines()
+        .next()
+        .and_then(|l| l.split_whitespace().nth(1))
+        .and_then(|s| s.parse::<u16>().ok())
+        .unwrap_or(0);
+    let body_prefix = String::from_utf8_lossy(&collected[header_end..]).to_string();
+    (stream, status, headers, body_prefix)
+}
+
+/// Read SSE body chunks until `predicate` matches or timeout.
+async fn read_sse_body_until(
+    stream: &mut TokioTcpStream,
+    initial: &str,
+    predicate: impl Fn(&str) -> bool,
+    timeout: Duration,
+) -> String {
+    let deadline = tokio::time::Instant::now() + timeout;
+    let mut body = initial.to_string();
+    if predicate(&body) {
+        return body;
+    }
+    let mut buf = vec![0u8; 4096];
+    while tokio::time::Instant::now() < deadline {
+        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
+        if remaining.is_zero() {
+            break;
+        }
+        match tokio::time::timeout(remaining, stream.read(&mut buf)).await {
+            Ok(Ok(0)) => break,
+            Ok(Ok(n)) => {
+                body.push_str(&String::from_utf8_lossy(&buf[..n]));
+                if predicate(&body) {
+                    return body;
+                }
+            }
+            Ok(Err(_)) | Err(_) => break,
+        }
+    }
+    body
+}
+
+/// Ensure a WAL-mode ledger.db exists with the transactions schema the detector reads.
+fn ensure_ledger_db(layout: &Layout) {
+    layout.ensure_state_dir().unwrap();
+    std::fs::create_dir_all(layout.state_subdir()).unwrap();
+    let db_path = layout.state_subdir().join("ledger.db");
+    let conn = Connection::open(db_path.as_std_path()).unwrap();
+    conn.execute_batch(
+        "PRAGMA journal_mode = WAL;
+         CREATE TABLE IF NOT EXISTS transactions (
+            tx_id TEXT PRIMARY KEY,
+            operation_id TEXT,
+            status TEXT NOT NULL,
+            category TEXT NOT NULL,
+            entity TEXT NOT NULL,
+            entity_normalized TEXT NOT NULL,
+            planned_action TEXT,
+            session_id TEXT NOT NULL,
+            source TEXT NOT NULL DEFAULT 'CLI',
+            started_at TEXT NOT NULL,
+            resolved_at TEXT,
+            detected_at TEXT,
+            drift_count INTEGER DEFAULT 1,
+            first_seen_at TEXT,
+            last_seen_at TEXT,
+            issue_ref TEXT,
+            snapshot_id INTEGER
+        );",
+    )
+    .unwrap();
+}
+
+/// Insert a PENDING transaction via a **separate** connection (cross-connection write).
+fn insert_pending_separate_connection(layout: &Layout, tx_id: &str) {
+    let db_path = layout.state_subdir().join("ledger.db");
+    let conn = Connection::open(db_path.as_std_path()).unwrap();
+    conn.execute_batch("PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000;")
+        .unwrap();
+    conn.execute(
+        "INSERT INTO transactions \
+         (tx_id, status, category, entity, entity_normalized, session_id, source, started_at) \
+         VALUES (?1, 'PENDING', 'FEATURE', 'dashboard-realtime', 'dashboard-realtime', 'test', 'test', ?2)",
+        rusqlite::params![tx_id, chrono::Utc::now().to_rfc3339()],
+    )
+    .unwrap();
+}
+
+#[tokio::test]
+async fn test_events_requires_auth_dod1() {
+    let guard = temp_layout();
+    let (url, token, handle) = spawn_server(guard.layout()).await;
+
+    // No token → 403
+    let (_s, status, _h, _b) = sse_handshake(&url, None).await;
+    assert_eq!(status, 403, "missing token must not open SSE stream");
+
+    // Bad token → 403
+    let (_s, status, _h, _b) =
+        sse_handshake(&url, Some("not-the-real-token-value-xxxxxxxxxxxx")).await;
+    assert_eq!(status, 403, "invalid token must not open SSE stream");
+
+    // Valid token → 200 + text/event-stream + at least one data: snapshot
+    let (mut stream, status, headers, prefix) = sse_handshake(&url, Some(&token)).await;
+    assert_eq!(status, 200, "valid token must open SSE: headers={headers}");
+    assert!(
+        headers.to_ascii_lowercase().contains("text/event-stream"),
+        "content-type must be text/event-stream, got headers:\n{headers}"
+    );
+    let body = read_sse_body_until(
+        &mut stream,
+        &prefix,
+        |b| b.contains("data:"),
+        Duration::from_secs(3),
+    )
+    .await;
+    assert!(
+        body.contains("data:"),
+        "connect must emit a snapshot data: frame, body={body:?}"
+    );
+    assert!(
+        body.contains("pendingTransactions"),
+        "snapshot JSON should carry camelCase DaemonEvent fields, body={body:?}"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_events_detects_cross_connection_commit_dod5() {
+    let guard = temp_layout();
+    ensure_ledger_db(&guard.layout());
+    let layout = guard.layout();
+    let (url, token, handle) = spawn_server(layout.clone()).await;
+
+    // Let the detector establish a data_version baseline before we write.
+    tokio::time::sleep(DETECTOR_TICK + Duration::from_millis(200)).await;
+
+    let (mut stream, status, headers, prefix) = sse_handshake(&url, Some(&token)).await;
+    assert_eq!(status, 200, "headers={headers}");
+
+    // Wait for initial snapshot.
+    let body = read_sse_body_until(
+        &mut stream,
+        &prefix,
+        |b| b.contains("data:"),
+        Duration::from_secs(3),
+    )
+    .await;
+    assert!(body.contains("data:"), "expected snapshot, body={body:?}");
+
+    // Separate connection commit — must move PRAGMA data_version for the detector.
+    insert_pending_separate_connection(&layout, "sse-detect-tx-1");
+
+    let body2 = read_sse_body_until(
+        &mut stream,
+        &body,
+        |b| b.contains("\"pendingTransactions\":1"),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(
+        body2.contains("\"pendingTransactions\":1"),
+        "detector must push updated DaemonEvent within 5s after cross-connection write; body={body2:?}"
+    );
+
+    handle.abort();
+}
+
+#[tokio::test]
+async fn test_events_graceful_shutdown_with_live_stream_dod6() {
+    let guard = temp_layout();
+    let (url, token, handle, shutdown_tx) = spawn_server_graceful(guard.layout()).await;
+
+    // Open a live SSE connection and read the snapshot so the request is in-flight.
+    let (mut stream, status, _headers, prefix) = sse_handshake(&url, Some(&token)).await;
+    assert_eq!(status, 200);
+    let _ = read_sse_body_until(
+        &mut stream,
+        &prefix,
+        |b| b.contains("data:"),
+        Duration::from_secs(3),
+    )
+    .await;
+
+    // Fire graceful shutdown (same path as Ctrl+C → with_graceful_shutdown).
+    let _ = shutdown_tx.send(());
+
+    let finished = tokio::time::timeout(Duration::from_secs(3), handle).await;
+    assert!(
+        finished.is_ok(),
+        "server task must complete within 3s with a live SSE connection (DoD-6); hung graceful shutdown"
+    );
 }

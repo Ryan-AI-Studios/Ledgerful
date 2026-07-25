@@ -6,6 +6,7 @@ use crate::commands::web::server::middleware::{
     csp_header_middleware, host_validation_layer, local_cors, peer_allowlist_layer,
     rate_limit_layer, security_headers_middleware, server_header_middleware, token_layer,
 };
+use crate::commands::web::server::sse;
 use crate::commands::web::state::AppState;
 use axum::Router;
 use axum::middleware;
@@ -17,10 +18,13 @@ use tracing::Level;
 
 /// Build the axum router for the Ledgerful web dashboard.
 pub fn router(state: Arc<AppState>) -> Router {
+    // `/events` is nested inside `api_router` so it inherits `token_layer`.
+    // Do not attach it to the outer router (would skip Bearer auth).
     let api_router = Router::new()
         .route("/session", get(handlers::session_handler))
         .route("/snapshot", get(handlers::snapshot_handler))
         .route("/status", get(handlers::status_handler))
+        .route("/events", get(sse::events_handler))
         .route("/projects", get(handlers::projects_handler))
         .route("/ledger", get(handlers::ledger_handler))
         .route("/ledger/search", get(handlers::ledger_search_handler))

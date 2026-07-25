@@ -1,9 +1,14 @@
 //! Server binding and startup helpers.
 
+use crate::commands::web::server::sse::{DETECTOR_TICK, spawn_change_detector};
+use crate::commands::web::state::AppState;
 use miette::{IntoDiagnostic, Result, miette};
 use std::net::SocketAddr;
 use std::path::Path;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpListener;
+use tokio::sync::oneshot;
 
 /// Production make-service: injects real peer [`SocketAddr`] as
 /// [`axum::extract::ConnectInfo`] so rate-limit and peer-allowlist layers
@@ -15,11 +20,31 @@ pub fn make_connect_info_service(
     router.into_make_service_with_connect_info::<SocketAddr>()
 }
 
-/// Bind a TCP listener and serve the router until SIGINT.
+/// Bind a TCP listener and serve the router until SIGINT (or external cancel).
+///
+/// Spawns the ledger change detector and signals SSE streams to terminate on
+/// graceful shutdown so open connections do not hang the process (track 0085).
 ///
 /// Uses [`make_connect_info_service`] so middleware can attribute rate limits
 /// and peer allowlist checks to the real peer IP (RT-W3).
-pub async fn serve(router: axum::Router, bind: String, port: u16) -> Result<()> {
+pub async fn serve(
+    router: axum::Router,
+    bind: String,
+    port: u16,
+    state: Arc<AppState>,
+) -> Result<()> {
+    serve_with_shutdown(router, bind, port, state, None).await
+}
+
+/// Like [`serve`], but accepts an optional oneshot that triggers the same
+/// graceful-shutdown path as Ctrl+C (used by integration tests for DoD-6).
+pub async fn serve_with_shutdown(
+    router: axum::Router,
+    bind: String,
+    port: u16,
+    state: Arc<AppState>,
+    external_shutdown: Option<oneshot::Receiver<()>>,
+) -> Result<()> {
     let addr = SocketAddr::new(
         bind.parse()
             .map_err(|e| miette!("Invalid bind address {}: {}", bind, e))?,
@@ -29,12 +54,40 @@ pub async fn serve(router: axum::Router, bind: String, port: u16) -> Result<()> 
     let listener = TcpListener::bind(addr).await.into_diagnostic()?;
     tracing::info!("ledgerful web listening on {}", addr);
 
+    // Detector is owned by the server lifetime; cancelled via shutdown watch.
+    let _detector = spawn_change_detector(
+        state.layout.clone(),
+        state.event_tx.clone(),
+        state.shutdown_rx(),
+        DETECTOR_TICK,
+    );
+
+    let state_for_shutdown = state.clone();
     axum::serve(listener, make_connect_info_service(router))
-        .with_graceful_shutdown(shutdown_signal())
+        .with_graceful_shutdown(async move {
+            wait_for_shutdown_trigger(external_shutdown).await;
+            // Tell SSE streams + detector to end so with_graceful_shutdown
+            // is not blocked by never-ending request bodies (DoD-6).
+            state_for_shutdown.signal_shutdown();
+            // Brief grace for streams to observe the watch and complete.
+            tokio::time::sleep(Duration::from_millis(150)).await;
+        })
         .await
         .into_diagnostic()?;
 
     Ok(())
+}
+
+async fn wait_for_shutdown_trigger(external: Option<oneshot::Receiver<()>>) {
+    match external {
+        Some(rx) => {
+            tokio::select! {
+                _ = shutdown_signal() => {}
+                _ = rx => {}
+            }
+        }
+        None => shutdown_signal().await,
+    }
 }
 
 async fn shutdown_signal() {
