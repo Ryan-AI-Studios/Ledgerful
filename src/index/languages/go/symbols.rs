@@ -21,6 +21,7 @@ pub fn extract_symbols(content: &str) -> Result<Option<Vec<Symbol>>> {
         content,
         r#"(function_declaration name: (identifier) @name)"#,
         SymbolKind::Function,
+        false,
         &mut symbols,
     )?;
 
@@ -30,23 +31,25 @@ pub fn extract_symbols(content: &str) -> Result<Option<Vec<Symbol>>> {
     // Type specs: struct / interface / other
     extract_type_specs(&language.into(), &tree, content, &mut symbols)?;
 
-    // Top-level const
+    // Top-level const only (skip nested inside funcs/methods/closures)
     extract_via_query(
         &language.into(),
         &tree,
         content,
         r#"(const_declaration (const_spec name: (identifier) @name))"#,
         SymbolKind::Constant,
+        true,
         &mut symbols,
     )?;
 
-    // Top-level var
+    // Top-level var only (skip nested inside funcs/methods/closures)
     extract_via_query(
         &language.into(),
         &tree,
         content,
         r#"(var_declaration (var_spec name: (identifier) @name))"#,
         SymbolKind::Variable,
+        true,
         &mut symbols,
     )?;
 
@@ -72,6 +75,7 @@ fn extract_via_query(
     content: &str,
     query_str: &str,
     kind: SymbolKind,
+    top_level_only: bool,
     symbols: &mut Vec<Symbol>,
 ) -> Result<()> {
     let query = Query::new(language, query_str).into_diagnostic()?;
@@ -86,6 +90,9 @@ fn extract_via_query(
             }
             let name = node_text(capture.node, content);
             if name.is_empty() {
+                continue;
+            }
+            if top_level_only && is_nested_in_function_scope(capture.node) {
                 continue;
             }
             let decl = capture.node.parent().unwrap_or(capture.node);
@@ -110,6 +117,19 @@ fn extract_via_query(
         }
     }
     Ok(())
+}
+
+/// True when `node` is nested inside a function, method, or func literal body.
+fn is_nested_in_function_scope(node: tree_sitter::Node) -> bool {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        match n.kind() {
+            "function_declaration" | "method_declaration" | "func_literal" => return true,
+            "source_file" => return false,
+            _ => current = n.parent(),
+        }
+    }
+    false
 }
 
 fn find_declaration_ancestor(node: tree_sitter::Node) -> Option<tree_sitter::Node> {
@@ -362,5 +382,58 @@ func (r *Reader) unused() {}
         assert!(public_fn.line_end.is_some());
         assert!(public_fn.byte_start.is_some());
         assert!(public_fn.byte_end.is_some());
+    }
+
+    #[test]
+    fn skips_nested_const_and_var_inside_functions() {
+        let content = r#"
+package demo
+
+const Top = 1
+var Global = 2
+
+func outer() {
+    const nestedConst = 3
+    var nestedVar = 4
+    _ = nestedConst
+    _ = nestedVar
+}
+
+func (u *User) method() {
+    const methodConst = 5
+    var methodVar = 6
+    _ = methodConst
+    _ = methodVar
+}
+
+type User struct{}
+"#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Top" && s.kind == SymbolKind::Constant)
+        );
+        assert!(
+            symbols
+                .iter()
+                .any(|s| s.name == "Global" && s.kind == SymbolKind::Variable)
+        );
+        assert!(
+            symbols.iter().all(|s| s.name != "nestedConst"),
+            "nested const inside function must not be emitted"
+        );
+        assert!(
+            symbols.iter().all(|s| s.name != "nestedVar"),
+            "nested var inside function must not be emitted"
+        );
+        assert!(
+            symbols.iter().all(|s| s.name != "methodConst"),
+            "const inside method must not be emitted"
+        );
+        assert!(
+            symbols.iter().all(|s| s.name != "methodVar"),
+            "var inside method must not be emitted"
+        );
     }
 }

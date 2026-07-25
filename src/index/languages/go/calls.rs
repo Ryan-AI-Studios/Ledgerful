@@ -9,7 +9,7 @@ use std::collections::HashSet;
 use std::path::Path;
 use tree_sitter::Parser;
 
-pub fn extract_calls(path: &Path, content: &str, symbols: &[Symbol]) -> Result<Vec<CallEdge>> {
+pub fn extract_calls(path: &Path, content: &str, _symbols: &[Symbol]) -> Result<Vec<CallEdge>> {
     let mut parser = Parser::new();
     let language = tree_sitter_go::LANGUAGE;
     parser.set_language(&language.into()).into_diagnostic()?;
@@ -21,28 +21,17 @@ pub fn extract_calls(path: &Path, content: &str, symbols: &[Symbol]) -> Result<V
     let imports = collect_imports(tree.root_node(), content);
     let import_aliases: HashSet<String> = imports.iter().map(|(alias, _)| alias.clone()).collect();
 
-    let local_names: HashSet<String> = symbols
-        .iter()
-        .flat_map(|s| {
-            let mut names = vec![s.name.clone()];
-            if let Some(q) = &s.qualified_name {
-                names.push(q.clone());
-                // Also the bare method name is already present as s.name
-                let _ = q;
-            }
-            names
-        })
-        .collect();
-
     let mut edges = Vec::new();
-    collect_go_call_edges(
-        path,
-        tree.root_node(),
-        content,
-        &import_aliases,
-        &local_names,
-        &mut edges,
-    );
+    collect_go_call_edges(path, tree.root_node(), content, &import_aliases, &mut edges);
+
+    // Deterministic order for stable index output
+    edges.sort_by(|a, b| {
+        a.caller_name
+            .cmp(&b.caller_name)
+            .then(a.callee_name.cmp(&b.callee_name))
+            .then(a.evidence.cmp(&b.evidence))
+    });
+
     Ok(edges)
 }
 
@@ -51,7 +40,6 @@ fn collect_go_call_edges(
     node: tree_sitter::Node,
     content: &str,
     import_aliases: &HashSet<String>,
-    local_names: &HashSet<String>,
     edges: &mut Vec<CallEdge>,
 ) {
     if node.kind() == "call_expression" {
@@ -63,22 +51,14 @@ fn collect_go_call_edges(
                 "identifier" => {
                     let name = node_text(callee, content);
                     if !name.is_empty() {
-                        // Local identifier call: Resolved if present in symbols or default Resolved
-                        // (Python marks plain identifiers Resolved). Prefer Resolved when local.
-                        let resolution_status = if local_names.is_empty() || local_names.contains(&name)
-                        {
-                            ResolutionStatus::Resolved
-                        } else {
-                            // Still treat bare identifiers as same-package/local by default
-                            ResolutionStatus::Resolved
-                        };
+                        // Bare identifiers default to same-package Resolved (Python parity).
                         edges.push(CallEdge {
                             caller_name,
                             caller_file: path.to_path_buf(),
                             callee_name: name.clone(),
                             callee_file: None,
                             call_kind: CallKind::Direct,
-                            resolution_status,
+                            resolution_status: ResolutionStatus::Resolved,
                             confidence: CallKind::Direct.default_confidence(),
                             evidence: format!("call_expr:{name}()"),
                         });
@@ -138,7 +118,7 @@ fn collect_go_call_edges(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_go_call_edges(path, child, content, import_aliases, local_names, edges);
+        collect_go_call_edges(path, child, content, import_aliases, edges);
     }
 }
 

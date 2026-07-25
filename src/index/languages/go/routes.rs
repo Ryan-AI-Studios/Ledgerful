@@ -51,9 +51,10 @@ fn detect_gin_routers(root: Node, content: &str) -> Vec<String> {
     while let Some(node) = stack.pop() {
         // short_var_declaration: r := gin.Default()
         // assignment_statement: r = gin.New()
+        // var_declaration: var api = gin.Default()
         if matches!(
             node.kind(),
-            "short_var_declaration" | "assignment_statement"
+            "short_var_declaration" | "assignment_statement" | "var_declaration"
         ) {
             let text = node_text(node, content);
             if text.contains("gin.Default(")
@@ -61,8 +62,10 @@ fn detect_gin_routers(root: Node, content: &str) -> Vec<String> {
                 || text.contains("gin.Default()")
                 || text.contains("gin.New()")
             {
-                // left side identifiers
-                if let Some(left) = node.child_by_field_name("left") {
+                if node.kind() == "var_declaration" {
+                    // var_spec name fields (no single left-hand list like short_var)
+                    collect_var_declaration_names(node, content, &mut routers);
+                } else if let Some(left) = node.child_by_field_name("left") {
                     collect_identifiers(left, content, &mut routers);
                 } else {
                     // Fallback: first identifier on the line
@@ -85,6 +88,21 @@ fn detect_gin_routers(root: Node, content: &str) -> Vec<String> {
     routers.sort();
     routers.dedup();
     routers
+}
+
+fn collect_var_declaration_names(node: Node, content: &str, out: &mut Vec<String>) {
+    let mut stack = vec![node];
+    while let Some(n) = stack.pop() {
+        if n.kind() == "var_spec"
+            && let Some(name_node) = n.child_by_field_name("name")
+        {
+            collect_identifiers(name_node, content, out);
+        }
+        let mut cursor = n.walk();
+        for child in n.children(&mut cursor) {
+            stack.push(child);
+        }
+    }
 }
 
 fn collect_identifiers(node: Node, content: &str, out: &mut Vec<String>) {
@@ -413,5 +431,27 @@ func main() {
             .find(|r| r.path_pattern == "/users" && r.method == "POST" && r.framework == "gin")
             .expect("gin POST /users");
         assert_eq!(post.handler_name, "createUser");
+    }
+
+    #[test]
+    fn extract_gin_routes_from_var_declaration() {
+        let content = r#"
+package main
+
+import "github.com/gin-gonic/gin"
+
+func listUsers(c *gin.Context) {}
+
+func main() {
+    var api = gin.Default()
+    api.GET("/items", listUsers)
+}
+"#;
+        let routes = extract_routes(content, &[]).unwrap();
+        let get = routes
+            .iter()
+            .find(|r| r.path_pattern == "/items" && r.method == "GET" && r.framework == "gin")
+            .expect("gin GET /items via var api = gin.Default()");
+        assert_eq!(get.handler_name, "listUsers");
     }
 }

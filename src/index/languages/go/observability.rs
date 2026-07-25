@@ -1,5 +1,6 @@
 use super::common::{
-    extract_selector_field, extract_selector_operand, is_in_go_test, node_text, truncate_evidence,
+    collect_imports, extract_selector_field, extract_selector_operand, is_in_go_test, node_text,
+    truncate_evidence,
 };
 use crate::index::observability::{
     ErrorHandlingPattern, LogLevel, LoggingPattern, TelemetryPattern,
@@ -25,13 +26,38 @@ pub fn extract_logging_patterns(content: &str) -> Result<Vec<LoggingPattern>> {
         .parse(content, None)
         .ok_or_else(|| miette::miette!("Failed to parse Go content"))?;
 
+    let imports = collect_imports(tree.root_node(), content);
+    let has_zap = imports
+        .iter()
+        .any(|(_, path)| path.contains("go.uber.org/zap") || path.ends_with("/zap"));
+    let has_zerolog = imports.iter().any(|(_, path)| path.contains("zerolog"));
+
     let mut patterns = Vec::new();
-    collect_go_logging(tree.root_node(), content, &mut patterns);
+    collect_go_logging(
+        tree.root_node(),
+        content,
+        has_zap,
+        has_zerolog,
+        &mut patterns,
+    );
     patterns.truncate(1000);
+    // Deterministic order for stable index output
+    patterns.sort_by(|a, b| {
+        a.line_start
+            .cmp(&b.line_start)
+            .then(a.framework.cmp(&b.framework))
+            .then(a.evidence.cmp(&b.evidence))
+    });
     Ok(patterns)
 }
 
-fn collect_go_logging(node: Node, content: &str, patterns: &mut Vec<LoggingPattern>) {
+fn collect_go_logging(
+    node: Node,
+    content: &str,
+    has_zap: bool,
+    has_zerolog: bool,
+    patterns: &mut Vec<LoggingPattern>,
+) {
     if node.kind() == "call_expression"
         && let Some(function) = node.child_by_field_name("function")
         && function.kind() == "selector_expression"
@@ -54,8 +80,7 @@ fn collect_go_logging(node: Node, content: &str, patterns: &mut Vec<LoggingPatte
                 if field == method && method != "Default" {
                     let line_start = node.start_position().row as i32 + 1;
                     let in_test = is_in_go_test(node, content);
-                    let evidence =
-                        truncate_evidence(&node_text(node, content), 200);
+                    let evidence = truncate_evidence(&node_text(node, content), 200);
                     patterns.push(LoggingPattern {
                         line_start,
                         level: Some(level),
@@ -69,7 +94,7 @@ fn collect_go_logging(node: Node, content: &str, patterns: &mut Vec<LoggingPatte
             }
         }
 
-        // Secondary: zap — zap.L().Info / logger.Info when imported as zap (best-effort)
+        // Secondary: zap/zerolog only when import path confirms the framework (avoids noise).
         if field == "Info" || field == "Error" || field == "Warn" || field == "Debug" {
             let level = match field.as_str() {
                 "Info" => LogLevel::Info,
@@ -78,10 +103,11 @@ fn collect_go_logging(node: Node, content: &str, patterns: &mut Vec<LoggingPatte
                 "Debug" => LogLevel::Debug,
                 _ => LogLevel::Info,
             };
-            if operand == "zap"
-                || operand.starts_with("zap.")
-                || operand.contains("zap.L()")
-                || operand.contains("zap.S()")
+            if has_zap
+                && (operand == "zap"
+                    || operand.starts_with("zap.")
+                    || operand.contains("zap.L()")
+                    || operand.contains("zap.S()"))
             {
                 let line_start = node.start_position().row as i32 + 1;
                 let in_test = is_in_go_test(node, content);
@@ -94,8 +120,9 @@ fn collect_go_logging(node: Node, content: &str, patterns: &mut Vec<LoggingPatte
                     evidence: truncate_evidence(&node_text(node, content), 200),
                 });
             }
-            // zerolog: log.Info() where log is zerolog package — weaker heuristic
-            if operand == "log" && content.contains("zerolog") {
+            // zerolog package is often imported as "log" — require zerolog import path.
+            if has_zerolog && (operand == "log" || operand == "zerolog" || operand.starts_with("zerolog."))
+            {
                 let line_start = node.start_position().row as i32 + 1;
                 let in_test = is_in_go_test(node, content);
                 patterns.push(LoggingPattern {
@@ -112,7 +139,7 @@ fn collect_go_logging(node: Node, content: &str, patterns: &mut Vec<LoggingPatte
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_go_logging(child, content, patterns);
+        collect_go_logging(child, content, has_zap, has_zerolog, patterns);
     }
 }
 
@@ -128,6 +155,13 @@ pub fn extract_error_handling(content: &str) -> Result<Vec<ErrorHandlingPattern>
     let mut patterns = Vec::new();
     collect_go_error_handling(tree.root_node(), content, &mut patterns);
     patterns.truncate(1000);
+    // Deterministic order for stable index output
+    patterns.sort_by(|a, b| {
+        a.line_start
+            .cmp(&b.line_start)
+            .then(a.framework.cmp(&b.framework))
+            .then(a.evidence.cmp(&b.evidence))
+    });
     Ok(patterns)
 }
 
@@ -220,6 +254,13 @@ pub fn extract_telemetry_patterns(content: &str) -> Result<Vec<TelemetryPattern>
         }
     }
     patterns.truncate(1000);
+    // Deterministic order for stable index output
+    patterns.sort_by(|a, b| {
+        a.line_start
+            .cmp(&b.line_start)
+            .then(a.framework.cmp(&b.framework))
+            .then(a.evidence.cmp(&b.evidence))
+    });
     Ok(patterns)
 }
 
@@ -318,6 +359,38 @@ func TestHandle(t *testing.T) {
         assert!(
             patterns.iter().any(|p| p.framework == "slog" && p.in_test),
             "slog inside Test* should be in_test"
+        );
+    }
+
+    #[test]
+    fn zap_requires_import_path() {
+        // Operand looks like zap but no matching import — must not emit.
+        let no_import = r#"
+package demo
+
+func handle(zap *Logger) {
+    zap.Info("noise")
+}
+"#;
+        let patterns = extract_logging_patterns(no_import).unwrap();
+        assert!(
+            patterns.iter().all(|p| p.framework != "zap"),
+            "zap without import path must not match"
+        );
+
+        let with_import = r#"
+package demo
+
+import "go.uber.org/zap"
+
+func handle() {
+    zap.L().Info("ok")
+}
+"#;
+        let patterns = extract_logging_patterns(with_import).unwrap();
+        assert!(
+            patterns.iter().any(|p| p.framework == "zap"),
+            "zap with go.uber.org/zap import should match; got {patterns:?}"
         );
     }
 }
