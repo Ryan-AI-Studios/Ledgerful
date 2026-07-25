@@ -151,7 +151,11 @@ impl<'a> DataModelExtractor<'a> {
             // Skip non-source language files
             if !matches!(
                 language.as_deref(),
-                Some("Rust") | Some("TypeScript") | Some("JavaScript") | Some("Python")
+                Some("Rust")
+                    | Some("TypeScript")
+                    | Some("JavaScript")
+                    | Some("Python")
+                    | Some("Go")
             ) {
                 continue;
             }

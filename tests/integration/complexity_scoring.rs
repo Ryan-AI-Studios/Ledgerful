@@ -114,6 +114,55 @@ function complex(value: number) {
 }
 
 #[test]
+fn go_complexity_scores_control_flow() {
+    let source = r#"
+package main
+
+func simple() {
+    println("hello")
+}
+
+func complex(x int) int {
+    if x > 0 {
+        for i := 0; i < x; i++ {
+            if i%2 == 0 {
+                return i
+            }
+        }
+    } else {
+        return -1
+    }
+    return 0
+}
+"#;
+
+    let scorer = NativeComplexityScorer::new();
+    let result = scorer
+        .score_file(Utf8Path::new("test.go"), source, Language::Go)
+        .unwrap();
+
+    assert!(
+        result.functions.iter().any(|f| f.name == "simple"),
+        "expected simple function"
+    );
+    let complex = result
+        .functions
+        .iter()
+        .find(|f| f.name == "complex")
+        .expect("complex function");
+    assert!(
+        complex.cyclomatic > 1,
+        "expected cyclomatic > 1, got {}",
+        complex.cyclomatic
+    );
+    assert!(
+        complex.cognitive > 0,
+        "expected cognitive > 0, got {}",
+        complex.cognitive
+    );
+}
+
+#[test]
 fn test_syntax_error_marks_ast_incomplete() {
     let source = "fn broken( { if true {";
     let scorer = NativeComplexityScorer::new();
