@@ -214,7 +214,8 @@ fn extract_nethttp_route(
 /// Parse Go 1.22 ServeMux patterns: `[METHOD ][HOST]/[PATH]`.
 ///
 /// - If first token is an HTTP verb → method + rest as path (may include host).
-/// - Else method defaults to GET and path is the full pattern.
+/// - Else no method restriction (legacy `Handle`/`HandleFunc` match all methods) →
+///   method `ANY` and path is the full pattern (may be host-only).
 fn parse_nethttp_pattern(pattern: &str) -> (String, String) {
     let pattern = pattern.trim();
     if let Some((first, rest)) = pattern.split_once(' ') {
@@ -225,8 +226,8 @@ fn parse_nethttp_pattern(pattern: &str) -> (String, String) {
             return (first_upper, path.to_string());
         }
     }
-    // No method token — default GET; path is the whole pattern (may be host-only).
-    ("GET".to_string(), pattern.to_string())
+    // No method token — all methods (pre-1.22 / methodless patterns).
+    ("ANY".to_string(), pattern.to_string())
 }
 
 fn extract_gin_route(
@@ -347,7 +348,7 @@ mod tests {
         );
         assert_eq!(
             parse_nethttp_pattern("/health"),
-            ("GET".to_string(), "/health".to_string())
+            ("ANY".to_string(), "/health".to_string())
         );
         assert_eq!(
             parse_nethttp_pattern("GET example.com/path"),
@@ -355,7 +356,7 @@ mod tests {
         );
         assert_eq!(
             parse_nethttp_pattern("example.com/path"),
-            ("GET".to_string(), "example.com/path".to_string())
+            ("ANY".to_string(), "example.com/path".to_string())
         );
     }
 
@@ -388,7 +389,8 @@ func main() {
             .iter()
             .find(|r| r.path_pattern == "/health" && r.framework == "nethttp")
             .expect("/health");
-        assert_eq!(health.method, "GET");
+        // Methodless HandleFunc matches all methods → ANY, not GET.
+        assert_eq!(health.method, "ANY");
     }
 
     #[test]

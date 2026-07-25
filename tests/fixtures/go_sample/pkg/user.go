@@ -20,6 +20,21 @@ func (u User) IsValid() bool {
 	return u.ID > 0 && u.Name != ""
 }
 
+// RunWithRetry exercises complexity inside a func_literal (DoD-3 / §2.9).
+func RunWithRetry(fn func() error) error {
+	go func() {
+		if err := fn(); err != nil {
+			return
+		}
+		for i := 0; i < 3; i++ {
+			if i > 0 {
+				_ = i
+			}
+		}
+	}()
+	return nil
+}
+
 const MaxUsers = 1000
 
 var DefaultUser = User{ID: 0, Name: "guest"}

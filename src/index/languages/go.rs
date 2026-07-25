@@ -124,6 +124,12 @@ mod fixture_tests {
                 .any(|r| r.path_pattern == "/users/{id}" && r.method == "GET"),
             "expected GET /users/{{id}}"
         );
+        assert!(
+            routes
+                .iter()
+                .any(|r| r.path_pattern == "/health" && r.method == "ANY"),
+            "methodless HandleFunc must be ANY; routes={routes:?}"
+        );
 
         // --- observability: slog + errors.Is + fmt.Errorf wrap ---
         let logging = extract_logging_patterns(&handlers_src).expect("logging");
@@ -143,7 +149,7 @@ mod fixture_tests {
                 .any(|p| p.framework == "fmt" && p.evidence.contains("%w"))
         );
 
-        // --- complexity on a fixture .go path ---
+        // --- complexity on a fixture .go path (incl. func_literal per DoD-3) ---
         let scorer = NativeComplexityScorer::new();
         let scored = scorer
             .score_file(Utf8Path::new("pkg/user.go"), &user_src, Language::Go)
@@ -154,6 +160,24 @@ mod fixture_tests {
                 .iter()
                 .any(|f| f.name == "DisplayName" && f.cyclomatic >= 1),
             "DisplayName should be complexity-scored; got {:?}",
+            scored.functions
+        );
+        // func_literal nodes are scored as "anonymous" in metrics.rs
+        let anon = scored
+            .functions
+            .iter()
+            .find(|f| f.name == "anonymous")
+            .expect("func_literal closure should be scored as anonymous");
+        assert!(
+            anon.cyclomatic > 1 || anon.cognitive > 0,
+            "func_literal with if/for must have nonzero complexity; got {anon:?}"
+        );
+        assert!(
+            scored
+                .functions
+                .iter()
+                .any(|f| f.name == "RunWithRetry" && f.cyclomatic >= 1),
+            "RunWithRetry should be scored; got {:?}",
             scored.functions
         );
     }
