@@ -1,3 +1,4 @@
+pub mod go;
 pub mod python;
 pub mod rust;
 pub mod types;
@@ -19,6 +20,7 @@ pub fn parse_symbols(path: &Path, content: &str) -> Result<Option<Vec<Symbol>>> 
         "rs" => rust::extract_symbols(content),
         "ts" | "tsx" | "js" | "jsx" => typescript::extract_symbols(content),
         "py" => python::extract_symbols(content),
+        "go" => go::extract_symbols(content),
         _ => Ok(None),
     }
 }
@@ -28,6 +30,7 @@ pub fn extract_calls(path: &Path, content: &str, symbols: &[Symbol]) -> Result<V
         Some("rs") => rust::extract_calls(path, content, symbols),
         Some("ts") | Some("tsx") => typescript::extract_calls(path, content, symbols),
         Some("py") => python::extract_calls(path, content, symbols),
+        Some("go") => go::extract_calls(path, content, symbols),
         _ => Ok(Vec::new()),
     }
 }
@@ -41,6 +44,7 @@ pub fn extract_routes(
         Some("rs") => rust::extract_routes(content, symbols),
         Some("ts") | Some("tsx") => typescript::extract_routes(content, symbols),
         Some("py") => python::extract_routes(content, symbols),
+        Some("go") => go::extract_routes(content, symbols),
         _ => Ok(Vec::new()),
     }
 }
@@ -56,6 +60,7 @@ pub fn extract_data_models(
             typescript::extract_data_models(content, &path.to_string_lossy(), symbols)
         }
         Some("py") => python::extract_data_models(content, &path.to_string_lossy(), symbols),
+        Some("go") => go::extract_data_models(content, &path.to_string_lossy(), symbols),
         _ => Ok(Vec::new()),
     }
 }
@@ -65,6 +70,7 @@ pub fn extract_logging_patterns(path: &Path, content: &str) -> Result<Vec<Loggin
         Some("rs") => rust::extract_logging_patterns(content),
         Some("ts") | Some("tsx") => typescript::extract_logging_patterns(content),
         Some("py") => python::extract_logging_patterns(content),
+        Some("go") => go::extract_logging_patterns(content),
         _ => Ok(Vec::new()),
     }
 }
@@ -74,6 +80,7 @@ pub fn extract_error_handling(path: &Path, content: &str) -> Result<Vec<ErrorHan
         Some("rs") => rust::extract_error_handling(content),
         Some("ts") | Some("tsx") => typescript::extract_error_handling(content),
         Some("py") => python::extract_error_handling(content),
+        Some("go") => go::extract_error_handling(content),
         _ => Ok(Vec::new()),
     }
 }
@@ -83,6 +90,7 @@ pub fn extract_telemetry_patterns(path: &Path, content: &str) -> Result<Vec<Tele
         Some("rs") => rust::extract_telemetry_patterns(content),
         Some("ts") | Some("tsx") => typescript::extract_telemetry_patterns(content),
         Some("py") => python::extract_telemetry_patterns(content),
+        Some("go") => go::extract_telemetry_patterns(content),
         _ => Ok(Vec::new()),
     }
 }

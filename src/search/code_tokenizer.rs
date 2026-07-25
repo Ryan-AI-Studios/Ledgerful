@@ -49,6 +49,10 @@ impl CodeTokenizer {
     }
 }
 
+// NOTE (0084 DoD-8): `get_rust_tokenizer`, `get_typescript_tokenizer`, and `get_go_tokenizer`
+// are all currently unreached outside this module — there is no live dispatch that selects a
+// per-language CodeTokenizer. Do not invent a new dispatch mechanism here; wire-up is a
+// separate finding if/when a call site is introduced for any language.
 pub fn get_rust_tokenizer() -> CodeTokenizer {
     CodeTokenizer::new(tree_sitter_rust::LANGUAGE.into())
 }
