@@ -56,6 +56,20 @@ fn is_false(v: &bool) -> bool {
     !v
 }
 
+/// Narrow daemon status event pushed over `GET /api/events` (SSE).
+///
+/// Drift counts + readiness only — deliberately excludes `model_reachable`
+/// probes and `is_demo` (constant for a daemon session). See track 0085.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+#[serde(rename_all = "camelCase")]
+pub struct DaemonEvent {
+    pub pending_transactions: usize,
+    pub unaudited_drift: usize,
+    pub index_ready: bool,
+    pub graph_ready: bool,
+}
+
 #[derive(Serialize)]
 #[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
 pub(crate) struct ProjectResponse {

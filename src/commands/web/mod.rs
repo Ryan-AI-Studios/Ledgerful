@@ -448,8 +448,8 @@ fn print_web_status() -> Result<()> {
 }
 
 async fn run_server(bind: String, port: u16, state: Arc<AppState>) -> Result<()> {
-    let router = server::router(state);
-    server::serve(router, bind, port).await
+    let router = server::router(state.clone());
+    server::serve(router, bind, port, state).await
 }
 
 fn validate_bind(bind: &str, allow_public: bool) -> Result<()> {

@@ -3,6 +3,7 @@
 use crate::commands::web::api::KnowledgeGraphResponse;
 use crate::commands::web::git_meta::GitMetaCacheEntry;
 use crate::commands::web::server::csp::{embedded_csp, resolve_csp_for_spa_dir};
+use crate::commands::web::types::DaemonEvent;
 use crate::state::layout::Layout;
 use axum::http::HeaderValue;
 use camino::Utf8PathBuf;
@@ -10,7 +11,7 @@ use std::collections::{HashMap, HashSet};
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Instant;
-use tokio::sync::Mutex;
+use tokio::sync::{Mutex, broadcast, watch};
 
 type KgCacheEntry = Option<(Instant, (usize, bool), KnowledgeGraphResponse)>;
 
@@ -19,6 +20,9 @@ pub type RateLimitMap = HashMap<(IpAddr, String), Vec<Instant>>;
 
 /// Maximum distinct (IP, path) keys retained by the rate limiter.
 pub const RATE_LIMIT_MAX_KEYS: usize = 10_000;
+
+/// Capacity of the daemon-event broadcast fan-out channel.
+const EVENT_BROADCAST_CAPACITY: usize = 64;
 
 /// Application-wide state shared by all axum handlers.
 #[derive(Debug, Clone)]
@@ -42,6 +46,11 @@ pub struct AppState {
     /// `file_path → (iso8601_timestamp, author_name)`. 5-minute TTL.
     /// Track TA30 will replace this with persisted `project_files` columns.
     pub git_meta_cache: Arc<Mutex<GitMetaCacheEntry>>,
+    /// Fan-out of narrow daemon status events for `GET /api/events` (SSE).
+    pub event_tx: broadcast::Sender<DaemonEvent>,
+    /// Multi-consumer shutdown flag (`false` = running, `true` = shutdown).
+    /// SSE streams and the change detector select on this and exit cleanly.
+    pub shutdown: watch::Sender<bool>,
 }
 
 impl AppState {
@@ -49,6 +58,7 @@ impl AppState {
     ///
     /// Constructor signature is unchanged for call sites: CSP is resolved from
     /// `spa_dir` (sidecar when `Some`, embedded vendored manifest when `None`).
+    /// Event broadcast + shutdown channels are created internally.
     pub fn new(
         layout: Layout,
         token: String,
@@ -70,6 +80,9 @@ impl AppState {
             )
         });
 
+        let (event_tx, _event_rx) = broadcast::channel(EVENT_BROADCAST_CAPACITY);
+        let (shutdown, _shutdown_rx) = watch::channel(false);
+
         Self {
             layout,
             token,
@@ -81,6 +94,24 @@ impl AppState {
             auth_fail_limiter: Arc::new(Mutex::new(HashMap::new())),
             peer_allowlist,
             git_meta_cache: Arc::new(Mutex::new(None)),
+            event_tx,
+            shutdown,
         }
+    }
+
+    /// Subscribe to daemon event broadcasts (SSE handlers, tests).
+    pub fn subscribe_events(&self) -> broadcast::Receiver<DaemonEvent> {
+        self.event_tx.subscribe()
+    }
+
+    /// Clone a receiver for the shutdown watch (`true` means shutting down).
+    pub fn shutdown_rx(&self) -> watch::Receiver<bool> {
+        self.shutdown.subscribe()
+    }
+
+    /// Signal all SSE streams and the change detector to terminate.
+    pub fn signal_shutdown(&self) {
+        // Ignore error when all receivers already dropped.
+        let _ = self.shutdown.send(true);
     }
 }

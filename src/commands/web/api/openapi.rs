@@ -7,10 +7,10 @@ use utoipa::OpenApi;
 
 #[cfg(any(test, feature = "openapi", feature = "web"))]
 use crate::commands::web::server::{
-    __path_changes_handler, __path_config_handler, __path_health_handler, __path_hotspots_handler,
-    __path_ledger_handler, __path_ledger_search_handler, __path_ledger_tx_handler,
-    __path_projects_handler, __path_session_handler, __path_snapshot_handler,
-    __path_status_handler, __path_sync_status_handler,
+    __path_changes_handler, __path_config_handler, __path_events_handler, __path_health_handler,
+    __path_hotspots_handler, __path_ledger_handler, __path_ledger_search_handler,
+    __path_ledger_tx_handler, __path_projects_handler, __path_session_handler,
+    __path_snapshot_handler, __path_status_handler, __path_sync_status_handler,
 };
 
 #[cfg(any(test, feature = "openapi", feature = "web"))]
@@ -27,7 +27,7 @@ use crate::commands::web::api::handlers::{
 // `pub(crate)` there, so we re-export them at crate visibility.
 pub(crate) use crate::commands::web::types::{
     ChangeResponse, ChangedFileResponse, ChangesQuery, ComplianceSignatureEntry,
-    ComplianceSummaryResponse, ConfigResponse, HotspotResponse, HotspotTrendQuery,
+    ComplianceSummaryResponse, ConfigResponse, DaemonEvent, HotspotResponse, HotspotTrendQuery,
     HotspotTrendResponse, HotspotTrendSeries, HotspotsQueryParams, KgEdge, KgNode,
     KnowledgeGraphQuery, KnowledgeGraphResponse, LedgerDetailResponse, LedgerEntryResponse,
     LedgerListQuery, LedgerSearchQuery, ProjectResponse, SecurityBoundariesResponse,
@@ -41,7 +41,7 @@ pub(crate) use crate::commands::web::types::{
 #[openapi(
     info(
         title = "Ledgerful Daemon API",
-        version = "0.1.8",
+        version = "0.2.0",
         description = "Machine-readable OpenAPI contract for the Ledgerful daemon `/api/*` endpoints. Generated from the Rust DTOs via utoipa."
     ),
     paths(
@@ -49,6 +49,7 @@ pub(crate) use crate::commands::web::types::{
         session_handler,
         snapshot_handler,
         status_handler,
+        events_handler,
         projects_handler,
         ledger_handler,
         ledger_search_handler,
@@ -75,6 +76,7 @@ pub(crate) use crate::commands::web::types::{
         UserSession,
         SnapshotResponse,
         StatusResponse,
+        DaemonEvent,
         ProjectResponse,
         LedgerEntryResponse,
         LedgerDetailResponse,
@@ -112,6 +114,7 @@ pub(crate) use crate::commands::web::types::{
         (name = "session", description = "Current user session"),
         (name = "snapshot", description = "Summary metrics"),
         (name = "status", description = "Daemon health status"),
+        (name = "events", description = "Authenticated SSE push channel for daemon status / ledger drift"),
         (name = "projects", description = "Project list"),
         (name = "ledger", description = "Ledger transactions"),
         (name = "changes", description = "Recent changes"),
