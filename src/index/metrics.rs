@@ -117,6 +117,20 @@ impl NativeComplexityScorer {
                         | "and"
                         | "or"
                 ),
+                // gocognit-aligned: switch/select count as branches; cases also branch.
+                Language::Go => matches!(
+                    kind,
+                    "if_statement"
+                        | "for_statement"
+                        | "expression_switch_statement"
+                        | "type_switch_statement"
+                        | "select_statement"
+                        | "expression_case"
+                        | "type_case"
+                        | "communication_case"
+                        | "&&"
+                        | "||"
+                ),
                 Language::Markdown => false,
             };
 
@@ -170,6 +184,15 @@ impl NativeComplexityScorer {
                 kind,
                 "if_statement" | "for_statement" | "while_statement" | "try_statement"
             ),
+            // gocognit: switch/select nest once (not per-case); cases are flat +1.
+            Language::Go => matches!(
+                kind,
+                "if_statement"
+                    | "for_statement"
+                    | "expression_switch_statement"
+                    | "type_switch_statement"
+                    | "select_statement"
+            ),
             Language::Markdown => false,
         };
 
@@ -191,6 +214,16 @@ impl NativeComplexityScorer {
                         | "and"
                         | "or"
                         | "conditional_expression"
+                ),
+                Language::Go => matches!(
+                    kind,
+                    "expression_case"
+                        | "type_case"
+                        | "default_case"
+                        | "communication_case"
+                        | "goto_statement"
+                        | "&&"
+                        | "||"
                 ),
                 Language::Markdown => false,
             };
@@ -245,6 +278,7 @@ impl ComplexityScorer for NativeComplexityScorer {
             Language::Rust => tree_sitter_rust::LANGUAGE.into(),
             Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             Language::Python => tree_sitter_python::LANGUAGE.into(),
+            Language::Go => tree_sitter_go::LANGUAGE.into(),
             Language::Markdown => unreachable!(), // Handled above
         };
         parser
@@ -272,6 +306,8 @@ impl ComplexityScorer for NativeComplexityScorer {
                     | "arrow_function"
                     | "function_declaration"
                     | "generator_function_declaration"
+                    // Go anonymous funcs/closures (goroutine bodies, callbacks).
+                    | "func_literal"
             ) {
                 let name = node
                     .child_by_field_name("name")
@@ -300,5 +336,99 @@ impl ComplexityScorer for NativeComplexityScorer {
             ast_incomplete,
             complexity_capped,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use camino::Utf8Path;
+
+    #[test]
+    fn go_function_has_nonzero_cyclomatic_and_cognitive() {
+        let source = r#"
+package main
+
+func Process(x int) int {
+    if x > 0 {
+        for i := 0; i < x; i++ {
+            if i%2 == 0 {
+                return i
+            }
+        }
+    }
+    return 0
+}
+"#;
+        let scorer = NativeComplexityScorer::new();
+        let result = scorer
+            .score_file(Utf8Path::new("main.go"), source, Language::Go)
+            .expect("score go file");
+        let process = result
+            .functions
+            .iter()
+            .find(|f| f.name == "Process")
+            .expect("Process function scored");
+        assert!(
+            process.cyclomatic > 1,
+            "expected cyclomatic > 1, got {}",
+            process.cyclomatic
+        );
+        assert!(
+            process.cognitive > 0,
+            "expected cognitive > 0, got {}",
+            process.cognitive
+        );
+    }
+
+    #[test]
+    fn go_func_literal_with_if_is_scored() {
+        let source = r#"
+package main
+
+func Launch() {
+    go func() {
+        if err := work(); err != nil {
+            return
+        }
+    }()
+}
+"#;
+        let scorer = NativeComplexityScorer::new();
+        let result = scorer
+            .score_file(Utf8Path::new("main.go"), source, Language::Go)
+            .expect("score go file");
+        let anon = result
+            .functions
+            .iter()
+            .find(|f| f.name == "anonymous")
+            .expect("func_literal should be scored as anonymous");
+        assert!(
+            anon.cyclomatic > 1,
+            "func_literal with if should have cyclomatic > 1, got {}",
+            anon.cyclomatic
+        );
+        assert!(
+            anon.cognitive > 0,
+            "func_literal with if should have cognitive > 0, got {}",
+            anon.cognitive
+        );
+    }
+
+    #[test]
+    fn go_extension_is_supported_by_score_supported_path() {
+        let source = "package main\nfunc F() {}\n";
+        let scorer = NativeComplexityScorer::new();
+        let result = scorer
+            .score_supported_path(Utf8Path::new("pkg/main.go"), source)
+            .expect("score supported path");
+        match result {
+            ComplexityResult::Scored(fc) => {
+                assert!(!fc.functions.is_empty());
+            }
+            ComplexityResult::NotApplicable { reason } => {
+                panic!("Go should be scored, got NotApplicable: {reason}");
+            }
+        }
     }
 }
