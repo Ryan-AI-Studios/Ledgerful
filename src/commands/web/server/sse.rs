@@ -210,6 +210,11 @@ pub fn spawn_change_detector(
         let db_path = layout.state_subdir().join("ledger.db");
         let mut conn = open_pragma_connection(db_path.as_std_path());
         let mut last_version: Option<i64> = None;
+        // Publish on the *next* successful baseline only after a failed/unavailable
+        // read (DB missing then created). Cold-start with an existing DB stays silent
+        // on first successful pragma so a client that connects immediately does not
+        // get a spurious second `data:` with no mutation (DoD-5 idle).
+        let mut publish_on_next_baseline = conn.is_none();
 
         loop {
             tokio::select! {
@@ -227,14 +232,13 @@ pub fn spawn_change_detector(
                         Ok(version) => {
                             match last_version {
                                 None => {
-                                    // First successful read (cold start or recovery after
-                                    // unavailable/errors): publish so clients that connected
-                                    // while the DB was missing get a real snapshot, not only
-                                    // the zeros connect frame. Duplicate vs connect snapshot
-                                    // is idempotent for dashboard consumers.
                                     last_version = Some(version);
-                                    let event = build_daemon_event(&layout);
-                                    let _ = event_tx.send(event);
+                                    if publish_on_next_baseline {
+                                        publish_on_next_baseline = false;
+                                        let event = build_daemon_event(&layout);
+                                        let _ = event_tx.send(event);
+                                    }
+                                    // else: silent cold-start baseline (existing DB).
                                 }
                                 Some(prev) if prev == version => {
                                     // Unchanged — no ledger reads, no send (DoD-5 idle).
@@ -252,10 +256,10 @@ pub fn spawn_change_detector(
                                 "change detector: data_version read failed (will retry): {e}"
                             );
                             // Drop and reopen next tick (missing/locked ledger.db).
-                            // Clear baseline so the next successful open re-publishes
-                            // (DB appeared / recovered after unavailable).
+                            // Next successful open must publish (DB appeared / recovered).
                             conn = None;
                             last_version = None;
+                            publish_on_next_baseline = true;
                         }
                     }
                 }

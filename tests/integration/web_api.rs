@@ -3480,6 +3480,62 @@ fn insert_pending_separate_connection(layout: &Layout, tx_id: &str) {
     .unwrap();
 }
 
+/// Insert a PENDING transaction from a **separate OS process** (DoD-5).
+///
+/// Uses a short-lived Python child (`sqlite3` stdlib) so the writer is a real
+/// process boundary — not merely a second in-process `rusqlite::Connection`.
+fn insert_pending_separate_process(layout: &Layout, tx_id: &str) {
+    use std::process::Command;
+
+    let db_path = layout.state_subdir().join("ledger.db");
+    let started_at = chrono::Utc::now().to_rfc3339();
+    // Keep the script free of shell quoting issues: pass path/tx/timestamp as argv.
+    let script = r#"
+import sqlite3, sys
+path, tx_id, started_at = sys.argv[1], sys.argv[2], sys.argv[3]
+conn = sqlite3.connect(path)
+conn.execute("PRAGMA journal_mode = WAL")
+conn.execute("PRAGMA busy_timeout = 5000")
+conn.execute(
+    "INSERT INTO transactions "
+    "(tx_id, status, category, entity, entity_normalized, session_id, source, started_at) "
+    "VALUES (?, 'PENDING', 'FEATURE', 'dashboard-realtime', 'dashboard-realtime', 'test', 'test', ?)",
+    (tx_id, started_at),
+)
+conn.commit()
+conn.close()
+"#;
+    let mut last_err = String::new();
+    for python in ["python", "py", "python3"] {
+        let mut cmd = Command::new(python);
+        if python == "py" {
+            cmd.arg("-3");
+        }
+        cmd.arg("-c")
+            .arg(script)
+            .arg(db_path.as_str())
+            .arg(tx_id)
+            .arg(&started_at);
+        match cmd.output() {
+            Ok(out) if out.status.success() => return,
+            Ok(out) => {
+                last_err = format!(
+                    "{python}: status={:?} stderr={} stdout={}",
+                    out.status.code(),
+                    String::from_utf8_lossy(&out.stderr),
+                    String::from_utf8_lossy(&out.stdout)
+                );
+            }
+            Err(e) => {
+                last_err = format!("{python}: spawn failed: {e}");
+            }
+        }
+    }
+    panic!(
+        "DoD-5 separate-OS-process write requires Python 3 (python/py/python3); last error: {last_err}"
+    );
+}
+
 /// Count SSE `data:` field lines (keep-alive comments start with `:` and are ignored).
 fn count_sse_data_lines(body: &str) -> usize {
     body.lines().filter(|l| l.starts_with("data:")).count()
@@ -3536,8 +3592,7 @@ async fn test_events_detects_cross_connection_commit_dod5() {
     let layout = guard.layout();
     let (url, token, handle) = spawn_server(layout.clone()).await;
 
-    // Let the detector establish a data_version baseline before we write.
-    // (First successful read also publishes; no SSE subscriber yet.)
+    // Let the detector establish a silent cold-start baseline before we write.
     tokio::time::sleep(DETECTOR_TICK + Duration::from_millis(200)).await;
 
     let (mut stream, status, headers, prefix) = sse_handshake(&url, Some(&token)).await;
@@ -3553,8 +3608,7 @@ async fn test_events_detects_cross_connection_commit_dod5() {
     .await;
     assert!(body.contains("data:"), "expected snapshot, body={body:?}");
 
-    // Separate connection commit — must move PRAGMA data_version for the detector.
-    // Accepted SQLite-correct evidence for DoD-5 (cross-connection, not only same-conn).
+    // Separate connection commit — SQLite-correct isolation unit for data_version.
     insert_pending_separate_connection(&layout, "sse-detect-tx-1");
 
     let body2 = read_sse_body_until(
@@ -3572,7 +3626,48 @@ async fn test_events_detects_cross_connection_commit_dod5() {
     handle.abort();
 }
 
-/// DoD-5 idle: after connect snapshot, no second `data:` without ledger writes.
+/// DoD-5: a write from a **separate OS process** is detected and streamed.
+#[tokio::test]
+async fn test_events_detects_separate_os_process_commit_dod5() {
+    let guard = temp_layout();
+    ensure_ledger_db(&guard.layout());
+    let layout = guard.layout();
+    let (url, token, handle) = spawn_server(layout.clone()).await;
+
+    tokio::time::sleep(DETECTOR_TICK + Duration::from_millis(200)).await;
+
+    let (mut stream, status, headers, prefix) = sse_handshake(&url, Some(&token)).await;
+    assert_eq!(status, 200, "headers={headers}");
+
+    let body = read_sse_body_until(
+        &mut stream,
+        &prefix,
+        |b| b.contains("data:"),
+        Duration::from_secs(3),
+    )
+    .await;
+    assert!(body.contains("data:"), "expected snapshot, body={body:?}");
+
+    // Real process boundary (Python child), not an in-process second connection.
+    insert_pending_separate_process(&layout, "sse-os-process-tx-1");
+
+    let body2 = read_sse_body_until(
+        &mut stream,
+        &body,
+        |b| b.contains("\"pendingTransactions\":1"),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(
+        body2.contains("\"pendingTransactions\":1"),
+        "detector must see a separate OS process commit within 5s; body={body2:?}"
+    );
+
+    handle.abort();
+}
+
+/// DoD-5 idle: connect immediately after start with an existing DB; cold-start
+/// baseline must be silent so no second `data:` arrives without ledger writes.
 /// Keep-alive comment frames (`:` lines) are allowed; only `data:` counts.
 #[tokio::test]
 async fn test_events_idle_no_spurious_data_dod5() {
@@ -3580,10 +3675,8 @@ async fn test_events_idle_no_spurious_data_dod5() {
     ensure_ledger_db(&guard.layout());
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
-    // Let detector baseline (and publish once with no subscribers) so the first
-    // successful read does not race a second `data:` after we open SSE.
-    tokio::time::sleep(DETECTOR_TICK.saturating_mul(2)).await;
-
+    // Open SSE immediately — no pre-baseline sleep. A buggy "always publish on
+    // first pragma success" would emit a second data: ~500ms later with no write.
     let (mut stream, status, _headers, prefix) = sse_handshake(&url, Some(&token)).await;
     assert_eq!(status, 200);
 
@@ -3600,7 +3693,7 @@ async fn test_events_idle_no_spurious_data_dod5() {
         "connect must yield exactly one data: snapshot before idle wait; body={body:?}"
     );
 
-    // Wait ≥ 4 detector ticks with no DB writes.
+    // Wait ≥ 4 detector ticks with no DB writes (covers cold-start first tick).
     let idle = DETECTOR_TICK.saturating_mul(4) + Duration::from_millis(200);
     let after =
         read_sse_body_until(&mut stream, &body, |b| count_sse_data_lines(b) > 1, idle).await;
