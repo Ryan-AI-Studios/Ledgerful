@@ -6,8 +6,52 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-25
+
 ### Added
 
+- **Go structural language support (0084):** `Language::Go` reaches Python-equivalent
+  structural-indexing depth — symbols (funcs, receiver-qualified methods, structs,
+  interfaces), call graph (same-package resolved, cross-package `Unresolved`),
+  complexity/hotspots scoring (including anonymous `func_literal` closures),
+  `net/http`/Gin route detection, `json`-tagged struct data models, and
+  `log/slog`/`errors.Is`/`errors.As` observability detection. Receiver methods
+  carry a qualified `TypeName.MethodName` symbol name.
+- **Crypto v2 provenance signing basis + trusted-key pin (0072):** new commits
+  sign a frozen v2 payload binding full provenance (entity/author/risk/origin/
+  change_type/entry_type/is_breaking/related_tickets, plus v1 fields).
+  Dual-verify by stored `sig_version` (schema m53). Trusted-key pin,
+  `min_sig_version`, `--strict-signatures`, new `doctor` checks, and
+  `enforce-init --require-signing` auto-pin for existing installs. Distinct
+  verify exit code `UNSIGNED=3`.
+- **Daemon auth fail-closed + rate limiting (0078):** fail-closed token
+  resolution/comparison, `--spa-dir` containment, peer allowlist, bounded
+  per-peer rate limiting on `ConnectInfo`, reduced token exposure
+  (`--print-token=false` file path). Auth failure frozen at `403`.
+- **Default-strict process policy (0079):** `ProcessPolicy` now defaults to
+  `strict: true` with a populated built-in toolchain allowlist (was
+  permissive-by-default); config allowlist entries extend rather than replace
+  the built-in set; `allow_shell_steps` gate scoped to config-declared steps
+  only, with shell-chain inner-command inspection (not just the `cmd`/`sh`
+  wrapper); shared `exec::grouped` process-group kill; `shlex`-based schedule
+  quoting; `GIT_BINARY` absolute-path validation + git subprocess env
+  hardening (`GIT_EXEC_PATH`/`GIT_CONFIG_*`/`GIT_SSH_COMMAND` stripped).
+- **Daemon SPA security headers + hash CSP (0081 engine slice):** the local
+  web daemon now serves a full security header set (hash-based CSP,
+  `X-Content-Type-Options`, frame/referrer/permissions policy) on SPA
+  document paths, mirroring the frontend's static-host headers; vendored
+  script-hash manifest for the shipped SPA, optional `--spa-dir` sidecar
+  manifest with a logged, testable `fallback_reason` when hashes are absent.
+- **Telemetry ingest token header (0077):** usage-flush POSTs now carry
+  `X-Ledgerful-Telemetry-Token` so the ingest edge function can stage
+  optional→required auth without silently dropping telemetry from older
+  clients. Default token is public/bar-raising (open CLI); override via
+  `LEDGERFUL_USAGE_TOKEN`. Silent-fail and opt-out-sends-nothing preserved.
+- **Golden-path demo cryptographic proof (0070):** the automated `demo` path
+  now runs real signature+chain and against-export verification so a
+  first-run skeptic sees `CRYPTO VALID`, not test-suite noise; `verify
+  --scope fast` demoted to quiet optional checks; new
+  [docs/golden-path.md](docs/golden-path.md) single-source narration.
 - Local self-timing facility: `ledgerful timings` surfaces which of *your*
   commands is slow (outer summaries, inner spans, collapsed flame stacks,
   `--explain`), with default-on capture, opt-out via `timings --opt-out`, and
@@ -44,9 +88,25 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (human operator path); only MCP spawn / explicit Forbidden forces zero-cloud.
 - MCP `ask` tool blurb documents Forbidden + host opt-in (not "forces local"
   alone).
+- **Install docs truth (0068):** Homebrew/Scoop install docs and PATH FAQ
+  corrected to match actual installer behavior; new `install_docs_truth`
+  guard catches future drift. Engine's dogfood PR-scan workflow SHA-pinned
+  to `ledgerful-action@2c8dacbc`.
 
 ### Security
 
+- **Public ledger verifier XSS fix (0075):** the export-public verifier
+  template's row/status rendering replaced `innerHTML` sinks with
+  `createElement`/`textContent`, closing a DOM-XSS path via malicious
+  free-text ledger fields. Signature verification basis (`VERIFY-ON-RAW`)
+  is unaffected — this is a rendering fix, not a crypto change.
+- **Offline network honesty + gitleaks pin + PAT-out-of-URL (0082 engine
+  slice):** `LEDGERFUL_NO_NETWORK` is now honored *before* AI-reachability
+  probes run (previously only gated the request itself); CI's `gitleaks`
+  step digest-pinned to match the frontend's pin (`v8.30.1@sha256:...`);
+  release automation's package-manager-manifest push now authenticates via
+  `gh auth setup-git` instead of embedding `MANIFEST_PUSH_TOKEN` directly in
+  a git remote URL.
 - **0073 residuals (not closed here):** RT-A5 tool *results* are not
   secret-redacted (MCP can still leak repo secrets to the agent); RT-A7 full
   semantic-extract cloud closure beyond Forbidden-env paths; RT-A8 tool DoS /
