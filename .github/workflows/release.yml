@@ -33,9 +33,16 @@ jobs:
           repository: Ryan-AI-Studios/ledgerful-frontend
           ref: 346df6027a8b3dda1a10350080ff115bfde52929 # 0083, 2026-07-25
           path: ledgerful-frontend
+      # Node 24, not 22: ledgerful-frontend has required >=24 since track 0083
+      # (package.json engines), and 0081's committed CSP script-hash manifest
+      # was generated/verified under Node 24 CI parity. Building under 22
+      # compiles different inline-script output and fails the manifest-drift
+      # check by design (discovered 2026-07-25 when the v0.2.0 release run
+      # failed here right after the stale frontend ref pin was fixed — this
+      # bug predates that fix, it was just never exercised by the old pin).
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 22
+          node-version: 24
       - run: npm ci
         working-directory: ledgerful-frontend
       - run: npm run build
