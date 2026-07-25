@@ -68,7 +68,7 @@ async fn spawn_server_with_spa_dir(
     (url, token, handle)
 }
 
-/// Spawn with graceful-shutdown oneshot (DoD-6). Detector + shutdown watch wired.
+/// Spawn with production [`serve_listener`] + oneshot shutdown (DoD-6).
 async fn spawn_server_graceful(
     layout: Layout,
 ) -> (
@@ -79,29 +79,19 @@ async fn spawn_server_graceful(
 ) {
     let token = generate_token();
     let state = Arc::new(AppState::new(layout, token.clone(), None, None));
-    let _detector = spawn_change_detector(
-        state.layout.clone(),
-        state.event_tx.clone(),
-        state.shutdown_rx(),
-        DETECTOR_TICK,
-    );
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let app = router(state.clone());
     let (shutdown_tx, shutdown_rx) = oneshot::channel::<()>();
 
     let handle = tokio::spawn(async move {
-        let state_for_shutdown = state.clone();
-        let serve = axum::serve(
+        let _ = ledgerful::commands::web::server::serve_listener(
             listener,
-            ledgerful::commands::web::server::make_connect_info_service(app),
+            app,
+            state,
+            Some(shutdown_rx),
         )
-        .with_graceful_shutdown(async move {
-            let _ = shutdown_rx.await;
-            state_for_shutdown.signal_shutdown();
-            tokio::time::sleep(Duration::from_millis(150)).await;
-        });
-        let _ = serve.await;
+        .await;
     });
 
     let url = format!("http://{}", addr);
@@ -3490,6 +3480,11 @@ fn insert_pending_separate_connection(layout: &Layout, tx_id: &str) {
     .unwrap();
 }
 
+/// Count SSE `data:` field lines (keep-alive comments start with `:` and are ignored).
+fn count_sse_data_lines(body: &str) -> usize {
+    body.lines().filter(|l| l.starts_with("data:")).count()
+}
+
 #[tokio::test]
 async fn test_events_requires_auth_dod1() {
     let guard = temp_layout();
@@ -3523,6 +3518,10 @@ async fn test_events_requires_auth_dod1() {
         "connect must emit a snapshot data: frame, body={body:?}"
     );
     assert!(
+        body.contains("event: daemon") || body.contains("event:daemon"),
+        "snapshot must use event name `daemon` (DoD-1), body={body:?}"
+    );
+    assert!(
         body.contains("pendingTransactions"),
         "snapshot JSON should carry camelCase DaemonEvent fields, body={body:?}"
     );
@@ -3538,6 +3537,7 @@ async fn test_events_detects_cross_connection_commit_dod5() {
     let (url, token, handle) = spawn_server(layout.clone()).await;
 
     // Let the detector establish a data_version baseline before we write.
+    // (First successful read also publishes; no SSE subscriber yet.)
     tokio::time::sleep(DETECTOR_TICK + Duration::from_millis(200)).await;
 
     let (mut stream, status, headers, prefix) = sse_handshake(&url, Some(&token)).await;
@@ -3554,6 +3554,7 @@ async fn test_events_detects_cross_connection_commit_dod5() {
     assert!(body.contains("data:"), "expected snapshot, body={body:?}");
 
     // Separate connection commit — must move PRAGMA data_version for the detector.
+    // Accepted SQLite-correct evidence for DoD-5 (cross-connection, not only same-conn).
     insert_pending_separate_connection(&layout, "sse-detect-tx-1");
 
     let body2 = read_sse_body_until(
@@ -3566,6 +3567,89 @@ async fn test_events_detects_cross_connection_commit_dod5() {
     assert!(
         body2.contains("\"pendingTransactions\":1"),
         "detector must push updated DaemonEvent within 5s after cross-connection write; body={body2:?}"
+    );
+
+    handle.abort();
+}
+
+/// DoD-5 idle: after connect snapshot, no second `data:` without ledger writes.
+/// Keep-alive comment frames (`:` lines) are allowed; only `data:` counts.
+#[tokio::test]
+async fn test_events_idle_no_spurious_data_dod5() {
+    let guard = temp_layout();
+    ensure_ledger_db(&guard.layout());
+    let (url, token, handle) = spawn_server(guard.layout()).await;
+
+    // Let detector baseline (and publish once with no subscribers) so the first
+    // successful read does not race a second `data:` after we open SSE.
+    tokio::time::sleep(DETECTOR_TICK.saturating_mul(2)).await;
+
+    let (mut stream, status, _headers, prefix) = sse_handshake(&url, Some(&token)).await;
+    assert_eq!(status, 200);
+
+    let body = read_sse_body_until(
+        &mut stream,
+        &prefix,
+        |b| count_sse_data_lines(b) >= 1,
+        Duration::from_secs(3),
+    )
+    .await;
+    assert_eq!(
+        count_sse_data_lines(&body),
+        1,
+        "connect must yield exactly one data: snapshot before idle wait; body={body:?}"
+    );
+
+    // Wait ≥ 4 detector ticks with no DB writes.
+    let idle = DETECTOR_TICK.saturating_mul(4) + Duration::from_millis(200);
+    let after =
+        read_sse_body_until(&mut stream, &body, |b| count_sse_data_lines(b) > 1, idle).await;
+    assert_eq!(
+        count_sse_data_lines(&after),
+        1,
+        "DoD-5 idle: no second data: frame without ledger writes (keepalive `:` ok); body={after:?}"
+    );
+
+    handle.abort();
+}
+
+/// First successful data_version after missing DB must publish (not silent baseline).
+#[tokio::test]
+async fn test_events_first_availability_publishes_dod5() {
+    let guard = temp_layout();
+    // No ledger.db yet — connect snapshot is zeros; detector has no baseline.
+    let layout = guard.layout();
+    let (url, token, handle) = spawn_server(layout.clone()).await;
+
+    let (mut stream, status, _headers, prefix) = sse_handshake(&url, Some(&token)).await;
+    assert_eq!(status, 200);
+
+    let body = read_sse_body_until(
+        &mut stream,
+        &prefix,
+        |b| b.contains("data:") && b.contains("\"pendingTransactions\":0"),
+        Duration::from_secs(3),
+    )
+    .await;
+    assert!(
+        body.contains("\"pendingTransactions\":0"),
+        "missing DB connect snapshot must be zeros; body={body:?}"
+    );
+
+    // DB appears + cross-connection write: detector must open, baseline, and publish.
+    ensure_ledger_db(&layout);
+    insert_pending_separate_connection(&layout, "sse-first-avail-tx-1");
+
+    let body2 = read_sse_body_until(
+        &mut stream,
+        &body,
+        |b| b.contains("\"pendingTransactions\":1"),
+        Duration::from_secs(5),
+    )
+    .await;
+    assert!(
+        body2.contains("\"pendingTransactions\":1"),
+        "first successful data_version after DB appears must publish (not silent baseline); body={body2:?}"
     );
 
     handle.abort();
@@ -3587,7 +3671,7 @@ async fn test_events_graceful_shutdown_with_live_stream_dod6() {
     )
     .await;
 
-    // Fire graceful shutdown (same path as Ctrl+C → with_graceful_shutdown).
+    // Fire graceful shutdown (production serve_listener path).
     let _ = shutdown_tx.send(());
 
     let finished = tokio::time::timeout(Duration::from_secs(3), handle).await;

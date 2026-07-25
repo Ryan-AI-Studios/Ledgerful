@@ -227,8 +227,14 @@ pub fn spawn_change_detector(
                         Ok(version) => {
                             match last_version {
                                 None => {
-                                    // Establish baseline; do not publish (clients get connect snapshot).
+                                    // First successful read (cold start or recovery after
+                                    // unavailable/errors): publish so clients that connected
+                                    // while the DB was missing get a real snapshot, not only
+                                    // the zeros connect frame. Duplicate vs connect snapshot
+                                    // is idempotent for dashboard consumers.
                                     last_version = Some(version);
+                                    let event = build_daemon_event(&layout);
+                                    let _ = event_tx.send(event);
                                 }
                                 Some(prev) if prev == version => {
                                     // Unchanged — no ledger reads, no send (DoD-5 idle).
@@ -246,7 +252,10 @@ pub fn spawn_change_detector(
                                 "change detector: data_version read failed (will retry): {e}"
                             );
                             // Drop and reopen next tick (missing/locked ledger.db).
+                            // Clear baseline so the next successful open re-publishes
+                            // (DB appeared / recovered after unavailable).
                             conn = None;
+                            last_version = None;
                         }
                     }
                 }

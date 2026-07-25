@@ -17,4 +17,4 @@ pub use handlers::{
 };
 pub use router::router;
 pub use sse::{__path_events_handler, spawn_change_detector};
-pub use startup::{make_connect_info_service, serve, serve_with_shutdown};
+pub use startup::{make_connect_info_service, serve, serve_listener, serve_with_shutdown};

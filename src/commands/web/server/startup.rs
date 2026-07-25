@@ -52,8 +52,26 @@ pub async fn serve_with_shutdown(
     );
 
     let listener = TcpListener::bind(addr).await.into_diagnostic()?;
-    tracing::info!("ledgerful web listening on {}", addr);
+    let bound = listener
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|_| addr.to_string());
+    tracing::info!("ledgerful web listening on {}", bound);
 
+    serve_listener(listener, router, state, external_shutdown).await
+}
+
+/// Serve on an already-bound [`TcpListener`] (production and tests share this path).
+///
+/// Spawns the change detector and wires graceful shutdown the same way as
+/// [`serve_with_shutdown`]. Tests bind `127.0.0.1:0`, read `local_addr`, then
+/// call this so DoD-6 exercises production shutdown wiring (not a fork).
+pub async fn serve_listener(
+    listener: TcpListener,
+    router: axum::Router,
+    state: Arc<AppState>,
+    external_shutdown: Option<oneshot::Receiver<()>>,
+) -> Result<()> {
     // Detector is owned by the server lifetime; cancelled via shutdown watch.
     let _detector = spawn_change_detector(
         state.layout.clone(),
