@@ -52,7 +52,7 @@ fn pr_scan_json_emits_schema_version_and_sorted_changes() {
     let (parsed, result) = run_pr_scan_json(root, "HEAD~1...HEAD");
     result.unwrap();
 
-    assert_eq!(parsed["schemaVersion"], 1);
+    assert_eq!(parsed["schemaVersion"], 2);
     assert_eq!(parsed["baseRef"], "HEAD~1");
     assert_eq!(parsed["headRef"], "HEAD");
     assert!(parsed["headHash"].as_str().is_some());
@@ -65,6 +65,16 @@ fn pr_scan_json_emits_schema_version_and_sorted_changes() {
     assert_eq!(paths, vec!["Cargo.toml", "src/lib.rs"]);
     let risk = parsed["riskLevel"].as_str().unwrap();
     assert!(matches!(risk, "low" | "medium" | "high"));
+    // Schema v2 history signals present; no author names.
+    assert!(parsed["historyWindowCommits"].as_u64().unwrap() >= 1);
+    assert_eq!(parsed["historyTruncated"], false);
+    for c in changes {
+        assert!(c["churn"].as_u64().unwrap() >= 1);
+        assert!(c.get("isSensitive").and_then(|v| v.as_bool()).is_some());
+    }
+    let raw = serde_json::to_string(&parsed).unwrap();
+    assert!(!raw.contains("lastContributor"));
+    assert!(!raw.contains("\"author\""));
 }
 
 #[test]
@@ -322,7 +332,7 @@ fn pr_scan_golden_output_matches_fixture() {
     let (parsed, result) = run_pr_scan_json(root, "HEAD~2...HEAD");
     result.unwrap();
 
-    assert_eq!(parsed["schemaVersion"], 1);
+    assert_eq!(parsed["schemaVersion"], 2);
     assert_eq!(parsed["baseRef"], "HEAD~2");
     assert_eq!(parsed["headRef"], "HEAD");
     assert!(
@@ -341,6 +351,9 @@ fn pr_scan_golden_output_matches_fixture() {
     );
     assert_eq!(parsed["changeCount"], 3);
     assert_eq!(parsed["riskLevel"], "high");
+    // 3 commits in the fixture → full-window walk of 3, not truncated.
+    assert_eq!(parsed["historyWindowCommits"], 3);
+    assert_eq!(parsed["historyTruncated"], false);
 
     let mut normalized = parsed.clone();
     let obj = normalized.as_object_mut().unwrap();
@@ -350,9 +363,19 @@ fn pr_scan_golden_output_matches_fixture() {
     // treeClean is asserted above; remove it from the fixture comparison so the
     // expected JSON does not hide a regression in diff-emptiness logic.
     obj.remove("treeClean");
+    // lastCommitAt depends on wall-clock commit times; normalize per change.
+    if let Some(changes) = obj.get_mut("changes").and_then(|c| c.as_array_mut()) {
+        for change in changes {
+            if let Some(cobj) = change.as_object_mut()
+                && cobj.contains_key("lastCommitAt")
+            {
+                cobj.insert("lastCommitAt".into(), "__LAST_COMMIT_AT__".into());
+            }
+        }
+    }
 
     let expected = serde_json::json!({
-        "schemaVersion": 1,
+        "schemaVersion": 2,
         "baseRef": "HEAD~2",
         "headRef": "HEAD",
         "headHash": "__HEAD_HASH__",
@@ -361,26 +384,42 @@ fn pr_scan_golden_output_matches_fixture() {
         "changes": [
             {
                 "path": "Cargo.toml",
-                "changeType": "added"
+                "changeType": "added",
+                "churn": 1,
+                "lastCommitAt": "__LAST_COMMIT_AT__",
+                "isSensitive": true
             },
             {
                 "path": "src/foo.rs",
-                "changeType": "modified"
+                "changeType": "modified",
+                "churn": 2,
+                "lastCommitAt": "__LAST_COMMIT_AT__",
+                "isSensitive": false
             },
             {
                 "path": "src/new.rs",
-                "changeType": "added"
+                "changeType": "added",
+                "churn": 1,
+                "lastCommitAt": "__LAST_COMMIT_AT__",
+                "isSensitive": false
             }
         ],
         "riskLevel": "high",
         "riskReasons": ["sensitive path touched: Cargo.toml"],
-        "analysisWarnings": []
+        "analysisWarnings": [],
+        "historyWindowCommits": 3,
+        "historyTruncated": false
     });
 
     assert_eq!(
         normalized, expected,
         "golden PR scan output did not match canonical fixture (generatedAt removed, volatile fields normalized)"
     );
+
+    // No author identity in the PR JSON surface.
+    let raw = serde_json::to_string(&parsed).unwrap();
+    assert!(!raw.contains("lastContributor"));
+    assert!(!raw.contains("\"author\""));
 
     // The single-commit rename boundary still reports the rename correctly.
     let (rename_parsed, rename_result) = run_pr_scan_json(root, "HEAD~1...HEAD");
@@ -423,7 +462,9 @@ fn pr_scan_json_out_writes_same_payload_to_file() {
     let file_content = fs::read_to_string(&out_path).unwrap();
     let file_parsed: serde_json::Value = serde_json::from_str(&file_content).unwrap();
     assert_eq!(file_parsed["baseRef"], "HEAD~1");
-    assert_eq!(file_parsed["schemaVersion"], 1);
+    assert_eq!(file_parsed["schemaVersion"], 2);
+    assert!(file_parsed.get("historyWindowCommits").is_some());
+    assert!(file_parsed.get("historyTruncated").is_some());
 }
 
 #[test]

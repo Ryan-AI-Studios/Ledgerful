@@ -7,7 +7,7 @@
 
 use crate::commands::helpers::{get_layout, load_ledger_config};
 use crate::commands::scan::{files_changed_between, parse_pr_range};
-use crate::commands::scan_pr::{PrRiskLevel, PrScanReport};
+use crate::commands::scan_pr::{HistoryEnrichment, PrRiskLevel, PrScanContext, PrScanReport};
 use crate::commands::verify::enumerate_invalid_ledger_entries;
 use crate::git::repo::{get_head_info, open_repo};
 use crate::git::status::get_repo_status;
@@ -920,14 +920,18 @@ impl EvalContext {
             let changed_paths = file_changes_to_paths(&changes);
             let repo = open_repo(root)?;
             let (head_hash, branch_name) = get_head_info(&repo)?;
+            // Risk-only path: skip history walk (churn not used for risk).
             let report = PrScanReport::new(
-                base,
-                head,
-                head_hash,
-                branch_name,
-                changes.is_empty(),
+                PrScanContext {
+                    base_ref: base,
+                    head_ref: head,
+                    head_hash,
+                    branch_name,
+                    tree_clean: changes.is_empty(),
+                },
                 &changes,
                 &[],
+                &HistoryEnrichment::empty(),
             );
             return Ok(Some(ResolvedRisk {
                 level: report.risk_level,
@@ -943,13 +947,16 @@ impl EvalContext {
                 let changed_paths = file_changes_to_paths(&changes);
                 let (head_hash, branch_name) = get_head_info(&repo).unwrap_or((None, None));
                 let report = PrScanReport::new(
-                    "WORKTREE".to_string(),
-                    "HEAD".to_string(),
-                    head_hash,
-                    branch_name,
-                    changes.is_empty(),
+                    PrScanContext {
+                        base_ref: "WORKTREE".to_string(),
+                        head_ref: "HEAD".to_string(),
+                        head_hash,
+                        branch_name,
+                        tree_clean: changes.is_empty(),
+                    },
                     &changes,
                     &[],
+                    &HistoryEnrichment::empty(),
                 );
                 Ok(Some(ResolvedRisk {
                     level: report.risk_level,

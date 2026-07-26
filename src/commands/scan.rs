@@ -1,7 +1,8 @@
-use crate::commands::scan_pr::PrScanReport;
+use crate::commands::scan_pr::{HistoryEnrichment, PrScanContext, PrScanReport};
 use crate::config::load::load_config;
 use crate::git::RepoSnapshot;
 use crate::git::diff::get_diff_summary;
+use crate::git::metadata::{DEFAULT_MAX_COMMITS, collect_path_history};
 use crate::git::repo::{get_head_info, open_repo};
 use crate::git::status::get_repo_status;
 use crate::git::{ChangeType, FileChange};
@@ -11,6 +12,7 @@ use crate::state::reports::{
     ScanDiffSummary, ScanReport, write_clean_tree_tombstone, write_scan_report,
 };
 use crate::state::storage::StorageManager;
+use camino::Utf8Path;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, Color, Table};
@@ -410,14 +412,35 @@ pub fn execute_scan(
 
     // PR-mode output: either JSON report or human summary.
     if let (Some(base), Some(head)) = (pr_base_ref, pr_head_ref) {
+        // Index-free history enrichment (schema v2): churn + recency from a
+        // bounded first-parent walk. No author names; see git::metadata docs.
+        let history = match Utf8Path::from_path(&current_dir) {
+            Some(root) => match collect_path_history(root, DEFAULT_MAX_COMMITS) {
+                Ok(result) => HistoryEnrichment::from_path_history(result),
+                Err(e) => {
+                    tracing::warn!("PR history enrichment failed; emitting empty history: {e}");
+                    HistoryEnrichment::empty()
+                }
+            },
+            None => {
+                tracing::warn!(
+                    "PR history enrichment skipped: current_dir is not valid UTF-8: {}",
+                    current_dir.display()
+                );
+                HistoryEnrichment::empty()
+            }
+        };
         let report = PrScanReport::new(
-            base,
-            head,
-            snapshot.head_hash.clone(),
-            snapshot.branch_name.clone(),
-            snapshot.is_clean,
+            PrScanContext {
+                base_ref: base,
+                head_ref: head,
+                head_hash: snapshot.head_hash.clone(),
+                branch_name: snapshot.branch_name.clone(),
+                tree_clean: snapshot.is_clean,
+            },
             &snapshot.changes,
-            &[],
+            &[], // analysisWarnings reserved — always empty (0086)
+            &history,
         );
 
         if format.as_deref() == Some("json") {
