@@ -65,8 +65,16 @@ pub fn router(state: Arc<AppState>) -> Router {
         .nest("/api", api_router);
 
     if let Some(spa_dir) = &state.spa_dir {
-        let fallback = ServeFile::new(spa_dir.join("index.html").as_std_path());
-        app = app.fallback_service(ServeDir::new(spa_dir.as_std_path()).fallback(fallback));
+        // Hashed assets under `/_next/` must 404 when missing — never fall back to
+        // index.html. Returning HTML for `*.css`/`*.js` breaks MIME checks and
+        // leaves the browser on a half-dead SPA after a rebuild (stale chunk names
+        // in a cached HTML shell). Page routes still use index.html fallback.
+        let next_dir = spa_dir.join("_next");
+        let page_fallback = ServeFile::new(spa_dir.join("index.html").as_std_path());
+        let pages = ServeDir::new(spa_dir.as_std_path()).fallback(page_fallback);
+        app = app
+            .nest_service("/_next", ServeDir::new(next_dir.as_std_path()))
+            .fallback_service(pages);
     } else {
         app = app.fallback(get(handlers::embedded_spa_handler));
     }
