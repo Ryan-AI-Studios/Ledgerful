@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-07-26
+
 ### Added
 
 - **PR scan schema v2 + index-free history signals (0086):** `scan --pr`
@@ -22,6 +24,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   500 ms in autocommit and publishes only on cross-process ledger commits;
   streams terminate on graceful shutdown so Ctrl+C does not hang with a live
   dashboard tab. See `coordination.md` §3.2.
+- **Embedded dashboard refresh:** release embeds `ledgerful-frontend` at
+  `91dd039` (includes 0085 SSE client + SPA session/routing fixes from FE
+  PRs #29/#30).
+
+### Fixed
+
+- **SPA `--spa-dir` static assets (PR #67):** missing `/_next/*` under a custom
+  SPA directory no longer 404 incorrectly when serving an external export.
 
 ## [0.2.0] - 2026-07-25
 
