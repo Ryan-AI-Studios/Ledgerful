@@ -4,6 +4,9 @@ This document defines the stable, versioned machine-readable output produced by
 `ledgerful scan --pr <range> --format json`. It is the contract that the
 `ledgerful-action` GitHub Action pins. Breaking changes bump `schemaVersion`.
 
+**Current version: 2** (0086). Action accepts `schemaVersion` **1 or 2** during
+rollout; v2 fields are optional on the Action side when reading older reports.
+
 ## Invocation
 
 ```bash
@@ -17,11 +20,11 @@ ledgerful scan --pr main...HEAD --format text
 - `--format` accepts `json` or `text`. Default is `text`.
 - `--out <path>` writes the JSON report to a file.
 
-## Schema
+## Schema (v2)
 
 ```json
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "generatedAt": "2026-07-17T12:00:00+00:00",
   "baseRef": "main",
   "headRef": "HEAD",
@@ -32,17 +35,25 @@ ledgerful scan --pr main...HEAD --format text
   "changes": [
     {
       "path": "src/foo.rs",
-      "changeType": "modified"
+      "changeType": "modified",
+      "churn": 4,
+      "lastCommitAt": "2026-07-10T08:00:00+00:00",
+      "isSensitive": false
     },
     {
       "path": "src/bar.rs",
       "changeType": "renamed",
-      "oldPath": "src/old_bar.rs"
+      "oldPath": "src/old_bar.rs",
+      "churn": 1,
+      "lastCommitAt": "2026-07-16T15:30:00+00:00",
+      "isSensitive": false
     }
   ],
   "riskLevel": "low",
   "riskReasons": [],
-  "analysisWarnings": []
+  "analysisWarnings": [],
+  "historyWindowCommits": 128,
+  "historyTruncated": false
 }
 ```
 
@@ -50,27 +61,42 @@ ledgerful scan --pr main...HEAD --format text
 
 | Field | Type | Description |
 |---|---|---|
-| `schemaVersion` | integer | Breaking schema changes increment this value. The Action pins a specific version. |
+| `schemaVersion` | integer | `2` for current engine output. Breaking schema changes increment this value. |
 | `generatedAt` | ISO 8601 string | UTC timestamp in RFC 3339 format. Volatile; the Action does **not** pin this. |
 | `baseRef` | string | Base ref used for the diff. |
 | `headRef` | string | Head ref used for the diff. |
-| `headHash` | string \| null | Commit hash at HEAD, if available. |
-| `branchName` | string \| null | Current branch name, if available. |
+| `headHash` | string (omitted when unknown) | Commit hash at HEAD. **Omitted** (not `null`) when unavailable — e.g. some edge cases. |
+| `branchName` | string (omitted when unknown) | Current branch name. **Omitted** on detached HEAD (typical `actions/checkout` PR checkout). Never serialized as JSON `null`. |
 | `treeClean` | boolean | Whether the diff between `baseRef` and `headRef` is empty (no changes). In CI/PR mode this reflects diff emptiness, not working-tree dirtiness. |
 | `changeCount` | integer | `len(changes)`. |
 | `changes` | array | Sorted by `path`. Forward-slash normalized for cross-platform determinism. |
 | `changes[].path` | string | Forward-slash normalized path. |
 | `changes[].changeType` | string | `added`, `modified`, `deleted`, or `renamed`. |
 | `changes[].oldPath` | string (omitted when not a rename) | Present only when `changeType` is `renamed`; otherwise the field is omitted. |
+| `changes[].churn` | integer (u32) | Commits in the history walk window that touched this path. `0` if the path has no history in the window. Always emitted in v2. |
+| `changes[].lastCommitAt` | ISO 8601 string (omitted when unknown) | Committer time of the most recent touch in the walk window. |
+| `changes[].isSensitive` | boolean | Whether the path matches a known sensitive-path pattern. Always emitted in v2. |
 | `riskLevel` | string | `low`, `medium`, or `high`. |
 | `riskReasons` | array of strings | Sorted alphabetically, deterministic reasons for the risk level. |
-| `analysisWarnings` | array of strings | Sorted alphabetically; partial-scan or other non-fatal notes. |
+| `analysisWarnings` | array of strings | **Reserved.** Engine always emits `[]` today; not a live warning channel until a real source is wired deliberately. |
+| `historyWindowCommits` | integer (u32) | How many commits were walked for history enrichment (≤ bound, default 1000). |
+| `historyTruncated` | boolean | `true` if the walk stopped because it hit the max-commit bound. Without this, `churn` would look absolute when it is bounded. |
+
+### What is deliberately not included
+
+- **Author / contributor names.** Recency and churn are risk signals; naming a
+  person in an automated public PR comment is a social cost with no analytic
+  gain. Do not add author fields to this schema without an explicit product
+  decision.
+- **Hotspots / impact / verify.** Those require a local index that is not
+  present in a fresh CI checkout (`.ledgerful/` is gitignored). PR scan stays
+  index-free by design.
 
 ## Determinism contract
 
-For the same `(baseRef, headHash, repoState)`, running `scan --pr` twice
-produces byte-identical JSON except for `generatedAt`. The caller must strip or
-ignore `generatedAt` when diffing or hashing.
+For the same `(baseRef, headHash, repoState, history window)`, running
+`scan --pr` twice produces byte-identical JSON except for `generatedAt`. The
+caller must strip or ignore `generatedAt` when diffing or hashing.
 
 Specific guarantees:
 
@@ -78,11 +104,13 @@ Specific guarantees:
 - `riskReasons` and `analysisWarnings` are sorted alphabetically.
 - Paths are forward-slash normalized (`\` → `/`).
 - `schemaVersion` is a stable integer; breaking changes bump it.
+- History enrichment uses a bounded first-parent walk (`DEFAULT_MAX_COMMITS =
+  1000`); same history ⇒ same `churn` / `lastCommitAt` / window fields.
 
 ## Risk derivation
 
 Risk is lightweight and deterministic; it does **not** depend on the full
-impact-analysis enrichment pipeline.
+impact-analysis enrichment pipeline or on history churn.
 
 Start at `low`.
 
@@ -98,31 +126,19 @@ Sensitive patterns:
 - `.github/workflows/` (directory-prefix match)
 - `crypto.rs` (exact file-name match; covers any `crypto.rs` at any depth)
 - `migrations/` (directory-prefix match)
-- `.ledgerful/` (directory-prefix match; covers all ledgerful state files including `config.toml`)
+- `.ledgerful/` (directory-prefix match)
 - `deny.toml` (exact file-name match)
 - `SECURITY.md` (exact file-name match)
 
-All `riskReasons` are sorted alphabetically.
+## History enrichment (index-free)
 
-## Missing base commit error
+Implemented by `git::metadata::collect_path_history`, shared walk core with
+`collect_git_metadata` (web API + indexer). First-parent, newest-first, bound at
+1000 commits. No storage, no network. CI workflows should use `fetch-depth: 0`
+so the walk has history to read.
 
-When the base commit is not in the local clone (typical with
-`actions/checkout` default `fetch-depth: 1`), the engine emits a clear,
-actionable error instead of a cryptic git failure:
+## Out of scope for this surface
 
-```text
-error: base commit '<base>' is not present in the local clone.
-       This usually means the checkout was shallow (fetch-depth: 1).
-       Fix: set `fetch-depth: 0` in your actions/checkout step, or fetch the base ref explicitly.
-```
-
-This is detected from git stderr containing any of:
-`Not a valid object name`, `unknown revision`, `bad revision`,
-`does not exist`, or `Invalid symmetric difference expression`.
-
-## No-network invariant
-
-The engine slice adds zero network code. `scan --pr` shells out to `git` and
-reads the local repo state, exactly like the existing `--base-ref` path. The
-Action wrapper (a separate repo) owns the GitHub API call. The privacy grep for
-`ureq`, `reqwest`, and `tokio_tungstenite` in the scan code path must stay green.
+- Full impact analysis / indexing / LLM enrichment
+- Network calls
+- Author identity in the JSON payload

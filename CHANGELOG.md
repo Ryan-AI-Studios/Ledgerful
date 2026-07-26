@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **PR scan schema v2 + index-free history signals (0086):** `scan --pr`
+  reports now emit `schemaVersion: 2` with per-change `churn`, optional
+  `lastCommitAt`, and `isSensitive`, plus report-level `historyWindowCommits`
+  / `historyTruncated` from a bounded first-parent walk (no index, no network,
+  no author names). Optional `headHash` / `branchName` omit when unknown
+  (never serialize as JSON `null`) so detached-HEAD CI checkouts validate
+  cleanly. `analysisWarnings` is documented as reserved (still always `[]`).
 - **Authenticated SSE push channel (0085 engine):** `GET /api/events` streams
   narrow `DaemonEvent` snapshots (`pendingTransactions`, `unauditedDrift`,
   `indexReady`, `graphReady`) over Server-Sent Events with Bearer auth (no
