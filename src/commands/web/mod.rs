@@ -116,18 +116,18 @@ fn start_web(args: WebStartArgs) -> Result<()> {
 
     println!("Starting ledgerful web at {}", base_url);
 
-    if args.open {
-        // Open the browser with the fragment code; never print `#c=…` to stdout
-        // (scrollback would defeat the single-use handoff design).
-        if let Some(code) = handoff_code.as_ref() {
-            let open_url = format!("{base_url}#c={code}");
-            if let Err(e) = webbrowser::open(&open_url) {
-                tracing::warn!("Failed to open browser: {}", e);
-            }
-        }
-        // Suppress the token notice entirely when --open auto-signs-in.
-        println!("{}", format_open_notice(&base_url));
+    // Browser open is deferred until after the TCP listener is bound (see
+    // `run_server_then_open`). Opening first races the accept loop: the first
+    // navigation can fail or land without `#c=`, which leaves the SPA on Sign in.
+    let open_url = if args.open {
+        handoff_code
+            .as_ref()
+            .map(|code| format!("{base_url}#c={code}"))
     } else {
+        None
+    };
+
+    if !args.open {
         emit_token_notice(&token, args.print_token, token_file_path.as_deref());
         println!(
             "Open {} in your browser and paste the auth token to sign in.",
@@ -140,7 +140,13 @@ fn start_web(args: WebStartArgs) -> Result<()> {
         .build()
         .into_diagnostic()?;
 
-    rt.block_on(run_server(args.bind, args.port, state))?;
+    rt.block_on(run_server_then_open(
+        args.bind,
+        args.port,
+        state,
+        open_url,
+        base_url.clone(),
+    ))?;
 
     Ok(())
 }
@@ -380,7 +386,11 @@ fn run_server_blocking(args: WebStartArgs, layout: crate::state::layout::Layout)
             return;
         }
     };
-    let _ = rt.block_on(run_server(args.bind, args.port, state));
+    // No handoff open on the background path (spec §2.7).
+    let base = format!("http://{}:{}/", args.bind, args.port);
+    let _ = rt.block_on(run_server_then_open(
+        args.bind, args.port, state, None, base,
+    ));
 }
 
 #[cfg(target_os = "windows")]
@@ -476,9 +486,112 @@ fn print_web_status() -> Result<()> {
     Ok(())
 }
 
-async fn run_server(bind: String, port: u16, state: Arc<AppState>) -> Result<()> {
+/// Bind first, then open the browser (if requested), then serve forever.
+///
+/// Order matters for `--open` handoff: the SPA must load after the listener is
+/// accepting, with the `#c=` fragment intact, so `POST /api/session/exchange`
+/// can run before the operator ever pastes a token.
+async fn run_server_then_open(
+    bind: String,
+    port: u16,
+    state: Arc<AppState>,
+    open_url: Option<String>,
+    base_url: String,
+) -> Result<()> {
+    use std::net::SocketAddr;
+    use tokio::net::TcpListener;
+
+    let addr = SocketAddr::new(
+        bind.parse()
+            .map_err(|e| miette!("Invalid bind address {bind}: {e}"))?,
+        port,
+    );
+    let listener = TcpListener::bind(addr).await.into_diagnostic()?;
+    let bound = listener
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|_| addr.to_string());
+    tracing::info!("ledgerful web listening on {bound}");
+
+    if let Some(url) = open_url.as_deref() {
+        // Never print the `#c=` form (scrollback would defeat single-use handoff).
+        println!("{}", format_open_notice(&base_url));
+        if let Err(e) = open_browser_for_handoff(url) {
+            tracing::warn!("Failed to open browser for handoff: {e}");
+        }
+    }
+
     let router = server::router(state.clone());
-    server::serve(router, bind, port, state).await
+    server::serve_listener(listener, router, state, None).await
+}
+
+/// Open a URL that may contain a `#fragment` without letting the Windows shell
+/// treat `#` as a cmd comment (which strips the handoff code).
+///
+/// When `LEDGERFUL_WEB_OPEN_URL_FILE` is set, write the URL there instead of
+/// launching a browser (integration / Playwright harness only).
+fn open_browser_for_handoff(url: &str) -> Result<(), String> {
+    if let Ok(path) = std::env::var("LEDGERFUL_WEB_OPEN_URL_FILE") {
+        std::fs::write(&path, url).map_err(|e| format!("write open-url file {path}: {e}"))?;
+        return Ok(());
+    }
+    #[cfg(windows)]
+    {
+        open_browser_windows_shell_execute(url)
+    }
+    #[cfg(not(windows))]
+    {
+        webbrowser::open(url).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(windows)]
+fn open_browser_windows_shell_execute(url: &str) -> Result<(), String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn ShellExecuteW(
+            hwnd: *mut core::ffi::c_void,
+            lp_operation: *const u16,
+            lp_file: *const u16,
+            lp_parameters: *const u16,
+            lp_directory: *const u16,
+            n_show_cmd: i32,
+        ) -> isize;
+    }
+
+    fn wide(s: &str) -> Vec<u16> {
+        OsStr::new(s)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    // ShellExecuteW("open", url) preserves URL fragments; `cmd /c start`
+    // treats `#…` as a batch comment and drops the handoff code.
+    let op = wide("open");
+    let file = wide(url);
+    // > 32 means success per ShellExecute docs.
+    // Legitimate: Win32 ShellExecuteW is the supported way to open a browser with a
+    // fragment-bearing URL; no untrusted input reaches the command line.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let rc = unsafe {
+        ShellExecuteW(
+            ptr::null_mut(),
+            op.as_ptr(),
+            file.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            1, // SW_SHOWNORMAL
+        )
+    };
+    if rc as usize <= 32 {
+        return Err(format!("ShellExecuteW failed with code {rc}"));
+    }
+    Ok(())
 }
 
 fn validate_bind(bind: &str, allow_public: bool) -> Result<()> {
@@ -664,6 +777,26 @@ mod tests {
         assert!(open_url.contains("#c="));
         assert!(!open_url.contains("?"));
         assert!(!open_url.contains("&c="));
+    }
+
+    #[test]
+    fn open_before_listen_is_not_the_start_order() {
+        // start_web must open the browser only after bind (run_server_then_open),
+        // never webbrowser::open before the runtime block_on.
+        let src = include_str!("mod.rs");
+        assert!(
+            src.contains("run_server_then_open"),
+            "start_web must open the browser only after bind via run_server_then_open"
+        );
+        let start_web = src
+            .split("fn start_web")
+            .nth(1)
+            .and_then(|s| s.split("fn format_token_notice").next())
+            .expect("start_web body");
+        assert!(
+            !start_web.contains("webbrowser::open"),
+            "start_web must not call webbrowser::open before the server listens"
+        );
     }
 
     #[cfg(unix)]
