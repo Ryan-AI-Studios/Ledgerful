@@ -389,11 +389,7 @@ fn run_server_blocking(args: WebStartArgs, layout: crate::state::layout::Layout)
     // No handoff open on the background path (spec §2.7).
     let base = format!("http://{}:{}/", args.bind, args.port);
     let _ = rt.block_on(run_server_then_open(
-        args.bind,
-        args.port,
-        state,
-        None,
-        base,
+        args.bind, args.port, state, None, base,
     ));
 }
 
@@ -579,6 +575,9 @@ fn open_browser_windows_shell_execute(url: &str) -> Result<(), String> {
     let op = wide("open");
     let file = wide(url);
     // > 32 means success per ShellExecute docs.
+    // Legitimate: Win32 ShellExecuteW is the supported way to open a browser with a
+    // fragment-bearing URL; no untrusted input reaches the command line.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     let rc = unsafe {
         ShellExecuteW(
             ptr::null_mut(),
