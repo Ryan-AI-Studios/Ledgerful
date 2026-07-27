@@ -44,7 +44,7 @@ async fn spawn_server_with_spa_dir(
     spa_dir: Option<camino::Utf8PathBuf>,
 ) -> (String, String, tokio::task::JoinHandle<()>) {
     let token = generate_token();
-    let state = Arc::new(AppState::new(layout, token.clone(), spa_dir, None));
+    let state = Arc::new(AppState::new(layout, token.clone(), spa_dir, None, None));
     // Mirror production: detector publishes DaemonEvent on ledger data_version change.
     let _detector = spawn_change_detector(
         state.layout.clone(),
@@ -78,7 +78,7 @@ async fn spawn_server_graceful(
     oneshot::Sender<()>,
 ) {
     let token = generate_token();
-    let state = Arc::new(AppState::new(layout, token.clone(), None, None));
+    let state = Arc::new(AppState::new(layout, token.clone(), None, None, None));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let app = router(state.clone());

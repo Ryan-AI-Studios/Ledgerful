@@ -9,8 +9,9 @@ use utoipa::OpenApi;
 use crate::commands::web::server::{
     __path_changes_handler, __path_config_handler, __path_events_handler, __path_health_handler,
     __path_hotspots_handler, __path_ledger_handler, __path_ledger_search_handler,
-    __path_ledger_tx_handler, __path_projects_handler, __path_session_handler,
-    __path_snapshot_handler, __path_status_handler, __path_sync_status_handler,
+    __path_ledger_tx_handler, __path_projects_handler, __path_session_exchange_handler,
+    __path_session_handler, __path_snapshot_handler, __path_status_handler,
+    __path_sync_status_handler,
 };
 
 #[cfg(any(test, feature = "openapi", feature = "web"))]
@@ -31,9 +32,10 @@ pub(crate) use crate::commands::web::types::{
     HotspotTrendResponse, HotspotTrendSeries, HotspotsQueryParams, KgEdge, KgNode,
     KnowledgeGraphQuery, KnowledgeGraphResponse, LedgerDetailResponse, LedgerEntryResponse,
     LedgerListQuery, LedgerSearchQuery, ProjectResponse, SecurityBoundariesResponse,
-    SnapshotResponse, StatusResponse, SyncStatusResponse, TrendPointDto, TrendsQuery,
-    TrendsResponse, UserSession, VerificationHealthResponse, VerificationStepResponse,
-    VerificationTrendPoint, VerifyHistoryQuery,
+    SessionExchangeRequest, SessionExchangeResponse, SnapshotResponse, StatusResponse,
+    SyncStatusResponse, TrendPointDto, TrendsQuery, TrendsResponse, UserSession,
+    VerificationHealthResponse, VerificationStepResponse, VerificationTrendPoint,
+    VerifyHistoryQuery,
 };
 
 #[cfg(any(test, feature = "openapi", feature = "web"))]
@@ -47,6 +49,7 @@ pub(crate) use crate::commands::web::types::{
     paths(
         health_handler,
         session_handler,
+        session_exchange_handler,
         snapshot_handler,
         status_handler,
         events_handler,
@@ -74,6 +77,8 @@ pub(crate) use crate::commands::web::types::{
     ),
     components(schemas(
         UserSession,
+        SessionExchangeRequest,
+        SessionExchangeResponse,
         SnapshotResponse,
         StatusResponse,
         DaemonEvent,
@@ -111,7 +116,7 @@ pub(crate) use crate::commands::web::types::{
     )),
     tags(
         (name = "health", description = "Daemon liveness"),
-        (name = "session", description = "Current user session"),
+        (name = "session", description = "Current user session and single-use handoff exchange"),
         (name = "snapshot", description = "Summary metrics"),
         (name = "status", description = "Daemon health status"),
         (name = "events", description = "Authenticated SSE push channel for daemon status / ledger drift"),

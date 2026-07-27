@@ -1,10 +1,11 @@
 use camino::{Utf8Path, Utf8PathBuf};
 use ledgerful::commands::web::auth::generate_token;
 use ledgerful::commands::web::server::{make_connect_info_service, router};
-use ledgerful::commands::web::state::AppState;
+use ledgerful::commands::web::state::{AppState, HANDOFF_TTL, HandoffCode};
 use ledgerful::state::layout::Layout;
-use reqwest::header::{AUTHORIZATION, HOST, ORIGIN};
+use reqwest::header::{AUTHORIZATION, CONTENT_TYPE, HOST, ORIGIN};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tokio::net::TcpListener;
 
 struct LayoutGuard {
@@ -32,8 +33,23 @@ async fn spawn_server_with_spa(
     layout: Layout,
     spa_dir: Option<Utf8PathBuf>,
 ) -> (String, String, tokio::task::JoinHandle<()>) {
+    spawn_server_with_options(layout, spa_dir, None).await
+}
+
+async fn spawn_server_with_handoff(
+    layout: Layout,
+    handoff: Option<HandoffCode>,
+) -> (String, String, tokio::task::JoinHandle<()>) {
+    spawn_server_with_options(layout, None, handoff).await
+}
+
+async fn spawn_server_with_options(
+    layout: Layout,
+    spa_dir: Option<Utf8PathBuf>,
+    handoff: Option<HandoffCode>,
+) -> (String, String, tokio::task::JoinHandle<()>) {
     let token = generate_token();
-    let state = Arc::new(AppState::new(layout, token.clone(), spa_dir, None));
+    let state = Arc::new(AppState::new(layout, token.clone(), spa_dir, None, handoff));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
 
@@ -197,7 +213,13 @@ async fn empty_expected_token_never_authenticates() {
     assert!(validate_token(Some("   ".into()), "   ").is_err());
 
     let guard = temp_layout();
-    let state = Arc::new(AppState::new(guard.layout(), String::new(), None, None));
+    let state = Arc::new(AppState::new(
+        guard.layout(),
+        String::new(),
+        None,
+        None,
+        None,
+    ));
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let app = router(state);
@@ -514,4 +536,207 @@ async fn embedded_fallback_response_has_security_headers_and_no_hsts() {
         "embedded path must ship vendored hashes: {script_part}"
     );
     handle.abort();
+}
+
+// ---------------------------------------------------------------------------
+// Track 0090 — single-use session handoff (DoD-2/3/4/5)
+// ---------------------------------------------------------------------------
+
+/// DoD-4: exchange is reachable without Authorization AND protected routes still
+/// require a token. Both directions in one test so neither can be dropped later.
+#[tokio::test]
+async fn session_exchange_public_but_protected_routes_still_gated() {
+    let code = generate_token();
+    let guard = temp_layout();
+    let (url, token, handle) = spawn_server_with_handoff(
+        guard.layout(),
+        Some(HandoffCode {
+            code: code.clone(),
+            expires_at: Instant::now() + HANDOFF_TTL,
+        }),
+    )
+    .await;
+
+    // Public: exchange succeeds without Authorization when handoff is valid.
+    let exchange = client()
+        .post(format!("{}/api/session/exchange", url))
+        .header(CONTENT_TYPE, "application/json")
+        .body(format!(r#"{{"code":"{code}"}}"#))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        exchange.status().as_u16(),
+        200,
+        "exchange must succeed without Authorization"
+    );
+    let body: serde_json::Value =
+        serde_json::from_str(&exchange.text().await.unwrap()).expect("exchange json");
+    assert_eq!(body["token"].as_str(), Some(token.as_str()));
+
+    // Protected: these must still 403 without Authorization (layer not dropped).
+    for path in ["/api/snapshot", "/api/status", "/api/events"] {
+        let status = client()
+            .get(format!("{url}{path}"))
+            .send()
+            .await
+            .unwrap()
+            .status()
+            .as_u16();
+        assert_eq!(
+            status, 403,
+            "{path} must still require Authorization after public merge"
+        );
+    }
+    handle.abort();
+}
+
+#[tokio::test]
+async fn session_exchange_rejects_non_loopback_host() {
+    let code = generate_token();
+    let guard = temp_layout();
+    let (url, _token, handle) = spawn_server_with_handoff(
+        guard.layout(),
+        Some(HandoffCode {
+            code: code.clone(),
+            expires_at: Instant::now() + HANDOFF_TTL,
+        }),
+    )
+    .await;
+
+    let status = client()
+        .post(format!("{}/api/session/exchange", url))
+        .header(HOST, "evil.com")
+        .header(CONTENT_TYPE, "application/json")
+        .body(format!(r#"{{"code":"{code}"}}"#))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16();
+    assert_eq!(
+        status, 403,
+        "outer host_validation_layer must wrap the exchange path"
+    );
+    handle.abort();
+}
+
+#[tokio::test]
+async fn session_exchange_happy_path_and_replay_forbidden() {
+    let code = generate_token();
+    let guard = temp_layout();
+    let (url, token, handle) = spawn_server_with_handoff(
+        guard.layout(),
+        Some(HandoffCode {
+            code: code.clone(),
+            expires_at: Instant::now() + HANDOFF_TTL,
+        }),
+    )
+    .await;
+
+    let first = client()
+        .post(format!("{}/api/session/exchange", url))
+        .header(CONTENT_TYPE, "application/json")
+        .body(format!(r#"{{"code":"{code}"}}"#))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(first.status().as_u16(), 200);
+    let body: serde_json::Value =
+        serde_json::from_str(&first.text().await.unwrap()).expect("exchange json");
+    assert_eq!(body["token"].as_str(), Some(token.as_str()));
+
+    // Replay must fail (consume-on-match).
+    let second = client()
+        .post(format!("{}/api/session/exchange", url))
+        .header(CONTENT_TYPE, "application/json")
+        .body(format!(r#"{{"code":"{code}"}}"#))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16();
+    assert_eq!(second, 403, "replay after consume must 403");
+    handle.abort();
+}
+
+#[tokio::test]
+async fn session_exchange_mismatch_does_not_burn_code() {
+    let code = generate_token();
+    let guard = temp_layout();
+    let (url, token, handle) = spawn_server_with_handoff(
+        guard.layout(),
+        Some(HandoffCode {
+            code: code.clone(),
+            expires_at: Instant::now() + HANDOFF_TTL,
+        }),
+    )
+    .await;
+
+    let wrong = "0".repeat(64);
+    let mismatch = client()
+        .post(format!("{}/api/session/exchange", url))
+        .header(CONTENT_TYPE, "application/json")
+        .body(format!(r#"{{"code":"{wrong}"}}"#))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16();
+    assert_eq!(mismatch, 403, "wrong guess must 403");
+
+    // Correct code still works afterwards (not burned).
+    let ok = client()
+        .post(format!("{}/api/session/exchange", url))
+        .header(CONTENT_TYPE, "application/json")
+        .body(format!(r#"{{"code":"{code}"}}"#))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(ok.status().as_u16(), 200);
+    let body: serde_json::Value =
+        serde_json::from_str(&ok.text().await.unwrap()).expect("exchange json");
+    assert_eq!(body["token"].as_str(), Some(token.as_str()));
+    handle.abort();
+}
+
+#[tokio::test]
+async fn session_exchange_expired_and_absent_forbid() {
+    let code = generate_token();
+    let guard = temp_layout();
+    let (url, _token, handle) = spawn_server_with_handoff(
+        guard.layout(),
+        Some(HandoffCode {
+            code: code.clone(),
+            expires_at: Instant::now() - Duration::from_secs(1),
+        }),
+    )
+    .await;
+
+    let expired = client()
+        .post(format!("{}/api/session/exchange", url))
+        .header(CONTENT_TYPE, "application/json")
+        .body(format!(r#"{{"code":"{code}"}}"#))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16();
+    assert_eq!(expired, 403, "expired handoff must 403");
+    handle.abort();
+
+    // Absent handoff (no --open).
+    let guard2 = temp_layout();
+    let (url2, _token2, handle2) = spawn_server(guard2.layout()).await;
+    let absent = client()
+        .post(format!("{}/api/session/exchange", url2))
+        .header(CONTENT_TYPE, "application/json")
+        .body(format!(r#"{{"code":"{}"}}"#, generate_token()))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16();
+    assert_eq!(absent, 403, "absent handoff must 403");
+    handle2.abort();
 }
