@@ -1,11 +1,11 @@
 # Workflow A — Ledgerful PR Scan (engine dogfood)
-# Track 0068 / 0047: two-workflow fork-PR pattern. This workflow is read-only.
+# Track 0068 / 0047 / 0086: two-workflow fork-PR pattern. This workflow is read-only.
 # Untrusted PR code only runs here (scan). Workflow B posts the comment/check-run
 # and never checks out or executes PR code.
 #
-# Pin: Ryan-AI-Studios/ledgerful-action@2c8dacbc… (main after action #3–#5; no mutable tag —
-# strategy B). Engine binary: v0.1.9 + published Linux archive checksum.
-# Never reintroduce inline `./action`.
+# Pin: Ryan-AI-Studios/ledgerful-action@76e3ee8 (0086 Action PR #7 — null-tolerant
+# validator, size guards, schema v1|v2). Engine binary: v0.2.1 + published Linux
+# archive checksum (schema v2 emission). Never reintroduce inline `./action`.
 
 name: Ledgerful PR Scan
 
@@ -27,11 +27,11 @@ jobs:
       - name: Run Ledgerful PR risk scan
         id: ledgerful-scan
         # Pin ledgerful-action to a full commit SHA (no mutable tag yet).
-        uses: Ryan-AI-Studios/ledgerful-action@2c8dacbc89dafae7d13735d1d19b89062de105a3
+        uses: Ryan-AI-Studios/ledgerful-action@76e3ee8ffaa7f52c5c7bfa23d415f3a97bd8ec8f
         with:
-          ledgerful-version: v0.1.9
-          # ledgerful-x86_64-unknown-linux-gnu.tar.gz from v0.1.9 published .sha256 sidecar
-          ledgerful-checksum: ab203f8de80597dcd8294c3e87a2198113428c7a5d39cecaf8a37ce36f1a01ff
+          ledgerful-version: v0.2.1
+          # ledgerful-x86_64-unknown-linux-gnu.tar.gz from v0.2.1 published .sha256 sidecar
+          ledgerful-checksum: db8a26f4ffa44e46dd1094b8c028caf0966782c43c7d1e504acb55ca5238deda
         env:
           LEDGERFUL_NO_NETWORK: "1"
 
