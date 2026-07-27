@@ -7,13 +7,14 @@ use crate::commands::web::git_meta::{
 };
 use crate::commands::web::server::git::{current_user, fetch_changes};
 use crate::commands::web::server::health::{compute_health_score, project_status_from_score};
+use crate::commands::web::server::middleware::record_rate_limit;
 use crate::commands::web::server::startup::open_ledger_connection;
-use crate::commands::web::state::AppState;
+use crate::commands::web::state::{AppState, RATE_LIMIT_MAX_KEYS, evaluate_handoff_exchange};
 use crate::commands::web::types::{
     ChangeResponse, ChangedFileResponse, ChangesQuery, ConfigResponse, HotspotResponse,
     HotspotsQueryParams, LedgerDetailResponse, LedgerEntryResponse, LedgerListQuery,
-    LedgerSearchQuery, ProjectResponse, SnapshotResponse, StatusResponse, SyncStatusResponse,
-    UserSession, map_hotspots_to_responses,
+    LedgerSearchQuery, ProjectResponse, SessionExchangeRequest, SessionExchangeResponse,
+    SnapshotResponse, StatusResponse, SyncStatusResponse, UserSession, map_hotspots_to_responses,
 };
 use crate::config::model::Config;
 use crate::git::repo::open_repo;
@@ -26,7 +27,7 @@ use crate::ledger::error::LedgerError;
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{ConnectInfo, Path, Query, State};
 #[cfg(any(test, debug_assertions))]
 use axum::http::StatusCode;
 #[cfg(not(debug_assertions))]
@@ -35,9 +36,14 @@ use axum::response::{IntoResponse, Response};
 use miette::{Result, miette};
 use serde_json::json;
 use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio::sync::Mutex;
+
+/// Auth-fail / general rate-limit window used by the exchange path (mirrors middleware).
+const AUTH_FAIL_WINDOW: Duration = Duration::from_secs(60);
+const AUTH_FAIL_MAX: usize = 60;
 
 /// `GET /health` — daemon liveness check. Does **not** require auth.
 #[utoipa::path(
@@ -72,6 +78,68 @@ pub(crate) async fn session_handler() -> Result<impl IntoResponse, WebError> {
         role: "admin".to_string(),
     };
     Ok(Json(session))
+}
+
+/// `POST /api/session/exchange` — bootstrap the SPA from a single-use handoff code.
+///
+/// Unauthenticated by design (no `Authorization` header): the SPA exchanges the
+/// fragment code (`#c=…`) for the long-lived bearer token before any other API
+/// call. Still wrapped by outer `host_validation_layer` and `rate_limit_layer`.
+///
+/// Semantics (track 0090):
+/// - Absent / expired handoff → 403 (expired entries are cleared)
+/// - Wrong code → 403, recorded on `auth_fail_limiter`, **code not burned**
+/// - Match → consume handoff, return `{ "token": "<session>" }`
+///
+/// Never logs the handoff code or session token.
+#[utoipa::path(
+    post,
+    path = "/api/session/exchange",
+    operation_id = "exchangeSession",
+    tag = "session",
+    request_body = SessionExchangeRequest,
+    responses(
+        (status = 200, description = "Handoff accepted; session bearer token returned", body = SessionExchangeResponse),
+        (status = 403, description = "Handoff absent, expired, already consumed, or mismatched"),
+        (status = 429, description = "Auth-failure rate limit exceeded")
+    )
+)]
+pub(crate) async fn session_exchange_handler(
+    State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    Json(body): Json<SessionExchangeRequest>,
+) -> Result<impl IntoResponse, WebError> {
+    let ip = addr.ip();
+    let path = "/api/session/exchange".to_string();
+
+    let mut slot = state.handoff.lock().await;
+    let outcome = evaluate_handoff_exchange(&mut slot, &body.code, Instant::now());
+    drop(slot);
+
+    match outcome {
+        crate::commands::web::state::HandoffExchangeOutcome::Matched => {
+            Ok(Json(SessionExchangeResponse {
+                token: state.token.clone(),
+            }))
+        }
+        crate::commands::web::state::HandoffExchangeOutcome::Denied { record_auth_fail } => {
+            if record_auth_fail {
+                let now = Instant::now();
+                let mut map = state.auth_fail_limiter.lock().await;
+                // Same budget as token_layer; may return 429 when saturated.
+                record_rate_limit(
+                    &mut map,
+                    ip,
+                    path,
+                    now,
+                    RATE_LIMIT_MAX_KEYS,
+                    AUTH_FAIL_WINDOW,
+                    AUTH_FAIL_MAX,
+                )?;
+            }
+            Err(WebError::Forbidden)
+        }
+    }
 }
 
 /// `GET /api/snapshot` — summary metrics + recent change feed.

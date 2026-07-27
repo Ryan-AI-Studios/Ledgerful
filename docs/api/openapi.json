@@ -624,6 +624,44 @@
         }
       }
     },
+    "/api/session/exchange": {
+      "post": {
+        "tags": [
+          "session"
+        ],
+        "summary": "`POST /api/session/exchange` — bootstrap the SPA from a single-use handoff code.",
+        "description": "Unauthenticated by design (no `Authorization` header): the SPA exchanges the\nfragment code (`#c=…`) for the long-lived bearer token before any other API\ncall. Still wrapped by outer `host_validation_layer` and `rate_limit_layer`.\n\nSemantics (track 0090):\n- Absent / expired handoff → 403 (expired entries are cleared)\n- Wrong code → 403, recorded on `auth_fail_limiter`, **code not burned**\n- Match → consume handoff, return `{ \"token\": \"<session>\" }`\n\nNever logs the handoff code or session token.",
+        "operationId": "exchangeSession",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/SessionExchangeRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Handoff accepted; session bearer token returned",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionExchangeResponse"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Handoff absent, expired, already consumed, or mismatched"
+          },
+          "429": {
+            "description": "Auth-failure rate limit exceeded"
+          }
+        }
+      }
+    },
     "/api/snapshot": {
       "get": {
         "tags": [
@@ -1657,6 +1695,32 @@
           "meta": {}
         }
       },
+      "SessionExchangeRequest": {
+        "type": "object",
+        "description": "Request body for `POST /api/session/exchange` (track 0090).\n\nCarries the single-use handoff code from the browser fragment (`#c=…`).\nNever place this code (or the returned session token) in a URL query string.",
+        "required": [
+          "code"
+        ],
+        "properties": {
+          "code": {
+            "type": "string",
+            "description": "256-bit hex handoff code minted by `ledgerful web start --open`."
+          }
+        }
+      },
+      "SessionExchangeResponse": {
+        "type": "object",
+        "description": "Response body for a successful `POST /api/session/exchange`.\n\nReturns the long-lived session bearer token for in-memory SPA use.\nThe handoff code is consumed on success and cannot be reused.",
+        "required": [
+          "token"
+        ],
+        "properties": {
+          "token": {
+            "type": "string",
+            "description": "Session bearer token (same value as `Authorization: Bearer …`)."
+          }
+        }
+      },
       "SnapshotResponse": {
         "type": "object",
         "required": [
@@ -1965,7 +2029,7 @@
     },
     {
       "name": "session",
-      "description": "Current user session"
+      "description": "Current user session and single-use handoff exchange"
     },
     {
       "name": "snapshot",

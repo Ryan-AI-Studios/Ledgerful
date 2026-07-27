@@ -91,8 +91,10 @@ ledgerful verify --signatures --against-export ./ledgerful-DEMO-evidence.zip
 
 - **Public ledger** (`/ledger` WebCrypto on production history) — optional post-success sidebar (“also: verify our production history”), not step 3 of the same clock
 - **Dashboard** (`ledgerful web start`) — optional; the default skeptic loop is **CLI-only**.
-  Prefer auto-generated token or `LEDGERFUL_WEB_TOKEN` / `--print-token=false`
-  (writes `.ledgerful/web-session-token`); empty/short explicit tokens refuse start.
+  By default the session token is written to `.ledgerful/web-session-token` (not printed);
+  use `--print-token=true` only when you need the hex on stdout. Prefer
+  `LEDGERFUL_WEB_TOKEN` or the token file over shell history; empty/short explicit tokens
+  refuse start. `web start --open` signs in via a single-use handoff code (no paste).
   `--allow-public` requires `LEDGERFUL_WEB_PEER_ALLOWLIST`.
 - **Control-mapping / certification claims** — parked (0048); this path is signed evidence only
 
