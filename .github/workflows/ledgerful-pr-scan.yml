@@ -5,7 +5,7 @@
 #
 # Pin: Ryan-AI-Studios/ledgerful-action@76e3ee8 (0086 Action PR #7 — null-tolerant
 # validator, size guards, schema v1|v2). Engine binary: v0.2.1 + published Linux
-# archive checksum (schema v2 emission). Never reintroduce inline `./action`.
+# archive checksum (schema v2 emission). Never reintroduce inline `./action`. DoD-8 deploy proof (0086) after pin merge.
 
 name: Ledgerful PR Scan
 
