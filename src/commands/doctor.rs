@@ -453,6 +453,18 @@ pub fn execute_doctor() -> Result<()> {
         );
     }
 
+    // 0094: four-surface legacy-migration residue (WARNING only — never CRITICAL).
+    // Silent on a clean repo (R5). Each finding names an exact remediation.
+    // RT-H5 enforcement half (absolute-path pin, fail-closed) is out of scope;
+    // doctor reports gate-present-but-inert detection only.
+    if let Some(root) = camino::Utf8Path::from_path(&current_dir) {
+        let mut legacy_findings = collect_legacy_migration_findings(root, &layout);
+        legacy_findings.sort();
+        for f in legacy_findings {
+            report.index_health.push(f.yellow().to_string());
+        }
+    }
+
     print_doctor_report(&report);
     print_vram_section();
 
@@ -483,6 +495,75 @@ pub fn execute_doctor() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Four-surface legacy migration checks (0094 DoD-6). Returns sorted WARNING
+/// strings with remediation commands. Empty on a fully migrated repo.
+fn collect_legacy_migration_findings(root: &camino::Utf8Path, layout: &Layout) -> Vec<String> {
+    let mut findings = Vec::new();
+
+    // 1. Legacy state directory still present (report only — never merge/delete).
+    let legacy_dir = root.join(crate::state::layout::LEGACY_STATE_DIR);
+    if legacy_dir.is_dir() {
+        let ledger_db = legacy_dir.join("state").join("ledger.db");
+        if ledger_db.is_file() {
+            findings.push(format!(
+                "Warning [legacy-state]: retired state directory `{}` still present and contains ledger.db (not merged automatically). Current state is `{}`. After verifying the active ledger, remove the legacy directory manually if unused.",
+                legacy_dir, layout.state_dir
+            ));
+        } else {
+            findings.push(format!(
+                "Warning [legacy-state]: retired state directory `{}` still present (empty or no ledger.db). Safe to remove manually after confirming `{}` is current.",
+                legacy_dir, layout.state_dir
+            ));
+        }
+    }
+
+    // 2. Hooks: legacy invocations / markers / duplicates / RT-H5 inert gate.
+    findings.extend(crate::commands::hook_repair::doctor_legacy_hook_findings(
+        root,
+    ));
+
+    // 3. .gitignore names only the legacy path (not .ledgerful/).
+    findings.extend(doctor_gitignore_legacy_findings(root));
+
+    // 4. Config staleness / unknown keys (serde_ignored; no deny_unknown_fields).
+    findings.extend(crate::config::load::doctor_config_findings(layout));
+
+    findings.sort();
+    findings.dedup();
+    findings
+}
+
+/// Warn when `.gitignore` mentions the retired state path but not `.ledgerful/`.
+fn doctor_gitignore_legacy_findings(root: &camino::Utf8Path) -> Vec<String> {
+    let gi_path = root.join(".gitignore");
+    if !gi_path.is_file() {
+        return Vec::new();
+    }
+    let Ok(content) = std::fs::read_to_string(gi_path.as_std_path()) else {
+        return Vec::new();
+    };
+    let legacy_name = crate::state::layout::LEGACY_STATE_DIR;
+    let has_legacy = content.lines().any(|l| {
+        let t = l.trim();
+        t == legacy_name
+            || t == format!("{legacy_name}/")
+            || t == format!("/{legacy_name}")
+            || t == format!("/{legacy_name}/")
+            || t.starts_with(&format!("{legacy_name}/"))
+            || t.starts_with(&format!("/{legacy_name}/"))
+    });
+    let has_current = content
+        .lines()
+        .any(|l| crate::git::ignore::gitignore_patterns_equivalent(l, ".ledgerful/"));
+    if has_legacy && !has_current {
+        vec![
+            "Warning [legacy-gitignore]: `.gitignore` names the retired state path but not `.ledgerful/`. Run `ledgerful init` (ensures `.ledgerful/` is gitignored) or add `.ledgerful/` to `.gitignore` manually.".to_string(),
+        ]
+    } else {
+        Vec::new()
+    }
 }
 
 /// Count committed ledger entries marked Verified without a verification_results row.
@@ -1159,5 +1240,169 @@ mod tests {
             matches!(res, ProbeResult::Unreachable { ref err, retries: 0 } if err == "401 server error (Unauthorized)")
         );
         assert_eq!(count, 1); // Fail immediately, no retry
+    }
+
+    /// DoD-6 / R5: clean repo produces zero legacy-migration findings.
+    #[test]
+    fn legacy_findings_silent_on_clean_repo() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        std::fs::write(root.join(".gitignore"), "target/\n.ledgerful/\n").unwrap();
+        std::fs::create_dir_all(root.join(".git").join("hooks")).unwrap();
+        std::fs::write(
+            root.join(".git").join("hooks").join("pre-commit"),
+            "#!/bin/sh\necho ok\n",
+        )
+        .unwrap();
+
+        let findings = collect_legacy_migration_findings(root, &layout);
+        assert!(
+            findings.is_empty(),
+            "clean repo must be silent: {findings:?}"
+        );
+    }
+
+    /// DoD-6: Design-shaped residue produces expected finding categories.
+    #[test]
+    fn legacy_findings_report_four_surfaces() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        // Both dirs present (no-merge case) so legacy state is still visible.
+        layout.ensure_state_dir().unwrap();
+        let legacy = root.join(crate::state::layout::LEGACY_STATE_DIR);
+        std::fs::create_dir_all(legacy.join("state")).unwrap();
+        std::fs::write(legacy.join("state").join("ledger.db"), b"x").unwrap();
+
+        // Gitignore only names the legacy path.
+        std::fs::write(
+            root.join(".gitignore"),
+            format!("{}/\n", crate::state::layout::LEGACY_STATE_DIR),
+        )
+        .unwrap();
+
+        // Legacy hook marker + invocation.
+        std::fs::create_dir_all(root.join(".git").join("hooks")).unwrap();
+        let brand = crate::state::layout::LEGACY_STATE_DIR.trim_start_matches('.');
+        std::fs::write(
+            root.join(".git").join("hooks").join("pre-commit"),
+            format!(
+                "#!/bin/sh\n# {brand}-ledger-gate: x\nif command -v {brand} &>/dev/null; then\n  {brand} ledger status\nfi\n"
+            ),
+        )
+        .unwrap();
+
+        // Unknown config keys.
+        std::fs::write(
+            layout.config_file(),
+            "[core]\nstrict = false\n[totally_unknown_section]\nx = 1\n",
+        )
+        .unwrap();
+
+        let findings = collect_legacy_migration_findings(root, &layout);
+        assert!(
+            findings.iter().any(|f| f.contains("legacy-state")),
+            "state: {findings:?}"
+        );
+        assert!(
+            findings.iter().any(|f| f.contains("legacy-hooks")),
+            "hooks: {findings:?}"
+        );
+        assert!(
+            findings.iter().any(|f| f.contains("legacy-gitignore")),
+            "gitignore: {findings:?}"
+        );
+        assert!(
+            findings.iter().any(|f| f.contains("legacy-config")),
+            "config: {findings:?}"
+        );
+        // Deterministic sort.
+        let mut sorted = findings.clone();
+        sorted.sort();
+        assert_eq!(findings, sorted);
+        // Remediation commands named.
+        assert!(
+            findings.iter().any(|f| f.contains("update --repair-hooks")),
+            "must name repair command: {findings:?}"
+        );
+    }
+
+    /// DoD-12: documented sequence auto-clears state/hooks/gitignore; config
+    /// residual may remain as WARNING with named remediation (spec §4 forbids
+    /// auto-rewriting user config). Not a "fully clean doctor" claim.
+    #[test]
+    fn e2e_four_surface_stale_auto_surfaces_clean_config_may_remain() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+
+        // Surface 1: legacy state dir only (will migrate on load_startup_config).
+        let legacy = root.join(crate::state::layout::LEGACY_STATE_DIR);
+        std::fs::create_dir_all(legacy.join("state")).unwrap();
+        std::fs::write(legacy.join("state").join("marker"), "x").unwrap();
+        std::fs::write(
+            legacy.join("config.toml"),
+            "[core]\nstrict = false\n[totally_unknown_section]\nx = 1\n",
+        )
+        .unwrap();
+
+        // Surface 3: gitignore only legacy.
+        std::fs::write(
+            root.join(".gitignore"),
+            format!("target/\n{}/\n", crate::state::layout::LEGACY_STATE_DIR),
+        )
+        .unwrap();
+
+        // Surface 2: legacy hooks.
+        std::fs::create_dir_all(root.join(".git").join("hooks")).unwrap();
+        let brand = crate::state::layout::LEGACY_STATE_DIR.trim_start_matches('.');
+        std::fs::write(
+            root.join(".git").join("hooks").join("pre-commit"),
+            format!(
+                "#!/bin/sh\n# {brand}-ledger-gate: auto-installed by `{brand} init`\nif command -v {brand} &>/dev/null; then\n    if ! {brand} ledger status --compact --exit-code 2>/dev/null; then\n        exit 1\n    fi\nfi\n"
+            ),
+        )
+        .unwrap();
+
+        let layout = Layout::new(root);
+
+        // Documented sequence step 1: repo-scoped command → migrate + gitignore
+        // side-effect on successful rename (emulate load_startup_config).
+        let renamed = layout.migrate_legacy_state_dir().unwrap();
+        assert!(renamed);
+        crate::git::ignore::add_to_gitignore(root, ".ledgerful/").unwrap();
+
+        // Documented sequence step 2: update --repair-hooks.
+        let report = crate::commands::hook_repair::repair_hooks_at(root, false).unwrap();
+        assert!(
+            report.residual_invocations.is_empty(),
+            "hooks must be fully repaired: {report:?}"
+        );
+
+        // After steps 1–2: auto-fixed surfaces must be clean.
+        // Unknown config keys may still warn until the user edits config — that
+        // is reported with remediation, not auto-rewritten (spec §4).
+        let findings = collect_legacy_migration_findings(root, &layout);
+        assert!(
+            !findings.iter().any(|f| f.contains("legacy-hooks")),
+            "hooks clean after repair: {findings:?}"
+        );
+        assert!(
+            !findings.iter().any(|f| f.contains("legacy-gitignore")),
+            "gitignore has .ledgerful/ after migrate: {findings:?}"
+        );
+        assert!(
+            !findings.iter().any(|f| f.contains("legacy-state")),
+            "legacy dir renamed away: {findings:?}"
+        );
+        // Config residual is allowed and must name explicit remediation
+        // (review/init) — never silent auto-rewrite.
+        if let Some(cfg_f) = findings.iter().find(|f| f.contains("legacy-config")) {
+            assert!(
+                cfg_f.contains("init") || cfg_f.contains("Review"),
+                "config finding must name remediation: {cfg_f}"
+            );
+        }
     }
 }

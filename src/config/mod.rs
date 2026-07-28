@@ -9,6 +9,6 @@ pub mod starter;
 pub mod validate;
 
 pub use error::ConfigError;
-pub use load::load_config;
+pub use load::{doctor_config_findings, load_config, load_config_with_unknown_keys};
 pub use model::Config;
 pub use validate::validate_config;
