@@ -6,7 +6,26 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **TypeScript + Python function signature extraction (0091 Part B):** extractors
+  write `metadata.signature` / `metadata.signatureShape` for `.ts`/`.tsx`/`.js`/
+  `.jsx`/`.py`, so `SignatureDeltaProvider` no longer silently no-ops on those
+  languages. Python covers the full parameter grammar (typed/default/variadic/
+  `/`/`*` separators as modifiers, binding-decorator allowlist). TypeScript
+  covers existing forms plus query widening: interface/abstract
+  `method_signature`, `function_signature`, and **named** arrows only
+  (`variable_declarator`, class field, `export default` → path-qualified
+  `{path.dots}.default`, e.g. `src.foo.index.default`). Anonymous arrows are
+  skipped. `.tsx`/`.jsx` symbol parse uses `LANGUAGE_TSX`. See
+  `docs/Signature-Diff.md`.
+
 ### Changed
+
+- **TypeScript symbol population (0091 behaviour change):** query widening adds
+  interface methods, declare-function signatures, and named arrows to
+  `project_symbols`. **Dead-code, centrality, and coupling outputs can move**
+  for TypeScript/JavaScript trees. Python is metadata-only (no new symbols).
 
 - **Call-graph resolution precision (0089 Parts A+B):** shared `resolve_callee`
   for full and incremental index paths. Candidates restricted to callable kinds

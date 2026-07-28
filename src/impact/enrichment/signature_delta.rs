@@ -696,4 +696,336 @@ mod tests {
         deltas.sort_unstable();
         assert!(deltas[0].symbol_name <= deltas[1].symbol_name);
     }
+
+    // --- 0091 DoD-6: end-to-end through SignatureDeltaProvider for TS + Python ---
+
+    #[test]
+    fn enrich_python_param_type_change_is_shape() {
+        let dir = tempdir().unwrap();
+        init_git_repo(dir.path());
+        let prev_src = "def greet(name: str) -> bool:\n    return True\n";
+        let curr_src = "def greet(name: int) -> bool:\n    return True\n";
+        fs::write(dir.path().join("app.py"), prev_src).unwrap();
+        assert!(git(dir.path(), &["add", "."]).status.success());
+        assert!(git(dir.path(), &["commit", "-m", "init"]).status.success());
+        fs::write(dir.path().join("app.py"), curr_src).unwrap();
+
+        let curr_syms = crate::index::languages::python::extract_symbols(curr_src)
+            .unwrap()
+            .unwrap();
+        let (storage, config) = enrichment_ctx();
+        let context = EnrichmentContext {
+            storage: &storage,
+            config: &config,
+            file_id_map: HashMap::new(),
+            project_root: dir.path().to_path_buf(),
+            warnings: Arc::new(Mutex::new(Vec::new())),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+        };
+        let mut packet = ImpactPacket {
+            changes: vec![changed_file("app.py", "Modified", None, Some(curr_syms))],
+            ..Default::default()
+        };
+        SignatureDeltaProvider
+            .enrich(&context, &mut packet)
+            .unwrap();
+        assert_eq!(
+            packet.signature_deltas.len(),
+            1,
+            "expected shape delta, got {:?}",
+            packet.signature_deltas
+        );
+        assert_eq!(packet.signature_deltas[0].change_class, "shape");
+        assert!(
+            packet.signature_deltas[0].symbol_name.contains("greet"),
+            "{}",
+            packet.signature_deltas[0].symbol_name
+        );
+    }
+
+    #[test]
+    fn enrich_python_rename_only_is_cosmetic() {
+        let dir = tempdir().unwrap();
+        init_git_repo(dir.path());
+        let prev_src = "def greet(name: str) -> bool:\n    return True\n";
+        let curr_src = "def greet(who: str) -> bool:\n    return True\n";
+        fs::write(dir.path().join("app.py"), prev_src).unwrap();
+        assert!(git(dir.path(), &["add", "."]).status.success());
+        assert!(git(dir.path(), &["commit", "-m", "init"]).status.success());
+        fs::write(dir.path().join("app.py"), curr_src).unwrap();
+
+        let curr_syms = crate::index::languages::python::extract_symbols(curr_src)
+            .unwrap()
+            .unwrap();
+        let (storage, config) = enrichment_ctx();
+        let context = EnrichmentContext {
+            storage: &storage,
+            config: &config,
+            file_id_map: HashMap::new(),
+            project_root: dir.path().to_path_buf(),
+            warnings: Arc::new(Mutex::new(Vec::new())),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+        };
+        let mut packet = ImpactPacket {
+            changes: vec![changed_file("app.py", "Modified", None, Some(curr_syms))],
+            ..Default::default()
+        };
+        SignatureDeltaProvider
+            .enrich(&context, &mut packet)
+            .unwrap();
+        assert_eq!(packet.signature_deltas.len(), 1);
+        assert_eq!(packet.signature_deltas[0].change_class, "cosmetic");
+    }
+
+    #[test]
+    fn enrich_python_body_only_no_delta() {
+        let dir = tempdir().unwrap();
+        init_git_repo(dir.path());
+        let prev_src = "def greet(name: str) -> bool:\n    return True\n";
+        let curr_src = "def greet(name: str) -> bool:\n    return False\n";
+        fs::write(dir.path().join("app.py"), prev_src).unwrap();
+        assert!(git(dir.path(), &["add", "."]).status.success());
+        assert!(git(dir.path(), &["commit", "-m", "init"]).status.success());
+        fs::write(dir.path().join("app.py"), curr_src).unwrap();
+
+        let curr_syms = crate::index::languages::python::extract_symbols(curr_src)
+            .unwrap()
+            .unwrap();
+        let (storage, config) = enrichment_ctx();
+        let context = EnrichmentContext {
+            storage: &storage,
+            config: &config,
+            file_id_map: HashMap::new(),
+            project_root: dir.path().to_path_buf(),
+            warnings: Arc::new(Mutex::new(Vec::new())),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+        };
+        let mut packet = ImpactPacket {
+            changes: vec![changed_file("app.py", "Modified", None, Some(curr_syms))],
+            ..Default::default()
+        };
+        SignatureDeltaProvider
+            .enrich(&context, &mut packet)
+            .unwrap();
+        assert!(
+            packet.signature_deltas.is_empty(),
+            "body-only must not emit: {:?}",
+            packet.signature_deltas
+        );
+    }
+
+    #[test]
+    fn enrich_typescript_param_type_change_is_shape() {
+        let dir = tempdir().unwrap();
+        init_git_repo(dir.path());
+        let prev_src = "export function greet(name: string): boolean { return true; }\n";
+        let curr_src = "export function greet(name: number): boolean { return true; }\n";
+        fs::write(dir.path().join("app.ts"), prev_src).unwrap();
+        assert!(git(dir.path(), &["add", "."]).status.success());
+        assert!(git(dir.path(), &["commit", "-m", "init"]).status.success());
+        fs::write(dir.path().join("app.ts"), curr_src).unwrap();
+
+        let curr_syms = crate::index::languages::typescript::extract_symbols(
+            curr_src,
+            Some(std::path::Path::new("app.ts")),
+        )
+        .unwrap()
+        .unwrap();
+        let (storage, config) = enrichment_ctx();
+        let context = EnrichmentContext {
+            storage: &storage,
+            config: &config,
+            file_id_map: HashMap::new(),
+            project_root: dir.path().to_path_buf(),
+            warnings: Arc::new(Mutex::new(Vec::new())),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+        };
+        let mut packet = ImpactPacket {
+            changes: vec![changed_file("app.ts", "Modified", None, Some(curr_syms))],
+            ..Default::default()
+        };
+        SignatureDeltaProvider
+            .enrich(&context, &mut packet)
+            .unwrap();
+        assert_eq!(
+            packet.signature_deltas.len(),
+            1,
+            "expected shape delta, got {:?}",
+            packet.signature_deltas
+        );
+        assert_eq!(packet.signature_deltas[0].change_class, "shape");
+    }
+
+    #[test]
+    fn enrich_typescript_rename_only_is_cosmetic() {
+        let dir = tempdir().unwrap();
+        init_git_repo(dir.path());
+        let prev_src = "export function greet(name: string): boolean { return true; }\n";
+        let curr_src = "export function greet(who: string): boolean { return true; }\n";
+        fs::write(dir.path().join("app.ts"), prev_src).unwrap();
+        assert!(git(dir.path(), &["add", "."]).status.success());
+        assert!(git(dir.path(), &["commit", "-m", "init"]).status.success());
+        fs::write(dir.path().join("app.ts"), curr_src).unwrap();
+
+        let curr_syms = crate::index::languages::typescript::extract_symbols(
+            curr_src,
+            Some(std::path::Path::new("app.ts")),
+        )
+        .unwrap()
+        .unwrap();
+        let (storage, config) = enrichment_ctx();
+        let context = EnrichmentContext {
+            storage: &storage,
+            config: &config,
+            file_id_map: HashMap::new(),
+            project_root: dir.path().to_path_buf(),
+            warnings: Arc::new(Mutex::new(Vec::new())),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+        };
+        let mut packet = ImpactPacket {
+            changes: vec![changed_file("app.ts", "Modified", None, Some(curr_syms))],
+            ..Default::default()
+        };
+        SignatureDeltaProvider
+            .enrich(&context, &mut packet)
+            .unwrap();
+        assert_eq!(packet.signature_deltas.len(), 1);
+        assert_eq!(packet.signature_deltas[0].change_class, "cosmetic");
+    }
+
+    #[test]
+    fn enrich_typescript_body_only_no_delta() {
+        let dir = tempdir().unwrap();
+        init_git_repo(dir.path());
+        let prev_src = "export function greet(name: string): boolean { return true; }\n";
+        let curr_src = "export function greet(name: string): boolean { return false; }\n";
+        fs::write(dir.path().join("app.ts"), prev_src).unwrap();
+        assert!(git(dir.path(), &["add", "."]).status.success());
+        assert!(git(dir.path(), &["commit", "-m", "init"]).status.success());
+        fs::write(dir.path().join("app.ts"), curr_src).unwrap();
+
+        let curr_syms = crate::index::languages::typescript::extract_symbols(
+            curr_src,
+            Some(std::path::Path::new("app.ts")),
+        )
+        .unwrap()
+        .unwrap();
+        let (storage, config) = enrichment_ctx();
+        let context = EnrichmentContext {
+            storage: &storage,
+            config: &config,
+            file_id_map: HashMap::new(),
+            project_root: dir.path().to_path_buf(),
+            warnings: Arc::new(Mutex::new(Vec::new())),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+        };
+        let mut packet = ImpactPacket {
+            changes: vec![changed_file("app.ts", "Modified", None, Some(curr_syms))],
+            ..Default::default()
+        };
+        SignatureDeltaProvider
+            .enrich(&context, &mut packet)
+            .unwrap();
+        assert!(
+            packet.signature_deltas.is_empty(),
+            "body-only must not emit: {:?}",
+            packet.signature_deltas
+        );
+    }
+
+    /// DoD-6: provider shape delta + semantic analyzer emit `Signature changed:` (py+ts).
+    #[test]
+    fn enrich_then_semantic_emits_signature_changed_reason_py_and_ts() {
+        use crate::config::Config;
+        use crate::impact::analysis::ImpactProvider;
+        use crate::impact::analysis::semantic::SemanticImpactProvider;
+        use crate::policy::rules::Rules;
+
+        // Python
+        {
+            let dir = tempdir().unwrap();
+            init_git_repo(dir.path());
+            let prev = "def greet(name: str) -> bool:\n    return True\n";
+            let curr = "def greet(name: int) -> bool:\n    return True\n";
+            fs::write(dir.path().join("app.py"), prev).unwrap();
+            assert!(git(dir.path(), &["add", "."]).status.success());
+            assert!(git(dir.path(), &["commit", "-m", "init"]).status.success());
+            fs::write(dir.path().join("app.py"), curr).unwrap();
+            let curr_syms = crate::index::languages::python::extract_symbols(curr)
+                .unwrap()
+                .unwrap();
+            let (storage, config) = enrichment_ctx();
+            let context = EnrichmentContext {
+                storage: &storage,
+                config: &config,
+                file_id_map: HashMap::new(),
+                project_root: dir.path().to_path_buf(),
+                warnings: Arc::new(Mutex::new(Vec::new())),
+                deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            };
+            let mut packet = ImpactPacket {
+                changes: vec![changed_file("app.py", "Modified", None, Some(curr_syms))],
+                ..Default::default()
+            };
+            SignatureDeltaProvider
+                .enrich(&context, &mut packet)
+                .unwrap();
+            let impact = SemanticImpactProvider
+                .analyze(&packet, &Rules::default(), &Config::default())
+                .unwrap();
+            assert!(
+                impact
+                    .reasons
+                    .iter()
+                    .any(|r| r.starts_with("Signature changed:")),
+                "python expected Signature changed, got {:?}",
+                impact.reasons
+            );
+        }
+
+        // TypeScript
+        {
+            let dir = tempdir().unwrap();
+            init_git_repo(dir.path());
+            let prev = "export function greet(name: string): boolean { return true; }\n";
+            let curr = "export function greet(name: number): boolean { return true; }\n";
+            fs::write(dir.path().join("app.ts"), prev).unwrap();
+            assert!(git(dir.path(), &["add", "."]).status.success());
+            assert!(git(dir.path(), &["commit", "-m", "init"]).status.success());
+            fs::write(dir.path().join("app.ts"), curr).unwrap();
+            let curr_syms = crate::index::languages::typescript::extract_symbols(
+                curr,
+                Some(std::path::Path::new("app.ts")),
+            )
+            .unwrap()
+            .unwrap();
+            let (storage, config) = enrichment_ctx();
+            let context = EnrichmentContext {
+                storage: &storage,
+                config: &config,
+                file_id_map: HashMap::new(),
+                project_root: dir.path().to_path_buf(),
+                warnings: Arc::new(Mutex::new(Vec::new())),
+                deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            };
+            let mut packet = ImpactPacket {
+                changes: vec![changed_file("app.ts", "Modified", None, Some(curr_syms))],
+                ..Default::default()
+            };
+            SignatureDeltaProvider
+                .enrich(&context, &mut packet)
+                .unwrap();
+            let impact = SemanticImpactProvider
+                .analyze(&packet, &Rules::default(), &Config::default())
+                .unwrap();
+            assert!(
+                impact
+                    .reasons
+                    .iter()
+                    .any(|r| r.starts_with("Signature changed:")),
+                "typescript expected Signature changed, got {:?}",
+                impact.reasons
+            );
+        }
+    }
 }
