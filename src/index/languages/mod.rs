@@ -18,7 +18,7 @@ pub fn parse_symbols(path: &Path, content: &str) -> Result<Option<Vec<Symbol>>> 
 
     match extension {
         "rs" => rust::extract_symbols(content),
-        "ts" | "tsx" | "js" | "jsx" => typescript::extract_symbols(content),
+        "ts" | "tsx" | "js" | "jsx" => typescript::extract_symbols(content, Some(path)),
         "py" => python::extract_symbols(content),
         "go" => go::extract_symbols(content),
         _ => Ok(None),
