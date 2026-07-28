@@ -217,9 +217,23 @@ pub fn extract_symbols(content: &str) -> Result<Option<Vec<Symbol>>> {
                 // - trait method decls → TraitName.method
                 // - impl methods → TypeName.method (matches Go Receiver.method)
                 // Free functions keep qualified_name: None.
+                // Trait default methods are `function_item` inside `trait_item`
+                // (body present); declarations without a body are
+                // `function_signature_item`. Try impl first, then trait.
+                // Codex R2 P3: qualify + promote trait defaults so same-name
+                // methods do not collide as unqualified Functions.
                 let qualified_name = match node.kind() {
                     "function_signature_item" => qualify_trait_method(node, content, &name),
-                    "function_item" => qualify_impl_method(node, content, &name),
+                    "function_item" => {
+                        if let Some(qn) = qualify_impl_method(node, content, &name) {
+                            Some(qn)
+                        } else if let Some(qn) = qualify_trait_method(node, content, &name) {
+                            kind = SymbolKind::Method;
+                            Some(qn)
+                        } else {
+                            None
+                        }
+                    }
                     _ => None,
                 };
 
@@ -871,6 +885,31 @@ mod tests {
             .find(|s| s.name == "free_new")
             .expect("free_new");
         assert_eq!(free.qualified_name, None);
+    }
+
+    /// Codex R2 P3: trait default methods (`function_item` inside trait) get
+    /// Trait.method qualification and Method kind.
+    #[test]
+    fn trait_default_method_with_body_is_qualified() {
+        let content = r#"
+            pub trait Reader {
+                fn read(&self) -> usize { 0 }
+                fn name(&self) -> &str;
+            }
+        "#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let read = symbols
+            .iter()
+            .find(|s| s.name == "read")
+            .expect("trait default read");
+        assert_eq!(read.kind, SymbolKind::Method);
+        assert_eq!(read.qualified_name.as_deref(), Some("Reader.read"));
+        assert!(read.metadata.contains_key("signatureShape"));
+        let name_m = symbols
+            .iter()
+            .find(|s| s.name == "name" && s.kind == SymbolKind::Method)
+            .expect("signature-only name");
+        assert_eq!(name_m.qualified_name.as_deref(), Some("Reader.name"));
     }
 
     /// Codex 0088 P2: nested local `fn` inside an impl method must NOT be
