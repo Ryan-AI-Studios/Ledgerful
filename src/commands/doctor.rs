@@ -440,6 +440,7 @@ pub fn execute_doctor() -> Result<()> {
     }
 
     print_sccache_hint();
+    print_scip_hint();
 
     // DoD-6: doctor exit non-zero when any CRITICAL present.
     if critical_count > 0 {
@@ -557,6 +558,54 @@ fn print_sccache_hint() {
             "CARGO_INCREMENTAL=1".cyan()
         );
     }
+}
+
+/// SCIP availability hints (0095 DoD-13). Optional accelerators — never put
+/// indexers in `DoctorReport.tools` (NotFound counts as failure). Absence is
+/// not a doctor failure. Sorted findings via [`collect_scip_findings`].
+fn print_scip_hint() {
+    let findings = collect_scip_findings();
+    if findings.is_empty() {
+        return;
+    }
+    println!();
+    for line in findings {
+        println!("{} {}", "Hint:".cyan().bold(), line);
+    }
+}
+
+/// Per-language SCIP capability report for doctor (0095).
+///
+/// Returns a **sorted** `Vec<String>` of human-readable lines. Empty when
+/// every wired language has a capable indexer (rare). Never contributes to
+/// `count_doctor_failures`. Go is reported as upstream-exists / not-wired.
+fn collect_scip_findings() -> Vec<String> {
+    use crate::scip::ScipToolchain;
+
+    let mut findings = Vec::new();
+    for (tool, available) in ScipToolchain::probe_all_languages() {
+        if available {
+            findings.push(format!(
+                "SCIP {}: {} available — `ledgerful index --auto-scip` can add precise reference edges on native symbols",
+                tool.language_label(),
+                tool.exe_name()
+            ));
+        } else {
+            findings.push(format!(
+                "SCIP {}: {} not available (capability probe). Install with `{}` to enable precise cross-file references via --auto-scip",
+                tool.language_label(),
+                tool.exe_name(),
+                tool.install_hint()
+            ));
+        }
+    }
+    // Go: upstream indexer exists, not wired in this track (spec §2.11 / §4)
+    findings.push(
+        "SCIP Go: upstream scip-go exists, not wired here — native Go tree-sitter path only"
+            .to_string(),
+    );
+    findings.sort();
+    findings
 }
 
 /// Result of a doctor availability probe for an optional/advertised backend.
@@ -1168,6 +1217,39 @@ mod tests {
             report.display.contains("Not configured"),
             "got: {}",
             report.display
+        );
+    }
+
+    /// 0095 DoD-13: SCIP findings never go in tools; absence is not a failure.
+    #[test]
+    fn scip_findings_sorted_and_mention_go_unwired() {
+        let findings = collect_scip_findings();
+        assert!(!findings.is_empty(), "expected at least Go unwired line");
+        let mut sorted = findings.clone();
+        sorted.sort();
+        assert_eq!(findings, sorted, "findings must be sorted");
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.contains("scip-go") || f.contains("not wired")),
+            "must report Go as upstream/not wired: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn doctor_zero_failures_without_scip_indexers_in_tools() {
+        // Indexers must not appear in DoctorReport.tools (NotFound = failure).
+        let tools = vec![(
+            "git".to_string(),
+            ExecutableStatus::Found(PathBuf::from("git")),
+        )];
+        let report = sample_report(&tools);
+        assert_eq!(count_doctor_failures(&report), 0);
+        // Ensure we don't accidentally count SCIP-ish tool names
+        assert!(
+            !tools
+                .iter()
+                .any(|(n, _)| n.contains("scip") || n.contains("rust-analyzer"))
         );
     }
 

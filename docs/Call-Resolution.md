@@ -81,8 +81,32 @@ for name+path heuristics is roughly **1–2% of structural edges**:
   (e.g. `…/my-util` declaring `package util`) are not statically resolvable at
   file level without a directory-level package parse.
 
-Do not claim completeness against stack graphs or compiler-grade SCIP resolution.
-SCIP occurrence ingest into `structural_edges` is a separate deferred track.
+## SCIP augment (0095)
+
+`ledgerful index --auto-scip` (or `--scip <path>`) **augments** the native call graph; it never
+replaces it. Ordering:
+
+1. Native full/incremental index builds `project_symbols` and heuristic `structural_edges`.
+2. SCIP index is generated (or loaded) and **definitions** are mapped to native symbol ids via
+   document path + range containment (0-based SCIP → 1-based native; innermost span wins).
+3. SCIP **reference** occurrences become additional `structural_edges` with `evidence = scip:ref`,
+   `resolution_status = RESOLVED`, high confidence. Unmapped caller or callee → skip (never guess).
+
+**Precedence (deterministic):** when SCIP and native both have an edge for the same
+`(caller_symbol_id, callee_symbol_id, call_kind)`, prefer SCIP evidence — update the existing row's
+`evidence` to `scip:ref` rather than inserting a duplicate.
+
+**What SCIP does not do here:** write `project_symbols` (that path was removed — external symbols,
+off-by-one lines, and last-occurrence ranges are gone with it); flip on by default; cover every
+language in one run (detection still picks one toolchain for generation by Rust → TS → Python
+priority); receiver-type inference for the ambiguous `METHOD_CALL` majority on machines without an
+indexer.
+
+**Honesty:** "SCIP did not run" (`scip.status = did_not_run` in `index --json`) is distinct from
+"SCIP ran and added zero edges" (`status = success` with `edges_added = 0`). Do not claim
+compiler-grade completeness against stack graphs; SCIP only adds edges where the resolver hits.
+
+A prior native index is **no longer required** for `--auto-scip`: native indexing always runs first.
 
 ## What this cannot do
 

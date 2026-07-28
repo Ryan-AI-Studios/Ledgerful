@@ -10,8 +10,26 @@ use thiserror::Error;
 /// basename variants so path-resolved shims still match.
 pub fn builtin_allowed_commands() -> Vec<String> {
     const BASES: &[&str] = &[
-        "cargo", "npm", "pnpm", "yarn", "npx", "node", "bun", "deno", "python", "python3",
-        "pytest", "pip", "go", "make", "git",
+        "cargo",
+        "npm",
+        "pnpm",
+        "yarn",
+        "npx",
+        "node",
+        "bun",
+        "deno",
+        "python",
+        "python3",
+        "pytest",
+        "pip",
+        "go",
+        "make",
+        "git",
+        // SCIP indexers spawned by `index --auto-scip` (0095). Operators can
+        // still deny via verify.denied_commands.
+        "rust-analyzer",
+        "scip-typescript",
+        "scip-python",
     ];
     let mut out = Vec::with_capacity(BASES.len() * 4);
     for base in BASES {

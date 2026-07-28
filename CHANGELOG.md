@@ -8,6 +8,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **SCIP doctor hints (0095):** `doctor` reports per-language SCIP capability
+  (probe, not PATH) and install commands; Go noted as upstream-exists / not
+  wired. Optional accelerators are **never** put in `DoctorReport.tools` and
+  do not count as doctor failures.
 - **Semantic search honesty docs (0096):** `docs/Semantic-Search.md` documents
   backend/index states, `--semantic-dry-run`, and the ban on conflating
   “semantic did not run” with “no semantic matches.”
@@ -21,6 +25,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **SCIP augments the native index (0095, user-visible):** `--auto-scip` /
+  `--scip <PATH>` no longer early-return or replace the native pipeline. SCIP
+  runs after `build_call_graph` (and again inside `--analyze-graph` before
+  centrality/KG) and adds reference edges onto **native** symbol ids with
+  `evidence=scip:ref`. Detection is a base-exe `--version` capability probe
+  (rustup shims resolve unavailable). Process policy uses the configured
+  verify allow/deny list. `index --json` always includes a `scip` object with
+  an explicit status (`did_not_run` / `success` / `failed` / `skipped_stale`).
+  **Default remains off** (`auto_scip: false` on implicit index paths).
 - **Semantic readiness wire shape (0096):** `SemanticReadiness` replaces
   `endpoint_available: bool` with `backend_status` (`not_configured` /
   `unreachable` / `ready`) plus `zero_vector_count`. JSON consumers of
@@ -42,6 +55,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **SCIP no longer writes `project_symbols` (0095, user-visible):** the old
+  ingest path wrote external/stdlib symbols into local files, used 0-based
+  lines against 1-based native rows, and kept the last occurrence's range.
+  SCIP now only contributes `structural_edges` via a definition→native
+  resolver. `scip_indices` is cleared with other project tables so staleness
+  cannot outlive wiped rows. Fresh-clone `--auto-scip` produces a complete
+  native index (native floor first).
 - **Semantic search honesty (0096, user-visible):** with no embedding backend
   configured, `index --semantic` **refuses** instead of fabricating and storing
   all-zero vectors. `vector_store.index_chunks` rejects zero-length and

@@ -41,7 +41,11 @@ Understand the "blast radius" of any change before it is committed.
 Compiler-grade search and conceptual discovery.
 
 *   **Trigram Regex Search**: Sub-millisecond regex discovery using Tantivy and custom Trigram pre-filters.
-*   **LSP Integration (SCIP)**: Ingest SCIP indices for exact, compiler-precise navigation and symbol mapping.
+*   **SCIP augment (optional)**: `index --auto-scip` / `index --scip <path>` run **after** the native
+    call graph and add precise cross-file **reference edges** onto native `project_symbols` ids
+    (`structural_edges` with `evidence=scip:ref`). SCIP does **not** write symbols, does not replace
+    the native index, and is off by default. Requires a capable per-language indexer (capability
+    probe, not PATH alone). See `docs/Call-Resolution.md`.
 *   **Semantic Discovery**: AST-based chunking and local vector embeddings for conceptual/natural-language code search.
 
 ## 4. Predictable Verification

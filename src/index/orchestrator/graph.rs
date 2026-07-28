@@ -1,6 +1,8 @@
 use super::ProjectIndexer;
+use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use miette::Result;
+use std::path::PathBuf;
 use tracing::{info, warn};
 
 /// Run the full graph analysis pipeline used by `index --analyze-graph`.
@@ -12,24 +14,38 @@ use tracing::{info, warn};
 /// centrality, and (if requested) runs semantic enrichment via the local
 /// model.
 ///
-/// Returns the computed `CentralityStats` so callers (e.g. `index
-/// --analyze-graph`) can surface entry-point/symbol/reachability counts
-/// without recomputing. Returns zeroed stats if CozoDB is unavailable, so
-/// callers degrade gracefully on platforms without graph storage.
+/// Returns the computed `CentralityStats` and optional SCIP augment result
+/// so callers (e.g. `index --analyze-graph`) can surface counts without
+/// recomputing. Returns zeroed stats if CozoDB is unavailable, so callers
+/// degrade gracefully on platforms without graph storage.
+///
+/// SCIP: when `auto_scip` / `scip_path` is set, re-runs edge augment after
+/// `infer_services` and **before** `build_kg_native` + `compute_centrality`
+/// (0095 §2.2b — the second pipeline pass deletes edges inserted earlier).
+#[allow(clippy::too_many_arguments)]
 pub fn run_graph_analysis(
     storage: StorageManager,
     repo_path: &std::path::Path,
     config: &crate::config::model::Config,
     enable_semantic: bool,
     fast: bool,
-) -> Result<crate::index::centrality::CentralityStats> {
+    auto_scip: bool,
+    scip_path: Option<PathBuf>,
+    layout: Option<&Layout>,
+) -> Result<(
+    crate::index::centrality::CentralityStats,
+    Option<crate::scip::ScipIndexJson>,
+)> {
     let Some(cozo) = storage.cozo.as_ref() else {
         info!("CozoDB not available, skipping graph analysis");
-        return Ok(crate::index::centrality::CentralityStats {
-            entry_points_count: 0,
-            symbols_computed: 0,
-            max_reachable: 0,
-        });
+        return Ok((
+            crate::index::centrality::CentralityStats {
+                entry_points_count: 0,
+                symbols_computed: 0,
+                max_reachable: 0,
+            },
+            None,
+        ));
     };
     // Light pre-flight: if the CozoDB store is reachable but empty, we still
     // want to run the full pipeline because `observability diff` needs the
@@ -60,10 +76,30 @@ pub fn run_graph_analysis(
         indexer.infer_services()?;
     }
 
+    // SCIP augment after services, before KG + centrality (0095 §2.2b)
+    let scip_json = if auto_scip || scip_path.is_some() {
+        let owned_layout;
+        let layout_ref = if let Some(l) = layout {
+            l
+        } else {
+            owned_layout = Layout::new(&repo_path);
+            &owned_layout
+        };
+        Some(crate::scip::maybe_run_scip_augment(
+            layout_ref,
+            indexer.storage_mut(),
+            config,
+            auto_scip,
+            scip_path,
+        ))
+    } else {
+        None
+    };
+
     indexer.build_kg_native(&config.local_model, &config.gemini, enable_semantic, fast)?;
     let cent_stats = indexer.compute_centrality()?;
 
-    Ok(cent_stats)
+    Ok((cent_stats, scip_json))
 }
 
 pub fn build_kg_native(
