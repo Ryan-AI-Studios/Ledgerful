@@ -1838,8 +1838,7 @@ fi
             report.discovery_notes
         );
         assert!(
-            report.repaired.contains(&"pre-commit".to_string())
-                || report.residual_invocations.is_empty(),
+            report.repaired.contains(&"pre-commit".to_string()),
             "expected repair of hooks at absolute inside path: {:?}",
             report
         );
