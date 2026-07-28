@@ -48,8 +48,9 @@ Surfaces must distinguish:
 1. **Semantic search did not run** (not configured / unreachable) — fallback copy says so.
 2. **Semantic index empty** (backend ready, no vectors) — remediate with `index --semantic`.
 3. **No semantic matches** (backend ready, index populated, query returned nothing).
+4. **Semantic search failed** (backend ready, but embed/query errored) — say **failed** with a short error and fall back to BM25/`ask` non-semantic context. Never claim “no matches.”
 
-Never collapse (1) or (2) into “no semantic matches.”
+Never collapse (1), (2), or (4) into “no semantic matches.”
 
 ## What happens without a backend
 

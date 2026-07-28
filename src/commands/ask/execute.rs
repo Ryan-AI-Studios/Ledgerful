@@ -1,3 +1,4 @@
+use crate::commands::ask::context::SemanticGather;
 use crate::commands::ask::{
     Backend, build_ask_user_prompt, degrade_to_context, fetch_kg_bm25, fetch_kg_neighborhood,
     gather_semantic_chunks, resolve_backend, resolve_provider_entries, run_gemini_synthesis,
@@ -359,13 +360,37 @@ pub fn execute_ask(
         );
     }
 
-    let mut relevant_chunks = gather_semantic_chunks(
+    // DoD-4/8: never treat embed/query Err as "no semantic matches".
+    // Track gather kind (without holding chunks) for honest KG-fallback notes.
+    #[derive(Clone, Copy)]
+    enum SemanticGatherKind {
+        Succeeded,
+        Skipped,
+        Failed,
+    }
+    let (mut relevant_chunks, semantic_gather_kind) = match gather_semantic_chunks(
         &storage,
         &query_string,
         limit,
         &config.local_model,
         is_global,
-    );
+    ) {
+        SemanticGather::Chunks(chunks) => (chunks, SemanticGatherKind::Succeeded),
+        SemanticGather::Skipped { reason } => {
+            tracing::warn!("Semantic context skipped: {reason}");
+            // Readiness messages already cover NotConfigured; keep a debug trail only.
+            (Vec::new(), SemanticGatherKind::Skipped)
+        }
+        SemanticGather::Failed { reason } => {
+            tracing::warn!("Semantic context failed: {reason}");
+            eprintln!(
+                "{} Semantic search failed (continuing with non-semantic context): {}",
+                "WARN".yellow().bold(),
+                reason
+            );
+            (Vec::new(), SemanticGatherKind::Failed)
+        }
+    };
 
     if relevant_chunks.is_empty() {
         relevant_chunks = pruner::query_relevant_chunks(
@@ -381,17 +406,25 @@ pub fn execute_ask(
             Vec::new()
         });
 
-        // KG Fallback logic
+        // KG Fallback logic — wording must not claim "index empty" on failure/skip.
         if is_global
             && relevant_chunks.is_empty()
             && !no_kg_fallback
             && let Some(cozo) = &storage.cozo
             && let Some(kg_bm25_context) = fetch_kg_bm25(cozo, &query_string, limit)
         {
-            eprintln!(
-                "{}",
-                "Note: semantic index empty — using KG text search for context".yellow()
-            );
+            let note = match semantic_gather_kind {
+                SemanticGatherKind::Failed => {
+                    "Note: semantic search failed — using KG text search for context"
+                }
+                SemanticGatherKind::Skipped => {
+                    "Note: semantic search did not run — using KG text search for context"
+                }
+                SemanticGatherKind::Succeeded => {
+                    "Note: semantic index empty — using KG text search for context"
+                }
+            };
+            eprintln!("{}", note.yellow());
             relevant_chunks.push(pruner::RankedChunk {
                 source: "Knowledge Graph (BM25)".to_string(),
                 content: kg_bm25_context,

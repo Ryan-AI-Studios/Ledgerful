@@ -102,21 +102,37 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         if !args.json {
             println!("[Search Mode: Semantic]");
         }
-        // On Err: print empty-result once and fall through to BM25.
+        // On Err: print *failure* message (never Ready "no matches") and fall through.
         // On Ok([]): print empty-result once in the empty branch below.
-        // Never both (P3 double-emit).
+        // Never both (P3 double-emit). JSON Err emits record_kind "semantic_error".
         let (results, query_succeeded) = match semantic_engine.query(&args.query, args.limit) {
             Ok(r) => (r, true),
             Err(e) => {
-                // Unconfigured / unreachable / other query failure: degrade to BM25.
-                if !args.json {
-                    println!(
-                        "{} {}",
-                        "WARN".yellow().bold(),
-                        crate::semantic::semantic_empty_result_message(&readiness)
-                    );
-                    debug!("Semantic query failed: {e}");
+                // Unconfigured / unreachable / Ready runtime failure: degrade to BM25
+                // with honesty about whether the search ran or failed.
+                let failure_msg = crate::semantic::semantic_query_failure_message(&readiness, &e);
+                if args.json {
+                    let record = BridgeRecord {
+                        bridge_version: BridgeRecord::VERSION.to_string(),
+                        direction: BridgeDirection::Outbound,
+                        timestamp: chrono::Utc::now(),
+                        parent_hash: None,
+                        project_id: args.project_id.clone(),
+                        session_id: None,
+                        tx_id: None,
+                        record_kind: "semantic_error".to_string(),
+                        payload: BridgePayload::Insight {
+                            memory_id: "semantic_error".to_string(),
+                            relevance: 0.0,
+                            content: failure_msg,
+                        },
+                        privacy: Privacy::ProjectLocal,
+                    };
+                    println!("{}", serde_json::to_string(&record).unwrap_or_default());
+                } else {
+                    println!("{} {}", "WARN".yellow().bold(), failure_msg);
                 }
+                debug!("Semantic query failed: {e}");
                 (Vec::new(), false)
             }
         };
@@ -158,7 +174,7 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
             return Ok(());
         }
 
-        // Only after a successful query that returned no hits.
+        // Only after a successful query that returned no hits (true empty / no-matches).
         if query_succeeded && !args.json {
             println!(
                 "{} ⚠️ {}",

@@ -120,8 +120,12 @@ pub fn semantic_readiness_messages(readiness: &SemanticReadiness) -> Vec<String>
     msgs
 }
 
-/// Fallback copy when semantic query returned no hits (DoD-4 / DoD-8).
+/// Fallback copy when semantic query **succeeded** with zero hits (DoD-4 / DoD-8).
 /// Distinguishes "did not run usefully" from "ran, no matches".
+///
+/// Never use this for `query` `Err` under `BackendStatus::Ready` — that path
+/// must use [`semantic_query_failure_message`] so a transient embed/store
+/// failure is not claimed as "no matches".
 pub fn semantic_empty_result_message(readiness: &SemanticReadiness) -> String {
     match readiness.backend_status {
         BackendStatus::NotConfigured => {
@@ -143,6 +147,59 @@ pub fn semantic_empty_result_message(readiness: &SemanticReadiness) -> String {
         BackendStatus::Ready => {
             "No relevant code snippets found semantically. Showing BM25 results.".to_string()
         }
+    }
+}
+
+/// User-facing copy when semantic `query` returned `Err` (DoD-4 / DoD-8).
+///
+/// - **NotConfigured / Unreachable**: reuse "did not run" config wording (backend
+///   was never usable; error is secondary).
+/// - **Ready**: must say semantic search **failed** (include a short error),
+///   never "no matches" / "no relevant". Mentions BM25 fallback when falling through.
+pub fn semantic_query_failure_message(
+    readiness: &SemanticReadiness,
+    error: &dyn std::fmt::Display,
+) -> String {
+    match readiness.backend_status {
+        BackendStatus::NotConfigured => {
+            "Semantic search did not run: embedding backend not configured. \
+             Set `local_model.base_url` (or `local_model.embedding_url`). \
+             Showing BM25 results."
+                .to_string()
+        }
+        BackendStatus::Unreachable => {
+            "Semantic search did not run: embedding endpoint unreachable. \
+             Check your model server. Showing BM25 results."
+                .to_string()
+        }
+        BackendStatus::Ready => {
+            let detail = error.to_string();
+            let first_line = detail
+                .lines()
+                .next()
+                .filter(|l| !l.is_empty())
+                .unwrap_or("unknown error");
+            format!("Semantic search failed: {first_line}. Falling back to BM25 results.")
+        }
+    }
+}
+
+/// Pure decision for post-query messaging when there are no hits to display.
+///
+/// - `query_succeeded == true` → successful empty (use empty-result copy)
+/// - `query_succeeded == false` → query/embed failed (use failure copy; never
+///   Ready "no matches")
+///
+/// Extracted so command-level honesty is unit-testable without driving full CLI I/O.
+pub fn semantic_no_results_message(
+    readiness: &SemanticReadiness,
+    query_succeeded: bool,
+    error: Option<&str>,
+) -> String {
+    if query_succeeded {
+        semantic_empty_result_message(readiness)
+    } else {
+        semantic_query_failure_message(readiness, &error.unwrap_or("unknown error"))
     }
 }
 
@@ -722,5 +779,137 @@ mod tests {
             msgs.iter().all(|m| !recommends_semantic_index(m)),
             "Unreachable + zeros must not recommend index --semantic: {msgs:?}"
         );
+    }
+
+    fn ready_populated() -> SemanticReadiness {
+        SemanticReadiness {
+            backend_status: BackendStatus::Ready,
+            model_name: "nomic".to_string(),
+            dimensions: 768,
+            vector_count: 42,
+            zero_vector_count: 0,
+            is_stale: false,
+            dimension_mismatch: false,
+        }
+    }
+
+    /// Codex R1 / DoD-4: Ready + query Err must never use "no matches" empty copy.
+    #[test]
+    fn query_failure_message_ready_says_failed_not_no_matches() {
+        let readiness = ready_populated();
+        let msg = semantic_query_failure_message(&readiness, &"embed HTTP 503");
+        assert!(
+            msg.to_lowercase().contains("fail"),
+            "Ready failure must say failed: {msg}"
+        );
+        assert!(
+            !msg.to_lowercase().contains("no relevant"),
+            "Ready failure must not claim no matches: {msg}"
+        );
+        assert!(
+            !msg.contains("did not run"),
+            "Ready failure is not a config skip: {msg}"
+        );
+        assert!(
+            msg.contains("embed HTTP 503"),
+            "must include short error detail: {msg}"
+        );
+        assert!(msg.contains("BM25"), "must mention BM25 fallback: {msg}");
+    }
+
+    /// NotConfigured query Err reuses did-not-run wording (config-related).
+    #[test]
+    fn query_failure_message_not_configured_did_not_run() {
+        let readiness = SemanticReadiness {
+            backend_status: BackendStatus::NotConfigured,
+            model_name: String::new(),
+            dimensions: 0,
+            vector_count: 0,
+            zero_vector_count: 0,
+            is_stale: false,
+            dimension_mismatch: false,
+        };
+        let msg = semantic_query_failure_message(&readiness, &"embedding backend not configured");
+        assert!(
+            msg.contains("did not run"),
+            "NotConfigured Err reuses did-not-run: {msg}"
+        );
+        assert!(
+            !msg.to_lowercase().contains("no relevant"),
+            "must not claim no matches: {msg}"
+        );
+        assert!(!recommends_semantic_index(&msg));
+    }
+
+    /// Unreachable query Err reuses did-not-run wording.
+    #[test]
+    fn query_failure_message_unreachable_did_not_run() {
+        let readiness = SemanticReadiness {
+            backend_status: BackendStatus::Unreachable,
+            model_name: "nomic".to_string(),
+            dimensions: 768,
+            vector_count: 0,
+            zero_vector_count: 0,
+            is_stale: false,
+            dimension_mismatch: false,
+        };
+        let msg = semantic_query_failure_message(&readiness, &"connection refused");
+        assert!(
+            msg.contains("did not run") || msg.contains("unreachable"),
+            "Unreachable Err reuses config-path wording: {msg}"
+        );
+        assert!(!msg.to_lowercase().contains("no relevant"));
+    }
+
+    /// Pure decision: Ready + Err → failure message; Ready + Ok empty → no-matches.
+    #[test]
+    fn no_results_message_ready_err_vs_empty_success() {
+        let readiness = ready_populated();
+
+        let on_err = semantic_no_results_message(&readiness, false, Some("store timeout"));
+        assert!(
+            on_err.to_lowercase().contains("fail"),
+            "Err path under Ready must use failure copy: {on_err}"
+        );
+        assert!(
+            !on_err.to_lowercase().contains("no relevant"),
+            "Err path must not use empty-result Ready wording: {on_err}"
+        );
+        assert!(on_err.contains("store timeout"), "{on_err}");
+
+        let on_empty_ok = semantic_no_results_message(&readiness, true, None);
+        assert!(
+            on_empty_ok.contains("No relevant") || on_empty_ok.contains("no relevant"),
+            "Ok([]) under Ready uses no-matches copy: {on_empty_ok}"
+        );
+        assert!(
+            !on_empty_ok.to_lowercase().contains("fail"),
+            "successful empty must not say failed: {on_empty_ok}"
+        );
+    }
+
+    /// NotConfigured empty success and Err both avoid "no relevant".
+    #[test]
+    fn no_results_message_unconfigured_never_no_matches() {
+        let readiness = SemanticReadiness {
+            backend_status: BackendStatus::NotConfigured,
+            model_name: String::new(),
+            dimensions: 0,
+            vector_count: 0,
+            zero_vector_count: 0,
+            is_stale: false,
+            dimension_mismatch: false,
+        };
+        for succeeded in [true, false] {
+            let msg = semantic_no_results_message(&readiness, succeeded, Some("no backend"));
+            assert!(
+                msg.contains("did not run"),
+                "unconfigured must say did not run (succeeded={succeeded}): {msg}"
+            );
+            assert!(
+                !msg.to_lowercase().contains("no relevant"),
+                "unconfigured must not claim no matches (succeeded={succeeded}): {msg}"
+            );
+        }
     }
 }
