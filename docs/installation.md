@@ -66,6 +66,34 @@ xattr -d com.apple.quarantine "$(which ledgerful)"
 
 The durable fix is codesign + notarize in the release pipeline; the `xattr` path is an interim workaround only.
 
+## Migrating from ChangeGuard (legacy name)
+
+If a repository still has residue from the pre-rename product name, complete migration with this
+sequence only (no other steps required):
+
+```powershell
+# 1. Any repo-scoped command renames `.changeguard/` → `.ledgerful/` and ensures
+#    `.ledgerful/` is listed in `.gitignore` (the legacy gitignore line is left in place).
+ledgerful doctor
+
+# 2. Repair installed git hooks (markers + invocations). Discoverability surface is this flag —
+#    do not confuse with `ledgerful ledger hook-repair` (sidecar transaction repair).
+ledgerful update --repair-hooks
+
+# 3. Re-check. Doctor is silent on a clean repo; any remaining WARNING names the exact next step.
+ledgerful doctor
+```
+
+Notes:
+
+- Legacy state directories that still exist **alongside** `.ledgerful/` are reported but never
+  auto-merged or deleted (two provenance chains). Remove manually only after you confirm the
+  active ledger is correct.
+- Hook discovery honours `core.hooksPath` and linked worktrees; hooks outside the repository are
+  reported and never rewritten. Husky / lefthook / pre-commit managed hooks are refused.
+- Stale config keys load with defaults and surface as doctor WARNINGs — they are never a hard
+  parse failure (`deny_unknown_fields` is intentionally not used).
+
 ## Requirements
 
 For release binaries:

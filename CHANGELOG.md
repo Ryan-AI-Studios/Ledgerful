@@ -6,6 +6,22 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Legacy migration completion (0094):** state-dir rename now also ensures
+  `.ledgerful/` is gitignored (anchoring-aware equivalence so `/.ledgerful/`
+  already counts), emits a one-line migration record, and no longer leaves
+  state un-ignored. `hook_repair` normalizes legacy gate markers, covers
+  `scan` invocations, two-tier de-duplicates dual-marker hooks, and never
+  reports a hook as repaired while a retired-binary invocation remains.
+  Hook discovery honours `core.hooksPath` and linked-worktree `commondir`,
+  refuses outside-repo rewrites, and re-detects husky on the resolved path.
+  Config load warns on parse failure (no silent defaults); unknown keys are
+  reported via `serde_ignored` through `doctor` (no `deny_unknown_fields`).
+  `doctor` reports all four residue surfaces as WARNINGs with remediation
+  (`ledgerful update --repair-hooks`). See `docs/installation.md`
+  ("Migrating from ChangeGuard").
+
 ### Added
 
 - **Module + import binding resolution (0092 Part 1):** per-file `file_bindings`

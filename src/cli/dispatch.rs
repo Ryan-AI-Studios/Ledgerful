@@ -11,7 +11,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
     let layout = crate::state::layout::Layout::new(current_dir.to_string_lossy().as_ref());
 
     // Global commands must not mutate the current repository before dispatch.
-    // `load_startup_config` migrates legacy state (e.g. `.changeguard` ->
+    // `load_startup_config` migrates legacy state (retired brand dir ->
     // `.ledgerful`) in the current working directory, which would violate the
     // read-only invariant for `ledger status --global` and `timings --global`.
     // For global commands we load only the user-level config; the per-repo
@@ -425,8 +425,36 @@ fn is_global_command(cmd: &Commands) -> bool {
 fn load_startup_config(
     layout: &crate::state::layout::Layout,
 ) -> Result<crate::config::model::Config> {
-    layout.migrate_legacy_state_dir()?;
-    Ok(crate::config::load::load_config(layout).unwrap_or_default())
+    // 0094: migrate + gitignore side-effect live at this seam (not in `state`)
+    // so the state crate does not depend on git. On rename we ensure
+    // `.ledgerful/` is ignored — finishing an operation the tool started
+    // (spec §3.1 / §4 single exception). The stale legacy gitignore line is
+    // left in place and only reported by doctor.
+    let renamed = layout.migrate_legacy_state_dir()?;
+    if renamed {
+        match crate::git::ignore::add_to_gitignore(&layout.root, ".ledgerful/") {
+            Ok(true) => {
+                tracing::info!("Added .ledgerful/ to .gitignore after migrating state directory")
+            }
+            Ok(false) => {}
+            Err(e) => {
+                tracing::warn!("Failed to add .ledgerful/ to .gitignore after state migration: {e}")
+            }
+        }
+    }
+    // DoD-7: warn-then-default on parse failure (same idiom as load_user_config).
+    // Do NOT introduce deny_unknown_fields — old configs must keep loading;
+    // unknown keys are reported via doctor / serde_ignored (DoD-8).
+    match crate::config::load::load_config(layout) {
+        Ok(cfg) => Ok(cfg),
+        Err(e) => {
+            tracing::warn!(
+                "Failed to parse config at {}: {e}. Using defaults.",
+                layout.config_file()
+            );
+            Ok(Default::default())
+        }
+    }
 }
 
 fn load_user_config() -> Result<crate::config::model::Config> {
@@ -1640,6 +1668,13 @@ fn handle_schema_error(err: miette::Error) -> Result<()> {
 mod rename_tests {
     use super::*;
     use camino::Utf8Path;
+    use std::sync::{Mutex, OnceLock};
+
+    /// Serialize cwd-mutating tests so parallel nextest workers do not race.
+    fn cwd_lock() -> &'static Mutex<()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(()))
+    }
 
     #[test]
     fn startup_config_migrates_legacy_state_before_loading() {
@@ -1659,5 +1694,118 @@ mod rename_tests {
         assert_eq!(config.verify.default_timeout_secs, 917);
         assert!(!legacy.exists());
         assert!(layout.config_file().exists());
+    }
+
+    /// DoD-1: Design-shaped fixture — legacy dir + gitignore only legacy path.
+    /// After migrate, `.ledgerful/` is present in `.gitignore`.
+    #[test]
+    fn startup_migration_ensures_ledgerful_gitignore() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let legacy = root.join(concat!(".change", "guard"));
+        std::fs::create_dir_all(legacy.join("state")).unwrap();
+        std::fs::write(legacy.join("state").join("marker"), "x").unwrap();
+        // Only the legacy path is ignored (Design shape).
+        std::fs::write(
+            root.join(".gitignore"),
+            format!("target/\n.{}/\n", concat!("change", "guard")),
+        )
+        .unwrap();
+
+        let layout = crate::state::layout::Layout::new(root);
+        let _ = load_startup_config(&layout).unwrap();
+
+        assert!(!legacy.exists());
+        assert!(layout.state_dir.exists());
+        let gi = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+        assert!(
+            gi.lines()
+                .any(|l| crate::git::ignore::gitignore_patterns_equivalent(l, ".ledgerful/")),
+            ".gitignore must contain a .ledgerful/ equivalent after migration; got:\n{gi}"
+        );
+    }
+
+    /// DoD-1 / R3: repo already ignoring `.ledgerful/` gets no .gitignore write.
+    #[test]
+    fn startup_migration_no_gitignore_write_when_already_present() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let legacy = root.join(concat!(".change", "guard"));
+        std::fs::create_dir_all(&legacy).unwrap();
+        let original_gi = "target/\n.ledgerful/\n";
+        std::fs::write(root.join(".gitignore"), original_gi).unwrap();
+
+        let layout = crate::state::layout::Layout::new(root);
+        let _ = load_startup_config(&layout).unwrap();
+
+        let after = std::fs::read_to_string(root.join(".gitignore")).unwrap();
+        assert_eq!(after, original_gi);
+    }
+
+    /// DoD-7: malformed config produces a warning (via tracing) and defaults.
+    #[test]
+    fn startup_config_malformed_uses_defaults_without_panic() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = crate::state::layout::Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        std::fs::write(layout.config_file(), "this is not = valid toml {{").unwrap();
+
+        let config = load_startup_config(&layout).unwrap();
+        // Defaults: strict is false.
+        assert!(!config.core.strict);
+    }
+
+    /// DoD-10: global command path must not rename the legacy state directory.
+    /// Invokes the real `run_with` dispatch path (not the rollup builder alone).
+    #[test]
+    fn global_command_does_not_rename_legacy_state_dir() {
+        let _guard = cwd_lock().lock().unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let legacy = root.join(concat!(".change", "guard"));
+        std::fs::create_dir_all(&legacy).unwrap();
+        std::fs::write(legacy.join("marker"), "preserve").unwrap();
+
+        let original = std::env::current_dir().unwrap();
+        std::env::set_current_dir(tmp.path()).unwrap();
+
+        let cli = Cli {
+            verbose: false,
+            command: Commands::Timings {
+                global: true,
+                json: true,
+                top: None,
+                days: None,
+                export: None,
+                inner: false,
+                command: None,
+                flame: false,
+                explain: None,
+                prune: false,
+                older_than: None,
+                opt_in: false,
+                opt_out: false,
+            },
+        };
+        // May fail for unrelated reasons (no timing data / user config); rename
+        // must still not have occurred.
+        let _ = run_with(cli);
+
+        std::env::set_current_dir(original).unwrap();
+
+        assert!(
+            legacy.exists(),
+            "global command must not rename legacy state directory"
+        );
+        assert!(
+            !root.join(".ledgerful").exists()
+                || std::fs::read_to_string(legacy.join("marker")).unwrap() == "preserve",
+            "legacy marker must remain under the legacy path"
+        );
+        assert_eq!(
+            std::fs::read_to_string(legacy.join("marker")).unwrap(),
+            "preserve"
+        );
     }
 }

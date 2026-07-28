@@ -6,7 +6,9 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 pub const STATE_DIR: &str = ".ledgerful";
-const LEGACY_STATE_DIR: &str = concat!(".change", "guard");
+/// Retired state-directory name (built with `concat!` so the brand is not a
+/// greppable literal). Public for doctor / migration residue detection (0094).
+pub const LEGACY_STATE_DIR: &str = concat!(".change", "guard");
 pub const LOGS_DIR: &str = "logs";
 pub const TMP_DIR: &str = "tmp";
 pub const REPORTS_DIR: &str = "reports";
@@ -98,7 +100,13 @@ impl Layout {
     }
 
     pub fn ensure_state_dir(&self) -> Result<()> {
-        self.migrate_legacy_state_dir()?;
+        // Migration rename + one-line record live here. The `.gitignore`
+        // side-effect (ensure `.ledgerful/` is ignored after rename) is
+        // applied at the `load_startup_config` seam in `cli/dispatch.rs` so
+        // `state` does not depend on `git` (CLAUDE.md boundaries). Callers
+        // that migrate outside that seam must invoke
+        // `crate::git::ignore::add_to_gitignore` themselves.
+        let _renamed = self.migrate_legacy_state_dir()?;
         self.ensure_dir(&self.state_dir)?;
         self.ensure_dir(&self.logs_dir())?;
         self.ensure_dir(&self.tmp_dir())?;
@@ -109,21 +117,27 @@ impl Layout {
         Ok(())
     }
 
-    pub fn migrate_legacy_state_dir(&self) -> Result<()> {
+    /// Rename a legacy state directory to the current name when needed.
+    ///
+    /// Returns `true` if a rename was performed. On success emits a one-line
+    /// `tracing::info!` record naming both paths (DoD-2). Does **not** edit
+    /// `.gitignore` — that side-effect is applied at the dispatch startup
+    /// seam to keep the `state`/`git` boundary clean.
+    pub fn migrate_legacy_state_dir(&self) -> Result<bool> {
         self.migrate_legacy_state_dir_with(|old, new| fs::rename(old, new))
     }
 
-    fn migrate_legacy_state_dir_with<F>(&self, rename: F) -> Result<()>
+    fn migrate_legacy_state_dir_with<F>(&self, rename: F) -> Result<bool>
     where
         F: FnOnce(&Utf8Path, &Utf8Path) -> std::io::Result<()>,
     {
         if self.state_dir.exists() {
-            return Ok(());
+            return Ok(false);
         }
 
         let legacy_state_dir = self.root.join(LEGACY_STATE_DIR);
         if !legacy_state_dir.exists() {
-            return Ok(());
+            return Ok(false);
         }
 
         rename(&legacy_state_dir, &self.state_dir).map_err(|source| {
@@ -133,7 +147,12 @@ impl Layout {
                 source,
             }
         })?;
-        Ok(())
+        tracing::info!(
+            "Migrated state directory from {} to {}",
+            legacy_state_dir,
+            self.state_dir
+        );
+        Ok(true)
     }
 
     pub fn ensure_dir(&self, path: &Utf8Path) -> Result<()> {
@@ -300,6 +319,20 @@ mod tests {
         );
         assert!(legacy_state_dir.join("marker").exists());
         assert!(!layout.state_dir.exists());
+    }
+
+    #[test]
+    fn migrate_returns_true_only_when_rename_occurs() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        assert!(!layout.migrate_legacy_state_dir().unwrap());
+
+        let legacy = root.join(LEGACY_STATE_DIR);
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("marker"), "x").unwrap();
+        assert!(layout.migrate_legacy_state_dir().unwrap());
+        assert!(!layout.migrate_legacy_state_dir().unwrap());
     }
 
     #[test]
