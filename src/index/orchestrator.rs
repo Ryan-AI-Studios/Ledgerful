@@ -60,6 +60,8 @@ mod lifecycle;
 mod parsing;
 mod topology;
 
+pub use parsing::IndexedFileWithEdges;
+
 impl ProjectIndexer {
     pub fn new(storage: StorageManager, repo_path: Utf8PathBuf, config: Config) -> Self {
         Self {
@@ -131,18 +133,12 @@ impl ProjectIndexer {
     ) -> Result<(
         crate::index::types::ProjectFile,
         Vec<crate::index::types::ProjectSymbol>,
+        Vec<crate::index::bindings::FileBinding>,
     )> {
         parsing::index_file(self, path)
     }
 
-    pub fn index_file_with_edges(
-        &self,
-        path: &camino::Utf8Path,
-    ) -> Result<(
-        crate::index::types::ProjectFile,
-        Vec<crate::index::types::ProjectSymbol>,
-        Vec<crate::index::call_graph::CallEdge>,
-    )> {
+    pub fn index_file_with_edges(&self, path: &camino::Utf8Path) -> Result<IndexedFileWithEdges> {
         parsing::index_file_with_edges(self, path)
     }
 

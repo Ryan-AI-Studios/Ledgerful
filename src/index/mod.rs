@@ -1,6 +1,8 @@
 pub mod advisories;
 pub mod analysis;
 pub mod ast_worker;
+/// File-scope import/mod bindings for call resolution (0092).
+pub mod bindings;
 pub mod call_graph;
 pub mod centrality;
 pub mod ci_gates;
@@ -16,6 +18,8 @@ pub mod incremental;
 pub mod languages;
 pub mod metrics;
 pub mod migrations;
+/// Module path derivation from source file paths (0092).
+pub mod module_path;
 pub mod normalize;
 pub mod observability;
 pub mod orchestrator;

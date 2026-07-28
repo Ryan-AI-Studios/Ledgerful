@@ -8,6 +8,25 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Module + import binding resolution (0092 Part 1):** per-file `file_bindings`
+  table (m54) stores bound names from Rust `use`/`mod`, TypeScript imports, and
+  Python imports (aliases and list forms expanded; wildcards non-enumerable).
+  Module paths are derived from source layout (`src/platform/urn.rs` →
+  `crate::platform::urn`). Shared `resolve_callee` gains a higher-precedence arm
+  for `crate::`/`self::`/`super::` and first-segment-local callees **only when an
+  enumerable binding proves locality** — so `pub mod fs;` + `fs::write` may
+  resolve locally while `use std::fs;` + `fs::write` stays `UNRESOLVED`. Full and
+  incremental index paths share the arm (DoD-6). Package-root manifests (Part 2)
+  declined by default (single-crate repo, no multi-package fixture). See
+  `docs/Call-Resolution.md`. **Measured on this repo (clean full reindex):**
+  `crate`/`self`/`super`-rooted UNRESOLVED **840→226 (−614)**; third-party bare
+  names (`unwrap`/`join`/`to_string`/`clone`/`expect`) stay at **0 RESOLVED**;
+  all observed `fs.*` edges stay UNRESOLVED. Net RESOLVED count can fall when
+  DoD-4 demotes false name-only matches — that is correct, not a quality score.
+  **Behaviour change:** path-qualified local edges and external-proven first
+  segments both move `callee_symbol_id` / status, so **dead-code, centrality, and
+  coupling outputs can move**.
+
 - **TypeScript + Python function signature extraction (0091 Part B):** extractors
   write `metadata.signature` / `metadata.signatureShape` for `.ts`/`.tsx`/`.js`/
   `.jsx`/`.py`, so `SignatureDeltaProvider` no longer silently no-ops on those

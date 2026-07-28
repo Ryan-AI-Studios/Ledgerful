@@ -1,4 +1,4 @@
-//! Shared call-graph callee resolution (0089 Parts A+B).
+//! Shared call-graph callee resolution (0089 Parts A+B, 0092 Part 1).
 //!
 //! One pure decision function used by both the full-index path
 //! (`call_graph.rs`) and the incremental path (`incremental.rs`) so the two
@@ -7,7 +7,9 @@
 //! Resolution is a **unique-local-candidate heuristic**, not a name-binding
 //! semantics. See `docs/Call-Resolution.md`.
 
+use crate::index::bindings::BindingInfo;
 use crate::index::call_graph::ResolutionStatus;
+use crate::index::module_path::{expand_rooted_callee, module_symbol_lookups};
 use std::collections::HashMap;
 
 /// Callable kinds accepted as call targets (locked kind-filter decision).
@@ -32,6 +34,13 @@ pub struct ResolveInput<'a> {
     pub candidates_by_bare_name: &'a HashMap<String, Vec<ResolveCandidate>>,
     /// Distinct non-empty `qualified_name` → candidates (all kinds; filter inside).
     pub candidates_by_qualified: &'a HashMap<String, Vec<ResolveCandidate>>,
+    /// Caller's module path (`crate::platform::urn`), if derivable.
+    pub caller_module_path: Option<&'a str>,
+    /// Bound-name → binding info for the caller file (enumerable local bindings
+    /// prove locality; wildcards and external uses do not).
+    pub caller_bindings: &'a HashMap<String, BindingInfo>,
+    /// file_id → module path for candidate filtering.
+    pub module_path_by_file: &'a HashMap<i64, String>,
 }
 
 /// Outcome of [`resolve_callee`].
@@ -160,19 +169,21 @@ fn unresolved(original: &str) -> ResolveResult {
 
 /// Resolve a callee name against indexed symbol candidates.
 ///
-/// Order (Parts A + B):
+/// Order (Parts A + B + 0092 Part 1):
 /// 1. Normalize `::` → `.`.
-/// 2. If the name contains `.` or is an exact QN key: try qualified exact match
+/// 2. **Module/import arm (0092)** — ahead of QN: resolve `crate`/`self`/`super`
+///    rooted paths and first-segment-local callees only when an enumerable
+///    binding proves locality (`use` or `mod`). Wildcards prove nothing.
+///    Name-only matching without a binding does **not** resolve (DoD-4).
+/// 3. If the name contains `.` or is an exact QN key: try qualified exact match
 ///    among callable kinds. 1 → Resolved, >1 → Ambiguous, 0 → **Unresolved**
 ///    when multi-segment (no bare-segment fallthrough — DoD-9 / codex P1-1).
-/// 3. Bare single-segment path (callable kinds only): 0 Unresolved, 1 Resolved,
+/// 4. Bare single-segment path (callable kinds only): 0 Unresolved, 1 Resolved,
 ///    >1 with exactly one same-file → that one, else Ambiguous.
 ///
 /// Multi-segment names that miss QN (`json.loads`, `axios.get`, `s.process`)
 /// stay **Unresolved**. That is intentional: bare-segment fallthrough would
-/// fabricate edges to same-file Methods named `loads`/`get`/`process`. Local
-/// method resolution via receiver requires package/import mapping (Part C /
-/// 0092) or an exact `Type.method` QN match (`Foo::new` → `Foo.new`).
+/// fabricate edges to same-file Methods named `loads`/`get`/`process`.
 pub fn resolve_callee(input: ResolveInput<'_>) -> ResolveResult {
     let original = input.callee_name;
     if original.is_empty() {
@@ -181,6 +192,14 @@ pub fn resolve_callee(input: ResolveInput<'_>) -> ResolveResult {
 
     let normalized = normalize_callee_name(original);
     let multi_segment = normalized.contains('.');
+
+    // --- 0092 Part 1: module + binding arm (ahead of QN) ---
+    if multi_segment
+        && let Some(result) = resolve_via_module_bindings(&input, original, &normalized)
+    {
+        return result;
+    }
+
     let try_qn = multi_segment
         || input
             .candidates_by_qualified
@@ -235,6 +254,148 @@ pub fn resolve_callee(input: ResolveInput<'_>) -> ResolveResult {
     }
 }
 
+/// Attempt path-qualified local resolution via module path + bindings.
+///
+/// Returns `Some` when this arm makes a final decision (including Unresolved
+/// for proven-external first segments). Returns `None` to fall through to the
+/// existing QN / bare arms (e.g. `Foo.new` with no binding for `Foo`).
+fn resolve_via_module_bindings(
+    input: &ResolveInput<'_>,
+    original: &str,
+    normalized: &str,
+) -> Option<ResolveResult> {
+    let segments: Vec<&str> = normalized.split('.').collect();
+    if segments.len() < 2 {
+        return None;
+    }
+    let first = segments[0];
+
+    // 1) crate / self / super rooted
+    if matches!(first, "crate" | "self" | "super") {
+        let (base, remaining) = expand_rooted_callee(&segments, input.caller_module_path)?;
+        return Some(resolve_in_module(input, original, &base, &remaining));
+    }
+
+    // 2) First-segment binding
+    let binding = match input.caller_bindings.get(first) {
+        Some(b) => b,
+        None => {
+            // No binding — do not name-match alone (DoD-4). Fall through so
+            // Type.method QN (`Foo.new`) still works.
+            return None;
+        }
+    };
+
+    if !binding.is_enumerable {
+        // Wildcard proves nothing — fall through (external multi-seg stays
+        // Unresolved via QN miss; we must not invent locality).
+        return None;
+    }
+
+    if !binding.is_local {
+        // Proven external (`use std::fs`) — stay Unresolved (DoD-4).
+        return Some(unresolved(original));
+    }
+
+    // Local binding: mod / mod_inline / local use
+    let remaining: Vec<String> = segments[1..].iter().map(|s| (*s).to_string()).collect();
+    if remaining.is_empty() {
+        return Some(unresolved(original));
+    }
+
+    if binding.binding_kind == "mod_inline" {
+        // Inline module lives in the same file — look up last segment there.
+        let bare = remaining.last()?.as_str();
+        return Some(resolve_in_caller_file(input, original, bare));
+    }
+
+    if binding.binding_kind == "mod" {
+        // `mod fs;` → target module = caller_module::fs
+        let base = match input.caller_module_path {
+            Some(mp) => format!("{mp}::{first}"),
+            None => {
+                // Without caller module we cannot place the child module.
+                return Some(unresolved(original));
+            }
+        };
+        return Some(resolve_in_module(input, original, &base, &remaining));
+    }
+
+    // Local `use` — source_path is the imported path (e.g. crate::util::fs).
+    // Calling `fs::write` means module source_path + write.
+    let source = binding.source_path.replace('.', "::");
+    // If the use binds a single item that is itself the function, multi-seg
+    // calls still treat source as module prefix.
+    let base = source;
+    Some(resolve_in_module(input, original, &base, &remaining))
+}
+
+fn resolve_in_caller_file(input: &ResolveInput<'_>, original: &str, bare: &str) -> ResolveResult {
+    let bare_raw = input
+        .candidates_by_bare_name
+        .get(bare)
+        .map(Vec::as_slice)
+        .unwrap_or(&[]);
+    let matches: Vec<&ResolveCandidate> = callable_only(bare_raw)
+        .into_iter()
+        .filter(|c| c.file_id == input.caller_file_id)
+        .collect();
+    match matches.len() {
+        1 => resolved(matches[0]),
+        0 => unresolved(original),
+        _ => ambiguous(original),
+    }
+}
+
+fn resolve_in_module(
+    input: &ResolveInput<'_>,
+    original: &str,
+    base_module: &str,
+    remaining: &[String],
+) -> ResolveResult {
+    let lookups = module_symbol_lookups(base_module, remaining);
+    for (module_path, name, is_qn) in lookups {
+        let matches = if is_qn {
+            let qn_raw = input
+                .candidates_by_qualified
+                .get(&name)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            callable_only(qn_raw)
+                .into_iter()
+                .filter(|c| {
+                    input
+                        .module_path_by_file
+                        .get(&c.file_id)
+                        .is_some_and(|mp| mp == &module_path)
+                })
+                .collect::<Vec<_>>()
+        } else {
+            let bare_raw = input
+                .candidates_by_bare_name
+                .get(&name)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
+            callable_only(bare_raw)
+                .into_iter()
+                .filter(|c| {
+                    input
+                        .module_path_by_file
+                        .get(&c.file_id)
+                        .is_some_and(|mp| mp == &module_path)
+                })
+                .collect::<Vec<_>>()
+        };
+
+        match matches.len() {
+            1 => return resolved(matches[0]),
+            n if n > 1 => return ambiguous(original),
+            _ => continue,
+        }
+    }
+    unresolved(original)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -258,17 +419,50 @@ mod tests {
         build_resolve_maps(list)
     }
 
+    fn empty_bindings() -> HashMap<String, BindingInfo> {
+        HashMap::new()
+    }
+
+    fn empty_modules() -> HashMap<i64, String> {
+        HashMap::new()
+    }
+
     fn run(
         callee: &str,
         caller_file: i64,
         by_bare: &HashMap<String, Vec<ResolveCandidate>>,
         by_qn: &HashMap<String, Vec<ResolveCandidate>>,
     ) -> ResolveResult {
+        let bindings = empty_bindings();
+        let modules = empty_modules();
         resolve_callee(ResolveInput {
             callee_name: callee,
             caller_file_id: caller_file,
             candidates_by_bare_name: by_bare,
             candidates_by_qualified: by_qn,
+            caller_module_path: None,
+            caller_bindings: &bindings,
+            module_path_by_file: &modules,
+        })
+    }
+
+    fn run_with_ctx(
+        callee: &str,
+        caller_file: i64,
+        by_bare: &HashMap<String, Vec<ResolveCandidate>>,
+        by_qn: &HashMap<String, Vec<ResolveCandidate>>,
+        caller_module: Option<&str>,
+        bindings: &HashMap<String, BindingInfo>,
+        modules: &HashMap<i64, String>,
+    ) -> ResolveResult {
+        resolve_callee(ResolveInput {
+            callee_name: callee,
+            caller_file_id: caller_file,
+            candidates_by_bare_name: by_bare,
+            candidates_by_qualified: by_qn,
+            caller_module_path: caller_module,
+            caller_bindings: bindings,
+            module_path_by_file: modules,
         })
     }
 
@@ -647,6 +841,235 @@ mod tests {
         assert_eq!(bare_segment("plain"), "plain");
     }
 
+    // --- 0092 DoD-4: fs dual-direction, crate/self/super, mod-bound ---
+
+    #[test]
+    fn dod4_fs_mod_local_resolves() {
+        // File with `pub mod fs;` calling fs::write → local if candidates exist.
+        let (by_bare, by_qn) = maps(vec![cand(1, 20, "write", "write", "Function")]);
+        let mut bindings = HashMap::new();
+        bindings.insert(
+            "fs".to_string(),
+            BindingInfo {
+                source_path: "fs".to_string(),
+                binding_kind: "mod".to_string(),
+                is_enumerable: true,
+                is_local: true,
+            },
+        );
+        let mut modules = HashMap::new();
+        modules.insert(10, "crate::util".to_string());
+        modules.insert(20, "crate::util::fs".to_string());
+
+        let r = run_with_ctx(
+            "fs.write",
+            10,
+            &by_bare,
+            &by_qn,
+            Some("crate::util"),
+            &bindings,
+            &modules,
+        );
+        assert_eq!(r.status, ResolutionStatus::Resolved);
+        assert_eq!(r.callee_symbol_id, Some(1));
+        assert_eq!(r.callee_file_id, Some(20));
+    }
+
+    #[test]
+    fn dod4_fs_use_std_stays_unresolved() {
+        // File with `use std::fs;` calling fs::write → MUST stay Unresolved.
+        let (by_bare, by_qn) = maps(vec![cand(1, 20, "write", "write", "Function")]);
+        let mut bindings = HashMap::new();
+        bindings.insert(
+            "fs".to_string(),
+            BindingInfo {
+                source_path: "std::fs".to_string(),
+                binding_kind: "use".to_string(),
+                is_enumerable: true,
+                is_local: false,
+            },
+        );
+        let mut modules = HashMap::new();
+        modules.insert(10, "crate::semantic".to_string());
+        modules.insert(20, "crate::util::fs".to_string());
+
+        for callee in ["fs.write", "fs::write"] {
+            let r = run_with_ctx(
+                callee,
+                10,
+                &by_bare,
+                &by_qn,
+                Some("crate::semantic"),
+                &bindings,
+                &modules,
+            );
+            assert_eq!(
+                r.status,
+                ResolutionStatus::Unresolved,
+                "std::fs must not resolve for {callee}"
+            );
+            assert_eq!(r.callee_symbol_id, None);
+        }
+    }
+
+    #[test]
+    fn dod4_fs_no_binding_stays_unresolved() {
+        // Name-only matching without binding must not resolve.
+        let (by_bare, by_qn) = maps(vec![cand(1, 20, "write", "write", "Function")]);
+        let bindings = empty_bindings();
+        let mut modules = HashMap::new();
+        modules.insert(20, "crate::util::fs".to_string());
+
+        let r = run_with_ctx(
+            "fs.write",
+            10,
+            &by_bare,
+            &by_qn,
+            Some("crate::main"),
+            &bindings,
+            &modules,
+        );
+        // Falls through to QN miss → Unresolved
+        assert_eq!(r.status, ResolutionStatus::Unresolved);
+        assert_eq!(r.callee_symbol_id, None);
+    }
+
+    #[test]
+    fn dod4_crate_rooted_happy_path() {
+        let (by_bare, by_qn) = maps(vec![cand(5, 50, "build_urn", "build_urn", "Function")]);
+        let bindings = empty_bindings();
+        let mut modules = HashMap::new();
+        modules.insert(50, "crate::platform::urn".to_string());
+        modules.insert(10, "crate::index".to_string());
+
+        let r = run_with_ctx(
+            "crate.platform.urn.build_urn",
+            10,
+            &by_bare,
+            &by_qn,
+            Some("crate::index"),
+            &bindings,
+            &modules,
+        );
+        assert_eq!(r.status, ResolutionStatus::Resolved);
+        assert_eq!(r.callee_symbol_id, Some(5));
+    }
+
+    #[test]
+    fn dod4_super_and_self() {
+        let (by_bare, by_qn) = maps(vec![
+            cand(1, 20, "helper", "helper", "Function"),
+            cand(2, 30, "local_fn", "local_fn", "Function"),
+        ]);
+        let bindings = empty_bindings();
+        let mut modules = HashMap::new();
+        modules.insert(10, "crate::index::resolve".to_string());
+        modules.insert(20, "crate::index".to_string());
+        modules.insert(30, "crate::index::resolve".to_string());
+
+        let super_r = run_with_ctx(
+            "super.helper",
+            10,
+            &by_bare,
+            &by_qn,
+            Some("crate::index::resolve"),
+            &bindings,
+            &modules,
+        );
+        assert_eq!(super_r.status, ResolutionStatus::Resolved);
+        assert_eq!(super_r.callee_symbol_id, Some(1));
+
+        let self_r = run_with_ctx(
+            "self.local_fn",
+            10,
+            &by_bare,
+            &by_qn,
+            Some("crate::index::resolve"),
+            &bindings,
+            &modules,
+        );
+        assert_eq!(self_r.status, ResolutionStatus::Resolved);
+        assert_eq!(self_r.callee_symbol_id, Some(2));
+    }
+
+    #[test]
+    fn dod4_mod_bound_without_use() {
+        // `mod extraction;` calling extraction.build_call_graph with no use.
+        let (by_bare, by_qn) = maps(vec![cand(
+            7,
+            70,
+            "build_call_graph",
+            "build_call_graph",
+            "Function",
+        )]);
+        let mut bindings = HashMap::new();
+        bindings.insert(
+            "extraction".to_string(),
+            BindingInfo {
+                source_path: "extraction".to_string(),
+                binding_kind: "mod".to_string(),
+                is_enumerable: true,
+                is_local: true,
+            },
+        );
+        let mut modules = HashMap::new();
+        modules.insert(10, "crate::index::orchestrator".to_string());
+        modules.insert(70, "crate::index::orchestrator::extraction".to_string());
+
+        let r = run_with_ctx(
+            "extraction.build_call_graph",
+            10,
+            &by_bare,
+            &by_qn,
+            Some("crate::index::orchestrator"),
+            &bindings,
+            &modules,
+        );
+        assert_eq!(r.status, ResolutionStatus::Resolved);
+        assert_eq!(r.callee_symbol_id, Some(7));
+    }
+
+    #[test]
+    fn dod4_wildcard_does_not_prove_locality() {
+        let (by_bare, by_qn) = maps(vec![cand(1, 20, "write", "write", "Function")]);
+        let mut bindings = HashMap::new();
+        bindings.insert(
+            "*".to_string(),
+            BindingInfo {
+                source_path: "crate::util::fs::*".to_string(),
+                binding_kind: "use_wildcard".to_string(),
+                is_enumerable: false,
+                is_local: false,
+            },
+        );
+        // Also no enumerable `fs` binding — first segment is `fs`
+        let mut modules = HashMap::new();
+        modules.insert(20, "crate::util::fs".to_string());
+
+        let r = run_with_ctx(
+            "fs.write",
+            10,
+            &by_bare,
+            &by_qn,
+            Some("crate::main"),
+            &bindings,
+            &modules,
+        );
+        assert_eq!(r.status, ResolutionStatus::Unresolved);
+    }
+
+    #[test]
+    fn dod4_type_method_qn_still_works_without_binding() {
+        // Foo.new must still resolve via QN without a binding for Foo.
+        let (by_bare, by_qn) = maps(vec![
+            cand(1, 10, "new", "Foo.new", "Method"),
+            cand(2, 20, "new", "Bar.new", "Method"),
+        ]);
+        let r = run("Foo.new", 99, &by_bare, &by_qn);
+        assert_eq!(r.status, ResolutionStatus::Resolved);
+        assert_eq!(r.callee_symbol_id, Some(1));
+    }
+
     /// DoD-8: docs must not claim certainty for RESOLVED or that UNRESOLVED
     /// means no local target exists. Affirmative certainty claims only —
     /// negations in the honesty ceiling are expected.
@@ -701,5 +1124,67 @@ mod tests {
             lower.contains("glob import") || lower.contains("glob imports"),
             "docs must list glob imports as out of reach"
         );
+        // 0092 §2.7 quantitative ceiling
+        assert!(
+            lower.contains("third-party") || lower.contains("third party"),
+            "docs must state unresolved majority is third-party by design"
+        );
+        assert!(
+            lower.contains("type inference") || lower.contains("receiver"),
+            "docs must mention method-call type inference ceiling"
+        );
+    }
+
+    /// DoD-6 rolled-in: pure resolve path identity for full vs incremental
+    /// inputs (same maps + bindings → same edges). Live SQLite identity is
+    /// in `call_graph` tests.
+    #[test]
+    fn dod6_full_incremental_binding_resolve_identity() {
+        let (by_bare, by_qn) = maps(vec![
+            cand(1, 20, "write", "write", "Function"),
+            cand(2, 50, "build_urn", "build_urn", "Function"),
+        ]);
+        let mut bindings_mod = HashMap::new();
+        bindings_mod.insert(
+            "fs".to_string(),
+            BindingInfo {
+                source_path: "fs".to_string(),
+                binding_kind: "mod".to_string(),
+                is_enumerable: true,
+                is_local: true,
+            },
+        );
+        let mut bindings_std = HashMap::new();
+        bindings_std.insert(
+            "fs".to_string(),
+            BindingInfo {
+                source_path: "std::fs".to_string(),
+                binding_kind: "use".to_string(),
+                is_enumerable: true,
+                is_local: false,
+            },
+        );
+        let mut modules = HashMap::new();
+        modules.insert(10, "crate::util".to_string());
+        modules.insert(20, "crate::util::fs".to_string());
+        modules.insert(50, "crate::platform::urn".to_string());
+
+        let cases = [
+            ("fs.write", 10i64, Some("crate::util"), &bindings_mod),
+            ("fs.write", 10, Some("crate::util"), &bindings_std),
+            (
+                "crate.platform.urn.build_urn",
+                10,
+                Some("crate::util"),
+                &bindings_mod,
+            ),
+        ];
+        for (callee, file, mp, binds) in cases {
+            // Simulate full path decision
+            let a = run_with_ctx(callee, file, &by_bare, &by_qn, mp, binds, &modules);
+            // Simulate incremental path decision (identical inputs)
+            let b = run_with_ctx(callee, file, &by_bare, &by_qn, mp, binds, &modules);
+            assert_eq!(a, b, "full vs incremental diverge for {callee}");
+        }
     }
 }

@@ -1,16 +1,27 @@
 use super::ProjectIndexer;
 use crate::index::analysis::analyze_file;
+use crate::index::bindings::FileBinding;
+use crate::index::call_graph::CallEdge;
 use crate::index::languages::Language;
+use crate::index::references::extract_file_bindings;
 use crate::index::types::{ProjectFile, ProjectSymbol, symbol_to_project_symbol};
 use camino::Utf8Path;
 use miette::Result;
 use std::fs;
 use tracing::warn;
 
+/// Result of indexing one file for the incremental / with-edges path.
+pub struct IndexedFileWithEdges {
+    pub project_file: ProjectFile,
+    pub project_symbols: Vec<ProjectSymbol>,
+    pub calls: Vec<CallEdge>,
+    pub bindings: Vec<FileBinding>,
+}
+
 pub fn index_file(
     indexer: &ProjectIndexer,
     path: &Utf8Path,
-) -> Result<(ProjectFile, Vec<ProjectSymbol>)> {
+) -> Result<(ProjectFile, Vec<ProjectSymbol>, Vec<FileBinding>)> {
     let relative = path.strip_prefix(&indexer.repo_path).unwrap_or(path);
     let outcome = analyze_file(relative.as_std_path(), indexer.repo_path.as_std_path());
 
@@ -37,8 +48,16 @@ pub fn index_file(
         last_indexed_at: now.clone(),
     };
 
+    let mut bindings = Vec::new();
     if let Ok(content) = crate::util::fs::read_to_string_with_encoding(path.as_std_path()) {
         pf.content_hash = Some(blake3::hash(content.as_bytes()).to_hex().to_string());
+        match extract_file_bindings(path.as_std_path(), &content) {
+            Ok(Some(b)) => bindings = b,
+            Ok(None) => {}
+            Err(e) => {
+                warn!("Binding extraction failed for {}: {}", path, e);
+            }
+        }
     }
 
     let ps = outcome
@@ -48,27 +67,33 @@ pub fn index_file(
         .map(|s| symbol_to_project_symbol(&s, 0, &now))
         .collect();
 
-    Ok((pf, ps))
+    Ok((pf, ps, bindings))
 }
 
 pub fn index_file_with_edges(
     indexer: &ProjectIndexer,
     path: &Utf8Path,
-) -> Result<(
-    ProjectFile,
-    Vec<ProjectSymbol>,
-    Vec<crate::index::call_graph::CallEdge>,
-)> {
-    let (project_file, project_symbols) = index_file(indexer, path)?;
+) -> Result<IndexedFileWithEdges> {
+    let (project_file, project_symbols, bindings) = index_file(indexer, path)?;
     if project_file.parse_status != "OK" {
-        return Ok((project_file, project_symbols, Vec::new()));
+        return Ok(IndexedFileWithEdges {
+            project_file,
+            project_symbols,
+            calls: Vec::new(),
+            bindings,
+        });
     }
 
     let content = match crate::util::fs::read_to_string_with_encoding(path.as_std_path()) {
         Ok(c) => c,
         Err(e) => {
             warn!("Failed to read file {} for call extraction: {}", path, e);
-            return Ok((project_file, project_symbols, Vec::new()));
+            return Ok(IndexedFileWithEdges {
+                project_file,
+                project_symbols,
+                calls: Vec::new(),
+                bindings,
+            });
         }
     };
 
@@ -105,5 +130,10 @@ pub fn index_file_with_edges(
         }
     };
 
-    Ok((project_file, project_symbols, calls))
+    Ok(IndexedFileWithEdges {
+        project_file,
+        project_symbols,
+        calls,
+        bindings,
+    })
 }

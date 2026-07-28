@@ -1,3 +1,4 @@
+use crate::index::bindings::FileBinding;
 use crate::index::types::{ProjectFile, ProjectSymbol};
 use camino::Utf8PathBuf;
 use crossbeam::channel::{Receiver, unbounded};
@@ -5,8 +6,15 @@ use indicatif::ProgressBar;
 use miette::Result;
 use std::sync::Arc;
 
+/// Payload for a successfully parsed source file (boxed in [`JobResult`] for size).
+pub struct ParsedFileJob {
+    pub file: ProjectFile,
+    pub symbols: Vec<ProjectSymbol>,
+    pub bindings: Vec<FileBinding>,
+}
+
 pub enum JobResult {
-    Parsed(ProjectFile, Vec<ProjectSymbol>),
+    Parsed(Box<ParsedFileJob>),
     Indexed(i64), // file_id
     Enriched,
     Failure(Utf8PathBuf, String),
@@ -34,10 +42,7 @@ impl WorkerPool {
         parser: F,
     ) -> Result<Receiver<JobResult>>
     where
-        F: Fn(&camino::Utf8Path) -> Result<(ProjectFile, Vec<ProjectSymbol>)>
-            + Send
-            + Sync
-            + 'static,
+        F: Fn(&camino::Utf8Path) -> Result<ParsedFileJob> + Send + Sync + 'static,
     {
         let (tx, rx) = unbounded();
         let parser = Arc::new(parser);
@@ -53,8 +58,8 @@ impl WorkerPool {
                 use rayon::prelude::*;
                 files.into_par_iter().for_each(|path| {
                     match parser(&path) {
-                        Ok((pf, ps)) => {
-                            let _ = tx.send(JobResult::Parsed(pf, ps));
+                        Ok(job) => {
+                            let _ = tx.send(JobResult::Parsed(Box::new(job)));
                         }
                         Err(e) => {
                             let _ = tx.send(JobResult::Failure(path, e.to_string()));
