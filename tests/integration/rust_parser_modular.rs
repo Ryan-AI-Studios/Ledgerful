@@ -95,10 +95,11 @@ fn test_rust_call_extraction() {
             .iter()
             .any(|e| e.caller_name == "main" && e.callee_name == "foo")
     );
+    // 0089: scoped_identifier stores dotted QN form (Bar::new → Bar.new).
     assert!(
         edges
             .iter()
-            .any(|e| e.caller_name == "main" && e.callee_name == "new")
+            .any(|e| e.caller_name == "main" && e.callee_name == "Bar.new")
     );
     assert!(
         edges

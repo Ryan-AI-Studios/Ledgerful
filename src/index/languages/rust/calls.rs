@@ -64,17 +64,19 @@ fn collect_call_edges(path: &Path, node: Node, content: &str, edges: &mut Vec<Ca
                     }
                 }
                 "scoped_identifier" => {
+                    // Store dotted form (Foo::new → Foo.new) so the shared
+                    // resolver can hit qualified_name; evidence keeps original.
                     let name = callee
                         .utf8_text(content.as_bytes())
                         .unwrap_or("")
                         .to_string();
                     if !name.is_empty() {
-                        let short_name = name.rsplit("::").next().unwrap_or(&name).to_string();
+                        let dotted = name.replace("::", ".");
                         let evidence = format!("call_expr:{}", name);
                         edges.push(CallEdge {
                             caller_name,
                             caller_file: path.to_path_buf(),
-                            callee_name: short_name,
+                            callee_name: dotted,
                             callee_file: None,
                             call_kind: CallKind::Direct,
                             resolution_status: ResolutionStatus::Resolved,
@@ -163,4 +165,86 @@ fn find_enclosing_function(node: Node, content: &str) -> String {
         current = parent.parent();
     }
     "<module>".to_string()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::call_graph::CallKind;
+    use std::path::Path;
+
+    #[test]
+    fn scoped_identifier_stores_dotted_qn_form() {
+        // Foo::new() → callee Foo.new (not bare "new") for QN resolution.
+        let content = r#"
+fn caller() {
+    let _ = Foo::new();
+}
+"#;
+        let edges = extract_calls(Path::new("test.rs"), content, &[]).unwrap();
+        let scoped: Vec<&CallEdge> = edges
+            .iter()
+            .filter(|e| e.callee_name == "Foo.new")
+            .collect();
+        assert!(
+            !scoped.is_empty(),
+            "expected Foo.new callee, got: {:?}",
+            edges.iter().map(|e| &e.callee_name).collect::<Vec<_>>()
+        );
+        assert!(
+            edges.iter().all(|e| e.callee_name != "new"),
+            "must not store bare new for scoped_identifier"
+        );
+        assert!(
+            scoped[0].evidence.contains("Foo::new"),
+            "evidence keeps original path text"
+        );
+        assert_eq!(scoped[0].call_kind, CallKind::Direct);
+    }
+
+    /// R1-07: extract Foo::new + resolve against Foo.new / Bar.new → Foo only.
+    #[test]
+    fn e2e_extract_foo_new_resolves_to_foo_only() {
+        use crate::index::call_graph::ResolutionStatus;
+        use crate::index::resolve::{
+            ResolveCandidate, ResolveInput, build_resolve_maps, resolve_callee,
+        };
+
+        let content = r#"
+fn caller() {
+    let _ = Foo::new();
+}
+"#;
+        let edges = extract_calls(Path::new("test.rs"), content, &[]).unwrap();
+        let callee = edges
+            .iter()
+            .find(|e| e.callee_name == "Foo.new")
+            .expect("Foo.new edge from extract");
+
+        let (by_bare, by_qn) = build_resolve_maps(vec![
+            ResolveCandidate {
+                symbol_id: 1,
+                file_id: 10,
+                symbol_name: "new".to_string(),
+                qualified_name: "Foo.new".to_string(),
+                symbol_kind: "Method".to_string(),
+            },
+            ResolveCandidate {
+                symbol_id: 2,
+                file_id: 20,
+                symbol_name: "new".to_string(),
+                qualified_name: "Bar.new".to_string(),
+                symbol_kind: "Method".to_string(),
+            },
+        ]);
+        let r = resolve_callee(ResolveInput {
+            callee_name: &callee.callee_name,
+            caller_file_id: 99,
+            candidates_by_bare_name: &by_bare,
+            candidates_by_qualified: &by_qn,
+        });
+        assert_eq!(r.status, ResolutionStatus::Resolved);
+        assert_eq!(r.callee_symbol_id, Some(1));
+        assert_ne!(r.callee_symbol_id, Some(2));
+    }
 }

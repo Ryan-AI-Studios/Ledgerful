@@ -4,7 +4,7 @@ use miette::{IntoDiagnostic, Result};
 use std::path::Path;
 use tree_sitter::Parser;
 
-use super::common::extract_ts_member_name;
+use super::common::extract_ts_member_qualified;
 
 pub fn extract_calls(path: &Path, content: &str, _symbols: &[Symbol]) -> Result<Vec<CallEdge>> {
     let mut parser = Parser::new();
@@ -53,8 +53,9 @@ fn collect_ts_call_edges(
                     }
                 }
                 "member_expression" => {
-                    // e.g. obj.method() -- member_expression inside call_expression
-                    let callee_name = extract_ts_member_name(callee, content);
+                    // e.g. obj.method() / axios.get() — store dotted receiver.field
+                    // so external members do not false-resolve to bare local names.
+                    let callee_name = extract_ts_member_qualified(callee, content);
                     if !callee_name.is_empty() {
                         let full_text =
                             node.utf8_text(content.as_bytes()).unwrap_or("").to_string();
@@ -199,9 +200,36 @@ mod tests {
         let edges = extract_calls(Path::new("test.ts"), content, &[]).unwrap();
         let method: Vec<&CallEdge> = edges
             .iter()
-            .filter(|e| e.call_kind == CallKind::MethodCall && e.callee_name == "greet")
+            .filter(|e| e.call_kind == CallKind::MethodCall && e.callee_name == "obj.greet")
             .collect();
-        assert!(!method.is_empty(), "should find a METHOD_CALL to greet");
+        assert!(
+            !method.is_empty(),
+            "should find a METHOD_CALL to obj.greet (dotted form)"
+        );
+    }
+
+    #[test]
+    fn test_extract_calls_external_member_dotted() {
+        // DoD-9: axios.get must be stored as dotted form, not bare "get".
+        let content = r#"
+            function caller(): void {
+                axios.get(url);
+            }
+        "#;
+        let edges = extract_calls(Path::new("test.ts"), content, &[]).unwrap();
+        let get: Vec<&CallEdge> = edges
+            .iter()
+            .filter(|e| e.callee_name == "axios.get")
+            .collect();
+        assert!(
+            !get.is_empty(),
+            "should store callee as axios.get, got: {:?}",
+            edges.iter().map(|e| &e.callee_name).collect::<Vec<_>>()
+        );
+        assert!(
+            edges.iter().all(|e| e.callee_name != "get"),
+            "must not store bare get"
+        );
     }
 
     #[test]

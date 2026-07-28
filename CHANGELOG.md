@@ -6,6 +6,21 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Call-graph resolution precision (0089 Parts A+B):** shared `resolve_callee`
+  for full and incremental index paths. Candidates restricted to callable kinds
+  (`Function`, `Method`); same-file preference on bare-name collisions; higher-
+  precedence `qualified_name` match (`Foo::new` / `Foo.new` → `Foo.new`).
+  Python/TypeScript methods emit `Class.method` QNs; member calls store dotted
+  `receiver.field` so external forms like `json.loads` / `axios.get` no longer
+  false-resolve to a unique local bare name. Package-root import mapping
+  (Part C) is deferred to track 0092. See `docs/Call-Resolution.md`.
+  **Behaviour change:** more (or fewer) edges get a non-null `callee_symbol_id`,
+  so **dead-code, centrality, and coupling outputs move** — ambiguous edges that
+  previously dropped out of those analyses may now resolve, and fabricated
+  external→local edges are removed.
+
 ### Added
 
 - **Function signature extraction + signature-changed impact risk (0088 Part A):**

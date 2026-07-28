@@ -64,8 +64,10 @@ fn collect_py_call_edges(
                     }
                 }
                 "attribute" => {
-                    // e.g. obj.method() -- attribute node in Python tree-sitter
-                    let callee_name = super::common::extract_py_attribute_name(callee, content);
+                    // e.g. obj.method() / json.loads() — store dotted receiver.field
+                    // so external members do not false-resolve to bare local names.
+                    let callee_name =
+                        super::common::extract_py_attribute_qualified(callee, content);
                     if !callee_name.is_empty() {
                         let full_text =
                             node.utf8_text(content.as_bytes()).unwrap_or("").to_string();
@@ -174,9 +176,74 @@ def caller():
         let edges = extract_calls(Path::new("test.py"), content, &[]).unwrap();
         let method: Vec<&CallEdge> = edges
             .iter()
-            .filter(|e| e.call_kind == CallKind::MethodCall && e.callee_name == "process")
+            .filter(|e| e.call_kind == CallKind::MethodCall && e.callee_name == "s.process")
             .collect();
-        assert!(!method.is_empty(), "should find a METHOD_CALL to process");
+        assert!(
+            !method.is_empty(),
+            "should find a METHOD_CALL to s.process (dotted form)"
+        );
+    }
+
+    #[test]
+    fn test_extract_calls_external_member_dotted() {
+        // DoD-9: json.loads must be stored as dotted form, not bare "loads".
+        let content = r#"
+def caller():
+    return json.loads(x)
+"#;
+        let edges = extract_calls(Path::new("test.py"), content, &[]).unwrap();
+        let loads: Vec<&CallEdge> = edges
+            .iter()
+            .filter(|e| e.callee_name == "json.loads")
+            .collect();
+        assert!(
+            !loads.is_empty(),
+            "should store callee as json.loads, got: {:?}",
+            edges.iter().map(|e| &e.callee_name).collect::<Vec<_>>()
+        );
+        assert!(
+            edges.iter().all(|e| e.callee_name != "loads"),
+            "must not store bare loads"
+        );
+    }
+
+    /// R1-07: extract `json.loads` + resolve with same-file Function `loads` → Unresolved.
+    #[test]
+    fn e2e_extract_json_loads_resolve_same_file_function_unresolved() {
+        use crate::index::call_graph::ResolutionStatus;
+        use crate::index::resolve::{
+            ResolveCandidate, ResolveInput, build_resolve_maps, resolve_callee,
+        };
+
+        let content = r#"
+def loads(x):
+    return x
+
+def caller():
+    return json.loads(x)
+"#;
+        let edges = extract_calls(Path::new("test.py"), content, &[]).unwrap();
+        let callee = edges
+            .iter()
+            .find(|e| e.callee_name.contains("loads") && e.caller_name == "caller")
+            .expect("caller→loads edge");
+        assert_eq!(callee.callee_name, "json.loads");
+
+        let (by_bare, by_qn) = build_resolve_maps(vec![ResolveCandidate {
+            symbol_id: 1,
+            file_id: 10,
+            symbol_name: "loads".to_string(),
+            qualified_name: "loads".to_string(),
+            symbol_kind: "Function".to_string(),
+        }]);
+        let r = resolve_callee(ResolveInput {
+            callee_name: &callee.callee_name,
+            caller_file_id: 10,
+            candidates_by_bare_name: &by_bare,
+            candidates_by_qualified: &by_qn,
+        });
+        assert_eq!(r.status, ResolutionStatus::Unresolved);
+        assert_eq!(r.callee_symbol_id, None);
     }
 
     #[test]
