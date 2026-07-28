@@ -1,7 +1,10 @@
+use crate::index::signature::{
+    SignatureParam, SymbolSignatureParts, build_symbol_signature, write_signature_metadata,
+};
 use crate::index::symbols::{Symbol, SymbolKind};
 use miette::{IntoDiagnostic, Result};
 use std::collections::BTreeMap;
-use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
+use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
 
 pub fn extract_symbols(content: &str) -> Result<Option<Vec<Symbol>>> {
     let mut parser = Parser::new();
@@ -12,8 +15,10 @@ pub fn extract_symbols(content: &str) -> Result<Option<Vec<Symbol>>> {
         .parse(content, None)
         .ok_or_else(|| miette::miette!("Failed to parse Rust content"))?;
 
+    // function_signature_item = trait method declarations (no body) — §2.8b coverage.
     let query_str = r#"
         (function_item name: (identifier) @name) @symbol
+        (function_signature_item name: (identifier) @name) @symbol
         (struct_item name: (type_identifier) @name) @symbol
         (enum_item name: (type_identifier) @name) @symbol
         (trait_item name: (type_identifier) @name) @symbol
@@ -51,6 +56,10 @@ pub fn extract_symbols(content: &str) -> Result<Option<Vec<Symbol>>> {
                     symbol_node = Some(node);
                     match node.kind() {
                         "function_item" => kind = SymbolKind::Function,
+                        // Trait method declarations (no default body). Same fields as
+                        // function_item; classified as Method so contract surfaces are
+                        // distinguishable from free functions.
+                        "function_signature_item" => kind = SymbolKind::Method,
                         "struct_item" => kind = SymbolKind::Struct,
                         "enum_item" => kind = SymbolKind::Enum,
                         "trait_item" => kind = SymbolKind::Trait,
@@ -195,7 +204,39 @@ pub fn extract_symbols(content: &str) -> Result<Option<Vec<Symbol>>> {
             let line_start = Some((node.start_position().row + 1) as i32);
             let line_end = Some((node.end_position().row + 1) as i32);
 
+            // Populate signature metadata for free functions and trait method decls.
+            if matches!(node.kind(), "function_item" | "function_signature_item")
+                && !name.is_empty()
+                && let Some(sig) = extract_rust_signature(node, content, &name)
+            {
+                write_signature_metadata(&mut metadata, &sig);
+            }
+
             if !name.is_empty() {
+                // Qualify methods so same-name symbols in one file do not collide:
+                // - trait method decls → TraitName.method
+                // - impl methods → TypeName.method (matches Go Receiver.method)
+                // Free functions keep qualified_name: None.
+                // Trait default methods are `function_item` inside `trait_item`
+                // (body present); declarations without a body are
+                // `function_signature_item`. Try impl first, then trait.
+                // Codex R2 P3: qualify + promote trait defaults so same-name
+                // methods do not collide as unqualified Functions.
+                let qualified_name = match node.kind() {
+                    "function_signature_item" => qualify_trait_method(node, content, &name),
+                    "function_item" => {
+                        if let Some(qn) = qualify_impl_method(node, content, &name) {
+                            Some(qn)
+                        } else if let Some(qn) = qualify_trait_method(node, content, &name) {
+                            kind = SymbolKind::Method;
+                            Some(qn)
+                        } else {
+                            None
+                        }
+                    }
+                    _ => None,
+                };
+
                 symbols.push(Symbol {
                     name,
                     kind,
@@ -204,7 +245,7 @@ pub fn extract_symbols(content: &str) -> Result<Option<Vec<Symbol>>> {
                     cyclomatic_complexity: None,
                     line_start,
                     line_end,
-                    qualified_name: None,
+                    qualified_name,
                     byte_start,
                     byte_end,
                     entrypoint_kind: None,
@@ -215,6 +256,199 @@ pub fn extract_symbols(content: &str) -> Result<Option<Vec<Symbol>>> {
     }
 
     Ok(Some(symbols))
+}
+
+/// Extract a normalized signature from a Rust `function_item` or `function_signature_item`.
+fn extract_rust_signature(
+    node: Node<'_>,
+    content: &str,
+    name: &str,
+) -> Option<crate::index::signature::SymbolSignature> {
+    let modifiers = extract_function_modifiers(node, content);
+    let params = extract_rust_params(node, content);
+    let return_type = node
+        .child_by_field_name("return_type")
+        .and_then(|n| node_text_owned(n, content))
+        .map(|s| s.trim().trim_start_matches("->").trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let parts = SymbolSignatureParts {
+        name: name.to_string(),
+        modifiers,
+        params,
+        return_type,
+    };
+    Some(build_symbol_signature(&parts))
+}
+
+fn extract_function_modifiers(node: Node<'_>, content: &str) -> Vec<String> {
+    let mut mods = Vec::new();
+    // `function_modifiers` is a named child on both function_item and function_signature_item.
+    if let Some(mod_node) = node.child_by_field_name("function_modifiers").or_else(|| {
+        let mut c = node.walk();
+        node.children(&mut c)
+            .find(|ch| ch.kind() == "function_modifiers")
+    }) {
+        let mut c = mod_node.walk();
+        for child in mod_node.children(&mut c) {
+            match child.kind() {
+                "async" | "const" | "unsafe" => {
+                    if let Some(t) = node_text_owned(child, content) {
+                        mods.push(t);
+                    }
+                }
+                "extern_modifier" | "abi" => {
+                    if let Some(t) = node_text_owned(child, content) {
+                        // Collapse whitespace for stable shape text.
+                        mods.push(t.split_whitespace().collect::<Vec<_>>().join(" "));
+                    }
+                }
+                _ => {}
+            }
+        }
+    } else {
+        // Fallback: scan direct children for modifier keywords (some grammar layouts).
+        let mut c = node.walk();
+        for child in node.children(&mut c) {
+            match child.kind() {
+                "async" | "const" | "unsafe" => {
+                    if let Some(t) = node_text_owned(child, content) {
+                        mods.push(t);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    mods
+}
+
+fn extract_rust_params(node: Node<'_>, content: &str) -> Vec<SignatureParam> {
+    let Some(params_node) = node.child_by_field_name("parameters") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut c = params_node.walk();
+    for child in params_node.children(&mut c) {
+        match child.kind() {
+            "parameter" => {
+                let name = child
+                    .child_by_field_name("pattern")
+                    .and_then(|p| first_identifier(p, content));
+                let type_text = child
+                    .child_by_field_name("type")
+                    .and_then(|t| node_text_owned(t, content));
+                out.push(SignatureParam { name, type_text });
+            }
+            "self_parameter" => {
+                let text = node_text_owned(child, content);
+                out.push(SignatureParam {
+                    name: Some("self".to_string()),
+                    type_text: text,
+                });
+            }
+            "variadic_parameter" => {
+                out.push(SignatureParam {
+                    name: None,
+                    type_text: node_text_owned(child, content),
+                });
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn first_identifier(node: Node<'_>, content: &str) -> Option<String> {
+    if matches!(node.kind(), "identifier" | "type_identifier") {
+        return node_text_owned(node, content);
+    }
+    let mut c = node.walk();
+    for child in node.children(&mut c) {
+        if let Some(id) = first_identifier(child, content) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+fn node_text_owned(node: Node<'_>, content: &str) -> Option<String> {
+    node.utf8_text(content.as_bytes())
+        .ok()
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// `TraitName.method` when the signature item sits inside a `trait_item`.
+///
+/// Nested local `fn`s inside a default trait method body are **not**
+/// qualified (stop at an intervening `function_item`).
+fn qualify_trait_method(node: Node<'_>, content: &str, method_name: &str) -> Option<String> {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if n.kind() == "trait_item" {
+            let trait_name = n
+                .child_by_field_name("name")
+                .and_then(|name_node| node_text_owned(name_node, content))?;
+            return Some(format!("{trait_name}.{method_name}"));
+        }
+        // Nested local function inside a method body — not a trait method.
+        if matches!(n.kind(), "function_item" | "function_signature_item") {
+            return None;
+        }
+        if matches!(n.kind(), "source_file" | "mod_item") {
+            return None;
+        }
+        current = n.parent();
+    }
+    None
+}
+
+/// `TypeName.method` when a `function_item` is a **direct method** of an
+/// `impl_item` (not a nested local function inside a method body).
+///
+/// Uses the impl's `type` field (not the first `type_identifier`) so
+/// `impl Display for Foo` qualifies as `Foo.method`, not `Display.method`.
+/// Free functions and nested locals return `None`.
+///
+/// Codex 0088 P2: walking past an intervening `function_item` mislabeled
+/// `impl Foo { fn bar() { fn helper() {} } }` as `Foo.helper`.
+fn qualify_impl_method(node: Node<'_>, content: &str, method_name: &str) -> Option<String> {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if n.kind() == "impl_item" {
+            let type_node = n.child_by_field_name("type")?;
+            let type_name = first_type_identifier(type_node, content)?;
+            return Some(format!("{type_name}.{method_name}"));
+        }
+        // Nested local `fn` inside a method (or free function) body: stop.
+        // Parent chain for `helper` is block → function_item(method) → … →
+        // impl_item; without this guard we would emit `TypeName.helper`.
+        if matches!(n.kind(), "function_item" | "function_signature_item") {
+            return None;
+        }
+        // Stop at item containers so we do not climb into an outer impl for a
+        // free function nested via macros or other odd structures.
+        if matches!(n.kind(), "source_file" | "mod_item" | "trait_item") {
+            return None;
+        }
+        current = n.parent();
+    }
+    None
+}
+
+/// First `type_identifier` under a type node (handles plain and generic types).
+fn first_type_identifier(node: Node<'_>, content: &str) -> Option<String> {
+    if node.kind() == "type_identifier" {
+        return node_text_owned(node, content);
+    }
+    let mut c = node.walk();
+    for child in node.children(&mut c) {
+        if let Some(id) = first_type_identifier(child, content) {
+            return Some(id);
+        }
+    }
+    None
 }
 
 fn extract_use_name(node: tree_sitter::Node, content: &str) -> String {
@@ -517,6 +751,257 @@ mod tests {
         assert!(
             !config.metadata.contains_key("derived_traits"),
             "cfg_attr without derive(...) must not set derived_traits"
+        );
+    }
+
+    #[test]
+    fn extracts_function_signature_metadata() {
+        let content = r#"
+            pub fn greet(name: String, age: u32) -> bool {
+                true
+            }
+        "#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let greet = symbols
+            .iter()
+            .find(|s| s.name == "greet" && s.kind == SymbolKind::Function)
+            .expect("greet");
+        let sig = greet.metadata.get("signature").expect("signature");
+        let shape = greet
+            .metadata
+            .get("signatureShape")
+            .expect("signatureShape");
+        assert!(sig.contains("name: String"), "readable: {sig}");
+        assert!(sig.contains("age: u32"), "readable: {sig}");
+        assert!(sig.contains("-> bool"), "readable: {sig}");
+        assert!(
+            !shape.contains("name") && !shape.contains("age"),
+            "shape excludes names: {shape}"
+        );
+        assert!(shape.contains("params=String,u32"), "shape: {shape}");
+        assert!(shape.contains("ret=bool"), "shape: {shape}");
+    }
+
+    #[test]
+    fn async_fn_changes_signature_shape() {
+        let sync_src = "fn foo() {}";
+        let async_src = "async fn foo() {}";
+        let sync_sym = extract_symbols(sync_src).unwrap().unwrap();
+        let async_sym = extract_symbols(async_src).unwrap().unwrap();
+        let s_shape = sync_sym
+            .iter()
+            .find(|s| s.name == "foo")
+            .and_then(|s| s.metadata.get("signatureShape"))
+            .expect("sync shape");
+        let a_shape = async_sym
+            .iter()
+            .find(|s| s.name == "foo")
+            .and_then(|s| s.metadata.get("signatureShape"))
+            .expect("async shape");
+        assert_ne!(s_shape, a_shape, "async must move shape");
+        assert!(a_shape.contains("async"), "async shape: {a_shape}");
+    }
+
+    #[test]
+    fn trait_method_signature_item_is_indexed() {
+        let content = r#"
+            pub trait Reader {
+                fn read(&self, buf: &mut [u8]) -> Result<usize, std::io::Error>;
+                fn name(&self) -> &str;
+            }
+        "#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let read = symbols
+            .iter()
+            .find(|s| s.name == "read" && s.kind == SymbolKind::Method)
+            .expect("trait method read must be indexed as Method");
+        assert_eq!(read.qualified_name.as_deref(), Some("Reader.read"));
+        assert!(
+            read.metadata.contains_key("signature"),
+            "trait method must carry signature metadata"
+        );
+        assert!(
+            read.metadata.contains_key("signatureShape"),
+            "trait method must carry signatureShape"
+        );
+        let name_m = symbols
+            .iter()
+            .find(|s| s.name == "name" && s.kind == SymbolKind::Method)
+            .expect("trait method name");
+        assert_eq!(name_m.qualified_name.as_deref(), Some("Reader.name"));
+    }
+
+    #[test]
+    fn signature_hash_non_null_via_project_symbol() {
+        use crate::index::types::symbol_to_project_symbol;
+        let content = "pub fn add(a: i32, b: i32) -> i32 { a + b }";
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let add = symbols.iter().find(|s| s.name == "add").expect("add");
+        let ps = symbol_to_project_symbol(add, 1, "now");
+        assert!(
+            ps.signature_hash.is_some(),
+            "Rust function must yield non-null signature_hash"
+        );
+    }
+
+    #[test]
+    fn impl_methods_are_qualified_by_type_name() {
+        let content = r#"
+            struct Foo;
+            struct Bar;
+            impl Foo {
+                fn new() -> Self { Foo }
+            }
+            impl Bar {
+                fn new() -> Self { Bar }
+            }
+            impl std::fmt::Display for Foo {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    Ok(())
+                }
+            }
+            fn free_new() {}
+        "#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let foo_new = symbols
+            .iter()
+            .find(|s| s.name == "new" && s.qualified_name.as_deref() == Some("Foo.new"))
+            .expect("Foo.new must be qualified");
+        let bar_new = symbols
+            .iter()
+            .find(|s| s.name == "new" && s.qualified_name.as_deref() == Some("Bar.new"))
+            .expect("Bar.new must be qualified");
+        assert!(foo_new.metadata.contains_key("signatureShape"));
+        assert!(bar_new.metadata.contains_key("signatureShape"));
+        // Trait impl uses the `type` field (Foo), not the trait name (Display).
+        let fmt = symbols
+            .iter()
+            .find(|s| s.name == "fmt")
+            .expect("fmt method");
+        assert_eq!(fmt.qualified_name.as_deref(), Some("Foo.fmt"));
+        // Free functions stay unqualified.
+        let free = symbols
+            .iter()
+            .find(|s| s.name == "free_new")
+            .expect("free_new");
+        assert_eq!(free.qualified_name, None);
+    }
+
+    /// Codex R2 P3: trait default methods (`function_item` inside trait) get
+    /// Trait.method qualification and Method kind.
+    #[test]
+    fn trait_default_method_with_body_is_qualified() {
+        let content = r#"
+            pub trait Reader {
+                fn read(&self) -> usize { 0 }
+                fn name(&self) -> &str;
+            }
+        "#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let read = symbols
+            .iter()
+            .find(|s| s.name == "read")
+            .expect("trait default read");
+        assert_eq!(read.kind, SymbolKind::Method);
+        assert_eq!(read.qualified_name.as_deref(), Some("Reader.read"));
+        assert!(read.metadata.contains_key("signatureShape"));
+        let name_m = symbols
+            .iter()
+            .find(|s| s.name == "name" && s.kind == SymbolKind::Method)
+            .expect("signature-only name");
+        assert_eq!(name_m.qualified_name.as_deref(), Some("Reader.name"));
+    }
+
+    /// Codex 0088 P2: nested local `fn` inside an impl method must NOT be
+    /// qualified as `TypeName.helper` (only direct impl methods qualify).
+    #[test]
+    fn nested_local_fn_inside_impl_method_is_not_qualified() {
+        let content = r#"
+            struct Foo;
+            impl Foo {
+                fn bar(&self) {
+                    fn helper(x: u32) -> u32 { x }
+                    let _ = helper(1);
+                }
+            }
+        "#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let bar = symbols
+            .iter()
+            .find(|s| s.name == "bar")
+            .expect("impl method bar");
+        assert_eq!(bar.qualified_name.as_deref(), Some("Foo.bar"));
+        let helper = symbols
+            .iter()
+            .find(|s| s.name == "helper")
+            .expect("nested local helper must still be indexed");
+        assert_eq!(
+            helper.qualified_name, None,
+            "nested local fn must not be Foo.helper; got {:?}",
+            helper.qualified_name
+        );
+        // Still gets signature metadata for its own shape.
+        assert!(helper.metadata.contains_key("signatureShape"));
+    }
+
+    /// Phase 0 P1/P3: confirm field names against the pinned tree-sitter-rust grammar.
+    #[test]
+    fn phase0_rust_definition_node_fields() {
+        let content = r#"
+            async fn foo(a: u32) -> u64 { a as u64 }
+            trait T { fn bar(&self) -> i32; }
+        "#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(content, None).unwrap();
+        let root = tree.root_node();
+
+        fn find_kind<'a>(node: tree_sitter::Node<'a>, kind: &str) -> Option<tree_sitter::Node<'a>> {
+            if node.kind() == kind {
+                return Some(node);
+            }
+            let mut c = node.walk();
+            for child in node.children(&mut c) {
+                if let Some(found) = find_kind(child, kind) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+
+        let fi = find_kind(root, "function_item").expect("function_item");
+        assert!(
+            fi.child_by_field_name("parameters").is_some(),
+            "function_item.parameters"
+        );
+        assert!(
+            fi.child_by_field_name("return_type").is_some(),
+            "function_item.return_type"
+        );
+        // function_modifiers may be a field or a child node depending on grammar layout
+        let has_async = {
+            let mut c = fi.walk();
+            fi.children(&mut c).any(|ch| {
+                ch.kind() == "function_modifiers"
+                    || ch.kind() == "async"
+                    || ch
+                        .utf8_text(content.as_bytes())
+                        .unwrap_or("")
+                        .contains("async")
+            })
+        };
+        assert!(has_async, "async modifier present on function_item");
+
+        let fsi = find_kind(root, "function_signature_item").expect("function_signature_item");
+        assert!(
+            fsi.child_by_field_name("parameters").is_some(),
+            "function_signature_item.parameters"
+        );
+        assert!(
+            fsi.child_by_field_name("return_type").is_some(),
+            "function_signature_item.return_type"
         );
     }
 }

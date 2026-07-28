@@ -34,6 +34,9 @@ pub struct ImpactPacket {
     pub test_coverage: Vec<super::TestCoverage>,
     #[serde(default)]
     pub runtime_usage_delta: Vec<super::RuntimeUsageDelta>,
+    /// Function-signature deltas (not Ed25519). Empty omitted from JSON.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub signature_deltas: Vec<super::SignatureDelta>,
     pub hotspots: Vec<super::Hotspot>,
     pub verification_results: Vec<super::VerificationResult>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -83,6 +86,7 @@ impl ImpactPacket {
             && self.env_var_deps.is_empty()
             && self.test_coverage.is_empty()
             && self.runtime_usage_delta.is_empty()
+            && self.signature_deltas.is_empty()
             && self.hotspots.is_empty()
             && self.verification_results.is_empty()
             && self.relevant_decisions.is_empty()
@@ -125,6 +129,7 @@ impl Default for ImpactPacket {
             env_var_deps: Vec::new(),
             test_coverage: Vec::new(),
             runtime_usage_delta: Vec::new(),
+            signature_deltas: Vec::new(),
             hotspots: Vec::new(),
             verification_results: Vec::new(),
             relevant_decisions: Vec::new(),
@@ -186,6 +191,7 @@ impl ImpactPacket {
         self.env_var_deps.dedup();
         self.test_coverage.sort_unstable();
         self.runtime_usage_delta.sort_unstable();
+        self.signature_deltas.sort_unstable();
         self.hotspots.sort_unstable_by(|a, b| {
             b.score
                 .partial_cmp(&a.score)
@@ -337,6 +343,7 @@ impl ImpactPacket {
         self.env_var_deps.clear();
         self.test_coverage.clear();
         self.runtime_usage_delta.clear();
+        self.signature_deltas.clear();
         self.relevant_decisions.clear();
         // CRITICAL: Clear observability signals which can contain unbounded log excerpts
         self.observability.clear();
