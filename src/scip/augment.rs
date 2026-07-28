@@ -5,7 +5,7 @@
 
 use crate::index::rows::get_file_id_by_path;
 use crate::scip::edges::{ScipEdgeStats, augment_edges_from_scip};
-use crate::scip::{ScipIndex, is_scip_stale, normalize_scip_path, register_scip_index};
+use crate::scip::{ScipIndex, normalize_scip_path, register_scip_index};
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use miette::{IntoDiagnostic, Result};
@@ -20,7 +20,8 @@ pub enum ScipRunStatus {
     DidNotRun,
     /// Indexer not available / generation failed / ingest failed (native continues).
     Failed,
-    /// Loaded index was already registered and hash-matched (skipped).
+    /// Reserved for API stability. Requested augment always re-applies edges
+    /// (idempotent via precedence); hash is audit-only, not a skip gate.
     SkippedStale,
     /// Edges were (re)applied successfully.
     Success,
@@ -75,6 +76,9 @@ impl ScipIndexJson {
         }
     }
 
+    /// Constructor retained for API stability; production paths no longer
+    /// emit `SkippedStale` (requested augment always re-applies edges).
+    #[allow(dead_code)]
     pub fn skipped_stale() -> Self {
         Self {
             status: ScipRunStatus::SkippedStale,
@@ -82,7 +86,10 @@ impl ScipIndexJson {
             edges_updated: Some(0),
             definitions_mapped: None,
             files_skipped: None,
-            message: Some("SCIP index hash unchanged; ingestion skipped".to_string()),
+            message: Some(
+                "SCIP index hash unchanged (legacy skip; edges are always re-applied now)"
+                    .to_string(),
+            ),
         }
     }
 }
@@ -147,23 +154,23 @@ pub fn maybe_run_scip_augment(
 }
 
 /// Ingest a SCIP index as structural_edges on native symbol ids only.
+///
+/// **Always re-applies edges** when called (idempotent via precedence/dedup).
+/// Hash matching is recorded in `scip_indices` for audit trail only — never
+/// used to skip edge application (partial residual `scip:%` edges after
+/// incremental deletes must not block a full re-apply).
 pub fn execute_scip_index(
     layout: &Layout,
     storage: &mut StorageManager,
     scip_path: PathBuf,
 ) -> Result<ScipIndexJson> {
     info!(
-        "Ingesting SCIP index from {:?} (edges-only augment)",
+        "Ingesting SCIP index from {:?} (edges-only augment; always re-apply)",
         scip_path
     );
     let scip_index = ScipIndex::load(&scip_path)?;
 
     let conn = storage.get_connection();
-    if !is_scip_stale(conn, &scip_path, &scip_index.file_hash)? {
-        info!("SCIP index is up to date, skipping ingestion.");
-        return Ok(ScipIndexJson::skipped_stale());
-    }
-
     let root = layout.root.as_std_path();
     let path_resolver = |rel: &str| -> Option<i64> {
         let normalized = match normalize_scip_path(root, rel) {
@@ -178,6 +185,7 @@ pub fn execute_scip_index(
 
     let stats = augment_edges_from_scip(conn, &scip_index.index.documents, &path_resolver)?;
 
+    // Audit trail only — registration does not gate future re-applies.
     let conn_mut = storage.get_connection_mut();
     let tx = conn_mut.unchecked_transaction().into_diagnostic()?;
     register_scip_index(&tx, &scip_path, &scip_index.file_hash)?;

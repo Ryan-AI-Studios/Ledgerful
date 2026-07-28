@@ -19,9 +19,10 @@ use tracing::{info, warn};
 /// recomputing. Returns zeroed stats if CozoDB is unavailable, so callers
 /// degrade gracefully on platforms without graph storage.
 ///
-/// SCIP: when `auto_scip` / `scip_path` is set, re-runs edge augment after
-/// `infer_services` and **before** `build_kg_native` + `compute_centrality`
-/// (0095 §2.2b — the second pipeline pass deletes edges inserted earlier).
+/// SCIP: when `auto_scip` / `scip_path` is set, runs edge augment **only**
+/// here after `infer_services` and **before** `build_kg_native` +
+/// `compute_centrality` (0095 §2.2b — exclusive with the main-mode site;
+/// `execute_main_mode` skips SCIP when `--analyze-graph` is set).
 #[allow(clippy::too_many_arguments)]
 pub fn run_graph_analysis(
     storage: StorageManager,

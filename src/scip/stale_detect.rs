@@ -2,12 +2,13 @@ use miette::{IntoDiagnostic, Result};
 use rusqlite::Connection;
 use std::path::Path;
 
-/// Detects if a SCIP index at the given path is stale compared to the database record.
+/// Hash / residual-edge probe for SCIP index metadata.
 ///
-/// A matching hash alone is not enough (0095 DoD-10): if `clear_project_data` or
-/// incremental reindex wiped `structural_edges`, the scip_indices row would
-/// otherwise skip re-ingest of edges that no longer exist. We also require at
-/// least one `scip:%` evidence edge to treat the index as up to date.
+/// **Not used to skip edge re-application** (`execute_scip_index` always
+/// re-applies). Retained for audit/diagnostics and optional future generation
+/// optimization. A matching hash alone is not enough (DoD-10): if
+/// `clear_project_data` or incremental reindex wiped edges, residual
+/// `scip_indices` rows would otherwise look "fresh" while coverage is incomplete.
 pub fn is_scip_stale(conn: &Connection, index_path: &Path, current_hash: &str) -> Result<bool> {
     let index_path_str = index_path.to_string_lossy();
 

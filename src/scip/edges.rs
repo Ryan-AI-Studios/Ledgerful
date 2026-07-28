@@ -1,9 +1,11 @@
 //! Ingest SCIP reference occurrences as `structural_edges` on native ids (0095).
 //!
 //! Precedence (DoD-8): when SCIP and native both have an edge for the same
-//! `(caller_symbol_id, callee_symbol_id, call_kind)`, prefer SCIP evidence —
-//! update the existing row's `evidence` to the SCIP marker rather than inserting
-//! a duplicate.
+//! `(caller_symbol_id, callee_symbol_id)` — **regardless of `call_kind`** —
+//! prefer SCIP evidence: update the existing row's `evidence` to the SCIP
+//! marker rather than inserting a duplicate. Native method edges are often
+//! `METHOD_CALL` while SCIP emits `DIRECT`; matching only on call_kind would
+//! leave both rows and skip the evidence upgrade.
 
 use crate::index::call_graph::{CallKind, ResolutionStatus};
 use crate::scip::range::parse_scip_range;
@@ -142,9 +144,10 @@ pub fn augment_edges_from_scip(
         }
     }
 
-    // Deterministic insert order
-    pending.sort_by_key(|e| (e.caller_symbol_id, e.callee_symbol_id, e.call_kind.clone()));
-    pending.dedup_by_key(|e| (e.caller_symbol_id, e.callee_symbol_id, e.call_kind.clone()));
+    // Deterministic insert order; dedup by (caller, callee) only — call_kind
+    // is not part of identity for SCIP precedence.
+    pending.sort_by_key(|e| (e.caller_symbol_id, e.callee_symbol_id));
+    pending.dedup_by_key(|e| (e.caller_symbol_id, e.callee_symbol_id));
 
     for edge in pending {
         apply_edge_with_precedence(conn, &edge, &mut stats)?;
@@ -154,23 +157,27 @@ pub fn augment_edges_from_scip(
 }
 
 /// Insert or update per DoD-8 precedence: SCIP evidence wins over native.
+///
+/// Match key is `(caller_symbol_id, callee_symbol_id)` regardless of
+/// `call_kind`, so a native `METHOD_CALL` row is upgraded rather than
+/// duplicated when SCIP would emit `DIRECT`.
 fn apply_edge_with_precedence(
     conn: &Connection,
     edge: &PendingEdge,
     stats: &mut ScipEdgeStats,
 ) -> Result<()> {
-    // Look for existing (caller, callee, call_kind) — may be multiple native dups
+    // Any existing edge for this caller→callee pair (any call_kind)
     let existing: Vec<(i64, Option<String>)> = {
         let mut stmt = conn
             .prepare(
                 "SELECT id, evidence FROM structural_edges \
-                 WHERE caller_symbol_id = ?1 AND callee_symbol_id = ?2 AND call_kind = ?3 \
+                 WHERE caller_symbol_id = ?1 AND callee_symbol_id = ?2 \
                  ORDER BY id",
             )
             .into_diagnostic()?;
         let rows = stmt
             .query_map(
-                rusqlite::params![edge.caller_symbol_id, edge.callee_symbol_id, edge.call_kind],
+                rusqlite::params![edge.caller_symbol_id, edge.callee_symbol_id],
                 |row| Ok((row.get::<_, i64>(0)?, row.get::<_, Option<String>>(1)?)),
             )
             .into_diagnostic()?;
@@ -203,7 +210,8 @@ fn apply_edge_with_precedence(
         return Ok(());
     }
 
-    // Prefer SCIP: update first row's evidence if not already SCIP; skip new insert
+    // Prefer SCIP: update first row's evidence if not already SCIP; leave
+    // call_kind as-is (native METHOD_CALL stays METHOD_CALL). No new insert.
     let (id, evidence) = &existing[0];
     let already_scip = evidence.as_deref().is_some_and(|e| e.starts_with("scip:"));
     if already_scip {
@@ -270,6 +278,48 @@ mod tests {
         .unwrap();
     }
 
+    fn insert_native_edge_kind(
+        conn: &Connection,
+        caller: i64,
+        callee: i64,
+        file_id: i64,
+        call_kind: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO structural_edges \
+             (caller_symbol_id, caller_file_id, callee_symbol_id, callee_file_id, \
+              call_kind, resolution_status, confidence, evidence) \
+             VALUES (?1, ?2, ?3, ?2, ?4, 'RESOLVED', 0.9, 'call_expr:method')",
+            rusqlite::params![caller, file_id, callee, call_kind],
+        )
+        .unwrap();
+    }
+
+    /// Synthetic SCIP document: definition of `callee` + reference inside `caller`.
+    /// Ranges are SCIP 0-based; native symbols use 1-based lines.
+    fn synthetic_doc(path: &str, scip_symbol: &str) -> scip::types::Document {
+        use crate::scip::resolver::SCIP_ROLE_DEFINITION;
+        // 0-based line 29 → native line 30 (callee_fn span 30–40)
+        let def = scip::types::Occurrence {
+            symbol: scip_symbol.to_string(),
+            symbol_roles: SCIP_ROLE_DEFINITION,
+            range: vec![29, 0, 5],
+            ..Default::default()
+        };
+        // 0-based line 9 → native line 10 (inside caller_fn 1–20)
+        let r#ref = scip::types::Occurrence {
+            symbol: scip_symbol.to_string(),
+            symbol_roles: 0, // reference
+            range: vec![9, 0, 5],
+            ..Default::default()
+        };
+        scip::types::Document {
+            relative_path: path.to_string(),
+            occurrences: vec![def, r#ref],
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn precedence_updates_native_evidence_to_scip() {
         let conn = setup_db();
@@ -305,6 +355,45 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM structural_edges", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1, "must not duplicate");
+    }
+
+    #[test]
+    fn precedence_updates_method_call_regardless_of_call_kind() {
+        // Native METHOD_CALL + SCIP DIRECT for same (caller, callee) → update, no dup
+        let conn = setup_db();
+        let fid = insert_file(&conn, "src/method.rs");
+        let caller = insert_symbol(&conn, fid, "caller_fn", 1, 20);
+        let callee = insert_symbol(&conn, fid, "callee_fn", 30, 40);
+        insert_native_edge_kind(&conn, caller, callee, fid, "METHOD_CALL");
+
+        let edge = PendingEdge {
+            caller_symbol_id: caller,
+            caller_file_id: fid,
+            callee_symbol_id: callee,
+            callee_file_id: Some(fid),
+            call_kind: CallKind::Direct.as_str().to_string(),
+            evidence: SCIP_EDGE_EVIDENCE.to_string(),
+        };
+        let mut stats = ScipEdgeStats::default();
+        apply_edge_with_precedence(&conn, &edge, &mut stats).unwrap();
+
+        assert_eq!(stats.edges_updated, 1);
+        assert_eq!(stats.edges_added, 0);
+
+        let (evidence, kind): (String, String) = conn
+            .query_row(
+                "SELECT evidence, call_kind FROM structural_edges WHERE caller_symbol_id = ?1",
+                [caller],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(evidence, SCIP_EDGE_EVIDENCE);
+        assert_eq!(kind, "METHOD_CALL", "leave native call_kind as-is");
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM structural_edges", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1, "must not insert DIRECT duplicate");
     }
 
     #[test]
@@ -349,5 +438,103 @@ mod tests {
             .unwrap();
         assert_eq!(before, after);
         assert_eq!(stats.edges_added, 0);
+    }
+
+    #[test]
+    fn augment_from_synthetic_scip_inserts_scip_ref_edge() {
+        let conn = setup_db();
+        let path = "src/lib.rs";
+        let fid = insert_file(&conn, path);
+        let _caller = insert_symbol(&conn, fid, "caller_fn", 1, 20);
+        let _callee = insert_symbol(&conn, fid, "callee_fn", 30, 40);
+
+        let docs = vec![synthetic_doc(
+            path,
+            "rust-analyzer cargo test 0.1 caller_fn/",
+        )];
+        let stats = augment_edges_from_scip(&conn, &docs, &|rel| {
+            if rel == path { Some(fid) } else { None }
+        })
+        .unwrap();
+
+        assert_eq!(stats.definitions_mapped, 1);
+        assert_eq!(stats.edges_added, 1);
+        assert_eq!(stats.edges_updated, 0);
+
+        let evidence: String = conn
+            .query_row("SELECT evidence FROM structural_edges LIMIT 1", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(evidence, SCIP_EDGE_EVIDENCE);
+
+        let status: String = conn
+            .query_row(
+                "SELECT resolution_status FROM structural_edges LIMIT 1",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(status, "RESOLVED");
+    }
+
+    #[test]
+    fn augment_prefers_scip_evidence_on_existing_native_edge() {
+        let conn = setup_db();
+        let path = "src/pair.rs";
+        let fid = insert_file(&conn, path);
+        let caller = insert_symbol(&conn, fid, "caller_fn", 1, 20);
+        let callee = insert_symbol(&conn, fid, "callee_fn", 30, 40);
+        insert_native_edge_kind(&conn, caller, callee, fid, "METHOD_CALL");
+
+        let docs = vec![synthetic_doc(path, "rust-analyzer cargo test 0.1 pair/")];
+        let stats = augment_edges_from_scip(&conn, &docs, &|rel| {
+            if rel == path { Some(fid) } else { None }
+        })
+        .unwrap();
+
+        assert_eq!(stats.definitions_mapped, 1);
+        assert_eq!(stats.edges_updated, 1);
+        assert_eq!(stats.edges_added, 0);
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM structural_edges", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+
+        let evidence: String = conn
+            .query_row(
+                "SELECT evidence FROM structural_edges WHERE caller_symbol_id = ?1",
+                [caller],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(evidence, SCIP_EDGE_EVIDENCE);
+    }
+
+    #[test]
+    fn reapply_is_idempotent_after_existing_scip_edges() {
+        // Simulates second execute_scip_index call with residual scip:% edges
+        // (hash would formerly have SkippedStale; now always re-applies).
+        let conn = setup_db();
+        let path = "src/again.rs";
+        let fid = insert_file(&conn, path);
+        let _caller = insert_symbol(&conn, fid, "caller_fn", 1, 20);
+        let _callee = insert_symbol(&conn, fid, "callee_fn", 30, 40);
+
+        let docs = vec![synthetic_doc(path, "rust-analyzer cargo test 0.1 again/")];
+        let path_res = |rel: &str| if rel == path { Some(fid) } else { None };
+
+        let first = augment_edges_from_scip(&conn, &docs, &path_res).unwrap();
+        assert_eq!(first.edges_added, 1);
+
+        let second = augment_edges_from_scip(&conn, &docs, &path_res).unwrap();
+        assert_eq!(second.edges_added, 0);
+        assert_eq!(second.edges_skipped_duplicate, 1);
+
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM structural_edges", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
     }
 }

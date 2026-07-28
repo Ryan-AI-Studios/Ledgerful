@@ -26,9 +26,11 @@ use tracing::{info, warn};
 /// 4. Main path:
 ///    - `--check` → health report then return.
 ///    - `--incremental` / default full → full indexing pipeline.
-///    - SCIP augment (`--auto-scip` / `--scip PATH`) runs **after**
-///      `build_call_graph()` (and again inside `run_graph_analysis` when
-///      `--analyze-graph` is set). SCIP never replaces the native index.
+///    - SCIP augment (`--auto-scip` / `--scip PATH`) is **mutually exclusive**
+///      per call site (spec §2.2b): without `--analyze-graph`, only after
+///      `build_call_graph()`; with `--analyze-graph`, only inside
+///      `run_graph_analysis` after `infer_services` (never both). SCIP never
+///      replaces the native index.
 ///    - `--analyze-graph` inside main path → centrality + KG build.
 ///    - `--contracts` inside main path → contract indexing.
 ///    - `--export-docs` inside main path → doc export (only when not check).
@@ -61,7 +63,7 @@ pub fn execute_index(args: IndexArgs) -> Result<()> {
 
     // ── SCIP is no longer an early-return mode (0095) ─────────────────────
     // `--auto-scip` and `--scip PATH` are handled inside execute_main_mode
-    // after build_call_graph (and again in run_graph_analysis when needed).
+    // (no-graph) or exclusively inside run_graph_analysis (--analyze-graph).
 
     // ── Mode: standalone semantic indexing ─────────────────────────────
     if args.semantic && !args.analyze_graph {
@@ -141,17 +143,26 @@ fn execute_main_mode(
     // Build call graph
     let cg_stats = indexer.build_call_graph()?;
 
-    // ── SCIP augment (0095): after native call graph, before consumers ──
-    // Without --analyze-graph this is the only insertion point.
-    // With --analyze-graph, run_graph_analysis rebuilds edges and calls the
-    // same helper again after infer_services (spec §2.2b).
-    let scip_json = maybe_run_scip_augment(
-        layout,
-        indexer.storage_mut(),
-        config,
-        args.auto_scip,
-        args.scip.clone(),
-    );
+    // ── SCIP augment (0095 §2.2b): mutually exclusive call sites ────────
+    // - without --analyze-graph → only here, after build_call_graph
+    // - with --analyze-graph → only inside run_graph_analysis after
+    //   infer_services (graph rebuild would discard any earlier edges)
+    let scip_json = if args.analyze_graph {
+        let mut deferred = crate::scip::ScipIndexJson::did_not_run();
+        if args.auto_scip || args.scip.is_some() {
+            deferred.message =
+                Some("SCIP deferred to --analyze-graph pass (after infer_services)".to_string());
+        }
+        deferred
+    } else {
+        maybe_run_scip_augment(
+            layout,
+            indexer.storage_mut(),
+            config,
+            args.auto_scip,
+            args.scip.clone(),
+        )
+    };
 
     // Extract API routes
     let route_stats = indexer.extract_routes()?;

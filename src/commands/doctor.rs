@@ -576,9 +576,10 @@ fn print_scip_hint() {
 
 /// Per-language SCIP capability report for doctor (0095).
 ///
-/// Returns a **sorted** `Vec<String>` of human-readable lines. Empty when
-/// every wired language has a capable indexer (rare). Never contributes to
-/// `count_doctor_failures`. Go is reported as upstream-exists / not-wired.
+/// Returns a **sorted** `Vec<String>` of human-readable lines for each wired
+/// language (available or missing) plus a Go upstream-exists / not-wired note.
+/// Findings are **never empty** in practice (Go note is always included).
+/// Never contributes to `count_doctor_failures` — these are optional accelerators.
 fn collect_scip_findings() -> Vec<String> {
     use crate::scip::ScipToolchain;
 
@@ -586,13 +587,13 @@ fn collect_scip_findings() -> Vec<String> {
     for (tool, available) in ScipToolchain::probe_all_languages() {
         if available {
             findings.push(format!(
-                "SCIP {}: {} available — `ledgerful index --auto-scip` can add precise reference edges on native symbols",
+                "SCIP {}: {} available — `ledgerful index --auto-scip` can add reference edges on native symbols",
                 tool.language_label(),
                 tool.exe_name()
             ));
         } else {
             findings.push(format!(
-                "SCIP {}: {} not available (capability probe). Install with `{}` to enable precise cross-file references via --auto-scip",
+                "SCIP {}: {} not available (capability probe). Install with `{}` to enable cross-file references via --auto-scip",
                 tool.language_label(),
                 tool.exe_name(),
                 tool.install_hint()

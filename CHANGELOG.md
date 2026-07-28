@@ -55,6 +55,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **SCIP exclusive call sites + always re-apply (0095 review):** with
+  `--analyze-graph`, SCIP runs only inside `run_graph_analysis` (not also in
+  `execute_main_mode`). Requested augment always re-applies edges (idempotent);
+  hash is audit-only, not a skip gate. Precedence matches `(caller, callee)`
+  regardless of `call_kind` so native `METHOD_CALL` edges upgrade to
+  `evidence=scip:ref` without duplicates.
 - **SCIP no longer writes `project_symbols` (0095, user-visible):** the old
   ingest path wrote external/stdlib symbols into local files, used 0-based
   lines against 1-based native rows, and kept the last occurrence's range.

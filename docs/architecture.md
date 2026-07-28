@@ -17,7 +17,7 @@ CLI
     -> embed/       embedding generation and SQLite vector storage
     -> semantic/    AST chunking, logic extraction, CozoDB HNSW vector search
     -> search/      streaming trigram indexing, Tantivy regex, BM25 ranking
-    -> scip/        protobuf ingestion, compiler-grade symbol navigation
+    -> scip/        optional SCIP edge augment on native symbols
     -> docs/        Markdown crawling, chunking, parsing, indexing
     -> contracts/   OpenAPI/Swagger parsing, contract risk matching
     -> coverage/    service maps, data-flow, CI, deploy, observability, ADRs
@@ -80,7 +80,7 @@ CLI
     - `embed/`: unified HTTP client and SQLite vector storage for local embedding generation.
     - `semantic/`: AST chunking, logic extraction, and local vector search powered by CozoDB HNSW indices.
     - `search/`: streaming trigram indexing, Tantivy regex execution, and ranked BM25 search.
-    - `scip/`: Protobuf ingestion, symbol mapping, and stale index detection for precise compiler-grade graph integration.
+    - `scip/`: Optional SCIP protobuf edge augment onto native `project_symbols` ids (`evidence=scip:ref`); never replaces the native index; off by default.
     - `docs/`: Markdown crawling, chunking, parsing, and indexing.
     - `contracts/`: OpenAPI/Swagger YAML/JSON parsing, semantic alignment, and public contract risk matching.
     - `coverage/`: domain extraction for CI configurations, Docker/Kubernetes manifests, service maps, data-flow coupling, and third-party SDK dependencies.

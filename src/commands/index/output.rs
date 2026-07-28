@@ -49,6 +49,8 @@ pub(crate) fn print_json_output(output: &IndexOutputStats) -> Result<()> {
             map.insert(format!("service_{}", k), v.clone());
         }
     }
+    // cg_* counters are **native call-graph only** (built before SCIP augment).
+    // SCIP edge deltas live under the top-level `scip` object (additive).
     let cg_obj = serde_json::to_value(&output.cg_stats).into_diagnostic()?;
     if let (Some(map), Some(cg)) = (merged.as_object_mut(), cg_obj.as_object()) {
         for (k, v) in cg {
