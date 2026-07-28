@@ -23,9 +23,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (level-split writer). Machine mode (`--json`, `scan --format json`, `mcp`)
   filters the layer to `WARN` so human lines cannot corrupt JSON on stdout.
   Per-entry signature `VALID`/`SKIP` lines are demoted to `debug!` so `--quiet`
-  can hide them; **default verbosity is unchanged** (filter still at `DEBUG`).
-  Double-emitted observe would-block / CRITICAL messages now emit once via
-  `cli_summary` only.
+  can hide them while the aggregate stays at `info!`; **default interactive
+  verbosity is unchanged** (summary filter remains `DEBUG`). Double-emitted
+  observe would-block / CRITICAL messages now emit once via `cli_summary` only.
 
 ### Fixed
 
