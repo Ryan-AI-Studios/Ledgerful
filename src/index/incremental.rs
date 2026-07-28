@@ -1,12 +1,15 @@
 #[cfg(test)]
 use crate::config::model::Config;
+use crate::index::bindings::FileBinding;
 use crate::index::call_graph::CallEdge;
+use crate::index::module_path::derive_module_path;
 use crate::index::orchestrator::{BINARY_EXTENSIONS, ProjectIndexer, SUPPORTED_EXTENSIONS};
 use crate::index::resolve::{
     ResolveCandidate, ResolveInput, build_resolve_maps, resolve_callee, resolve_candidate_from_row,
 };
 use crate::index::rows::{
-    delete_file_index_dependents, get_file_id_by_path, insert_symbol_row, upsert_file_row,
+    delete_file_index_dependents, get_file_id_by_path, insert_symbol_row, load_all_file_bindings,
+    replace_file_bindings, upsert_file_row,
 };
 use crate::index::types::{ProjectFile, ProjectSymbol};
 use crate::state::graph_kinds::{EdgeKind, NodeKind};
@@ -25,6 +28,10 @@ struct SymbolMaps {
     by_qualified: HashMap<String, Vec<ResolveCandidate>>,
     /// symbol_id → qualified_name (for graph edge URNs)
     name_to_qualified: HashMap<i64, String>,
+    /// file_id → module path (`crate::…`)
+    module_path_by_file: HashMap<i64, String>,
+    /// file_id → bound_name → BindingInfo
+    bindings_by_file: HashMap<i64, HashMap<String, crate::index::bindings::BindingInfo>>,
 }
 
 pub struct IncrementalSyncEngine {
@@ -125,6 +132,7 @@ impl IncrementalSyncEngine {
             project_file: Option<ProjectFile>,
             project_symbols: Vec<ProjectSymbol>,
             calls: Vec<CallEdge>,
+            bindings: Vec<FileBinding>,
         }
 
         let mut parsed: Vec<ParsedFile> = Vec::new();
@@ -150,8 +158,8 @@ impl IncrementalSyncEngine {
                         continue;
                     }
                     match self.indexer.index_file_with_edges(&full_path) {
-                        Ok((pf, ps, calls)) => {
-                            if pf.parse_status == "PARSE_FAILED" {
+                        Ok(indexed) => {
+                            if indexed.project_file.parse_status == "PARSE_FAILED" {
                                 warn!("Skipping parse-failed file: {}", event.path);
                                 // Even if parse fails, we process it by leaving it in the affected list
                                 // as a deletion of its previous symbols to avoid leaving stale knowledge graph nodes.
@@ -163,14 +171,16 @@ impl IncrementalSyncEngine {
                                     project_file: None,
                                     project_symbols: Vec::new(),
                                     calls: Vec::new(),
+                                    bindings: Vec::new(),
                                 });
                                 continue;
                             }
                             parsed.push(ParsedFile {
                                 event: event.clone(),
-                                project_file: Some(pf),
-                                project_symbols: ps,
-                                calls,
+                                project_file: Some(indexed.project_file),
+                                project_symbols: indexed.project_symbols,
+                                calls: indexed.calls,
+                                bindings: indexed.bindings,
                             });
                         }
                         Err(e) => {
@@ -184,6 +194,7 @@ impl IncrementalSyncEngine {
                                 project_file: None,
                                 project_symbols: Vec::new(),
                                 calls: Vec::new(),
+                                bindings: Vec::new(),
                             });
                             continue;
                         }
@@ -195,6 +206,7 @@ impl IncrementalSyncEngine {
                         project_file: None,
                         project_symbols: Vec::new(),
                         calls: Vec::new(),
+                        bindings: Vec::new(),
                     });
                 }
                 _ => {}
@@ -235,10 +247,11 @@ impl IncrementalSyncEngine {
                     upsert_file_row(&tx, project_file)?;
                     let file_id = get_file_id_by_path(&tx, &relative)?;
 
-                    // Insert new symbols
+                    // Insert new symbols and bindings
                     for ps in &item.project_symbols {
                         insert_symbol_row(&tx, ps, file_id)?;
                     }
+                    replace_file_bindings(&tx, file_id, &item.bindings)?;
 
                     affected.push(AffectedFileRecord {
                         file_path: relative.clone(),
@@ -331,11 +344,20 @@ impl IncrementalSyncEngine {
                     .cloned()
                     .unwrap_or_else(|| call.caller_name.clone());
 
+                let empty_bindings = HashMap::new();
+                let caller_bindings = symbol_maps
+                    .bindings_by_file
+                    .get(&file_id)
+                    .unwrap_or(&empty_bindings);
+                let caller_module = symbol_maps.module_path_by_file.get(&file_id);
                 let resolved = resolve_callee(ResolveInput {
                     callee_name: &call.callee_name,
                     caller_file_id: file_id,
                     candidates_by_bare_name: &symbol_maps.by_bare,
                     candidates_by_qualified: &symbol_maps.by_qualified,
+                    caller_module_path: caller_module.map(String::as_str),
+                    caller_bindings,
+                    module_path_by_file: &symbol_maps.module_path_by_file,
                 });
                 let resolution_status = resolved.status.as_str();
 
@@ -486,10 +508,33 @@ impl IncrementalSyncEngine {
         }
 
         let (by_bare, by_qualified) = build_resolve_maps(candidates);
+
+        // Module paths from project_files
+        let mut file_stmt = conn
+            .prepare("SELECT id, file_path FROM project_files")
+            .into_diagnostic()?;
+        let file_rows = file_stmt
+            .query_map([], |row| {
+                Ok((row.get::<_, i64>(0)?, row.get::<_, String>(1)?))
+            })
+            .into_diagnostic()?;
+        let mut module_path_by_file = HashMap::new();
+        for row in file_rows {
+            let (fid, path) = row.into_diagnostic()?;
+            if let Some(mp) = derive_module_path(&path, None) {
+                module_path_by_file.insert(fid, mp);
+            }
+        }
+        drop(file_stmt);
+
+        let bindings_by_file = load_all_file_bindings(conn)?;
+
         Ok(SymbolMaps {
             by_bare,
             by_qualified,
             name_to_qualified,
+            module_path_by_file,
+            bindings_by_file,
         })
     }
 

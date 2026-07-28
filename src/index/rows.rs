@@ -1,3 +1,4 @@
+use crate::index::bindings::{FileBinding, sort_bindings};
 use crate::index::types::{ProjectFile, ProjectSymbol};
 use miette::{IntoDiagnostic, Result};
 use rusqlite::Connection;
@@ -73,10 +74,152 @@ pub fn delete_file_index_dependents(conn: &Connection, file_path: &str) -> Resul
         ),
         format!("DELETE FROM env_declarations WHERE source_file_id IN ({file_id_subquery})"),
         format!("DELETE FROM project_docs WHERE file_id IN ({file_id_subquery})"),
+        format!("DELETE FROM file_bindings WHERE file_id IN ({file_id_subquery})"),
     ] {
         conn.execute(&statement, [file_path]).into_diagnostic()?;
     }
     Ok(())
+}
+
+/// Replace all bindings for a file (delete then insert, deterministic order).
+pub fn replace_file_bindings(
+    conn: &Connection,
+    file_id: i64,
+    bindings: &[FileBinding],
+) -> Result<()> {
+    conn.execute("DELETE FROM file_bindings WHERE file_id = ?1", [file_id])
+        .into_diagnostic()?;
+
+    if bindings.is_empty() {
+        return Ok(());
+    }
+
+    let mut sorted = bindings.to_vec();
+    sort_bindings(&mut sorted);
+
+    let mut stmt = conn
+        .prepare(
+            "INSERT INTO file_bindings \
+             (file_id, bound_name, source_path, binding_kind, is_enumerable, is_local) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6) \
+             ON CONFLICT(file_id, bound_name, source_path, binding_kind) DO UPDATE SET \
+               is_enumerable=excluded.is_enumerable, is_local=excluded.is_local",
+        )
+        .into_diagnostic()?;
+
+    for b in &sorted {
+        stmt.execute(rusqlite::params![
+            file_id,
+            b.bound_name,
+            b.source_path,
+            b.binding_kind,
+            b.is_enumerable as i32,
+            b.is_local as i32,
+        ])
+        .into_diagnostic()?;
+    }
+    Ok(())
+}
+
+/// Load bindings for one file as a bound_name → BindingInfo map.
+pub fn load_file_bindings_map(
+    conn: &Connection,
+    file_id: i64,
+) -> Result<std::collections::HashMap<String, crate::index::bindings::BindingInfo>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT bound_name, source_path, binding_kind, is_enumerable, is_local \
+             FROM file_bindings WHERE file_id = ?1 \
+             ORDER BY bound_name, source_path, binding_kind",
+        )
+        .into_diagnostic()?;
+    let rows = stmt
+        .query_map([file_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, i32>(3)? != 0,
+                row.get::<_, i32>(4)? != 0,
+            ))
+        })
+        .into_diagnostic()?;
+
+    let mut map = std::collections::HashMap::new();
+    for row in rows {
+        let (bound, source, kind, enumerable, local) = row.into_diagnostic()?;
+        let info = crate::index::bindings::BindingInfo {
+            source_path: source,
+            binding_kind: kind,
+            is_enumerable: enumerable,
+            is_local: local,
+        };
+        map.entry(bound)
+            .and_modify(|existing: &mut crate::index::bindings::BindingInfo| {
+                let better = (info.is_local && info.is_enumerable)
+                    && !(existing.is_local && existing.is_enumerable);
+                if better {
+                    *existing = info.clone();
+                }
+            })
+            .or_insert(info);
+    }
+    Ok(map)
+}
+
+/// Load all file_id → bindings maps (for full call-graph build).
+pub fn load_all_file_bindings(
+    conn: &Connection,
+) -> Result<
+    std::collections::HashMap<
+        i64,
+        std::collections::HashMap<String, crate::index::bindings::BindingInfo>,
+    >,
+> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT file_id, bound_name, source_path, binding_kind, is_enumerable, is_local \
+             FROM file_bindings \
+             ORDER BY file_id, bound_name, source_path, binding_kind",
+        )
+        .into_diagnostic()?;
+    let rows = stmt
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, i64>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+                row.get::<_, i32>(4)? != 0,
+                row.get::<_, i32>(5)? != 0,
+            ))
+        })
+        .into_diagnostic()?;
+
+    let mut by_file: std::collections::HashMap<
+        i64,
+        std::collections::HashMap<String, crate::index::bindings::BindingInfo>,
+    > = std::collections::HashMap::new();
+    for row in rows {
+        let (file_id, bound, source, kind, enumerable, local) = row.into_diagnostic()?;
+        let info = crate::index::bindings::BindingInfo {
+            source_path: source,
+            binding_kind: kind,
+            is_enumerable: enumerable,
+            is_local: local,
+        };
+        let map = by_file.entry(file_id).or_default();
+        map.entry(bound)
+            .and_modify(|existing| {
+                let better = (info.is_local && info.is_enumerable)
+                    && !(existing.is_local && existing.is_enumerable);
+                if better {
+                    *existing = info.clone();
+                }
+            })
+            .or_insert(info);
+    }
+    Ok(by_file)
 }
 
 pub fn insert_symbol_row(conn: &Connection, ps: &ProjectSymbol, file_id: i64) -> Result<()> {

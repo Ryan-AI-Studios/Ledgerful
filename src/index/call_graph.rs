@@ -338,11 +338,18 @@ impl<'a> CallGraphBuilder<'a> {
 
         let (candidates_by_bare, candidates_by_qn) = build_resolve_maps(resolve_candidates);
 
-        // file_paths: file_id -> file_path (available for future use)
-        let _file_paths: HashMap<i64, String> = file_rows
+        // file_id -> path and module path (0092)
+        let file_paths: HashMap<i64, String> = file_rows
             .iter()
             .map(|(id, path, _)| (*id, path.clone()))
             .collect();
+        let mut module_path_by_file: HashMap<i64, String> = HashMap::new();
+        for (id, path) in &file_paths {
+            if let Some(mp) = crate::index::module_path::derive_module_path(path, None) {
+                module_path_by_file.insert(*id, mp);
+            }
+        }
+        let bindings_by_file = crate::index::rows::load_all_file_bindings(conn)?;
 
         // 4. Iterate over source files
         let mut total_edges = 0usize;
@@ -420,11 +427,17 @@ impl<'a> CallGraphBuilder<'a> {
                         None => continue, // skip if caller not found in this file's symbols
                     };
 
+                let empty_bindings = std::collections::HashMap::new();
+                let caller_bindings = bindings_by_file.get(file_id).unwrap_or(&empty_bindings);
+                let caller_module = module_path_by_file.get(file_id);
                 let resolved = resolve_callee(ResolveInput {
                     callee_name: &call_edge.callee_name,
                     caller_file_id: *file_id,
                     candidates_by_bare_name: &candidates_by_bare,
                     candidates_by_qualified: &candidates_by_qn,
+                    caller_module_path: caller_module.map(String::as_str),
+                    caller_bindings,
+                    module_path_by_file: &module_path_by_file,
                 });
 
                 let callee_is_public = resolved
@@ -1000,6 +1013,517 @@ fn internal() {}
             "expected helper->internal edge, got callers={:?} callees={:?}",
             caller_names,
             callee_names
+        );
+    }
+
+    /// 0092 rolled-in: Py/TS production-path negative — json.loads / axios.get
+    /// must persist as UNRESOLVED even with a same-file Function of that name.
+    #[test]
+    fn production_path_json_loads_and_axios_get_unresolved() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("src");
+        fs::create_dir_all(&src).unwrap();
+
+        // Python: free Function loads + json.loads call
+        fs::write(
+            src.join("app.py"),
+            r#"
+def loads(x):
+    return x
+
+def caller():
+    return json.loads(x)
+"#,
+        )
+        .unwrap();
+
+        // TypeScript: free Function get + axios.get call
+        fs::write(
+            src.join("client.ts"),
+            r#"
+export function get() { return 1; }
+export function run() { return axios.get("/x"); }
+"#,
+        )
+        .unwrap();
+
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            ("src/app.py", "Python", "h1", 50, "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        let py_id = conn.last_insert_rowid();
+        for (qn, name) in [("loads", "loads"), ("caller", "caller")] {
+            conn.execute(
+                "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, is_public, confidence, last_indexed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                (py_id, qn, name, "Function", 1, 1.0, "2026-05-01T00:00:00Z"),
+            )
+            .unwrap();
+        }
+
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            ("src/client.ts", "TypeScript", "h2", 50, "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        let ts_id = conn.last_insert_rowid();
+        for (qn, name) in [("get", "get"), ("run", "run")] {
+            conn.execute(
+                "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, is_public, confidence, last_indexed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                (ts_id, qn, name, "Function", 1, 1.0, "2026-05-01T00:00:00Z"),
+            )
+            .unwrap();
+        }
+
+        let builder = CallGraphBuilder::new(&storage, dir.path().to_path_buf());
+        let stats = builder.build().expect("build");
+        assert!(stats.total_edges >= 2);
+
+        let mut stmt = conn
+            .prepare(
+                "SELECT unresolved_callee, resolution_status, callee_symbol_id \
+                 FROM structural_edges \
+                 WHERE unresolved_callee IN ('json.loads', 'axios.get') \
+                    OR (resolution_status = 'RESOLVED' AND callee_symbol_id IS NOT NULL)",
+            )
+            .unwrap();
+        let rows: Vec<(Option<String>, String, Option<i64>)> = stmt
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        let json_edge = rows
+            .iter()
+            .find(|(u, _, _)| u.as_deref() == Some("json.loads"));
+        assert!(
+            json_edge.is_some(),
+            "expected json.loads edge, got {rows:?}"
+        );
+        assert_eq!(json_edge.unwrap().1, "UNRESOLVED");
+        assert!(json_edge.unwrap().2.is_none());
+
+        let axios_edge = rows
+            .iter()
+            .find(|(u, _, _)| u.as_deref() == Some("axios.get"));
+        assert!(
+            axios_edge.is_some(),
+            "expected axios.get edge, got {rows:?}"
+        );
+        assert_eq!(axios_edge.unwrap().1, "UNRESOLVED");
+        assert!(axios_edge.unwrap().2.is_none());
+    }
+
+    /// DoD-1: bindings round-trip through replace_file_bindings.
+    #[test]
+    fn file_bindings_round_trip_persist() {
+        use crate::index::bindings::FileBinding;
+        use crate::index::rows::{load_file_bindings_map, replace_file_bindings};
+
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            ("src/util/mod.rs", "Rust", "h", 10, "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+
+        let bindings = vec![
+            FileBinding {
+                bound_name: "fs".into(),
+                source_path: "fs".into(),
+                binding_kind: "mod".into(),
+                is_enumerable: true,
+                is_local: true,
+            },
+            FileBinding {
+                bound_name: "Map".into(),
+                source_path: "std::collections::HashMap".into(),
+                binding_kind: "use".into(),
+                is_enumerable: true,
+                is_local: false,
+            },
+            FileBinding {
+                bound_name: "*".into(),
+                source_path: "foo::*".into(),
+                binding_kind: "use_wildcard".into(),
+                is_enumerable: false,
+                is_local: false,
+            },
+        ];
+        replace_file_bindings(conn, file_id, &bindings).unwrap();
+
+        let map = load_file_bindings_map(conn, file_id).unwrap();
+        assert!(map.get("fs").is_some_and(|b| b.is_local && b.is_enumerable));
+        assert!(map.get("Map").is_some_and(|b| !b.is_local));
+        assert!(map.get("*").is_some_and(|b| !b.is_enumerable));
+
+        // Empty replace clears
+        replace_file_bindings(conn, file_id, &[]).unwrap();
+        let map2 = load_file_bindings_map(conn, file_id).unwrap();
+        assert!(map2.is_empty());
+    }
+
+    /// DoD-6: full CallGraphBuilder structural_edges identity on tempfile
+    /// fixture (two builds over identical DB+files must match).
+    #[test]
+    fn full_vs_full_structural_edges_identity() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("util")).unwrap();
+        fs::write(
+            src.join("util/mod.rs"),
+            "pub mod fs;\nfn caller() { fs::local_write(); }\n",
+        )
+        .unwrap();
+        fs::write(src.join("util/fs.rs"), "pub fn local_write() {}\n").unwrap();
+        fs::write(
+            src.join("main.rs"),
+            "use std::fs;\nfn main() { fs::write(\"x\", b\"\"); }\n",
+        )
+        .unwrap();
+
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+
+        // util/mod.rs
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            ("src/util/mod.rs", "Rust", "h1", 40, "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        let mod_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, is_public, confidence, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (mod_id, "caller", "caller", "Function", 0, 1.0, "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        crate::index::rows::replace_file_bindings(
+            conn,
+            mod_id,
+            &[crate::index::bindings::FileBinding {
+                bound_name: "fs".into(),
+                source_path: "fs".into(),
+                binding_kind: "mod".into(),
+                is_enumerable: true,
+                is_local: true,
+            }],
+        )
+        .unwrap();
+
+        // util/fs.rs
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            ("src/util/fs.rs", "Rust", "h2", 30, "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        let fs_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, is_public, confidence, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (
+                fs_id,
+                "local_write",
+                "local_write",
+                "Function",
+                1,
+                1.0,
+                "2026-05-01T00:00:00Z",
+            ),
+        )
+        .unwrap();
+
+        // main.rs with std::fs
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            ("src/main.rs", "Rust", "h3", 50, "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        let main_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, is_public, confidence, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (main_id, "main", "main", "Function", 0, 1.0, "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        crate::index::rows::replace_file_bindings(
+            conn,
+            main_id,
+            &[crate::index::bindings::FileBinding {
+                bound_name: "fs".into(),
+                source_path: "std::fs".into(),
+                binding_kind: "use".into(),
+                is_enumerable: true,
+                is_local: false,
+            }],
+        )
+        .unwrap();
+
+        let builder = CallGraphBuilder::new(&storage, dir.path().to_path_buf());
+        builder.build().expect("build 1");
+
+        let edges1: Vec<(i64, Option<i64>, Option<String>, String)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT caller_symbol_id, callee_symbol_id, unresolved_callee, resolution_status \
+                     FROM structural_edges ORDER BY caller_symbol_id, unresolved_callee, resolution_status",
+                )
+                .unwrap();
+            stmt.query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+        };
+
+        // Clear edges and rebuild (identity of resolve path)
+        conn.execute("DELETE FROM structural_edges", []).unwrap();
+        builder.build().expect("build 2");
+
+        let edges2: Vec<(i64, Option<i64>, Option<String>, String)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT caller_symbol_id, callee_symbol_id, unresolved_callee, resolution_status \
+                     FROM structural_edges ORDER BY caller_symbol_id, unresolved_callee, resolution_status",
+                )
+                .unwrap();
+            stmt.query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap()
+        };
+
+        assert_eq!(edges1, edges2, "repeated full build must be byte-identical");
+
+        // Dual-direction fs check on persisted edges
+        let mut stmt = conn
+            .prepare(
+                "SELECT pf.file_path, se.resolution_status, se.callee_symbol_id, se.unresolved_callee \
+                 FROM structural_edges se \
+                 JOIN project_files pf ON se.caller_file_id = pf.id \
+                 WHERE se.unresolved_callee LIKE 'fs.%' OR se.unresolved_callee LIKE 'fs::%' \
+                    OR (se.resolution_status = 'RESOLVED' AND se.unresolved_callee IS NULL)",
+            )
+            .unwrap();
+        let edge_rows: Vec<(String, String, Option<i64>, Option<String>)> = stmt
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
+            .unwrap();
+
+        let mod_edges: Vec<_> = edge_rows
+            .iter()
+            .filter(|(p, _, _, _)| p.contains("util/mod"))
+            .collect();
+        let main_edges: Vec<_> = edge_rows
+            .iter()
+            .filter(|(p, _, _, u)| {
+                p.contains("main.rs") && u.as_deref().is_some_and(|s| s.starts_with("fs."))
+            })
+            .collect();
+
+        // mod-bound fs::local_write should resolve
+        assert!(
+            mod_edges
+                .iter()
+                .any(|(_, st, cid, _)| st == "RESOLVED" && cid.is_some()),
+            "mod-bound fs call should resolve, got {mod_edges:?}"
+        );
+        // std::fs write must stay unresolved
+        assert!(
+            main_edges
+                .iter()
+                .any(|(_, st, cid, _)| st == "UNRESOLVED" && cid.is_none()),
+            "std::fs call must stay unresolved, got {main_edges:?}"
+        );
+    }
+
+    /// DoD-6: live full CallGraphBuilder vs IncrementalSyncEngine structural_edges
+    /// identity on a hermetic multi-file tempfile (name-keyed edge dump).
+    #[test]
+    fn full_vs_incremental_structural_edges_identity() {
+        use crate::config::model::Config;
+        use crate::index::incremental::IncrementalSyncEngine;
+        use crate::index::orchestrator::ProjectIndexer;
+        use crate::state::storage_cozo::CozoStorage;
+        use crate::watch::batch::{WatchBatch, WatchEvent, WatchEventKind};
+        use camino::Utf8PathBuf;
+        use std::fs;
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let repo_path = Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("utf8 path");
+        let src = dir.path().join("src");
+        fs::create_dir_all(src.join("util")).unwrap();
+
+        // Multi-file fixture: crate:: paths + local mod binding + external use.
+        fs::write(
+            src.join("lib.rs"),
+            r#"
+mod util;
+
+pub fn entry() {
+    util::run();
+    crate::util::run();
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            src.join("util/mod.rs"),
+            r#"
+pub mod fs;
+
+pub fn run() {
+    fs::local_write();
+    crate::util::fs::local_write();
+}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            src.join("util/fs.rs"),
+            r#"
+pub fn local_write() {}
+"#,
+        )
+        .unwrap();
+        fs::write(
+            src.join("main.rs"),
+            r#"
+use std::fs;
+
+fn main() {
+    fs::write("x", b"");
+}
+"#,
+        )
+        .unwrap();
+
+        // Storage with Cozo (required by IncrementalSyncEngine process_batch).
+        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = conn;
+        get_migrations().to_latest(&mut conn).unwrap();
+        let mut storage = StorageManager::init_from_conn(conn);
+        let cozo = CozoStorage::new(&std::path::PathBuf::from("")).unwrap();
+        storage.cozo = Some(cozo);
+
+        let indexer = ProjectIndexer::new(storage, repo_path.clone(), Config::default());
+        let mut engine = IncrementalSyncEngine::new(indexer, repo_path.clone());
+
+        let batch = WatchBatch::new(vec![
+            WatchEvent {
+                path: repo_path.join("src/lib.rs"),
+                kind: WatchEventKind::Create,
+            },
+            WatchEvent {
+                path: repo_path.join("src/util/mod.rs"),
+                kind: WatchEventKind::Create,
+            },
+            WatchEvent {
+                path: repo_path.join("src/util/fs.rs"),
+                kind: WatchEventKind::Create,
+            },
+            WatchEvent {
+                path: repo_path.join("src/main.rs"),
+                kind: WatchEventKind::Create,
+            },
+        ]);
+        let delta = engine.process_batch(&batch).expect("incremental index");
+        assert!(
+            delta.files_processed >= 4,
+            "expected all fixture files processed, got {}",
+            delta.files_processed
+        );
+
+        fn dump_edge_keys(conn: &Connection) -> Vec<(String, String, String, String, String)> {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT pf.file_path, ps_caller.symbol_name, \
+                            COALESCE(ps_callee.symbol_name, se.unresolved_callee, ''), \
+                            se.resolution_status, se.call_kind \
+                     FROM structural_edges se \
+                     JOIN project_files pf ON se.caller_file_id = pf.id \
+                     JOIN project_symbols ps_caller ON se.caller_symbol_id = ps_caller.id \
+                     LEFT JOIN project_symbols ps_callee ON se.callee_symbol_id = ps_callee.id \
+                     ORDER BY pf.file_path, ps_caller.symbol_name, 3, se.resolution_status, se.call_kind",
+                )
+                .unwrap();
+            let mut keys: Vec<(String, String, String, String, String)> = stmt
+                .query_map([], |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                })
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap();
+            keys.sort();
+            keys
+        }
+
+        let conn = engine.indexer.storage().get_connection();
+        let incremental_keys = dump_edge_keys(conn);
+        assert!(
+            !incremental_keys.is_empty(),
+            "incremental path must produce structural_edges"
+        );
+
+        // Clear edges only — keep files/symbols/bindings for the full builder path.
+        conn.execute("DELETE FROM structural_edges", []).unwrap();
+
+        let builder = CallGraphBuilder::new(engine.indexer.storage(), dir.path().to_path_buf());
+        builder.build().expect("full CallGraphBuilder");
+        let full_keys = dump_edge_keys(conn);
+
+        assert_eq!(
+            incremental_keys, full_keys,
+            "full vs incremental structural_edges keys must match\nincremental={incremental_keys:?}\nfull={full_keys:?}"
+        );
+
+        // Sanity: mod-bound local_write resolves; std::fs write stays unresolved.
+        assert!(
+            full_keys.iter().any(|(_, caller, callee, status, _)| {
+                caller == "run" && callee == "local_write" && status == "RESOLVED"
+            }),
+            "expected resolved local_write from util::run, got {full_keys:?}"
+        );
+        assert!(
+            full_keys.iter().any(|(_, caller, callee, status, _)| {
+                caller == "main" && callee.contains("fs") && status == "UNRESOLVED"
+            }),
+            "expected unresolved std::fs call from main, got {full_keys:?}"
         );
     }
 }

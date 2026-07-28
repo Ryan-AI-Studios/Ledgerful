@@ -3,7 +3,7 @@ use crate::index::analysis::analyze_file;
 use crate::index::languages::Language;
 use crate::index::rows as row_helpers;
 use crate::index::types::{ProjectFile, ProjectSymbol, symbol_to_project_symbol};
-use crate::index::worker_pool::{JobResult, WorkerPool};
+use crate::index::worker_pool::{JobResult, ParsedFileJob, WorkerPool};
 use crate::state::storage::StorageManager;
 use indicatif::{ProgressBar, ProgressStyle};
 use miette::{IntoDiagnostic, Result};
@@ -109,8 +109,16 @@ pub fn full_index(indexer: &mut ProjectIndexer) -> Result<super::IndexStats> {
             last_indexed_at: now.clone(),
         };
 
+        let mut bindings = Vec::new();
         if let Ok(content) = crate::util::fs::read_to_string_with_encoding(path.as_std_path()) {
             pf.content_hash = Some(blake3::hash(content.as_bytes()).to_hex().to_string());
+            match crate::index::references::extract_file_bindings(path.as_std_path(), &content) {
+                Ok(Some(b)) => bindings = b,
+                Ok(None) => {}
+                Err(e) => {
+                    warn!("Binding extraction failed for {}: {}", path, e);
+                }
+            }
         }
 
         let ps = outcome
@@ -120,7 +128,11 @@ pub fn full_index(indexer: &mut ProjectIndexer) -> Result<super::IndexStats> {
             .map(|s| symbol_to_project_symbol(&s, 0, &now))
             .collect();
 
-        Ok((pf, ps))
+        Ok(ParsedFileJob {
+            file: pf,
+            symbols: ps,
+            bindings,
+        })
     })?;
 
     let stats = collect_results(&mut indexer.storage, rx, true)?;
@@ -208,8 +220,16 @@ pub fn incremental_index(indexer: &mut ProjectIndexer) -> Result<super::IndexSta
             },
             last_indexed_at: now.clone(),
         };
+        let mut bindings = Vec::new();
         if let Ok(content) = crate::util::fs::read_to_string_with_encoding(path.as_std_path()) {
             pf.content_hash = Some(blake3::hash(content.as_bytes()).to_hex().to_string());
+            match crate::index::references::extract_file_bindings(path.as_std_path(), &content) {
+                Ok(Some(b)) => bindings = b,
+                Ok(None) => {}
+                Err(e) => {
+                    warn!("Binding extraction failed for {}: {}", path, e);
+                }
+            }
         }
         let ps = outcome
             .symbols
@@ -217,7 +237,11 @@ pub fn incremental_index(indexer: &mut ProjectIndexer) -> Result<super::IndexSta
             .into_iter()
             .map(|s| symbol_to_project_symbol(&s, 0, &now))
             .collect();
-        Ok((pf, ps))
+        Ok(ParsedFileJob {
+            file: pf,
+            symbols: ps,
+            bindings,
+        })
     })?;
 
     let stats = collect_results(&mut indexer.storage, rx, false)?;
@@ -261,10 +285,16 @@ pub fn collect_results(
     let mut parse_failures = 0;
     let mut batch_files = Vec::new();
     let mut batch_symbols = Vec::new();
+    let mut batch_bindings = Vec::new();
 
     while let Ok(result) = rx.recv() {
         match result {
-            JobResult::Parsed(pf, ps) => {
+            JobResult::Parsed(job) => {
+                let ParsedFileJob {
+                    file: pf,
+                    symbols: ps,
+                    bindings,
+                } = *job;
                 if pf.parse_status == "PARSE_FAILED" {
                     parse_failures += 1;
                 } else {
@@ -278,15 +308,17 @@ pub fn collect_results(
 
                 batch_files.push(pf);
                 batch_symbols.push(ps);
+                batch_bindings.push(bindings);
 
                 if batch_files.len() >= super::BATCH_SIZE {
                     if is_full {
-                        insert_batch(storage, &batch_files, &batch_symbols)?;
+                        insert_batch(storage, &batch_files, &batch_symbols, &batch_bindings)?;
                     } else {
-                        upsert_batch(storage, &batch_files, &batch_symbols)?;
+                        upsert_batch(storage, &batch_files, &batch_symbols, &batch_bindings)?;
                     }
                     batch_files.clear();
                     batch_symbols.clear();
+                    batch_bindings.clear();
                 }
             }
             JobResult::Failure(path, err) => {
@@ -299,9 +331,9 @@ pub fn collect_results(
 
     if !batch_files.is_empty() {
         if is_full {
-            insert_batch(storage, &batch_files, &batch_symbols)?;
+            insert_batch(storage, &batch_files, &batch_symbols, &batch_bindings)?;
         } else {
-            upsert_batch(storage, &batch_files, &batch_symbols)?;
+            upsert_batch(storage, &batch_files, &batch_symbols, &batch_bindings)?;
         }
     }
 
@@ -329,6 +361,7 @@ pub fn clear_project_data(storage: &mut StorageManager) -> Result<()> {
         "env_declarations",
         "project_docs",
         "project_topology",
+        "file_bindings",
         "project_symbols",
         "project_files",
     ] {
@@ -342,6 +375,7 @@ pub fn insert_batch(
     storage: &mut StorageManager,
     files: &[ProjectFile],
     symbols: &[Vec<ProjectSymbol>],
+    bindings: &[Vec<crate::index::bindings::FileBinding>],
 ) -> Result<()> {
     let conn = storage.get_connection_mut();
     let tx = conn.unchecked_transaction().into_diagnostic()?;
@@ -351,6 +385,8 @@ pub fn insert_batch(
         for ps in &symbols[i] {
             row_helpers::insert_symbol_row(&tx, ps, file_id)?;
         }
+        let file_bindings = bindings.get(i).map(Vec::as_slice).unwrap_or(&[]);
+        row_helpers::replace_file_bindings(&tx, file_id, file_bindings)?;
     }
     tx.commit().into_diagnostic()
 }
@@ -359,6 +395,7 @@ pub fn upsert_batch(
     storage: &mut StorageManager,
     files: &[ProjectFile],
     symbols: &[Vec<ProjectSymbol>],
+    bindings: &[Vec<crate::index::bindings::FileBinding>],
 ) -> Result<()> {
     let conn = storage.get_connection_mut();
     let tx = conn.unchecked_transaction().into_diagnostic()?;
@@ -368,6 +405,8 @@ pub fn upsert_batch(
         for ps in &symbols[i] {
             row_helpers::insert_symbol_row(&tx, ps, file_id)?;
         }
+        let file_bindings = bindings.get(i).map(Vec::as_slice).unwrap_or(&[]);
+        row_helpers::replace_file_bindings(&tx, file_id, file_bindings)?;
     }
     tx.commit().into_diagnostic()
 }

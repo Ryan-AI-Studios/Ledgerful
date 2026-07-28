@@ -25,6 +25,7 @@ pub mod m50_ledger_entry_observed;
 pub mod m51_ledger_chain_hash;
 pub mod m52_command_timings;
 pub mod m53_ledger_sig_version;
+pub mod m54_file_bindings;
 
 use rusqlite_migration::Migrations;
 
@@ -143,6 +144,10 @@ pub fn get_migrations() -> Migrations<'static> {
     // unconditionally so schema_version stays monotonic across binaries;
     // existing rows default to 1 (legacy five-field signatures).
     all_m.extend(m53_ledger_sig_version::m53_ledger_sig_version());
+    // m54 adds `file_bindings` (Track 0092 Part 1). Per-file bound names from
+    // imports and mod declarations. Registered unconditionally so
+    // schema_version stays monotonic; the table is empty until indexing writes it.
+    all_m.extend(m54_file_bindings::m54_file_bindings());
 
     Migrations::new(all_m)
 }
@@ -187,6 +192,8 @@ pub fn get_migrations_count() -> usize {
     count += m52_command_timings::m52_command_timings().len();
     // m53 is counted unconditionally — see the matching comment in `get_migrations`.
     count += m53_ledger_sig_version::m53_ledger_sig_version().len();
+    // m54 is counted unconditionally — see the matching comment in `get_migrations`.
+    count += m54_file_bindings::m54_file_bindings().len();
 
     count
 }
@@ -255,6 +262,7 @@ mod tests {
                 "project_trend_days",
                 "chain_head",
                 "command_timings",
+                "file_bindings",
             ];
 
             // `sync_state` and `tx_tombstones` are registered

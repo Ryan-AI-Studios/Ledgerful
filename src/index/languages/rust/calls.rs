@@ -237,11 +237,16 @@ fn caller() {
                 symbol_kind: "Method".to_string(),
             },
         ]);
+        let bindings = std::collections::HashMap::new();
+        let modules = std::collections::HashMap::new();
         let r = resolve_callee(ResolveInput {
             callee_name: &callee.callee_name,
             caller_file_id: 99,
             candidates_by_bare_name: &by_bare,
             candidates_by_qualified: &by_qn,
+            caller_module_path: None,
+            caller_bindings: &bindings,
+            module_path_by_file: &modules,
         });
         assert_eq!(r.status, ResolutionStatus::Resolved);
         assert_eq!(r.callee_symbol_id, Some(1));
