@@ -559,7 +559,7 @@ fn doctor_gitignore_legacy_findings(root: &camino::Utf8Path) -> Vec<String> {
         .any(|l| crate::git::ignore::gitignore_patterns_equivalent(l, ".ledgerful/"));
     if has_legacy && !has_current {
         vec![
-            "Warning [legacy-gitignore]: `.gitignore` names the retired state path but not `.ledgerful/`. Run any repo-scoped command (or `ledgerful init`) so migration can add `.ledgerful/`, or add it manually.".to_string(),
+            "Warning [legacy-gitignore]: `.gitignore` names the retired state path but not `.ledgerful/`. Run `ledgerful init` (ensures `.ledgerful/` is gitignored) or add `.ledgerful/` to `.gitignore` manually.".to_string(),
         ]
     } else {
         Vec::new()
@@ -1329,9 +1329,11 @@ mod tests {
         );
     }
 
-    /// DoD-12: four-surface stale fixture reaches clean via documented sequence only.
+    /// DoD-12: documented sequence auto-clears state/hooks/gitignore; config
+    /// residual may remain as WARNING with named remediation (spec §4 forbids
+    /// auto-rewriting user config). Not a "fully clean doctor" claim.
     #[test]
-    fn e2e_four_surface_stale_reaches_clean_via_documented_sequence() {
+    fn e2e_four_surface_stale_auto_surfaces_clean_config_may_remain() {
         let tmp = tempfile::tempdir().unwrap();
         let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
 
@@ -1365,8 +1367,8 @@ mod tests {
 
         let layout = Layout::new(root);
 
-        // Documented sequence step 1: any repo-scoped command → migrate + gitignore.
-        // Emulate load_startup_config side effects.
+        // Documented sequence step 1: repo-scoped command → migrate + gitignore
+        // side-effect on successful rename (emulate load_startup_config).
         let renamed = layout.migrate_legacy_state_dir().unwrap();
         assert!(renamed);
         crate::git::ignore::add_to_gitignore(root, ".ledgerful/").unwrap();
@@ -1378,7 +1380,7 @@ mod tests {
             "hooks must be fully repaired: {report:?}"
         );
 
-        // After sequence: legacy findings that are auto-fixed should be gone.
+        // After steps 1–2: auto-fixed surfaces must be clean.
         // Unknown config keys may still warn until the user edits config — that
         // is reported with remediation, not auto-rewritten (spec §4).
         let findings = collect_legacy_migration_findings(root, &layout);
@@ -1394,8 +1396,8 @@ mod tests {
             !findings.iter().any(|f| f.contains("legacy-state")),
             "legacy dir renamed away: {findings:?}"
         );
-        // Config unknown keys may remain — that is expected (explicit repair only).
-        // Documented remediation is review/init, not a silent rewrite.
+        // Config residual is allowed and must name explicit remediation
+        // (review/init) — never silent auto-rewrite.
         if let Some(cfg_f) = findings.iter().find(|f| f.contains("legacy-config")) {
             assert!(
                 cfg_f.contains("init") || cfg_f.contains("Review"),

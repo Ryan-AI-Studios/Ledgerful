@@ -422,6 +422,23 @@ fn is_global_command(cmd: &Commands) -> bool {
     )
 }
 
+/// Pure warn-message for config parse fallback (DoD-7). Unit-tested so the
+/// warn! site stays honest without pulling a tracing-subscriber harness.
+fn config_load_fallback_warn_message(
+    path: impl std::fmt::Display,
+    err: impl std::fmt::Display,
+) -> String {
+    format!("Failed to parse config at {path}: {err}. Using defaults.")
+}
+
+/// Pure warn-message for global/user config parse fallback (mirrors startup).
+fn global_config_load_fallback_warn_message(
+    path: impl std::fmt::Display,
+    err: impl std::fmt::Display,
+) -> String {
+    format!("Failed to parse global rollup config at {path}: {err}. Using defaults.")
+}
+
 fn load_startup_config(
     layout: &crate::state::layout::Layout,
 ) -> Result<crate::config::model::Config> {
@@ -449,8 +466,8 @@ fn load_startup_config(
         Ok(cfg) => Ok(cfg),
         Err(e) => {
             tracing::warn!(
-                "Failed to parse config at {}: {e}. Using defaults.",
-                layout.config_file()
+                "{}",
+                config_load_fallback_warn_message(layout.config_file(), &e)
             );
             Ok(Default::default())
         }
@@ -478,8 +495,8 @@ fn load_user_config() -> Result<crate::config::model::Config> {
         Ok(cfg) => Ok(cfg),
         Err(e) => {
             tracing::warn!(
-                "Failed to parse global rollup config at {}: {e}. Using defaults.",
-                layout.config_file()
+                "{}",
+                global_config_load_fallback_warn_message(layout.config_file(), &e)
             );
             Ok(Default::default())
         }
@@ -1754,6 +1771,31 @@ mod rename_tests {
         let config = load_startup_config(&layout).unwrap();
         // Defaults: strict is false.
         assert!(!config.core.strict);
+    }
+
+    /// DoD-7: fallback warn message names path and "Using defaults".
+    #[test]
+    fn config_load_fallback_warn_message_includes_path_and_defaults() {
+        let msg = config_load_fallback_warn_message(
+            "/tmp/repo/.ledgerful/config.toml",
+            "TOML parse error at line 1",
+        );
+        assert!(
+            msg.contains("/tmp/repo/.ledgerful/config.toml"),
+            "must include path: {msg}"
+        );
+        assert!(
+            msg.contains("Using defaults"),
+            "must say Using defaults: {msg}"
+        );
+        assert!(
+            msg.contains("TOML parse error"),
+            "must include error fragment: {msg}"
+        );
+        assert!(
+            msg.contains("Failed to parse config"),
+            "must identify parse failure: {msg}"
+        );
     }
 
     /// DoD-10: global command path must not rename the legacy state directory.

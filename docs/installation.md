@@ -68,21 +68,27 @@ The durable fix is codesign + notarize in the release pipeline; the `xattr` path
 
 ## Migrating from ChangeGuard (legacy name)
 
-If a repository still has residue from the pre-rename product name, complete migration with this
-sequence only (no other steps required):
+If a repository still has residue from the pre-rename product name, run this sequence:
 
 ```powershell
-# 1. Any repo-scoped command renames `.changeguard/` → `.ledgerful/` and ensures
-#    `.ledgerful/` is listed in `.gitignore` (the legacy gitignore line is left in place).
+# 1. Any repo-scoped command renames `.changeguard/` → `.ledgerful/` when only the
+#    legacy directory exists, and on that successful rename ensures `.ledgerful/` is
+#    listed in `.gitignore` (the legacy gitignore line is left in place).
 ledgerful doctor
 
 # 2. Repair installed git hooks (markers + invocations). Discoverability surface is this flag —
 #    do not confuse with `ledgerful ledger hook-repair` (sidecar transaction repair).
 ledgerful update --repair-hooks
 
-# 3. Re-check. Doctor is silent on a clean repo; any remaining WARNING names the exact next step.
+# 3. Re-check. Doctor is silent only when the repo is fully clean.
+#    Unknown or stale keys in `.ledgerful/config.toml` remain as WARNING until you
+#    edit that file yourself (config is never auto-rewritten). That edit is part of
+#    finishing migration when those warnings appear — not a hidden extra step.
 ledgerful doctor
 ```
+
+Steps 1–2 auto-fix state rename (when safe), gitignore for `.ledgerful/` (on rename), and
+hooks. Step 3 reports what is left; residual config warnings need an explicit config edit.
 
 Notes:
 
@@ -91,8 +97,9 @@ Notes:
   active ledger is correct.
 - Hook discovery honours `core.hooksPath` and linked worktrees; hooks outside the repository are
   reported and never rewritten. Husky / lefthook / pre-commit managed hooks are refused.
-- Stale config keys load with defaults and surface as doctor WARNINGs — they are never a hard
-  parse failure (`deny_unknown_fields` is intentionally not used).
+- Stale or unknown config keys load with defaults and surface as doctor WARNINGs — they are never
+  a hard parse failure and are never auto-rewritten (`deny_unknown_fields` is intentionally not
+  used). Edit `.ledgerful/config.toml` (or re-init carefully) to clear them.
 
 ## Requirements
 

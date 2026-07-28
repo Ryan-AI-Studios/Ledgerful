@@ -1753,6 +1753,7 @@ fi
     }
 
     /// Outside-repo hooksPath is refused (DoD-9b). Config written via pure FS.
+    /// Asserts the outside hook file bytes are unchanged (not rewritten).
     #[test]
     fn repair_refuses_outside_repo_hooks_path() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1760,7 +1761,9 @@ fi
         let root = make_repo(tmp.path());
         let outside_hooks = outside.path().join("hooks");
         fs::create_dir_all(&outside_hooks).unwrap();
-        fs::write(outside_hooks.join("pre-commit"), stale_pre_push()).unwrap();
+        let outside_hook = outside_hooks.join("pre-commit");
+        let original_bytes = stale_pre_push().into_bytes();
+        fs::write(&outside_hook, &original_bytes).unwrap();
 
         // Write core.hooksPath into .git/config (pure FS — matches production reader).
         let config = format!(
@@ -1776,8 +1779,12 @@ fi
             report.discovery_notes
         );
         assert!(report.repaired.is_empty());
-        let outside_content = fs::read_to_string(outside_hooks.join("pre-commit")).unwrap();
-        assert!(outside_content.contains(LEGACY_BINARY) || outside_content.contains("ledgerful"));
+        // Critical: outside-repo hooks must not be rewritten at all.
+        let after_bytes = fs::read(&outside_hook).unwrap();
+        assert_eq!(
+            after_bytes, original_bytes,
+            "outside-repo hook file must be byte-identical after refuse"
+        );
     }
 
     /// Non-root husky (CrawlX shape) is detected via resolved path (DoD-9b).
@@ -1873,7 +1880,8 @@ fi
         );
     }
 
-    /// Real `git worktree add` fixture: resolved hooks path exists via commondir (DoD-9).
+    /// Real `git worktree add` fixture: resolved hooks path is the main repo's
+    /// common `.git/hooks` via commondir (DoD-9) — not the worktree gitdir hooks.
     #[test]
     fn resolve_hooks_via_worktree_commondir() {
         let tmp = tempfile::tempdir().unwrap();
@@ -1908,29 +1916,58 @@ fi
         );
 
         let linked_root = Utf8PathBuf::from_path_buf(linked).unwrap();
+        let main_hooks = main.join(".git").join("hooks");
+        assert!(
+            main_hooks.is_dir(),
+            "main common hooks dir must exist for comparison"
+        );
+        let main_hooks_canon = dunce::canonicalize(&main_hooks).unwrap();
+
         match resolve_hooks_dir(&linked_root) {
             HooksDirResolution::Found { hooks_dir } => {
+                // Resolved path must exist as a directory (common-dir hooks).
                 assert!(
-                    hooks_dir.is_dir() || hooks_dir.parent().is_some(),
-                    "resolved hooks path should exist or be under common dir: {hooks_dir}"
+                    hooks_dir.is_dir(),
+                    "hooks dir from commondir must exist: {hooks_dir}"
                 );
-                // The main repo's .git/hooks is the real location.
-                let main_hooks = main.join(".git").join("hooks");
-                assert!(
-                    main_hooks.is_dir(),
-                    "main hooks dir should exist for comparison"
+                let resolved_canon = dunce::canonicalize(hooks_dir.as_std_path()).unwrap();
+                assert_eq!(
+                    resolved_canon, main_hooks_canon,
+                    "worktree hooks must resolve to main .git/hooks via commondir; got {hooks_dir}"
                 );
-                // Resolved path must exist (commondir path), not a non-existent
-                // <gitdir>/hooks under worktrees/.
-                let as_path = hooks_dir.as_std_path();
-                assert!(
-                    as_path.exists()
-                        || dunce::canonicalize(as_path.parent().unwrap_or(as_path)).is_ok(),
-                    "hooks dir from commondir must resolve: {hooks_dir}"
-                );
-                // Must not be the non-existent worktree-private hooks path.
+
+                // Worktree-private <gitdir>/hooks must NOT be what was used.
                 let git_file = linked_root.join(".git");
                 assert!(git_file.is_file(), "linked worktree has .git file");
+                let git_contents = fs::read_to_string(git_file.as_std_path()).unwrap();
+                let gitdir_line = git_contents
+                    .lines()
+                    .find_map(|l| l.trim().strip_prefix("gitdir:"))
+                    .map(str::trim)
+                    .expect("gitdir: line");
+                let worktree_gitdir = {
+                    let p = Path::new(gitdir_line);
+                    if p.is_absolute() {
+                        PathBuf::from(p)
+                    } else {
+                        linked_root.as_std_path().join(p)
+                    }
+                };
+                let worktree_private_hooks = worktree_gitdir.join("hooks");
+                // Either the private path does not exist, or it is not the resolved dir.
+                if worktree_private_hooks.exists() {
+                    let private_canon = dunce::canonicalize(&worktree_private_hooks).unwrap();
+                    assert_ne!(
+                        resolved_canon, private_canon,
+                        "must not use worktree-private <gitdir>/hooks"
+                    );
+                } else {
+                    assert!(
+                        !worktree_private_hooks.exists(),
+                        "worktree-private hooks path should not exist: {}",
+                        worktree_private_hooks.display()
+                    );
+                }
             }
             other => panic!("expected Found via commondir, got {other:?}"),
         }
