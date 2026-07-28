@@ -1,3 +1,4 @@
+pub mod blob;
 pub mod classify;
 pub mod commit;
 pub mod diff;
@@ -6,6 +7,8 @@ pub mod metadata;
 pub mod numstat;
 pub mod repo;
 pub mod status;
+
+pub use blob::read_head_blob;
 
 use miette::Diagnostic;
 use std::path::PathBuf;

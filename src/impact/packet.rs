@@ -191,6 +191,8 @@ mod schema_golden_tests {
                 env_vars_previous: Vec::new(),
                 env_vars_current: vec!["VAR".to_string()],
             }],
+            // Empty → skipped by serde; golden exact-key set stays stable.
+            signature_deltas: Vec::new(),
             hotspots: vec![Hotspot {
                 path: PathBuf::from("h.rs"),
                 score: 0.9,

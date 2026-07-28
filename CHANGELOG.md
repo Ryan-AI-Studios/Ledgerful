@@ -6,6 +6,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Function signature extraction + signature-changed impact risk (0088 Part A):**
+  tree-sitter extractors for Rust and Go write `metadata.signature` /
+  `metadata.signatureShape` (arity, ordered types, return, behavioural modifiers;
+  names excluded from the shape). `signature_hash` is derived from the shape via
+  blake3 in `symbol_to_project_symbol`. Coverage widened to Rust trait method
+  declarations (`function_signature_item`) and Go interface methods
+  (`method_elem` in pinned tree-sitter-go 0.25). New `SignatureDeltaProvider`
+  compares working tree vs HEAD via **gix** (no raw `git` subprocess) and emits
+  `signatureDeltas` on the impact packet. Shape changes raise a distinct risk
+  reason (`Signature changed: …`); renames are cosmetic (recorded, not scored).
+  TypeScript/Python extractors deferred to Part B. See `docs/Signature-Diff.md`.
+
 ## [0.2.2] - 2026-07-27
 
 ### Fixed

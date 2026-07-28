@@ -20,6 +20,7 @@ pub mod knowledge;
 pub mod observability;
 pub mod runtime_usage;
 pub mod services;
+pub mod signature_delta;
 use crate::state::storage::StorageManager;
 use miette::Result;
 use std::collections::HashMap;

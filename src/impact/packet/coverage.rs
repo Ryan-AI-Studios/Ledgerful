@@ -57,6 +57,20 @@ impl Ord for RuntimeUsageDelta {
     }
 }
 
+/// A per-symbol function-signature change between HEAD and the working tree.
+///
+/// Naming: this is a **function** signature delta, not an Ed25519 ledger signature.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[serde(rename_all = "camelCase")]
+pub struct SignatureDelta {
+    pub file_path: String,
+    pub symbol_name: String,
+    pub previous_signature: String,
+    pub current_signature: String,
+    /// One of: `shape`, `cosmetic`, `unknown` (see `index::signature::SignatureChangeClass`).
+    pub change_class: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct CoveringTest {

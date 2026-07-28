@@ -1,7 +1,10 @@
+use crate::index::signature::{
+    SignatureParam, SymbolSignatureParts, build_symbol_signature, write_signature_metadata,
+};
 use crate::index::symbols::{Symbol, SymbolKind};
 use miette::{IntoDiagnostic, Result};
 use std::collections::BTreeMap;
-use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
+use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
 
 pub fn extract_symbols(content: &str) -> Result<Option<Vec<Symbol>>> {
     let mut parser = Parser::new();
@@ -12,8 +15,10 @@ pub fn extract_symbols(content: &str) -> Result<Option<Vec<Symbol>>> {
         .parse(content, None)
         .ok_or_else(|| miette::miette!("Failed to parse Rust content"))?;
 
+    // function_signature_item = trait method declarations (no body) — §2.8b coverage.
     let query_str = r#"
         (function_item name: (identifier) @name) @symbol
+        (function_signature_item name: (identifier) @name) @symbol
         (struct_item name: (type_identifier) @name) @symbol
         (enum_item name: (type_identifier) @name) @symbol
         (trait_item name: (type_identifier) @name) @symbol
@@ -51,6 +56,10 @@ pub fn extract_symbols(content: &str) -> Result<Option<Vec<Symbol>>> {
                     symbol_node = Some(node);
                     match node.kind() {
                         "function_item" => kind = SymbolKind::Function,
+                        // Trait method declarations (no default body). Same fields as
+                        // function_item; classified as Method so contract surfaces are
+                        // distinguishable from free functions.
+                        "function_signature_item" => kind = SymbolKind::Method,
                         "struct_item" => kind = SymbolKind::Struct,
                         "enum_item" => kind = SymbolKind::Enum,
                         "trait_item" => kind = SymbolKind::Trait,
@@ -195,7 +204,22 @@ pub fn extract_symbols(content: &str) -> Result<Option<Vec<Symbol>>> {
             let line_start = Some((node.start_position().row + 1) as i32);
             let line_end = Some((node.end_position().row + 1) as i32);
 
+            // Populate signature metadata for free functions and trait method decls.
+            if matches!(node.kind(), "function_item" | "function_signature_item")
+                && !name.is_empty()
+                && let Some(sig) = extract_rust_signature(node, content, &name)
+            {
+                write_signature_metadata(&mut metadata, &sig);
+            }
+
             if !name.is_empty() {
+                // Qualify trait method decls as TraitName.method when nested in trait_item.
+                let qualified_name = if node.kind() == "function_signature_item" {
+                    qualify_trait_method(node, content, &name)
+                } else {
+                    None
+                };
+
                 symbols.push(Symbol {
                     name,
                     kind,
@@ -204,7 +228,7 @@ pub fn extract_symbols(content: &str) -> Result<Option<Vec<Symbol>>> {
                     cyclomatic_complexity: None,
                     line_start,
                     line_end,
-                    qualified_name: None,
+                    qualified_name,
                     byte_start,
                     byte_end,
                     entrypoint_kind: None,
@@ -215,6 +239,142 @@ pub fn extract_symbols(content: &str) -> Result<Option<Vec<Symbol>>> {
     }
 
     Ok(Some(symbols))
+}
+
+/// Extract a normalized signature from a Rust `function_item` or `function_signature_item`.
+fn extract_rust_signature(
+    node: Node<'_>,
+    content: &str,
+    name: &str,
+) -> Option<crate::index::signature::SymbolSignature> {
+    let modifiers = extract_function_modifiers(node, content);
+    let params = extract_rust_params(node, content);
+    let return_type = node
+        .child_by_field_name("return_type")
+        .and_then(|n| node_text_owned(n, content))
+        .map(|s| s.trim().trim_start_matches("->").trim().to_string())
+        .filter(|s| !s.is_empty());
+
+    let parts = SymbolSignatureParts {
+        name: name.to_string(),
+        modifiers,
+        params,
+        return_type,
+    };
+    Some(build_symbol_signature(&parts))
+}
+
+fn extract_function_modifiers(node: Node<'_>, content: &str) -> Vec<String> {
+    let mut mods = Vec::new();
+    // `function_modifiers` is a named child on both function_item and function_signature_item.
+    if let Some(mod_node) = node.child_by_field_name("function_modifiers").or_else(|| {
+        let mut c = node.walk();
+        node.children(&mut c)
+            .find(|ch| ch.kind() == "function_modifiers")
+    }) {
+        let mut c = mod_node.walk();
+        for child in mod_node.children(&mut c) {
+            match child.kind() {
+                "async" | "const" | "unsafe" => {
+                    if let Some(t) = node_text_owned(child, content) {
+                        mods.push(t);
+                    }
+                }
+                "extern_modifier" | "abi" => {
+                    if let Some(t) = node_text_owned(child, content) {
+                        // Collapse whitespace for stable shape text.
+                        mods.push(t.split_whitespace().collect::<Vec<_>>().join(" "));
+                    }
+                }
+                _ => {}
+            }
+        }
+    } else {
+        // Fallback: scan direct children for modifier keywords (some grammar layouts).
+        let mut c = node.walk();
+        for child in node.children(&mut c) {
+            match child.kind() {
+                "async" | "const" | "unsafe" => {
+                    if let Some(t) = node_text_owned(child, content) {
+                        mods.push(t);
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    mods
+}
+
+fn extract_rust_params(node: Node<'_>, content: &str) -> Vec<SignatureParam> {
+    let Some(params_node) = node.child_by_field_name("parameters") else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    let mut c = params_node.walk();
+    for child in params_node.children(&mut c) {
+        match child.kind() {
+            "parameter" => {
+                let name = child
+                    .child_by_field_name("pattern")
+                    .and_then(|p| first_identifier(p, content));
+                let type_text = child
+                    .child_by_field_name("type")
+                    .and_then(|t| node_text_owned(t, content));
+                out.push(SignatureParam { name, type_text });
+            }
+            "self_parameter" => {
+                let text = node_text_owned(child, content);
+                out.push(SignatureParam {
+                    name: Some("self".to_string()),
+                    type_text: text,
+                });
+            }
+            "variadic_parameter" => {
+                out.push(SignatureParam {
+                    name: None,
+                    type_text: node_text_owned(child, content),
+                });
+            }
+            _ => {}
+        }
+    }
+    out
+}
+
+fn first_identifier(node: Node<'_>, content: &str) -> Option<String> {
+    if matches!(node.kind(), "identifier" | "type_identifier") {
+        return node_text_owned(node, content);
+    }
+    let mut c = node.walk();
+    for child in node.children(&mut c) {
+        if let Some(id) = first_identifier(child, content) {
+            return Some(id);
+        }
+    }
+    None
+}
+
+fn node_text_owned(node: Node<'_>, content: &str) -> Option<String> {
+    node.utf8_text(content.as_bytes())
+        .ok()
+        .map(|s| s.to_string())
+        .filter(|s| !s.is_empty())
+}
+
+/// `TraitName.method` when the signature item sits inside a `trait_item`.
+fn qualify_trait_method(node: Node<'_>, content: &str, method_name: &str) -> Option<String> {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if n.kind() == "trait_item" {
+            let trait_name = n
+                .child_by_field_name("name")
+                .and_then(|name_node| node_text_owned(name_node, content))?;
+            return Some(format!("{trait_name}.{method_name}"));
+        }
+        current = n.parent();
+    }
+    None
 }
 
 fn extract_use_name(node: tree_sitter::Node, content: &str) -> String {
@@ -517,6 +677,157 @@ mod tests {
         assert!(
             !config.metadata.contains_key("derived_traits"),
             "cfg_attr without derive(...) must not set derived_traits"
+        );
+    }
+
+    #[test]
+    fn extracts_function_signature_metadata() {
+        let content = r#"
+            pub fn greet(name: String, age: u32) -> bool {
+                true
+            }
+        "#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let greet = symbols
+            .iter()
+            .find(|s| s.name == "greet" && s.kind == SymbolKind::Function)
+            .expect("greet");
+        let sig = greet.metadata.get("signature").expect("signature");
+        let shape = greet
+            .metadata
+            .get("signatureShape")
+            .expect("signatureShape");
+        assert!(sig.contains("name: String"), "readable: {sig}");
+        assert!(sig.contains("age: u32"), "readable: {sig}");
+        assert!(sig.contains("-> bool"), "readable: {sig}");
+        assert!(
+            !shape.contains("name") && !shape.contains("age"),
+            "shape excludes names: {shape}"
+        );
+        assert!(shape.contains("params=String,u32"), "shape: {shape}");
+        assert!(shape.contains("ret=bool"), "shape: {shape}");
+    }
+
+    #[test]
+    fn async_fn_changes_signature_shape() {
+        let sync_src = "fn foo() {}";
+        let async_src = "async fn foo() {}";
+        let sync_sym = extract_symbols(sync_src).unwrap().unwrap();
+        let async_sym = extract_symbols(async_src).unwrap().unwrap();
+        let s_shape = sync_sym
+            .iter()
+            .find(|s| s.name == "foo")
+            .and_then(|s| s.metadata.get("signatureShape"))
+            .expect("sync shape");
+        let a_shape = async_sym
+            .iter()
+            .find(|s| s.name == "foo")
+            .and_then(|s| s.metadata.get("signatureShape"))
+            .expect("async shape");
+        assert_ne!(s_shape, a_shape, "async must move shape");
+        assert!(a_shape.contains("async"), "async shape: {a_shape}");
+    }
+
+    #[test]
+    fn trait_method_signature_item_is_indexed() {
+        let content = r#"
+            pub trait Reader {
+                fn read(&self, buf: &mut [u8]) -> Result<usize, std::io::Error>;
+                fn name(&self) -> &str;
+            }
+        "#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let read = symbols
+            .iter()
+            .find(|s| s.name == "read" && s.kind == SymbolKind::Method)
+            .expect("trait method read must be indexed as Method");
+        assert_eq!(read.qualified_name.as_deref(), Some("Reader.read"));
+        assert!(
+            read.metadata.contains_key("signature"),
+            "trait method must carry signature metadata"
+        );
+        assert!(
+            read.metadata.contains_key("signatureShape"),
+            "trait method must carry signatureShape"
+        );
+        let name_m = symbols
+            .iter()
+            .find(|s| s.name == "name" && s.kind == SymbolKind::Method)
+            .expect("trait method name");
+        assert_eq!(name_m.qualified_name.as_deref(), Some("Reader.name"));
+    }
+
+    #[test]
+    fn signature_hash_non_null_via_project_symbol() {
+        use crate::index::types::symbol_to_project_symbol;
+        let content = "pub fn add(a: i32, b: i32) -> i32 { a + b }";
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let add = symbols.iter().find(|s| s.name == "add").expect("add");
+        let ps = symbol_to_project_symbol(add, 1, "now");
+        assert!(
+            ps.signature_hash.is_some(),
+            "Rust function must yield non-null signature_hash"
+        );
+    }
+
+    /// Phase 0 P1/P3: confirm field names against the pinned tree-sitter-rust grammar.
+    #[test]
+    fn phase0_rust_definition_node_fields() {
+        let content = r#"
+            async fn foo(a: u32) -> u64 { a as u64 }
+            trait T { fn bar(&self) -> i32; }
+        "#;
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .unwrap();
+        let tree = parser.parse(content, None).unwrap();
+        let root = tree.root_node();
+
+        fn find_kind<'a>(node: tree_sitter::Node<'a>, kind: &str) -> Option<tree_sitter::Node<'a>> {
+            if node.kind() == kind {
+                return Some(node);
+            }
+            let mut c = node.walk();
+            for child in node.children(&mut c) {
+                if let Some(found) = find_kind(child, kind) {
+                    return Some(found);
+                }
+            }
+            None
+        }
+
+        let fi = find_kind(root, "function_item").expect("function_item");
+        assert!(
+            fi.child_by_field_name("parameters").is_some(),
+            "function_item.parameters"
+        );
+        assert!(
+            fi.child_by_field_name("return_type").is_some(),
+            "function_item.return_type"
+        );
+        // function_modifiers may be a field or a child node depending on grammar layout
+        let has_async = {
+            let mut c = fi.walk();
+            fi.children(&mut c).any(|ch| {
+                ch.kind() == "function_modifiers"
+                    || ch.kind() == "async"
+                    || ch
+                        .utf8_text(content.as_bytes())
+                        .unwrap_or("")
+                        .contains("async")
+            })
+        };
+        assert!(has_async, "async modifier present on function_item");
+
+        let fsi = find_kind(root, "function_signature_item").expect("function_signature_item");
+        assert!(
+            fsi.child_by_field_name("parameters").is_some(),
+            "function_signature_item.parameters"
+        );
+        assert!(
+            fsi.child_by_field_name("return_type").is_some(),
+            "function_signature_item.return_type"
         );
     }
 }

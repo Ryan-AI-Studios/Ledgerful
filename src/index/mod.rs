@@ -23,6 +23,8 @@ pub mod references;
 pub mod routes;
 pub mod rows;
 pub mod runtime_usage;
+/// Function/method signature extraction (not Ed25519 ledger crypto — see module docs).
+pub mod signature;
 pub mod staleness;
 pub mod storage;
 pub mod symbols;

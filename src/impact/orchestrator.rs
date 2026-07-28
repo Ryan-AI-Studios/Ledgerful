@@ -112,6 +112,9 @@ impl ImpactOrchestrator {
         orch.register_enrichment_provider(Box::new(
             crate::impact::enrichment::runtime_usage::RuntimeUsageProvider,
         ));
+        orch.register_enrichment_provider(Box::new(
+            crate::impact::enrichment::signature_delta::SignatureDeltaProvider,
+        ));
         // RiskProvider is removed from enrichment and handled by analysis_registry.
         orch.register_enrichment_provider(Box::new(
             crate::impact::enrichment::dead_code::DeadCodeProvider,
