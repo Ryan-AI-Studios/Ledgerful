@@ -37,15 +37,25 @@ pub fn run_graph_analysis(
     crate::index::centrality::CentralityStats,
     Option<crate::scip::ScipIndexJson>,
 )> {
+    let scip_requested = auto_scip || scip_path.is_some();
     let Some(cozo) = storage.cozo.as_ref() else {
         info!("CozoDB not available, skipping graph analysis");
+        // SCIP edges live in SQLite; without Cozo we skip the full graph pass
+        // and must not pretend SCIP was merely "not requested."
+        let scip_status = if scip_requested {
+            Some(crate::scip::ScipIndexJson::failed(
+                "CozoDB unavailable; graph analysis (and SCIP augment) skipped",
+            ))
+        } else {
+            None
+        };
         return Ok((
             crate::index::centrality::CentralityStats {
                 entry_points_count: 0,
                 symbols_computed: 0,
                 max_reachable: 0,
             },
-            None,
+            scip_status,
         ));
     };
     // Light pre-flight: if the CozoDB store is reachable but empty, we still

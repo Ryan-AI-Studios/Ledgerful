@@ -27,12 +27,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **SCIP augments the native index (0095, user-visible):** `--auto-scip` /
   `--scip <PATH>` no longer early-return or replace the native pipeline. SCIP
-  runs after `build_call_graph` (and again inside `--analyze-graph` before
-  centrality/KG) and adds reference edges onto **native** symbol ids with
-  `evidence=scip:ref`. Detection is a base-exe `--version` capability probe
-  (rustup shims resolve unavailable). Process policy uses the configured
+  runs once: after `build_call_graph` without `--analyze-graph`, or only inside
+  `run_graph_analysis` (after `infer_services`, before centrality/KG) when
+  `--analyze-graph` is set. It adds reference edges onto **native** symbol ids
+  with `evidence=scip:ref`. Detection is a base-exe `--version` capability
+  probe (rustup shims resolve unavailable). Process policy uses the configured
   verify allow/deny list. `index --json` always includes a `scip` object with
-  an explicit status (`did_not_run` / `success` / `failed` / `skipped_stale`).
+  an explicit status (`did_not_run` / `success` / `failed`).
   **Default remains off** (`auto_scip: false` on implicit index paths).
 - **Semantic readiness wire shape (0096):** `SemanticReadiness` replaces
   `endpoint_available: bool` with `backend_status` (`not_configured` /
