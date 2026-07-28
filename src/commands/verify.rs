@@ -3,15 +3,246 @@ use crate::output::verification::VerificationReporter;
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use crate::verify::engine::{VerificationContext, VerifyEngine};
-use crate::verify::plan::{VerificationStep, build_plan_from_config};
+use crate::verify::plan::{VerificationStep, VerifyScope, build_plan_from_config};
 use crate::verify::predictor::OutcomePredictor;
+use crate::verify::results::{VerificationReport, VerificationResult};
 use crate::verify::suggestions::{generate_suggestions, query_ledger_status};
 use crate::verify::timeouts::manual_timeout;
-use miette::Result;
+use miette::{IntoDiagnostic, Result};
 use owo_colors::OwoColorize;
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::Path;
 use tracing::{info, warn};
+
+/// Stable schema version for `verify --json` CLI wire contract (track 0093).
+/// Distinct from the persisted `VerificationReport` / `latest-verify.json`.
+pub const VERIFY_JSON_SCHEMA_VERSION: u32 = 1;
+
+/// Versioned machine-readable payload for `ledgerful verify --json`.
+/// Built *from* `VerificationReport` — does not extend the persisted report.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyCliJson {
+    pub schema_version: u32,
+    pub ok: bool,
+    pub scope_requested: String,
+    pub scope_executed: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_reason: Option<String>,
+    /// Plan order (probability-ordered), not sorted alphabetically.
+    pub steps: Vec<VerifyCliStepJson>,
+    pub timestamp: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub tx_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyCliStepJson {
+    pub name: String,
+    pub command: String,
+    /// `"pass"` when `exitCode == 0`, else `"fail"`. Defined once so it cannot
+    /// disagree with `ok`.
+    pub status: String,
+    pub exit_code: i32,
+    pub duration_ms: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failure_detail: Option<String>,
+}
+
+/// Derive step status from exit code — single definition for DoD-10.
+pub fn step_status_from_exit_code(exit_code: i32) -> &'static str {
+    if exit_code == 0 { "pass" } else { "fail" }
+}
+
+impl VerifyCliJson {
+    /// Build the CLI wire payload from a completed `VerificationReport`.
+    ///
+    /// `scope_executed` is `"full"` whenever the plan fell back
+    /// (`fallback_reason.is_some()`), otherwise the requested scope string.
+    pub fn from_report(report: &VerificationReport, scope_requested: VerifyScope) -> Self {
+        let fallback_reason = report.plan.as_ref().and_then(|p| p.fallback_reason.clone());
+        let scope_executed = if fallback_reason.is_some() {
+            "full".to_string()
+        } else {
+            scope_requested.to_string()
+        };
+
+        let steps: Vec<VerifyCliStepJson> = report
+            .results
+            .iter()
+            .map(VerifyCliStepJson::from_result)
+            .collect();
+
+        Self {
+            schema_version: VERIFY_JSON_SCHEMA_VERSION,
+            ok: report.overall_pass,
+            scope_requested: scope_requested.to_string(),
+            scope_executed,
+            fallback_reason,
+            steps,
+            timestamp: report.timestamp.clone(),
+            tx_id: report.tx_id.clone(),
+        }
+    }
+
+    /// Serialize deterministically for agent consumers (pretty JSON).
+    pub fn to_json_string(&self) -> Result<String> {
+        serde_json::to_string_pretty(self).into_diagnostic()
+    }
+}
+
+impl VerifyCliStepJson {
+    pub fn from_result(result: &VerificationResult) -> Self {
+        let status = step_status_from_exit_code(result.exit_code).to_string();
+        let failure_detail = if result.exit_code != 0 {
+            let detail = if !result.stderr_summary.is_empty() {
+                result.stderr_summary.clone()
+            } else if !result.stdout_summary.is_empty() {
+                result.stdout_summary.clone()
+            } else {
+                format!("exit code {}", result.exit_code)
+            };
+            Some(detail)
+        } else {
+            None
+        };
+        // Prefer description-like name from command; command is the full string.
+        let name = result
+            .command
+            .split_whitespace()
+            .take(3)
+            .collect::<Vec<_>>()
+            .join(" ");
+        Self {
+            name,
+            command: result.command.clone(),
+            status,
+            exit_code: result.exit_code,
+            duration_ms: result.duration_ms,
+            failure_detail,
+        }
+    }
+}
+
+/// Where a per-entry signature status line is emitted (0093 DoD-5).
+///
+/// `RawStderr` lines use `eprintln!` and are **never** suppressed by the
+/// three-state `cli_summary` filter (default / quiet / machine). Filtered
+/// detail uses `tracing::debug!(target: "cli_summary", …)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigEntryStream {
+    /// Hard failures: INVALID crypto, and UNSIGNED when signing is required.
+    RawStderr,
+    /// Per-entry VALID / optional SKIP detail — `debug!` on `cli_summary`.
+    CliSummaryDebug,
+}
+
+impl SigEntryStream {
+    pub fn is_raw_stderr(self) -> bool {
+        matches!(self, Self::RawStderr)
+    }
+}
+
+/// Decide the emission stream for a signature status line (pure; unit-tested).
+///
+/// Production emit loop calls this for every LOCAL entry (N1). Policy-invalid
+/// crypto-valid rows force [`SigEntryStream::RawStderr`] before this helper.
+pub fn sig_entry_stream(
+    status: crate::ledger::crypto::SignatureTrustStatus,
+    signing_required: bool,
+) -> SigEntryStream {
+    use crate::ledger::crypto::SignatureTrustStatus;
+    match status {
+        SignatureTrustStatus::Invalid => SigEntryStream::RawStderr,
+        SignatureTrustStatus::Unsigned if signing_required => SigEntryStream::RawStderr,
+        SignatureTrustStatus::ValidTrusted
+        | SignatureTrustStatus::ValidUnknownKey
+        | SignatureTrustStatus::Unsigned => SigEntryStream::CliSummaryDebug,
+    }
+}
+
+/// Aggregate counts on the signature verification summary line (0093 DoD-6).
+///
+/// Counting happens before any quiet/default/machine stream filter — the same
+/// fixture always yields identical aggregates under default and `--quiet`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct SignatureAggregateCounts {
+    pub valid: usize,
+    pub invalid: usize,
+    pub skipped: usize,
+    pub federated_skip: usize,
+    pub unsigned_fail: usize,
+}
+
+impl SignatureAggregateCounts {
+    /// Plain (uncolored) counts fragment for dual-run assertions and agents.
+    pub fn summary_counts_fragment(&self) -> String {
+        format!(
+            "{} valid, {} invalid, {} skipped, {} federated-skip",
+            self.valid, self.invalid, self.skipped, self.federated_skip
+        )
+    }
+}
+
+/// Pure per-entry class used by the production emit loop and DoD-6 tally tests.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigEntryClass {
+    Federated,
+    Valid,
+    Invalid,
+    UnsignedRequired,
+    UnsignedOptional,
+}
+
+/// Classify one entry for emit routing + aggregate tallies (pure).
+pub fn class_for_sig_entry(
+    is_local: bool,
+    status: crate::ledger::crypto::SignatureTrustStatus,
+    signing_required: bool,
+    policy_invalid: bool,
+) -> SigEntryClass {
+    use crate::ledger::crypto::SignatureTrustStatus;
+    if !is_local {
+        return SigEntryClass::Federated;
+    }
+    match status {
+        SignatureTrustStatus::ValidTrusted | SignatureTrustStatus::ValidUnknownKey
+            if policy_invalid =>
+        {
+            SigEntryClass::Invalid
+        }
+        SignatureTrustStatus::ValidTrusted | SignatureTrustStatus::ValidUnknownKey => {
+            SigEntryClass::Valid
+        }
+        SignatureTrustStatus::Invalid => SigEntryClass::Invalid,
+        SignatureTrustStatus::Unsigned if signing_required => SigEntryClass::UnsignedRequired,
+        SignatureTrustStatus::Unsigned => SigEntryClass::UnsignedOptional,
+    }
+}
+
+/// Tally loop-visible counters from entry classes. `invalid` comes from the
+/// policy enumerate path (may include more than per-entry Invalid emissions).
+pub fn tally_signature_classes(
+    classes: impl IntoIterator<Item = SigEntryClass>,
+    invalid: usize,
+) -> SignatureAggregateCounts {
+    let mut counts = SignatureAggregateCounts {
+        invalid,
+        ..SignatureAggregateCounts::default()
+    };
+    for class in classes {
+        match class {
+            SigEntryClass::Federated => counts.federated_skip += 1,
+            SigEntryClass::Valid => counts.valid += 1,
+            SigEntryClass::Invalid => {}
+            SigEntryClass::UnsignedRequired => counts.unsigned_fail += 1,
+            SigEntryClass::UnsignedOptional => counts.skipped += 1,
+        }
+    }
+    counts
+}
 
 /// Exit codes for signature / chain verification (0072 frozen table).
 ///
@@ -147,90 +378,121 @@ pub fn verify_ledger_signatures_with_options(
 
     let invalid_tx_ids: std::collections::HashSet<&str> =
         invalid.iter().map(|(tx_id, _, _)| tx_id.as_str()).collect();
-    let mut valid_count = 0usize;
-    let mut skipped_count = 0usize;
-    let mut federated_skip = 0usize;
-    let mut unsigned_fail = 0usize;
+    let mut classes: Vec<SigEntryClass> = Vec::with_capacity(entries.len());
 
     for entry in &entries {
-        if entry.origin != "LOCAL" {
-            federated_skip += 1;
+        let is_local = entry.origin == "LOCAL";
+        let status = if is_local {
+            crate::ledger::crypto::classify_entry_signature(entry, trusted_keys, min_sig_version)
+        } else {
+            // Federated rows are not crypto-classified for this path.
+            crate::ledger::crypto::SignatureTrustStatus::Unsigned
+        };
+        let policy_invalid = is_local && invalid_tx_ids.contains(entry.tx_id.as_str());
+        let class = class_for_sig_entry(is_local, status, signing_required, policy_invalid);
+        classes.push(class);
+
+        if !is_local {
             continue;
         }
-        let status =
-            crate::ledger::crypto::classify_entry_signature(entry, trusted_keys, min_sig_version);
+
         let short = if entry.tx_id.len() >= 8 {
             &entry.tx_id[..8]
         } else {
             &entry.tx_id
         };
-        match status {
-            crate::ledger::crypto::SignatureTrustStatus::ValidTrusted
-            | crate::ledger::crypto::SignatureTrustStatus::ValidUnknownKey => {
-                if invalid_tx_ids.contains(entry.tx_id.as_str()) {
-                    eprintln!(
-                        "  [{}] TX {} signature verification FAILED!",
-                        "INVALID".red(),
-                        short
-                    );
-                } else {
-                    tracing::info!(
-                        target: "cli_summary",
-                        "  [{}] TX {}",
-                        status.as_str().green(),
-                        short
-                    );
-                    valid_count += 1;
-                }
-            }
-            crate::ledger::crypto::SignatureTrustStatus::Invalid => {
+
+        // Production emit routes through `sig_entry_stream` (N1 / DoD-5).
+        // Policy-invalid crypto-valid rows force raw stderr like hard INVALID.
+        let stream = if policy_invalid
+            && matches!(
+                status,
+                crate::ledger::crypto::SignatureTrustStatus::ValidTrusted
+                    | crate::ledger::crypto::SignatureTrustStatus::ValidUnknownKey
+            ) {
+            SigEntryStream::RawStderr
+        } else {
+            sig_entry_stream(status, signing_required)
+        };
+
+        match (status, stream) {
+            (
+                crate::ledger::crypto::SignatureTrustStatus::ValidTrusted
+                | crate::ledger::crypto::SignatureTrustStatus::ValidUnknownKey,
+                SigEntryStream::RawStderr,
+            ) => {
                 eprintln!(
                     "  [{}] TX {} signature verification FAILED!",
                     "INVALID".red(),
                     short
                 );
             }
-            crate::ledger::crypto::SignatureTrustStatus::Unsigned => {
-                if signing_required {
-                    eprintln!(
-                        "  [{}] TX {} has no signature — treating as verification failure.",
-                        "UNSIGNED".yellow(),
-                        short
-                    );
-                    unsigned_fail += 1;
-                } else {
-                    tracing::info!(
-                        target: "cli_summary",
-                        "  [{}] TX {} has no signature (signing not required, skipping).",
-                        "SKIP".yellow(),
-                        short
-                    );
-                    skipped_count += 1;
-                }
+            (
+                crate::ledger::crypto::SignatureTrustStatus::ValidTrusted
+                | crate::ledger::crypto::SignatureTrustStatus::ValidUnknownKey,
+                SigEntryStream::CliSummaryDebug,
+            ) => {
+                // Per-entry detail at debug! so --quiet / machine hide it
+                // while default (DEBUG) keeps today's behaviour (0093 DoD-5).
+                tracing::debug!(
+                    target: "cli_summary",
+                    "  [{}] TX {}",
+                    status.as_str().green(),
+                    short
+                );
+            }
+            (crate::ledger::crypto::SignatureTrustStatus::Invalid, _) => {
+                eprintln!(
+                    "  [{}] TX {} signature verification FAILED!",
+                    "INVALID".red(),
+                    short
+                );
+            }
+            (crate::ledger::crypto::SignatureTrustStatus::Unsigned, SigEntryStream::RawStderr) => {
+                eprintln!(
+                    "  [{}] TX {} has no signature — treating as verification failure.",
+                    "UNSIGNED".yellow(),
+                    short
+                );
+            }
+            (
+                crate::ledger::crypto::SignatureTrustStatus::Unsigned,
+                SigEntryStream::CliSummaryDebug,
+            ) => {
+                tracing::debug!(
+                    target: "cli_summary",
+                    "  [{}] TX {} has no signature (signing not required, skipping).",
+                    "SKIP".yellow(),
+                    short
+                );
             }
         }
     }
 
-    if federated_skip > 0 {
-        tracing::info!(
+    // Aggregate tallies are pure over `classes` — independent of quiet/default
+    // filters (DoD-6). Same fixture always yields the same counts.
+    let aggregates = tally_signature_classes(classes, invalid_count);
+
+    if aggregates.federated_skip > 0 {
+        tracing::debug!(
             target: "cli_summary",
             "  [{}]: {}",
             "SKIP (federated)".yellow(),
-            federated_skip
+            aggregates.federated_skip
         );
     }
 
     tracing::info!(
         target: "cli_summary",
         "\nSignature verification summary: {} valid, {} invalid, {} skipped, {} federated-skip.",
-        valid_count.green(),
-        if invalid_count > 0 {
-            invalid_count.red().to_string()
+        aggregates.valid.green(),
+        if aggregates.invalid > 0 {
+            aggregates.invalid.red().to_string()
         } else {
-            invalid_count.to_string()
+            aggregates.invalid.to_string()
         },
-        skipped_count.yellow(),
-        federated_skip
+        aggregates.skipped.yellow(),
+        aggregates.federated_skip
     );
 
     if all_valid {
@@ -243,18 +505,19 @@ pub fn verify_ledger_signatures_with_options(
         );
         Ok(())
     } else {
-        let code = sig_exit::decide_signature_exit(invalid_count, unsigned_fail, false);
+        let code =
+            sig_exit::decide_signature_exit(aggregates.invalid, aggregates.unsigned_fail, false);
         sig_exit::request_exit(code);
         if code == sig_exit::UNSIGNED {
             Err(miette::miette!(
                 "Ledger signature verification failed: {} unsigned entries (exit {}).",
-                unsigned_fail,
+                aggregates.unsigned_fail,
                 sig_exit::UNSIGNED
             ))
         } else {
             Err(miette::miette!(
                 "Ledger signature verification failed: {} entries have invalid or missing signatures.",
-                invalid_count
+                aggregates.invalid
             ))
         }
     }
@@ -656,6 +919,7 @@ pub fn execute_verify(
     dry_run: bool,
     scope: crate::verify::plan::VerifyScope,
     auto_index: bool,
+    json: bool,
 ) -> Result<()> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
@@ -678,6 +942,8 @@ pub fn execute_verify(
         explain,
         health,
     );
+    // Keep per-step SUCCESS/FAILURE println! off stdout when emitting JSON.
+    ctx.suppress_human_output = json;
 
     // 2. Load Storage and Packet
     ctx.storage = match StorageManager::open_read_only(&layout.root) {
@@ -746,6 +1012,12 @@ pub fn execute_verify(
 
     // Health mode early exit — skip OutcomePredictor::predict and full plan building
     if health {
+        if json {
+            // Health is a separate surface; --json is for the plan execution payload.
+            return Err(miette::miette!(
+                "verify --json cannot be combined with --health"
+            ));
+        }
         return execute_verify_health(&layout, &config);
     }
 
@@ -757,7 +1029,9 @@ pub fn execute_verify(
         ),
         None => {
             if let Some(config_plan) = config_plan {
-                print_verify_plan(&config_plan);
+                if !json {
+                    print_verify_plan(&config_plan);
+                }
                 (Some(config_plan.clone()), config_plan.steps)
             } else {
                 let prediction = OutcomePredictor::predict(&mut ctx)?;
@@ -811,12 +1085,15 @@ pub fn execute_verify(
                 }
 
                 // Announce fast→full fallback before the user waits through a
-                // full run they did not expect.
-                if let Some(reason) = &plan.fallback_reason {
+                // full run they did not expect. On --json the reason is in
+                // fallbackReason — do not print around the payload.
+                if !json && let Some(reason) = &plan.fallback_reason {
                     println!("{} {}", "ℹ".cyan(), reason.yellow());
                 }
 
-                print_verify_plan(&plan);
+                if !json {
+                    print_verify_plan(&plan);
+                }
                 let steps = plan.steps.clone();
                 (Some(plan), steps)
             }
@@ -824,7 +1101,8 @@ pub fn execute_verify(
     };
 
     // Entity-scoped explanation: show tests mapped to the entity and relevant steps.
-    if explain && entity.is_some() {
+    // Skipped under --json (machine payload has steps; explain is human-only).
+    if !json && explain && entity.is_some() {
         let target = entity.as_deref().unwrap_or("");
         println!(
             "\n{}",
@@ -899,6 +1177,11 @@ pub fn execute_verify(
 
     // Dry Run early exit with compressed output
     if dry_run {
+        if json {
+            return Err(miette::miette!(
+                "verify --json cannot be combined with --dry-run"
+            ));
+        }
         // For manual commands, print the steps derived from the CLI arg
         if manual_requested {
             println!("{}", "Verification Plan".bold().green());
@@ -985,8 +1268,10 @@ pub fn execute_verify(
         let _ = storage.shutdown();
     }
 
-    // Show progress indicator before verification execution
-    if !ctx.no_predict {
+    // Show progress indicator before verification execution.
+    // Machine mode (WARN filter) drops this info! so it cannot corrupt JSON;
+    // also skip when --json is set for clarity.
+    if !json && !ctx.no_predict {
         let num_steps = steps.len();
         if num_steps > 0 {
             tracing::info!(target: "cli_summary", "Running {} verification step(s)...", num_steps);
@@ -1142,7 +1427,10 @@ pub fn execute_verify(
     report = report.with_suggested_actions(suggestions);
 
     // 6. Final Reporting & IPC
-    VerificationReporter::report(&ctx, &report);
+    // Human report is suppressed on --json so stdout carries only the payload.
+    if !json {
+        VerificationReporter::report(&ctx, &report);
+    }
 
     // Push results to bridge
     let bridge_outcomes = report
@@ -1165,6 +1453,13 @@ pub fn execute_verify(
         .collect();
     crate::bridge::notify::push_verify_results(bridge_outcomes);
 
+    // Emit versioned CLI payload before any error return (DoD-15 boundary):
+    // JSON present + non-zero = validation rejection; no JSON + non-zero = fatal.
+    if json {
+        let payload = VerifyCliJson::from_report(&report, scope);
+        println!("{}", payload.to_json_string()?);
+    }
+
     if report.overall_pass {
         Ok(())
     } else {
@@ -1177,7 +1472,8 @@ pub fn execute_verify(
 /// Returns within a bounded time (<5s on normal machines).
 fn execute_verify_health(layout: &Layout, config: &crate::config::model::Config) -> Result<()> {
     println!("{}", "Verification Health Check".bold().green());
-    eprintln!("Checking verification dependencies...");
+    // Product-output header (0093): keep with report body on stdout (policy §3).
+    println!("Checking verification dependencies...");
     let mut all_ok = true;
 
     let profile = crate::platform::repository::detect_repository(layout.root.as_std_path());
@@ -1210,7 +1506,7 @@ fn execute_verify_health(layout: &Layout, config: &crate::config::model::Config)
         let mut sorted_tools: Vec<_> = expected_tools.into_iter().collect();
         sorted_tools.sort();
         for tool in sorted_tools {
-            eprintln!("  Checking {}...", tool);
+            println!("  Checking {}...", tool);
             let exists = check_executable_exists(&tool);
             if exists {
                 println!("  [{}] {} is available.", "OK".green(), tool);
@@ -1232,7 +1528,7 @@ fn execute_verify_health(layout: &Layout, config: &crate::config::model::Config)
     }
 
     // Check ledger health (bounded query)
-    eprintln!("  Checking ledger state...");
+    println!("  Checking ledger state...");
     let ledger_status = query_ledger_status(layout);
     if ledger_status.unaudited_count > 0 || ledger_status.has_stale_pending {
         println!(
@@ -1440,6 +1736,226 @@ pub fn explain_test_mappings(
 }
 
 #[cfg(test)]
+mod sig_entry_stream_tests {
+    use super::{
+        SigEntryClass, SigEntryStream, SignatureAggregateCounts, class_for_sig_entry,
+        sig_entry_stream, tally_signature_classes,
+    };
+    use crate::ledger::crypto::SignatureTrustStatus;
+    use std::io::{self, Write};
+    use std::sync::{Arc, Mutex};
+    use tracing::Level;
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::fmt;
+    use tracing_subscriber::fmt::writer::MakeWriter;
+    use tracing_subscriber::layer::SubscriberExt;
+    use tracing_subscriber::util::SubscriberInitExt;
+
+    #[test]
+    fn invalid_and_required_unsigned_are_raw_stderr() {
+        assert_eq!(
+            sig_entry_stream(SignatureTrustStatus::Invalid, false),
+            SigEntryStream::RawStderr
+        );
+        assert_eq!(
+            sig_entry_stream(SignatureTrustStatus::Invalid, true),
+            SigEntryStream::RawStderr
+        );
+        assert_eq!(
+            sig_entry_stream(SignatureTrustStatus::Unsigned, true),
+            SigEntryStream::RawStderr
+        );
+    }
+
+    #[test]
+    fn valid_and_optional_unsigned_are_filterable_debug() {
+        assert_eq!(
+            sig_entry_stream(SignatureTrustStatus::ValidTrusted, false),
+            SigEntryStream::CliSummaryDebug
+        );
+        assert_eq!(
+            sig_entry_stream(SignatureTrustStatus::ValidUnknownKey, true),
+            SigEntryStream::CliSummaryDebug
+        );
+        assert_eq!(
+            sig_entry_stream(SignatureTrustStatus::Unsigned, false),
+            SigEntryStream::CliSummaryDebug
+        );
+    }
+
+    /// DoD-6: same fixture classes → identical aggregate under two tallies
+    /// (models default vs quiet both counting before any stream filter).
+    #[test]
+    fn aggregate_counts_identical_quiet_vs_default_pure_tally() {
+        use SignatureTrustStatus::*;
+        let fixture: Vec<(bool, SignatureTrustStatus, bool, bool)> = vec![
+            // (is_local, status, signing_required, policy_invalid)
+            (true, ValidTrusted, false, false),
+            (true, ValidUnknownKey, false, false),
+            (true, Invalid, false, false),
+            (true, Unsigned, false, false),
+            (true, Unsigned, true, false),
+            (false, Unsigned, false, false),
+            (true, ValidTrusted, false, true),
+        ];
+        let classes: Vec<SigEntryClass> = fixture
+            .iter()
+            .map(|&(local, status, req, policy)| class_for_sig_entry(local, status, req, policy))
+            .collect();
+        // invalid enumerate size for this fixture: Invalid + policy-invalid Valid + required Unsigned
+        let invalid = 3usize;
+        let default_run = tally_signature_classes(classes.iter().copied(), invalid);
+        let quiet_run = tally_signature_classes(classes.iter().copied(), invalid);
+        assert_eq!(
+            default_run, quiet_run,
+            "DoD-6: aggregate must be identical across dual runs of the same fixture"
+        );
+        assert_eq!(default_run.valid, 2);
+        assert_eq!(default_run.invalid, 3);
+        assert_eq!(default_run.skipped, 1);
+        assert_eq!(default_run.federated_skip, 1);
+        assert_eq!(default_run.unsigned_fail, 1);
+        assert_eq!(
+            default_run.summary_counts_fragment(),
+            "2 valid, 3 invalid, 1 skipped, 1 federated-skip"
+        );
+        // Stream decision for each LOCAL non-policy-invalid row matches class.
+        for &(local, status, req, policy) in &fixture {
+            if !local {
+                continue;
+            }
+            let class = class_for_sig_entry(local, status, req, policy);
+            let stream = if policy && matches!(status, ValidTrusted | ValidUnknownKey) {
+                SigEntryStream::RawStderr
+            } else {
+                sig_entry_stream(status, req)
+            };
+            match class {
+                SigEntryClass::Valid | SigEntryClass::UnsignedOptional => {
+                    assert_eq!(stream, SigEntryStream::CliSummaryDebug);
+                }
+                SigEntryClass::Invalid | SigEntryClass::UnsignedRequired => {
+                    assert_eq!(stream, SigEntryStream::RawStderr);
+                }
+                SigEntryClass::Federated => unreachable!(),
+            }
+        }
+    }
+
+    #[derive(Clone, Default)]
+    struct BufWriter {
+        buf: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl<'a> MakeWriter<'a> for BufWriter {
+        type Writer = BufGuard;
+        fn make_writer(&'a self) -> Self::Writer {
+            BufGuard {
+                buf: Arc::clone(&self.buf),
+            }
+        }
+    }
+
+    struct BufGuard {
+        buf: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Write for BufGuard {
+        fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+            self.buf
+                .lock()
+                .map_err(|e| io::Error::other(e.to_string()))?
+                .extend_from_slice(data);
+            Ok(data.len())
+        }
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// DoD-6 dual-run with real filter levels: default (DEBUG) shows per-entry
+    /// detail + aggregate; quiet (INFO) hides detail but keeps the same aggregate
+    /// counts fragment on the product stream.
+    #[test]
+    fn aggregate_summary_identical_under_quiet_and_default_filters() {
+        let counts = SignatureAggregateCounts {
+            valid: 4,
+            invalid: 1,
+            skipped: 2,
+            federated_skip: 0,
+            unsigned_fail: 0,
+        };
+        let fragment = counts.summary_counts_fragment();
+
+        let capture = |max: Level| -> String {
+            let buf = BufWriter::default();
+            let capture = Arc::clone(&buf.buf);
+            let layer = fmt::layer()
+                .with_writer(buf)
+                .without_time()
+                .with_target(false)
+                .with_level(false)
+                .with_filter(tracing_subscriber::filter::filter_fn(move |meta| {
+                    meta.target() == "cli_summary" && *meta.level() <= max
+                }));
+            let _guard = tracing_subscriber::registry().with(layer).set_default();
+            // Per-entry detail (production uses debug!).
+            tracing::debug!(target: "cli_summary", "  [VALID] TX aaaaaaaa");
+            tracing::debug!(target: "cli_summary", "  [SKIP] TX bbbbbbbb");
+            // Aggregate (production uses info!).
+            tracing::info!(
+                target: "cli_summary",
+                "Signature verification summary: {fragment}."
+            );
+            String::from_utf8_lossy(&capture.lock().unwrap()).to_string()
+        };
+
+        let default_out = capture(Level::DEBUG);
+        let quiet_out = capture(Level::INFO);
+
+        assert!(
+            default_out.contains(&fragment),
+            "default must show aggregate; out={default_out:?}"
+        );
+        assert!(
+            quiet_out.contains(&fragment),
+            "quiet must show same aggregate; out={quiet_out:?}"
+        );
+        assert!(
+            default_out.contains("[VALID]"),
+            "default must show per-entry detail"
+        );
+        assert!(
+            !quiet_out.contains("[VALID]") && !quiet_out.contains("[SKIP]"),
+            "quiet must hide per-entry detail; out={quiet_out:?}"
+        );
+
+        // Parse counts from both aggregate lines — must match exactly.
+        fn parse_counts(s: &str) -> Option<(usize, usize, usize, usize)> {
+            let line = s
+                .lines()
+                .find(|l| l.contains("Signature verification summary"))?;
+            let after = line.split("summary: ").nth(1)?;
+            let parts: Vec<&str> = after.split(',').collect();
+            if parts.len() < 4 {
+                return None;
+            }
+            let num = |p: &str| -> Option<usize> { p.split_whitespace().next()?.parse().ok() };
+            Some((
+                num(parts[0])?,
+                num(parts[1])?,
+                num(parts[2])?,
+                num(parts[3].trim_end_matches('.'))?,
+            ))
+        }
+        let d = parse_counts(&default_out).expect("default aggregate parse");
+        let q = parse_counts(&quiet_out).expect("quiet aggregate parse");
+        assert_eq!(d, q, "DoD-6 dual-run: aggregate counts must match");
+        assert_eq!(d, (4, 1, 2, 0));
+    }
+}
+
+#[cfg(test)]
 mod sig_exit_tests {
     use super::sig_exit;
 
@@ -1541,5 +2057,192 @@ mod sig_exit_tests {
         );
         assert_eq!(SignatureTrustStatus::Invalid.as_str(), "INVALID");
         assert_eq!(SignatureTrustStatus::Unsigned.as_str(), "UNSIGNED");
+    }
+}
+
+#[cfg(test)]
+mod verify_cli_json_tests {
+    use super::*;
+    use crate::verify::plan::{PlanSource, VerificationPlan, VerificationStep};
+    use crate::verify::results::{VerificationReport, VerificationResult};
+
+    fn sample_result(command: &str, exit: i32) -> VerificationResult {
+        VerificationResult {
+            command: command.to_string(),
+            exit_code: exit,
+            duration_ms: 10,
+            stdout_summary: if exit == 0 {
+                "ok".into()
+            } else {
+                String::new()
+            },
+            stderr_summary: if exit != 0 {
+                "boom".into()
+            } else {
+                String::new()
+            },
+            truncated: false,
+            timestamp: "2026-01-01T00:00:00Z".into(),
+        }
+    }
+
+    fn sample_report(
+        results: Vec<VerificationResult>,
+        fallback: Option<&str>,
+    ) -> VerificationReport {
+        let plan = VerificationPlan {
+            source: Some(PlanSource::AutoPolicy),
+            steps: results
+                .iter()
+                .map(|r| VerificationStep {
+                    command: r.command.clone(),
+                    timeout_secs: 60,
+                    description: "step".into(),
+                    shell: false,
+                })
+                .collect(),
+            fallback_reason: fallback.map(|s| s.to_string()),
+        };
+        let mut report = VerificationReport::new(Some(plan), results);
+        // Stabilize timestamp for byte-identity.
+        report.timestamp = "2026-01-01T00:00:00Z".into();
+        report.tx_id = Some("tx-abc".into());
+        report
+    }
+
+    #[test]
+    fn schema_version_and_ok_from_report() {
+        let report = sample_report(vec![sample_result("cargo test", 0)], None);
+        let payload = VerifyCliJson::from_report(&report, VerifyScope::Full);
+        assert_eq!(payload.schema_version, VERIFY_JSON_SCHEMA_VERSION);
+        assert!(payload.ok);
+        assert_eq!(payload.scope_requested, "full");
+        assert_eq!(payload.scope_executed, "full");
+        assert!(payload.fallback_reason.is_none());
+        assert_eq!(payload.steps.len(), 1);
+        assert_eq!(payload.steps[0].status, "pass");
+        assert_eq!(payload.steps[0].exit_code, 0);
+        assert!(payload.steps[0].failure_detail.is_none());
+    }
+
+    #[test]
+    fn fallback_sets_scope_executed_full() {
+        let report = sample_report(
+            vec![sample_result("cargo test", 0)],
+            Some("fast scope unavailable — empty test_mapping; running full (~5-8 min)"),
+        );
+        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast);
+        assert_eq!(payload.scope_requested, "fast");
+        assert_eq!(payload.scope_executed, "full");
+        assert!(payload.fallback_reason.as_ref().unwrap().contains("empty"));
+    }
+
+    #[test]
+    fn ok_false_when_step_fails_and_status_agrees() {
+        let report = sample_report(
+            vec![
+                sample_result("cargo fmt", 0),
+                sample_result("cargo clippy", 1),
+            ],
+            None,
+        );
+        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast);
+        assert!(!payload.ok);
+        assert_eq!(payload.steps[0].status, "pass");
+        assert_eq!(payload.steps[1].status, "fail");
+        assert_eq!(payload.steps[1].failure_detail.as_deref(), Some("boom"));
+        // DoD-10: ok == all steps pass == (would be exit 0)
+        assert_eq!(payload.ok, payload.steps.iter().all(|s| s.exit_code == 0));
+    }
+
+    #[test]
+    fn byte_identical_across_two_builds() {
+        let report = sample_report(
+            vec![
+                sample_result("cargo fmt --all -- --check", 0),
+                sample_result("cargo nextest run --lib", 0),
+            ],
+            None,
+        );
+        let a = VerifyCliJson::from_report(&report, VerifyScope::Fast)
+            .to_json_string()
+            .unwrap();
+        let b = VerifyCliJson::from_report(&report, VerifyScope::Fast)
+            .to_json_string()
+            .unwrap();
+        assert_eq!(a, b);
+        let parsed: VerifyCliJson = serde_json::from_str(&a).unwrap();
+        assert_eq!(parsed.schema_version, 1);
+        assert!(parsed.ok);
+    }
+
+    #[test]
+    fn step_status_from_exit_code_matrix() {
+        assert_eq!(step_status_from_exit_code(0), "pass");
+        assert_eq!(step_status_from_exit_code(1), "fail");
+        assert_eq!(step_status_from_exit_code(3), "fail");
+    }
+
+    #[test]
+    fn ok_matches_sig_exit_matrix_for_gate() {
+        // Process exit 0 ↔ ok true; non-zero validation rejection ↔ ok false.
+        for (exit, expect_ok) in [(0, true), (1, false), (3, false)] {
+            let results = if exit == 0 {
+                vec![sample_result("cargo test", 0)]
+            } else {
+                vec![sample_result("cargo test", exit)]
+            };
+            let report = sample_report(results, None);
+            let payload = VerifyCliJson::from_report(&report, VerifyScope::Full);
+            assert_eq!(payload.ok, expect_ok, "exit={exit}");
+            assert_eq!(payload.ok, exit == 0);
+        }
+    }
+
+    /// DoD-15: clap-level fatal rejects before `execute_verify` runs — no path
+    /// that could emit a partial `VerifyCliJson` payload.
+    #[test]
+    fn verify_json_invalid_scope_is_clap_fatal() {
+        use crate::cli::Cli;
+        use clap::Parser;
+        let err = Cli::try_parse_from(["ledgerful", "verify", "--json", "--scope", "not-a-scope"]);
+        assert!(
+            err.is_err(),
+            "invalid --scope under --json must fail at clap (fatal, no partial JSON)"
+        );
+        let msg = err.unwrap_err().to_string();
+        assert!(
+            msg.contains("not-a-scope") || msg.contains("scope") || msg.contains("fast"),
+            "clap error should mention scope; got {msg}"
+        );
+    }
+
+    /// DoD-15: rejected `--json` combinations return `Err` from dispatch helpers
+    /// without building a report (no `VerifyCliJson` emit site reached).
+    #[test]
+    fn verify_json_rejected_combos_are_errors_not_partial_payloads() {
+        // Structural: execute_verify returns Err early for health/dry-run+json
+        // before plan execution or JSON println. Live process proof is in
+        // integration + output/0093-after/verify-json-fatal.*.
+        let src = include_str!("verify.rs");
+        assert!(
+            src.contains("verify --json cannot be combined with --health"),
+            "health+json must reject"
+        );
+        assert!(
+            src.contains("verify --json cannot be combined with --dry-run"),
+            "dry-run+json must reject"
+        );
+        // Emit-before-err boundary: JSON println is immediately before overall_pass check.
+        let emit_idx = src
+            .find("payload.to_json_string()")
+            .expect("JSON emit site");
+        let fail_idx = src
+            .find("if report.overall_pass")
+            .expect("overall_pass gate");
+        assert!(
+            emit_idx < fail_idx,
+            "DoD-15 boundary: JSON must emit before validation-rejection Err"
+        );
     }
 }

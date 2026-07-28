@@ -165,7 +165,9 @@ impl OutcomePredictor {
                     10,
                 ) {
                     Ok(similar_ci) => {
-                        if !similar_ci.is_empty() {
+                        // Human table/println! must not run under machine mode
+                        // (`verify --json` sets suppress_human_output) — 0093 F1.
+                        if !similar_ci.is_empty() && !ctx.suppress_human_output {
                             crate::output::verification::VerificationReporter::print_ci_predictions(
                                 &similar_ci,
                                 ctx.explain,
@@ -179,7 +181,7 @@ impl OutcomePredictor {
             }
         }
 
-        if ctx.explain && !prediction.explain_lines.is_empty() {
+        if ctx.explain && !prediction.explain_lines.is_empty() && !ctx.suppress_human_output {
             for line in &prediction.explain_lines {
                 println!("{line}");
             }

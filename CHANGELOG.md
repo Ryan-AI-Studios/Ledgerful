@@ -6,6 +6,33 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Agent CLI output contract (0093):** `verify --json` emits a versioned
+  (`schemaVersion: 1`) machine-readable result with `ok`, `scopeRequested`,
+  `scopeExecuted`, `fallbackReason`, and per-step status. Global `--quiet`/`-q`
+  (and `LEDGERFUL_QUIET=1`) hide per-entry signature detail while keeping the
+  aggregate. See `docs/agent-output-contract.md`.
+- **`ledger status --json`:** adds `schemaVersion: 1` and sorts `pendingTxIds`
+  for deterministic agent parsing.
+
+### Changed
+
+- **Stream discipline for `cli_summary` (0093, user-visible):** product `info!`
+  lines route to **stdout**; diagnostic `warn!`/`error!` stay on **stderr**
+  (level-split writer). Machine mode (`--json`, `scan --format json`, `mcp`)
+  filters the layer to `WARN` so human lines cannot corrupt JSON on stdout.
+  Per-entry signature `VALID`/`SKIP` lines are demoted to `debug!` so `--quiet`
+  can hide them while the aggregate stays at `info!`; **default interactive
+  verbosity is unchanged** (summary filter remains `DEBUG`). Double-emitted
+  observe would-block / CRITICAL messages now emit once via `cli_summary` only.
+- **Machine mode silences normal_layer progress INFO (0093 R1):** under `--json`
+  / machine mode the non-`cli_summary` EnvFilter is raised to `WARN`, so a
+  successful `verify --json` has empty stderr. `WARN`/`ERROR` still pass.
+  `verify --json` rejects combination with `--signatures` / `--chain` /
+  `--against-export` (same pattern as `--health` / `--dry-run`). CI prediction
+  `println!` tables are gated on `suppress_human_output`.
+
 ### Fixed
 
 - **Legacy migration completion (0094):** state-dir rename now also ensures

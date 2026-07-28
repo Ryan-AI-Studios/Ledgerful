@@ -22,6 +22,8 @@ pub struct VerificationContext {
     pub explain: bool,
     pub health: bool,
     pub warnings: Vec<String>,
+    /// When true, suppress human `println!` progress (e.g. `verify --json`).
+    pub suppress_human_output: bool,
 }
 
 impl VerificationContext {
@@ -43,6 +45,7 @@ impl VerificationContext {
             explain,
             health,
             warnings: Vec::new(),
+            suppress_human_output: false,
         }
     }
 
@@ -100,10 +103,21 @@ impl VerifyEngine {
             } else {
                 prepare_rule_step(step, ctx.config.verify.allow_shell_steps, &policy)?
             };
-            info!(
-                "Running verification command via {:?}: {}",
-                prepared.execution_mode, prepared.display_command
-            );
+            // Progress INFO must not hit stderr under machine mode (`verify --json`).
+            // Structural subscriber filter also raises normal_layer to WARN; demote
+            // here so even a misconfigured RUST_LOG cannot reintroduce the line.
+            if ctx.suppress_human_output {
+                tracing::debug!(
+                    "Running verification command via {:?}: {}",
+                    prepared.execution_mode,
+                    prepared.display_command
+                );
+            } else {
+                info!(
+                    "Running verification command via {:?}: {}",
+                    prepared.execution_mode, prepared.display_command
+                );
+            }
 
             // Local fast-path speed lever: enable incremental compilation for
             // warm rebuilds. Only on the fast convenience scope; never in CI or
@@ -123,7 +137,9 @@ impl VerifyEngine {
             }
 
             let result = execute_step_with_command(&prepared, &policy, Some(command))?;
-            print_verify_result(&prepared.display_command, step.timeout_secs, &result);
+            if !ctx.suppress_human_output {
+                print_verify_result(&prepared.display_command, step.timeout_secs, &result);
+            }
 
             let report_result = Self::to_report_result(&prepared.display_command, &result);
             if report_result.exit_code != 0 {

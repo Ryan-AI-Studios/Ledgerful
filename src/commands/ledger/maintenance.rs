@@ -153,7 +153,7 @@ fn refuse_gc_protected(
         "[Ledgerful] CRITICAL [{CODE_PROMOTE_ORPHAN}]: {verb} to GC {reason} orphan tx {id}. \
          Use recover-orphan — never silent-delete promote-fail trails. {RECOVER_HINT}"
     );
-    eprintln!("{msg}");
+    // Single emission via cli_summary (0093 DoD-9); error! → stderr via level-split.
     tracing::error!(target: "cli_summary", "{msg}");
     true
 }

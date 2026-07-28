@@ -23,6 +23,48 @@ pub struct LifecycleSignals {
     pub promote_error: Option<String>,
 }
 
+/// Stable schema version for `ledger status --json` (track 0093).
+const STATUS_JSON_SCHEMA_VERSION: u32 = 1;
+
+/// Wire payload for `ledger status --json` (v1).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusJson {
+    pub schema_version: u32,
+    pub pending_count: usize,
+    pub unaudited_count: usize,
+    pub pending_tx_ids: Vec<String>,
+    pub unaudited_file_count: usize,
+    pub promote_orphan: bool,
+    pub head_uncovered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub promote_orphan_tx_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub promote_error: Option<String>,
+}
+
+/// Build the status JSON payload with lexicographically sorted `pendingTxIds`
+/// (determinism; 0093 DoD-8). Shared by the live path and unit tests.
+pub fn build_status_json(
+    mut pending_tx_ids: Vec<String>,
+    unaudited_count: usize,
+    unaudited_file_count: usize,
+    signals: &LifecycleSignals,
+) -> StatusJson {
+    pending_tx_ids.sort();
+    StatusJson {
+        schema_version: STATUS_JSON_SCHEMA_VERSION,
+        pending_count: pending_tx_ids.len(),
+        unaudited_count,
+        pending_tx_ids,
+        unaudited_file_count,
+        promote_orphan: signals.promote_orphan,
+        head_uncovered: signals.head_uncovered,
+        promote_orphan_tx_id: signals.promote_orphan_tx_id.clone(),
+        promote_error: signals.promote_error.clone(),
+    }
+}
+
 /// Inspect the pending_hook_tx sidecar for promote-fail / HEAD-match coverage gaps.
 ///
 /// **Honest minimum:** `head_uncovered` is co-set with orphan/sidecar detection
@@ -86,25 +128,21 @@ fn apply_exit_code(
         std::process::exit(1);
     }
 
+    // Single emission via cli_summary (0093 DoD-9). Level-split writer routes
+    // warn! → stderr so `ledger status --json` keeps stdout JSON-only.
+    let remediation = if signals.promote_orphan {
+        RECOVER_HINT
+    } else {
+        "Set gate to enforce for blocking exit codes, or pass --strict-observe-signal for exit 2."
+    };
     tracing::warn!(
         target: "cli_summary",
-        "Gate is observe: status would block in enforce mode (pending={}, unaudited={}, promote_orphan={}, head_uncovered={})",
-        pending_count,
-        unaudited_count,
-        signals.promote_orphan,
-        signals.head_uncovered
-    );
-    eprintln!(
         "[Ledgerful] WARNING: observe mode would-block (pending={}, unaudited={}, promote_orphan={}, head_uncovered={}). {}",
         pending_count,
         unaudited_count,
         signals.promote_orphan,
         signals.head_uncovered,
-        if signals.promote_orphan {
-            RECOVER_HINT
-        } else {
-            "Set gate to enforce for blocking exit codes, or pass --strict-observe-signal for exit 2."
-        }
+        remediation
     );
     if strict {
         std::process::exit(2);
@@ -155,32 +193,13 @@ pub fn execute_ledger_status(
             .get_all_unaudited()
             .map_err(|e| miette::miette!("{}", e))?;
         let pending_tx_ids: Vec<String> = pending.iter().map(|t| t.tx_id.clone()).collect();
-
-        #[derive(Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct StatusJson {
-            pending_count: usize,
-            unaudited_count: usize,
-            pending_tx_ids: Vec<String>,
-            unaudited_file_count: usize,
-            promote_orphan: bool,
-            head_uncovered: bool,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            promote_orphan_tx_id: Option<String>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            promote_error: Option<String>,
-        }
-
-        let status = StatusJson {
-            pending_count: pending.len(),
-            unaudited_count: unaudited.len(),
+        let unaudited_file_count = unaudited.iter().map(|u| u.drift_count as usize).sum();
+        let status = build_status_json(
             pending_tx_ids,
-            unaudited_file_count: unaudited.iter().map(|u| u.drift_count as usize).sum(),
-            promote_orphan: signals.promote_orphan,
-            head_uncovered: signals.head_uncovered,
-            promote_orphan_tx_id: signals.promote_orphan_tx_id.clone(),
-            promote_error: signals.promote_error.clone(),
-        };
+            unaudited.len(),
+            unaudited_file_count,
+            &signals,
+        );
 
         println!(
             "{}",
@@ -571,4 +590,154 @@ pub fn execute_ledger_export_provenance(output: Option<String>) -> Result<()> {
 /// and optional bot-key signing.
 pub fn execute_ledger_export_public(options: crate::ledger::ExportOptions<'_>) -> Result<()> {
     crate::ledger::export_public_bundle(options)
+}
+
+#[cfg(test)]
+mod status_json_tests {
+    use super::*;
+
+    #[test]
+    fn pending_tx_ids_sorted_and_stable_via_real_builder() {
+        // Exercises the production `build_status_json` / `StatusJson` path
+        // (not a reimplemented fixture).
+        let signals = LifecycleSignals::default();
+        let a = build_status_json(
+            vec!["z-tx".into(), "a-tx".into(), "m-tx".into()],
+            0,
+            0,
+            &signals,
+        );
+        let b = build_status_json(
+            vec!["m-tx".into(), "z-tx".into(), "a-tx".into()],
+            0,
+            0,
+            &signals,
+        );
+        assert_eq!(a.pending_tx_ids, vec!["a-tx", "m-tx", "z-tx"]);
+        assert_eq!(a.pending_count, 3);
+        assert_eq!(a.schema_version, STATUS_JSON_SCHEMA_VERSION);
+        assert_eq!(a, b);
+        let ja = serde_json::to_string(&a).unwrap();
+        let jb = serde_json::to_string(&b).unwrap();
+        assert_eq!(ja, jb);
+        let pretty = serde_json::to_string_pretty(&a).unwrap();
+        assert!(pretty.contains("schemaVersion"));
+        assert!(pretty.contains("pendingTxIds"));
+    }
+
+    #[test]
+    fn would_block_stream_stays_on_warn_cli_summary() {
+        // Observe would-block is a single warn!(cli_summary) — level-split
+        // writer routes WARN → stderr so stdout JSON stays pure (DoD-3/F4).
+        // Structural: apply_exit_code only emits via cli_summary warn, not println.
+        let src = include_str!("reporting.rs");
+        assert!(
+            src.contains("target: \"cli_summary\""),
+            "would-block must emit via cli_summary"
+        );
+        // Ensure the de-duped path no longer double-emits eprintln for would-block.
+        let apply_fn = src.split("fn apply_exit_code").nth(1).unwrap_or("");
+        let apply_body = apply_fn
+            .split("pub fn execute_ledger_status")
+            .next()
+            .unwrap_or("");
+        assert!(
+            !apply_body.contains("eprintln!"),
+            "apply_exit_code must not eprintln (DoD-9 de-dup); body={apply_body}"
+        );
+        assert!(
+            apply_body.contains("tracing::warn!"),
+            "apply_exit_code must warn! on cli_summary"
+        );
+    }
+
+    /// DoD-3 strengthening: real stream capture of `apply_exit_code` under the
+    /// production level-split writer (info→stdout, warn/error→stderr).
+    #[test]
+    fn would_block_apply_exit_code_warn_on_stderr_not_stdout() {
+        use std::io::{self, Write};
+        use std::sync::{Arc, Mutex};
+        use tracing::Level;
+        use tracing_subscriber::Layer;
+        use tracing_subscriber::fmt;
+        use tracing_subscriber::fmt::writer::{MakeWriter, MakeWriterExt};
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        #[derive(Clone, Default)]
+        struct BufWriter {
+            buf: Arc<Mutex<Vec<u8>>>,
+        }
+        impl<'a> MakeWriter<'a> for BufWriter {
+            type Writer = BufGuard;
+            fn make_writer(&'a self) -> Self::Writer {
+                BufGuard {
+                    buf: Arc::clone(&self.buf),
+                }
+            }
+        }
+        struct BufGuard {
+            buf: Arc<Mutex<Vec<u8>>>,
+        }
+        impl Write for BufGuard {
+            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+                self.buf
+                    .lock()
+                    .map_err(|e| io::Error::other(e.to_string()))?
+                    .extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let stdout_buf = BufWriter::default();
+        let stderr_buf = BufWriter::default();
+        let stdout_capture = Arc::clone(&stdout_buf.buf);
+        let stderr_capture = Arc::clone(&stderr_buf.buf);
+        let writer = stderr_buf.with_max_level(Level::WARN).or_else(stdout_buf);
+        let layer = fmt::layer()
+            .with_writer(writer)
+            .without_time()
+            .with_target(false)
+            .with_level(false)
+            .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
+                meta.target() == "cli_summary"
+            }));
+        let _guard = tracing_subscriber::registry().with(layer).set_default();
+
+        // Default config is observe gate — would-block warns, does not exit(1).
+        let config = crate::config::model::Config::default();
+        assert!(
+            config.gate.is_observe(),
+            "default gate must be observe for non-exiting would-block path"
+        );
+        apply_exit_code(
+            &config,
+            true,  // --exit-code
+            false, // not strict
+            1,     // pending
+            0,
+            &LifecycleSignals::default(),
+        );
+
+        let stdout = String::from_utf8_lossy(&stdout_capture.lock().unwrap()).to_string();
+        let stderr = String::from_utf8_lossy(&stderr_capture.lock().unwrap()).to_string();
+
+        assert!(
+            stderr.contains("would-block") || stderr.contains("observe mode"),
+            "would-block warn must land on stderr; stderr={stderr:?} stdout={stdout:?}"
+        );
+        assert!(
+            !stdout.contains("would-block") && !stdout.contains("observe mode"),
+            "would-block must not pollute stdout JSON stream; stdout={stdout:?}"
+        );
+        // Simulated machine payload on stdout remains parseable if only JSON is there.
+        assert!(
+            stdout.trim().is_empty()
+                || serde_json::from_str::<serde_json::Value>(stdout.trim()).is_ok(),
+            "stdout must stay JSON-pure; stdout={stdout:?}"
+        );
+    }
 }

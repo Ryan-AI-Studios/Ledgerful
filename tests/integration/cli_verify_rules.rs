@@ -32,6 +32,7 @@ fn test_verify_invalid_rules_fail_visibly() {
         false,
         VerifyScope::Full,
         false,
+        false,
     )
     .unwrap_err();
     assert!(format!("{err:?}").contains("Invalid glob pattern"));

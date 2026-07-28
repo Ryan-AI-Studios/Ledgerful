@@ -157,17 +157,15 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
                                 RECOVER_HINT
                             ));
                         }
-                        eprintln!(
-                            "[Ledgerful] WARNING [{}]: promote orphan retained (tx {}): {}. \
-                             Recover with: {}",
-                            CODE_PROMOTE_ORPHAN, pending.tx_id, detail, RECOVER_HINT
-                        );
+                        // Single emission via cli_summary (0093 DoD-9); warn! → stderr.
                         tracing::warn!(
                             target: "cli_summary",
-                            "[Ledgerful] WARNING [{}]: promote orphan (tx {}): {}",
+                            "[Ledgerful] WARNING [{}]: promote orphan retained (tx {}): {}. \
+                             Recover with: {}",
                             CODE_PROMOTE_ORPHAN,
                             pending.tx_id,
-                            detail
+                            detail,
+                            RECOVER_HINT
                         );
                         // Observe: do not GC; continue so the new commit can proceed with a banner.
                         // Still block writing a second concurrent sidecar — hard-fail only under enforce.

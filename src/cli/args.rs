@@ -22,6 +22,12 @@ pub struct Cli {
     /// Enable verbose logging output
     #[arg(long, short, global = true)]
     pub verbose: bool,
+
+    /// Quiet mode: hide per-entry `cli_summary` detail, keep the aggregate summary.
+    /// Also selected by `LEDGERFUL_QUIET=1`. Does **not** select machine mode;
+    /// use `--json` (or `mcp` / `scan --format json`) for agent-safe stdout.
+    #[arg(long, short = 'q', global = true)]
+    pub quiet: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -272,9 +278,11 @@ pub enum Commands {
         /// Show the verification plan without executing any commands
         #[arg(long)]
         dry_run: bool,
-        /// Verification scope: `fast` (scoped test selection via test_mapping,
-        /// for pre-push) or `full` (entire suite, for CI and manual runs).
-        /// Default: `full`. The pre-push hook uses `fast`.
+        /// Verification scope: `fast` or `full` (default: `full`).
+        /// `fast` always runs fmt + clippy; only test selection is scoped via
+        /// `test_mapping`. Falls back to full with an announcement when the
+        /// mapping is unavailable. Pre-push uses `fast`. See
+        /// `docs/verify-performance.md`.
         #[arg(long, default_value = "full")]
         scope: crate::verify::plan::VerifyScope,
         /// Automatically refresh a stale or empty `test_mapping` index before
@@ -282,6 +290,11 @@ pub enum Commands {
         /// an announcement if indexing fails. Opt-in to avoid surprise latency.
         #[arg(long)]
         auto_index: bool,
+        /// Emit a versioned machine-readable result object on stdout (schema
+        /// version 1). Selects machine mode so human `cli_summary` lines cannot
+        /// precede or follow the JSON. See `docs/agent-output-contract.md`.
+        #[arg(long)]
+        json: bool,
     },
     /// Ask Gemini or a local model for assistance based on the current context
     Ask {
@@ -597,6 +610,146 @@ impl Commands {
     /// any user-supplied values, paths, or arguments. The dispatch hook
     /// stores this as the primary key in the per-repo `usage_counters`
     /// table.
+    /// Whether this invocation is machine-facing and must keep stdout free of
+    /// human `cli_summary` product lines (track 0093 machine mode).
+    ///
+    /// Selected by any `--json` flag, `scan --format json`, or `mcp`.
+    /// **No wildcard arm** — a new subcommand or `--json` flag must decide
+    /// explicitly at compile time rather than silently defaulting to human.
+    pub fn is_machine_output(&self) -> bool {
+        match self {
+            Commands::Init { .. } => false,
+            Commands::Gate { .. } => false,
+            Commands::Policy { command } => match command {
+                // Policy uses `--format json` (not `--json`); treat as machine.
+                PolicyCommands::Check { format, .. } => format
+                    .as_deref()
+                    .is_some_and(|f| f.eq_ignore_ascii_case("json")),
+            },
+            Commands::Setup { .. } => false,
+            Commands::Scan { json, format, .. } => {
+                *json
+                    || format
+                        .as_deref()
+                        .is_some_and(|f| f.eq_ignore_ascii_case("json"))
+            }
+            Commands::Impact { json, .. } => *json,
+            Commands::Index { json, .. } => *json,
+            Commands::Search { json, .. } => *json,
+            Commands::Hotspots { args } => {
+                args.json
+                    || match &args.command {
+                        Some(HotspotSubcommands::Trend { json, .. }) => *json,
+                        Some(HotspotSubcommands::Budget { json }) => *json,
+                        Some(HotspotSubcommands::Explain { .. }) => false,
+                        None => false,
+                    }
+            }
+            Commands::Endpoints(args) => args.wants_json(),
+            Commands::Export { .. } => false,
+            Commands::Federate { .. } => false,
+            Commands::Services { command } => match command {
+                ServiceSubcommands::Diff(args) => args.json,
+            },
+            Commands::DataModels(args) => match &args.command {
+                DataModelSubcommands::List { json, .. } => *json,
+                DataModelSubcommands::Impact { json, .. } => *json,
+            },
+            Commands::Ci(args) => match &args.command {
+                crate::commands::deploy::CiSubcommands::Diff { json } => *json,
+            },
+            Commands::Deploy(args) => match &args.command {
+                crate::commands::deploy::DeploySubcommands::Impact { json, .. } => *json,
+            },
+            Commands::Dependencies(args) => match &args.command {
+                crate::commands::dependencies::DependencySubcommands::List { json, .. } => *json,
+                crate::commands::dependencies::DependencySubcommands::Audit { json, .. } => *json,
+            },
+            Commands::Observability(args) => match &args.command {
+                ObservabilitySubcommands::Coverage { json } => *json,
+                ObservabilitySubcommands::Diff { json } => *json,
+            },
+            Commands::Security(args) => match &args.command {
+                SecuritySubcommands::Impact { json, .. } => *json,
+                SecuritySubcommands::Boundaries { json } => *json,
+            },
+            Commands::Tests(args) => args.json,
+            Commands::Bridge { subcommand } => match subcommand {
+                BridgeCommands::Export { json, .. } => *json,
+                BridgeCommands::Import { .. } => false,
+                BridgeCommands::Query { .. } => false,
+            },
+            Commands::Ledger { command } => match command {
+                LedgerCommands::Start { .. } => false,
+                LedgerCommands::Commit { .. } => false,
+                LedgerCommands::Rollback { .. } => false,
+                LedgerCommands::Atomic { .. } => false,
+                LedgerCommands::Status { json, .. } => *json,
+                LedgerCommands::Register { .. } => false,
+                LedgerCommands::Stack { .. } => false,
+                LedgerCommands::Adr { .. } => false,
+                LedgerCommands::Validator { command } => match command {
+                    ValidatorSubcommands::List { json } => *json,
+                    ValidatorSubcommands::Enable { .. } => false,
+                    ValidatorSubcommands::Disable { .. } => false,
+                    ValidatorSubcommands::Remove { .. } => false,
+                    ValidatorSubcommands::Doctor => false,
+                },
+                LedgerCommands::Graph(args) => args.json,
+                LedgerCommands::Search { json, .. } => *json,
+                LedgerCommands::Reconcile { .. } => false,
+                LedgerCommands::Adopt { .. } => false,
+                LedgerCommands::Audit { json, .. } => *json,
+                LedgerCommands::Note { .. } => false,
+                LedgerCommands::ReSign { .. } => false,
+                LedgerCommands::Gc { .. } => false,
+                LedgerCommands::Resume { .. } => false,
+                LedgerCommands::ExportProvenance { .. } => false,
+                LedgerCommands::ExportPublic { .. } => false,
+                LedgerCommands::HookRepair { .. } => false,
+                LedgerCommands::RecoverOrphan { .. } => false,
+            },
+            Commands::Verify { json, .. } => *json,
+            Commands::Ask { .. } => false,
+            Commands::Intent { .. } => false,
+            Commands::Reset { .. } => false,
+            Commands::Doctor => false,
+            Commands::Status => false,
+            Commands::Timings { json, .. } => *json,
+            Commands::Config { command } => match command {
+                ConfigCommands::Verify { json, .. } => *json,
+                ConfigCommands::View { json, .. } => *json,
+                ConfigCommands::Schema { json } => *json,
+                ConfigCommands::Diff { json, .. } => *json,
+                ConfigCommands::Set { .. } => false,
+                ConfigCommands::Unset { .. } => false,
+            },
+            Commands::DeadCode { .. } => false,
+            Commands::Viz { .. } => false,
+            Commands::Update { .. } => false,
+            Commands::Watch { json, .. } => *json,
+            #[cfg(feature = "sync")]
+            Commands::Sync { .. } => false,
+            Commands::SearchTrigrams { .. } => false,
+            Commands::Audit { json, .. } => *json,
+            Commands::Schedule { .. } => false,
+            #[cfg(feature = "daemon")]
+            Commands::Daemon { .. } => false,
+            #[cfg(feature = "viz-server")]
+            Commands::VizServer { .. } => false,
+            #[cfg(feature = "web")]
+            Commands::Web { .. } => false,
+            Commands::Internal { .. } => false,
+            Commands::Demo { .. } => false,
+            #[cfg(feature = "usage-metrics")]
+            Commands::Usage { .. } => false,
+            #[cfg(feature = "mcp")]
+            Commands::Mcp => true,
+            #[cfg(any(feature = "openapi", feature = "web"))]
+            Commands::Openapi => true,
+        }
+    }
+
     pub fn command_name(&self) -> &'static str {
         match self {
             Commands::Init { .. } => "init",
@@ -765,7 +918,65 @@ impl Commands {
             Commands::Openapi => "openapi",
         }
     }
+}
 
+#[cfg(test)]
+mod machine_output_tests {
+    use super::*;
+    use clap::Parser;
+
+    fn parse(args: &[&str]) -> Commands {
+        let mut full = vec!["ledgerful"];
+        full.extend_from_slice(args);
+        Cli::try_parse_from(full).unwrap().command
+    }
+
+    #[test]
+    fn machine_mode_selected_for_json_flags() {
+        assert!(parse(&["verify", "--json"]).is_machine_output());
+        assert!(parse(&["ledger", "status", "--json"]).is_machine_output());
+        assert!(parse(&["scan", "--impact", "--json"]).is_machine_output());
+        assert!(parse(&["config", "view", "--json"]).is_machine_output());
+        assert!(parse(&["search", "foo", "--json"]).is_machine_output());
+        assert!(parse(&["index", "--check", "--json"]).is_machine_output());
+        assert!(parse(&["timings", "--json"]).is_machine_output());
+        assert!(parse(&["hotspots", "--json"]).is_machine_output());
+    }
+
+    #[test]
+    fn machine_mode_selected_for_scan_format_json() {
+        assert!(parse(&["scan", "--pr", "main...HEAD", "--format", "json"]).is_machine_output());
+        assert!(!parse(&["scan", "--pr", "main...HEAD", "--format", "text"]).is_machine_output());
+    }
+
+    #[test]
+    fn machine_mode_selected_for_mcp() {
+        #[cfg(feature = "mcp")]
+        assert!(parse(&["mcp"]).is_machine_output());
+    }
+
+    #[test]
+    fn human_commands_not_machine() {
+        assert!(!parse(&["doctor"]).is_machine_output());
+        assert!(!parse(&["verify"]).is_machine_output());
+        assert!(!parse(&["verify", "--signatures"]).is_machine_output());
+        assert!(!parse(&["ledger", "status"]).is_machine_output());
+        assert!(!parse(&["scan", "--impact"]).is_machine_output());
+    }
+
+    #[test]
+    fn quiet_does_not_imply_machine() {
+        // Quiet is a separate state; only --json selects machine mode.
+        let cli = Cli::try_parse_from(["ledgerful", "--quiet", "verify"]).unwrap();
+        assert!(cli.quiet);
+        assert!(!cli.command.is_machine_output());
+        let cli_json = Cli::try_parse_from(["ledgerful", "--quiet", "verify", "--json"]).unwrap();
+        assert!(cli_json.quiet);
+        assert!(cli_json.command.is_machine_output());
+    }
+}
+
+impl Commands {
     /// Canonical workload-shape key for `argv_hash`: subcommand path plus sorted
     /// present flag *names* (no values — paths, tx-ids, queries omitted).
     pub fn argv_shape(&self) -> String {
@@ -941,6 +1152,7 @@ impl Commands {
                 strict_signatures,
                 dry_run,
                 auto_index,
+                json,
                 // `scope` always present (default full) — include name only when not default
                 // would leak value; we record the flag name always when user would care.
                 // Values are stripped: record "scope" unconditionally so fast/full group
@@ -987,6 +1199,9 @@ impl Commands {
                 f.push("scope");
                 if *auto_index {
                     f.push("auto_index");
+                }
+                if *json {
+                    f.push("json");
                 }
             }
             Commands::Timings {

@@ -163,6 +163,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
             dry_run,
             scope,
             auto_index,
+            json,
         } => dispatch_verify(
             &layout,
             command,
@@ -179,6 +180,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
             dry_run,
             scope,
             auto_index,
+            json,
         ),
         Commands::Ask {
             query,
@@ -1534,8 +1536,17 @@ fn dispatch_verify(
     dry_run: bool,
     scope: crate::verify::plan::VerifyScope,
     auto_index: bool,
+    json: bool,
 ) -> Result<()> {
     if signatures || chain || against_export.is_some() {
+        // No versioned JSON payload for the signature/chain path — reject the
+        // combo the same way --health / --dry-run do (0093 F3), rather than
+        // silently emitting empty stdout under machine mode.
+        if json {
+            return Err(miette::miette!(
+                "verify --json cannot be combined with --signatures, --chain, or --against-export"
+            ));
+        }
         crate::commands::verify::verify_ledger_signatures_with_options(
             layout,
             signatures,
@@ -1546,7 +1557,7 @@ fn dispatch_verify(
     } else {
         crate::commands::verify::execute_verify(
             command, tx_id, timeout, no_predict, explain, entity, health, dry_run, scope,
-            auto_index,
+            auto_index, json,
         )
     }
 }
@@ -1814,6 +1825,7 @@ mod rename_tests {
 
         let cli = Cli {
             verbose: false,
+            quiet: false,
             command: Commands::Timings {
                 global: true,
                 json: true,

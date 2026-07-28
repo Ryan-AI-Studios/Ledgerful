@@ -44,7 +44,7 @@ pub fn execute_hook_post_commit_for_layout(layout: &crate::state::layout::Layout
             "[Ledgerful] CRITICAL: post-commit promote failed (trail retained): {}. Recover with: {}",
             e, RECOVER_HINT
         );
-        eprintln!("{msg}");
+        // Single emission via cli_summary (0093 DoD-9); error! → stderr via level-split.
         tracing::error!(target: "cli_summary", "{msg}");
     }
 
