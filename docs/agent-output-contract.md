@@ -173,11 +173,25 @@ on stdout.
 |---|---|---|---|---|
 | **Pass** | valid JSON, `ok: true` | `0` | checks passed | proceed |
 | **Validation rejection** | valid JSON, `ok: false` | non-zero (`1`/`3`) | repo failed a check | read `steps[]`, fix code |
-| **Fatal execution error** | empty / unparseable | non-zero (`1`, or **`101`** on panic) | tool could not run | fix environment; **do not** treat as a verification result |
+| **Fatal execution error** | empty / unparseable | non-zero (`1`, or **`101`** on panic) | tool could not complete a verification result | fix environment / flags; **do not** treat as a clean pass |
 
-A non-zero exit with **no** JSON is an environment failure (config, missing
-state, panic), not a clean verification pass. Always check **exit code and**
-that stdout parsed.
+A non-zero exit with **no** JSON is **not** a verification result. Always check
+**exit code and** that stdout parsed.
+
+### What is (and is not) fatal under `verify --json`
+
+| Case | Behaviour | Outcome class |
+|---|---|---|
+| Clap / invalid flags (e.g. bad `--scope`, rejected `--json` combos) | no payload; non-zero; message on stderr | **Fatal** |
+| Panic in the main thread | exit **101**; no payload | **Fatal** |
+| Hard `Err` before the payload is emitted (e.g. cwd unreadable, rejected combo) | no payload; non-zero | **Fatal** |
+| Plan step failure after the run completes | **JSON present**, `ok: false`, non-zero | **Validation rejection** |
+| **Config load failure** | **not fatal** — warn + defaults (post-0094 honesty path); verification still runs | continue; may see stderr WARN |
+| **SQLite / packet open failure** | **not fatal** — prediction disabled with warn; plan still runs | continue; may see stderr WARN |
+
+Do **not** assume "missing `.ledgerful/config.toml` or a soft config parse
+error" means no JSON. Soft config and storage failures degrade; only hard
+pre-payload `Err`s and panics produce the empty-stdout fatal class.
 
 ---
 
@@ -193,15 +207,18 @@ PowerShell 7+ does not throw on stderr alone. Stream discipline cannot eliminate
 legitimate warnings forever; the durable agent invocation is:
 
 ```powershell
+# Supported agent invocation: machine mode (selected by --json alone).
 ledgerful verify --json
-# or, when you need empty stderr on a successful run:
-ledgerful verify --json --quiet
+# --quiet is optional and only collapses cli_summary per-entry detail;
+# it is not required for empty-stderr success under --json.
 ```
 
 Machine mode keeps human product lines off stdout **and** silences normal_layer
-progress `INFO` on stderr. A successful run under `--json` should write
-**empty stderr** (or only true `WARN`/`ERROR` diagnostics). A would-block or
-CRITICAL still uses stderr by design.
+progress `INFO` on stderr. A successful plan run under `--json` with no
+degradation warnings should write **empty stderr**. Soft config/storage
+degradation, would-block observe warnings, and CRITICAL refusals still use
+stderr by design — agents must not merge streams under Windows PowerShell 5.1
++ `$ErrorActionPreference='Stop'`.
 
 ---
 
