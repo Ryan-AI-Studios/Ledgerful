@@ -2004,6 +2004,51 @@ mod tests {
     }
 
     #[test]
+    fn test_signature_deltas_cleared_in_truncate_phase_3() {
+        let mut packet = ImpactPacket {
+            changes: vec![ChangedFile {
+                path: PathBuf::from("src/main.rs"),
+                status: "Modified".to_string(),
+                old_path: None,
+                is_staged: true,
+                symbols: None,
+                imports: None,
+                runtime_usage: None,
+                analysis_status: FileAnalysisStatus::default(),
+                analysis_warnings: Vec::new(),
+                api_routes: Vec::new(),
+                data_models: Vec::new(),
+                ci_gates: Vec::new(),
+            }],
+            signature_deltas: vec![SignatureDelta {
+                file_path: "src/main.rs".into(),
+                symbol_name: "Function:foo".into(),
+                previous_signature: "fn foo()".into(),
+                current_signature: "fn foo(a: u32)".into(),
+                change_class: "shape".into(),
+            }],
+            runtime_usage_delta: vec![RuntimeUsageDelta {
+                file_path: "src/main.rs".into(),
+                env_vars_previous_count: 1,
+                env_vars_current_count: 2,
+                config_keys_previous_count: 0,
+                config_keys_current_count: 0,
+                env_vars_previous: vec!["A".into()],
+                env_vars_current: vec!["A".into(), "B".into()],
+            }],
+            ..ImpactPacket::default()
+        };
+
+        let truncated = packet.truncate_for_context(100);
+        assert!(truncated);
+        assert!(
+            packet.signature_deltas.is_empty(),
+            "Phase 3 must clear signature_deltas alongside other peer deltas"
+        );
+        assert!(packet.runtime_usage_delta.is_empty());
+    }
+
+    #[test]
     fn test_observability_empty_absent_from_json() {
         let packet = ImpactPacket::default();
         let json = serde_json::to_string_pretty(&packet).unwrap();

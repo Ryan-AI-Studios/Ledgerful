@@ -343,6 +343,7 @@ impl ImpactPacket {
         self.env_var_deps.clear();
         self.test_coverage.clear();
         self.runtime_usage_delta.clear();
+        self.signature_deltas.clear();
         self.relevant_decisions.clear();
         // CRITICAL: Clear observability signals which can contain unbounded log excerpts
         self.observability.clear();

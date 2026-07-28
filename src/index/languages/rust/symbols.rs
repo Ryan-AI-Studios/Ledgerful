@@ -213,11 +213,14 @@ pub fn extract_symbols(content: &str) -> Result<Option<Vec<Symbol>>> {
             }
 
             if !name.is_empty() {
-                // Qualify trait method decls as TraitName.method when nested in trait_item.
-                let qualified_name = if node.kind() == "function_signature_item" {
-                    qualify_trait_method(node, content, &name)
-                } else {
-                    None
+                // Qualify methods so same-name symbols in one file do not collide:
+                // - trait method decls → TraitName.method
+                // - impl methods → TypeName.method (matches Go Receiver.method)
+                // Free functions keep qualified_name: None.
+                let qualified_name = match node.kind() {
+                    "function_signature_item" => qualify_trait_method(node, content, &name),
+                    "function_item" => qualify_impl_method(node, content, &name),
+                    _ => None,
                 };
 
                 symbols.push(Symbol {
@@ -373,6 +376,43 @@ fn qualify_trait_method(node: Node<'_>, content: &str, method_name: &str) -> Opt
             return Some(format!("{trait_name}.{method_name}"));
         }
         current = n.parent();
+    }
+    None
+}
+
+/// `TypeName.method` when a `function_item` sits inside an `impl_item`.
+///
+/// Uses the impl's `type` field (not the first `type_identifier`) so
+/// `impl Display for Foo` qualifies as `Foo.method`, not `Display.method`.
+/// Free functions (no enclosing impl) return `None`.
+fn qualify_impl_method(node: Node<'_>, content: &str, method_name: &str) -> Option<String> {
+    let mut current = node.parent();
+    while let Some(n) = current {
+        if n.kind() == "impl_item" {
+            let type_node = n.child_by_field_name("type")?;
+            let type_name = first_type_identifier(type_node, content)?;
+            return Some(format!("{type_name}.{method_name}"));
+        }
+        // Stop at item containers so we do not climb into an outer impl for a
+        // free function nested via macros or other odd structures.
+        if matches!(n.kind(), "source_file" | "mod_item" | "trait_item") {
+            return None;
+        }
+        current = n.parent();
+    }
+    None
+}
+
+/// First `type_identifier` under a type node (handles plain and generic types).
+fn first_type_identifier(node: Node<'_>, content: &str) -> Option<String> {
+    if node.kind() == "type_identifier" {
+        return node_text_owned(node, content);
+    }
+    let mut c = node.walk();
+    for child in node.children(&mut c) {
+        if let Some(id) = first_type_identifier(child, content) {
+            return Some(id);
+        }
     }
     None
 }
@@ -768,6 +808,49 @@ mod tests {
             ps.signature_hash.is_some(),
             "Rust function must yield non-null signature_hash"
         );
+    }
+
+    #[test]
+    fn impl_methods_are_qualified_by_type_name() {
+        let content = r#"
+            struct Foo;
+            struct Bar;
+            impl Foo {
+                fn new() -> Self { Foo }
+            }
+            impl Bar {
+                fn new() -> Self { Bar }
+            }
+            impl std::fmt::Display for Foo {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                    Ok(())
+                }
+            }
+            fn free_new() {}
+        "#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let foo_new = symbols
+            .iter()
+            .find(|s| s.name == "new" && s.qualified_name.as_deref() == Some("Foo.new"))
+            .expect("Foo.new must be qualified");
+        let bar_new = symbols
+            .iter()
+            .find(|s| s.name == "new" && s.qualified_name.as_deref() == Some("Bar.new"))
+            .expect("Bar.new must be qualified");
+        assert!(foo_new.metadata.contains_key("signatureShape"));
+        assert!(bar_new.metadata.contains_key("signatureShape"));
+        // Trait impl uses the `type` field (Foo), not the trait name (Display).
+        let fmt = symbols
+            .iter()
+            .find(|s| s.name == "fmt")
+            .expect("fmt method");
+        assert_eq!(fmt.qualified_name.as_deref(), Some("Foo.fmt"));
+        // Free functions stay unqualified.
+        let free = symbols
+            .iter()
+            .find(|s| s.name == "free_new")
+            .expect("free_new");
+        assert_eq!(free.qualified_name, None);
     }
 
     /// Phase 0 P1/P3: confirm field names against the pinned tree-sitter-rust grammar.
