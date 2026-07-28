@@ -1,6 +1,6 @@
 [package]
 name = "ledgerful"
-version = "0.2.1"
+version = "0.2.2"
 edition = "2024"
 license-file = "LICENSE"
 description = "Local-first change intelligence CLI for deterministic impact analysis and verification"

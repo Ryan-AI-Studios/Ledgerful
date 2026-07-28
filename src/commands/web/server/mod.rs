@@ -12,8 +12,8 @@ pub mod startup;
 pub use handlers::{
     __path_changes_handler, __path_config_handler, __path_health_handler, __path_hotspots_handler,
     __path_ledger_handler, __path_ledger_search_handler, __path_ledger_tx_handler,
-    __path_projects_handler, __path_session_handler, __path_snapshot_handler,
-    __path_status_handler, __path_sync_status_handler,
+    __path_projects_handler, __path_session_exchange_handler, __path_session_handler,
+    __path_snapshot_handler, __path_status_handler, __path_sync_status_handler,
 };
 pub use router::router;
 pub use sse::{__path_events_handler, spawn_change_detector};

@@ -21,6 +21,28 @@ pub(crate) struct UserSession {
     pub(crate) role: String,
 }
 
+/// Request body for `POST /api/session/exchange` (track 0090).
+///
+/// Carries the single-use handoff code from the browser fragment (`#c=…`).
+/// Never place this code (or the returned session token) in a URL query string.
+#[derive(Debug, Deserialize, Serialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+pub(crate) struct SessionExchangeRequest {
+    /// 256-bit hex handoff code minted by `ledgerful web start --open`.
+    pub(crate) code: String,
+}
+
+/// Response body for a successful `POST /api/session/exchange`.
+///
+/// Returns the long-lived session bearer token for in-memory SPA use.
+/// The handoff code is consumed on success and cannot be reused.
+#[derive(Debug, Serialize)]
+#[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
+pub(crate) struct SessionExchangeResponse {
+    /// Session bearer token (same value as `Authorization: Bearer …`).
+    pub(crate) token: String,
+}
+
 #[derive(Serialize)]
 #[cfg_attr(any(test, feature = "openapi", feature = "web"), derive(ToSchema))]
 pub(crate) struct SnapshotResponse {

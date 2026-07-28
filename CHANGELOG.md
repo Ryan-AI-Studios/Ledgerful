@@ -6,6 +6,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.2] - 2026-07-27
+
+### Fixed
+
+- **`--open` handoff reliability (0090 follow-up):** bind the web listener **before**
+  opening the browser so the SPA can load and call `POST /api/session/exchange`
+  immediately. On Windows, open the handoff URL via `ShellExecuteW` so `#c=<code>`
+  is not stripped (cmd `start` treats `#` as a batch comment). Optional
+  `LEDGERFUL_WEB_OPEN_URL_FILE` writes the open URL for integration harnesses
+  instead of launching a browser.
+
 ## [0.2.1] - 2026-07-26
 
 ### Added

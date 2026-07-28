@@ -10,15 +10,16 @@ pub mod types;
 use crate::cli::args::{WebCommands, WebStartArgs};
 use crate::commands::helpers::get_layout;
 use crate::commands::pid::PidFile;
-use crate::commands::web::auth::resolve_session_token;
+use crate::commands::web::auth::{generate_token, resolve_session_token};
 use crate::commands::web::spa_dir::validate_spa_dir;
-use crate::commands::web::state::AppState;
+use crate::commands::web::state::{AppState, HANDOFF_TTL, HandoffCode};
 use camino::{Utf8Path, Utf8PathBuf};
 use miette::{IntoDiagnostic, Result, miette};
 use owo_colors::OwoColorize;
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::Arc;
+use std::time::Instant;
 
 const TOKEN_ENV_VAR: &str = "LEDGERFUL_WEB_TOKEN";
 /// Comma-separated peer IPs required when `--allow-public` binds non-loopback.
@@ -82,6 +83,8 @@ fn start_web(args: WebStartArgs) -> Result<()> {
     };
 
     if args.background {
+        // Background path returns before --open; never mints a handoff code
+        // (spec §2.7 — --background --open remains a no-op for browser open).
         return spawn_background_server(
             args,
             layout,
@@ -91,58 +94,83 @@ fn start_web(args: WebStartArgs) -> Result<()> {
         );
     }
 
+    // Mint a single-use handoff code only for foreground --open (track 0090).
+    let handoff = if args.open {
+        Some(HandoffCode {
+            code: generate_token(),
+            expires_at: Instant::now() + HANDOFF_TTL,
+        })
+    } else {
+        None
+    };
+    let handoff_code = handoff.as_ref().map(|h| h.code.clone());
+
     let _pid_guard = PidFile::create(pid_path)?;
     let state = Arc::new(AppState::new(
         layout,
         token.clone(),
         spa_dir,
         peer_allowlist,
+        handoff,
     ));
 
     println!("Starting ledgerful web at {}", base_url);
-    emit_token_notice(&token, args.print_token, token_file_path.as_deref());
 
-    if args.open {
-        if let Err(e) = webbrowser::open(&base_url) {
-            tracing::warn!("Failed to open browser: {}", e);
-        }
-        if !args.print_token
-            && let Some(path) = token_file_path.as_ref()
-        {
-            println!(
-                "Browser opened; session token is in {} (not printed).",
-                path
-            );
-        }
+    // Browser open is deferred until after the TCP listener is bound (see
+    // `run_server_then_open`). Opening first races the accept loop: the first
+    // navigation can fail or land without `#c=`, which leaves the SPA on Sign in.
+    let open_url = if args.open {
+        handoff_code
+            .as_ref()
+            .map(|code| format!("{base_url}#c={code}"))
+    } else {
+        None
+    };
+
+    if !args.open {
+        emit_token_notice(&token, args.print_token, token_file_path.as_deref());
+        println!(
+            "Open {} in your browser and paste the auth token to sign in.",
+            base_url
+        );
     }
-    println!(
-        "Open {} in your browser and paste the auth token to sign in.",
-        base_url
-    );
 
     let rt = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
         .into_diagnostic()?;
 
-    rt.block_on(run_server(args.bind, args.port, state))?;
+    rt.block_on(run_server_then_open(
+        args.bind,
+        args.port,
+        state,
+        open_url,
+        base_url.clone(),
+    ))?;
 
     Ok(())
 }
 
-/// Format the operator-facing token notice (DoD-5). Pure so tests can assert
+/// Format the operator-facing token notice. Pure so tests can assert
 /// redaction without capturing process stdout.
 ///
-/// When `print_token` is true the full token is included (legacy default).
-/// When false, only the path is mentioned — the token value must never appear.
+/// Default is `print_token=false` (track 0090 W1): only the token-file path is
+/// mentioned. Pass `--print-token=true` to include the hex token (opt-in
+/// escape hatch for demos / CI). When false, the token value must never appear.
 fn format_token_notice(token: &str, print_token: bool, token_file: Option<&Utf8Path>) -> String {
     if print_token {
         format!("Auth token: {token}")
     } else if let Some(path) = token_file {
         format!("Auth token written to {path}")
     } else {
-        "Auth token suppressed (--print-token=false); no token file path available.".to_string()
+        "Auth token suppressed (default); no token file path available.".to_string()
     }
+}
+
+/// Operator-facing message for the `--open` auto-sign-in path (never includes
+/// the handoff code or session token).
+fn format_open_notice(base_url: &str) -> String {
+    format!("Opening {base_url} — signing in automatically.")
 }
 
 /// Print the token or only the file path (DoD-5).
@@ -346,7 +374,8 @@ fn run_server_blocking(args: WebStartArgs, layout: crate::state::layout::Layout)
             return;
         }
     };
-    let state = Arc::new(AppState::new(layout, token, spa_dir, peer_allowlist));
+    // Background daemon path never mints a handoff code (no --open browser).
+    let state = Arc::new(AppState::new(layout, token, spa_dir, peer_allowlist, None));
     let rt = match tokio::runtime::Builder::new_multi_thread()
         .enable_all()
         .build()
@@ -357,7 +386,11 @@ fn run_server_blocking(args: WebStartArgs, layout: crate::state::layout::Layout)
             return;
         }
     };
-    let _ = rt.block_on(run_server(args.bind, args.port, state));
+    // No handoff open on the background path (spec §2.7).
+    let base = format!("http://{}:{}/", args.bind, args.port);
+    let _ = rt.block_on(run_server_then_open(
+        args.bind, args.port, state, None, base,
+    ));
 }
 
 #[cfg(target_os = "windows")]
@@ -393,8 +426,14 @@ fn spawn_background_server(
     if args.allow_public {
         command.arg("--allow-public");
     }
-    // Keep hidden --token for daemonize handoff (RT-W5); no per-spawn warning.
-    command.arg("--token").arg(token);
+    // Do NOT pass --token on the process command line (track 0090 W2).
+    // Command lines are enumerable without knowing where the token file lives
+    // (Task Manager / Get-CimInstance / Sysmon process-create events) and
+    // outlive the session in telemetry logs. LEDGERFUL_WEB_TOKEN alone is
+    // sufficient: the child calls resolve_session_token(args.token /* None */,
+    // env_token) and falls through to the env branch. The hidden --token CLI
+    // flag itself remains for operators who supply it intentionally — only
+    // this background spawn path stops using it.
     // Preserve print_token preference for the child (child will not re-print if false
     // and token already written by parent; still avoid double-print of the secret).
     if !args.print_token {
@@ -447,9 +486,112 @@ fn print_web_status() -> Result<()> {
     Ok(())
 }
 
-async fn run_server(bind: String, port: u16, state: Arc<AppState>) -> Result<()> {
+/// Bind first, then open the browser (if requested), then serve forever.
+///
+/// Order matters for `--open` handoff: the SPA must load after the listener is
+/// accepting, with the `#c=` fragment intact, so `POST /api/session/exchange`
+/// can run before the operator ever pastes a token.
+async fn run_server_then_open(
+    bind: String,
+    port: u16,
+    state: Arc<AppState>,
+    open_url: Option<String>,
+    base_url: String,
+) -> Result<()> {
+    use std::net::SocketAddr;
+    use tokio::net::TcpListener;
+
+    let addr = SocketAddr::new(
+        bind.parse()
+            .map_err(|e| miette!("Invalid bind address {bind}: {e}"))?,
+        port,
+    );
+    let listener = TcpListener::bind(addr).await.into_diagnostic()?;
+    let bound = listener
+        .local_addr()
+        .map(|a| a.to_string())
+        .unwrap_or_else(|_| addr.to_string());
+    tracing::info!("ledgerful web listening on {bound}");
+
+    if let Some(url) = open_url.as_deref() {
+        // Never print the `#c=` form (scrollback would defeat single-use handoff).
+        println!("{}", format_open_notice(&base_url));
+        if let Err(e) = open_browser_for_handoff(url) {
+            tracing::warn!("Failed to open browser for handoff: {e}");
+        }
+    }
+
     let router = server::router(state.clone());
-    server::serve(router, bind, port, state).await
+    server::serve_listener(listener, router, state, None).await
+}
+
+/// Open a URL that may contain a `#fragment` without letting the Windows shell
+/// treat `#` as a cmd comment (which strips the handoff code).
+///
+/// When `LEDGERFUL_WEB_OPEN_URL_FILE` is set, write the URL there instead of
+/// launching a browser (integration / Playwright harness only).
+fn open_browser_for_handoff(url: &str) -> Result<(), String> {
+    if let Ok(path) = std::env::var("LEDGERFUL_WEB_OPEN_URL_FILE") {
+        std::fs::write(&path, url).map_err(|e| format!("write open-url file {path}: {e}"))?;
+        return Ok(());
+    }
+    #[cfg(windows)]
+    {
+        open_browser_windows_shell_execute(url)
+    }
+    #[cfg(not(windows))]
+    {
+        webbrowser::open(url).map_err(|e| e.to_string())
+    }
+}
+
+#[cfg(windows)]
+fn open_browser_windows_shell_execute(url: &str) -> Result<(), String> {
+    use std::ffi::OsStr;
+    use std::os::windows::ffi::OsStrExt;
+    use std::ptr;
+
+    #[link(name = "shell32")]
+    unsafe extern "system" {
+        fn ShellExecuteW(
+            hwnd: *mut core::ffi::c_void,
+            lp_operation: *const u16,
+            lp_file: *const u16,
+            lp_parameters: *const u16,
+            lp_directory: *const u16,
+            n_show_cmd: i32,
+        ) -> isize;
+    }
+
+    fn wide(s: &str) -> Vec<u16> {
+        OsStr::new(s)
+            .encode_wide()
+            .chain(std::iter::once(0))
+            .collect()
+    }
+
+    // ShellExecuteW("open", url) preserves URL fragments; `cmd /c start`
+    // treats `#…` as a batch comment and drops the handoff code.
+    let op = wide("open");
+    let file = wide(url);
+    // > 32 means success per ShellExecute docs.
+    // Legitimate: Win32 ShellExecuteW is the supported way to open a browser with a
+    // fragment-bearing URL; no untrusted input reaches the command line.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
+    let rc = unsafe {
+        ShellExecuteW(
+            ptr::null_mut(),
+            op.as_ptr(),
+            file.as_ptr(),
+            ptr::null(),
+            ptr::null(),
+            1, // SW_SHOWNORMAL
+        )
+    };
+    if rc as usize <= 32 {
+        return Err(format!("ShellExecuteW failed with code {rc}"));
+    }
+    Ok(())
 }
 
 fn validate_bind(bind: &str, allow_public: bool) -> Result<()> {
@@ -581,7 +723,10 @@ mod tests {
     fn format_token_notice_print_true_includes_token() {
         let token = "a".repeat(64);
         let notice = format_token_notice(&token, true, None);
-        assert!(notice.contains(&token), "default print must show token");
+        assert!(
+            notice.contains(&token),
+            "--print-token=true (opt-in) must show token"
+        );
         assert!(notice.starts_with("Auth token:"));
     }
 
@@ -592,11 +737,11 @@ mod tests {
         let notice = format_token_notice(&token, false, Some(path));
         assert!(
             !notice.contains(&token),
-            "print-token=false must not include the token value: {notice}"
+            "default print_token=false must not include the token value: {notice}"
         );
         assert!(
             notice.contains("web-session-token"),
-            "print-token=false must report the file path: {notice}"
+            "default must report the file path: {notice}"
         );
         assert!(notice.contains("Auth token written to"));
     }
@@ -610,15 +755,48 @@ mod tests {
     }
 
     #[test]
-    fn open_path_message_reports_token_file_when_suppressed() {
-        // Mirrors the --open branch in start_web when print_token is false.
-        let path = Utf8Path::new("C:\\repo\\.ledgerful\\web-session-token");
-        let msg = format!(
-            "Open {} in your browser. Sign in with the token from {}.",
-            "http://127.0.0.1:52001/", path
+    fn format_open_notice_never_includes_handoff_or_token() {
+        let base = "http://127.0.0.1:52001/";
+        let notice = format_open_notice(base);
+        assert!(notice.contains(base));
+        assert!(notice.contains("signing in automatically"));
+        assert!(
+            !notice.contains("#c="),
+            "open notice must never print the fragment code: {notice}"
         );
-        assert!(msg.contains("web-session-token"));
-        assert!(!msg.contains("Auth token:"));
+        assert!(!notice.contains("Auth token:"));
+    }
+
+    #[test]
+    fn open_url_format_uses_fragment_not_query() {
+        // Pure format check for the browser-open URL (never printed to stdout).
+        let base = "http://127.0.0.1:52001/";
+        let code = "a".repeat(64);
+        let open_url = format!("{base}#c={code}");
+        assert!(open_url.starts_with(base));
+        assert!(open_url.contains("#c="));
+        assert!(!open_url.contains("?"));
+        assert!(!open_url.contains("&c="));
+    }
+
+    #[test]
+    fn open_before_listen_is_not_the_start_order() {
+        // start_web must open the browser only after bind (run_server_then_open),
+        // never webbrowser::open before the runtime block_on.
+        let src = include_str!("mod.rs");
+        assert!(
+            src.contains("run_server_then_open"),
+            "start_web must open the browser only after bind via run_server_then_open"
+        );
+        let start_web = src
+            .split("fn start_web")
+            .nth(1)
+            .and_then(|s| s.split("fn format_token_notice").next())
+            .expect("start_web body");
+        assert!(
+            !start_web.contains("webbrowser::open"),
+            "start_web must not call webbrowser::open before the server listens"
+        );
     }
 
     #[cfg(unix)]

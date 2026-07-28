@@ -2020,7 +2020,8 @@ impl Commands {
                     if args.background {
                         f.push("background");
                     }
-                    if !args.print_token {
+                    // print_token defaults to false (0090 W1); record only when opted in.
+                    if args.print_token {
                         f.push("print_token");
                     }
                     if args.token.is_some() {
@@ -2166,14 +2167,17 @@ pub struct WebStartArgs {
     /// Run the server in the background
     #[arg(long)]
     pub background: bool,
-    /// Print the session token to stdout (default true). Use `--print-token=false`
-    /// to write the token to `.ledgerful/web-session-token` instead and print only
-    /// the path (reduces shell-history / screen-share leakage).
-    #[arg(long, default_value_t = true, action = clap::ArgAction::Set)]
+    /// Print the session token to stdout (default **false**). By default the token
+    /// is written to `.ledgerful/web-session-token` and only the path is printed,
+    /// reducing shell-history / screen-share / CI-log leakage. Pass
+    /// `--print-token=true` as an opt-in escape hatch for demos or local debugging.
+    #[arg(long, default_value_t = false, action = clap::ArgAction::Set)]
     pub print_token: bool,
-    /// Pre-generated session token (hidden; used when daemonizing so the parent
-    /// and child share the same token). Prefer `LEDGERFUL_WEB_TOKEN` or the
-    /// session token file for operator-supplied secrets.
+    /// Pre-generated session token (hidden; operator-supplied override only).
+    /// Background daemonize no longer passes this on the child command line
+    /// (track 0090 W2) — the parent hands the token via `LEDGERFUL_WEB_TOKEN`
+    /// to avoid process-list / EDR command-line leakage. Prefer that env var
+    /// or the session token file for secrets.
     #[arg(long, hide = true)]
     pub token: Option<String>,
 }

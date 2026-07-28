@@ -10,7 +10,7 @@ use crate::commands::web::server::sse;
 use crate::commands::web::state::AppState;
 use axum::Router;
 use axum::middleware;
-use axum::routing::get;
+use axum::routing::{get, post};
 use std::sync::Arc;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace::{DefaultMakeSpan, DefaultOnResponse, TraceLayer};
@@ -58,11 +58,21 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/knowledge-graph", get(api::knowledge_graph_handler))
         .route("/config", get(handlers::config_handler))
         .route("/sync/status", get(handlers::sync_status_handler))
+        // Apply token_layer to protected routes only — must complete before
+        // merge so the public exchange route does not inherit this layer.
         .route_layer(middleware::from_fn_with_state(state.clone(), token_layer));
+
+    // Public API routes under `/api` without Bearer auth (track 0090).
+    // Merged after `route_layer` so they stay unauthenticated while protected
+    // routes retain `token_layer` (axum merge-separately-middleware idiom).
+    let api_public = Router::new().route(
+        "/session/exchange",
+        post(handlers::session_exchange_handler),
+    );
 
     let mut app = Router::new()
         .route("/health", get(handlers::health_handler))
-        .nest("/api", api_router);
+        .nest("/api", api_router.merge(api_public));
 
     if let Some(spa_dir) = &state.spa_dir {
         // Hashed assets under `/_next/` must 404 when missing — never fall back to
