@@ -16,6 +16,9 @@ pub struct DoctorReport<'a> {
     pub path_kind: &'a str,
     pub is_wsl_mounted: bool,
     pub embedding_model_status: String,
+    /// From `BackendAvailabilityReport::is_failure` — preferred over string
+    /// matching when counting doctor failures for the embedding backend.
+    pub embedding_model_failed: bool,
     pub completion_model_status: String,
     pub native_graph_status: String,
     pub active_ask_backend: String,

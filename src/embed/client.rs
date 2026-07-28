@@ -20,8 +20,20 @@ impl Dimensions {
     }
 }
 
+/// True when an embedding server URL is set via `local_model.base_url` or
+/// `local_model.embedding_url`. Shared by the semantic embedder, readiness,
+/// doctor, and index refuse path so gates cannot drift.
+pub fn is_embedding_backend_configured(config: &LocalModelConfig) -> bool {
+    let has_base = !config.base_url.trim().is_empty();
+    let has_embed_url = config
+        .embedding_url
+        .as_ref()
+        .is_some_and(|u| !u.trim().is_empty());
+    has_base || has_embed_url
+}
+
 pub fn check_local_model(config: &LocalModelConfig) -> Result<Dimensions, String> {
-    if config.base_url.is_empty() && config.embedding_url.is_none() {
+    if !is_embedding_backend_configured(config) {
         return Ok(Dimensions {
             dimensions: 0,
             model_name: String::new(),
@@ -234,6 +246,33 @@ mod tests {
         let result = check_local_model(&config).unwrap();
         assert!(!result.active);
         assert_eq!(result.dimensions, 0);
+    }
+
+    #[test]
+    fn is_embedding_backend_configured_false_for_default() {
+        assert!(!is_embedding_backend_configured(
+            &LocalModelConfig::default()
+        ));
+    }
+
+    #[test]
+    fn is_embedding_backend_configured_false_for_model_name_only() {
+        let config = LocalModelConfig {
+            embedding_model: "nomic-embed-text".to_string(),
+            base_url: String::new(),
+            embedding_url: None,
+            ..Default::default()
+        };
+        assert!(!is_embedding_backend_configured(&config));
+    }
+
+    #[test]
+    fn is_embedding_backend_configured_true_for_base_url() {
+        let config = LocalModelConfig {
+            base_url: "http://127.0.0.1:8083".to_string(),
+            ..Default::default()
+        };
+        assert!(is_embedding_backend_configured(&config));
     }
 
     #[test]

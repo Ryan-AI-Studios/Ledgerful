@@ -38,6 +38,7 @@ mod cli_migration_prompt;
 mod cli_reset;
 mod cli_scan;
 mod cli_search;
+mod cli_semantic_honesty;
 mod cli_services_diff_messaging;
 mod cli_setup;
 mod cli_sparse_empty_states;

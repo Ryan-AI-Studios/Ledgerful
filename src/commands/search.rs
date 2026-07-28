@@ -63,44 +63,11 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
             crate::semantic::SemanticDiscovery::new(config.local_model.clone(), cozo)?;
 
         // --- Phase 1: Readiness Check ---
-        let mut readiness = semantic_engine.check_readiness()?;
-        if readiness.vector_count == 0
-            && !args.auto_index
-            && !args.json
-            && crate::util::term::is_interactive()
-        {
-            use inquire::Confirm;
-            if let Ok(true) = Confirm::new(
-                "Semantic index is empty. Would you like to run 'ledgerful index --semantic' now?",
-            )
-            .with_default(true)
-            .prompt()
-            {
-                println!("Running semantic indexing...");
-                crate::commands::index::execute_index(crate::commands::index::IndexArgs {
-                    incremental: true,
-                    check: false,
-                    strict: false,
-                    json: false,
-                    analyze_graph: false,
-                    docs: false,
-                    contracts: false,
-                    semantic: false,
-                    scip: None,
-                    auto_scip: false,
-                    export_docs: false,
-
-                    doc_type: None,
-                    concurrency: None,
-                    semantic_dry_run: None,
-                    fast: false,
-                    repair_metadata: false,
-                    dry_run: false,
-                    yes: false,
-                })?;
-                readiness = semantic_engine.check_readiness()?;
-            }
-        }
+        // Interactive auto-index prompt removed (0096 DoD-5): it named
+        // `index --semantic` but ran incremental without semantic, and
+        // re-prompted forever on repos with nothing to index. Explicit
+        // state-driven warnings replace it.
+        let readiness = semantic_engine.check_readiness()?;
 
         if args.json {
             let record = BridgeRecord {
@@ -121,27 +88,13 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
             };
             println!("{}", serde_json::to_string(&record).unwrap_or_default());
         } else {
-            if !readiness.endpoint_available {
-                println!(
-                    "{} Local embedding endpoint unreachable. Check your model server.",
-                    "WARN".yellow().bold()
-                );
-            }
-            if readiness.vector_count == 0 {
-                println!(
-                    "{} Semantic index is empty. Run {} to populate.",
-                    "WARN".yellow().bold(),
-                    "ledgerful index --semantic".cyan().bold()
-                );
-            }
-            if readiness.dimension_mismatch {
-                println!(
-                    "{} Model/Index dimension mismatch ({} vs {}). Run {} to fix.",
-                    "ERROR".red().bold(),
-                    readiness.model_name,
-                    readiness.dimensions,
-                    "ledgerful update --migrate".cyan().bold()
-                );
+            for msg in crate::semantic::semantic_readiness_messages(&readiness) {
+                let is_error = msg.contains("dimension mismatch") || msg.contains("Dimension");
+                if is_error {
+                    println!("{} {}", "ERROR".red().bold(), msg);
+                } else {
+                    println!("{} {}", "WARN".yellow().bold(), msg);
+                }
             }
         }
 
@@ -149,7 +102,40 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         if !args.json {
             println!("[Search Mode: Semantic]");
         }
-        let results = semantic_engine.query(&args.query, args.limit)?;
+        // On Err: print *failure* message (never Ready "no matches") and fall through.
+        // On Ok([]): print empty-result once in the empty branch below.
+        // Never both (P3 double-emit). JSON Err emits record_kind "semantic_error".
+        let (results, query_succeeded) = match semantic_engine.query(&args.query, args.limit) {
+            Ok(r) => (r, true),
+            Err(e) => {
+                // Unconfigured / unreachable / Ready runtime failure: degrade to BM25
+                // with honesty about whether the search ran or failed.
+                let failure_msg = crate::semantic::semantic_query_failure_message(&readiness, &e);
+                if args.json {
+                    let record = BridgeRecord {
+                        bridge_version: BridgeRecord::VERSION.to_string(),
+                        direction: BridgeDirection::Outbound,
+                        timestamp: chrono::Utc::now(),
+                        parent_hash: None,
+                        project_id: args.project_id.clone(),
+                        session_id: None,
+                        tx_id: None,
+                        record_kind: "semantic_error".to_string(),
+                        payload: BridgePayload::Insight {
+                            memory_id: "semantic_error".to_string(),
+                            relevance: 0.0,
+                            content: failure_msg,
+                        },
+                        privacy: Privacy::ProjectLocal,
+                    };
+                    println!("{}", serde_json::to_string(&record).unwrap_or_default());
+                } else {
+                    println!("{} {}", "WARN".yellow().bold(), failure_msg);
+                }
+                debug!("Semantic query failed: {e}");
+                (Vec::new(), false)
+            }
+        };
 
         if !results.is_empty() {
             if args.json {
@@ -188,18 +174,13 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
             return Ok(());
         }
 
-        if !args.json {
-            if readiness.vector_count == 0 {
-                println!(
-                    "{} ⚠️ Semantic index empty. Showing BM25 results. Run 'ledgerful index --semantic' to populate.",
-                    "WARN".yellow().bold()
-                );
-            } else {
-                println!(
-                    "{} ⚠️ No relevant code snippets found semantically. Showing BM25 results.",
-                    "WARN".yellow().bold()
-                );
-            }
+        // Only after a successful query that returned no hits (true empty / no-matches).
+        if query_succeeded && !args.json {
+            println!(
+                "{} ⚠️ {}",
+                "WARN".yellow().bold(),
+                crate::semantic::semantic_empty_result_message(&readiness)
+            );
         }
     }
 

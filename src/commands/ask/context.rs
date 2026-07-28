@@ -45,58 +45,104 @@ pub fn escape_cozo_string(s: &str) -> String {
     s.replace('\\', "\\\\").replace('\'', "''")
 }
 
+/// Outcome of gathering semantic context for `ask` (DoD-4 / DoD-8 honesty).
+/// Distinguishes successful empty gathers from skipped (not usable) and
+/// runtime failures so callers never treat embed/query Err as "no matches".
+#[derive(Debug)]
+pub(crate) enum SemanticGather {
+    /// Embed+query completed (chunks may be empty — true no-match / filtered).
+    Chunks(Vec<pruner::RankedChunk>),
+    /// Semantic path not usable (no Cozo, backend not configured, etc.).
+    Skipped { reason: String },
+    /// Backend should work but embed/query failed at runtime.
+    Failed { reason: String },
+}
+
 pub(crate) fn gather_semantic_chunks(
     storage: &StorageManager,
     query_string: &str,
     limit: usize,
     config: &LocalModelConfig,
     is_global: bool,
-) -> Vec<pruner::RankedChunk> {
+) -> SemanticGather {
+    let Some(cozo) = &storage.cozo else {
+        return SemanticGather::Skipped {
+            reason: "CozoDB storage not available".to_string(),
+        };
+    };
+
+    if !crate::embed::client::is_embedding_backend_configured(config) {
+        return SemanticGather::Skipped {
+            reason: "embedding backend not configured".to_string(),
+        };
+    }
+
+    let vector_store = match crate::semantic::vector_store::VectorStore::new(
+        cozo,
+        config.dimensions,
+        config.disable_hnsw,
+    ) {
+        Ok(vs) => vs,
+        Err(e) => {
+            return SemanticGather::Failed {
+                reason: format!("vector store open failed: {e}"),
+            };
+        }
+    };
+
+    let query_vector = match crate::semantic::embedder::SemanticEmbedder::new(config.clone())
+        .embed(query_string)
+    {
+        Ok(v) => v,
+        Err(e) => {
+            return SemanticGather::Failed {
+                reason: format!("embedding failed: {e}"),
+            };
+        }
+    };
+
+    let results = match vector_store.query(query_vector, limit) {
+        Ok(r) => r,
+        Err(e) => {
+            return SemanticGather::Failed {
+                reason: format!("semantic query failed: {e}"),
+            };
+        }
+    };
+
     let mut relevant_chunks = Vec::new();
     let mut semantic_symbols = std::collections::HashSet::new();
 
-    if let Some(cozo) = &storage.cozo
-        && let Ok(vector_store) = crate::semantic::vector_store::VectorStore::new(
-            cozo,
-            config.dimensions,
-            config.disable_hnsw,
-        )
-        && let Ok(embedder) =
-            crate::semantic::embedder::SemanticEmbedder::new(config.clone()).embed(query_string)
-        && let Ok(results) = vector_store.query(embedder, limit)
-    {
-        for (file_path, name, _offset, dist) in results {
-            let score = 1.0 - (dist / 2.0);
-            if score >= config.chunk_min_similarity {
-                semantic_symbols.insert(name.clone());
-                if let Ok(content) =
-                    crate::util::fs::read_to_string_with_encoding(std::path::Path::new(&file_path))
-                {
-                    let snippet = content.chars().take(1000).collect::<String>();
-                    relevant_chunks.push(pruner::RankedChunk {
-                        source: format!("{}:: {}", file_path, name),
-                        content: snippet,
-                        score,
-                    });
-                }
+    for (file_path, name, _offset, dist) in results {
+        let score = 1.0 - (dist / 2.0);
+        if score >= config.chunk_min_similarity {
+            semantic_symbols.insert(name.clone());
+            if let Ok(content) =
+                crate::util::fs::read_to_string_with_encoding(std::path::Path::new(&file_path))
+            {
+                let snippet = content.chars().take(1000).collect::<String>();
+                relevant_chunks.push(pruner::RankedChunk {
+                    source: format!("{}:: {}", file_path, name),
+                    content: snippet,
+                    score,
+                });
             }
-        }
-
-        if is_global
-            && !semantic_symbols.is_empty()
-            && let Some(cozo) = &storage.cozo
-            && let Some(kg_ctx) =
-                fetch_kg_neighborhood(cozo, semantic_symbols.iter().map(|s| s.as_str()))
-        {
-            relevant_chunks.push(pruner::RankedChunk {
-                source: "Knowledge Graph".to_string(),
-                content: kg_ctx,
-                score: 1.0,
-            });
         }
     }
 
-    relevant_chunks
+    if is_global
+        && !semantic_symbols.is_empty()
+        && let Some(kg_ctx) =
+            fetch_kg_neighborhood(cozo, semantic_symbols.iter().map(|s| s.as_str()))
+    {
+        relevant_chunks.push(pruner::RankedChunk {
+            source: "Knowledge Graph".to_string(),
+            content: kg_ctx,
+            score: 1.0,
+        });
+    }
+
+    SemanticGather::Chunks(relevant_chunks)
 }
 
 /// CR7: Run the KG neighborhood edge query for a set of symbol names and return a
@@ -181,7 +227,42 @@ pub(crate) fn fetch_kg_bm25(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::model::LocalModelConfig;
     use crate::impact::packet::ImpactPacket;
+    use crate::state::layout::Layout;
+    use crate::state::storage::StorageManager;
+
+    #[test]
+    fn gather_semantic_chunks_unconfigured_is_skipped_not_empty_success() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = camino::Utf8Path::from_path(tmp.path()).expect("utf8 path");
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().expect("state dir");
+        let db_path = layout.state_subdir().join("ledger.db");
+        let storage = StorageManager::init(db_path.as_std_path()).expect("storage init");
+
+        let config = LocalModelConfig::default();
+        assert!(
+            !crate::embed::client::is_embedding_backend_configured(&config),
+            "precondition: default config unconfigured"
+        );
+
+        let outcome = gather_semantic_chunks(&storage, "how does indexing work", 5, &config, true);
+        match outcome {
+            SemanticGather::Skipped { reason } => {
+                assert!(
+                    reason.contains("not configured") || reason.contains("Cozo"),
+                    "skipped reason should name config/backend: {reason}"
+                );
+            }
+            SemanticGather::Chunks(c) => {
+                panic!("unconfigured must not look like successful empty gather: {c:?}")
+            }
+            SemanticGather::Failed { reason } => {
+                panic!("unconfigured should be Skipped, not Failed: {reason}")
+            }
+        }
+    }
 
     #[test]
     fn should_prune_impact_true_for_global_conceptual() {

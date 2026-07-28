@@ -1,3 +1,4 @@
+use crate::commands::ask::context::SemanticGather;
 use crate::commands::ask::{
     Backend, build_ask_user_prompt, degrade_to_context, fetch_kg_bm25, fetch_kg_neighborhood,
     gather_semantic_chunks, resolve_backend, resolve_provider_entries, run_gemini_synthesis,
@@ -330,44 +331,18 @@ pub fn execute_ask(
 
     let semantic = semantic || is_global;
 
+    // 0096 DoD-5: removed interactive `index --semantic` prompt (same defect as
+    // search — named semantic index, ran non-semantic incremental; re-prompted
+    // forever on empty repos). State-driven warnings replace it.
     if semantic
         && !auto_index
         && let Some(ref cozo) = storage.cozo
         && let Ok(semantic_engine) =
             crate::semantic::SemanticDiscovery::new(config.local_model.clone(), cozo)
         && let Ok(readiness) = semantic_engine.check_readiness()
-        && readiness.vector_count == 0
-        && crate::util::term::is_interactive()
     {
-        use inquire::Confirm;
-        if let Ok(true) = Confirm::new(
-            "Semantic index is empty. Would you like to run 'ledgerful index --semantic' now?",
-        )
-        .with_default(true)
-        .prompt()
-        {
-            eprintln!("Running semantic indexing...");
-            crate::commands::index::execute_index(crate::commands::index::IndexArgs {
-                incremental: true,
-                check: false,
-                strict: false,
-                json: false,
-                analyze_graph: false,
-                docs: false,
-                contracts: false,
-                semantic: false,
-                scip: None,
-                auto_scip: false,
-                export_docs: false,
-
-                doc_type: None,
-                concurrency: None,
-                semantic_dry_run: None,
-                fast: false,
-                repair_metadata: false,
-                dry_run: false,
-                yes: false,
-            })?;
+        for msg in crate::semantic::semantic_readiness_messages(&readiness) {
+            eprintln!("{} {}", "WARN".yellow().bold(), msg);
         }
     }
 
@@ -385,13 +360,37 @@ pub fn execute_ask(
         );
     }
 
-    let mut relevant_chunks = gather_semantic_chunks(
+    // DoD-4/8: never treat embed/query Err as "no semantic matches".
+    // Track gather kind (without holding chunks) for honest KG-fallback notes.
+    #[derive(Clone, Copy)]
+    enum SemanticGatherKind {
+        Succeeded,
+        Skipped,
+        Failed,
+    }
+    let (mut relevant_chunks, semantic_gather_kind) = match gather_semantic_chunks(
         &storage,
         &query_string,
         limit,
         &config.local_model,
         is_global,
-    );
+    ) {
+        SemanticGather::Chunks(chunks) => (chunks, SemanticGatherKind::Succeeded),
+        SemanticGather::Skipped { reason } => {
+            tracing::warn!("Semantic context skipped: {reason}");
+            // Readiness messages already cover NotConfigured; keep a debug trail only.
+            (Vec::new(), SemanticGatherKind::Skipped)
+        }
+        SemanticGather::Failed { reason } => {
+            tracing::warn!("Semantic context failed: {reason}");
+            eprintln!(
+                "{} Semantic search failed (continuing with non-semantic context): {}",
+                "WARN".yellow().bold(),
+                reason
+            );
+            (Vec::new(), SemanticGatherKind::Failed)
+        }
+    };
 
     if relevant_chunks.is_empty() {
         relevant_chunks = pruner::query_relevant_chunks(
@@ -407,17 +406,25 @@ pub fn execute_ask(
             Vec::new()
         });
 
-        // KG Fallback logic
+        // KG Fallback logic — wording must not claim "index empty" on failure/skip.
         if is_global
             && relevant_chunks.is_empty()
             && !no_kg_fallback
             && let Some(cozo) = &storage.cozo
             && let Some(kg_bm25_context) = fetch_kg_bm25(cozo, &query_string, limit)
         {
-            eprintln!(
-                "{}",
-                "Note: semantic index empty — using KG text search for context".yellow()
-            );
+            let note = match semantic_gather_kind {
+                SemanticGatherKind::Failed => {
+                    "Note: semantic search failed — using KG text search for context"
+                }
+                SemanticGatherKind::Skipped => {
+                    "Note: semantic search did not run — using KG text search for context"
+                }
+                SemanticGatherKind::Succeeded => {
+                    "Note: semantic index empty — using KG text search for context"
+                }
+            };
+            eprintln!("{}", note.yellow());
             relevant_chunks.push(pruner::RankedChunk {
                 source: "Knowledge Graph (BM25)".to_string(),
                 content: kg_bm25_context,

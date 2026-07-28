@@ -8,6 +8,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Semantic search honesty docs (0096):** `docs/Semantic-Search.md` documents
+  backend/index states, `--semantic-dry-run`, and the ban on conflating
+  “semantic did not run” with “no semantic matches.”
 - **Agent CLI output contract (0093):** `verify --json` emits a versioned
   (`schemaVersion: 1`) machine-readable result with `ok`, `scopeRequested`,
   `scopeExecuted`, `fallbackReason`, and per-step status. Global `--quiet`/`-q`
@@ -18,6 +21,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Semantic readiness wire shape (0096):** `SemanticReadiness` replaces
+  `endpoint_available: bool` with `backend_status` (`not_configured` /
+  `unreachable` / `ready`) plus `zero_vector_count`. JSON consumers of
+  `semantic_readiness` BridgeRecords should update.
 - **Stream discipline for `cli_summary` (0093, user-visible):** product `info!`
   lines route to **stdout**; diagnostic `warn!`/`error!` stay on **stderr**
   (level-split writer). Machine mode (`--json`, `scan --format json`, `mcp`)
@@ -35,6 +42,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Semantic search honesty (0096, user-visible):** with no embedding backend
+  configured, `index --semantic` **refuses** instead of fabricating and storing
+  all-zero vectors. `vector_store.index_chunks` rejects zero-length and
+  all-zero embeddings. `search --semantic` distinguishes not-configured /
+  unreachable / ready+empty (and never recommends `index --semantic` when
+  unconfigured). The broken interactive “run index --semantic?” prompt (which
+  ran non-semantic incremental) is removed in favour of explicit warnings.
+  `doctor` no longer reports a healthy backend for partial config (model name
+  set, URL empty). Pre-existing zero-vector rows are detected and reported,
+  never auto-deleted; query paths exclude zero-magnitude stored vectors.
+  See `docs/Semantic-Search.md`.
 - **Legacy migration completion (0094):** state-dir rename now also ensures
   `.ledgerful/` is gitignored (anchoring-aware equivalence so `/.ledgerful/`
   already counts), emits a one-line migration record, and no longer leaves
