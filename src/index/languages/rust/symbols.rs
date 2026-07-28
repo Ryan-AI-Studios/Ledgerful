@@ -366,6 +366,9 @@ fn node_text_owned(node: Node<'_>, content: &str) -> Option<String> {
 }
 
 /// `TraitName.method` when the signature item sits inside a `trait_item`.
+///
+/// Nested local `fn`s inside a default trait method body are **not**
+/// qualified (stop at an intervening `function_item`).
 fn qualify_trait_method(node: Node<'_>, content: &str, method_name: &str) -> Option<String> {
     let mut current = node.parent();
     while let Some(n) = current {
@@ -375,16 +378,27 @@ fn qualify_trait_method(node: Node<'_>, content: &str, method_name: &str) -> Opt
                 .and_then(|name_node| node_text_owned(name_node, content))?;
             return Some(format!("{trait_name}.{method_name}"));
         }
+        // Nested local function inside a method body — not a trait method.
+        if matches!(n.kind(), "function_item" | "function_signature_item") {
+            return None;
+        }
+        if matches!(n.kind(), "source_file" | "mod_item") {
+            return None;
+        }
         current = n.parent();
     }
     None
 }
 
-/// `TypeName.method` when a `function_item` sits inside an `impl_item`.
+/// `TypeName.method` when a `function_item` is a **direct method** of an
+/// `impl_item` (not a nested local function inside a method body).
 ///
 /// Uses the impl's `type` field (not the first `type_identifier`) so
 /// `impl Display for Foo` qualifies as `Foo.method`, not `Display.method`.
-/// Free functions (no enclosing impl) return `None`.
+/// Free functions and nested locals return `None`.
+///
+/// Codex 0088 P2: walking past an intervening `function_item` mislabeled
+/// `impl Foo { fn bar() { fn helper() {} } }` as `Foo.helper`.
 fn qualify_impl_method(node: Node<'_>, content: &str, method_name: &str) -> Option<String> {
     let mut current = node.parent();
     while let Some(n) = current {
@@ -392,6 +406,12 @@ fn qualify_impl_method(node: Node<'_>, content: &str, method_name: &str) -> Opti
             let type_node = n.child_by_field_name("type")?;
             let type_name = first_type_identifier(type_node, content)?;
             return Some(format!("{type_name}.{method_name}"));
+        }
+        // Nested local `fn` inside a method (or free function) body: stop.
+        // Parent chain for `helper` is block → function_item(method) → … →
+        // impl_item; without this guard we would emit `TypeName.helper`.
+        if matches!(n.kind(), "function_item" | "function_signature_item") {
+            return None;
         }
         // Stop at item containers so we do not climb into an outer impl for a
         // free function nested via macros or other odd structures.
@@ -851,6 +871,38 @@ mod tests {
             .find(|s| s.name == "free_new")
             .expect("free_new");
         assert_eq!(free.qualified_name, None);
+    }
+
+    /// Codex 0088 P2: nested local `fn` inside an impl method must NOT be
+    /// qualified as `TypeName.helper` (only direct impl methods qualify).
+    #[test]
+    fn nested_local_fn_inside_impl_method_is_not_qualified() {
+        let content = r#"
+            struct Foo;
+            impl Foo {
+                fn bar(&self) {
+                    fn helper(x: u32) -> u32 { x }
+                    let _ = helper(1);
+                }
+            }
+        "#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let bar = symbols
+            .iter()
+            .find(|s| s.name == "bar")
+            .expect("impl method bar");
+        assert_eq!(bar.qualified_name.as_deref(), Some("Foo.bar"));
+        let helper = symbols
+            .iter()
+            .find(|s| s.name == "helper")
+            .expect("nested local helper must still be indexed");
+        assert_eq!(
+            helper.qualified_name, None,
+            "nested local fn must not be Foo.helper; got {:?}",
+            helper.qualified_name
+        );
+        // Still gets signature metadata for its own shape.
+        assert!(helper.metadata.contains_key("signatureShape"));
     }
 
     /// Phase 0 P1/P3: confirm field names against the pinned tree-sitter-rust grammar.
