@@ -81,8 +81,42 @@ for name+path heuristics is roughly **1–2% of structural edges**:
   (e.g. `…/my-util` declaring `package util`) are not statically resolvable at
   file level without a directory-level package parse.
 
-Do not claim completeness against stack graphs or compiler-grade SCIP resolution.
-SCIP occurrence ingest into `structural_edges` is a separate deferred track.
+## SCIP augment (0095)
+
+`ledgerful index --auto-scip` (or `--scip <path>`) **augments** the native call graph; it never
+replaces it. Ordering:
+
+1. Native full/incremental index builds `project_symbols` and heuristic `structural_edges`.
+2. SCIP index is generated (or loaded) and **definitions** are mapped to native symbol ids via
+   document path + range containment (0-based SCIP → 1-based native; innermost span wins).
+3. SCIP **reference** occurrences become additional `structural_edges` with `evidence = scip:ref`,
+   `resolution_status = RESOLVED`, high confidence. Unmapped caller or callee → skip (never guess).
+
+**Precedence (deterministic):** when SCIP and native both have an edge for the same
+`(caller_symbol_id, callee_symbol_id)` — **regardless of `call_kind`** — prefer SCIP evidence:
+update the existing row's `evidence` to `scip:ref` rather than inserting a duplicate. Native
+method edges are often `METHOD_CALL` while SCIP emits `DIRECT`; matching only on call_kind would
+duplicate rows and skip the upgrade.
+
+**Call sites (mutually exclusive, §2.2b):** without `--analyze-graph`, SCIP runs once after
+`build_call_graph` in the main index path; with `--analyze-graph`, SCIP runs only inside
+`run_graph_analysis` after `infer_services` (never both — avoids double rust-analyzer runs).
+
+**Output:** `cg_*` fields in `index --json` are **native call-graph only**. SCIP deltas are
+additive under the top-level `scip` object (`edges_added` / `edges_updated` / status).
+
+**What SCIP does not do here:** write `project_symbols` (that path was removed — external symbols,
+off-by-one lines, and last-occurrence ranges are gone with it); flip on by default; cover every
+language in one run (detection still picks one toolchain for generation by Rust → TS → Python
+priority); receiver-type inference for the ambiguous `METHOD_CALL` majority on machines without an
+indexer; claim stack-graph completeness.
+
+**Honesty:** "SCIP did not run" (`scip.status = did_not_run` in `index --json`) is distinct from
+"SCIP ran and added zero edges" (`status = success` with `edges_added = 0`). SCIP only adds edges
+where the native-span resolver hits; stdlib/external symbols must not appear as project
+`scip:ref` callees. Requested augment **always re-applies** edges (idempotent); hash is audit-only.
+
+A prior native index is **no longer required** for `--auto-scip`: native indexing always runs first.
 
 ## What this cannot do
 

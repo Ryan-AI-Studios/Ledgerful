@@ -364,6 +364,8 @@ pub fn clear_project_data(storage: &mut StorageManager) -> Result<()> {
         "file_bindings",
         "project_symbols",
         "project_files",
+        // 0095 DoD-10: scip_indices must not outlive the rows it describes
+        "scip_indices",
     ] {
         conn.execute(&format!("DELETE FROM {}", table), [])
             .into_diagnostic()?;
@@ -494,4 +496,39 @@ fn create_progress_bar(total: usize) -> ProgressBar {
             .unwrap_or_else(|_| ProgressStyle::with_template("{pos}/{len}").unwrap()),
     );
     pb
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::state::migrations::get_migrations;
+    use rusqlite::Connection;
+
+    #[test]
+    fn clear_project_data_clears_scip_indices() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO scip_indices (index_path, blake3_hash, indexed_at) \
+             VALUES ('/tmp/x.scip', 'abc', datetime('now'))",
+            [],
+        )
+        .unwrap();
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM scip_indices", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(before, 1);
+
+        let mut storage = StorageManager::init_from_conn(conn);
+        clear_project_data(&mut storage).unwrap();
+
+        let after: i64 = storage
+            .get_connection()
+            .query_row("SELECT COUNT(*) FROM scip_indices", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(
+            after, 0,
+            "DoD-10: scip_indices must clear with project data"
+        );
+    }
 }

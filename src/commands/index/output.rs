@@ -19,6 +19,8 @@ pub(crate) struct IndexOutputStats {
     pub(crate) cent_stats: crate::index::centrality::CentralityStats,
     pub(crate) contracts_summary: Option<crate::contracts::index::ContractsIndexSummary>,
     pub(crate) analyze_graph: bool,
+    /// SCIP augment result (DoD-14: always present when set — never omit for "found nothing").
+    pub(crate) scip: Option<crate::scip::ScipIndexJson>,
 }
 
 pub(crate) fn print_json_output(output: &IndexOutputStats) -> Result<()> {
@@ -47,6 +49,8 @@ pub(crate) fn print_json_output(output: &IndexOutputStats) -> Result<()> {
             map.insert(format!("service_{}", k), v.clone());
         }
     }
+    // cg_* counters are **native call-graph only** (built before SCIP augment).
+    // SCIP edge deltas live under the top-level `scip` object (additive).
     let cg_obj = serde_json::to_value(&output.cg_stats).into_diagnostic()?;
     if let (Some(map), Some(cg)) = (merged.as_object_mut(), cg_obj.as_object()) {
         for (k, v) in cg {
@@ -104,6 +108,16 @@ pub(crate) fn print_json_output(output: &IndexOutputStats) -> Result<()> {
                 map.insert(format!("contracts_{}", k), v.clone());
             }
         }
+    }
+    // SCIP section: always emit when present, including explicit did_not_run / failed
+    // so agents never confuse "did not run" with "found nothing" (DoD-14).
+    let scip_payload = output
+        .scip
+        .clone()
+        .unwrap_or_else(crate::scip::ScipIndexJson::did_not_run);
+    let scip_obj = serde_json::to_value(&scip_payload).into_diagnostic()?;
+    if let Some(map) = merged.as_object_mut() {
+        map.insert("scip".to_string(), scip_obj);
     }
     println!(
         "{}",
@@ -178,6 +192,40 @@ pub(crate) fn print_human_output(output: &IndexOutputStats) {
     println!("  Unresolved:     {}", output.cg_stats.unresolved_edges);
     println!("  Ambiguous:      {}", output.cg_stats.ambiguous_edges);
     println!("  Files processed: {}", output.cg_stats.files_processed);
+    println!();
+    // SCIP augment status (DoD-14: distinguish did-not-run from found-nothing)
+    let scip = output
+        .scip
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(crate::scip::ScipIndexJson::did_not_run);
+    println!("SCIP augment:");
+    match scip.status {
+        crate::scip::ScipRunStatus::DidNotRun => {
+            println!("  Status:         did not run");
+        }
+        crate::scip::ScipRunStatus::Failed => {
+            println!(
+                "  Status:         failed ({})",
+                scip.message.as_deref().unwrap_or("unknown")
+            );
+        }
+        crate::scip::ScipRunStatus::SkippedStale => {
+            println!("  Status:         skipped (index hash unchanged)");
+        }
+        crate::scip::ScipRunStatus::Success => {
+            println!("  Status:         success");
+            if let Some(n) = scip.edges_added {
+                println!("  Edges added:    {}", n);
+            }
+            if let Some(n) = scip.edges_updated {
+                println!("  Edges updated:  {}", n);
+            }
+            if let Some(n) = scip.definitions_mapped {
+                println!("  Defs mapped:    {}", n);
+            }
+        }
+    }
     println!();
     println!("API Routes:");
     println!("  Total routes:   {}", output.route_stats.total_routes);

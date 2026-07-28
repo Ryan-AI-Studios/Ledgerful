@@ -118,7 +118,17 @@ fn maybe_auto_analyze_graph(
     .join("ledger.db");
     let write_storage = StorageManager::init(db_path.as_std_path())?;
 
-    crate::index::run_graph_analysis(write_storage, project_root, config, false, false).map(|_| ())
+    crate::index::run_graph_analysis(
+        write_storage,
+        project_root,
+        config,
+        false,
+        false,
+        false,
+        None,
+        None,
+    )
+    .map(|_| ())
 }
 
 /// Parse `git diff --name-status` output into `FileChange` values.

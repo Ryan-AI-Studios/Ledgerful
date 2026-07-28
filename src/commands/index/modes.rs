@@ -1,12 +1,12 @@
 use super::graph::{execute_contracts_index, execute_docs_index};
 use super::output::{IndexOutputStats, print_human_output, print_json_output};
 use super::repair::execute_repair_metadata;
-use super::scip::execute_scip_index;
 use super::semantic::{execute_semantic_dry_run, execute_semantic_index};
 use super::{IndexArgs, get_layout};
 use crate::config::load::load_config;
 use crate::index::staleness::{EmptyIndexReason, IndexFreshnessState};
 use crate::index::{ProjectIndexer, ServiceIndexStats};
+use crate::scip::maybe_run_scip_augment;
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use camino::Utf8PathBuf;
@@ -17,17 +17,20 @@ use tracing::{info, warn};
 ///
 /// Precedence (early-return order) is critical and must be preserved:
 /// 1. `--semantic-dry-run`  → preempts everything (returns immediately).
-/// 2. `--auto-scip`         → automatically generate and ingest SCIP.
-/// 3. `--scip <PATH>`       → early-returns next.
-/// 4. `--semantic` (without `--analyze-graph`) → early-returns.
+/// 2. `--semantic` (without `--analyze-graph`) → early-returns.
 ///    `--semantic --analyze-graph` falls through to the main path,
 ///    where semantic enrichment is applied inside graph analysis.
-/// 5. `--docs` (without `--analyze-graph`) → early-returns.
+/// 3. `--docs` (without `--analyze-graph`) → early-returns.
 ///    `--docs --analyze-graph` runs docs indexing then continues into
 ///    the main path so graph analysis also executes.
-/// 6. Main path:
+/// 4. Main path:
 ///    - `--check` → health report then return.
 ///    - `--incremental` / default full → full indexing pipeline.
+///    - SCIP augment (`--auto-scip` / `--scip PATH`) is **mutually exclusive**
+///      per call site (spec §2.2b): without `--analyze-graph`, only after
+///      `build_call_graph()`; with `--analyze-graph`, only inside
+///      `run_graph_analysis` after `infer_services` (never both). SCIP never
+///      replaces the native index.
 ///    - `--analyze-graph` inside main path → centrality + KG build.
 ///    - `--contracts` inside main path → contract indexing.
 ///    - `--export-docs` inside main path → doc export (only when not check).
@@ -44,7 +47,7 @@ pub fn execute_index(args: IndexArgs) -> Result<()> {
     }
 
     let db_path = layout.state_subdir().join("ledger.db");
-    let mut storage = StorageManager::init(db_path.as_std_path())?;
+    let storage = StorageManager::init(db_path.as_std_path())?;
     let repo_path = layout.root.clone();
     // ── Mode: Repair Metadata ──────────────────────────────────────────────
     if args.repair_metadata {
@@ -58,57 +61,11 @@ pub fn execute_index(args: IndexArgs) -> Result<()> {
         );
     }
 
-    // ── Mode 2: Automated SCIP ────────────────────────────────────────────
-    if args.auto_scip {
-        let repo_root = layout.root.as_std_path();
-        match crate::scip::orchestrator::ScipToolchain::detect(repo_root) {
-            Some(toolchain) => {
-                match toolchain.generate(repo_root) {
-                    Ok(scip_path) => {
-                        info!("Automatically generated SCIP index at {:?}", scip_path);
-                        let res = execute_scip_index(&layout, &mut storage, scip_path.clone());
+    // ── SCIP is no longer an early-return mode (0095) ─────────────────────
+    // `--auto-scip` and `--scip PATH` are handled inside execute_main_mode
+    // (no-graph) or exclusively inside run_graph_analysis (--analyze-graph).
 
-                        // Cleanup temporary index file if it's the default one we generated
-                        if scip_path.exists()
-                            && scip_path.file_name().and_then(|n| n.to_str())
-                                == Some("ledgerful.temp.scip")
-                        {
-                            let _ = std::fs::remove_file(&scip_path);
-                        }
-
-                        // S4: If ingestion fails, we might still want to continue to main indexing,
-                        // but the current precedence says SCIP ingestion is an early-return mode.
-                        // Given the spec says "gracefully fall back to native Tree-Sitter parsing",
-                        // if SCIP fails, we should fall through to the main path.
-                        if let Err(e) = res {
-                            warn!(
-                                "SCIP ingestion failed: {}. Falling back to native indexing.",
-                                e
-                            );
-                        } else {
-                            return Ok(());
-                        }
-                    }
-                    Err(e) => {
-                        warn!(
-                            "SCIP generation failed: {}. Falling back to native indexing.",
-                            e
-                        );
-                    }
-                }
-            }
-            None => {
-                warn!("No suitable SCIP indexer found on PATH. Falling back to native indexing.");
-            }
-        }
-    }
-
-    // ── Mode 3: SCIP ingestion ─────────────────────────────────────────────
-    if let Some(scip_path) = args.scip {
-        return execute_scip_index(&layout, &mut storage, scip_path);
-    }
-
-    // ── Mode 3: standalone semantic indexing ─────────────────────────────
+    // ── Mode: standalone semantic indexing ─────────────────────────────
     if args.semantic && !args.analyze_graph {
         return execute_semantic_index(
             &layout,
@@ -119,7 +76,7 @@ pub fn execute_index(args: IndexArgs) -> Result<()> {
         );
     }
 
-    // ── Mode 4: docs (standalone or combined with graph) ───────────────────
+    // ── Mode: docs (standalone or combined with graph) ───────────────────
     if args.docs {
         if !args.analyze_graph {
             return execute_docs_index(&layout, &storage);
@@ -135,7 +92,7 @@ pub fn execute_index(args: IndexArgs) -> Result<()> {
 
     let mut indexer = ProjectIndexer::new(storage, repo_path.clone(), config.clone());
 
-    // ── Mode 5: main indexing pipeline (check / incremental / full / graph / export) ─
+    // ── Main indexing pipeline (check / incremental / full / graph / export) ─
     execute_main_mode(
         &mut indexer,
         &args,
@@ -186,6 +143,27 @@ fn execute_main_mode(
     // Build call graph
     let cg_stats = indexer.build_call_graph()?;
 
+    // ── SCIP augment (0095 §2.2b): mutually exclusive call sites ────────
+    // - without --analyze-graph → only here, after build_call_graph
+    // - with --analyze-graph → only inside run_graph_analysis after
+    //   infer_services (graph rebuild would discard any earlier edges)
+    let scip_json = if args.analyze_graph {
+        let mut deferred = crate::scip::ScipIndexJson::did_not_run();
+        if args.auto_scip || args.scip.is_some() {
+            deferred.message =
+                Some("SCIP deferred to --analyze-graph pass (after infer_services)".to_string());
+        }
+        deferred
+    } else {
+        maybe_run_scip_augment(
+            layout,
+            indexer.storage_mut(),
+            config,
+            args.auto_scip,
+            args.scip.clone(),
+        )
+    };
+
     // Extract API routes
     let route_stats = indexer.extract_routes()?;
 
@@ -218,7 +196,7 @@ fn execute_main_mode(
     };
 
     // Compute centrality if requested
-    let cent_stats = if args.analyze_graph {
+    let (cent_stats, scip_json) = if args.analyze_graph {
         // Move storage out of the indexer for the shared graph-analysis driver,
         // then leave a fresh in-memory handle so the rest of the command can
         // still read/write SQLite metadata (e.g. contracts, Tantivy) if needed.
@@ -228,20 +206,28 @@ fn execute_main_mode(
                 rusqlite::Connection::open_in_memory().into_diagnostic()?,
             ),
         );
-        crate::index::run_graph_analysis(
+        let (cent, scip_from_graph) = crate::index::run_graph_analysis(
             moved_storage,
             repo_path.as_std_path(),
             config,
             args.semantic,
             args.fast,
-        )?
+            args.auto_scip,
+            args.scip.clone(),
+            Some(layout),
+        )?;
+        // Prefer the graph-pass SCIP result when analyze-graph ran (final edges).
+        (cent, scip_from_graph.unwrap_or(scip_json))
     } else {
         info!("Centrality computation skipped (use --analyze-graph to enable).");
-        crate::index::centrality::CentralityStats {
-            entry_points_count: 0,
-            symbols_computed: 0,
-            max_reachable: 0,
-        }
+        (
+            crate::index::centrality::CentralityStats {
+                entry_points_count: 0,
+                symbols_computed: 0,
+                max_reachable: 0,
+            },
+            scip_json,
+        )
     };
 
     let contracts_summary: Option<crate::contracts::index::ContractsIndexSummary> =
@@ -281,6 +267,7 @@ fn execute_main_mode(
         cent_stats,
         contracts_summary,
         analyze_graph: args.analyze_graph,
+        scip: Some(scip_json),
     };
     if args.json {
         print_json_output(&output_stats)?;

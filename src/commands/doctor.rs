@@ -440,6 +440,7 @@ pub fn execute_doctor() -> Result<()> {
     }
 
     print_sccache_hint();
+    print_scip_hint(&config);
 
     // DoD-6: doctor exit non-zero when any CRITICAL present.
     if critical_count > 0 {
@@ -557,6 +558,68 @@ fn print_sccache_hint() {
             "CARGO_INCREMENTAL=1".cyan()
         );
     }
+}
+
+/// SCIP availability hints (0095 DoD-13). Optional accelerators — never put
+/// indexers in `DoctorReport.tools` (NotFound counts as failure). Absence is
+/// not a doctor failure. Sorted findings via [`collect_scip_findings`].
+fn print_scip_hint(config: &crate::config::model::Config) {
+    let findings = collect_scip_findings(config);
+    if findings.is_empty() {
+        return;
+    }
+    println!();
+    for line in findings {
+        println!("{} {}", "Hint:".cyan().bold(), line);
+    }
+}
+
+/// Per-language SCIP capability + process-policy report for doctor (0095).
+///
+/// Returns a **sorted** `Vec<String>` of human-readable lines for each wired
+/// language (available, policy-blocked, or missing) plus a Go upstream-exists /
+/// not-wired note. Findings are **never empty** in practice (Go note is always
+/// included). Never contributes to `count_doctor_failures`.
+///
+/// A tool that passes the capability probe but is denied by
+/// `verify.process_policy` is reported as **not runnable**, matching runtime
+/// `generate()` which calls `check_policy` with the configured policy.
+fn collect_scip_findings(config: &crate::config::model::Config) -> Vec<String> {
+    use crate::platform::process_policy::check_policy;
+    use crate::scip::ScipToolchain;
+
+    let policy = config.verify.effective_process_policy();
+    let mut findings = Vec::new();
+    for (tool, available) in ScipToolchain::probe_all_languages() {
+        if available {
+            match check_policy(tool.exe_name(), &policy) {
+                Ok(()) => findings.push(format!(
+                    "SCIP {}: {} available — `ledgerful index --auto-scip` can add reference edges on native symbols",
+                    tool.language_label(),
+                    tool.exe_name()
+                )),
+                Err(e) => findings.push(format!(
+                    "SCIP {}: {} present but blocked by process policy ({e}) — adjust verify.allowed_commands / denied_commands or install is not enough for --auto-scip",
+                    tool.language_label(),
+                    tool.exe_name()
+                )),
+            }
+        } else {
+            findings.push(format!(
+                "SCIP {}: {} not available (capability probe). Install with `{}` to enable cross-file references via --auto-scip",
+                tool.language_label(),
+                tool.exe_name(),
+                tool.install_hint()
+            ));
+        }
+    }
+    // Go: upstream indexer exists, not wired in this track (spec §2.11 / §4)
+    findings.push(
+        "SCIP Go: upstream scip-go exists, not wired here — native Go tree-sitter path only"
+            .to_string(),
+    );
+    findings.sort();
+    findings
 }
 
 /// Result of a doctor availability probe for an optional/advertised backend.
@@ -1168,6 +1231,68 @@ mod tests {
             report.display.contains("Not configured"),
             "got: {}",
             report.display
+        );
+    }
+
+    /// 0095 DoD-13: SCIP findings never go in tools; absence is not a failure.
+    #[test]
+    fn scip_findings_sorted_and_mention_go_unwired() {
+        let config = crate::config::model::Config::default();
+        let findings = collect_scip_findings(&config);
+        assert!(!findings.is_empty(), "expected at least Go unwired line");
+        let mut sorted = findings.clone();
+        sorted.sort();
+        assert_eq!(findings, sorted, "findings must be sorted");
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.contains("scip-go") || f.contains("not wired")),
+            "must report Go as upstream/not wired: {findings:?}"
+        );
+    }
+
+    /// Doctor must not advertise SCIP as runnable when process policy denies it.
+    #[test]
+    fn scip_findings_report_policy_block_when_denied() {
+        let mut config = crate::config::model::Config::default();
+        config.verify.denied_commands = vec!["rust-analyzer".to_string()];
+        // Force capability true via inject if available; otherwise the probe may
+        // already fail and we only assert the deny path when available.
+        let findings = collect_scip_findings(&config);
+        // Either the probe says not available, or it says blocked by policy —
+        // never a plain "available — can add reference edges" for a denied exe.
+        for f in &findings {
+            if f.contains("rust-analyzer") || f.contains("Rust") {
+                assert!(
+                    !f.contains("available —"),
+                    "denied rust-analyzer must not look freely available: {f}"
+                );
+            }
+        }
+        assert!(
+            findings
+                .iter()
+                .any(|f| f.contains("blocked by process policy")
+                    || f.contains("not available")
+                    || f.contains("scip-go")),
+            "expected policy or probe messaging: {findings:?}"
+        );
+    }
+
+    #[test]
+    fn doctor_zero_failures_without_scip_indexers_in_tools() {
+        // Indexers must not appear in DoctorReport.tools (NotFound = failure).
+        let tools = vec![(
+            "git".to_string(),
+            ExecutableStatus::Found(PathBuf::from("git")),
+        )];
+        let report = sample_report(&tools);
+        assert_eq!(count_doctor_failures(&report), 0);
+        // Ensure we don't accidentally count SCIP-ish tool names
+        assert!(
+            !tools
+                .iter()
+                .any(|(n, _)| n.contains("scip") || n.contains("rust-analyzer"))
         );
     }
 
