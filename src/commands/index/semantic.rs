@@ -585,4 +585,34 @@ mod tests {
                 .collect::<Vec<_>>()
         );
     }
+
+    /// DoD-1: unconfigured backend refuses before any semantic write.
+    #[test]
+    fn execute_semantic_index_refuses_when_unconfigured() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = camino::Utf8Path::from_path(tmp.path()).expect("utf8 path");
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().expect("state dir");
+        let db_path = layout.state_subdir().join("ledger.db");
+        let storage = StorageManager::init(db_path.as_std_path()).expect("storage init");
+
+        // Default Config has empty embedding URL — not configured.
+        let config = Config::default();
+        assert!(
+            !crate::embed::client::is_embedding_backend_configured(&config.local_model),
+            "precondition: default config must be unconfigured"
+        );
+
+        let err = execute_semantic_index(&layout, storage, &config, false, None)
+            .expect_err("must refuse when unconfigured");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("embedding backend") || msg.contains("base_url"),
+            "error must name backend/config requirement: {msg}"
+        );
+        assert!(
+            msg.contains("semantic-dry-run"),
+            "error must point at dry-run inspect: {msg}"
+        );
+    }
 }

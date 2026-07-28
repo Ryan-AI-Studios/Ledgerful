@@ -35,6 +35,7 @@ pub fn execute_doctor() -> Result<()> {
         path_kind: &path_kind_str,
         is_wsl_mounted: false,
         embedding_model_status: "checking...".to_string(),
+        embedding_model_failed: false,
         completion_model_status: "checking...".to_string(),
         native_graph_status: "checking...".to_string(),
         active_ask_backend: "checking...".to_string(),
@@ -56,9 +57,11 @@ pub fn execute_doctor() -> Result<()> {
     // DoD-6 / DoD-11: use shared availability helper so partial config
     // (model name set, base_url empty) is not reported healthy, and so
     // 0095 can extend the same shape for optional toolchains.
+    // Drive failure counting from `is_failure`, not display-string matching alone.
     {
         let avail = format_embedding_backend_availability(&config.local_model, &model_config);
         report.embedding_model_status = avail.display;
+        report.embedding_model_failed = avail.is_failure;
         if let Some(detail) = avail.debug_detail {
             tracing::debug!("Full embedding model error: {}", detail);
         }
@@ -692,7 +695,9 @@ fn format_embedding_backend_availability(
 ///
 /// Heuristic, by design: a check is "failed" if any of these are true:
 /// - a required tool is `ExecutableStatus::NotFound`,
-/// - the embedding model is "Not configured" or "unreachable",
+/// - the embedding model failed (`embedding_model_failed` from
+///   `BackendAvailabilityReport::is_failure`, or legacy display strings
+///   "Not configured" / "unreachable"),
 /// - the completion model is "Not configured" or "unreachable",
 /// - the native graph is "Not initialized" or starts with "Error",
 /// - any `index_health` line contains the markers "Corrupt", "Missing",
@@ -712,7 +717,10 @@ fn count_doctor_failures(report: &crate::output::human::DoctorReport) -> u64 {
     }
 
     let lower = |s: &String| s.to_ascii_lowercase();
-    if report.embedding_model_status.starts_with("Not configured")
+    // Prefer the explicit is_failure flag; keep string fallback for tests
+    // and any path that only sets display without the flag.
+    if report.embedding_model_failed
+        || report.embedding_model_status.starts_with("Not configured")
         || lower(&report.embedding_model_status).contains("unreachable")
     {
         failures += 1;
@@ -1035,6 +1043,7 @@ mod tests {
             path_kind: "test",
             is_wsl_mounted: false,
             embedding_model_status: "OK".to_string(),
+            embedding_model_failed: false,
             completion_model_status: "OK".to_string(),
             native_graph_status: "Ready (CozoDB active)".to_string(),
             active_ask_backend: "Gemini (Cloud)".to_string(),
@@ -1131,6 +1140,18 @@ mod tests {
             ..sample_report(&tools)
         };
         assert_eq!(count_doctor_failures(&doctor), 1);
+
+        // is_failure flag alone (non-matching display) must still count.
+        let doctor_flag = DoctorReport {
+            embedding_model_status: "backend unavailable (custom wording)".to_string(),
+            embedding_model_failed: true,
+            ..sample_report(&tools)
+        };
+        assert_eq!(
+            count_doctor_failures(&doctor_flag),
+            1,
+            "embedding_model_failed must drive failure count even when display lacks legacy prefixes"
+        );
     }
 
     /// DoD-6: fully empty config (default install) is also Not configured.

@@ -102,10 +102,13 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         if !args.json {
             println!("[Search Mode: Semantic]");
         }
-        let results = match semantic_engine.query(&args.query, args.limit) {
-            Ok(r) => r,
+        // On Err: print empty-result once and fall through to BM25.
+        // On Ok([]): print empty-result once in the empty branch below.
+        // Never both (P3 double-emit).
+        let (results, query_succeeded) = match semantic_engine.query(&args.query, args.limit) {
+            Ok(r) => (r, true),
             Err(e) => {
-                // Unconfigured / unreachable backend: degrade to BM25 with clear copy.
+                // Unconfigured / unreachable / other query failure: degrade to BM25.
                 if !args.json {
                     println!(
                         "{} {}",
@@ -114,7 +117,7 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                     );
                     debug!("Semantic query failed: {e}");
                 }
-                Vec::new()
+                (Vec::new(), false)
             }
         };
 
@@ -155,7 +158,8 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
             return Ok(());
         }
 
-        if !args.json {
+        // Only after a successful query that returned no hits.
+        if query_succeeded && !args.json {
             println!(
                 "{} ⚠️ {}",
                 "WARN".yellow().bold(),

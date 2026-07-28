@@ -86,12 +86,36 @@ pub fn semantic_readiness_messages(readiness: &SemanticReadiness) -> Vec<String>
         ));
     }
     if readiness.zero_vector_count > 0 {
-        msgs.push(format!(
-            "{} zero-magnitude embedding row(s) detected in the vector store. \
-             Re-run `ledgerful index --semantic` after configuring a valid backend to replace them \
-             (rows are not auto-deleted).",
-            readiness.zero_vector_count
-        ));
+        // Gate index --semantic remediation on Ready only. Under
+        // NotConfigured / Unreachable, naming index alone reintroduces the
+        // forbidden remedy (backend must be healthy before re-index helps).
+        match readiness.backend_status {
+            BackendStatus::Ready => {
+                msgs.push(format!(
+                    "{} zero-magnitude embedding row(s) detected in the vector store. \
+                     Re-run `ledgerful index --semantic` to replace them \
+                     (rows are not auto-deleted).",
+                    readiness.zero_vector_count
+                ));
+            }
+            BackendStatus::NotConfigured => {
+                msgs.push(format!(
+                    "{} zero-magnitude embedding row(s) detected in the vector store. \
+                     Configure an embedding backend first (inspect with \
+                     `ledgerful index --semantic-dry-run`); re-index only after the \
+                     backend is ready (rows are not auto-deleted).",
+                    readiness.zero_vector_count
+                ));
+            }
+            BackendStatus::Unreachable => {
+                msgs.push(format!(
+                    "{} zero-magnitude embedding row(s) detected in the vector store. \
+                     Restore the embedding endpoint, then re-index once it is reachable \
+                     (rows are not auto-deleted).",
+                    readiness.zero_vector_count
+                ));
+            }
+        }
     }
     msgs
 }
@@ -562,7 +586,9 @@ mod tests {
     /// Mentions of `--semantic-dry-run` alone do not count.
     fn recommends_semantic_index(msg: &str) -> bool {
         // Strip dry-run mentions so substring checks don't false-positive.
-        let scrubbed = msg.replace("semantic-dry-run", "").replace("semantic_dry_run", "");
+        let scrubbed = msg
+            .replace("semantic-dry-run", "")
+            .replace("semantic_dry_run", "");
         scrubbed.contains("index --semantic")
     }
 
@@ -639,6 +665,62 @@ mod tests {
         assert!(
             msgs.iter().any(|m| m.contains("not auto-deleted")),
             "must state non-deletion: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| recommends_semantic_index(m)),
+            "Ready + zeros may recommend index --semantic: {msgs:?}"
+        );
+    }
+
+    /// NotConfigured + zero rows must not recommend bare `index --semantic`.
+    #[test]
+    fn readiness_messages_zero_vector_not_configured_no_index_remedy() {
+        let readiness = SemanticReadiness {
+            backend_status: BackendStatus::NotConfigured,
+            model_name: String::new(),
+            dimensions: 0,
+            vector_count: 5,
+            zero_vector_count: 2,
+            is_stale: false,
+            dimension_mismatch: false,
+        };
+        let msgs = semantic_readiness_messages(&readiness);
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("2") && m.contains("zero-magnitude")),
+            "must report zero-vector count: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().all(|m| !recommends_semantic_index(m)),
+            "NotConfigured + zeros must not recommend index --semantic: {msgs:?}"
+        );
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("semantic-dry-run") || m.contains("base_url")),
+            "must point at config/dry-run first: {msgs:?}"
+        );
+    }
+
+    /// Unreachable + zero rows must not recommend bare `index --semantic`.
+    #[test]
+    fn readiness_messages_zero_vector_unreachable_no_index_remedy() {
+        let readiness = SemanticReadiness {
+            backend_status: BackendStatus::Unreachable,
+            model_name: "nomic".to_string(),
+            dimensions: 768,
+            vector_count: 5,
+            zero_vector_count: 1,
+            is_stale: false,
+            dimension_mismatch: false,
+        };
+        let msgs = semantic_readiness_messages(&readiness);
+        assert!(
+            msgs.iter().any(|m| m.contains("zero-magnitude")),
+            "must report zero-vector count: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().all(|m| !recommends_semantic_index(m)),
+            "Unreachable + zeros must not recommend index --semantic: {msgs:?}"
         );
     }
 }
