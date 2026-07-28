@@ -1539,9 +1539,14 @@ fn dispatch_verify(
     json: bool,
 ) -> Result<()> {
     if signatures || chain || against_export.is_some() {
-        // Signature path has no CLI JSON payload yet; --json still selects
-        // machine mode at the subscriber so cli_summary cannot pollute stdout.
-        let _ = json;
+        // No versioned JSON payload for the signature/chain path — reject the
+        // combo the same way --health / --dry-run do (0093 F3), rather than
+        // silently emitting empty stdout under machine mode.
+        if json {
+            return Err(miette::miette!(
+                "verify --json cannot be combined with --signatures, --chain, or --against-export"
+            ));
+        }
         crate::commands::verify::verify_ledger_signatures_with_options(
             layout,
             signatures,

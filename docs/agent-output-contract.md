@@ -21,6 +21,7 @@ payloads.
 | Diagnostics from `cli_summary` at `warn!` / `error!` | **stderr** |
 | Progress / backend chatter (`ask`, retries) | **stderr** |
 | Hard signature failures (`INVALID`, required `UNSIGNED`) | **stderr** (raw `eprintln!`) |
+| Non-`cli_summary` progress `INFO` under machine mode | **suppressed** (normal_layer max `WARN`) |
 
 A command advertised as JSON must emit **only** JSON on stdout. Warnings must
 not precede or follow that JSON on stdout.
@@ -39,8 +40,30 @@ Machine mode wins over quiet if both are set. **`--json` selects machine mode,
 not quiet** — quiet would still emit aggregate `info!` lines around the JSON
 payload.
 
+**Machine mode also raises the non-`cli_summary` (`normal_layer`) EnvFilter to
+`WARN`**, so progress `INFO` lines (for example `Running verification command
+via Shell: …`) do not appear on stderr during a successful `verify --json`
+run. `WARN` / `ERROR` on `normal_layer` are **not** suppressed (Wave 0 honesty).
+
 `INVALID` and signing-required `UNSIGNED` are raw `eprintln!` outside the
 layer; no filter state suppresses them.
+
+---
+
+## Rejected flag combinations (`verify --json`)
+
+`verify --json` is only defined for the plan-execution payload. Combining it
+with surfaces that have no versioned JSON schema is a hard error:
+
+| Combo | Error |
+|---|---|
+| `verify --json --health` | `verify --json cannot be combined with --health` |
+| `verify --json --dry-run` | `verify --json cannot be combined with --dry-run` |
+| `verify --json --signatures` | `verify --json cannot be combined with --signatures, --chain, or --against-export` |
+| `verify --json --chain` | same as above |
+| `verify --json --against-export …` | same as above |
+
+These reject rather than emit empty stdout under machine mode.
 
 ---
 
@@ -175,9 +198,10 @@ ledgerful verify --json
 ledgerful verify --json --quiet
 ```
 
-Machine mode keeps human product lines off stdout. A successful run under
-`--json` should write nothing material to stderr; a would-block or CRITICAL
-still uses stderr by design.
+Machine mode keeps human product lines off stdout **and** silences normal_layer
+progress `INFO` on stderr. A successful run under `--json` should write
+**empty stderr** (or only true `WARN`/`ERROR` diagnostics). A would-block or
+CRITICAL still uses stderr by design.
 
 ---
 

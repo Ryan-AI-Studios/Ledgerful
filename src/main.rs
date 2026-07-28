@@ -5,14 +5,20 @@ use tracing::Level;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
-/// Build the log filter based on the verbose flag.
+/// Build the log filter based on the verbose flag and machine mode.
 ///
-/// - `verbose = true`: use "debug" level for all crates
-/// - `verbose = false`: respect `RUST_LOG` if set, otherwise apply the quiet
-///   default that silences noisy third-party crates (graph_builder, tantivy,
-///   sqlite) to WARN while keeping everything else at INFO.
-fn build_log_filter(verbose: bool) -> EnvFilter {
-    if verbose {
+/// - `machine = true`: force WARN so normal_layer progress INFO cannot hit
+///   stderr around a machine payload (0093; successful `verify --json` empty
+///   stderr). WARN/ERROR still pass (Wave 0 honesty).
+/// - `verbose = true` (and not machine): use "debug" level for all crates
+/// - otherwise: respect `RUST_LOG` if set, else silence noisy third-party
+///   crates to WARN while keeping everything else at INFO.
+fn build_log_filter(verbose: bool, machine: bool) -> EnvFilter {
+    if machine {
+        // Prefer a fixed WARN floor over RUST_LOG so agents cannot accidentally
+        // re-enable progress INFO via an ambient RUST_LOG=info.
+        EnvFilter::new("warn,graph_builder=warn,tantivy=warn,sqlite=warn")
+    } else if verbose {
         EnvFilter::new("debug")
     } else {
         EnvFilter::try_from_default_env()
@@ -92,17 +98,17 @@ fn run() -> Result<()> {
     // 0093: three-state `cli_summary` filter. Machine mode (`--json` / mcp /
     // scan --format json) filters to WARN so human product lines cannot land
     // on stdout around a machine payload. Quiet hides per-entry DEBUG detail.
-    let summary_max = summary_layer_max_level(
-        cli_args.command.is_machine_output(),
-        resolve_quiet(cli_args.quiet),
-    );
+    // Machine also raises normal_layer to WARN so progress INFO (e.g. engine
+    // "Running verification command…") cannot pollute stderr on success.
+    let machine = cli_args.command.is_machine_output();
+    let summary_max = summary_layer_max_level(machine, resolve_quiet(cli_args.quiet));
 
     let normal_layer = fmt::layer()
         .with_writer(std::io::stderr)
         .with_filter(tracing_subscriber::filter::filter_fn(move |meta| {
             meta.target() != "cli_summary"
         }))
-        .with_filter(build_log_filter(effective_verbose));
+        .with_filter(build_log_filter(effective_verbose, machine));
 
     // Level-split writer (0093 DoD-4): product `info!` → stdout; diagnostic
     // `warn!`/`error!` → stderr. A blanket stdout writer would break
@@ -238,12 +244,31 @@ mod tests {
 
     #[test]
     fn build_log_filter_verbose_does_not_panic() {
-        let _f = build_log_filter(true);
+        let _f = build_log_filter(true, false);
     }
 
     #[test]
     fn build_log_filter_quiet_does_not_panic() {
-        let _f = build_log_filter(false);
+        let _f = build_log_filter(false, false);
+    }
+
+    #[test]
+    fn build_log_filter_machine_forces_warn() {
+        // Machine mode must silence normal_layer INFO regardless of ambient RUST_LOG.
+        let filter = build_log_filter(false, true);
+        // EnvFilter Debug form includes the directive string we set.
+        let rendered = format!("{filter:?}");
+        assert!(
+            rendered.contains("warn") || rendered.to_lowercase().contains("warn"),
+            "machine filter must be WARN-based; got {rendered}"
+        );
+        // Verbose must not override machine.
+        let filter_v = build_log_filter(true, true);
+        let rendered_v = format!("{filter_v:?}");
+        assert!(
+            !rendered_v.contains("debug") || rendered_v.contains("warn"),
+            "machine must win over verbose; got {rendered_v}"
+        );
     }
 
     #[test]
@@ -388,6 +413,83 @@ mod tests {
         assert!(
             stdout.is_empty() || !stdout.contains("injected"),
             "stdout must stay clean for machine payloads; stdout={stdout:?}"
+        );
+    }
+
+    /// DoD-5 / F3: under the machine `cli_summary` filter, VALID-style detail
+    /// (`debug!`) is dropped; INVALID / required-UNSIGNED are raw `eprintln!`
+    /// outside the subscriber and therefore cannot be filtered away.
+    #[test]
+    fn machine_mode_drops_valid_detail_not_raw_invalid() {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        let stdout_buf = BufWriter::default();
+        let stderr_buf = BufWriter::default();
+        let stdout_capture = Arc::clone(&stdout_buf.buf);
+        let stderr_capture = Arc::clone(&stderr_buf.buf);
+
+        let writer = stderr_buf.with_max_level(Level::WARN).or_else(stdout_buf);
+        let summary_max = summary_layer_max_level(true, false); // machine = WARN
+
+        let layer = fmt::layer()
+            .with_writer(writer)
+            .without_time()
+            .with_target(false)
+            .with_level(false)
+            .with_filter(tracing_subscriber::filter::filter_fn(move |meta| {
+                meta.target() == "cli_summary" && *meta.level() <= summary_max
+            }));
+
+        let _guard = tracing_subscriber::registry().with(layer).set_default();
+
+        // VALID detail (production uses debug! on cli_summary).
+        tracing::debug!(target: "cli_summary", "  [VALID] TX abcdef01");
+        // Aggregate summary (production uses info! on cli_summary).
+        tracing::info!(
+            target: "cli_summary",
+            "Signature verification summary: 1 valid, 0 invalid"
+        );
+        // Machine still allows warn! diagnostics on stderr.
+        tracing::warn!(target: "cli_summary", "observe would-block");
+
+        let stdout = String::from_utf8_lossy(&stdout_capture.lock().unwrap()).to_string();
+        let stderr = String::from_utf8_lossy(&stderr_capture.lock().unwrap()).to_string();
+
+        assert!(
+            !stdout.contains("[VALID]") && !stderr.contains("[VALID]"),
+            "VALID detail must not appear under machine filter; stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert!(
+            !stdout.contains("Signature verification summary")
+                && !stderr.contains("Signature verification summary"),
+            "aggregate info! must not appear under machine; stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert!(
+            stderr.contains("observe would-block"),
+            "warn! still reaches stderr under machine; stderr={stderr:?}"
+        );
+
+        // Structural guarantee for INVALID / required UNSIGNED: they use raw
+        // `eprintln!`, which never enters the tracing subscriber. Prove the
+        // emit decision helper marks them filter-immune.
+        use ledgerful::commands::verify::sig_entry_stream;
+        use ledgerful::ledger::crypto::SignatureTrustStatus;
+        assert!(
+            sig_entry_stream(SignatureTrustStatus::Invalid, false).is_raw_stderr(),
+            "INVALID must bypass cli_summary filter"
+        );
+        assert!(
+            sig_entry_stream(SignatureTrustStatus::Unsigned, true).is_raw_stderr(),
+            "required UNSIGNED must bypass cli_summary filter"
+        );
+        assert!(
+            !sig_entry_stream(SignatureTrustStatus::ValidTrusted, false).is_raw_stderr(),
+            "VALID must go through cli_summary (debug) and be filterable"
+        );
+        assert!(
+            !sig_entry_stream(SignatureTrustStatus::Unsigned, false).is_raw_stderr(),
+            "optional UNSIGNED (SKIP) must go through cli_summary (debug)"
         );
     }
 }

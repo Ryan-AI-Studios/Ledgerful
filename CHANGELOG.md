@@ -26,6 +26,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   can hide them while the aggregate stays at `info!`; **default interactive
   verbosity is unchanged** (summary filter remains `DEBUG`). Double-emitted
   observe would-block / CRITICAL messages now emit once via `cli_summary` only.
+- **Machine mode silences normal_layer progress INFO (0093 R1):** under `--json`
+  / machine mode the non-`cli_summary` EnvFilter is raised to `WARN`, so a
+  successful `verify --json` has empty stderr. `WARN`/`ERROR` still pass.
+  `verify --json` rejects combination with `--signatures` / `--chain` /
+  `--against-export` (same pattern as `--health` / `--dry-run`). CI prediction
+  `println!` tables are gated on `suppress_human_output`.
 
 ### Fixed
 

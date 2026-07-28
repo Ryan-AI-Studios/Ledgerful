@@ -126,6 +126,40 @@ impl VerifyCliStepJson {
     }
 }
 
+/// Where a per-entry signature status line is emitted (0093 DoD-5).
+///
+/// `RawStderr` lines use `eprintln!` and are **never** suppressed by the
+/// three-state `cli_summary` filter (default / quiet / machine). Filtered
+/// detail uses `tracing::debug!(target: "cli_summary", …)`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SigEntryStream {
+    /// Hard failures: INVALID crypto, and UNSIGNED when signing is required.
+    RawStderr,
+    /// Per-entry VALID / optional SKIP detail — `debug!` on `cli_summary`.
+    CliSummaryDebug,
+}
+
+impl SigEntryStream {
+    pub fn is_raw_stderr(self) -> bool {
+        matches!(self, Self::RawStderr)
+    }
+}
+
+/// Decide the emission stream for a signature status line (pure; unit-tested).
+pub fn sig_entry_stream(
+    status: crate::ledger::crypto::SignatureTrustStatus,
+    signing_required: bool,
+) -> SigEntryStream {
+    use crate::ledger::crypto::SignatureTrustStatus;
+    match status {
+        SignatureTrustStatus::Invalid => SigEntryStream::RawStderr,
+        SignatureTrustStatus::Unsigned if signing_required => SigEntryStream::RawStderr,
+        SignatureTrustStatus::ValidTrusted
+        | SignatureTrustStatus::ValidUnknownKey
+        | SignatureTrustStatus::Unsigned => SigEntryStream::CliSummaryDebug,
+    }
+}
+
 /// Exit codes for signature / chain verification (0072 frozen table).
 ///
 /// | Condition | Status | Exit |
@@ -277,19 +311,20 @@ pub fn verify_ledger_signatures_with_options(
         } else {
             &entry.tx_id
         };
+        // Stream choice: `sig_entry_stream` (DoD-5). INVALID / required UNSIGNED
+        // use raw eprintln! (filter-immune); VALID / optional SKIP use debug!.
         match status {
             crate::ledger::crypto::SignatureTrustStatus::ValidTrusted
             | crate::ledger::crypto::SignatureTrustStatus::ValidUnknownKey => {
                 if invalid_tx_ids.contains(entry.tx_id.as_str()) {
-                    // INVALID is raw eprintln! — outside the cli_summary layer so
-                    // no verbosity filter (including machine mode) can suppress it.
+                    // Chain/policy INVALID: raw eprintln! (filter-immune).
                     eprintln!(
                         "  [{}] TX {} signature verification FAILED!",
                         "INVALID".red(),
                         short
                     );
                 } else {
-                    // Per-entry detail at debug! so --quiet (INFO filter) hides it
+                    // Per-entry detail at debug! so --quiet / machine hide it
                     // while default (DEBUG) keeps today's behaviour (0093 DoD-5).
                     tracing::debug!(
                         target: "cli_summary",
@@ -1587,6 +1622,44 @@ pub fn explain_test_mappings(
         TestMappingState::NoMappingsForEntity
     } else {
         TestMappingState::Mapped(mapped)
+    }
+}
+
+#[cfg(test)]
+mod sig_entry_stream_tests {
+    use super::{SigEntryStream, sig_entry_stream};
+    use crate::ledger::crypto::SignatureTrustStatus;
+
+    #[test]
+    fn invalid_and_required_unsigned_are_raw_stderr() {
+        assert_eq!(
+            sig_entry_stream(SignatureTrustStatus::Invalid, false),
+            SigEntryStream::RawStderr
+        );
+        assert_eq!(
+            sig_entry_stream(SignatureTrustStatus::Invalid, true),
+            SigEntryStream::RawStderr
+        );
+        assert_eq!(
+            sig_entry_stream(SignatureTrustStatus::Unsigned, true),
+            SigEntryStream::RawStderr
+        );
+    }
+
+    #[test]
+    fn valid_and_optional_unsigned_are_filterable_debug() {
+        assert_eq!(
+            sig_entry_stream(SignatureTrustStatus::ValidTrusted, false),
+            SigEntryStream::CliSummaryDebug
+        );
+        assert_eq!(
+            sig_entry_stream(SignatureTrustStatus::ValidUnknownKey, true),
+            SigEntryStream::CliSummaryDebug
+        );
+        assert_eq!(
+            sig_entry_stream(SignatureTrustStatus::Unsigned, false),
+            SigEntryStream::CliSummaryDebug
+        );
     }
 }
 

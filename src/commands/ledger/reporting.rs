@@ -23,6 +23,48 @@ pub struct LifecycleSignals {
     pub promote_error: Option<String>,
 }
 
+/// Stable schema version for `ledger status --json` (track 0093).
+const STATUS_JSON_SCHEMA_VERSION: u32 = 1;
+
+/// Wire payload for `ledger status --json` (v1).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusJson {
+    pub schema_version: u32,
+    pub pending_count: usize,
+    pub unaudited_count: usize,
+    pub pending_tx_ids: Vec<String>,
+    pub unaudited_file_count: usize,
+    pub promote_orphan: bool,
+    pub head_uncovered: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub promote_orphan_tx_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub promote_error: Option<String>,
+}
+
+/// Build the status JSON payload with lexicographically sorted `pendingTxIds`
+/// (determinism; 0093 DoD-8). Shared by the live path and unit tests.
+pub fn build_status_json(
+    mut pending_tx_ids: Vec<String>,
+    unaudited_count: usize,
+    unaudited_file_count: usize,
+    signals: &LifecycleSignals,
+) -> StatusJson {
+    pending_tx_ids.sort();
+    StatusJson {
+        schema_version: STATUS_JSON_SCHEMA_VERSION,
+        pending_count: pending_tx_ids.len(),
+        unaudited_count,
+        pending_tx_ids,
+        unaudited_file_count,
+        promote_orphan: signals.promote_orphan,
+        head_uncovered: signals.head_uncovered,
+        promote_orphan_tx_id: signals.promote_orphan_tx_id.clone(),
+        promote_error: signals.promote_error.clone(),
+    }
+}
+
 /// Inspect the pending_hook_tx sidecar for promote-fail / HEAD-match coverage gaps.
 ///
 /// **Honest minimum:** `head_uncovered` is co-set with orphan/sidecar detection
@@ -150,40 +192,14 @@ pub fn execute_ledger_status(
         let unaudited = tx_mgr
             .get_all_unaudited()
             .map_err(|e| miette::miette!("{}", e))?;
-        let mut pending_tx_ids: Vec<String> = pending.iter().map(|t| t.tx_id.clone()).collect();
-        // determinism{}: sort emitted collections (0093 DoD-8).
-        pending_tx_ids.sort();
-
-        /// Stable schema version for `ledger status --json` (track 0093).
-        const STATUS_JSON_SCHEMA_VERSION: u32 = 1;
-
-        #[derive(Serialize)]
-        #[serde(rename_all = "camelCase")]
-        struct StatusJson {
-            schema_version: u32,
-            pending_count: usize,
-            unaudited_count: usize,
-            pending_tx_ids: Vec<String>,
-            unaudited_file_count: usize,
-            promote_orphan: bool,
-            head_uncovered: bool,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            promote_orphan_tx_id: Option<String>,
-            #[serde(skip_serializing_if = "Option::is_none")]
-            promote_error: Option<String>,
-        }
-
-        let status = StatusJson {
-            schema_version: STATUS_JSON_SCHEMA_VERSION,
-            pending_count: pending.len(),
-            unaudited_count: unaudited.len(),
+        let pending_tx_ids: Vec<String> = pending.iter().map(|t| t.tx_id.clone()).collect();
+        let unaudited_file_count = unaudited.iter().map(|u| u.drift_count as usize).sum();
+        let status = build_status_json(
             pending_tx_ids,
-            unaudited_file_count: unaudited.iter().map(|u| u.drift_count as usize).sum(),
-            promote_orphan: signals.promote_orphan,
-            head_uncovered: signals.head_uncovered,
-            promote_orphan_tx_id: signals.promote_orphan_tx_id.clone(),
-            promote_error: signals.promote_error.clone(),
-        };
+            unaudited.len(),
+            unaudited_file_count,
+            &signals,
+        );
 
         println!(
             "{}",
@@ -580,38 +596,58 @@ pub fn execute_ledger_export_public(options: crate::ledger::ExportOptions<'_>) -
 mod status_json_tests {
     use super::*;
 
-    /// Mirrors the StatusJson shape used by `execute_ledger_status` so tests can
-    /// assert schemaVersion + sorted pendingTxIds without opening a live DB.
-    #[derive(Serialize, serde::Deserialize, PartialEq, Eq, Debug)]
-    #[serde(rename_all = "camelCase")]
-    struct StatusJsonFixture {
-        schema_version: u32,
-        pending_count: usize,
-        pending_tx_ids: Vec<String>,
-    }
-
-    fn build_status_json(mut pending_tx_ids: Vec<String>) -> StatusJsonFixture {
-        pending_tx_ids.sort();
-        StatusJsonFixture {
-            schema_version: 1,
-            pending_count: pending_tx_ids.len(),
-            pending_tx_ids,
-        }
-    }
-
     #[test]
-    fn pending_tx_ids_sorted_and_stable() {
-        let a = build_status_json(vec!["z-tx".into(), "a-tx".into(), "m-tx".into()]);
-        let b = build_status_json(vec!["m-tx".into(), "z-tx".into(), "a-tx".into()]);
+    fn pending_tx_ids_sorted_and_stable_via_real_builder() {
+        // Exercises the production `build_status_json` / `StatusJson` path
+        // (not a reimplemented fixture).
+        let signals = LifecycleSignals::default();
+        let a = build_status_json(
+            vec!["z-tx".into(), "a-tx".into(), "m-tx".into()],
+            0,
+            0,
+            &signals,
+        );
+        let b = build_status_json(
+            vec!["m-tx".into(), "z-tx".into(), "a-tx".into()],
+            0,
+            0,
+            &signals,
+        );
         assert_eq!(a.pending_tx_ids, vec!["a-tx", "m-tx", "z-tx"]);
+        assert_eq!(a.pending_count, 3);
+        assert_eq!(a.schema_version, STATUS_JSON_SCHEMA_VERSION);
         assert_eq!(a, b);
         let ja = serde_json::to_string(&a).unwrap();
         let jb = serde_json::to_string(&b).unwrap();
         assert_eq!(ja, jb);
-        assert!(ja.contains("\"schemaVersion\":1") || ja.contains("\"schema_version\""));
-        // camelCase rename
         let pretty = serde_json::to_string_pretty(&a).unwrap();
         assert!(pretty.contains("schemaVersion"));
         assert!(pretty.contains("pendingTxIds"));
+    }
+
+    #[test]
+    fn would_block_stream_stays_on_warn_cli_summary() {
+        // Observe would-block is a single warn!(cli_summary) — level-split
+        // writer routes WARN → stderr so stdout JSON stays pure (DoD-3/F4).
+        // Structural: apply_exit_code only emits via cli_summary warn, not println.
+        let src = include_str!("reporting.rs");
+        assert!(
+            src.contains("target: \"cli_summary\""),
+            "would-block must emit via cli_summary"
+        );
+        // Ensure the de-duped path no longer double-emits eprintln for would-block.
+        let apply_fn = src.split("fn apply_exit_code").nth(1).unwrap_or("");
+        let apply_body = apply_fn
+            .split("pub fn execute_ledger_status")
+            .next()
+            .unwrap_or("");
+        assert!(
+            !apply_body.contains("eprintln!"),
+            "apply_exit_code must not eprintln (DoD-9 de-dup); body={apply_body}"
+        );
+        assert!(
+            apply_body.contains("tracing::warn!"),
+            "apply_exit_code must warn! on cli_summary"
+        );
     }
 }

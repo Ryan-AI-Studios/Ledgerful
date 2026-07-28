@@ -103,10 +103,21 @@ impl VerifyEngine {
             } else {
                 prepare_rule_step(step, ctx.config.verify.allow_shell_steps, &policy)?
             };
-            info!(
-                "Running verification command via {:?}: {}",
-                prepared.execution_mode, prepared.display_command
-            );
+            // Progress INFO must not hit stderr under machine mode (`verify --json`).
+            // Structural subscriber filter also raises normal_layer to WARN; demote
+            // here so even a misconfigured RUST_LOG cannot reintroduce the line.
+            if ctx.suppress_human_output {
+                tracing::debug!(
+                    "Running verification command via {:?}: {}",
+                    prepared.execution_mode,
+                    prepared.display_command
+                );
+            } else {
+                info!(
+                    "Running verification command via {:?}: {}",
+                    prepared.execution_mode, prepared.display_command
+                );
+            }
 
             // Local fast-path speed lever: enable incremental compilation for
             // warm rebuilds. Only on the fast convenience scope; never in CI or
