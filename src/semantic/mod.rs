@@ -5,6 +5,7 @@ pub mod hotspots;
 pub mod vector_store;
 
 use crate::config::model::{LocalModelConfig, SemanticConfig};
+use crate::embed::client::is_embedding_backend_configured;
 use crate::semantic::chunker::AstChunker;
 use crate::semantic::embedder::SemanticEmbedder;
 use crate::semantic::vector_store::VectorStore;
@@ -14,14 +15,111 @@ use std::path::Path;
 
 use serde::Serialize;
 
+/// Orthogonal backend axis for semantic readiness (DoD-3).
+/// Kept separate from `vector_count` so Ready+empty is expressible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BackendStatus {
+    NotConfigured,
+    Unreachable,
+    Ready,
+}
+
 #[derive(Debug, Serialize)]
 pub struct SemanticReadiness {
-    pub endpoint_available: bool,
+    /// Backend health axis (replaces collapsed `endpoint_available: bool`).
+    pub backend_status: BackendStatus,
     pub model_name: String,
     pub dimensions: usize,
     pub vector_count: usize,
+    /// Pre-existing all-zero / zero-length embedding rows (detect, never delete).
+    pub zero_vector_count: usize,
     pub is_stale: bool,
     pub dimension_mismatch: bool,
+}
+
+/// Map a probe result + config into the backend status axis.
+/// Shared so search and doctor cannot re-derive a third gate (spec §2.3).
+pub fn backend_status_from_probe(
+    config: &LocalModelConfig,
+    probe: &std::result::Result<crate::embed::client::Dimensions, String>,
+) -> BackendStatus {
+    if !is_embedding_backend_configured(config) {
+        return BackendStatus::NotConfigured;
+    }
+    match probe {
+        Ok(dims) if dims.active => BackendStatus::Ready,
+        Ok(_) => BackendStatus::NotConfigured,
+        Err(_) => BackendStatus::Unreachable,
+    }
+}
+
+/// User-facing readiness messages for `search --semantic` (DoD-4).
+/// Distinct wording per state; never recommends `index --semantic` when
+/// the backend is not configured.
+pub fn semantic_readiness_messages(readiness: &SemanticReadiness) -> Vec<String> {
+    let mut msgs = Vec::new();
+    match readiness.backend_status {
+        BackendStatus::NotConfigured => {
+            msgs.push(
+                "Embedding backend not configured. Set `local_model.base_url` (or \
+                 `local_model.embedding_url`) to enable semantic search. Inspect with \
+                 `ledgerful index --semantic-dry-run`."
+                    .to_string(),
+            );
+        }
+        BackendStatus::Unreachable => {
+            msgs.push("Local embedding endpoint unreachable. Check your model server.".to_string());
+        }
+        BackendStatus::Ready if readiness.vector_count == 0 => {
+            msgs.push(
+                "Semantic index is empty. Run `ledgerful index --semantic` to populate."
+                    .to_string(),
+            );
+        }
+        BackendStatus::Ready => {}
+    }
+    if readiness.dimension_mismatch {
+        msgs.push(format!(
+            "Model/Index dimension mismatch ({} vs {}). Run `ledgerful update --migrate` to fix.",
+            readiness.model_name, readiness.dimensions
+        ));
+    }
+    if readiness.zero_vector_count > 0 {
+        msgs.push(format!(
+            "{} zero-magnitude embedding row(s) detected in the vector store. \
+             Re-run `ledgerful index --semantic` after configuring a valid backend to replace them \
+             (rows are not auto-deleted).",
+            readiness.zero_vector_count
+        ));
+    }
+    msgs
+}
+
+/// Fallback copy when semantic query returned no hits (DoD-4 / DoD-8).
+/// Distinguishes "did not run usefully" from "ran, no matches".
+pub fn semantic_empty_result_message(readiness: &SemanticReadiness) -> String {
+    match readiness.backend_status {
+        BackendStatus::NotConfigured => {
+            "Semantic search did not run: embedding backend not configured. \
+             Set `local_model.base_url` (or `local_model.embedding_url`). \
+             Showing BM25 results."
+                .to_string()
+        }
+        BackendStatus::Unreachable => {
+            "Semantic search did not run: embedding endpoint unreachable. \
+             Check your model server. Showing BM25 results."
+                .to_string()
+        }
+        BackendStatus::Ready if readiness.vector_count == 0 => {
+            "Semantic index empty. Showing BM25 results. \
+             Run `ledgerful index --semantic` to populate."
+                .to_string()
+        }
+        BackendStatus::Ready => {
+            "No relevant code snippets found semantically. Showing BM25 results.".to_string()
+        }
+    }
 }
 
 pub struct SemanticDiscovery<'a> {
@@ -86,14 +184,21 @@ impl<'a> SemanticDiscovery<'a> {
 
     pub fn check_readiness(&self) -> Result<SemanticReadiness> {
         let probe = crate::embed::client::check_local_model(&self.config);
-        let endpoint_available = probe.is_ok();
+        let backend_status = backend_status_from_probe(&self.config, &probe);
         let model_name = probe
             .as_ref()
-            .map(|d| d.model_name.clone())
+            .map(|d| {
+                if d.model_name.is_empty() {
+                    self.config.embedding_model.clone()
+                } else {
+                    d.model_name.clone()
+                }
+            })
             .unwrap_or_else(|_| self.config.embedding_model.clone());
         let model_dims = probe.as_ref().map(|d| d.dimensions).unwrap_or(0);
 
         let vector_count = self.vector_store.get_vector_count().unwrap_or(0);
+        let zero_vector_count = self.vector_store.count_zero_vectors().unwrap_or(0);
 
         // Check for dimension mismatch between model and store
         let dimension_mismatch = if model_dims > 0 && self.config.dimensions > 0 {
@@ -103,10 +208,11 @@ impl<'a> SemanticDiscovery<'a> {
         };
 
         Ok(SemanticReadiness {
-            endpoint_available,
+            backend_status,
             model_name,
             dimensions: self.config.dimensions,
             vector_count,
+            zero_vector_count,
             is_stale: false, // Stale check handled at command level
             dimension_mismatch,
         })
@@ -302,5 +408,237 @@ impl<'a> SemanticDiscovery<'a> {
         );
         self.vector_store.storage_ref().run_script(&script)?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::model::LocalModelConfig;
+
+    #[test]
+    fn backend_status_not_configured_when_url_empty() {
+        let config = LocalModelConfig::default();
+        let probe = Ok(crate::embed::client::Dimensions {
+            dimensions: 0,
+            model_name: String::new(),
+            active: false,
+        });
+        assert_eq!(
+            backend_status_from_probe(&config, &probe),
+            BackendStatus::NotConfigured
+        );
+    }
+
+    #[test]
+    fn backend_status_unreachable_on_probe_err() {
+        let config = LocalModelConfig {
+            base_url: "http://127.0.0.1:9".to_string(),
+            embedding_model: "test".to_string(),
+            ..Default::default()
+        };
+        let probe = Err("unreachable".to_string());
+        assert_eq!(
+            backend_status_from_probe(&config, &probe),
+            BackendStatus::Unreachable
+        );
+    }
+
+    #[test]
+    fn backend_status_ready_when_active() {
+        let config = LocalModelConfig {
+            base_url: "http://127.0.0.1:8083".to_string(),
+            embedding_model: "nomic".to_string(),
+            dimensions: 768,
+            ..Default::default()
+        };
+        let probe = Ok(crate::embed::client::Dimensions {
+            dimensions: 768,
+            model_name: "nomic".to_string(),
+            active: true,
+        });
+        assert_eq!(
+            backend_status_from_probe(&config, &probe),
+            BackendStatus::Ready
+        );
+    }
+
+    /// DoD-3: Ready + empty index is expressible (orthogonal axes).
+    #[test]
+    fn readiness_ready_and_empty_is_expressible() {
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let config = LocalModelConfig {
+            // No URL → NotConfigured for real probe; we assert the struct shape
+            // by constructing SemanticReadiness directly for the Ready+empty case.
+            dimensions: 3,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let semantic = SemanticDiscovery::new(config, &storage).expect("semantic");
+        let readiness = semantic.check_readiness().expect("readiness");
+        // Default install: NotConfigured + vector_count == 0
+        assert_eq!(readiness.backend_status, BackendStatus::NotConfigured);
+        assert_eq!(readiness.vector_count, 0);
+
+        // The combination the flat enum could not express:
+        let ready_empty = SemanticReadiness {
+            backend_status: BackendStatus::Ready,
+            model_name: "nomic".to_string(),
+            dimensions: 768,
+            vector_count: 0,
+            zero_vector_count: 0,
+            is_stale: false,
+            dimension_mismatch: false,
+        };
+        assert_eq!(ready_empty.backend_status, BackendStatus::Ready);
+        assert_eq!(ready_empty.vector_count, 0);
+        let msgs = semantic_readiness_messages(&ready_empty);
+        assert!(
+            msgs.iter().any(|m| m.contains("index --semantic")),
+            "Ready+empty must recommend index --semantic: {msgs:?}"
+        );
+    }
+
+    /// DoD-4: NotConfigured message never suggests index --semantic.
+    #[test]
+    fn readiness_messages_not_configured_never_suggests_index_semantic() {
+        let readiness = SemanticReadiness {
+            backend_status: BackendStatus::NotConfigured,
+            model_name: String::new(),
+            dimensions: 0,
+            vector_count: 0,
+            zero_vector_count: 0,
+            is_stale: false,
+            dimension_mismatch: false,
+        };
+        let msgs = semantic_readiness_messages(&readiness);
+        assert!(!msgs.is_empty(), "NotConfigured must emit a message");
+        for msg in &msgs {
+            assert!(
+                !recommends_semantic_index(msg),
+                "must never recommend index --semantic when unconfigured: {msg}"
+            );
+            assert!(
+                msg.contains("semantic-dry-run") || msg.contains("base_url"),
+                "must name config key or dry-run: {msg}"
+            );
+        }
+        let empty = semantic_empty_result_message(&readiness);
+        assert!(
+            !recommends_semantic_index(&empty),
+            "empty-result path must not recommend index --semantic: {empty}"
+        );
+        assert!(
+            empty.contains("did not run"),
+            "must distinguish absence of run: {empty}"
+        );
+    }
+
+    /// DoD-4: Unreachable message.
+    #[test]
+    fn readiness_messages_unreachable() {
+        let readiness = SemanticReadiness {
+            backend_status: BackendStatus::Unreachable,
+            model_name: "nomic".to_string(),
+            dimensions: 768,
+            vector_count: 0,
+            zero_vector_count: 0,
+            is_stale: false,
+            dimension_mismatch: false,
+        };
+        let msgs = semantic_readiness_messages(&readiness);
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("unreachable") || m.contains("model server")),
+            "Unreachable must mention server: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().all(|m| !recommends_semantic_index(m)),
+            "Unreachable must not recommend index when endpoint is down: {msgs:?}"
+        );
+    }
+
+    /// True if message recommends *populating* via `index --semantic`.
+    /// Mentions of `--semantic-dry-run` alone do not count.
+    fn recommends_semantic_index(msg: &str) -> bool {
+        // Strip dry-run mentions so substring checks don't false-positive.
+        let scrubbed = msg.replace("semantic-dry-run", "").replace("semantic_dry_run", "");
+        scrubbed.contains("index --semantic")
+    }
+
+    /// DoD-4: dimension_mismatch message.
+    #[test]
+    fn readiness_messages_dimension_mismatch() {
+        let readiness = SemanticReadiness {
+            backend_status: BackendStatus::Ready,
+            model_name: "nomic".to_string(),
+            dimensions: 384,
+            vector_count: 10,
+            zero_vector_count: 0,
+            is_stale: false,
+            dimension_mismatch: true,
+        };
+        let msgs = semantic_readiness_messages(&readiness);
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("dimension mismatch") || m.contains("Dimension")),
+            "must report dimension mismatch: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("update --migrate")),
+            "must name migrate remediation: {msgs:?}"
+        );
+    }
+
+    /// DoD-4: Ready + non-empty has no "empty index" warning.
+    #[test]
+    fn readiness_messages_ready_populated_is_quiet() {
+        let readiness = SemanticReadiness {
+            backend_status: BackendStatus::Ready,
+            model_name: "nomic".to_string(),
+            dimensions: 768,
+            vector_count: 42,
+            zero_vector_count: 0,
+            is_stale: false,
+            dimension_mismatch: false,
+        };
+        let msgs = semantic_readiness_messages(&readiness);
+        assert!(
+            msgs.is_empty(),
+            "healthy ready+populated must be silent: {msgs:?}"
+        );
+        let empty = semantic_empty_result_message(&readiness);
+        assert!(
+            empty.contains("No relevant") || empty.contains("no relevant"),
+            "must distinguish ran-but-no-matches: {empty}"
+        );
+        assert!(
+            !empty.contains("did not run"),
+            "populated ready must not claim did-not-run: {empty}"
+        );
+    }
+
+    /// DoD-7: zero_vector_count surfaces a named remediation without auto-delete.
+    #[test]
+    fn readiness_messages_zero_vector_report() {
+        let readiness = SemanticReadiness {
+            backend_status: BackendStatus::Ready,
+            model_name: "nomic".to_string(),
+            dimensions: 768,
+            vector_count: 10,
+            zero_vector_count: 3,
+            is_stale: false,
+            dimension_mismatch: false,
+        };
+        let msgs = semantic_readiness_messages(&readiness);
+        assert!(
+            msgs.iter()
+                .any(|m| m.contains("3") && m.contains("zero-magnitude")),
+            "must report zero-vector count: {msgs:?}"
+        );
+        assert!(
+            msgs.iter().any(|m| m.contains("not auto-deleted")),
+            "must state non-deletion: {msgs:?}"
+        );
     }
 }

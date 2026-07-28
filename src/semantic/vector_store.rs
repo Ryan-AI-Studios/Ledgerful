@@ -159,6 +159,30 @@ impl<'a> VectorStore<'a> {
         Ok(0)
     }
 
+    /// Count stored embeddings that are zero-length or all-zero (legacy junk).
+    /// Read-only — never deletes (DoD-7).
+    pub fn count_zero_vectors(&self) -> Result<usize> {
+        let relations = self.storage.get_relations()?;
+        if !relations.contains(&"snippet_embedding".to_string()) {
+            return Ok(0);
+        }
+        let script = "?[file_path, name, line_offset, embedding] := *snippet_embedding{file_path, name, line_offset, embedding}";
+        let res = self.storage.run_script(script)?;
+        let mut count = 0usize;
+        for row in res.rows {
+            if let Some(DataValue::Vec(v)) = row.get(3) {
+                let candidate: Vec<f32> = match &**v {
+                    cozo::Vector::F32(vec) => vec.to_vec(),
+                    cozo::Vector::F64(vec) => vec.iter().map(|&x| x as f32).collect(),
+                };
+                if candidate.is_empty() || is_all_zero(&candidate) {
+                    count += 1;
+                }
+            }
+        }
+        Ok(count)
+    }
+
     /// Expose the underlying storage reference for HP3 hash-tracking helpers.
     pub fn storage_ref(&self) -> &CozoStorage {
         self.storage
@@ -182,6 +206,29 @@ impl<'a> VectorStore<'a> {
     pub fn index_chunks(&self, chunks: Vec<AstChunk>, embeddings: Vec<Vec<f32>>) -> Result<()> {
         if chunks.len() != embeddings.len() {
             return Err(miette!("Mismatch between chunks and embeddings length"));
+        }
+
+        // DoD-2: belt-and-braces — reject zero-length and all-zero embeddings
+        // (never silently skip). Match only all-zero / empty, never a norm threshold.
+        for (i, embedding) in embeddings.iter().enumerate() {
+            if embedding.is_empty() {
+                return Err(miette!(
+                    "Refusing to store zero-length embedding at index {i} (snippet '{}')",
+                    chunks
+                        .get(i)
+                        .map(|c| c.name.as_str())
+                        .unwrap_or("<unknown>")
+                ));
+            }
+            if is_all_zero(embedding) {
+                return Err(miette!(
+                    "Refusing to store all-zero embedding at index {i} (snippet '{}')",
+                    chunks
+                        .get(i)
+                        .map(|c| c.name.as_str())
+                        .unwrap_or("<unknown>")
+                ));
+            }
         }
 
         use cozo::ScriptMutability;
@@ -212,21 +259,22 @@ impl<'a> VectorStore<'a> {
                     embedding.len()
                 ));
             }
-            if let Some(normalized_embedding) = normalize_vector(embedding) {
-                let row = vec![
-                    DataValue::from(chunk.file_path.replace('\\', "/")),
-                    DataValue::from(chunk.name),
-                    DataValue::from(chunk.offset as i64),
-                    DataValue::Vec(Box::new(cozo::Vector::F32(normalized_embedding.into()))),
-                ];
-                data_rows.push(DataValue::List(Box::new(row)));
-            } else {
-                tracing::warn!(
-                    "Skipping snippet '{}' in '{}' due to invalid embedding (zero magnitude).",
+            // After DoD-2 rejection above, normalize is expected to succeed for
+            // finite non-zero vectors; NaN/Inf-only vectors still fail loudly.
+            let normalized_embedding = normalize_vector(embedding).ok_or_else(|| {
+                miette!(
+                    "Refusing to store invalid embedding for snippet '{}' in '{}' (zero magnitude after sanitization)",
                     chunk.name,
                     chunk.file_path
-                );
-            }
+                )
+            })?;
+            let row = vec![
+                DataValue::from(chunk.file_path.replace('\\', "/")),
+                DataValue::from(chunk.name),
+                DataValue::from(chunk.offset as i64),
+                DataValue::Vec(Box::new(cozo::Vector::F32(normalized_embedding.into()))),
+            ];
+            data_rows.push(DataValue::List(Box::new(row)));
         }
 
         if data_rows.is_empty() {
@@ -343,9 +391,11 @@ impl<'a> VectorStore<'a> {
         );
 
         // Tier 1: HNSW candidate generation with exact Cozo-side cosine reranking.
+        // Over-fetch candidates so zero-magnitude legacy rows excluded at parse
+        // time (DoD-7b) do not starve the top-k.
         let candidate_k = k.saturating_mul(10).max(50);
         let hnsw_script = format!(
-            "?[file_path, name, line_offset, dist] := ~snippet_embedding:snippet_idx{{file_path, name, line_offset | query: $query_vec, k: {candidate_k}, ef: 100}}, *snippet_embedding{{file_path, name, line_offset, embedding}}, dist = cos_dist(embedding, $query_vec) :order +dist :limit {k}"
+            "?[file_path, name, line_offset, dist] := ~snippet_embedding:snippet_idx{{file_path, name, line_offset | query: $query_vec, k: {candidate_k}, ef: 100}}, *snippet_embedding{{file_path, name, line_offset, embedding}}, dist = cos_dist(embedding, $query_vec) :order +dist :limit {candidate_k}"
         );
         let res = self.storage.run_script_with_params(
             &hnsw_script,
@@ -356,7 +406,7 @@ impl<'a> VectorStore<'a> {
         match res {
             Ok(r) => {
                 info!("Semantic query served by HNSW index");
-                return parse_hnsw_results(r);
+                return parse_hnsw_results(r, k);
             }
             Err(e)
                 if e.to_string().contains("hnsw_index_not_found")
@@ -368,10 +418,11 @@ impl<'a> VectorStore<'a> {
             Err(e) => return Err(e),
         }
 
-        // Tier 2: CozoDB-native cos_dist query
+        // Tier 2: CozoDB-native cos_dist query (over-fetch for DoD-7b filter)
+        let fetch_k = k.saturating_mul(10).max(50);
         let cos_dist_script = format!(
             "?[file_path, name, line_offset, dist] := *snippet_embedding{{file_path, name, line_offset, embedding}}, dist = cos_dist(embedding, $query_vec) :order +dist :limit {}",
-            k
+            fetch_k
         );
         let cos_res = self.storage.run_script_with_params(
             &cos_dist_script,
@@ -382,7 +433,7 @@ impl<'a> VectorStore<'a> {
         match cos_res {
             Ok(r) => {
                 info!("Semantic query served by Cozo-native cos_dist");
-                return parse_hnsw_results(r);
+                return parse_hnsw_results(r, k);
             }
             Err(e) if e.to_string().contains("no_implementation") => {
                 warn!("Cozo-native cos_dist unavailable, falling back to Rust-side cosine_sim.");
@@ -412,7 +463,18 @@ impl<'a> VectorStore<'a> {
                     cozo::Vector::F64(vec) => vec.iter().map(|&x| x as f32).collect(),
                 };
 
+                // DoD-7b: exclude zero-magnitude stored vectors at query time
+                if candidate_vec.is_empty() || is_all_zero(&candidate_vec) {
+                    continue;
+                }
+                if normalize_vector(candidate_vec.clone()).is_none() {
+                    continue;
+                }
+
                 if let Ok(sim) = cosine_sim(&query_vector, &candidate_vec) {
+                    if !sim.is_finite() {
+                        continue;
+                    }
                     scored_results.push((
                         file_path.to_string(),
                         name.to_string(),
@@ -441,6 +503,12 @@ impl<'a> VectorStore<'a> {
     }
 }
 
+/// True when every element is exactly `0.0` (all-zero / zero-length check
+/// for DoD-2 / DoD-7). Does **not** use a norm threshold (spec §6).
+fn is_all_zero(vector: &[f32]) -> bool {
+    !vector.is_empty() && vector.iter().all(|&x| x == 0.0)
+}
+
 /// Normalize a vector to unit length.
 ///
 /// Sanitizes any `NaN` or `Inf` values to `0.0` before computing the norm.
@@ -466,7 +534,13 @@ fn normalize_vector(mut vector: Vec<f32>) -> Option<Vec<f32>> {
     }
 }
 
-fn parse_hnsw_results(res: cozo::NamedRows) -> Result<Vec<(String, String, usize, f32)>> {
+/// Parse Cozo HNSW / cos_dist rows. **Excludes** non-finite distances
+/// (DoD-7b: zero-magnitude stored vectors yield NaN from `cos_dist` and
+/// must not rank). Truncates to `limit` after filtering.
+fn parse_hnsw_results(
+    res: cozo::NamedRows,
+    limit: usize,
+) -> Result<Vec<(String, String, usize, f32)>> {
     let mut results = Vec::new();
     for row in res.rows {
         if let (
@@ -476,20 +550,26 @@ fn parse_hnsw_results(res: cozo::NamedRows) -> Result<Vec<(String, String, usize
             Some(DataValue::Num(Num::Float(dist))),
         ) = (row.first(), row.get(1), row.get(2), row.get(3))
         {
-            // Guard against NaN distances — clamp to a neutral large value so
-            // results are always finite and sortable.
             let dist_f32 = *dist as f32;
+            // DoD-7b: drop NaN/Inf rather than clamping into the ranking.
             if !dist_f32.is_finite() {
-                tracing::warn!("Non-finite distance detected in HNSW result: {dist_f32}");
+                tracing::debug!(
+                    "Excluding non-finite cos_dist for {}::{} (legacy zero-magnitude row?)",
+                    file_path,
+                    name
+                );
+                continue;
             }
-            let safe_dist = if dist_f32.is_finite() { dist_f32 } else { 2.0 };
             results.push((
                 file_path.to_string(),
                 name.to_string(),
                 *offset as usize,
-                safe_dist,
+                dist_f32,
             ));
         }
+    }
+    if results.len() > limit {
+        results.truncate(limit);
     }
     Ok(results)
 }
@@ -568,5 +648,157 @@ mod tests {
         let at_threshold = HnswRefreshPlan::for_batch_with_threshold(50, false, 50);
         assert!(at_threshold.drop_before_put);
         assert!(at_threshold.rebuild_after_put);
+    }
+
+    fn test_chunk(name: &str) -> AstChunk {
+        AstChunk {
+            file_path: "t.rs".to_string(),
+            name: name.to_string(),
+            kind: crate::index::symbols::SymbolKind::Function,
+            content: format!("fn {name}() {{}}"),
+            docstring: None,
+            range: (0, 10),
+            lines: (1, 1),
+            offset: 0,
+        }
+    }
+
+    /// DoD-2: index_chunks rejects all-zero embeddings independently of the embedder.
+    #[test]
+    fn index_chunks_rejects_all_zero_embeddings() {
+        let storage = CozoStorage::new_in_memory().expect("in-memory cozo");
+        let store = VectorStore::new_without_hnsw(&storage, 3).expect("store");
+        let chunks = vec![test_chunk("zero_fn")];
+        let embeddings = vec![vec![0.0_f32, 0.0, 0.0]];
+        let err = store
+            .index_chunks(chunks, embeddings)
+            .expect_err("all-zero must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("all-zero") || msg.contains("zero"),
+            "expected all-zero rejection, got: {msg}"
+        );
+        assert_eq!(store.get_vector_count().unwrap_or(0), 0);
+    }
+
+    /// DoD-2: index_chunks rejects zero-length embeddings.
+    #[test]
+    fn index_chunks_rejects_zero_length_embeddings() {
+        let storage = CozoStorage::new_in_memory().expect("in-memory cozo");
+        let store = VectorStore::new_without_hnsw(&storage, 3).expect("store");
+        let chunks = vec![test_chunk("empty_fn")];
+        let embeddings = vec![vec![]];
+        let err = store
+            .index_chunks(chunks, embeddings)
+            .expect_err("zero-length must be rejected");
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("zero-length") || msg.contains("zero"),
+            "expected zero-length rejection, got: {msg}"
+        );
+        assert_eq!(store.get_vector_count().unwrap_or(0), 0);
+    }
+
+    /// DoD-2 / sparse: legitimately sparse (not all-zero) vectors are accepted.
+    #[test]
+    fn index_chunks_accepts_sparse_non_zero_embeddings() {
+        let storage = CozoStorage::new_in_memory().expect("in-memory cozo");
+        let store = VectorStore::new_without_hnsw(&storage, 3).expect("store");
+        let chunks = vec![test_chunk("sparse_fn")];
+        // Sparse but not all-zero — must not be rejected by the all-zero gate.
+        let embeddings = vec![vec![0.0_f32, 0.0, 1.0]];
+        store
+            .index_chunks(chunks, embeddings)
+            .expect("sparse non-zero must be accepted");
+        assert_eq!(store.get_vector_count().unwrap_or(0), 1);
+    }
+
+    /// DoD-7: count_zero_vectors reports without deleting.
+    #[test]
+    fn count_zero_vectors_does_not_delete() {
+        use cozo::{DataValue, ScriptMutability};
+        use std::collections::BTreeMap;
+
+        let storage = CozoStorage::new_in_memory().expect("in-memory cozo");
+        let store = VectorStore::new_without_hnsw(&storage, 3).expect("store");
+        // Insert one valid vector via the guarded API.
+        store
+            .index_chunks(vec![test_chunk("good")], vec![vec![1.0, 0.0, 0.0]])
+            .expect("valid insert");
+        // Bypass the guard to plant a legacy zero row (simulates pre-0096 junk).
+        let mut params = BTreeMap::new();
+        params.insert(
+            "data".to_string(),
+            DataValue::from(vec![DataValue::List(Box::new(vec![
+                DataValue::from("t.rs"),
+                DataValue::from("junk"),
+                DataValue::from(1_i64),
+                DataValue::Vec(Box::new(cozo::Vector::F32(vec![0.0_f32, 0.0, 0.0].into()))),
+            ]))]),
+        );
+        storage
+            .run_script_with_params(
+                "?[file_path, name, line_offset, embedding] <- $data :put snippet_embedding",
+                params,
+                ScriptMutability::Mutable,
+            )
+            .expect("plant junk");
+
+        let before_total = store.get_vector_count().expect("count");
+        let zeros = store.count_zero_vectors().expect("zero count");
+        assert_eq!(zeros, 1, "exactly one planted zero row");
+        let after_total = store.get_vector_count().expect("count after");
+        assert_eq!(
+            before_total, after_total,
+            "count_zero_vectors must not delete rows"
+        );
+        assert_eq!(after_total, 2);
+    }
+
+    /// DoD-7b: query with a valid vector excludes all-zero stored rows from ranking.
+    #[test]
+    fn query_excludes_zero_magnitude_stored_vectors() {
+        use cozo::{DataValue, ScriptMutability};
+        use std::collections::BTreeMap;
+
+        let storage = CozoStorage::new_in_memory().expect("in-memory cozo");
+        let store = VectorStore::new_without_hnsw(&storage, 3).expect("store");
+        store
+            .index_chunks(
+                vec![test_chunk("good_a"), test_chunk("good_b")],
+                vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]],
+            )
+            .expect("valid inserts");
+        // Plant all-zero junk.
+        let mut params = BTreeMap::new();
+        params.insert(
+            "data".to_string(),
+            DataValue::from(vec![DataValue::List(Box::new(vec![
+                DataValue::from("t.rs"),
+                DataValue::from("junk_zero"),
+                DataValue::from(99_i64),
+                DataValue::Vec(Box::new(cozo::Vector::F32(vec![0.0_f32, 0.0, 0.0].into()))),
+            ]))]),
+        );
+        storage
+            .run_script_with_params(
+                "?[file_path, name, line_offset, embedding] <- $data :put snippet_embedding",
+                params,
+                ScriptMutability::Mutable,
+            )
+            .expect("plant junk");
+
+        let results = store
+            .query(vec![1.0, 0.0, 0.0], 10)
+            .expect("query must succeed");
+        assert!(
+            results.iter().all(|(_, name, _, _)| name != "junk_zero"),
+            "zero-magnitude stored vector must not appear in results: {results:?}"
+        );
+        assert!(
+            !results.is_empty(),
+            "valid rows must still be returned under a valid query vector"
+        );
+        assert_eq!(results[0].1, "good_a");
     }
 }

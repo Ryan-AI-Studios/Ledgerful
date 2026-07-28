@@ -95,6 +95,17 @@ pub(crate) fn execute_semantic_index(
     incremental: bool,
     concurrency_override: Option<usize>,
 ) -> Result<()> {
+    // DoD-1: refuse before any write when no embedding backend is configured.
+    // Non-zero exit is intentional — the command cannot succeed meaningfully.
+    if !crate::embed::client::is_embedding_backend_configured(&config.local_model) {
+        return Err(miette::miette!(
+            "Semantic indexing requires an embedding backend. \
+             Set `local_model.base_url` (or `local_model.embedding_url`) in config, then re-run. \
+             Inspect with `ledgerful index --semantic-dry-run`. \
+             (Unconfigured is a valid install state — configure only if you want semantic search.)"
+        ));
+    }
+
     let cozo = storage
         .cozo
         .as_ref()

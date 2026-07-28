@@ -330,44 +330,18 @@ pub fn execute_ask(
 
     let semantic = semantic || is_global;
 
+    // 0096 DoD-5: removed interactive `index --semantic` prompt (same defect as
+    // search — named semantic index, ran non-semantic incremental; re-prompted
+    // forever on empty repos). State-driven warnings replace it.
     if semantic
         && !auto_index
         && let Some(ref cozo) = storage.cozo
         && let Ok(semantic_engine) =
             crate::semantic::SemanticDiscovery::new(config.local_model.clone(), cozo)
         && let Ok(readiness) = semantic_engine.check_readiness()
-        && readiness.vector_count == 0
-        && crate::util::term::is_interactive()
     {
-        use inquire::Confirm;
-        if let Ok(true) = Confirm::new(
-            "Semantic index is empty. Would you like to run 'ledgerful index --semantic' now?",
-        )
-        .with_default(true)
-        .prompt()
-        {
-            eprintln!("Running semantic indexing...");
-            crate::commands::index::execute_index(crate::commands::index::IndexArgs {
-                incremental: true,
-                check: false,
-                strict: false,
-                json: false,
-                analyze_graph: false,
-                docs: false,
-                contracts: false,
-                semantic: false,
-                scip: None,
-                auto_scip: false,
-                export_docs: false,
-
-                doc_type: None,
-                concurrency: None,
-                semantic_dry_run: None,
-                fast: false,
-                repair_metadata: false,
-                dry_run: false,
-                yes: false,
-            })?;
+        for msg in crate::semantic::semantic_readiness_messages(&readiness) {
+            eprintln!("{} {}", "WARN".yellow().bold(), msg);
         }
     }
 

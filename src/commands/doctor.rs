@@ -53,60 +53,14 @@ pub fn execute_doctor() -> Result<()> {
         .index_health
         .push(format_gate_mode_status(&layout, &config));
 
-    if config.local_model.embedding_model.is_empty() {
-        report.embedding_model_status = "Not configured".yellow().to_string();
-    } else {
-        match probe_with_retry(|| crate::embed::client::check_local_model(&model_config)) {
-            ProbeResult::Healthy(dims) => {
-                report.embedding_model_status = format!(
-                    "{} ({} dims) @ {}",
-                    config.local_model.embedding_model,
-                    dims.dimensions,
-                    config
-                        .local_model
-                        .embedding_url
-                        .as_deref()
-                        .unwrap_or(&config.local_model.base_url)
-                );
-            }
-            ProbeResult::ReachableAfterRetry { val: dims, retries } => {
-                report.embedding_model_status = format!(
-                    "{} ({} dims) @ {} (reachable after retry: flaky/transient - {})",
-                    config.local_model.embedding_model,
-                    dims.dimensions,
-                    config
-                        .local_model
-                        .embedding_url
-                        .as_deref()
-                        .unwrap_or(&config.local_model.base_url),
-                    format!(
-                        "{} {}",
-                        retries,
-                        if retries == 1 { "retry" } else { "retries" }
-                    )
-                    .green()
-                );
-            }
-            ProbeResult::Unreachable { err, retries } => {
-                let retry_suffix = if retries > 0 {
-                    format!(" after {} retries", retries)
-                } else {
-                    "".to_string()
-                };
-                let truncated: String = err.chars().take(80).collect();
-                let detail_hint = if err.chars().count() > 80 {
-                    " [set RUST_LOG=debug for details]"
-                } else {
-                    ""
-                };
-                report.embedding_model_status = format!(
-                    "unreachable ({}{}){}",
-                    truncated.yellow(),
-                    retry_suffix,
-                    detail_hint
-                );
-                tracing::debug!("Full embedding model error: {}", err);
-            }
+    // DoD-6 / DoD-11: use shared availability helper so partial config
+    // (model name set, base_url empty) is not reported healthy, and so
+    // 0095 can extend the same shape for optional toolchains.
+    {
+        let avail = format_embedding_backend_availability(&config.local_model, &model_config);
+        report.embedding_model_status = avail.display;
+        if let Some(detail) = avail.debug_detail {
+            tracing::debug!("Full embedding model error: {}", detail);
         }
     }
 
@@ -602,6 +556,138 @@ fn print_sccache_hint() {
     }
 }
 
+/// Result of a doctor availability probe for an optional/advertised backend.
+///
+/// **DoD-11 seam for 0095:** SCIP and other optional toolchains should reuse
+/// this shape. Callers choose whether `is_failure` contributes to
+/// `count_doctor_failures` and whether the display lands on
+/// `DoctorReport.tools` (where any `NotFound` is a failure — optional
+/// accelerators must **not** go there) vs a dedicated status field.
+/// Semantic embedding is an advertised capability, so absence is a failure;
+/// optional SCIP absence is not.
+#[derive(Debug, Clone)]
+pub struct BackendAvailabilityReport {
+    /// Colored/human display string for the doctor line.
+    pub display: String,
+    /// Whether this should increment `count_doctor_failures`.
+    pub is_failure: bool,
+    /// Orthogonal backend axis (mirrors semantic readiness).
+    pub status: crate::semantic::BackendStatus,
+    /// Full error detail for debug logging (not shown to user).
+    pub debug_detail: Option<String>,
+}
+
+/// Format embedding-backend availability for doctor (DoD-6, DoD-11).
+///
+/// Gates on URL emptiness via `is_embedding_backend_configured` — **not**
+/// on `embedding_model.is_empty()` alone — so partial config (model name
+/// set, no URL) reports "Not configured" rather than a healthy
+/// `(0 dims) @ `.
+fn format_embedding_backend_availability(
+    display_config: &crate::config::model::LocalModelConfig,
+    probe_config: &crate::config::model::LocalModelConfig,
+) -> BackendAvailabilityReport {
+    use crate::embed::client::is_embedding_backend_configured;
+    use crate::semantic::BackendStatus;
+    use owo_colors::OwoColorize;
+
+    if !is_embedding_backend_configured(display_config) {
+        return BackendAvailabilityReport {
+            display: "Not configured".yellow().to_string(),
+            is_failure: true,
+            status: BackendStatus::NotConfigured,
+            debug_detail: None,
+        };
+    }
+
+    let endpoint = display_config
+        .embedding_url
+        .as_deref()
+        .unwrap_or(&display_config.base_url);
+
+    match probe_with_retry(|| crate::embed::client::check_local_model(probe_config)) {
+        ProbeResult::Healthy(dims) if dims.active => BackendAvailabilityReport {
+            display: format!(
+                "{} ({} dims) @ {}",
+                if display_config.embedding_model.is_empty() {
+                    dims.model_name.as_str()
+                } else {
+                    display_config.embedding_model.as_str()
+                },
+                dims.dimensions,
+                endpoint
+            ),
+            is_failure: false,
+            status: BackendStatus::Ready,
+            debug_detail: None,
+        },
+        ProbeResult::Healthy(_dims) => {
+            // URL set but probe returned inactive (0 dims) — treat as not ready.
+            BackendAvailabilityReport {
+                display: "Not configured".yellow().to_string(),
+                is_failure: true,
+                status: BackendStatus::NotConfigured,
+                debug_detail: Some(
+                    "Probe returned inactive dimensions despite URL being set".to_string(),
+                ),
+            }
+        }
+        ProbeResult::ReachableAfterRetry { val: dims, retries } if dims.active => {
+            BackendAvailabilityReport {
+                display: format!(
+                    "{} ({} dims) @ {} (reachable after retry: flaky/transient - {})",
+                    if display_config.embedding_model.is_empty() {
+                        dims.model_name.as_str()
+                    } else {
+                        display_config.embedding_model.as_str()
+                    },
+                    dims.dimensions,
+                    endpoint,
+                    format!(
+                        "{} {}",
+                        retries,
+                        if retries == 1 { "retry" } else { "retries" }
+                    )
+                    .green()
+                ),
+                is_failure: false,
+                status: BackendStatus::Ready,
+                debug_detail: None,
+            }
+        }
+        ProbeResult::ReachableAfterRetry { .. } => BackendAvailabilityReport {
+            display: "Not configured".yellow().to_string(),
+            is_failure: true,
+            status: BackendStatus::NotConfigured,
+            debug_detail: None,
+        },
+        ProbeResult::Unreachable { err, retries } => {
+            let retry_suffix = if retries > 0 {
+                format!(" after {} retries", retries)
+            } else {
+                String::new()
+            };
+            let truncated: String = err.chars().take(80).collect();
+            let detail_hint = if err.chars().count() > 80 {
+                " [set RUST_LOG=debug for details]"
+            } else {
+                ""
+            };
+            BackendAvailabilityReport {
+                display: format!(
+                    "unreachable ({}{}){}",
+                    truncated.yellow(),
+                    retry_suffix,
+                    detail_hint
+                ),
+                is_failure: true,
+                status: BackendStatus::Unreachable,
+                debug_detail: Some(err),
+            }
+        }
+    }
+}
+
 /// Count the number of failed checks in a doctor report.
 ///
 /// Heuristic, by design: a check is "failed" if any of these are true:
@@ -1005,6 +1091,63 @@ mod tests {
         // 1 missing tool + 1 unconfigured embedding + 1 unreachable completion +
         // 1 not-initialized graph + 3 index_health lines = 7
         assert_eq!(count_doctor_failures(&report), 7);
+    }
+
+    /// DoD-6: partial config (model name set, base_url empty) is Not configured
+    /// and counted as a failure — not a healthy `(0 dims) @ `.
+    #[test]
+    fn format_embedding_partial_config_is_not_configured_failure() {
+        use crate::config::model::LocalModelConfig;
+        use crate::semantic::BackendStatus;
+
+        let config = LocalModelConfig {
+            embedding_model: "nomic-embed-text".to_string(),
+            base_url: String::new(),
+            embedding_url: None,
+            dimensions: 768,
+            ..Default::default()
+        };
+        let report = format_embedding_backend_availability(&config, &config);
+        assert_eq!(report.status, BackendStatus::NotConfigured);
+        assert!(report.is_failure);
+        assert!(
+            report.display.contains("Not configured"),
+            "partial config must not look healthy, got: {}",
+            report.display
+        );
+        assert!(
+            !report.display.contains("0 dims"),
+            "must not print healthy-looking (0 dims) @ for partial config, got: {}",
+            report.display
+        );
+
+        // count_doctor_failures must count the plain status string.
+        let tools = vec![(
+            "git".to_string(),
+            ExecutableStatus::Found(PathBuf::from("git")),
+        )];
+        let doctor = DoctorReport {
+            embedding_model_status: "Not configured".to_string(),
+            ..sample_report(&tools)
+        };
+        assert_eq!(count_doctor_failures(&doctor), 1);
+    }
+
+    /// DoD-6: fully empty config (default install) is also Not configured.
+    #[test]
+    fn format_embedding_default_config_is_not_configured() {
+        use crate::config::model::LocalModelConfig;
+        use crate::semantic::BackendStatus;
+
+        let config = LocalModelConfig::default();
+        let report = format_embedding_backend_availability(&config, &config);
+        assert_eq!(report.status, BackendStatus::NotConfigured);
+        assert!(report.is_failure);
+        assert!(
+            report.display.contains("Not configured"),
+            "got: {}",
+            report.display
+        );
     }
 
     #[test]
