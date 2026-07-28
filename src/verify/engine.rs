@@ -22,6 +22,8 @@ pub struct VerificationContext {
     pub explain: bool,
     pub health: bool,
     pub warnings: Vec<String>,
+    /// When true, suppress human `println!` progress (e.g. `verify --json`).
+    pub suppress_human_output: bool,
 }
 
 impl VerificationContext {
@@ -43,6 +45,7 @@ impl VerificationContext {
             explain,
             health,
             warnings: Vec::new(),
+            suppress_human_output: false,
         }
     }
 
@@ -123,7 +126,9 @@ impl VerifyEngine {
             }
 
             let result = execute_step_with_command(&prepared, &policy, Some(command))?;
-            print_verify_result(&prepared.display_command, step.timeout_secs, &result);
+            if !ctx.suppress_human_output {
+                print_verify_result(&prepared.display_command, step.timeout_secs, &result);
+            }
 
             let report_result = Self::to_report_result(&prepared.display_command, &result);
             if report_result.exit_code != 0 {

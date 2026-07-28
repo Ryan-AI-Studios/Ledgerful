@@ -22,6 +22,7 @@ fn test_verify_command_pass() {
         false,
         VerifyScope::Full,
         false,
+        false,
     );
     assert!(result.is_ok());
 }
@@ -42,6 +43,7 @@ fn test_verify_command_fail() {
         false,
         false,
         VerifyScope::Full,
+        false,
         false,
     );
     assert!(result.is_err());
@@ -68,6 +70,7 @@ fn test_verify_command_timeout() {
         false,
         VerifyScope::Full,
         false,
+        false,
     );
     assert!(result.is_err());
     let err_msg = format!("{:?}", result.err().unwrap());
@@ -93,6 +96,7 @@ fn test_verify_command_not_found() {
         false,
         VerifyScope::Full,
         false,
+        false,
     );
     assert!(result.is_err());
     let err_msg = format!("{:?}", result.err().unwrap());
@@ -115,6 +119,7 @@ fn test_verify_dry_run_does_not_execute() {
         false,
         true, // dry_run = true
         VerifyScope::Full,
+        false,
         false,
     );
     assert!(
@@ -140,6 +145,7 @@ fn test_verify_health_check_known_executable() {
         true, // health = true
         false,
         VerifyScope::Full,
+        false,
         false,
     );
     assert!(
@@ -168,6 +174,7 @@ fn test_verify_health_check_missing_executable() {
         false,
         VerifyScope::Full,
         false,
+        false,
     );
     // On a dev machine with cargo available, health check should succeed.
     assert!(
@@ -195,6 +202,7 @@ fn test_verify_health_check_env_prefix_command() {
         true, // health = true
         false,
         VerifyScope::Full,
+        false,
         false,
     );
     assert!(
@@ -1051,6 +1059,7 @@ timeout_secs = 5
         false,
         VerifyScope::Full,
         false,
+        false,
     )
     .expect_err("hostile shell:true config step must be refused");
 
@@ -1102,6 +1111,7 @@ timeout_secs = 5
         false,
         false,
         VerifyScope::Full,
+        false,
         false,
     )
     .expect_err("hostile shell chain second command must be refused");
@@ -1155,6 +1165,7 @@ timeout_secs = 5
         false,
         VerifyScope::Full,
         false,
+        false,
     )
     .expect_err("un-allowlisted direct config step must be refused");
 
@@ -1206,6 +1217,7 @@ timeout_secs = 30
         false,
         false,
         VerifyScope::Full,
+        false,
         false,
     );
     assert!(

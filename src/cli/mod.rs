@@ -172,6 +172,7 @@ mod tests {
                 enforce: false,
             },
             verbose: false,
+            quiet: false,
         };
         let _: LedgerCommands = LedgerCommands::Status {
             entity: None,

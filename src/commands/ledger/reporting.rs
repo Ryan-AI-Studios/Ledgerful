@@ -86,25 +86,21 @@ fn apply_exit_code(
         std::process::exit(1);
     }
 
+    // Single emission via cli_summary (0093 DoD-9). Level-split writer routes
+    // warn! → stderr so `ledger status --json` keeps stdout JSON-only.
+    let remediation = if signals.promote_orphan {
+        RECOVER_HINT
+    } else {
+        "Set gate to enforce for blocking exit codes, or pass --strict-observe-signal for exit 2."
+    };
     tracing::warn!(
         target: "cli_summary",
-        "Gate is observe: status would block in enforce mode (pending={}, unaudited={}, promote_orphan={}, head_uncovered={})",
-        pending_count,
-        unaudited_count,
-        signals.promote_orphan,
-        signals.head_uncovered
-    );
-    eprintln!(
         "[Ledgerful] WARNING: observe mode would-block (pending={}, unaudited={}, promote_orphan={}, head_uncovered={}). {}",
         pending_count,
         unaudited_count,
         signals.promote_orphan,
         signals.head_uncovered,
-        if signals.promote_orphan {
-            RECOVER_HINT
-        } else {
-            "Set gate to enforce for blocking exit codes, or pass --strict-observe-signal for exit 2."
-        }
+        remediation
     );
     if strict {
         std::process::exit(2);
@@ -154,11 +150,17 @@ pub fn execute_ledger_status(
         let unaudited = tx_mgr
             .get_all_unaudited()
             .map_err(|e| miette::miette!("{}", e))?;
-        let pending_tx_ids: Vec<String> = pending.iter().map(|t| t.tx_id.clone()).collect();
+        let mut pending_tx_ids: Vec<String> = pending.iter().map(|t| t.tx_id.clone()).collect();
+        // determinism{}: sort emitted collections (0093 DoD-8).
+        pending_tx_ids.sort();
+
+        /// Stable schema version for `ledger status --json` (track 0093).
+        const STATUS_JSON_SCHEMA_VERSION: u32 = 1;
 
         #[derive(Serialize)]
         #[serde(rename_all = "camelCase")]
         struct StatusJson {
+            schema_version: u32,
             pending_count: usize,
             unaudited_count: usize,
             pending_tx_ids: Vec<String>,
@@ -172,6 +174,7 @@ pub fn execute_ledger_status(
         }
 
         let status = StatusJson {
+            schema_version: STATUS_JSON_SCHEMA_VERSION,
             pending_count: pending.len(),
             unaudited_count: unaudited.len(),
             pending_tx_ids,
@@ -571,4 +574,44 @@ pub fn execute_ledger_export_provenance(output: Option<String>) -> Result<()> {
 /// and optional bot-key signing.
 pub fn execute_ledger_export_public(options: crate::ledger::ExportOptions<'_>) -> Result<()> {
     crate::ledger::export_public_bundle(options)
+}
+
+#[cfg(test)]
+mod status_json_tests {
+    use super::*;
+
+    /// Mirrors the StatusJson shape used by `execute_ledger_status` so tests can
+    /// assert schemaVersion + sorted pendingTxIds without opening a live DB.
+    #[derive(Serialize, serde::Deserialize, PartialEq, Eq, Debug)]
+    #[serde(rename_all = "camelCase")]
+    struct StatusJsonFixture {
+        schema_version: u32,
+        pending_count: usize,
+        pending_tx_ids: Vec<String>,
+    }
+
+    fn build_status_json(mut pending_tx_ids: Vec<String>) -> StatusJsonFixture {
+        pending_tx_ids.sort();
+        StatusJsonFixture {
+            schema_version: 1,
+            pending_count: pending_tx_ids.len(),
+            pending_tx_ids,
+        }
+    }
+
+    #[test]
+    fn pending_tx_ids_sorted_and_stable() {
+        let a = build_status_json(vec!["z-tx".into(), "a-tx".into(), "m-tx".into()]);
+        let b = build_status_json(vec!["m-tx".into(), "z-tx".into(), "a-tx".into()]);
+        assert_eq!(a.pending_tx_ids, vec!["a-tx", "m-tx", "z-tx"]);
+        assert_eq!(a, b);
+        let ja = serde_json::to_string(&a).unwrap();
+        let jb = serde_json::to_string(&b).unwrap();
+        assert_eq!(ja, jb);
+        assert!(ja.contains("\"schemaVersion\":1") || ja.contains("\"schema_version\""));
+        // camelCase rename
+        let pretty = serde_json::to_string_pretty(&a).unwrap();
+        assert!(pretty.contains("schemaVersion"));
+        assert!(pretty.contains("pendingTxIds"));
+    }
 }

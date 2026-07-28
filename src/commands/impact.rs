@@ -315,7 +315,8 @@ pub fn execute_impact(
                     e
                 )
             })?;
-            eprintln!(
+            // Product result path (0093): belongs on stdout.
+            println!(
                 "Wrote impact report to {}",
                 path.display().to_string().cyan()
             );

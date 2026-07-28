@@ -6,6 +6,27 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Agent CLI output contract (0093):** `verify --json` emits a versioned
+  (`schemaVersion: 1`) machine-readable result with `ok`, `scopeRequested`,
+  `scopeExecuted`, `fallbackReason`, and per-step status. Global `--quiet`/`-q`
+  (and `LEDGERFUL_QUIET=1`) hide per-entry signature detail while keeping the
+  aggregate. See `docs/agent-output-contract.md`.
+- **`ledger status --json`:** adds `schemaVersion: 1` and sorts `pendingTxIds`
+  for deterministic agent parsing.
+
+### Changed
+
+- **Stream discipline for `cli_summary` (0093, user-visible):** product `info!`
+  lines route to **stdout**; diagnostic `warn!`/`error!` stay on **stderr**
+  (level-split writer). Machine mode (`--json`, `scan --format json`, `mcp`)
+  filters the layer to `WARN` so human lines cannot corrupt JSON on stdout.
+  Per-entry signature `VALID`/`SKIP` lines are demoted to `debug!` so `--quiet`
+  can hide them; **default verbosity is unchanged** (filter still at `DEBUG`).
+  Double-emitted observe would-block / CRITICAL messages now emit once via
+  `cli_summary` only.
+
 ### Fixed
 
 - **Legacy migration completion (0094):** state-dir rename now also ensures

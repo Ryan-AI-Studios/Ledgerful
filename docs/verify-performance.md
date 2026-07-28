@@ -8,10 +8,29 @@ their safe combinations.
 - `ledgerful verify --scope full` is the **authoritative gate**. It always runs
 the complete suite (fmt, clippy, tests, doctests, slow tier). CI uses this
 scope.
-- `ledgerful verify --scope fast` is the **local convenience gate**. It uses
-`test_mapping` to run only the tests that cover changed files, falling back to
-the full suite when shared infrastructure is touched or the mapping is empty.
-The pre-push hook uses this scope.
+- `ledgerful verify --scope fast` is the **local convenience gate**. The pre-push
+hook uses this scope.
+
+### What `--scope fast` actually runs
+
+Fast scope is **not** "tests only". The plan always includes three steps
+(`src/verify/plan.rs` → `build_fast_scoped_plan`):
+
+1. `cargo fmt --all -- --check` — always
+2. `cargo clippy --all-targets --all-features -- -D warnings` — always
+3. Scoped `cargo nextest` (or equivalent) selected via `test_mapping` for
+   changed files — **this** is the only part that is scoped
+
+So a successful fast run still shows fmt → clippy → tests. That is intentional:
+fmt and clippy are cheap and catch issues the test suite does not.
+
+### Fallback is never silent
+
+When shared infrastructure is touched, `test_mapping` is empty/stale/absent, or
+auto-index fails, fast falls back to the **full** suite. The plan sets
+`fallbackReason` and the CLI announces it before execution (human path) or
+exposes it as `fallbackReason` / `scopeExecuted: "full"` under `verify --json`.
+A silent scope substitution is not possible.
 
 All speed measures in this guide apply to `--scope fast` only. `--scope full`
 remains unchanged.

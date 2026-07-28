@@ -25,6 +25,11 @@ pub struct EndpointsArgs {
 }
 
 impl EndpointsArgs {
+    /// Whether `--json` is set (machine-output selection).
+    pub fn wants_json(&self) -> bool {
+        self.json
+    }
+
     /// Long flag names that are present (values stripped). Used for `argv_hash` shape.
     pub fn present_flag_names(&self) -> Vec<&'static str> {
         let mut f = Vec::new();

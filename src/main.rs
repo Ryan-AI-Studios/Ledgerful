@@ -1,6 +1,8 @@
 use clap::Parser;
 use ledgerful::cli::{self, Cli};
 use miette::Result;
+use tracing::Level;
+use tracing_subscriber::fmt::writer::MakeWriterExt;
 use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 
 /// Build the log filter based on the verbose flag.
@@ -16,6 +18,33 @@ fn build_log_filter(verbose: bool) -> EnvFilter {
         EnvFilter::try_from_default_env()
             .unwrap_or_else(|_| EnvFilter::new("info,graph_builder=warn,tantivy=warn,sqlite=warn"))
     }
+}
+
+/// Three-state verbosity for the `cli_summary` product layer (track 0093).
+///
+/// - Default (`DEBUG`): per-entry detail and aggregate both visible.
+/// - Quiet (`INFO`): hide per-entry `debug!` detail; keep aggregate `info!`.
+/// - Machine (`WARN`): no human-facing `cli_summary` line reaches stdout.
+///
+/// Machine wins over quiet when both are selected.
+fn summary_layer_max_level(machine: bool, quiet: bool) -> Level {
+    if machine {
+        Level::WARN
+    } else if quiet {
+        Level::INFO
+    } else {
+        Level::DEBUG
+    }
+}
+
+/// `true` when `--quiet`/`-q` or `LEDGERFUL_QUIET=1` (or `true`) is set.
+fn resolve_quiet(cli_quiet: bool) -> bool {
+    if cli_quiet {
+        return true;
+    }
+    std::env::var("LEDGERFUL_QUIET")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
 }
 
 fn run() -> Result<()> {
@@ -60,6 +89,14 @@ fn run() -> Result<()> {
             }
         );
 
+    // 0093: three-state `cli_summary` filter. Machine mode (`--json` / mcp /
+    // scan --format json) filters to WARN so human product lines cannot land
+    // on stdout around a machine payload. Quiet hides per-entry DEBUG detail.
+    let summary_max = summary_layer_max_level(
+        cli_args.command.is_machine_output(),
+        resolve_quiet(cli_args.quiet),
+    );
+
     let normal_layer = fmt::layer()
         .with_writer(std::io::stderr)
         .with_filter(tracing_subscriber::filter::filter_fn(move |meta| {
@@ -67,13 +104,20 @@ fn run() -> Result<()> {
         }))
         .with_filter(build_log_filter(effective_verbose));
 
+    // Level-split writer (0093 DoD-4): product `info!` → stdout; diagnostic
+    // `warn!`/`error!` → stderr. A blanket stdout writer would break
+    // `ledger status --json` on the observe would-block path (spec §2.3).
     let summary_layer = fmt::layer()
-        .with_writer(std::io::stderr)
+        .with_writer(
+            std::io::stderr
+                .with_max_level(Level::WARN)
+                .or_else(std::io::stdout),
+        )
         .without_time()
         .with_target(false)
         .with_level(false)
         .with_filter(tracing_subscriber::filter::filter_fn(move |meta| {
-            meta.target() == "cli_summary"
+            meta.target() == "cli_summary" && *meta.level() <= summary_max
         }));
 
     // Track 0043: local-only TimingLayer buffers span closes in memory;
@@ -163,6 +207,9 @@ fn main() {
 mod tests {
     use super::*;
     use clap::Parser;
+    use std::io::{self, Write};
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::fmt::MakeWriter;
 
     #[test]
     fn cli_has_verbose_flag() {
@@ -181,6 +228,15 @@ mod tests {
     }
 
     #[test]
+    fn cli_has_quiet_flag() {
+        let args = ledgerful::cli::Cli::try_parse_from(["ledgerful", "--quiet", "doctor"]).unwrap();
+        assert!(args.quiet);
+        let args_short =
+            ledgerful::cli::Cli::try_parse_from(["ledgerful", "-q", "doctor"]).unwrap();
+        assert!(args_short.quiet);
+    }
+
+    #[test]
     fn build_log_filter_verbose_does_not_panic() {
         let _f = build_log_filter(true);
     }
@@ -188,5 +244,150 @@ mod tests {
     #[test]
     fn build_log_filter_quiet_does_not_panic() {
         let _f = build_log_filter(false);
+    }
+
+    #[test]
+    fn summary_layer_max_level_three_states() {
+        assert_eq!(summary_layer_max_level(false, false), Level::DEBUG);
+        assert_eq!(summary_layer_max_level(false, true), Level::INFO);
+        assert_eq!(summary_layer_max_level(true, false), Level::WARN);
+        // Machine wins over quiet.
+        assert_eq!(summary_layer_max_level(true, true), Level::WARN);
+    }
+
+    /// Buffer make-writer for stream-routing tests (DoD-4).
+    #[derive(Clone, Default)]
+    struct BufWriter {
+        buf: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl<'a> MakeWriter<'a> for BufWriter {
+        type Writer = BufGuard;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            BufGuard {
+                buf: Arc::clone(&self.buf),
+            }
+        }
+    }
+
+    struct BufGuard {
+        buf: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Write for BufGuard {
+        fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+            self.buf
+                .lock()
+                .map_err(|e| io::Error::other(e.to_string()))?
+                .extend_from_slice(data);
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn summary_layer_routes_info_to_stdout_warn_error_to_stderr() {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        let stdout_buf = BufWriter::default();
+        let stderr_buf = BufWriter::default();
+        let stdout_capture = Arc::clone(&stdout_buf.buf);
+        let stderr_capture = Arc::clone(&stderr_buf.buf);
+
+        // Level-split: events at WARN and above → stderr buffer; else → stdout.
+        let writer = stderr_buf.with_max_level(Level::WARN).or_else(stdout_buf);
+
+        let layer = fmt::layer()
+            .with_writer(writer)
+            .without_time()
+            .with_target(false)
+            .with_level(false)
+            .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
+                meta.target() == "cli_summary"
+            }));
+
+        let _guard = tracing_subscriber::registry().with(layer).set_default();
+
+        tracing::info!(target: "cli_summary", "info-product-line");
+        tracing::warn!(target: "cli_summary", "warn-diagnostic-line");
+        tracing::error!(target: "cli_summary", "error-diagnostic-line");
+
+        let stdout = String::from_utf8_lossy(&stdout_capture.lock().unwrap()).to_string();
+        let stderr = String::from_utf8_lossy(&stderr_capture.lock().unwrap()).to_string();
+
+        assert!(
+            stdout.contains("info-product-line"),
+            "info! must land on stdout; got stdout={stdout:?} stderr={stderr:?}"
+        );
+        assert!(
+            !stdout.contains("warn-diagnostic-line") && !stdout.contains("error-diagnostic-line"),
+            "warn/error must not land on stdout; got stdout={stdout:?}"
+        );
+        assert!(
+            stderr.contains("warn-diagnostic-line"),
+            "warn! must land on stderr; got stderr={stderr:?}"
+        );
+        assert!(
+            stderr.contains("error-diagnostic-line"),
+            "error! must land on stderr; got stderr={stderr:?}"
+        );
+        assert!(
+            !stderr.contains("info-product-line"),
+            "info! must not land on stderr; got stderr={stderr:?}"
+        );
+    }
+
+    #[test]
+    fn machine_mode_drops_cli_summary_info() {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        let stdout_buf = BufWriter::default();
+        let stderr_buf = BufWriter::default();
+        let stdout_capture = Arc::clone(&stdout_buf.buf);
+        let stderr_capture = Arc::clone(&stderr_buf.buf);
+
+        let writer = stderr_buf.with_max_level(Level::WARN).or_else(stdout_buf);
+        let summary_max = summary_layer_max_level(true, false); // machine
+
+        let layer = fmt::layer()
+            .with_writer(writer)
+            .without_time()
+            .with_target(false)
+            .with_level(false)
+            .with_filter(tracing_subscriber::filter::filter_fn(move |meta| {
+                meta.target() == "cli_summary" && *meta.level() <= summary_max
+            }));
+
+        let _guard = tracing_subscriber::registry().with(layer).set_default();
+
+        // Injected from the test itself — structural guarantee (DoD-4b).
+        tracing::info!(target: "cli_summary", "injected-info-must-not-appear");
+        tracing::warn!(target: "cli_summary", "injected-warn-on-stderr");
+
+        let stdout = String::from_utf8_lossy(&stdout_capture.lock().unwrap()).to_string();
+        let stderr = String::from_utf8_lossy(&stderr_capture.lock().unwrap()).to_string();
+
+        assert!(
+            !stdout.contains("injected-info-must-not-appear"),
+            "machine mode must drop info! from both streams; stdout={stdout:?}"
+        );
+        assert!(
+            !stderr.contains("injected-info-must-not-appear"),
+            "machine mode must drop info!; stderr={stderr:?}"
+        );
+        assert!(
+            stderr.contains("injected-warn-on-stderr"),
+            "machine mode still routes warn! to stderr; stderr={stderr:?}"
+        );
+        assert!(
+            stdout.is_empty() || !stdout.contains("injected"),
+            "stdout must stay clean for machine payloads; stdout={stdout:?}"
+        );
     }
 }
