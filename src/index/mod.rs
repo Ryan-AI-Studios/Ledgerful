@@ -20,6 +20,8 @@ pub mod normalize;
 pub mod observability;
 pub mod orchestrator;
 pub mod references;
+/// Shared call-graph callee resolution (full + incremental paths).
+pub mod resolve;
 pub mod routes;
 pub mod rows;
 pub mod runtime_usage;

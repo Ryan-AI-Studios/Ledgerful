@@ -1,4 +1,7 @@
 use crate::index::languages;
+use crate::index::resolve::{
+    ResolveCandidate, ResolveInput, build_resolve_maps, resolve_callee, resolve_candidate_from_row,
+};
 use crate::index::symbols::{Symbol, SymbolKind};
 use crate::state::storage::StorageManager;
 use miette::{IntoDiagnostic, Result};
@@ -241,12 +244,15 @@ impl<'a> CallGraphBuilder<'a> {
     pub fn build(&self) -> Result<CallGraphStats> {
         let conn = self.storage.get_connection();
 
-        // 1. Query all project_symbols
+        // 1. Query all project_symbols (include qualified_name for Part B reader)
         let mut stmt = conn
-            .prepare("SELECT id, file_id, symbol_name, symbol_kind, is_public FROM project_symbols")
+            .prepare(
+                "SELECT id, file_id, symbol_name, symbol_kind, is_public, qualified_name \
+                 FROM project_symbols",
+            )
             .into_diagnostic()?;
 
-        let symbol_rows: Vec<(i64, i64, String, String, bool)> = stmt
+        let symbol_rows: Vec<(i64, i64, String, String, bool, String)> = stmt
             .query_map([], |row| {
                 Ok((
                     row.get::<_, i64>(0)?,
@@ -254,6 +260,7 @@ impl<'a> CallGraphBuilder<'a> {
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
                     row.get::<_, i32>(4)? != 0,
+                    row.get::<_, String>(5)?,
                 ))
             })
             .into_diagnostic()?
@@ -294,30 +301,42 @@ impl<'a> CallGraphBuilder<'a> {
         drop(file_stmt);
 
         // 3. Build lookup maps
-        // symbols_by_file: file_id -> list of (symbol_id, symbol_name, symbol_kind, is_public)
-        let mut symbols_by_file: HashMap<i64, Vec<(i64, String, String, bool)>> = HashMap::new();
-        // symbol_index: (symbol_name, file_id) -> symbol_id
-        let mut symbol_index: HashMap<(String, i64), i64> = HashMap::new();
-        // symbol_name_to_ids: symbol_name -> Vec<symbol_id>
-        let mut symbol_name_to_ids: HashMap<String, Vec<i64>> = HashMap::new();
-        // symbol_id_to_file: symbol_id -> file_id (for resolution)
-        let mut symbol_id_to_file: HashMap<i64, i64> = HashMap::new();
-
-        for (sym_id, file_id, name, kind, is_public) in &symbol_rows {
-            symbols_by_file.entry(*file_id).or_default().push((
-                *sym_id,
-                name.clone(),
-                kind.clone(),
-                *is_public,
-            ));
-
-            symbol_index.insert((name.clone(), *file_id), *sym_id);
-            symbol_name_to_ids
-                .entry(name.clone())
-                .or_default()
-                .push(*sym_id);
-            symbol_id_to_file.insert(*sym_id, *file_id);
+        // symbols_by_file: file_id -> per-file symbol rows for extractors / callers
+        #[derive(Clone)]
+        struct FileSymbolRow {
+            id: i64,
+            name: String,
+            kind: String,
+            is_public: bool,
+            qualified_name: String,
         }
+        let mut symbols_by_file: HashMap<i64, Vec<FileSymbolRow>> = HashMap::new();
+        let mut resolve_candidates: Vec<ResolveCandidate> = Vec::new();
+        // symbol_id -> is_public (edge-cap priority)
+        let mut symbol_id_to_public: HashMap<i64, bool> = HashMap::new();
+
+        for (sym_id, file_id, name, kind, is_public, qn) in &symbol_rows {
+            symbols_by_file
+                .entry(*file_id)
+                .or_default()
+                .push(FileSymbolRow {
+                    id: *sym_id,
+                    name: name.clone(),
+                    kind: kind.clone(),
+                    is_public: *is_public,
+                    qualified_name: qn.clone(),
+                });
+            symbol_id_to_public.insert(*sym_id, *is_public);
+            resolve_candidates.push(resolve_candidate_from_row(
+                *sym_id,
+                *file_id,
+                name.clone(),
+                qn.clone(),
+                kind.clone(),
+            ));
+        }
+
+        let (candidates_by_bare, candidates_by_qn) = build_resolve_maps(resolve_candidates);
 
         // file_paths: file_id -> file_path (available for future use)
         let _file_paths: HashMap<i64, String> = file_rows
@@ -347,22 +366,30 @@ impl<'a> CallGraphBuilder<'a> {
             let path = PathBuf::from(file_path);
             let file_symbols = symbols_by_file.get(file_id).cloned().unwrap_or_default();
 
-            // Build Symbol structs for the language extractors
+            // Build Symbol structs for the language extractors (pass through real QN)
             let sym_vec: Vec<Symbol> = file_symbols
                 .iter()
-                .map(|(_, name, kind, is_public)| Symbol {
-                    name: name.clone(),
-                    kind: parse_symbol_kind(kind),
-                    is_public: *is_public,
-                    cognitive_complexity: None,
-                    cyclomatic_complexity: None,
-                    line_start: None,
-                    line_end: None,
-                    qualified_name: None,
-                    byte_start: None,
-                    byte_end: None,
-                    entrypoint_kind: None,
-                    metadata: std::collections::BTreeMap::new(),
+                .map(|row| {
+                    let qualified_name =
+                        if row.qualified_name.is_empty() || row.qualified_name == row.name {
+                            None
+                        } else {
+                            Some(row.qualified_name.clone())
+                        };
+                    Symbol {
+                        name: row.name.clone(),
+                        kind: parse_symbol_kind(&row.kind),
+                        is_public: row.is_public,
+                        cognitive_complexity: None,
+                        cyclomatic_complexity: None,
+                        line_start: None,
+                        line_end: None,
+                        qualified_name,
+                        byte_start: None,
+                        byte_end: None,
+                        entrypoint_kind: None,
+                        metadata: std::collections::BTreeMap::new(),
+                    }
                 })
                 .collect();
 
@@ -379,7 +406,7 @@ impl<'a> CallGraphBuilder<'a> {
             // Build a name -> (symbol_id, is_public) lookup for callers in this file
             let caller_by_name: HashMap<&str, (i64, bool)> = file_symbols
                 .iter()
-                .map(|(sym_id, name, _, is_public)| (name.as_str(), (*sym_id, *is_public)))
+                .map(|row| (row.name.as_str(), (row.id, row.is_public)))
                 .collect();
 
             // Collect edges with their public-ness for sorting/capping
@@ -393,57 +420,28 @@ impl<'a> CallGraphBuilder<'a> {
                         None => continue, // skip if caller not found in this file's symbols
                     };
 
-                let callee_is_public =
-                    if let Some(callee_ids) = symbol_name_to_ids.get(&call_edge.callee_name) {
-                        callee_ids
-                            .iter()
-                            .filter_map(|&cid| {
-                                file_symbols
-                                    .iter()
-                                    .find(|(sid, _, _, _)| *sid == cid)
-                                    .map(|(_, _, _, pub_flag)| *pub_flag)
-                            })
-                            .next()
-                            .unwrap_or(false)
-                    } else {
-                        false
-                    };
+                let resolved = resolve_callee(ResolveInput {
+                    callee_name: &call_edge.callee_name,
+                    caller_file_id: *file_id,
+                    candidates_by_bare_name: &candidates_by_bare,
+                    candidates_by_qualified: &candidates_by_qn,
+                });
 
-                // Try to resolve the callee
-                let (callee_symbol_id, callee_file_id, resolution_status, unresolved_callee) =
-                    if let Some(callee_ids) = symbol_name_to_ids.get(&call_edge.callee_name) {
-                        if callee_ids.len() == 1 {
-                            let cid = callee_ids[0];
-                            let fid = symbol_id_to_file[&cid];
-                            (Some(cid), Some(fid), ResolutionStatus::Resolved, None)
-                        } else {
-                            // Multiple matches: ambiguous
-                            (
-                                None,
-                                None,
-                                ResolutionStatus::Ambiguous,
-                                Some(call_edge.callee_name.clone()),
-                            )
-                        }
-                    } else {
-                        (
-                            None,
-                            None,
-                            ResolutionStatus::Unresolved,
-                            Some(call_edge.callee_name.clone()),
-                        )
-                    };
+                let callee_is_public = resolved
+                    .callee_symbol_id
+                    .and_then(|cid| symbol_id_to_public.get(&cid).copied())
+                    .unwrap_or(false);
 
                 let confidence = call_edge.call_kind.default_confidence();
 
                 file_edges.push(EdgeRow {
                     caller_symbol_id,
                     caller_file_id: *file_id,
-                    callee_symbol_id,
-                    callee_file_id,
-                    unresolved_callee,
+                    callee_symbol_id: resolved.callee_symbol_id,
+                    callee_file_id: resolved.callee_file_id,
+                    unresolved_callee: resolved.unresolved_callee,
                     call_kind: call_edge.call_kind.as_str().to_string(),
-                    resolution_status: resolution_status.as_str().to_string(),
+                    resolution_status: resolved.status.as_str().to_string(),
                     confidence,
                     evidence: call_edge.evidence.clone(),
                     // Used for sorting/cap prioritization:

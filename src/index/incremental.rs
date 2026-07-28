@@ -2,6 +2,9 @@
 use crate::config::model::Config;
 use crate::index::call_graph::CallEdge;
 use crate::index::orchestrator::{BINARY_EXTENSIONS, ProjectIndexer, SUPPORTED_EXTENSIONS};
+use crate::index::resolve::{
+    ResolveCandidate, ResolveInput, build_resolve_maps, resolve_callee, resolve_candidate_from_row,
+};
 use crate::index::rows::{
     delete_file_index_dependents, get_file_id_by_path, insert_symbol_row, upsert_file_row,
 };
@@ -16,11 +19,13 @@ use serde_json::json;
 use std::collections::HashMap;
 use tracing::{info, warn};
 
-type SymbolMaps = (
-    HashMap<String, Vec<i64>>,
-    HashMap<i64, i64>,
-    HashMap<i64, String>,
-);
+/// Maps used by incremental edge resolution and Cozo URN wiring.
+struct SymbolMaps {
+    by_bare: HashMap<String, Vec<ResolveCandidate>>,
+    by_qualified: HashMap<String, Vec<ResolveCandidate>>,
+    /// symbol_id → qualified_name (for graph edge URNs)
+    name_to_qualified: HashMap<i64, String>,
+}
 
 pub struct IncrementalSyncEngine {
     pub indexer: ProjectIndexer,
@@ -272,8 +277,7 @@ impl IncrementalSyncEngine {
         }
 
         // Phase 3: Build symbol resolution maps from the current DB state
-        let (symbol_name_to_ids, symbol_id_to_file, name_to_qualified) =
-            Self::build_symbol_maps(&tx)?;
+        let symbol_maps = Self::build_symbol_maps(&tx)?;
 
         // Phase 4: Resolve calls and insert structural edges, then build GraphEdges
         for item in &parsed {
@@ -321,23 +325,19 @@ impl IncrementalSyncEngine {
                     None => continue,
                 };
 
-                let caller_qualified = name_to_qualified
+                let caller_qualified = symbol_maps
+                    .name_to_qualified
                     .get(&caller_symbol_id)
                     .cloned()
                     .unwrap_or_else(|| call.caller_name.clone());
 
-                let (callee_symbol_id, callee_file_id, resolution_status, unresolved_callee) =
-                    if let Some(callee_ids) = symbol_name_to_ids.get(&call.callee_name) {
-                        if callee_ids.len() == 1 {
-                            let cid = callee_ids[0];
-                            let fid = symbol_id_to_file.get(&cid).copied();
-                            (Some(cid), fid, "RESOLVED", None)
-                        } else {
-                            (None, None, "AMBIGUOUS", Some(call.callee_name.clone()))
-                        }
-                    } else {
-                        (None, None, "UNRESOLVED", Some(call.callee_name.clone()))
-                    };
+                let resolved = resolve_callee(ResolveInput {
+                    callee_name: &call.callee_name,
+                    caller_file_id: file_id,
+                    candidates_by_bare_name: &symbol_maps.by_bare,
+                    candidates_by_qualified: &symbol_maps.by_qualified,
+                });
+                let resolution_status = resolved.status.as_str();
 
                 tx.execute(
                     "INSERT INTO structural_edges \
@@ -347,9 +347,9 @@ impl IncrementalSyncEngine {
                     rusqlite::params![
                         caller_symbol_id,
                         file_id,
-                        callee_symbol_id,
-                        callee_file_id,
-                        unresolved_callee,
+                        resolved.callee_symbol_id,
+                        resolved.callee_file_id,
+                        resolved.unresolved_callee,
                         call.call_kind.as_str(),
                         resolution_status,
                         call.confidence,
@@ -359,8 +359,8 @@ impl IncrementalSyncEngine {
                 .into_diagnostic()?;
 
                 if resolution_status == "RESOLVED"
-                    && let Some(&callee_id) = callee_symbol_id.as_ref()
-                    && let Some(target) = name_to_qualified.get(&callee_id)
+                    && let Some(callee_id) = resolved.callee_symbol_id
+                    && let Some(target) = symbol_maps.name_to_qualified.get(&callee_id)
                 {
                     record.new_edges.push(GraphEdge {
                         source: crate::platform::urn::build_urn(
@@ -457,7 +457,10 @@ impl IncrementalSyncEngine {
 
     fn build_symbol_maps(conn: &Connection) -> Result<SymbolMaps> {
         let mut stmt = conn
-            .prepare("SELECT id, file_id, symbol_name, qualified_name FROM project_symbols")
+            .prepare(
+                "SELECT id, file_id, symbol_name, qualified_name, symbol_kind \
+                 FROM project_symbols",
+            )
             .into_diagnostic()?;
         let rows = stmt
             .query_map([], |row| {
@@ -466,21 +469,28 @@ impl IncrementalSyncEngine {
                     row.get::<_, i64>(1)?,
                     row.get::<_, String>(2)?,
                     row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
                 ))
             })
             .into_diagnostic()?;
 
-        let mut symbol_name_to_ids: HashMap<String, Vec<i64>> = HashMap::new();
-        let mut symbol_id_to_file: HashMap<i64, i64> = HashMap::new();
+        let mut candidates = Vec::new();
         let mut name_to_qualified: HashMap<i64, String> = HashMap::new();
 
         for row in rows {
-            let (sym_id, fid, name, qualified) = row.into_diagnostic()?;
-            symbol_name_to_ids.entry(name).or_default().push(sym_id);
-            symbol_id_to_file.insert(sym_id, fid);
-            name_to_qualified.insert(sym_id, qualified);
+            let (sym_id, fid, name, qualified, kind) = row.into_diagnostic()?;
+            name_to_qualified.insert(sym_id, qualified.clone());
+            candidates.push(resolve_candidate_from_row(
+                sym_id, fid, name, qualified, kind,
+            ));
         }
-        Ok((symbol_name_to_ids, symbol_id_to_file, name_to_qualified))
+
+        let (by_bare, by_qualified) = build_resolve_maps(candidates);
+        Ok(SymbolMaps {
+            by_bare,
+            by_qualified,
+            name_to_qualified,
+        })
     }
 
     fn build_nodes(
