@@ -66,9 +66,18 @@ pub fn augment_edges_from_scip(
         };
         stats.files_processed += 1;
 
-        let spans = spans_cache
-            .entry(file_id)
-            .or_insert_with(|| load_native_spans_for_file(conn, file_id).unwrap_or_default());
+        let spans = match spans_cache.entry(file_id) {
+            std::collections::hash_map::Entry::Occupied(e) => e.into_mut(),
+            std::collections::hash_map::Entry::Vacant(e) => {
+                match load_native_spans_for_file(conn, file_id) {
+                    Ok(spans) => e.insert(spans),
+                    Err(err) => {
+                        // Do not report success over a DB read failure (Codex R2 P3).
+                        return Err(err);
+                    }
+                }
+            }
+        };
 
         for occurrence in &document.occurrences {
             if occurrence.symbol.is_empty() || occurrence.symbol.starts_with("local ") {

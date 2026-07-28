@@ -38,13 +38,41 @@ pub fn run_graph_analysis(
     Option<crate::scip::ScipIndexJson>,
 )> {
     let scip_requested = auto_scip || scip_path.is_some();
-    let Some(cozo) = storage.cozo.as_ref() else {
-        info!("CozoDB not available, skipping graph analysis");
-        // SCIP edges live in SQLite; without Cozo we skip the full graph pass
-        // and must not pretend SCIP was merely "not requested."
+    if storage.cozo.is_none() {
+        info!("CozoDB not available, skipping graph analysis (KG/centrality)");
+        // SCIP edges live in SQLite only. When main mode deferred SCIP to this
+        // path under --analyze-graph, still apply edges against the native floor
+        // already present in `storage` (built before the storage handle was moved).
         let scip_status = if scip_requested {
-            Some(crate::scip::ScipIndexJson::failed(
-                "CozoDB unavailable; graph analysis (and SCIP augment) skipped",
+            let repo_path_utf8 = match camino::Utf8PathBuf::from_path_buf(repo_path.to_path_buf()) {
+                Ok(p) => p,
+                Err(_) => {
+                    return Ok((
+                        crate::index::centrality::CentralityStats {
+                            entry_points_count: 0,
+                            symbols_computed: 0,
+                            max_reachable: 0,
+                        },
+                        Some(crate::scip::ScipIndexJson::failed(
+                            "repository root is not valid UTF-8; SCIP augment skipped",
+                        )),
+                    ));
+                }
+            };
+            let mut storage = storage;
+            let owned_layout;
+            let layout_ref = if let Some(l) = layout {
+                l
+            } else {
+                owned_layout = Layout::new(&repo_path_utf8);
+                &owned_layout
+            };
+            Some(crate::scip::maybe_run_scip_augment(
+                layout_ref,
+                &mut storage,
+                config,
+                auto_scip,
+                scip_path,
             ))
         } else {
             None
@@ -57,12 +85,14 @@ pub fn run_graph_analysis(
             },
             scip_status,
         ));
-    };
+    }
     // Light pre-flight: if the CozoDB store is reachable but empty, we still
     // want to run the full pipeline because `observability diff` needs the
     // OpenSLO nodes loaded from the `observability/` directory. The heavy work
     // (incremental index, extraction, KG build) is shared with `index`.
-    let _ = cozo.node_count();
+    if let Some(cozo) = storage.cozo.as_ref() {
+        let _ = cozo.node_count();
+    }
 
     let repo_path = camino::Utf8PathBuf::from_path_buf(repo_path.to_path_buf())
         .map_err(|_| miette::miette!("Repository root is not valid UTF-8"))?;
