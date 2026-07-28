@@ -650,4 +650,94 @@ mod status_json_tests {
             "apply_exit_code must warn! on cli_summary"
         );
     }
+
+    /// DoD-3 strengthening: real stream capture of `apply_exit_code` under the
+    /// production level-split writer (info→stdout, warn/error→stderr).
+    #[test]
+    fn would_block_apply_exit_code_warn_on_stderr_not_stdout() {
+        use std::io::{self, Write};
+        use std::sync::{Arc, Mutex};
+        use tracing::Level;
+        use tracing_subscriber::Layer;
+        use tracing_subscriber::fmt;
+        use tracing_subscriber::fmt::writer::{MakeWriter, MakeWriterExt};
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        #[derive(Clone, Default)]
+        struct BufWriter {
+            buf: Arc<Mutex<Vec<u8>>>,
+        }
+        impl<'a> MakeWriter<'a> for BufWriter {
+            type Writer = BufGuard;
+            fn make_writer(&'a self) -> Self::Writer {
+                BufGuard {
+                    buf: Arc::clone(&self.buf),
+                }
+            }
+        }
+        struct BufGuard {
+            buf: Arc<Mutex<Vec<u8>>>,
+        }
+        impl Write for BufGuard {
+            fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+                self.buf
+                    .lock()
+                    .map_err(|e| io::Error::other(e.to_string()))?
+                    .extend_from_slice(data);
+                Ok(data.len())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+
+        let stdout_buf = BufWriter::default();
+        let stderr_buf = BufWriter::default();
+        let stdout_capture = Arc::clone(&stdout_buf.buf);
+        let stderr_capture = Arc::clone(&stderr_buf.buf);
+        let writer = stderr_buf.with_max_level(Level::WARN).or_else(stdout_buf);
+        let layer = fmt::layer()
+            .with_writer(writer)
+            .without_time()
+            .with_target(false)
+            .with_level(false)
+            .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
+                meta.target() == "cli_summary"
+            }));
+        let _guard = tracing_subscriber::registry().with(layer).set_default();
+
+        // Default config is observe gate — would-block warns, does not exit(1).
+        let config = crate::config::model::Config::default();
+        assert!(
+            config.gate.is_observe(),
+            "default gate must be observe for non-exiting would-block path"
+        );
+        apply_exit_code(
+            &config,
+            true,  // --exit-code
+            false, // not strict
+            1,     // pending
+            0,
+            &LifecycleSignals::default(),
+        );
+
+        let stdout = String::from_utf8_lossy(&stdout_capture.lock().unwrap()).to_string();
+        let stderr = String::from_utf8_lossy(&stderr_capture.lock().unwrap()).to_string();
+
+        assert!(
+            stderr.contains("would-block") || stderr.contains("observe mode"),
+            "would-block warn must land on stderr; stderr={stderr:?} stdout={stdout:?}"
+        );
+        assert!(
+            !stdout.contains("would-block") && !stdout.contains("observe mode"),
+            "would-block must not pollute stdout JSON stream; stdout={stdout:?}"
+        );
+        // Simulated machine payload on stdout remains parseable if only JSON is there.
+        assert!(
+            stdout.trim().is_empty()
+                || serde_json::from_str::<serde_json::Value>(stdout.trim()).is_ok(),
+            "stdout must stay JSON-pure; stdout={stdout:?}"
+        );
+    }
 }

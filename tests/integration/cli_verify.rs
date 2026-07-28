@@ -5,6 +5,57 @@ use ledgerful::verify::plan::VerifyScope;
 use std::process::Command;
 use tempfile::tempdir;
 
+/// DoD-15: clap-level fatal under `verify --json` must exit non-zero with empty
+/// stdout (no partial JSON). Captures real process streams.
+#[test]
+fn test_verify_json_invalid_scope_fatal_empty_stdout() {
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["verify", "--json", "--scope", "not-a-scope"])
+        .output()
+        .expect("spawn ledgerful");
+    assert!(
+        !output.status.success(),
+        "invalid scope must be non-zero exit"
+    );
+    assert!(
+        output.stdout.is_empty(),
+        "DoD-15: fatal must not emit partial JSON; stdout={:?}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(!stderr.is_empty(), "fatal must report the error on stderr");
+    assert!(
+        stderr.contains("not-a-scope") || stderr.contains("scope") || stderr.contains("fast"),
+        "stderr should mention scope; got {stderr}"
+    );
+}
+
+/// DoD-15 / F3: rejected combo returns non-zero with no JSON payload on stdout.
+#[test]
+fn test_verify_json_signatures_rejected_no_partial_json() {
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["verify", "--json", "--signatures"])
+        .output()
+        .expect("spawn ledgerful");
+    assert!(!output.status.success());
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // miette may render on stderr only; stdout must not be a partial/full payload.
+    if !stdout.is_empty() {
+        assert!(
+            serde_json::from_str::<serde_json::Value>(stdout.trim()).is_err()
+                || !stdout.contains("schemaVersion"),
+            "reject must not emit VerifyCliJson; stdout={stdout:?}"
+        );
+    }
+    let combined = format!("{}{}", stdout, String::from_utf8_lossy(&output.stderr));
+    assert!(
+        combined.contains("cannot be combined") || combined.contains("signatures"),
+        "reject message must appear; combined={combined:?}"
+    );
+}
+
 #[test]
 fn test_verify_command_pass() {
     let tmp = tempdir().unwrap();
