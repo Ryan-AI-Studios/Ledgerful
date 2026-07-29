@@ -27,12 +27,18 @@ jobs:
       contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Parser matrix (Gate B / Gate A shared changelog section test)
+      - name: Parser matrix (Gate B / Gate A shared changelog section + Unreleased body)
         shell: bash
         run: |
           set -euo pipefail
-          chmod +x scripts/test-release-changelog.sh scripts/lib/release-changelog.sh
+          chmod +x scripts/test-release-changelog.sh scripts/lib/release-changelog.sh scripts/changelog-unreleased.sh
           scripts/test-release-changelog.sh
+      - name: npm publish three-state decision matrix (DoD-8)
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/test-npm-publish-decision.sh scripts/npm-publish-decision.sh
+          scripts/test-npm-publish-decision.sh
       - name: Run Gate B
         shell: bash
         run: |
