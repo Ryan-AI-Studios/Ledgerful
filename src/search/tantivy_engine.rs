@@ -15,9 +15,94 @@ pub struct SearchResult {
     pub path: String,
     pub line_count: usize,
     pub score: f32,
+    /// Plain-text snippet fragment (no HTML, no ANSI).
     pub snippet: Option<String>,
-    pub highlighted: Option<String>,
+    /// Byte ranges into `snippet` that match the query. Callers apply emphasis
+    /// at print time; the engine never embeds escape sequences or HTML.
+    pub highlight_ranges: Option<Vec<(usize, usize)>>,
     pub line_number: Option<usize>,
+}
+
+/// Max plain-snippet bytes kept after our own truncation arithmetic.
+/// Width/ellipsis policy is a separate track; this only prevents mid-char slices.
+const SNIPPET_MAX_BYTES: usize = 240;
+
+/// Plain fragment plus byte highlight ranges into that fragment.
+struct BuiltSnippet {
+    fragment: String,
+    /// Inclusive-start exclusive-end byte ranges into `fragment`.
+    ranges: Vec<(usize, usize)>,
+    line_number: Option<usize>,
+}
+
+/// Truncate `s` to at most `max_bytes` without splitting a multi-byte character.
+pub(crate) fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
+    if s.len() <= max_bytes {
+        return s;
+    }
+    let mut end = max_bytes.min(s.len());
+    while end > 0 && !s.is_char_boundary(end) {
+        end -= 1;
+    }
+    &s[..end]
+}
+
+/// Build a plain fragment + byte highlight ranges from a tantivy Snippet.
+/// Uses `fragment()` + `highlighted()` ranges only — no HTML round-trip.
+/// Ranges are already aligned to the fragment (byte offsets).
+fn build_snippet(snippet: &tantivy::snippet::Snippet, content: &str) -> Option<BuiltSnippet> {
+    let raw_fragment = snippet.fragment();
+    if raw_fragment.is_empty() {
+        return None;
+    }
+
+    // Track-owned truncation: never slice mid-character (DoD-6).
+    let fragment = truncate_at_char_boundary(raw_fragment, SNIPPET_MAX_BYTES).to_string();
+    let frag_len = fragment.len();
+
+    let mut ranges: Vec<(usize, usize)> = snippet
+        .highlighted()
+        .iter()
+        .filter_map(|r| {
+            let start = r.start;
+            let end = r.end;
+            if start > end || end > frag_len {
+                return None;
+            }
+            // Defensive: tantivy ranges are byte-aligned, but guard our slices.
+            if !fragment.is_char_boundary(start) || !fragment.is_char_boundary(end) {
+                return None;
+            }
+            Some((start, end))
+        })
+        .collect();
+    // Deterministic order for same repo state.
+    ranges.sort_by_key(|(s, e)| (*s, *e));
+
+    let line_number = if let Some(idx) = content.find(&fragment) {
+        if content.is_char_boundary(idx) {
+            let lines_before = content[..idx].chars().filter(|&c| c == '\n').count();
+            Some(lines_before + 1)
+        } else {
+            Some(1)
+        }
+    } else if let Some(idx) = content.find(raw_fragment) {
+        // Fragment may have been truncated; locate via the full raw fragment.
+        if content.is_char_boundary(idx) {
+            let lines_before = content[..idx].chars().filter(|&c| c == '\n').count();
+            Some(lines_before + 1)
+        } else {
+            Some(1)
+        }
+    } else {
+        Some(1)
+    };
+
+    Some(BuiltSnippet {
+        fragment,
+        ranges,
+        line_number,
+    })
 }
 
 pub struct TantivySearchEngine {
@@ -189,7 +274,7 @@ impl TantivySearchEngine {
                 .unwrap_or(0) as usize;
 
             let mut snippet_opt = None;
-            let mut highlighted_opt = None;
+            let mut ranges_opt = None;
             let mut line_number_opt = None;
 
             if let Some(content_val) = retrieved_doc
@@ -197,22 +282,10 @@ impl TantivySearchEngine {
                 .and_then(|v| v.as_str())
             {
                 let snippet = snippet_generator.snippet_from_doc(&retrieved_doc);
-                let highlighted_html = snippet.to_html();
-                if !highlighted_html.is_empty() {
-                    snippet_opt = Some(snippet.fragment().to_string());
-                    highlighted_opt = Some(
-                        highlighted_html
-                            .replace("<b>", "\x1b[1m")
-                            .replace("</b>", "\x1b[0m"),
-                    );
-                    let plain_snippet = snippet.fragment();
-                    if let Some(idx) = content_val.find(plain_snippet) {
-                        let lines_before =
-                            content_val[..idx].chars().filter(|&c| c == '\n').count();
-                        line_number_opt = Some(lines_before + 1);
-                    } else {
-                        line_number_opt = Some(1);
-                    }
+                if let Some(built) = build_snippet(&snippet, content_val) {
+                    snippet_opt = Some(built.fragment);
+                    ranges_opt = Some(built.ranges);
+                    line_number_opt = built.line_number;
                 }
             }
 
@@ -221,7 +294,7 @@ impl TantivySearchEngine {
                 line_count,
                 score,
                 snippet: snippet_opt,
-                highlighted: highlighted_opt,
+                highlight_ranges: ranges_opt,
                 line_number: line_number_opt,
             });
         }
@@ -263,7 +336,7 @@ impl TantivySearchEngine {
                 .unwrap_or(0) as usize;
 
             let mut snippet_opt = None;
-            let mut highlighted_opt = None;
+            let mut ranges_opt = None;
             let mut line_number_opt = None;
 
             if let Some(content_val) = retrieved_doc
@@ -271,22 +344,10 @@ impl TantivySearchEngine {
                 .and_then(|v| v.as_str())
             {
                 let snippet = snippet_generator.snippet_from_doc(&retrieved_doc);
-                let highlighted_html = snippet.to_html();
-                if !highlighted_html.is_empty() {
-                    snippet_opt = Some(snippet.fragment().to_string());
-                    highlighted_opt = Some(
-                        highlighted_html
-                            .replace("<b>", "\x1b[1m")
-                            .replace("</b>", "\x1b[0m"),
-                    );
-                    let plain_snippet = snippet.fragment();
-                    if let Some(idx) = content_val.find(plain_snippet) {
-                        let lines_before =
-                            content_val[..idx].chars().filter(|&c| c == '\n').count();
-                        line_number_opt = Some(lines_before + 1);
-                    } else {
-                        line_number_opt = Some(1);
-                    }
+                if let Some(built) = build_snippet(&snippet, content_val) {
+                    snippet_opt = Some(built.fragment);
+                    ranges_opt = Some(built.ranges);
+                    line_number_opt = built.line_number;
                 }
             }
 
@@ -295,7 +356,7 @@ impl TantivySearchEngine {
                 line_count,
                 score,
                 snippet: snippet_opt,
-                highlighted: highlighted_opt,
+                highlight_ranges: ranges_opt,
                 line_number: line_number_opt,
             });
         }
@@ -517,6 +578,30 @@ mod tests {
     use super::*;
     use crate::search::trigram::extract_trigrams;
     use tempfile::TempDir;
+
+    #[test]
+    fn truncate_at_char_boundary_ascii() {
+        assert_eq!(truncate_at_char_boundary("hello world", 5), "hello");
+        assert_eq!(truncate_at_char_boundary("short", 100), "short");
+    }
+
+    #[test]
+    fn truncate_at_char_boundary_cjk_and_emoji() {
+        // "中" is 3 bytes; max_bytes=4 would land mid-"文" if sliced blind.
+        let s = "中文emoji😀boundary";
+        let t = truncate_at_char_boundary(s, 4);
+        assert!(t.is_char_boundary(t.len()));
+        assert!(!t.contains('\u{FFFD}'));
+        // 4 bytes → only first CJK char (3 bytes), not mid-second-char.
+        assert_eq!(t, "中");
+
+        // 4-byte emoji: landing max_bytes inside the emoji must not split it.
+        let with_emoji = "ab😀cd";
+        // 'a','b' = 2 bytes, emoji = 4 bytes → at max 3 we keep "ab"
+        let t2 = truncate_at_char_boundary(with_emoji, 3);
+        assert_eq!(t2, "ab");
+        assert!(t2.is_char_boundary(t2.len()));
+    }
 
     fn make_engine(dir: &TempDir) -> TantivySearchEngine {
         TantivySearchEngine::open_or_create(dir.path()).expect("open_or_create")
