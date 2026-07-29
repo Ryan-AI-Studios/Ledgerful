@@ -6,6 +6,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Scheduled release cut (0104):** weekday `release-cut.yml` proposes a Tier-2 release PR when
+  `[Unreleased]` has content (`scripts/prepare-release-cut.sh` + pre-bump `changelog-unreleased.sh`).
+  Opens `release/vX.Y.Z` with exactly four files (CHANGELOG, Cargo.toml/lock, mcp pin **and** wrapper
+  patch), label `release-cut`. Merge tags the **merge commit** so `release.yml` fires. Empty Unreleased
+  and an already-open cut PR are clean skips. Merge and `ai-reviewed` stay human; automation cannot
+  set the review status (by design).
+
 ### Fixed
 
 - **MCP npm channel engine pin (0101):** published `@ledgerful/mcp-server` was still shipping
