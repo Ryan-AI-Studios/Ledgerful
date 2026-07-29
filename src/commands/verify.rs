@@ -1066,7 +1066,7 @@ pub fn execute_verify(
                             &profile,
                             scope,
                             conn,
-                            layout.root.as_std_path(),
+                            &layout,
                             auto_index,
                         )
                     }

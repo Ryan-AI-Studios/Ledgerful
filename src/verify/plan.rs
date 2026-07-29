@@ -188,6 +188,9 @@ fn build_scoped_nextest_command(test_stems: &[String]) -> String {
 ///
 /// `conn` is the SQLite connection from the storage manager. When `None`,
 /// scoped selection is impossible and the full plan is returned.
+///
+/// `layout` provides the analysis root (`layout.root`) and shared state home
+/// (`layout.state_dir`) so auto-index opens the same DB as verify (0108).
 #[allow(clippy::too_many_arguments)]
 pub fn build_plan_scoped(
     packet: &ImpactPacket,
@@ -197,10 +200,10 @@ pub fn build_plan_scoped(
     profile: &crate::platform::repository::RepositoryProfile,
     scope: VerifyScope,
     conn: Option<&rusqlite::Connection>,
-    repo_root: &std::path::Path,
+    layout: &crate::state::layout::Layout,
 ) -> VerificationPlan {
     build_plan_scoped_with_options(
-        packet, rules, predicted, config, profile, scope, conn, repo_root, false,
+        packet, rules, predicted, config, profile, scope, conn, layout, false,
     )
 }
 
@@ -217,9 +220,10 @@ pub fn build_plan_scoped_with_options(
     profile: &crate::platform::repository::RepositoryProfile,
     scope: VerifyScope,
     conn: Option<&rusqlite::Connection>,
-    repo_root: &std::path::Path,
+    layout: &crate::state::layout::Layout,
     auto_index: bool,
 ) -> VerificationPlan {
+    let repo_root = layout.root.as_std_path();
     if !scope.is_fast() {
         // Explicit full request — no fallback announcement needed.
         return build_plan_with_scope(packet, rules, predicted, config, profile, scope, repo_root);
@@ -247,7 +251,7 @@ pub fn build_plan_scoped_with_options(
         && let Some(c) = conn
         && is_test_mapping_stale(c, packet)
     {
-        if let Err(e) = run_incremental_index_for_changed_files(packet, repo_root, config) {
+        if let Err(e) = run_incremental_index_for_changed_files(packet, layout, config) {
             let mut plan =
                 build_plan_with_scope(packet, rules, predicted, config, profile, scope, repo_root);
             plan.fallback_reason = Some(format_fallback_reason(
@@ -354,31 +358,30 @@ fn is_test_mapping_stale(conn: &rusqlite::Connection, packet: &ImpactPacket) -> 
 /// Run an incremental index limited to the changed files in the packet. This
 /// delegates to the same indexer used by `ledgerful index --incremental` but
 /// does not spawn a separate CLI process.
+///
+/// Uses `layout.state_dir` for the DB (shared across linked worktrees) and
+/// `layout.root` as the analysis root — never invents `Layout::new(repo_root)`.
 fn run_incremental_index_for_changed_files(
     packet: &ImpactPacket,
-    repo_root: &std::path::Path,
+    layout: &crate::state::layout::Layout,
     config: &VerifyConfig,
 ) -> Result<(), String> {
     use crate::config::model::Config;
     use crate::index::ProjectIndexer;
-    use crate::state::layout::Layout;
     use crate::state::storage::StorageManager;
 
-    let root = camino::Utf8PathBuf::from_path_buf(repo_root.to_path_buf())
-        .map_err(|_| "repo root is not valid UTF-8".to_string())?;
-    let layout = Layout::new(&root);
     let db_path = layout.state_subdir().join("ledger.db");
 
     let storage = StorageManager::init(db_path.as_std_path())
         .map_err(|e| format!("failed to open storage for auto-index: {e}"))?;
 
-    let mut full_config = crate::config::load::load_config(&layout).unwrap_or_else(|err| {
+    let mut full_config = crate::config::load::load_config(layout).unwrap_or_else(|err| {
         tracing::warn!("Failed to load config for auto-index: {err}. Using defaults.");
         Config::default()
     });
     full_config.verify = config.clone();
 
-    let mut indexer = ProjectIndexer::new(storage, root, full_config);
+    let mut indexer = ProjectIndexer::new(storage, layout.root.clone(), full_config);
     indexer
         .incremental_index()
         .map_err(|e| format!("incremental index failed: {e}"))?;
@@ -1421,6 +1424,7 @@ default-filter = 'test(/__slow$/)'
     fn test_build_plan_scoped_full_scope_uses_build_plan() {
         let packet = empty_packet();
         let rules = Rules::default();
+        let layout = crate::state::layout::Layout::new(".");
         let plan = build_plan_scoped(
             &packet,
             &rules,
@@ -1429,7 +1433,7 @@ default-filter = 'test(/__slow$/)'
             &crate::platform::repository::RepositoryProfile::default(),
             VerifyScope::Full,
             None,
-            std::path::Path::new("."),
+            &layout,
         );
         // Full scope → falls through to build_plan → default cargo test command.
         assert_eq!(plan.steps.len(), 2);
@@ -1439,6 +1443,7 @@ default-filter = 'test(/__slow$/)'
     fn test_build_plan_scoped_fast_no_conn_falls_back() {
         let packet = empty_packet();
         let rules = Rules::default();
+        let layout = crate::state::layout::Layout::new(".");
         let plan = build_plan_scoped(
             &packet,
             &rules,
@@ -1447,7 +1452,7 @@ default-filter = 'test(/__slow$/)'
             &crate::platform::repository::RepositoryProfile::default(),
             VerifyScope::Fast,
             None,
-            std::path::Path::new("."),
+            &layout,
         );
         // No connection → can't scope → falls back to full build_plan.
         assert_eq!(plan.steps.len(), 2);
@@ -1465,6 +1470,7 @@ default-filter = 'test(/__slow$/)'
         let rules = Rules::default();
         // Even with a conn, shared infra → full plan.
         let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let layout = crate::state::layout::Layout::new(".");
         let plan = build_plan_scoped(
             &packet,
             &rules,
@@ -1473,7 +1479,7 @@ default-filter = 'test(/__slow$/)'
             &crate::platform::repository::RepositoryProfile::default(),
             VerifyScope::Fast,
             Some(&conn),
-            std::path::Path::new("."),
+            &layout,
         );
         // Falls back to build_plan (no rules match Cargo.toml except the
         // rules.toml override, but in this test rules are default/empty).
@@ -1510,6 +1516,7 @@ default-filter = 'test(/__slow$/)'
             [],
         )
         .unwrap();
+        let layout = crate::state::layout::Layout::new(".");
         let plan = build_plan_scoped(
             &packet,
             &rules,
@@ -1518,7 +1525,7 @@ default-filter = 'test(/__slow$/)'
             &crate::platform::repository::RepositoryProfile::default(),
             VerifyScope::Fast,
             Some(&conn),
-            std::path::Path::new("."),
+            &layout,
         );
         // Empty mapping → falls back to full plan.
         assert_eq!(plan.steps.len(), 2);
@@ -1579,6 +1586,7 @@ default-filter = 'test(/__slow$/)'
         )
         .unwrap();
 
+        let layout = crate::state::layout::Layout::new(".");
         let plan = build_plan_scoped(
             &packet,
             &rules,
@@ -1587,7 +1595,7 @@ default-filter = 'test(/__slow$/)'
             &crate::platform::repository::RepositoryProfile::default(),
             VerifyScope::Fast,
             Some(&conn),
-            std::path::Path::new("."),
+            &layout,
         );
         // Should produce 3 steps: fmt, clippy, scoped test command.
         assert_eq!(plan.steps.len(), 3);
@@ -1721,6 +1729,8 @@ default-filter = 'test(/__slow$/)'
         )
         .unwrap();
         let tmp = tempfile::tempdir().unwrap();
+        let root = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let layout = crate::state::layout::Layout::new(&root);
         let plan = build_plan_scoped_with_options(
             &packet,
             &rules,
@@ -1729,7 +1739,7 @@ default-filter = 'test(/__slow$/)'
             &crate::platform::repository::RepositoryProfile::default(),
             VerifyScope::Fast,
             Some(&conn),
-            tmp.path(),
+            &layout,
             true,
         );
         assert_eq!(plan.steps.len(), 2);
@@ -1797,6 +1807,7 @@ default-filter = 'test(/__slow$/)'
         )
         .unwrap();
 
+        let layout = crate::state::layout::Layout::new(".");
         let plan = build_plan_scoped_with_options(
             &packet,
             &rules,
@@ -1805,7 +1816,7 @@ default-filter = 'test(/__slow$/)'
             &crate::platform::repository::RepositoryProfile::default(),
             VerifyScope::Fast,
             Some(&conn),
-            std::path::Path::new("."),
+            &layout,
             true, // auto_index=true
         );
         // Should return scoped plan (3 steps), not full plan.

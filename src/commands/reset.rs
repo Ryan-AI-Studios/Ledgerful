@@ -2,7 +2,6 @@ use crate::state::layout::Layout;
 use camino::{Utf8Path, Utf8PathBuf};
 use miette::{Result, miette};
 use owo_colors::OwoColorize;
-use std::env;
 use std::fs;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -36,11 +35,10 @@ pub fn execute_reset(
         ));
     }
 
-    let current_dir =
-        env::current_dir().map_err(|e| miette!("Failed to get current directory: {e}"))?;
-    let root = Utf8PathBuf::from_path_buf(current_dir)
-        .map_err(|path| miette!("Current directory is not valid UTF-8: {:?}", path))?;
-    let layout = Layout::new(root.as_str());
+    // Resolve via git discover so nested cwd and linked worktrees share the
+    // correct state home (0108). Fail closed on non-git: destructive reset must
+    // not target cwd-local Layout::new when state may live under the main tree.
+    let layout = crate::commands::helpers::get_layout()?;
 
     // 1. Generate and print reset plan preview
     let plan_items = reset_plan_items(
