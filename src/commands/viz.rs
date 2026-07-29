@@ -2,7 +2,6 @@ use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
-use std::env;
 use std::fs;
 use std::path::PathBuf;
 
@@ -29,15 +28,13 @@ pub fn execute_viz(
     entity: Option<String>,
     view: String,
 ) -> Result<()> {
-    let current_dir = env::current_dir().into_diagnostic()?;
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    let layout = crate::commands::helpers::get_layout()?;
 
     if view.eq_ignore_ascii_case("services") {
         return execute_viz_services(output_path, layout);
     }
 
-    let db_path = layout.state_subdir().join("ledger.db");
-    let storage = StorageManager::init(db_path.as_std_path())?;
+    let storage = StorageManager::init_with_layout(&layout)?;
 
     let cozo = storage
         .cozo
@@ -439,8 +436,7 @@ fn generate_html(nodes: &[VizNode], edges: &[VizEdge]) -> String {
 
 /// Renders the service boundary and communication graph as an HTML file.
 fn execute_viz_services(output_path: Option<PathBuf>, layout: Layout) -> Result<()> {
-    let db_path = layout.state_subdir().join("ledger.db");
-    let storage = StorageManager::init(db_path.as_std_path())?;
+    let storage = StorageManager::init_with_layout(&layout)?;
 
     let cozo = storage
         .cozo

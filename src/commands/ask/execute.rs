@@ -35,14 +35,13 @@ pub fn execute_ask(
     let config = load_ledger_config(&layout)?;
 
     layout.ensure_state_dir()?;
-    let storage_path = layout.state_subdir().join("ledger.db");
-    let storage = StorageManager::init(storage_path.as_std_path())?;
+    let storage = StorageManager::init_with_layout(&layout)?;
 
     // --- Staleness check ---
     let threshold = config.index.stale_threshold_days;
     let non_interactive = crate::index::staleness::is_non_interactive();
     let storage = if auto_index {
-        crate::index::staleness::try_auto_index(storage, threshold)?
+        crate::index::staleness::try_auto_index(storage, threshold, &layout)?
     } else if non_interactive {
         // Non-interactive mode: skip auto-index prompt, just warn
         warn_if_stale(&storage, threshold);
@@ -56,7 +55,7 @@ pub fn execute_ask(
                 .prompt()
             {
                 eprintln!("Running auto-indexing...");
-                crate::index::staleness::try_auto_index(storage, threshold)?
+                crate::index::staleness::try_auto_index(storage, threshold, &layout)?
             } else {
                 storage
             }

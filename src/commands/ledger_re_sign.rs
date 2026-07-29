@@ -50,7 +50,7 @@ pub fn execute_ledger_re_sign_with_keys_dir(
         .to_path_buf();
 
     // Read-only preview: open without claiming a write lock.
-    let mut preview_storage = StorageManager::open_read_only_sqlite_only(&layout.root)?;
+    let mut preview_storage = StorageManager::open_read_only_sqlite_only(&layout)?;
     let config = load_ledger_config(&layout)?;
     let preview_db = LedgerDb::new(preview_storage.get_connection());
     let entries = preview_db
@@ -184,7 +184,7 @@ pub fn execute_ledger_re_sign_with_keys_dir(
     }
 
     // Mutation path: take the write connection, create a WAL-safe backup first, then re-sign.
-    let mut storage = StorageManager::init(&db_path)?;
+    let mut storage = StorageManager::init_with_layout(&layout)?;
     let backup_path = backup_ledger_db(storage.get_connection(), &db_path)?;
 
     let author = current_actor(&layout);

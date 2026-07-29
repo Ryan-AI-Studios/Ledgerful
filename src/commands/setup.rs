@@ -17,13 +17,12 @@ use std::path::PathBuf;
 /// When `skip_scan` is true, the first-scan step is omitted.
 /// If no git repository is detected, the first-scan step is skipped with a warning.
 ///
-/// The wizard's project root is resolved via `gix::discover(".")` (mirroring
-/// `init.rs:192-210`) so the wizard's own bookkeeping (state_exists check,
-/// init call, no-git scan-skip, success-screen report path) agrees with
-/// what `init`/`index` actually do. A `CwdGuard` additionally redirects the
-/// process cwd to the discovered root for the duration of the wizard so
-/// that `execute_doctor`/`execute_scan` — which read `env::current_dir()`
-/// unconditionally — write to the same `.ledgerful` tree.
+/// Work root is the current worktree workdir (`gix::discover`); state_dir is
+/// resolved via [`crate::commands::helpers::resolve_state_dir`] so linked
+/// worktrees share the main worktree's `.ledgerful` (same as `init` /
+/// `get_layout`). Non-git cwd falls back to `Layout::new(cwd)`. A
+/// `CwdGuard` redirects process cwd to the work root for the wizard so
+/// doctor/scan agree with init on analysis root.
 ///
 /// # Concurrency
 ///
@@ -40,45 +39,39 @@ pub fn execute_setup(yes: bool, skip_scan: bool) -> Result<()> {
         welcome_message(&mut stdout).into_diagnostic()?;
     }
 
-    // ── 2. Resolve git-discovered root ──────────────────────────────────────
-    // H1: mirror the gix::discover(".") pattern from init.rs:192-210 so the
-    // wizard's own bookkeeping agrees with init/index (which both use the
-    // git-discovered workdir) instead of with doctor/scan (which both use
-    // raw cwd). Without this, running the wizard from a subdirectory of a
-    // git work tree splits the .ledgerful tree across two locations and
-    // silently hides state from later commands.
-    let root = match gix::discover(".") {
+    // ── 2. Resolve work root + shared state (not cwd-as-root) ───────────────
+    // Mirror init: work_root from discover, state_dir via resolve_state_dir so
+    // linked worktrees do not get a private .ledgerful under the linked tree.
+    // Canonicalize workdir when present so subdirectory discovery paths that
+    // contain `..` resolve cleanly for CwdGuard and downstream discover.
+    let (root, layout) = match gix::discover(".") {
         Ok(repo) => {
             let path = repo
                 .workdir()
                 .ok_or(crate::commands::CommandError::RepoDiscoveryFailed)?
                 .to_path_buf();
-            // `gix::discover(".")` from a subdirectory returns a workdir
-            // expressed as a path *from the starting point* (e.g.
-            // `<git-root>/sub/..`), which still contains a `..` component.
-            // Canonicalize so downstream `gix::discover` checks and the
-            // scan-step's `open_repo` see the resolved git root. The
-            // canonicalize is best-effort: if it fails (e.g. the workdir
-            // was deleted between discovery and now), we fall back to the
-            // raw workdir path.
-            dunce::canonicalize(&path)
+            let work_root = dunce::canonicalize(&path)
                 .ok()
                 .and_then(|p| Utf8PathBuf::from_path_buf(p).ok())
                 .unwrap_or_else(|| {
                     Utf8PathBuf::from_path_buf(path).unwrap_or_else(|_| Utf8PathBuf::from("."))
-                })
+                });
+            let state_dir = crate::commands::helpers::resolve_state_dir(&repo)?;
+            let layout = Layout::from_roots(&work_root, state_dir);
+            (work_root, layout)
         }
-        Err(_) => Utf8PathBuf::from_path_buf(env::current_dir().into_diagnostic()?)
-            .map_err(|_| miette!("Current directory is not valid UTF-8"))?,
+        Err(_) => {
+            let root = Utf8PathBuf::from_path_buf(env::current_dir().into_diagnostic()?)
+                .map_err(|_| miette!("Current directory is not valid UTF-8"))?;
+            let layout = Layout::new(&root);
+            (root, layout)
+        }
     };
-    let layout = Layout::new(&root);
     let state_exists = layout.state_dir.exists();
 
-    // H1: redirect cwd to the discovered root so execute_doctor and
-    // execute_scan (which both use raw cwd) target the same .ledgerful
-    // tree that execute_init and execute_index just wrote to. The guard
-    // restores the original cwd on drop, so the wizard doesn't leave the
-    // caller's shell in an unexpected directory.
+    // Redirect cwd to the work root so execute_doctor / execute_scan analyze
+    // the same tree as init. State opens still go through get_layout /
+    // resolve_state_dir (shared for linked worktrees). Guard restores cwd.
     let _cwd_guard = CwdGuard::enter(&root)?;
 
     if state_exists {
@@ -178,7 +171,7 @@ pub fn execute_setup(yes: bool, skip_scan: bool) -> Result<()> {
     // ── 6. Success screen ───────────────────────────────────────────────────
     {
         let mut stdout = std::io::stdout().lock();
-        success_screen(&mut stdout, &root).into_diagnostic()?;
+        success_screen(&mut stdout, &layout).into_diagnostic()?;
     }
 
     Ok(())
@@ -255,7 +248,7 @@ fn welcome_message<W: Write>(out: &mut W) -> std::io::Result<()> {
     Ok(())
 }
 
-fn success_screen<W: Write>(out: &mut W, layout_root: &Utf8Path) -> std::io::Result<()> {
+fn success_screen<W: Write>(out: &mut W, layout: &Layout) -> std::io::Result<()> {
     writeln!(
         out,
         "\n{}",
@@ -272,13 +265,9 @@ fn success_screen<W: Write>(out: &mut W, layout_root: &Utf8Path) -> std::io::Res
         "╰──────────────────────────────────────────────────────╯".green()
     )?;
 
-    // M1: derive the canonical impact-report path from the Layout helper
-    // and the `LATEST_IMPACT_REPORT` constant instead of hand-rolling the
-    // path segments. This keeps the success screen in sync if `STATE_DIR`
-    // or `REPORTS_DIR` ever changes.
-    let report_path = Layout::new(layout_root)
-        .reports_dir()
-        .join(LATEST_IMPACT_REPORT);
+    // Use the resolved layout (shared state_dir for linked worktrees) so the
+    // success screen points at the same reports home as init/scan/impact.
+    let report_path = layout.reports_dir().join(LATEST_IMPACT_REPORT);
     if report_path.exists() {
         writeln!(
             out,
@@ -434,20 +423,18 @@ mod tests {
     fn success_screen_contains_suggested_next_steps() {
         let tmp = tempfile::tempdir().expect("tempdir must succeed");
         let root = Utf8Path::from_path(tmp.path()).expect("tempdir path must be UTF-8");
+        let layout = Layout::new(root);
 
         // Pre-create a fake impact report so success_screen renders the path.
-        std::fs::create_dir_all(root.join(".ledgerful").join("reports"))
-            .expect("reports dir must be creatable");
+        std::fs::create_dir_all(layout.reports_dir()).expect("reports dir must be creatable");
         std::fs::write(
-            root.join(".ledgerful")
-                .join("reports")
-                .join("latest-impact.json"),
+            layout.reports_dir().join("latest-impact.json"),
             r#"{"sentinel":"success_screen test"}"#,
         )
         .expect("sentinel report must be writable");
 
         let mut buf = Vec::new();
-        success_screen(&mut buf, root).expect("success_screen should not fail on Vec writer");
+        success_screen(&mut buf, &layout).expect("success_screen should not fail on Vec writer");
 
         let output = String::from_utf8(buf).expect("success_screen output must be UTF-8");
 

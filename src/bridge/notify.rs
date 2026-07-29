@@ -1,6 +1,5 @@
 use crate::bridge::ipc::IpcClient;
 use crate::bridge::model::{BridgeDirection, BridgePayload, BridgeRecord, BridgeVerifyOutcome};
-use crate::state::layout::Layout;
 use std::collections::HashSet;
 use std::sync::LazyLock;
 use std::sync::Mutex;
@@ -17,11 +16,10 @@ static ALERTED_PAIRS: LazyLock<Mutex<HashSet<(String, String)>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
 pub fn push_verify_results(results: Vec<BridgeVerifyOutcome>) {
-    let current_dir = match std::env::current_dir() {
-        Ok(d) => d,
+    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
+        Ok(l) => l,
         Err(_) => return,
     };
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
     if !crate::bridge::client::is_bridge_enabled(&layout) {
         return;
     }
@@ -72,14 +70,13 @@ pub fn push_risk_alert(
     risk_level: &str,
     threshold: f64,
 ) {
-    let current_dir = match std::env::current_dir() {
-        Ok(d) => d,
+    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
+        Ok(l) => l,
         Err(e) => {
-            tracing::debug!("Risk alert skipped: cannot get current dir: {:?}", e);
+            tracing::debug!("Risk alert skipped: cannot resolve layout: {:?}", e);
             return;
         }
     };
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
     if !crate::bridge::client::is_bridge_enabled(&layout) {
         return;
     }
@@ -152,6 +149,7 @@ pub fn push_risk_alert(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::layout::Layout;
 
     /// Helper to canonicalise a pair the same way push_risk_alert does.
     fn canonical_pair(a: &str, b: &str) -> (String, String) {

@@ -14,6 +14,10 @@ pub struct DoctorReport<'a> {
     pub tools: &'a Vec<(String, ExecutableStatus)>,
     pub path_display: &'a str,
     pub path_kind: &'a str,
+    /// Current worktree workdir (analysis root).
+    pub work_root: &'a str,
+    /// Resolved `.ledgerful` state home (may be on the main worktree for linked trees).
+    pub state_dir: &'a str,
     pub is_wsl_mounted: bool,
     pub embedding_model_status: String,
     /// From `BackendAvailabilityReport::is_failure` — preferred over string
@@ -89,6 +93,8 @@ pub fn print_doctor_report(report: &DoctorReport, summary: &DoctorSummaryCounts)
 
     println!("\nCurrent Path:        {}", report.path_display);
     println!("Path Type:           {}", report.path_kind);
+    println!("Work root:           {}", report.work_root);
+    println!("State dir:           {}", report.state_dir);
     if report.is_wsl_mounted {
         println!("WSL Support:         Active (Mounted)");
     }
@@ -140,8 +146,16 @@ pub fn print_scan_summary(snapshot: &crate::git::RepoSnapshot) {
     println!("{:<15} {}", "State:".bold(), state_str);
 
     if !snapshot.changes.is_empty() {
-        let current_dir = std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-        let layout = crate::state::layout::Layout::new(current_dir.to_string_lossy().as_ref());
+        // Prefer shared state (linked worktrees). Non-git → Layout::new(cwd) for
+        // ignore-pattern config only — no DB open. Resolve-after-discover fails closed.
+        let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
+            Ok(l) => l,
+            Err(_) => {
+                // Rare: bad UTF-8 cwd. Use empty defaults without inventing state.
+                let root = camino::Utf8PathBuf::from(".");
+                crate::state::layout::Layout::new(root)
+            }
+        };
         let config = crate::config::load::load_config(&layout).unwrap_or_default();
         let ignore_set = if !config.watch.ignore_patterns.is_empty() {
             let mut builder = globset::GlobSetBuilder::new();

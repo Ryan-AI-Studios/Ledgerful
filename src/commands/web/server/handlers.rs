@@ -445,7 +445,7 @@ async fn sync_status_impl(state: Arc<AppState>) -> Result<Json<SyncStatusRespons
             return empty_sync_status();
         }
 
-        let storage = match StorageManager::open_read_only_sqlite_only(&layout.root) {
+        let storage = match StorageManager::open_read_only_sqlite_only(&layout) {
             Ok(s) => s,
             Err(e) => {
                 tracing::warn!(
@@ -849,7 +849,7 @@ fn fetch_hotspots(
         }
     };
 
-    let storage = match StorageManager::open_read_only_sqlite_only(&layout.root) {
+    let storage = match StorageManager::open_read_only_sqlite_only(layout) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("Storage not available for /api/hotspots: {}", e);
@@ -900,7 +900,7 @@ pub(crate) fn fetch_hotspots_response(
     let mut git_meta: HashMap<String, (String, String)> = HashMap::new();
     let mut need_cache_fallback = false;
 
-    if let Ok(storage) = StorageManager::open_read_only_sqlite_only(&layout.root) {
+    if let Ok(storage) = StorageManager::open_read_only_sqlite_only(layout) {
         let conn = storage.get_connection();
         for chunk in file_paths.chunks(500) {
             let placeholders = std::iter::repeat_n("?", chunk.len())

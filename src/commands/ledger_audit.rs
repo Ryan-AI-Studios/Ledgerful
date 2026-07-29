@@ -88,7 +88,7 @@ pub fn execute_ledger_audit(
     json: bool,
 ) -> Result<()> {
     let layout = get_layout()?;
-    let mut storage = StorageManager::open_read_only_sqlite_only(&layout.root)?;
+    let mut storage = StorageManager::open_read_only_sqlite_only(&layout)?;
 
     if !json {
         println!("{}", "Ledgerful Project Audit".bold().underline());
@@ -147,7 +147,7 @@ fn gather_audit_data(
     let config = load_ledger_config(&layout)?;
 
     // Opening a second connection for the manager avoids borrow conflicts
-    let mut storage_mut = StorageManager::open_read_only_sqlite_only(&layout.root)?;
+    let mut storage_mut = StorageManager::open_read_only_sqlite_only(&layout)?;
     let manager = TransactionManager::new(&mut storage_mut, layout.root.clone().into(), config);
 
     let v_7 = db

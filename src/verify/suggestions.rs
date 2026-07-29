@@ -182,8 +182,7 @@ pub fn generate_health_suggestions(ledger_status: &LedgerStatus) -> Vec<Suggesti
 
 /// Query the ledger database for the status snapshot needed by the suggestion engine.
 pub fn query_ledger_status(layout: &Layout) -> LedgerStatus {
-    let db_path = layout.state_subdir().join("ledger.db");
-    let storage = match StorageManager::init(db_path.as_std_path()) {
+    let storage = match StorageManager::init_with_layout(layout) {
         Ok(s) => s,
         Err(_) => {
             // No db means no packets — flag it

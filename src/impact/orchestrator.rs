@@ -205,13 +205,24 @@ impl ImpactOrchestrator {
             }
         }
 
-        // 3. Execute Analysis (Scoring)
-        let layout = crate::state::layout::Layout::new(project_root.to_string_lossy().as_ref());
-        let rules = match crate::policy::load::load_rules(&layout) {
-            Ok(r) => r,
+        // 3. Execute Analysis (Scoring) — load policy rules via resolved layout.
+        // Rules-only: soft-fail to defaults. Never invent private worktree state
+        // when git discover succeeded but resolve failed (fail-closed).
+        let rules = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
+            Ok(layout) => match crate::policy::load::load_rules(&layout) {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("Failed to load policy rules: {}", e);
+                    context.add_warning(format!("Failed to load policy rules: {}", e));
+                    crate::policy::rules::Rules::default()
+                }
+            },
             Err(e) => {
-                warn!("Failed to load policy rules: {}", e);
-                context.add_warning(format!("Failed to load policy rules: {}", e));
+                warn!(
+                    "Failed to resolve layout for policy rules (no private state invent): {}",
+                    e
+                );
+                context.add_warning(format!("Failed to resolve layout for policy rules: {e}"));
                 crate::policy::rules::Rules::default()
             }
         };

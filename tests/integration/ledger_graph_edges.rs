@@ -5,6 +5,7 @@ use ledgerful::config::model::Config;
 use ledgerful::ledger::*;
 use ledgerful::platform::urn::build_urn;
 use ledgerful::state::graph_kinds::NodeKind;
+use ledgerful::state::layout::Layout;
 use ledgerful::state::storage::StorageManager;
 use std::fs;
 use tempfile::tempdir;
@@ -72,7 +73,8 @@ fn test_commit_writes_kg_edges() {
 
     // Open read-only to verify Cozo DB state
     let storage_read =
-        StorageManager::open_read_only(camino::Utf8Path::from_path(&root).unwrap()).unwrap();
+        StorageManager::open_read_only(&Layout::new(camino::Utf8Path::from_path(&root).unwrap()))
+            .unwrap();
     let cozo_read = storage_read
         .cozo
         .as_ref()
@@ -193,7 +195,8 @@ fn test_adopt_writes_kg_edges_with_real_files() {
 
     // Open read-only and verify KG edges reference the real file, not "drift_adoption"
     let storage_read =
-        StorageManager::open_read_only(camino::Utf8Path::from_path(&root).unwrap()).unwrap();
+        StorageManager::open_read_only(&Layout::new(camino::Utf8Path::from_path(&root).unwrap()))
+            .unwrap();
     let cozo_read = storage_read
         .cozo
         .as_ref()

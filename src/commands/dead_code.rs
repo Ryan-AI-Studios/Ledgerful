@@ -90,11 +90,11 @@ pub fn execute_dead_code_with_prompt(
     let layout = get_layout()?;
     let mut config = load_ledger_config(&layout)?;
 
-    let storage = crate::state::storage::StorageManager::open_read_only(&layout.root)?;
+    let storage = crate::state::storage::StorageManager::open_read_only(&layout)?;
     let threshold_days = config.index.stale_threshold_days;
 
     let storage = if auto_index {
-        crate::index::staleness::try_auto_index(storage, threshold_days)?
+        crate::index::staleness::try_auto_index(storage, threshold_days, &layout)?
     } else if explain.is_none() {
         let _ = warn_if_stale(&storage, threshold_days);
         storage
@@ -205,9 +205,8 @@ pub fn execute_dead_code_with_prompt(
         } else {
             let removed = run_prune_loop(prompt, targets)?;
             if !removed.is_empty() {
-                let mut write_storage = crate::state::storage::StorageManager::init(
-                    layout.state_subdir().join("ledger.db").as_std_path(),
-                )?;
+                let mut write_storage =
+                    crate::state::storage::StorageManager::init_with_layout(&layout)?;
                 start_prune_transaction(&mut write_storage, &removed, &layout.root)?;
                 let _ = write_storage.shutdown();
             }

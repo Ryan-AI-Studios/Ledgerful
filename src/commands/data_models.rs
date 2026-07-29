@@ -45,7 +45,7 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
             min_confidence,
             json,
         } => {
-            let storage = StorageManager::open_read_only(&layout.root)?;
+            let storage = StorageManager::open_read_only(&layout)?;
             let conn = storage.get_connection();
 
             let threshold = if all { 0.0 } else { min_confidence };
@@ -109,7 +109,7 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
         DataModelSubcommands::Impact { changed, json } => {
             let packet = crate::commands::impact::execute_impact_silent()?;
 
-            let storage = StorageManager::open_read_only(&layout.root)?;
+            let storage = StorageManager::open_read_only(&layout)?;
             let conn = storage.get_connection();
 
             // Collect the files that changed

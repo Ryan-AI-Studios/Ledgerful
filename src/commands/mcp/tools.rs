@@ -109,12 +109,12 @@ pub fn dispatch_tool(name: &str, params: Value) -> Value {
 }
 
 fn handle_ledger_status(_params: Value) -> Value {
-    let layout = match crate::commands::helpers::get_layout() {
+    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
         Ok(l) => l,
         Err(e) => return error_response(&format!("Failed to get layout: {}", e)),
     };
     let mut storage =
-        match crate::state::storage::StorageManager::open_read_only_sqlite_only(&layout.root) {
+        match crate::state::storage::StorageManager::open_read_only_sqlite_only(&layout) {
             Ok(s) => s,
             Err(e) => return error_response(&format!("Failed to open storage: {}", e)),
         };
@@ -146,7 +146,7 @@ fn handle_ledger_status(_params: Value) -> Value {
 
 fn handle_hotspots(params: Value) -> Value {
     let limit = params["limit"].as_u64().unwrap_or(10) as usize;
-    let layout = match crate::commands::helpers::get_layout() {
+    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
         Ok(l) => l,
         Err(e) => return error_response(&format!("Failed to get layout: {}", e)),
     };
@@ -159,11 +159,10 @@ fn handle_hotspots(params: Value) -> Value {
         Ok(r) => r,
         Err(e) => return error_response(&format!("Failed to open repo: {}", e)),
     };
-    let storage =
-        match crate::state::storage::StorageManager::open_read_only_sqlite_only(&layout.root) {
-            Ok(s) => s,
-            Err(e) => return error_response(&format!("Failed to open storage: {}", e)),
-        };
+    let storage = match crate::state::storage::StorageManager::open_read_only_sqlite_only(&layout) {
+        Ok(s) => s,
+        Err(e) => return error_response(&format!("Failed to open storage: {}", e)),
+    };
 
     let history_provider = crate::impact::temporal::GixHistoryProvider::new(&repo);
     let query = crate::impact::hotspots::HotspotQuery {
@@ -217,14 +216,14 @@ fn handle_search(params: Value) -> Value {
 }
 
 fn handle_ledger_search(params: Value) -> Value {
-    let layout = match crate::commands::helpers::get_layout() {
+    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
         Ok(l) => l,
         Err(e) => return error_response(&format!("Failed to get layout: {}", e)),
     };
     let query = params["query"].as_str().unwrap_or("");
     let days = params["days"].as_u64().unwrap_or(30) as u32;
     let mut storage =
-        match crate::state::storage::StorageManager::open_read_only_sqlite_only(&layout.root) {
+        match crate::state::storage::StorageManager::open_read_only_sqlite_only(&layout) {
             Ok(s) => s,
             Err(e) => return error_response(&format!("Failed to open storage: {}", e)),
         };
@@ -311,12 +310,12 @@ fn handle_security_boundaries(_params: Value) -> Value {
 }
 
 fn handle_dead_code(params: Value) -> Value {
-    let layout = match crate::commands::helpers::get_layout() {
+    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
         Ok(l) => l,
         Err(e) => return error_response(&format!("Failed to get layout: {}", e)),
     };
     let config = crate::config::load_config(&layout).unwrap_or_default();
-    let storage = match crate::state::storage::StorageManager::open_read_only(&layout.root) {
+    let storage = match crate::state::storage::StorageManager::open_read_only(&layout) {
         Ok(s) => s,
         Err(e) => return error_response(&format!("Failed to open storage: {}", e)),
     };
@@ -338,7 +337,7 @@ fn handle_dead_code(params: Value) -> Value {
 }
 
 fn handle_verify_plan(_params: Value) -> Value {
-    let layout = match crate::commands::helpers::get_layout() {
+    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
         Ok(l) => l,
         Err(e) => return error_response(&format!("Failed to get layout: {}", e)),
     };

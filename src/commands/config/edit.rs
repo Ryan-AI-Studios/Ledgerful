@@ -18,9 +18,7 @@ use miette::Result;
 /// `services.alias=mylabel` without quoting. Any other parse failure is
 /// surfaced as a diagnostic.
 pub fn execute_config_set(key_value: &str) -> Result<()> {
-    let current_dir = std::env::current_dir()
-        .map_err(|e| miette::miette!("Failed to get current directory: {e}"))?;
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    let layout = crate::commands::helpers::get_layout()?;
     execute_config_set_in(&layout, key_value)
 }
 
@@ -104,9 +102,7 @@ pub fn execute_config_set_in(layout: &Layout, key_value: &str) -> Result<()> {
 
 /// Entry point for the `ledgerful config unset` subcommand.
 pub fn execute_config_unset(key: &str) -> Result<()> {
-    let current_dir = std::env::current_dir()
-        .map_err(|e| miette::miette!("Failed to get current directory: {e}"))?;
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    let layout = crate::commands::helpers::get_layout()?;
     execute_config_unset_in(&layout, key)
 }
 

@@ -1,8 +1,8 @@
 use crate::commands::config::env::{
     is_ignored_env_var, is_internal_env_var, is_test_or_example_path,
 };
+use crate::commands::helpers::get_layout;
 use crate::index::env_schema::EnvSchemaExtractor;
-use crate::state::layout::Layout;
 use miette::{IntoDiagnostic, Result};
 use owo_colors::OwoColorize;
 use serde::Serialize;
@@ -21,10 +21,8 @@ pub(crate) struct MissingDeclarationSource {
 }
 
 pub fn execute_config_diff(json: bool, show_internal: bool) -> Result<()> {
-    let current_dir = std::env::current_dir()
-        .map_err(|e| miette::miette!("Failed to get current directory: {e}"))?;
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
-    let storage = crate::state::storage::StorageManager::open_read_only(&layout.root)?;
+    let layout = get_layout()?;
+    let storage = crate::state::storage::StorageManager::open_read_only(&layout)?;
     let conn = storage.get_connection();
 
     let mut decl_stmt = conn

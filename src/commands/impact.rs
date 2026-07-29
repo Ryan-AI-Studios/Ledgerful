@@ -1,9 +1,9 @@
+use crate::commands::helpers::get_layout;
 use crate::config::load::load_config;
 use crate::git::RepoSnapshot;
 use crate::git::repo::{get_head_info, open_repo};
 use crate::git::status::get_repo_status;
 use crate::output::diagnostics::success_marker;
-use crate::state::layout::Layout;
 use crate::state::reports::write_impact_report;
 use miette::Result;
 use owo_colors::OwoColorize;
@@ -21,7 +21,7 @@ pub fn execute_impact_silent_with_snapshot(
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
 
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    let layout = get_layout()?;
 
     let mut packet = crate::impact::orchestrator::map_snapshot_to_packet(snapshot, &current_dir)?;
 
@@ -29,8 +29,7 @@ pub fn execute_impact_silent_with_snapshot(
     let config = load_config(&layout).unwrap_or_default();
 
     // Persist to SQLite and run Orchestrated Enrichment
-    let db_path = layout.state_subdir().join("ledger.db");
-    let storage = crate::state::storage::StorageManager::init(db_path.as_std_path())?;
+    let storage = crate::state::storage::StorageManager::init_with_layout(&layout)?;
 
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
     orchestrator.run(&mut packet, &storage, &config, &current_dir)?;
@@ -58,7 +57,7 @@ pub fn execute_impact_silent() -> Result<crate::impact::packet::ImpactPacket> {
 
     let repo = open_repo(&current_dir)?;
     let (head_hash, branch_name) = get_head_info(&repo)?;
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    let layout = get_layout()?;
 
     // Filter changes against config ignore_patterns
     let config = load_config(&layout).unwrap_or_else(|_| crate::config::model::Config::default());
@@ -84,8 +83,7 @@ pub fn execute_impact_silent() -> Result<crate::impact::packet::ImpactPacket> {
     let config = load_config(&layout).unwrap_or_default();
 
     // Persist to SQLite and run Orchestrated Enrichment
-    let db_path = layout.state_subdir().join("ledger.db");
-    let storage = crate::state::storage::StorageManager::init(db_path.as_std_path())?;
+    let storage = crate::state::storage::StorageManager::init_with_layout(&layout)?;
 
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
     orchestrator.run(&mut packet, &storage, &config, &current_dir)?;
@@ -247,7 +245,7 @@ pub fn execute_impact(
 
     let repo = open_repo(&current_dir)?;
     let (head_hash, branch_name) = get_head_info(&repo)?;
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    let layout = get_layout()?;
 
     // Filter changes against config ignore_patterns
     let mut config =
@@ -279,8 +277,7 @@ pub fn execute_impact(
     }
 
     // Persist to SQLite and run Orchestrated Enrichment
-    let db_path = layout.state_subdir().join("ledger.db");
-    let storage = crate::state::storage::StorageManager::init(db_path.as_std_path())?;
+    let storage = crate::state::storage::StorageManager::init_with_layout(&layout)?;
 
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
     orchestrator.run(&mut packet, &storage, &config, &current_dir)?;

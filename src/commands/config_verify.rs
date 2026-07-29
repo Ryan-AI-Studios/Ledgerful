@@ -416,15 +416,18 @@ impl ConfigSection for SemanticSection {
             },
         });
 
-        let rebuild_threshold_explicit = if let Ok(current_dir) = std::env::current_dir() {
-            let layout = crate::state::layout::Layout::new(current_dir.to_string_lossy().as_ref());
-            let path = layout.config_file();
-            if path.exists() {
-                if let Ok(content) = std::fs::read_to_string(&path) {
-                    if let Ok(val) = toml::from_str::<toml::Value>(&content) {
-                        val.get("semantic")
-                            .and_then(|s| s.get("hnsw_rebuild_threshold"))
-                            .is_some()
+        let rebuild_threshold_explicit =
+            if let Ok(layout) = crate::commands::helpers::get_layout_or_cwd_if_not_git() {
+                let path = layout.config_file();
+                if path.exists() {
+                    if let Ok(content) = std::fs::read_to_string(&path) {
+                        if let Ok(val) = toml::from_str::<toml::Value>(&content) {
+                            val.get("semantic")
+                                .and_then(|s| s.get("hnsw_rebuild_threshold"))
+                                .is_some()
+                        } else {
+                            false
+                        }
                     } else {
                         false
                     }
@@ -433,10 +436,7 @@ impl ConfigSection for SemanticSection {
                 }
             } else {
                 false
-            }
-        } else {
-            false
-        };
+            };
 
         rows.push(ConfigRow {
             label: "hnsw_rebuild_threshold".to_string(),

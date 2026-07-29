@@ -1,7 +1,3 @@
-use camino::Utf8PathBuf;
-use miette::{IntoDiagnostic, Result};
-use std::env;
-
 pub use crate::commands::index::modes::execute_index;
 
 pub(crate) mod graph;
@@ -35,20 +31,4 @@ pub struct IndexArgs {
     pub repair_metadata: bool,
     pub dry_run: bool,
     pub yes: bool,
-}
-
-pub(crate) fn get_repo_root() -> Result<Utf8PathBuf> {
-    let current_dir = env::current_dir().into_diagnostic()?;
-    let discovered = gix::discover(&current_dir).into_diagnostic()?;
-    let root = discovered
-        .workdir()
-        .ok_or_else(|| miette::miette!("Failed to find work directory for repository"))?;
-
-    Utf8PathBuf::from_path_buf(root.to_path_buf())
-        .map_err(|_| miette::miette!("Repository root is not valid UTF-8"))
-}
-
-pub(crate) fn get_layout() -> Result<crate::state::layout::Layout> {
-    let root = get_repo_root()?;
-    Ok(crate::state::layout::Layout::new(root))
 }

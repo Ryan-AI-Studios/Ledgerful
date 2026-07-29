@@ -1,13 +1,22 @@
+use crate::commands::hook_repair::{HooksDirResolution, resolve_hooks_dir};
 use crate::config::ConfigError;
 use crate::config::starter::{publish_starter_config, starter_config_contents};
 use crate::git::ignore::add_to_gitignore;
 use crate::policy::defaults::DEFAULT_RULES;
 use crate::state::layout::Layout;
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use miette::{IntoDiagnostic, Result};
 use std::fs;
 use std::io::Write as IoWrite;
 use tracing::info;
+
+/// Shared hooks directory for install (linked worktrees via commondir — not `root/.git/hooks`).
+fn hooks_dir_for_install(root: &Utf8Path) -> Option<Utf8PathBuf> {
+    match resolve_hooks_dir(root) {
+        HooksDirResolution::Found { hooks_dir } => Some(hooks_dir),
+        HooksDirResolution::OutsideRepo { .. } | HooksDirResolution::CannotLook { .. } => None,
+    }
+}
 
 const HOOK_MARKER: &str = "# ledgerful-ledger-gate";
 const HOOK_BLOCK_TEMPLATE: &str = "\
@@ -42,12 +51,9 @@ fi
 ";
 
 fn install_git_hook(root: &Utf8PathBuf, hook_name: &str, bypass_command: &str) -> Result<bool> {
-    let git_dir = root.join(".git");
-    if !git_dir.exists() {
+    let Some(hooks_dir) = hooks_dir_for_install(root) else {
         return Ok(false);
-    }
-
-    let hooks_dir = git_dir.join("hooks");
+    };
     fs::create_dir_all(&hooks_dir).into_diagnostic()?;
 
     let hook_path = hooks_dir.join(hook_name);
@@ -107,12 +113,9 @@ fi
 ";
 
 fn install_commit_msg_hook(root: &Utf8PathBuf) -> Result<bool> {
-    let git_dir = root.join(".git");
-    if !git_dir.exists() {
+    let Some(hooks_dir) = hooks_dir_for_install(root) else {
         return Ok(false);
-    }
-
-    let hooks_dir = git_dir.join("hooks");
+    };
     fs::create_dir_all(&hooks_dir).into_diagnostic()?;
 
     let hook_path = hooks_dir.join("commit-msg");
@@ -148,12 +151,9 @@ fn install_commit_msg_hook(root: &Utf8PathBuf) -> Result<bool> {
 }
 
 fn install_post_commit_hook(root: &Utf8PathBuf) -> Result<bool> {
-    let git_dir = root.join(".git");
-    if !git_dir.exists() {
+    let Some(hooks_dir) = hooks_dir_for_install(root) else {
         return Ok(false);
-    }
-
-    let hooks_dir = git_dir.join("hooks");
+    };
     fs::create_dir_all(&hooks_dir).into_diagnostic()?;
 
     let hook_path = hooks_dir.join("post-commit");
@@ -231,7 +231,10 @@ const VERIFY_GATE_MARKER: &str = "# ledgerful-verify-gate";
 /// already present. This is separate from `install_git_hook` because the
 /// verify block is pre-push-only and has its own marker for idempotency.
 fn install_pre_push_verify_block(root: &Utf8PathBuf) -> Result<()> {
-    let hook_path = root.join(".git").join("hooks").join("pre-push");
+    let Some(hooks_dir) = hooks_dir_for_install(root) else {
+        return Ok(());
+    };
+    let hook_path = hooks_dir.join("pre-push");
     if !hook_path.exists() {
         return Ok(());
     }
@@ -260,29 +263,37 @@ fn install_pre_push_verify_block(root: &Utf8PathBuf) -> Result<()> {
 }
 
 pub fn execute_init(no_gitignore: bool, enforce: bool) -> Result<()> {
-    // 1. Discover repository root
-    let root = match gix::discover(".") {
+    // 1. Discover work root + shared state dir (linked worktrees share main).
+    // Non-git cwd keeps Layout::new (private state under cwd) intentionally.
+    let (root, layout) = match gix::discover(".") {
         Ok(repo) => {
             let path = repo
                 .workdir()
                 .ok_or(crate::commands::CommandError::RepoDiscoveryFailed)?
                 .to_path_buf();
             info!("Discovered git repository root at: {:?}", path);
-            Utf8PathBuf::from_path_buf(path)
-                .map_err(|_| crate::commands::CommandError::RepoDiscoveryFailed)?
+            let work_root = Utf8PathBuf::from_path_buf(path)
+                .map_err(|_| crate::commands::CommandError::RepoDiscoveryFailed)?;
+            let state_dir = crate::commands::helpers::resolve_state_dir(&repo)?;
+            let layout = Layout::from_roots(&work_root, state_dir);
+            (work_root, layout)
         }
         Err(e) => {
             info!(
                 "gix::discover failed: {:?}. Using current directory as root",
                 e
             );
-            Utf8PathBuf::from_path_buf(std::env::current_dir().into_diagnostic()?)
-                .map_err(|_| crate::commands::CommandError::RepoDiscoveryFailed)?
+            let root = Utf8PathBuf::from_path_buf(std::env::current_dir().into_diagnostic()?)
+                .map_err(|_| crate::commands::CommandError::RepoDiscoveryFailed)?;
+            let layout = Layout::new(&root);
+            (root, layout)
         }
     };
 
-    info!("Resolved root for initialization: {}", root);
-    let layout = Layout::new(&root);
+    info!(
+        "Resolved init work_root={} state_dir={}",
+        layout.root, layout.state_dir
+    );
 
     // 2. Ensure directory layout
     layout.ensure_state_dir()?;
@@ -374,8 +385,7 @@ pub fn execute_init(no_gitignore: bool, enforce: bool) -> Result<()> {
     }
 
     // 6. Initialize ledger storage database
-    let db_path = layout.state_subdir().join("ledger.db");
-    crate::state::storage::StorageManager::init(db_path.as_std_path())?;
+    crate::state::storage::StorageManager::init_with_layout(&layout)?;
 
     // 7. Print the deterministic detected profile, evidence, and current commands.
     use owo_colors::OwoColorize;
@@ -468,8 +478,7 @@ pub(crate) fn write_initial_mode_ledger_entry(
     };
     use crate::state::storage::StorageManager;
 
-    let db_path = layout.state_subdir().join("ledger.db");
-    let mut storage = StorageManager::init(db_path.as_std_path())?;
+    let mut storage = StorageManager::init_with_layout(layout)?;
     let config = crate::commands::helpers::load_ledger_config(layout)?;
     let mut tx_mgr = TransactionManager::new(&mut storage, layout.root.clone().into(), config);
 

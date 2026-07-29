@@ -1,6 +1,7 @@
 use crate::commands::dx1_templates::write_cedar_template;
 use crate::commands::helpers::get_layout;
 use crate::output::table::Table;
+use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use crate::util::term::prompt_yes_no;
 use clap::{Args, Subcommand};
@@ -45,8 +46,11 @@ fn collect_changed_files() -> Result<HashSet<String>> {
 }
 
 /// Open CozoDB storage in read-only mode and return the Cozo engine.
-fn open_cozo(root: &camino::Utf8Path) -> Result<crate::state::storage_cozo::CozoStorage> {
-    let storage = StorageManager::open_read_only(root)?;
+///
+/// Uses the caller's resolved [`Layout`] so linked worktrees open the shared
+/// main-tree state_dir (never `Layout::new(work_root)` alone).
+fn open_cozo(layout: &Layout) -> Result<crate::state::storage_cozo::CozoStorage> {
+    let storage = StorageManager::open_read_only(layout)?;
     storage
         .cozo
         .ok_or_else(|| miette::miette!("CozoDB not available"))
@@ -113,7 +117,7 @@ fn collect_detected_routes(conn: &rusqlite::Connection) -> Result<Vec<(String, S
 
 fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layout) -> Result<()> {
     let changed_files = collect_changed_files()?;
-    let cozo = open_cozo(&layout.root)?;
+    let cozo = open_cozo(layout)?;
 
     // Query all policy nodes and determine impact in-memory
     let query = "?[id, label, raw, effect, source_file] := *node{id, label, category: 'policy', metadata: meta}, \
@@ -225,7 +229,7 @@ fn execute_boundaries(json: bool, layout: &crate::state::layout::Layout) -> Resu
     // graph (for the policy-node + graph-populated checks) and the SQLite
     // `api_routes` table (to count detected HTTP routes for the DX1 Cedar
     // template bootstrap offer).
-    let storage = StorageManager::open_read_only(&layout.root)?;
+    let storage = StorageManager::open_read_only(layout)?;
     let cozo = storage
         .cozo
         .as_ref()

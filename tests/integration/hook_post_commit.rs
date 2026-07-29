@@ -100,7 +100,7 @@ fn setup_indexed_repo() -> tempfile::TempDir {
 
 fn hotspot_trends_count(root: &std::path::Path) -> i64 {
     let repo_root = Utf8Path::from_path(root).unwrap();
-    let storage = StorageManager::open_read_only_sqlite_only(repo_root).unwrap();
+    let storage = StorageManager::open_read_only_sqlite_only(&Layout::new(repo_root)).unwrap();
     let conn = storage.get_connection();
     conn.query_row("SELECT COUNT(*) FROM hotspot_trends", [], |row| row.get(0))
         .unwrap()
@@ -108,7 +108,7 @@ fn hotspot_trends_count(root: &std::path::Path) -> i64 {
 
 fn hotspot_trends_for_commit(root: &std::path::Path, commit_hash: &str) -> i64 {
     let repo_root = Utf8Path::from_path(root).unwrap();
-    let storage = StorageManager::open_read_only_sqlite_only(repo_root).unwrap();
+    let storage = StorageManager::open_read_only_sqlite_only(&Layout::new(repo_root)).unwrap();
     let conn = storage.get_connection();
     conn.query_row(
         "SELECT COUNT(*) FROM hotspot_trends WHERE commit_hash = ?1",
@@ -274,7 +274,7 @@ fn changed_files_stats_for_tx(
     tx_id: &str,
 ) -> Vec<(String, Option<i64>, Option<i64>, bool)> {
     let repo_root = Utf8Path::from_path(root).unwrap();
-    let storage = StorageManager::open_read_only_sqlite_only(repo_root).unwrap();
+    let storage = StorageManager::open_read_only_sqlite_only(&Layout::new(repo_root)).unwrap();
     let conn = storage.get_connection();
     let mut stmt = conn
         .prepare(
@@ -301,7 +301,7 @@ fn changed_files_stats_for_tx(
 
 fn latest_committed_tx_id(root: &std::path::Path) -> Option<String> {
     let repo_root = Utf8Path::from_path(root).unwrap();
-    let storage = StorageManager::open_read_only_sqlite_only(repo_root).unwrap();
+    let storage = StorageManager::open_read_only_sqlite_only(&Layout::new(repo_root)).unwrap();
     let conn = storage.get_connection();
     // `transactions` has no integer id column; use SQLite rowid for insertion
     // order.
@@ -315,7 +315,7 @@ fn latest_committed_tx_id(root: &std::path::Path) -> Option<String> {
 
 fn verify_latest_signature(root: &std::path::Path) -> bool {
     let repo_root = Utf8Path::from_path(root).unwrap();
-    let storage = StorageManager::open_read_only_sqlite_only(repo_root).unwrap();
+    let storage = StorageManager::open_read_only_sqlite_only(&Layout::new(repo_root)).unwrap();
     let db = ledgerful::ledger::db::LedgerDb::new(storage.get_connection());
     let tx_id = latest_committed_tx_id(root).expect("committed tx");
     let entries = db.get_ledger_entries_for_tx(&tx_id).expect("entries");

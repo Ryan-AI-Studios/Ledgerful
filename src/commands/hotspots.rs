@@ -24,16 +24,16 @@ pub fn execute_hotspots(args: HotspotArgs) -> Result<()> {
     let layout = get_layout()?;
 
     let storage = if args.semantic || args.centrality {
-        StorageManager::open_read_only(&layout.root)?
+        StorageManager::open_read_only(&layout)?
     } else {
-        StorageManager::open_read_only_sqlite_only(&layout.root)?
+        StorageManager::open_read_only_sqlite_only(&layout)?
     };
 
     // --- Staleness check ---
     let config = load_config(&layout).unwrap_or_default();
     let threshold_days = config.index.stale_threshold_days;
     let storage = if args.auto_index {
-        crate::index::staleness::try_auto_index(storage, threshold_days)?
+        crate::index::staleness::try_auto_index(storage, threshold_days, &layout)?
     } else {
         let _ = warn_if_stale(&storage, threshold_days);
         storage

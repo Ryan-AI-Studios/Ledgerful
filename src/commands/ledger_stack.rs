@@ -6,7 +6,7 @@ use owo_colors::OwoColorize;
 
 pub fn execute_ledger_stack(category: Option<String>) -> Result<()> {
     let layout = get_layout()?;
-    let storage = StorageManager::open_read_only_sqlite_only(&layout.root)?;
+    let storage = StorageManager::open_read_only_sqlite_only(&layout)?;
     let db = LedgerDb::new(storage.get_connection());
 
     println!("{}", "Ledgerful Tech Stack & Validators".bold().underline());

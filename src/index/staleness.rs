@@ -350,7 +350,16 @@ pub fn warn_if_stale(storage: &StorageManager, threshold_days: u64) -> bool {
 
 /// Run an incremental index if the current index is stale.
 /// Returns the (possibly re-opened) StorageManager.
-pub fn try_auto_index(storage: StorageManager, threshold_days: u64) -> Result<StorageManager> {
+///
+/// `layout` must be the resolved work_root + state_dir (from
+/// [`crate::commands::helpers::get_layout`]). Do **not** rebuild layout from
+/// `storage.root()`: that path is the parent of `.ledgerful` inferred from the
+/// DB path and invents a private state tree under a linked worktree.
+pub fn try_auto_index(
+    storage: StorageManager,
+    threshold_days: u64,
+    layout: &Layout,
+) -> Result<StorageManager> {
     let assessment = assess_index_freshness(&storage, threshold_days);
     match assessment.state {
         IndexFreshnessState::Indeterminate => {
@@ -389,22 +398,17 @@ pub fn try_auto_index(storage: StorageManager, threshold_days: u64) -> Result<St
             warning.days_since_indexed
         );
 
-        let root = storage.root().to_path_buf();
-
-        // StorageManager::init handles write-mode and migrations
-        let write_storage = StorageManager::init(
-            Layout::new(&root)
-                .state_subdir()
-                .join("ledger.db")
-                .as_std_path(),
-        )?;
+        // Open write DB under resolved state_dir (shared on linked worktrees).
+        let write_storage = StorageManager::init_with_layout(layout)?;
 
         use crate::config::model::Config;
-        let mut indexer = ProjectIndexer::new(write_storage, root.clone(), Config::default());
+        // Index analysis root is the current worktree workdir, not state parent.
+        let mut indexer =
+            ProjectIndexer::new(write_storage, layout.root.clone(), Config::default());
         indexer.incremental_index()?;
 
-        // Re-open in read-only mode for the caller
-        StorageManager::open_read_only(&root)
+        // Re-open in read-only mode for the caller using the same layout.
+        StorageManager::open_read_only(layout)
     } else {
         Ok(storage)
     }

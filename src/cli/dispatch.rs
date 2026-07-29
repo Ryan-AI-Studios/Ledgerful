@@ -8,18 +8,31 @@ use std::env;
 
 pub fn run_with(cli: Cli) -> Result<()> {
     let current_dir = env::current_dir().into_diagnostic()?;
-    let layout = crate::state::layout::Layout::new(current_dir.to_string_lossy().as_ref());
 
     // Global commands must not mutate the current repository before dispatch.
     // `load_startup_config` migrates legacy state (retired brand dir ->
-    // `.ledgerful`) in the current working directory, which would violate the
+    // `.ledgerful`) against the *resolved* state path, which would violate the
     // read-only invariant for `ledger status --global` and `timings --global`.
     // For global commands we load only the user-level config; the per-repo
     // global path does not need the current repo's config.
+    //
+    // Non-global: resolve via `get_layout()` (discover + shared state for linked
+    // worktrees). Never use raw cwd as repo root — nested dirs used to create
+    // orphan `{subdir}/.ledgerful` trees.
     let config = if is_global_command(&cli.command) {
         load_user_config().unwrap_or_default()
-    } else {
+    } else if env::var(crate::commands::helpers::LEDGERFUL_STATE_DIR_ENV).is_ok() {
+        // Override present: fail closed on relative/empty/invalid values.
+        let layout = crate::commands::helpers::get_layout()?;
         load_startup_config(&layout)?
+    } else {
+        match crate::commands::helpers::get_layout() {
+            Ok(layout) => load_startup_config(&layout)?,
+            Err(e) => {
+                tracing::debug!("Skipping per-repo startup config (no resolvable worktree): {e}");
+                Default::default()
+            }
+        }
     };
 
     // Capture the command name for usage metrics before moving `cli.command`
@@ -164,24 +177,27 @@ pub fn run_with(cli: Cli) -> Result<()> {
             scope,
             auto_index,
             json,
-        } => dispatch_verify(
-            &layout,
-            command,
-            tx_id,
-            timeout,
-            no_predict,
-            explain,
-            entity,
-            health,
-            signatures,
-            chain,
-            against_export,
-            strict_signatures,
-            dry_run,
-            scope,
-            auto_index,
-            json,
-        ),
+        } => {
+            let layout = crate::commands::helpers::get_layout()?;
+            dispatch_verify(
+                &layout,
+                command,
+                tx_id,
+                timeout,
+                no_predict,
+                explain,
+                entity,
+                health,
+                signatures,
+                chain,
+                against_export,
+                strict_signatures,
+                dry_run,
+                scope,
+                auto_index,
+                json,
+            )
+        }
         Commands::Ask {
             query,
             semantic,
@@ -603,7 +619,6 @@ fn is_demo_repo(layout: &crate::state::layout::Layout) -> bool {
 fn dispatch_export(command: ExportCommands) -> Result<()> {
     use crate::export::soc2::generate_soc2_export_with_options;
     use crate::export::soc2_control::generate_soc2_control_export;
-    use crate::state::layout::Layout;
     use owo_colors::OwoColorize;
 
     match command {
@@ -619,14 +634,9 @@ fn dispatch_export(command: ExportCommands) -> Result<()> {
                 ));
             }
 
-            let root = crate::commands::helpers::get_repo_root()
-                .map(|r| r.as_std_path().to_path_buf())
-                .unwrap_or_else(|_| {
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
-                });
-            let root = camino::Utf8PathBuf::from_path_buf(root)
-                .map_err(|_| miette::miette!("export root path is not valid UTF-8"))?;
-            let layout = Layout::new(root);
+            // Shared state_dir for linked worktrees; Layout::new only when not in a repo.
+            // Resolve errors after git discover fail closed (no private state invent).
+            let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git()?;
 
             let is_demo = is_demo_repo(&layout);
             let keys_dir = if is_demo {

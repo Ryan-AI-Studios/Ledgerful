@@ -142,7 +142,7 @@ pub fn generate_soc2_export_with_options(
     let config = crate::config::load::load_config(layout).unwrap_or_default();
 
     let (ledger_entries, verification_rows, adr_entries, chain_head) = if has_db {
-        let storage = StorageManager::open_read_only_sqlite_only(&layout.root)?;
+        let storage = StorageManager::open_read_only_sqlite_only(layout)?;
         let conn = storage.get_connection();
         let db = LedgerDb::new(conn);
 

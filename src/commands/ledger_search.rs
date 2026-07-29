@@ -20,8 +20,7 @@ pub fn execute_ledger_search(
     json: bool,
 ) -> Result<()> {
     let layout = get_layout()?;
-    let db_path = layout.state_subdir().join("ledger.db");
-    let mut storage = StorageManager::init(db_path.as_std_path())?;
+    let mut storage = StorageManager::init_with_layout(&layout)?;
     let config = load_ledger_config(&layout)?;
     let manager = TransactionManager::new(&mut storage, layout.root.clone().into(), config);
 

@@ -21,7 +21,7 @@ pub(crate) const KG_MAX_LIMIT: usize = 1000;
 // ---------------------------------------------------------------------------
 
 pub(crate) fn fetch_security_boundaries(layout: &Layout) -> Result<SecurityBoundariesResponse> {
-    let storage = match StorageManager::open_read_only(&layout.root) {
+    let storage = match StorageManager::open_read_only(layout) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("Storage not available for /api/security/boundaries: {e}");
@@ -127,7 +127,7 @@ pub(crate) fn fetch_knowledge_graph(
     limit: usize,
     focus_changed: bool,
 ) -> Result<KnowledgeGraphResponse> {
-    let storage = match StorageManager::open_read_only(&layout.root) {
+    let storage = match StorageManager::open_read_only(layout) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("Storage not available for /api/knowledge-graph: {e}");
@@ -204,7 +204,7 @@ pub(crate) fn fetch_knowledge_graph(
 /// This closes the gap between the backend node shape and the frontend graph
 /// table, which expects top-level `file_path` and `complexity` fields.
 fn enrich_kg_nodes(layout: &Layout, nodes: &mut [KgNode]) {
-    let storage = match StorageManager::open_read_only_sqlite_only(&layout.root) {
+    let storage = match StorageManager::open_read_only_sqlite_only(layout) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("Storage not available for knowledge-graph enrichment: {e}");

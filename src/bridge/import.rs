@@ -15,8 +15,7 @@ struct BridgeState {
 }
 
 pub fn execute_import(in_path: String) -> Result<()> {
-    let current_dir = std::env::current_dir().into_diagnostic()?;
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git()?;
 
     if !camino::Utf8Path::new(&in_path).exists() {
         return Err(miette::miette!("Input file does not exist: {}", in_path));

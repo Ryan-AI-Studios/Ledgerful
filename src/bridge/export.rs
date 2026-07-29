@@ -1,5 +1,5 @@
 use crate::bridge::model::{BridgeDirection, BridgePayload, BridgeRecord, SnapshotPayload};
-use crate::commands::helpers::get_layout;
+use crate::commands::helpers::get_layout_or_cwd_if_not_git;
 use crate::git::RepoSnapshot;
 use crate::git::repo::{get_head_info, open_repo};
 use crate::git::status::get_repo_status;
@@ -50,8 +50,8 @@ pub struct ExportArgs {
 }
 
 pub fn execute_export(args: ExportArgs) -> Result<()> {
-    let layout = get_layout()?;
-    let storage = StorageManager::open_read_only_sqlite_only(&layout.root)?;
+    let layout = get_layout_or_cwd_if_not_git()?;
+    let storage = StorageManager::open_read_only_sqlite_only(&layout)?;
 
     let project_id = layout.get_project_id();
 

@@ -110,7 +110,7 @@ pub fn export_public_bundle(options: ExportOptions<'_>) -> Result<()> {
     }
 
     // Read-only access to ledger state. This export never writes ledger entries.
-    let storage = StorageManager::open_read_only_sqlite_only(&layout.root)?;
+    let storage = StorageManager::open_read_only_sqlite_only(&layout)?;
     let db = LedgerDb::new(storage.get_connection());
 
     let entries = db

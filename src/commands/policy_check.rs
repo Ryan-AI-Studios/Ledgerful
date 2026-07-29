@@ -574,7 +574,7 @@ impl EvalContext {
         if !db_path.exists() {
             return Ok(None);
         }
-        match StorageManager::open_read_only_sqlite_only(&self.layout.root) {
+        match StorageManager::open_read_only_sqlite_only(&self.layout) {
             Ok(s) => Ok(Some(s)),
             Err(e) => Err(e),
         }

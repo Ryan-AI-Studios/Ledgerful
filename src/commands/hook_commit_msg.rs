@@ -178,8 +178,7 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
                             "Found stale pending sidecar (does not match HEAD). Rolling back pending transaction and cleaning up."
                         );
 
-                        let db_path = layout.state_subdir().join("ledger.db");
-                        match StorageManager::init(db_path.as_std_path()) {
+                        match StorageManager::init_with_layout(&layout) {
                             Ok(mut storage) => {
                                 let mut tx_mgr = TransactionManager::new(
                                     &mut storage,
@@ -567,7 +566,7 @@ fn silently_record_ledger(args: SilentRecordArgs) -> Result<()> {
     } else {
         parse_category_from_message(args.what)
     };
-    let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
+    let mut storage = StorageManager::init_with_layout(&layout)?;
     let mut tx_mgr = TransactionManager::new(
         &mut storage,
         layout.root.clone().into(),
@@ -731,11 +730,12 @@ fn capture_staged_snapshot(
     packet.finalize();
     crate::impact::redact::redact_secrets(&mut packet);
 
-    let db_path = layout.state_subdir().join("ledger.db");
-    let storage = match StorageManager::init(db_path.as_std_path()) {
+    let storage = match StorageManager::init_with_layout(layout) {
         Ok(s) => s,
         Err(e) => {
-            tracing::debug!("capture_staged_snapshot: StorageManager::init failed: {e}");
+            tracing::debug!(
+                "capture_staged_snapshot: StorageManager::init_with_layout failed: {e}"
+            );
             return None;
         }
     };

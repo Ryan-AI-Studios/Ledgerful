@@ -1,5 +1,6 @@
 use crate::common::setup_git_repo;
 use camino::Utf8Path;
+use ledgerful::state::layout::Layout;
 use ledgerful::state::storage::StorageManager;
 use std::fs;
 use std::process::Command;
@@ -39,7 +40,7 @@ checksum = "bb132488d2348f7a79a296f187a7412ee291e0a24f0a0d9223011400e955f134"
         .unwrap();
 
     // Check CozoDB
-    let storage = StorageManager::open_read_only(root_utf8).unwrap();
+    let storage = StorageManager::open_read_only(&Layout::new(root_utf8)).unwrap();
     let cozo = storage.cozo.as_ref().expect("CozoDB should be initialized");
 
     let res = cozo
@@ -101,7 +102,7 @@ dependencies = [
         .output()
         .unwrap();
 
-    let storage = StorageManager::open_read_only(root_utf8).unwrap();
+    let storage = StorageManager::open_read_only(&Layout::new(root_utf8)).unwrap();
     let cozo = storage.cozo.as_ref().expect("CozoDB should be initialized");
 
     let edge_res = cozo
@@ -166,7 +167,7 @@ dependencies = [
         .output()
         .unwrap();
 
-    let storage = StorageManager::open_read_only(root_utf8).unwrap();
+    let storage = StorageManager::open_read_only(&Layout::new(root_utf8)).unwrap();
     let cozo = storage.cozo.as_ref().expect("CozoDB should be initialized");
 
     // Query for DependsOn edges from consumer. Join with node table on stable label.
@@ -230,7 +231,7 @@ dependencies = [
         .output()
         .unwrap();
 
-    let storage = StorageManager::open_read_only(root_utf8).unwrap();
+    let storage = StorageManager::open_read_only(&Layout::new(root_utf8)).unwrap();
     let cozo = storage.cozo.as_ref().expect("CozoDB should be initialized");
 
     let res = cozo
@@ -308,7 +309,7 @@ dependencies = [
         .output()
         .unwrap();
 
-    let storage = StorageManager::open_read_only(root_utf8).unwrap();
+    let storage = StorageManager::open_read_only(&Layout::new(root_utf8)).unwrap();
     let cozo = storage.cozo.as_ref().expect("CozoDB should be initialized");
 
     let res = cozo

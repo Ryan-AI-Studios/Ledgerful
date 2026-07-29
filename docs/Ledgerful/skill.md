@@ -19,6 +19,10 @@ Ledgerful is a local-first CLI that turns repository changes into deterministic 
 
 Use it as a safety and planning layer. It is not the source of truth for code correctness; it tells you what changed, what may be affected, and what should be verified.
 
+## Git worktrees
+
+Linked worktrees share ledger state with the primary worktree's `.ledgerful` (same pending TX and `ledger.db`). Run `ledgerful` commands from the worktree cwd; do not copy state into the linked tree. Submodules keep their own `.ledgerful`. Set absolute `LEDGERFUL_STATE_DIR` to override.
+
 ## When To Use
 
 Use Ledgerful when:

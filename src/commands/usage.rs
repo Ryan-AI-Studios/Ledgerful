@@ -56,8 +56,7 @@
 //! pattern, so 700-ish lines is in-family. A future cleanup track can
 //! revisit the split once the surface area stabilizes.
 
-use crate::state::layout::Layout;
-use camino::{Utf8Path, Utf8PathBuf};
+use camino::Utf8PathBuf;
 use miette::Result;
 use owo_colors::OwoColorize;
 use serde::{Deserialize, Serialize};
@@ -259,9 +258,7 @@ fn today_utc() -> String {
 /// connection open) fails. Callers must treat `None` as a no-op — the
 /// dispatch hook is best-effort and must never panic the host command.
 fn open_counter_store() -> Option<rusqlite::Connection> {
-    let current_dir = env::current_dir().ok()?;
-    let utf8_dir = Utf8Path::from_path(&current_dir)?;
-    let layout = Layout::new(utf8_dir);
+    let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git().ok()?;
     let db_path = layout.state_subdir().join(USAGE_DB_FILENAME);
     if !db_path.as_std_path().exists() {
         return None;

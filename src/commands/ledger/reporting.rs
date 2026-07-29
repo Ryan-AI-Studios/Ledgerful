@@ -170,7 +170,7 @@ pub fn execute_ledger_status(
         crate::commands::verify::verify_ledger_signatures(&layout)?;
     }
 
-    let mut storage = StorageManager::open_read_only_sqlite_only(&layout.root)?;
+    let mut storage = StorageManager::open_read_only_sqlite_only(&layout)?;
     let config = load_ledger_config(&layout)?;
     let stale_threshold = config.ledger.stale_threshold_hours as i64;
     let tx_mgr = TransactionManager::new(&mut storage, layout.root.clone().into(), config.clone());
@@ -563,7 +563,7 @@ pub fn execute_ledger_status(
 /// to the specified file path.
 pub fn execute_ledger_export_provenance(output: Option<String>) -> Result<()> {
     let layout = get_layout()?;
-    let storage = StorageManager::open_read_only(&layout.root)?;
+    let storage = StorageManager::open_read_only(&layout)?;
     let db = LedgerDb::new(storage.get_connection());
     let entries = db
         .get_all_committed_ledger_entries()

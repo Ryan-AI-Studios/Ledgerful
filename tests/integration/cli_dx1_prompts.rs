@@ -17,6 +17,7 @@ use crate::common::{DirGuard, git_add_and_commit, non_interactive, setup_git_rep
 use camino::Utf8Path;
 use ledgerful::commands::index::{IndexArgs, execute_index};
 use ledgerful::commands::init::execute_init;
+use ledgerful::state::layout::Layout;
 use ledgerful::state::storage::StorageManager;
 use serial_test::serial;
 use std::fs;
@@ -64,7 +65,7 @@ fn setup_indexed_repo() -> tempfile::TempDir {
 /// check: a non-interactive degrade run must not mutate history).
 fn hotspot_history_count(root: &std::path::Path) -> i64 {
     let repo_root = Utf8Path::from_path(root).unwrap();
-    let storage = StorageManager::open_read_only_sqlite_only(repo_root).unwrap();
+    let storage = StorageManager::open_read_only_sqlite_only(&Layout::new(repo_root)).unwrap();
     let conn = storage.get_connection();
     conn.query_row("SELECT COUNT(*) FROM hotspot_history", [], |row| row.get(0))
         .unwrap()

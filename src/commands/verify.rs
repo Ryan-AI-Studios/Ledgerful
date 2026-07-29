@@ -317,8 +317,7 @@ pub fn verify_ledger_signatures_with_options(
     strict_signatures: bool,
     against_export: Option<&Path>,
 ) -> Result<()> {
-    let db_path = layout.state_subdir().join("ledger.db");
-    let mut storage = StorageManager::init(db_path.as_std_path())?;
+    let mut storage = StorageManager::init_with_layout(layout)?;
     let db = crate::ledger::db::LedgerDb::new(storage.get_connection_mut());
 
     let config = crate::config::load::load_config(layout).unwrap_or_default();
@@ -938,7 +937,7 @@ pub fn execute_verify(
 ) -> Result<()> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git()?;
     let manual_requested = command_str.is_some();
 
     // 1. Initialize Context
@@ -961,7 +960,7 @@ pub fn execute_verify(
     ctx.suppress_human_output = json;
 
     // 2. Load Storage and Packet
-    ctx.storage = match StorageManager::open_read_only(&layout.root) {
+    ctx.storage = match StorageManager::open_read_only(&layout) {
         Ok(storage) => Some(storage),
         Err(err) => {
             if !no_predict {
@@ -1066,7 +1065,7 @@ pub fn execute_verify(
                             &profile,
                             scope,
                             conn,
-                            layout.root.as_std_path(),
+                            &layout,
                             auto_index,
                         )
                     }
@@ -1294,7 +1293,7 @@ pub fn execute_verify(
     }
 
     let resolved_tx_id = if let Some(ref id) = tx_id {
-        match StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()) {
+        match StorageManager::init_with_layout(&layout) {
             Ok(mut stg) => {
                 let mgr = crate::ledger::TransactionManager::new(
                     &mut stg,
@@ -1364,9 +1363,7 @@ pub fn execute_verify(
                         }
 
                         if fresh {
-                            match StorageManager::init(
-                                layout.state_subdir().join("ledger.db").as_std_path(),
-                            ) {
+                            match StorageManager::init_with_layout(&layout) {
                                 Ok(mut stg) => {
                                     let mgr = crate::ledger::TransactionManager::new(
                                         &mut stg,

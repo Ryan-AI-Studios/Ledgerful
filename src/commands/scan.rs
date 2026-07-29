@@ -95,6 +95,7 @@ fn maybe_auto_analyze_graph(
     storage: &StorageManager,
     project_root: &std::path::Path,
     config: &crate::config::model::Config,
+    layout: &Layout,
 ) -> Result<()> {
     if !changes_include_observability_config(changes) {
         return Ok(());
@@ -108,15 +109,10 @@ fn maybe_auto_analyze_graph(
     );
 
     // Re-open storage in write mode: `storage` may be read-only, and graph
-    // analysis needs a writable CozoDB/SQLite handle.
-    let db_path = Layout::new(
-        camino::Utf8PathBuf::from_path_buf(project_root.to_path_buf())
-            .map_err(|_| miette::miette!("Repository root is not valid UTF-8"))?
-            .as_str(),
-    )
-    .state_subdir()
-    .join("ledger.db");
-    let write_storage = StorageManager::init(db_path.as_std_path())?;
+    // analysis needs a writable CozoDB/SQLite handle. Use the caller's
+    // resolved layout (shared state_dir on linked worktrees) — never invent
+    // Layout::new(project_root) here.
+    let write_storage = StorageManager::init_with_layout(layout)?;
 
     crate::index::run_graph_analysis(
         write_storage,
@@ -126,7 +122,7 @@ fn maybe_auto_analyze_graph(
         false,
         false,
         None,
-        None,
+        Some(layout),
     )
     .map(|_| ())
 }
@@ -350,7 +346,7 @@ pub fn execute_scan(
 
     // When --base-ref is provided, derive the changed file list from git diff
     // instead of from the working-tree status (which is empty in CI).
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    let layout = crate::commands::helpers::get_layout()?;
     let config = load_config(&layout).unwrap_or_default();
 
     let (changes, is_clean, pr_base_ref, pr_head_ref) = if let Some(ref range) = pr {
@@ -482,14 +478,13 @@ pub fn execute_scan(
         // auto-analysis is strictly an optimization for the observability-diff
         // empty-state case.
         if !snapshot.changes.is_empty() {
-            let root_utf8 = camino::Utf8PathBuf::from_path_buf(current_dir.clone())
-                .map_err(|_| miette::miette!("Current directory is not valid UTF-8"))?;
-            if let Ok(read_only_storage) = StorageManager::open_read_only(&root_utf8) {
+            if let Ok(read_only_storage) = StorageManager::open_read_only(&layout) {
                 maybe_auto_analyze_graph(
                     &snapshot.changes,
                     &read_only_storage,
                     &current_dir,
                     &config,
+                    &layout,
                 )?;
             } else {
                 tracing::debug!(

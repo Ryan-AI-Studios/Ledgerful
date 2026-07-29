@@ -18,19 +18,22 @@ pub const SIG_PIN_WARNING: &str = "Warning [sig-pin]: no intent.trusted_public_k
 
 pub fn execute_doctor() -> Result<()> {
     let current_dir = env::current_dir().into_diagnostic()?;
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    // Resolve via git discover so nested cwd and linked worktrees share the
+    // correct state home (0108). Never treat cwd as repo root.
+    let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git()?;
 
     let platform = current_platform();
     let shell = detect_shell();
     let tools = check_tools();
 
     layout.ensure_state_dir()?;
-    let storage_path = layout.state_subdir().join("ledger.db");
-    let storage = StorageManager::init(storage_path.as_std_path())?;
+    let storage = StorageManager::init_with_layout(&layout)?;
 
     let platform_str = format!("{:?}", platform);
     let shell_str = format!("{:?}", shell);
     let path_kind_str = format!("{:?}", classify_path(&current_dir));
+    let work_root_str = layout.root.to_string();
+    let state_dir_str = layout.state_dir.to_string();
 
     let mut report = crate::output::human::DoctorReport {
         platform: &platform_str,
@@ -38,6 +41,8 @@ pub fn execute_doctor() -> Result<()> {
         tools: &tools,
         path_display: &current_dir.to_string_lossy(),
         path_kind: &path_kind_str,
+        work_root: &work_root_str,
+        state_dir: &state_dir_str,
         is_wsl_mounted: false,
         embedding_model_status: "checking...".to_string(),
         embedding_model_failed: false,
@@ -47,6 +52,12 @@ pub fn execute_doctor() -> Result<()> {
         index_health: Vec::new(),
         target_triple: env!("TARGET"),
     };
+
+    // Split-brain residue: local worktree `.ledgerful/state/ledger.db` exists
+    // and is not the same file as the resolved shared ledger (detect only).
+    if let Some(warn) = split_brain_ledger_warning(&layout) {
+        report.index_health.push(warn);
+    }
 
     // --- Intelligence Probes ---
     let config = crate::config::load::load_config(&layout)?;
@@ -1086,6 +1097,33 @@ fn parse_url_host(url: &str) -> Option<String> {
     }
 }
 
+/// WARN when a worktree-local `ledger.db` exists and is not the resolved shared DB.
+/// Detection only — never deletes or merges orphan state (0108 DoD-7).
+pub(crate) fn split_brain_ledger_warning(layout: &Layout) -> Option<String> {
+    use crate::state::layout::{STATE_DIR, STATE_SUBDIR};
+
+    let local_db = layout
+        .root
+        .join(STATE_DIR)
+        .join(STATE_SUBDIR)
+        .join("ledger.db");
+    if !local_db.is_file() {
+        return None;
+    }
+    let shared_db = layout.state_subdir().join("ledger.db");
+    let local_canon = dunce::canonicalize(local_db.as_std_path()).ok();
+    let shared_canon = dunce::canonicalize(shared_db.as_std_path()).ok();
+    match (local_canon, shared_canon) {
+        (Some(local), Some(shared)) if local == shared => None,
+        _ => Some(format!(
+            "Warning [worktree-split-brain]: local ledger.db at {} exists and differs from \
+             resolved shared state {}; linked worktrees share the main worktree's `.ledgerful` \
+             — remove the orphan local state only after confirming it is unused",
+            local_db, shared_db
+        )),
+    }
+}
+
 fn print_vram_section() {
     #[cfg(target_os = "windows")]
     {
@@ -1133,7 +1171,7 @@ mod tests {
     use super::*;
     use crate::output::human::DoctorReport;
     use crate::platform::env::ExecutableStatus;
-    use camino::Utf8Path;
+    use camino::{Utf8Path, Utf8PathBuf};
     use std::path::PathBuf;
 
     fn sample_report<'a>(tools: &'a Vec<(String, ExecutableStatus)>) -> DoctorReport<'a> {
@@ -1143,6 +1181,8 @@ mod tests {
             tools,
             path_display: "test",
             path_kind: "test",
+            work_root: "test",
+            state_dir: "test/.ledgerful",
             is_wsl_mounted: false,
             embedding_model_status: "OK".to_string(),
             embedding_model_failed: false,
@@ -1799,5 +1839,49 @@ mod tests {
                 "config finding must name remediation: {cfg_f}"
             );
         }
+    }
+
+    #[test]
+    fn split_brain_warns_when_local_and_shared_db_differ() {
+        let tmp = tempfile::tempdir().unwrap();
+        let work = Utf8PathBuf::from_path_buf(tmp.path().join("linked")).unwrap();
+        let main_state =
+            Utf8PathBuf::from_path_buf(tmp.path().join("main").join(".ledgerful")).unwrap();
+        std::fs::create_dir_all(work.join(".ledgerful").join("state").as_std_path()).unwrap();
+        std::fs::create_dir_all(main_state.join("state").as_std_path()).unwrap();
+        std::fs::write(
+            work.join(".ledgerful")
+                .join("state")
+                .join("ledger.db")
+                .as_std_path(),
+            b"local",
+        )
+        .unwrap();
+        std::fs::write(
+            main_state.join("state").join("ledger.db").as_std_path(),
+            b"shared",
+        )
+        .unwrap();
+
+        let layout = Layout::from_roots(&work, &main_state);
+        let warn = split_brain_ledger_warning(&layout);
+        assert!(warn.is_some(), "must warn when local != shared");
+        assert!(
+            warn.unwrap().contains("worktree-split-brain"),
+            "expected split-brain tag"
+        );
+    }
+
+    #[test]
+    fn split_brain_silent_when_paths_are_same_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let layout = Layout::new(&root);
+        layout.ensure_state_dir().unwrap();
+        std::fs::write(layout.state_subdir().join("ledger.db").as_std_path(), b"db").unwrap();
+        assert!(
+            split_brain_ledger_warning(&layout).is_none(),
+            "single-tree layout must not warn"
+        );
     }
 }

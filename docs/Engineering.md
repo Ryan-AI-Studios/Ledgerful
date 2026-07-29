@@ -560,3 +560,16 @@ filesystem lacks that atomic primitive. Symlink or reparse-point aliases are
 refused. Operation-owned `.new`/`.old` artifacts use an exact lowercase UUID
 name. Deferred old-executable cleanup requires a regular working alias,
 reports failures, and never scans or mutates unrelated `PATH` locations.
+
+
+## Git worktrees (state sharing)
+
+Linked git worktrees share one Ledgerful **state** home with the primary worktree:
+`{main}/.ledgerful` (ledger DB, config, keys, reports, search index). Analysis
+still uses the **current worktree workdir** as the work root so scans and impact
+see the files you are editing.
+
+Resolution uses `gix` `git_dir()` vs `common_dir()` (not "`.git` is a file" —
+that would mis-handle submodules). Submodules keep private `{module}/.ledgerful`.
+Override with absolute `LEDGERFUL_STATE_DIR` pointing at the state directory itself.
+After large branch switches across worktrees, reindex if the shared index is stale.

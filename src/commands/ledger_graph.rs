@@ -31,7 +31,7 @@ pub struct GraphRelation {
 
 pub fn execute_ledger_graph(args: LedgerGraphArgs) -> Result<()> {
     let layout = get_layout()?;
-    let storage = StorageManager::open_read_only(&layout.root)?;
+    let storage = StorageManager::open_read_only(&layout)?;
     let cozo = storage
         .cozo
         .as_ref()
