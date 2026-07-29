@@ -115,9 +115,10 @@ Tier-2 cut when there is work; a human still merges after `ai-reviewed` and the 
 1. If any open PR already has label `release-cut` → `::notice::` and exit 0 (no stacked cuts).
 2. If `[Unreleased]` is empty → `::notice::` and exit 0 (no work to cut; **not** a red workflow).
 3. Else compute next **patch** from `Cargo.toml` (or validate `version` override: semver + strictly greater).
-4. Ensure the `release-cut` label exists; on `dry_run: true` print version + file list and stop.
-5. Create `release/vX.Y.Z` (refuse if remote branch exists — **no force-push**; delete manually after inspect).
-6. Run prepare → commit four files → push with PAT (`gh auth setup-git`, never token-in-URL) → open PR.
+4. On `dry_run: true` print version + file list and stop (no label create, push, or PR).
+5. Ensure the `release-cut` label exists (after dry_run only).
+6. Create `release/vX.Y.Z` (refuse if remote branch exists — **no force-push**; delete manually after inspect).
+7. Run prepare → commit four files → push with PAT (`gh auth setup-git`, never token-in-URL) → open PR.
 
 **On merge** of a PR with label `release-cut`: tag job tags **`merge_commit_sha`** (not `github.sha`, not the PR head), asserts it is an ancestor of `origin/main`, pushes `vX.Y.Z` with the PAT so `release.yml` fires.
 
