@@ -110,10 +110,10 @@ fn test_endpoints_human_auth_no_raw_json() {
         !stdout.contains("[\""),
         "DoD-7: human Auth column must not show raw JSON array; stdout={stdout}"
     );
-    // Should render the human value.
+    // Seeded ["secured"] must render as the human token, not only a header.
     assert!(
-        stdout.contains("secured") || stdout.contains("None") || stdout.contains("Auth"),
-        "expected endpoints table output: {stdout}"
+        stdout.contains("secured"),
+        "DoD-7: seeded auth [\"secured\"] must render as human text; stdout={stdout}"
     );
 }
 
