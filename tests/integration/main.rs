@@ -12,6 +12,7 @@ mod bridge_notify_tests;
 mod bridge_query_tests;
 mod bridge_tests;
 mod bump_manifests;
+mod require_secret;
 mod cargo_lock_orphan_pruning;
 mod cedar_orphan_pruning;
 mod ci_prediction;

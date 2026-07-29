@@ -44,18 +44,49 @@ tests/fixtures/package-manifests/v0.1.8/
 
 **Script runtimes:** On Windows, use `pwsh -File scripts/bump-manifests.ps1` as the primary local path. `scripts/bump-manifests.sh` is **Bash 3.2+** compatible (macOS `/bin/bash`) and is the path used by Ubuntu release CI.
 
+## Release gates (0098)
+
+Two gates keep half-executed releases from going unnoticed:
+
+| Gate | Script / workflow | When it fails |
+|---|---|---|
+| **A** (preflight) | `scripts/check-release-tag.sh` as first job in `release.yml` | Tag disagrees with `Cargo.toml` version, dated CHANGELOG section, or `mcp-server` `ledgerfulEngineTag` — **before any build** |
+| **B** (drift) | `scripts/check-release-state.sh` via `release-state.yml` (weekday schedule + `workflow_dispatch`) | `Cargo.toml` version has a dated CHANGELOG section but no matching remote tag |
+
+Gate B is scheduled, not a PR gate — a short red window between a merged release commit and the tag push is expected. **Where to look for a red run:** Actions → *Release state*. A scheduled red has no pager; someone must watch that workflow.
+
+`ci.yml` / `smoke.yml` frontend `ref:` drift is **reported only** by Gate B (warnings do not fail the job). Do not refresh those pins without resolving the Node 24 + Linux CSP gap (see track 0098 / `deferred.md`).
+
+### Ops recovery — re-run a release without retagging
+
+```bash
+gh workflow run release.yml --ref vX.Y.Z
+```
+
+`GITHUB_REF_NAME` becomes the tag for Gate A and every `${GITHUB_REF_NAME#v}` step. There is **no** separate `tag` input (removed 0098 — a second source of truth would fight the preflight). Optional `frontend_ref` pins the embedded SPA for a recovery rebuild; empty resolves `ledgerful-frontend` `main` at run time (SHA is recorded in the release body).
+
+### Post-publish smoke
+
+- `verify-assets` (`needs: publish`): expected archives / checksums / SBOMs / signatures exist; downloads the Linux tarball and asserts `./ledgerful --version` matches the tag.
+- `verify-manifests` (`needs: bump-manifests`): live `gh api` read of `homebrew-tap/ledgerful.rb` and `scoop-bucket/ledgerful.json` (not the job's own `bumped/` output).
+
 ## Bump automation
 
 On each release, job `bump-manifests` (after `publish`):
 
 1. `gh release download` of `*.sha256` for the tag
 2. `scripts/bump-manifests.sh --version … --checksums-dir …` (always — validates script)
-3. If secret `MANIFEST_PUSH_TOKEN` is set, commit + push:
+3. `scripts/require-secret.sh MANIFEST_PUSH_TOKEN` — **hard-fails** if the secret is empty (0098; was silent `exit 0`)
+4. On success, commit + push:
    - `Ryan-AI-Studios/homebrew-tap` → `ledgerful.rb`
    - `Ryan-AI-Studios/scoop-bucket` → `ledgerful.json`
-4. If the secret is empty: print skip; dry-run/validation still must pass
+5. Step summary names both repos
+
+**Failure after publish is loud and recoverable by design** — a published release with unbumped manifests can be fixed by re-running the push (or a hand `bump-manifests` + push). Do not change the hard-fail back to `exit 0`.
 
 **Invariant:** the bump script reads hashes **only** from published `.sha256` files. It never recomputes hashes from archives.
+
+`WINGET_TOKEN` remains an intentional skip when unset (`::notice::` + step summary); that is deliberate until `Ledgerful.Ledgerful` exists on winget-pkgs.
 
 ### Local / CI fixture test
 
