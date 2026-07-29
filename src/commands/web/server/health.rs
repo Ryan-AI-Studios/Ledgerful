@@ -20,13 +20,12 @@ use crate::state::reports::{LATEST_IMPACT_REPORT, read_latest_impact_report};
 ///   abandoned because the `changes[]` array does not carry a per-file
 ///   `risk` field — the only available risk signal is the top-level
 ///   `riskLevel` enum, so we map that enum directly to a single penalty.
-/// - `doctor_failures`: count of failed checks in the most recent
-///   `ledgerful doctor` run, read from
-///   `layout.state_subdir().join("doctor-results.json")` (written by
-///   `execute_doctor` in `src/commands/doctor.rs`, per M8 opencode-review
-///   H1). Returns 0 if the file is absent (`Err(NotFound)`); logs a
-///   warning if the file is present but unparseable, so a future schema
-///   rename is loud not silent.
+/// - `doctor_failures`: `failures` field from the most recent
+///   `doctor-results.json` (written by `execute_doctor`). As of 0109,
+///   `failures = count(block) + count(warn WHERE category != optional)`.
+///   Optional backends (embed/completion/SCIP/sccache/gemini) never
+///   contribute. Returns 0 if the file is absent (`Err(NotFound)`); logs a
+///   warning if present but unparseable.
 ///
 /// The function returns `(health_score, last_scan_at)` where
 /// `last_scan_at` is the `timestampUtc` of the most recent impact
@@ -76,16 +75,11 @@ pub(crate) fn compute_health_score(layout: &Layout) -> (u8, Option<String>) {
 
 /// Read `doctor_failures` from the most recent `doctor-results.json`.
 ///
-/// File schema (per `conductor/trackM8/spec.md` DoD + the M8 review H1
-/// recommendation in `output/m8-opencode-1.md`): a JSON object with a
-/// `failures: u64` field written by `execute_doctor` in
-/// `src/commands/doctor.rs`. The legacy `results: [{ passed: bool, ... }]`
-/// array shape is also accepted for forward-compat (count of items with
-/// `passed == false`) — the schema was provisional before the M8
-/// resolve. The file lives in `state_subdir()` (the same directory as
-/// `ledger.db`); a `NotFound` error returns 0, and a parse failure logs
-/// a warning so a future schema rename surfaces instead of silently
-/// reporting "all green".
+/// File schema (0109 additive): `{ failures, timestamp, readyForPublish,
+/// block, warn, info }`. **`failures`** uses the dashboard formula
+/// (block + non-optional warn). The legacy `results: [{ passed: bool }]`
+/// array shape is still accepted on read. File lives in `state_subdir()`;
+/// `NotFound` → 0; parse failure logs a warning.
 fn read_doctor_failures(layout: &Layout) -> u64 {
     let path = layout.state_subdir().join("doctor-results.json");
     match std::fs::read_to_string(&path) {

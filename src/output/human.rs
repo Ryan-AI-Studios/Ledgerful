@@ -30,38 +30,45 @@ pub struct DoctorReport<'a> {
     pub target_triple: &'a str,
 }
 
-/// Pure summary text for doctor aggregate-first header (0100 DoD-5).
+/// Pure summary text for doctor aggregate-first header (0109).
 ///
-/// Priority: critical → soft failures → warnings/hints → all-pass.
-/// Exit code still tracks `critical` only (unchanged policy).
-pub fn format_doctor_summary_text(critical: u64, soft_failures: u64, warnings: u64) -> String {
-    if critical > 0 {
-        format!("✗ Doctor: {critical} CRITICAL issue(s)")
-    } else if soft_failures > 0 {
-        format!("✗ Doctor: {soft_failures} issue(s) found")
-    } else if warnings > 0 {
-        format!("✓ Doctor: 0 failures, {warnings} warning(s)/hint(s)")
+/// Priority: block → warn → info → all-pass.
+/// Red “issue(s)” wording is reserved for **block** only; warnings use the
+/// yellow ready-for-publish shape. Exit code tracks block only.
+pub fn format_doctor_summary_text(block: u64, warn: u64, info: u64) -> String {
+    if block > 0 {
+        format!("✗ Doctor: {block} block issue(s)")
+    } else if warn > 0 {
+        format!("✓ Doctor: ready for publish env · {warn} warning(s)")
+    } else if info > 0 {
+        format!("✓ Doctor: ready for publish env · {info} hint(s)")
     } else {
         "✓ Doctor: all checks passed".to_string()
     }
 }
 
-/// Counters for the doctor aggregate-first header.
+/// Counters for the doctor aggregate-first header (0109 severity model).
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct DoctorSummaryCounts {
-    pub critical: u64,
-    pub soft_failures: u64,
-    pub warnings: u64,
+    pub block: u64,
+    pub warn: u64,
+    pub info: u64,
 }
 
-pub fn print_doctor_report(report: &DoctorReport, summary: &DoctorSummaryCounts) {
-    // Aggregate-first (0100 DoD-5): first meaningful lines are the status.
-    let summary_text =
-        format_doctor_summary_text(summary.critical, summary.soft_failures, summary.warnings);
-    // DoD-5: aggregate is the literal first line (no leading blank). Codex R1 P2.
-    if summary.critical > 0 || summary.soft_failures > 0 {
+/// Human doctor report from structured findings (0109).
+///
+/// `index_health` holds non-finding status lines (e.g. Search index OK).
+/// Severity-classified issues are in `findings` and printed with prefixes.
+pub fn print_doctor_report(
+    report: &DoctorReport,
+    summary: &DoctorSummaryCounts,
+    findings: &[crate::commands::doctor::DoctorFinding],
+) {
+    // Aggregate-first: first meaningful line is the status (no leading blank).
+    let summary_text = format_doctor_summary_text(summary.block, summary.warn, summary.info);
+    if summary.block > 0 {
         println!("{}", summary_text.red().bold());
-    } else if summary.warnings > 0 {
+    } else if summary.warn > 0 {
         println!("{}", summary_text.yellow().bold());
     } else {
         println!("{}", summary_text.green().bold());
@@ -104,19 +111,40 @@ pub fn print_doctor_report(report: &DoctorReport, summary: &DoctorSummaryCounts)
     println!("\nActive Ask Backend:  {}", report.active_ask_backend);
     println!("Native Graph:        {}", report.native_graph_status);
 
-    if !report.index_health.is_empty() {
+    let core_findings: Vec<_> = findings
+        .iter()
+        .filter(|f| f.category != crate::commands::doctor::DoctorCategory::Optional)
+        .collect();
+    if !report.index_health.is_empty() || !core_findings.is_empty() {
         println!("\nIndex Health:");
         for health in &report.index_health {
             println!("  • {}", health);
         }
+        for f in &core_findings {
+            let prefix = match f.severity {
+                crate::commands::doctor::DoctorSeverity::Block => "[block]".red().to_string(),
+                crate::commands::doctor::DoctorSeverity::Warn => "[warn]".yellow().to_string(),
+                crate::commands::doctor::DoctorSeverity::Info => "[info]".cyan().to_string(),
+            };
+            println!("  • {} [{}] {}", prefix, f.code, f.message);
+        }
     }
 
-    // Optional accelerators: embedding/completion status (severity unchanged —
-    // partial-config still fails count_doctor_failures). SCIP/sccache hints
-    // are appended by doctor after this call under the same section.
+    // Optional accelerators: embedding/completion display + optional findings.
     println!("\n── Optional Accelerators ──────────────────────");
     println!("Embedding Model:     {}", report.embedding_model_status);
     println!("Completion Model:    {}", report.completion_model_status);
+    for f in findings
+        .iter()
+        .filter(|f| f.category == crate::commands::doctor::DoctorCategory::Optional)
+    {
+        let prefix = match f.severity {
+            crate::commands::doctor::DoctorSeverity::Block => "[block]".red().to_string(),
+            crate::commands::doctor::DoctorSeverity::Warn => "[warn]".yellow().to_string(),
+            crate::commands::doctor::DoctorSeverity::Info => "[info]".cyan().to_string(),
+        };
+        println!("{} [{}] {}", prefix, f.code, f.message);
+    }
 }
 
 /// Honest-ceiling footer for dead-code human output (0100 Option 1 / DoD-4).
@@ -584,20 +612,24 @@ mod tests {
     fn doctor_summary_text_four_way() {
         assert_eq!(
             format_doctor_summary_text(1, 0, 0),
-            "✗ Doctor: 1 CRITICAL issue(s)"
+            "✗ Doctor: 1 block issue(s)"
         );
         assert_eq!(
             format_doctor_summary_text(0, 2, 0),
-            "✗ Doctor: 2 issue(s) found"
+            "✓ Doctor: ready for publish env · 2 warning(s)"
         );
         assert_eq!(
             format_doctor_summary_text(0, 0, 3),
-            "✓ Doctor: 0 failures, 3 warning(s)/hint(s)"
+            "✓ Doctor: ready for publish env · 3 hint(s)"
         );
         assert_eq!(
             format_doctor_summary_text(0, 0, 0),
             "✓ Doctor: all checks passed"
         );
+        // Block wins over warn/info when present.
+        assert!(format_doctor_summary_text(1, 9, 9).contains("block issue"));
+        // Warn uses ready shape — never red soft-fail wording.
+        assert!(!format_doctor_summary_text(0, 2, 0).contains("issue(s) found"));
     }
 
     #[test]

@@ -8,12 +8,27 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Doctor severity + publish readiness (0109):** structured findings `block|warn|info` with
+  required `category` and stable `code`. `ledgerful doctor --json` emits pure schema-v1 JSON
+  (`schemaVersion` u32 `1`, `readyForPublish`, `summary`, `findings`, `environment`).
+  `readyForPublish` is true iff zero **block** findings (docs/skill define dual-green:
+  readiness ≠ `verify --scope fast` ≠ full CI). See `docs/doctor-severity.md`.
 - **Scheduled release cut (0104):** weekday `release-cut.yml` proposes a Tier-2 release PR when
   `[Unreleased]` has content (`scripts/prepare-release-cut.sh` + pre-bump `changelog-unreleased.sh`).
   Opens `release/vX.Y.Z` with exactly four files (CHANGELOG, Cargo.toml/lock, mcp pin **and** wrapper
   patch), label `release-cut`. Merge tags the **merge commit** so `release.yml` fires. Empty Unreleased
   and an already-open cut PR are clean skips. Merge and `ai-reviewed` stay human; automation cannot
   set the review status (by design).
+
+### Changed
+
+- **Doctor dashboard `failures` formula (0109):** `failures = count(block) + count(warn WHERE
+  category != optional)`. Optional backends (embedding/completion/SCIP/sccache/gemini) no longer
+  soft-fail or penalize health. On a models-down machine this removes the historical **~−60**
+  health points (`failures * 20`) while corrupt index/search still penalizes via non-optional warn.
+  Additive `doctor-results.json` fields: `readyForPublish`, `block`, `warn`, `info`. Legacy
+  `results: [{passed}]` readers still accepted. Human aggregate: red reserved for **block** only;
+  warnings use yellow “ready for publish env · N warning(s)”.
 
 ### Fixed
 
