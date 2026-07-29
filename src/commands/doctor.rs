@@ -422,7 +422,23 @@ pub fn execute_doctor() -> Result<()> {
         }
     }
 
-    print_doctor_report(&report);
+    // Aggregate-first counters (0100 DoD-5). soft_failures feed the summary
+    // and dashboard; critical alone drives exit 1 (policy unchanged).
+    let soft_failures = count_doctor_failures(&report);
+    let sccache_hint_active = std::env::var("RUSTC_WRAPPER").is_err();
+    let scip_findings = collect_scip_findings(&config);
+    let warnings = count_doctor_warnings(&report, sccache_hint_active, scip_findings.len());
+    let summary = crate::output::human::DoctorSummaryCounts {
+        critical: critical_count,
+        soft_failures,
+        warnings,
+    };
+
+    print_doctor_report(&report, &summary);
+    // SCIP / sccache continue under the Optional Accelerators section opened
+    // by print_doctor_report (embedding/completion already printed there).
+    print_sccache_hint();
+    print_scip_findings_lines(&scip_findings);
     print_vram_section();
 
     // Persist a summary so the web dashboard's `health_score` formula
@@ -439,9 +455,6 @@ pub fn execute_doctor() -> Result<()> {
         tracing::warn!("Failed to write doctor-results.json: {}", e);
     }
 
-    print_sccache_hint();
-    print_scip_hint(&config);
-
     // DoD-6: doctor exit non-zero when any CRITICAL present.
     if critical_count > 0 {
         eprintln!(
@@ -453,6 +466,28 @@ pub fn execute_doctor() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Count yellow Warning lines in index_health plus optional-hint emissions
+/// (sccache / SCIP). Used only for the aggregate-first summary line.
+fn count_doctor_warnings(
+    report: &crate::output::human::DoctorReport,
+    sccache_hint: bool,
+    scip_finding_count: usize,
+) -> u64 {
+    let mut n: u64 = 0;
+    for line in &report.index_health {
+        // Lines are pre-coloured with owo_colors; "Warning" remains in the
+        // string content after ANSI codes.
+        if line.contains("Warning") {
+            n += 1;
+        }
+    }
+    if sccache_hint {
+        n += 1;
+    }
+    n = n.saturating_add(scip_finding_count as u64);
+    n
 }
 
 /// Four-surface legacy migration checks (0094 DoD-6). Returns sorted WARNING
@@ -547,10 +582,13 @@ fn count_phantom_verified(conn: &rusqlite::Connection) -> Result<i64> {
 /// recommended here. sccache requires `CARGO_INCREMENTAL=0` — it cannot cache
 /// incrementally-compiled crates. This is guidance only; verify does not wire
 /// sccache into its command generation.
+///
+/// Printed under the Optional Accelerators section opened by
+/// `print_doctor_report` (0100).
 fn print_sccache_hint() {
     if std::env::var("RUSTC_WRAPPER").is_err() {
         println!(
-            "\n{} Cold or CI builds may benefit from sccache v0.16.0+. \
+            "{} Cold or CI builds may benefit from sccache v0.16.0+. \
              Set {} and {}. Note: do not combine with {}; use one or the other.",
             "Hint:".cyan().bold(),
             "RUSTC_WRAPPER=sccache".cyan(),
@@ -563,12 +601,10 @@ fn print_sccache_hint() {
 /// SCIP availability hints (0095 DoD-13). Optional accelerators — never put
 /// indexers in `DoctorReport.tools` (NotFound counts as failure). Absence is
 /// not a doctor failure. Sorted findings via [`collect_scip_findings`].
-fn print_scip_hint(config: &crate::config::model::Config) {
-    let findings = collect_scip_findings(config);
-    if findings.is_empty() {
-        return;
-    }
-    println!();
+///
+/// Printed under the Optional Accelerators section (0100); no extra blank
+/// header — callers already opened the section.
+fn print_scip_findings_lines(findings: &[String]) {
     for line in findings {
         println!("{} {}", "Hint:".cyan().bold(), line);
     }
@@ -1113,6 +1149,46 @@ mod tests {
             index_health: vec!["Search index: OK (0 documents)".to_string()],
             target_triple: "test",
         }
+    }
+
+    #[test]
+    fn doctor_summary_four_way_priority() {
+        use crate::output::human::format_doctor_summary_text;
+        assert_eq!(
+            format_doctor_summary_text(2, 5, 3),
+            "✗ Doctor: 2 CRITICAL issue(s)"
+        );
+        assert_eq!(
+            format_doctor_summary_text(0, 3, 2),
+            "✗ Doctor: 3 issue(s) found"
+        );
+        assert_eq!(
+            format_doctor_summary_text(0, 0, 4),
+            "✓ Doctor: 0 failures, 4 warning(s)/hint(s)"
+        );
+        assert_eq!(
+            format_doctor_summary_text(0, 0, 0),
+            "✓ Doctor: all checks passed"
+        );
+        // Soft failures win over warnings when critical is zero.
+        assert!(format_doctor_summary_text(0, 1, 9).contains("issue(s) found"));
+    }
+
+    #[test]
+    fn count_doctor_warnings_includes_warning_lines_and_hints() {
+        let tools = vec![(
+            "git".to_string(),
+            ExecutableStatus::Found(PathBuf::from("git")),
+        )];
+        let report = DoctorReport {
+            index_health: vec![
+                "Warning [sig-pin]: no intent.trusted_public_keys pinned; crypto-valid signatures report VALID (unknown key). Pin keys after init or re-sign.".to_string(),
+                "Search index: OK (0 documents)".to_string(),
+            ],
+            ..sample_report(&tools)
+        };
+        assert_eq!(count_doctor_warnings(&report, false, 0), 1);
+        assert_eq!(count_doctor_warnings(&report, true, 3), 5);
     }
 
     #[test]

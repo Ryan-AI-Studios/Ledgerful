@@ -363,6 +363,8 @@ pub enum Commands {
     /// Quick status check of the project ledger and pending transactions
     Status,
     /// Configuration management
+    // after_help only on Config (0100 DoD-8): clap auto-help is insufficient for
+    // key=value set examples; do not spray after_help on every command group.
     Config {
         #[command(subcommand)]
         command: ConfigCommands,
@@ -2951,6 +2953,13 @@ pub enum RegisterCommands {
 }
 
 #[derive(Subcommand, Debug)]
+#[command(after_help = "\
+Examples:
+  ledgerful config view                        Show resolved configuration
+  ledgerful config verify                      Verify config and environment health
+  ledgerful config set coverage.enabled=true   Set a configuration value
+  ledgerful config diff                        Show declared vs inferred config
+")]
 pub enum ConfigCommands {
     /// Verify current configuration and environment health
     Verify {

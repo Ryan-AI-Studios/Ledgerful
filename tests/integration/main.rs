@@ -37,6 +37,7 @@ mod cli_ledger_graph;
 mod cli_migration_prompt;
 mod cli_reset;
 mod cli_scan;
+mod cli_scannability;
 mod cli_search;
 mod cli_semantic_honesty;
 mod cli_services_diff_messaging;

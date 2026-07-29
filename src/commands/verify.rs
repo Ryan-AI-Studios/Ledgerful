@@ -428,16 +428,30 @@ pub fn verify_ledger_signatures_with_options(
                 );
             }
             (
-                crate::ledger::crypto::SignatureTrustStatus::ValidTrusted
-                | crate::ledger::crypto::SignatureTrustStatus::ValidUnknownKey,
+                crate::ledger::crypto::SignatureTrustStatus::ValidTrusted,
                 SigEntryStream::CliSummaryDebug,
             ) => {
-                // Per-entry detail at debug! so --quiet / machine hide it
-                // while default (DEBUG) keeps today's behaviour (0093 DoD-5).
+                // Per-entry detail at debug! — visible under --verbose (DEBUG
+                // layer); hidden at product default INFO and under --quiet /
+                // machine (0100 / 0093 DoD-5).
                 tracing::debug!(
                     target: "cli_summary",
                     "  [{}] TX {}",
                     status.as_str().green(),
+                    short
+                );
+            }
+            (
+                crate::ledger::crypto::SignatureTrustStatus::ValidUnknownKey,
+                SigEntryStream::CliSummaryDebug,
+            ) => {
+                // Amber/yellow: crypto-valid but unpinned key is not full
+                // success — shared vocabulary with doctor [sig-pin] warning
+                // ("unknown key", "pin", "trusted").
+                tracing::debug!(
+                    target: "cli_summary",
+                    "  [{}] TX {}",
+                    status.as_str().yellow(),
                     short
                 );
             }
@@ -1873,11 +1887,11 @@ mod sig_entry_stream_tests {
         }
     }
 
-    /// DoD-6 dual-run with real filter levels: default (DEBUG) shows per-entry
-    /// detail + aggregate; quiet (INFO) hides detail but keeps the same aggregate
-    /// counts fragment on the product stream.
+    /// DoD-6 dual-run with real filter levels (0100 four-state):
+    /// product default / quiet are INFO (aggregate only); verbose is DEBUG
+    /// (per-entry + aggregate). Aggregate counts fragment is identical.
     #[test]
-    fn aggregate_summary_identical_under_quiet_and_default_filters() {
+    fn aggregate_summary_under_default_quiet_and_verbose_filters() {
         let counts = SignatureAggregateCounts {
             valid: 4,
             invalid: 1,
@@ -1910,8 +1924,10 @@ mod sig_entry_stream_tests {
             String::from_utf8_lossy(&capture.lock().unwrap()).to_string()
         };
 
-        let default_out = capture(Level::DEBUG);
+        // Product default and --quiet both use INFO (0100).
+        let default_out = capture(Level::INFO);
         let quiet_out = capture(Level::INFO);
+        let verbose_out = capture(Level::DEBUG);
 
         assert!(
             default_out.contains(&fragment),
@@ -1922,15 +1938,23 @@ mod sig_entry_stream_tests {
             "quiet must show same aggregate; out={quiet_out:?}"
         );
         assert!(
-            default_out.contains("[VALID]"),
-            "default must show per-entry detail"
+            verbose_out.contains(&fragment),
+            "verbose must show aggregate; out={verbose_out:?}"
+        );
+        assert!(
+            !default_out.contains("[VALID]") && !default_out.contains("[SKIP]"),
+            "default (INFO) must hide per-entry detail; out={default_out:?}"
         );
         assert!(
             !quiet_out.contains("[VALID]") && !quiet_out.contains("[SKIP]"),
             "quiet must hide per-entry detail; out={quiet_out:?}"
         );
+        assert!(
+            verbose_out.contains("[VALID]"),
+            "verbose (DEBUG) must show per-entry detail; out={verbose_out:?}"
+        );
 
-        // Parse counts from both aggregate lines — must match exactly.
+        // Parse counts from aggregate lines — must match exactly.
         fn parse_counts(s: &str) -> Option<(usize, usize, usize, usize)> {
             let line = s
                 .lines()
@@ -1950,8 +1974,33 @@ mod sig_entry_stream_tests {
         }
         let d = parse_counts(&default_out).expect("default aggregate parse");
         let q = parse_counts(&quiet_out).expect("quiet aggregate parse");
+        let v = parse_counts(&verbose_out).expect("verbose aggregate parse");
         assert_eq!(d, q, "DoD-6 dual-run: aggregate counts must match");
+        assert_eq!(d, v, "verbose aggregate counts must match default");
         assert_eq!(d, (4, 1, 2, 0));
+    }
+
+    /// DoD-2 structural safety: INVALID / required-UNSIGNED always route to
+    /// RawStderr (eprintln!), so no verbosity filter can suppress them.
+    #[test]
+    fn hard_failures_always_raw_stderr_across_verbosity_levels() {
+        use crate::ledger::crypto::SignatureTrustStatus;
+        // At every product verbosity the stream decision is identical —
+        // RawStderr is outside cli_summary filtering entirely.
+        for signing_required in [false, true] {
+            assert!(
+                sig_entry_stream(SignatureTrustStatus::Invalid, signing_required).is_raw_stderr(),
+                "INVALID must always be RawStderr (signing_required={signing_required})"
+            );
+        }
+        assert!(
+            sig_entry_stream(SignatureTrustStatus::Unsigned, true).is_raw_stderr(),
+            "required UNSIGNED must always be RawStderr"
+        );
+        // Soft statuses stay filterable (not RawStderr).
+        assert!(!sig_entry_stream(SignatureTrustStatus::ValidTrusted, false).is_raw_stderr());
+        assert!(!sig_entry_stream(SignatureTrustStatus::ValidUnknownKey, false).is_raw_stderr());
+        assert!(!sig_entry_stream(SignatureTrustStatus::Unsigned, false).is_raw_stderr());
     }
 }
 

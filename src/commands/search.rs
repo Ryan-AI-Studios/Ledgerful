@@ -248,15 +248,20 @@ fn perform_search(
     use_regex: bool,
     use_hybrid: bool,
 ) -> Result<()> {
+    // Overfetch by one so human path can emit a truncation affordance without
+    // claiming an exact "K more" total (0100 DoD-7). JSON still truncates to
+    // `args.limit` with no new fields.
+    let overfetch = args.limit.saturating_add(1);
+
     if use_hybrid {
         if !args.json {
             println!("[Search Mode: Hybrid]");
         }
         let filter = RegexFilter::new(&engine);
         let regex_matches = filter
-            .search(root, &args.query, args.limit)
+            .search(root, &args.query, overfetch)
             .unwrap_or_default();
-        let bm25_results = engine.search(&args.query, args.limit).unwrap_or_default();
+        let bm25_results = engine.search(&args.query, overfetch).unwrap_or_default();
 
         struct MergedResult {
             path: String,
@@ -329,6 +334,7 @@ fn perform_search(
                 .partial_cmp(&score_a)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        let truncated = merged_results.len() > args.limit;
         merged_results.truncate(args.limit);
 
         if merged_results.is_empty() {
@@ -404,6 +410,9 @@ fn perform_search(
                         display.trim()
                     );
                 }
+                if truncated {
+                    print_search_truncation_affordance();
+                }
                 println!();
             }
         }
@@ -412,7 +421,9 @@ fn perform_search(
             println!("[Search Mode: Regex]");
         }
         let filter = RegexFilter::new(&engine);
-        let matches = filter.search(root, &args.query, args.limit)?;
+        let mut matches = filter.search(root, &args.query, overfetch)?;
+        let truncated = matches.len() > args.limit;
+        matches.truncate(args.limit);
 
         if args.json {
             for m in matches {
@@ -452,6 +463,9 @@ fn perform_search(
                         m.content.trim()
                     );
                 }
+                if truncated {
+                    print_search_truncation_affordance();
+                }
             }
             println!();
         }
@@ -459,7 +473,9 @@ fn perform_search(
         if !args.json {
             println!("[Search Mode: BM25]");
         }
-        let results = engine.search(&args.query, args.limit)?;
+        let mut results = engine.search(&args.query, overfetch)?;
+        let truncated = results.len() > args.limit;
+        results.truncate(args.limit);
 
         if results.is_empty() {
             handle_fuzzy_fallback(&engine, args);
@@ -503,12 +519,21 @@ fn perform_search(
                         println!("  {}", display.trim());
                     }
                 }
+                if truncated {
+                    print_search_truncation_affordance();
+                }
                 println!();
             }
         }
     }
 
     Ok(())
+}
+
+/// Human-only truncation affordance (0100 DoD-7). No exact remaining count —
+/// engines do not always return a total. JSON paths never call this.
+fn print_search_truncation_affordance() {
+    println!("… and more results (use --limit N to see more)");
 }
 
 /// Apply bold emphasis to byte ranges in a plain snippet via owo_colors.

@@ -26,20 +26,29 @@ fn build_log_filter(verbose: bool, machine: bool) -> EnvFilter {
     }
 }
 
-/// Three-state verbosity for the `cli_summary` product layer (track 0093).
+/// Four-state verbosity for the `cli_summary` product layer (0093 + 0100).
 ///
-/// - Default (`DEBUG`): per-entry detail and aggregate both visible.
-/// - Quiet (`INFO`): hide per-entry `debug!` detail; keep aggregate `info!`.
-/// - Machine (`WARN`): no human-facing `cli_summary` line reaches stdout.
+/// | State | Level | Per-entry `debug!` | Aggregate `info!` |
+/// |---|---|---|---|
+/// | Default | `INFO` | hidden | shown |
+/// | `--verbose` | `DEBUG` | shown | shown |
+/// | `--quiet` | `INFO` | hidden | shown |
+/// | Machine | `WARN` | hidden | hidden |
 ///
-/// Machine wins over quiet when both are selected.
-fn summary_layer_max_level(machine: bool, quiet: bool) -> Level {
+/// Precedence: machine → `WARN` (wins over everything); else if `verbose` →
+/// `DEBUG` (explicit `-v` wins over quiet); else → `INFO` (default and quiet
+/// are equivalent for signatures). Track 0100 moved the product default from
+/// `DEBUG` to `INFO`; `--verbose` restores per-entry detail.
+fn summary_layer_max_level(machine: bool, quiet: bool, verbose: bool) -> Level {
     if machine {
         Level::WARN
-    } else if quiet {
-        Level::INFO
-    } else {
+    } else if verbose {
         Level::DEBUG
+    } else {
+        // quiet and default both INFO — quiet is kept as a flag for agents
+        // that already set LEDGERFUL_QUIET=1 (no behaviour change for them).
+        let _ = quiet;
+        Level::INFO
     }
 }
 
@@ -95,13 +104,14 @@ fn run() -> Result<()> {
             }
         );
 
-    // 0093: three-state `cli_summary` filter. Machine mode (`--json` / mcp /
+    // 0093/0100: four-state `cli_summary` filter. Machine mode (`--json` / mcp /
     // scan --format json) filters to WARN so human product lines cannot land
-    // on stdout around a machine payload. Quiet hides per-entry DEBUG detail.
-    // Machine also raises normal_layer to WARN so progress INFO (e.g. engine
-    // "Running verification command…") cannot pollute stderr on success.
+    // on stdout around a machine payload. Default/quiet are INFO (aggregate
+    // only); `--verbose` restores DEBUG per-entry detail. Machine also raises
+    // normal_layer to WARN so progress INFO cannot pollute stderr on success.
     let machine = cli_args.command.is_machine_output();
-    let summary_max = summary_layer_max_level(machine, resolve_quiet(cli_args.quiet));
+    let summary_max =
+        summary_layer_max_level(machine, resolve_quiet(cli_args.quiet), effective_verbose);
 
     let normal_layer = fmt::layer()
         .with_writer(std::io::stderr)
@@ -272,12 +282,21 @@ mod tests {
     }
 
     #[test]
-    fn summary_layer_max_level_three_states() {
-        assert_eq!(summary_layer_max_level(false, false), Level::DEBUG);
-        assert_eq!(summary_layer_max_level(false, true), Level::INFO);
-        assert_eq!(summary_layer_max_level(true, false), Level::WARN);
-        // Machine wins over quiet.
-        assert_eq!(summary_layer_max_level(true, true), Level::WARN);
+    fn summary_layer_max_level_four_states() {
+        // Default → INFO (summary-first; hides per-entry debug!).
+        assert_eq!(summary_layer_max_level(false, false, false), Level::INFO);
+        // Quiet → INFO (same as default for signatures).
+        assert_eq!(summary_layer_max_level(false, true, false), Level::INFO);
+        // Verbose → DEBUG (restores per-entry detail).
+        assert_eq!(summary_layer_max_level(false, false, true), Level::DEBUG);
+        // Explicit -v wins over quiet.
+        assert_eq!(summary_layer_max_level(false, true, true), Level::DEBUG);
+        // Machine → WARN.
+        assert_eq!(summary_layer_max_level(true, false, false), Level::WARN);
+        // Machine wins over quiet and verbose.
+        assert_eq!(summary_layer_max_level(true, true, false), Level::WARN);
+        assert_eq!(summary_layer_max_level(true, false, true), Level::WARN);
+        assert_eq!(summary_layer_max_level(true, true, true), Level::WARN);
     }
 
     /// Buffer make-writer for stream-routing tests (DoD-4).
@@ -378,7 +397,7 @@ mod tests {
         let stderr_capture = Arc::clone(&stderr_buf.buf);
 
         let writer = stderr_buf.with_max_level(Level::WARN).or_else(stdout_buf);
-        let summary_max = summary_layer_max_level(true, false); // machine
+        let summary_max = summary_layer_max_level(true, false, false); // machine
 
         let layer = fmt::layer()
             .with_writer(writer)
@@ -430,7 +449,7 @@ mod tests {
         let stderr_capture = Arc::clone(&stderr_buf.buf);
 
         let writer = stderr_buf.with_max_level(Level::WARN).or_else(stdout_buf);
-        let summary_max = summary_layer_max_level(true, false); // machine = WARN
+        let summary_max = summary_layer_max_level(true, false, false); // machine = WARN
 
         let layer = fmt::layer()
             .with_writer(writer)
