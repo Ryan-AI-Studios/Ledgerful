@@ -1,0 +1,267 @@
+# 0104 — Scheduled Tier-2 release cut (0098 Part B).
+#
+# Proposes a release PR when [Unreleased] has content; tags on merge of a
+# release-cut-labelled PR. Does NOT auto-merge and cannot set ai-reviewed
+# (token lacks commit_statuses: write by design).
+#
+# Cadence: weekdays mid-morning America/New_York, non-top-of-hour (GitHub
+# high-load includes the start of every hour; delivery can still lag 15m–2h).
+# A missed day is harmless — the next run sees a larger [Unreleased].
+# Public-repo schedules auto-disable after ~60 days of repository inactivity.
+#
+# Credential: secrets.RELEASE_CUT_TOKEN (fine-grained PAT, contents+PR write on
+# Ledgerful only; no workflows:write, no commit_statuses:write, no expiration).
+# Never embed the token in a URL — use gh auth setup-git (0082 RT-X9).
+name: Release cut
+
+on:
+  schedule:
+    # 10:17 America/New_York weekdays ≈ mid-morning ET (DST-aware via timezone).
+    - cron: "17 10 * * 1-5"
+      timezone: "America/New_York"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Optional version override (X.Y.Z or vX.Y.Z); default next patch"
+        required: false
+        type: string
+      dry_run:
+        description: "Run guards and print plan without push/PR"
+        required: false
+        type: boolean
+        default: false
+  pull_request:
+    types: [closed]
+
+concurrency:
+  group: release-cut
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: Prepare release cut PR
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Full history not required; default token is read-only — push uses PAT.
+          fetch-depth: 0
+
+      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
+        with:
+          toolchain: stable
+
+      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+
+      - name: Open-PR guard + Unreleased + version + prepare + PR
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_CUT_TOKEN }}
+          INPUT_VERSION: ${{ github.event.inputs.version || '' }}
+          INPUT_DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
+        run: |
+          set -euo pipefail
+          chmod +x scripts/prepare-release-cut.sh \
+            scripts/changelog-unreleased.sh \
+            scripts/lib/release-changelog.sh
+
+          # shellcheck source=scripts/lib/release-changelog.sh
+          source scripts/lib/release-changelog.sh
+
+          # --- 1. Open-PR guard (label, not --head) -------------------------
+          # Version-named branches mean --head would miss an open cut for a
+          # different computed version and stack a second PR. Label is identity.
+          open_prs="$(gh pr list --label release-cut --state open --json number,headRefName --jq 'length')"
+          if [ "${open_prs}" != "0" ]; then
+            detail="$(gh pr list --label release-cut --state open --json number,headRefName \
+              --jq '.[] | "#\(.number) \(.headRefName)"' | tr '\n' ' ')"
+            echo "::notice::skipped: release-cut PR already open (${detail}) — not stacking a second cut"
+            exit 0
+          fi
+
+          # --- 2. Pre-bump Unreleased guard ---------------------------------
+          # changelog-unreleased.sh exits 1 when empty (by design). A bare run:
+          # would red every quiet day — wrap and distinguish exit 2 (hard fail).
+          set +e
+          bash scripts/changelog-unreleased.sh
+          unrel_rc=$?
+          set -e
+          if [ "$unrel_rc" -eq 1 ]; then
+            echo "::notice::[Unreleased] is empty — no completed work to cut"
+            exit 0
+          fi
+          if [ "$unrel_rc" -ne 0 ]; then
+            echo "::error::changelog-unreleased.sh failed with exit ${unrel_rc} (usage/missing file)"
+            exit 1
+          fi
+
+          # --- 3. Compute version (patch default, optional override) --------
+          current="$(cargo_toml_version Cargo.toml)"
+          if [ -z "$current" ]; then
+            echo "::error::could not read Cargo.toml version"
+            exit 1
+          fi
+          IFS=. read -r maj min pat <<<"$current"
+          next_patch="${maj}.${min}.$((pat + 1))"
+
+          version="$next_patch"
+          if [ -n "${INPUT_VERSION}" ]; then
+            raw="${INPUT_VERSION}"
+            version="${raw#v}"
+            if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+              echo "::error::version override must match ^v?[0-9]+.[0-9]+.[0-9]+$ (got: ${raw})"
+              exit 1
+            fi
+            # Strict greater than current (same rule as prepare-release-cut.sh).
+            if [ "$version" = "$current" ] \
+              || [ "$(printf '%s\n%s\n' "$version" "$current" | sort -V | head -n1)" != "$current" ]; then
+              echo "::error::version override ${version} must be greater than current Cargo.toml ${current}"
+              exit 1
+            fi
+          fi
+
+          branch="release/v${version}"
+          echo "Plan: cut v${version} (current ${current}) on branch ${branch}"
+          echo "Would touch: CHANGELOG.md Cargo.toml Cargo.lock mcp-server/package.json"
+
+          # --- 4. Ensure release-cut label exists ---------------------------
+          # gh pr create --label fails hard on a missing label; missing label
+          # also means a merged PR never tags (Phase 3 keys on the label).
+          gh label create release-cut \
+            --description "Automated release cut PR — do not remove" \
+            --color 0E8A16 \
+            --force
+
+          # --- 5. dry_run stops before any push/PR --------------------------
+          if [ "${INPUT_DRY_RUN}" = "true" ]; then
+            echo "::notice::dry_run: would prepare v${version} on ${branch}; files: CHANGELOG.md Cargo.toml Cargo.lock mcp-server/package.json"
+            exit 0
+          fi
+
+          # --- 6. Branch must not already exist on remote -------------------
+          if git ls-remote --exit-code --heads origin "${branch}" >/dev/null 2>&1; then
+            echo "::error::remote branch ${branch} already exists — refuse to overwrite"
+            echo "::error::inspect the abandoned cut, then: git push origin --delete ${branch}"
+            exit 1
+          fi
+
+          git checkout -B "${branch}"
+
+          # --- 7. Prepare four files ----------------------------------------
+          bash scripts/prepare-release-cut.sh "${version}"
+
+          # --- 8. Commit + push with PAT (gh auth setup-git, not URL) -------
+          git config user.name "ledgerful-release-cut[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add CHANGELOG.md Cargo.toml Cargo.lock mcp-server/package.json
+          git status --short
+          git commit -m "chore(release): cut v${version}"
+
+          # GH_TOKEN authenticates gh; setup-git wires git push (0082 RT-X9).
+          gh auth setup-git
+          git push -u origin "HEAD:${branch}"
+
+          # --- 9. Open PR ---------------------------------------------------
+          body="$(cat <<EOF
+          ## Release cut v${version}
+
+          Automated Tier-2 cut (track 0104 / workflow \`release-cut\`).
+
+          ### Files (exactly four)
+          - \`CHANGELOG.md\` — retitle \`[Unreleased]\` → \`[${version}]\` + fresh empty Unreleased
+          - \`Cargo.toml\` / \`Cargo.lock\` — package version \`${version}\`
+          - \`mcp-server/package.json\` — \`ledgerfulEngineTag\` → \`v${version}\` **and** npm wrapper patch bump
+
+          ### Do not
+          - **Do not remove the \`release-cut\` label** — the merge→tag job keys on it. Without the label, merge will not create \`v${version}\` and Gate B will go red.
+          - Do not add commits under \`.github/\` on this branch (PAT cannot push them; do not try).
+
+          ### Still required before merge
+          - **\`ai-reviewed\`** is still required. This automation cannot set it (by design — token has no commit-statuses write). Follow [docs/AI-CODE-REVIEW-PROTOCOL.md](../blob/main/docs/AI-CODE-REVIEW-PROTOCOL.md).
+          - Required checks must pass; merge is a human decision.
+
+          ### After merge
+          The tag job creates \`v${version}\` on the **merge commit** (not the PR head), which starts \`release.yml\`.
+          EOF
+          )"
+          # Strip leading indentation from the heredoc for a clean body.
+          body="$(printf '%s\n' "$body" | sed -E 's/^          //')"
+
+          gh pr create \
+            --title "chore(release): cut v${version}" \
+            --label release-cut \
+            --base main \
+            --head "${branch}" \
+            --body "${body}"
+
+          echo "::notice::opened release cut PR for v${version} on ${branch}"
+
+  tag:
+    name: Tag merged release-cut PR
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true &&
+      contains(github.event.pull_request.labels.*.name, 'release-cut')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+
+      - name: Tag merge commit and push
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_CUT_TOKEN }}
+          HEAD_REF: ${{ github.event.pull_request.head.ref }}
+          MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
+        run: |
+          set -euo pipefail
+
+          # Version travels only on the branch name (title is editable).
+          # release/vX.Y.Z → X.Y.Z
+          if [[ ! "${HEAD_REF}" =~ ^release/v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::head ref '${HEAD_REF}' does not match release/vX.Y.Z — refuse to tag"
+            exit 1
+          fi
+          VERSION="${HEAD_REF#release/v}"
+          if ! [[ "${VERSION}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::parsed VERSION '${VERSION}' is not X.Y.Z"
+            exit 1
+          fi
+
+          if [ -z "${MERGE_SHA}" ] || [ "${MERGE_SHA}" = "null" ]; then
+            echo "::error::merge_commit_sha is empty — refuse to tag (never fall back to github.sha or PR head)"
+            exit 1
+          fi
+
+          # Tag the merge commit on main — never github.sha (ephemeral
+          # refs/pull/N/merge) and never the PR head (not an ancestor of main
+          # after squash-merge). See 0104 plan step 19 / risk 5.
+          git fetch origin main
+          if ! git merge-base --is-ancestor "${MERGE_SHA}" origin/main; then
+            echo "::error::merge_commit_sha ${MERGE_SHA} is not an ancestor of origin/main — refuse to tag"
+            exit 1
+          fi
+
+          tag="v${VERSION}"
+          if git ls-remote --exit-code --tags origin "refs/tags/${tag}" >/dev/null 2>&1; then
+            echo "::error::tag ${tag} already exists on remote — refuse to overwrite"
+            exit 1
+          fi
+
+          git tag "${tag}" "${MERGE_SHA}"
+          # PAT so the tag push starts release.yml (GITHUB_TOKEN would not).
+          gh auth setup-git
+          git push origin "${tag}"
+
+          echo "::notice::tagged ${tag} at ${MERGE_SHA} (merge commit on main)"

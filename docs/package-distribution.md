@@ -94,6 +94,59 @@ git push origin vX.Y.Z
 
 ## Bump automation
 
+### Scheduled release cut (0104) — proposes, does not merge
+
+Workflow: `release-cut.yml` (`Release cut`). This is **0098 Part B**: automation **proposes** a
+Tier-2 cut when there is work; a human still merges after `ai-reviewed` and the other required checks.
+
+| | Value |
+|---|---|
+| **Schedule** | Weekdays `17 10 * * 1-5` with `timezone: America/New_York` (10:17 ET mid-morning, non-top-of-hour) |
+| **Manual** | `workflow_dispatch` with optional `version` (`X.Y.Z` / `vX.Y.Z`) and `dry_run` (boolean) |
+| **Branch** | `release/vX.Y.Z` — **the version's only durable carrier** (tag job parses it) |
+| **Title** | `chore(release): cut vX.Y.Z` (cosmetic; editable — do not trust for version) |
+| **Label** | `release-cut` — identity of "a cut is proposed"; **do not remove** (tag job keys on it) |
+| **Files** | Exactly four: `CHANGELOG.md`, `Cargo.toml`, `Cargo.lock`, `mcp-server/package.json` (engine pin **and** npm wrapper patch). Never under `.github/` |
+| **Script** | `scripts/prepare-release-cut.sh <version>` (calls `changelog-unreleased.sh` first) |
+| **Secret** | `RELEASE_CUT_TOKEN` (fine-grained PAT: contents + PR write on `Ledgerful` only) |
+
+**What the schedule does**
+
+1. If any open PR already has label `release-cut` → `::notice::` and exit 0 (no stacked cuts).
+2. If `[Unreleased]` is empty → `::notice::` and exit 0 (no work to cut; **not** a red workflow).
+3. Else compute next **patch** from `Cargo.toml` (or validate `version` override: semver + strictly greater).
+4. Ensure the `release-cut` label exists; on `dry_run: true` print version + file list and stop.
+5. Create `release/vX.Y.Z` (refuse if remote branch exists — **no force-push**; delete manually after inspect).
+6. Run prepare → commit four files → push with PAT (`gh auth setup-git`, never token-in-URL) → open PR.
+
+**On merge** of a PR with label `release-cut`: tag job tags **`merge_commit_sha`** (not `github.sha`, not the PR head), asserts it is an ancestor of `origin/main`, pushes `vX.Y.Z` with the PAT so `release.yml` fires.
+
+**Still required before merge:** `ai-reviewed` and the other required checks. This automation **cannot** set `ai-reviewed` (token has no commit-statuses write — load-bearing). See `docs/AI-CODE-REVIEW-PROTOCOL.md`.
+
+**Schedule operational facts** (same class as Gate B): delivery can lag under load (15 min–2 h reported under high load); a missed day is harmless (next run sees a larger `[Unreleased]`); public-repo schedules auto-disable after ~60 days of inactivity.
+
+**Credential inventory:** `RELEASE_CUT_TOKEN` is a fine-grained PAT with **no expiration** (a fact, not a missing date). Nothing forces a periodic review of whether it is still needed or correctly scoped — that is prose, not a mechanism. Revocation path: github.com/settings/personal-access-tokens → Delete. Do not grant it `workflows: write` or `commit statuses: write` (those absences enforce "never commit `.github/`" and "cannot set ai-reviewed").
+
+**Ops recovery — release cut**
+
+| Symptom | What to do |
+|---|---|
+| **Merged release-cut PR but no tag** | Tag job failed or label was removed. Re-run the *Tag merged release-cut PR* job, or tag by hand with the PAT: `git tag vX.Y.Z <merge_sha> && git push origin vX.Y.Z`. Gate B going red for a few **seconds** between merge and tag is expected; **hours** means a stuck tag job. |
+| **Tag pushed but no release** | Gate A rejected the tag. Orphaned-tag recovery: `git push --delete origin vX.Y.Z` (then fix tree and re-tag). |
+| **Abandoned `release/vX.Y.Z` branch** | Inspect, then `git push origin --delete release/vX.Y.Z` — never force-push over it. |
+| **Quiet days show green with notice** | Expected: empty Unreleased or open release-cut PR both exit 0 with distinct `::notice::` text. |
+
+**Local prepare (human cut or dry exercise):**
+
+```bash
+bash scripts/changelog-unreleased.sh          # must exit 0
+bash scripts/prepare-release-cut.sh 0.2.4     # or v0.2.4
+# inspect: git diff --name-only  → exactly the four paths
+bash scripts/test-prepare-release-cut.sh
+```
+
+### Manifest bump after publish (Homebrew / Scoop)
+
 On each release, job `bump-manifests` (after `publish`):
 
 1. `gh release download` of `*.sha256` for the tag
@@ -142,6 +195,7 @@ scripts/bump-manifests.sh \
 
 | Secret | Used by | Purpose |
 |---|---|---|
+| `RELEASE_CUT_TOKEN` | `release-cut.yml` (prepare + tag) | Fine-grained PAT: open release PR + push tag that starts `release.yml`. No expiry; revoke at github.com/settings/personal-access-tokens if retired |
 | `MANIFEST_PUSH_TOKEN` | `bump-manifests` | Push formula/manifest to homebrew-tap + scoop-bucket |
 | `WINGET_TOKEN` | `winget-release` | Submit winget-pkgs update PR |
 | `GITHUB_TOKEN` | release download of checksums | Default; contents read on public releases |
