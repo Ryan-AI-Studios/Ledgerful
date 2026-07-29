@@ -39,7 +39,7 @@ pub fn execute_dependencies(args: DependenciesArgs) -> Result<()> {
 
     match args.command {
         DependencySubcommands::List { json, verbose } => {
-            let storage = StorageManager::open_read_only(&layout.root)?;
+            let storage = StorageManager::open_read_only(&layout)?;
             let cozo = storage
                 .cozo
                 .as_ref()

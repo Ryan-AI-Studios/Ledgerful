@@ -57,7 +57,7 @@ fn test_prune_removes_lines_and_records_pending_transaction() {
 
     // Verify a PENDING ledger transaction exists with the right category and symbol provenance.
     let layout = Layout::new(root_utf8);
-    let storage = StorageManager::open_read_only_sqlite_only(&layout.root).unwrap();
+    let storage = StorageManager::open_read_only_sqlite_only(&layout).unwrap();
     let db = LedgerDb::new(storage.get_connection());
     let pending = db.get_all_pending().unwrap();
     assert_eq!(

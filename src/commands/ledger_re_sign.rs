@@ -50,7 +50,7 @@ pub fn execute_ledger_re_sign_with_keys_dir(
         .to_path_buf();
 
     // Read-only preview: open without claiming a write lock.
-    let mut preview_storage = StorageManager::open_read_only_sqlite_only(&layout.root)?;
+    let mut preview_storage = StorageManager::open_read_only_sqlite_only(&layout)?;
     let config = load_ledger_config(&layout)?;
     let preview_db = LedgerDb::new(preview_storage.get_connection());
     let entries = preview_db

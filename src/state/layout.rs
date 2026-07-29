@@ -25,9 +25,23 @@ pub struct Layout {
 }
 
 impl Layout {
+    /// Single-tree convenience: `state_dir = root / ".ledgerful"`.
+    ///
+    /// Prefer [`Layout::from_roots`] or `commands::helpers::get_layout` for
+    /// production paths so linked worktrees share the main worktree's state.
     pub fn new<P: AsRef<Utf8Path>>(root: P) -> Self {
         let root = normalize_root(root.as_ref());
         let state_dir = root.join(STATE_DIR);
+        Self { root, state_dir }
+    }
+
+    /// Work root (current worktree / analysis root) and state directory may differ.
+    ///
+    /// - `work_root`: paths for scan/impact relative to the current checkout
+    /// - `state_dir`: shared `.ledgerful` home (ledger DB, config, index, reports)
+    pub fn from_roots<P: AsRef<Utf8Path>, Q: AsRef<Utf8Path>>(work_root: P, state_dir: Q) -> Self {
+        let root = normalize_root(work_root.as_ref());
+        let state_dir = normalize_root(state_dir.as_ref());
         Self { root, state_dir }
     }
 
@@ -135,7 +149,14 @@ impl Layout {
             return Ok(false);
         }
 
-        let legacy_state_dir = self.root.join(LEGACY_STATE_DIR);
+        // Legacy state is a sibling of the *resolved* state directory (main
+        // worktree for linked worktrees), not necessarily under work_root.
+        let legacy_parent = self
+            .state_dir
+            .parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| self.root.clone());
+        let legacy_state_dir = legacy_parent.join(LEGACY_STATE_DIR);
         if !legacy_state_dir.exists() {
             return Ok(false);
         }
@@ -353,5 +374,20 @@ mod tests {
         let expected_root = dunce::canonicalize(tmp.path()).unwrap();
         let actual_root = dunce::canonicalize(layout.root.as_std_path()).unwrap();
         assert_eq!(actual_root, expected_root);
+    }
+
+    #[test]
+    fn from_roots_allows_distinct_work_and_state() {
+        let tmp = tempdir().unwrap();
+        let work = Utf8PathBuf::from_path_buf(tmp.path().join("work")).unwrap();
+        let state = Utf8PathBuf::from_path_buf(tmp.path().join("main").join(STATE_DIR)).unwrap();
+        fs::create_dir_all(work.as_std_path()).unwrap();
+        fs::create_dir_all(state.as_std_path()).unwrap();
+
+        let layout = Layout::from_roots(&work, &state);
+        assert_eq!(layout.root.file_name(), Some("work"));
+        assert_eq!(layout.state_dir.file_name(), Some(STATE_DIR));
+        assert_ne!(layout.state_dir, layout.root.join(STATE_DIR));
+        assert_eq!(layout.logs_dir(), layout.state_dir.join(LOGS_DIR));
     }
 }

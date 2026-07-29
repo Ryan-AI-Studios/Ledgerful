@@ -28,7 +28,7 @@ pub fn execute_tests_for_entity(args: TestsForEntityArgs) -> Result<()> {
     };
 
     let layout = get_layout()?;
-    let storage = StorageManager::open_read_only(&layout.root)?;
+    let storage = StorageManager::open_read_only(&layout)?;
     let conn = storage.get_connection();
 
     let normalized_entity =
@@ -153,7 +153,7 @@ pub fn execute_tests_for_entity(args: TestsForEntityArgs) -> Result<()> {
 
 fn show_tests_empty_state() -> Result<()> {
     let layout = get_layout()?;
-    let storage = StorageManager::open_read_only(&layout.root)?;
+    let storage = StorageManager::open_read_only(&layout)?;
     let conn = storage.get_connection();
 
     let mut stmt = conn

@@ -21,7 +21,7 @@ pub fn execute_services_diff(
     config: &crate::config::model::Config,
 ) -> Result<()> {
     let layout = get_layout()?;
-    let storage = StorageManager::open_read_only(&layout.root)?;
+    let storage = StorageManager::open_read_only(&layout)?;
     let conn = storage.get_connection();
 
     // Query for services and their boundaries

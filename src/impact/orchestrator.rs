@@ -205,8 +205,10 @@ impl ImpactOrchestrator {
             }
         }
 
-        // 3. Execute Analysis (Scoring)
-        let layout = crate::state::layout::Layout::new(project_root.to_string_lossy().as_ref());
+        // 3. Execute Analysis (Scoring) — resolve shared state for linked worktrees.
+        let layout = crate::commands::helpers::get_layout().unwrap_or_else(|_| {
+            crate::state::layout::Layout::new(project_root.to_string_lossy().as_ref())
+        });
         let rules = match crate::policy::load::load_rules(&layout) {
             Ok(r) => r,
             Err(e) => {

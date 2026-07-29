@@ -290,8 +290,10 @@ impl Drop for TimedCommand {
 }
 
 fn persist_batch(rows: &[TimingRow]) -> miette::Result<()> {
-    let cwd = std::env::current_dir().map_err(|e| miette::miette!("cwd: {e}"))?;
-    let layout = crate::state::layout::Layout::new(cwd.to_string_lossy().as_ref());
+    let layout = match crate::commands::helpers::get_layout() {
+        Ok(l) => l,
+        Err(_) => return Ok(()), // not in a resolvable worktree — skip quietly
+    };
     let db_path = layout.state_subdir().join("ledger.db");
     if !db_path.exists() {
         // Not an initialized repo — skip quietly.

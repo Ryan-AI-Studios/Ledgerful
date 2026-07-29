@@ -1,5 +1,6 @@
 use crate::common::setup_git_repo;
 use camino::Utf8Path;
+use ledgerful::state::layout::Layout;
 use ledgerful::state::storage::StorageManager;
 use std::fs;
 use std::process::Command;
@@ -42,7 +43,7 @@ fn test_data_models_impact_binary_output() {
         .unwrap();
 
     // Manually insert model because detector is picky in this env
-    let storage = StorageManager::open_read_only(root_utf8).unwrap();
+    let storage = StorageManager::open_read_only(&Layout::new(root_utf8)).unwrap();
     let conn = storage.get_connection();
     let file_id: i64 = conn
         .query_row(
@@ -164,7 +165,8 @@ fn test_data_models_impact_json_output() {
 
     // Insert dummy data directly
     let storage =
-        StorageManager::open_read_only(camino::Utf8Path::from_path(root).unwrap()).unwrap();
+        StorageManager::open_read_only(&Layout::new(camino::Utf8Path::from_path(root).unwrap()))
+            .unwrap();
     let conn = storage.get_connection();
     let file_id: i64 = conn
         .query_row(

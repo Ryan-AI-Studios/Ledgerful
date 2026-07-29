@@ -8,14 +8,13 @@ pub fn current_mode_from_ledger(layout: &Layout) -> Option<String> {
     if !db_path.exists() {
         return None;
     }
-    let storage =
-        match crate::state::storage::StorageManager::open_read_only_sqlite_only(&layout.root) {
-            Ok(s) => s,
-            Err(e) => {
-                tracing::debug!("current_mode_from_ledger: could not open storage: {e}");
-                return None;
-            }
-        };
+    let storage = match crate::state::storage::StorageManager::open_read_only_sqlite_only(layout) {
+        Ok(s) => s,
+        Err(e) => {
+            tracing::debug!("current_mode_from_ledger: could not open storage: {e}");
+            return None;
+        }
+    };
     let db = crate::ledger::db::LedgerDb::new(storage.get_connection());
     let entries = match db.get_all_committed_ledger_entries() {
         Ok(e) => e,

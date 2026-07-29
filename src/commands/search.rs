@@ -28,7 +28,7 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
     // --- Staleness check (applies to both semantic and BM25 paths) ---
     if !args.index {
         let config = load_config(&layout)?;
-        let storage_opt = StorageManager::open_read_only(&layout.root).ok();
+        let storage_opt = StorageManager::open_read_only(&layout).ok();
 
         if let Some(storage) = storage_opt {
             let threshold = config.index.stale_threshold_days;
@@ -53,7 +53,7 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
 
     if args.semantic {
         let config = load_config(&layout)?;
-        let storage = StorageManager::open_read_only(&layout.root)?;
+        let storage = StorageManager::open_read_only(&layout)?;
         let cozo = storage
             .cozo
             .as_ref()

@@ -122,7 +122,7 @@ fn chain__two_sequential_commits__linear_no_fork() {
         }
     }
 
-    let storage = StorageManager::open_read_only_sqlite_only(&root).unwrap();
+    let storage = StorageManager::open_read_only_sqlite_only(&Layout::new(&root)).unwrap();
     let db = LedgerDb::new(storage.get_connection());
     let entries = db.get_all_committed_ledger_entries().unwrap();
     assert_eq!(

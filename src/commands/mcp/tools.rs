@@ -114,7 +114,7 @@ fn handle_ledger_status(_params: Value) -> Value {
         Err(e) => return error_response(&format!("Failed to get layout: {}", e)),
     };
     let mut storage =
-        match crate::state::storage::StorageManager::open_read_only_sqlite_only(&layout.root) {
+        match crate::state::storage::StorageManager::open_read_only_sqlite_only(&layout) {
             Ok(s) => s,
             Err(e) => return error_response(&format!("Failed to open storage: {}", e)),
         };
@@ -159,11 +159,10 @@ fn handle_hotspots(params: Value) -> Value {
         Ok(r) => r,
         Err(e) => return error_response(&format!("Failed to open repo: {}", e)),
     };
-    let storage =
-        match crate::state::storage::StorageManager::open_read_only_sqlite_only(&layout.root) {
-            Ok(s) => s,
-            Err(e) => return error_response(&format!("Failed to open storage: {}", e)),
-        };
+    let storage = match crate::state::storage::StorageManager::open_read_only_sqlite_only(&layout) {
+        Ok(s) => s,
+        Err(e) => return error_response(&format!("Failed to open storage: {}", e)),
+    };
 
     let history_provider = crate::impact::temporal::GixHistoryProvider::new(&repo);
     let query = crate::impact::hotspots::HotspotQuery {
@@ -224,7 +223,7 @@ fn handle_ledger_search(params: Value) -> Value {
     let query = params["query"].as_str().unwrap_or("");
     let days = params["days"].as_u64().unwrap_or(30) as u32;
     let mut storage =
-        match crate::state::storage::StorageManager::open_read_only_sqlite_only(&layout.root) {
+        match crate::state::storage::StorageManager::open_read_only_sqlite_only(&layout) {
             Ok(s) => s,
             Err(e) => return error_response(&format!("Failed to open storage: {}", e)),
         };
@@ -316,7 +315,7 @@ fn handle_dead_code(params: Value) -> Value {
         Err(e) => return error_response(&format!("Failed to get layout: {}", e)),
     };
     let config = crate::config::load_config(&layout).unwrap_or_default();
-    let storage = match crate::state::storage::StorageManager::open_read_only(&layout.root) {
+    let storage = match crate::state::storage::StorageManager::open_read_only(&layout) {
         Ok(s) => s,
         Err(e) => return error_response(&format!("Failed to open storage: {}", e)),
     };

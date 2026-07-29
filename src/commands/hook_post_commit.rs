@@ -318,7 +318,8 @@ fn record_hotspot_trends(repo_root: &camino::Utf8Path, db_path: &std::path::Path
         }
     };
 
-    let layout = crate::state::layout::Layout::new(repo_root);
+    // Prefer shared state resolution (linked worktrees); fall back to work root.
+    let layout = get_layout().unwrap_or_else(|_| crate::state::layout::Layout::new(repo_root));
     let config = load_ledger_config(&layout).unwrap_or_default();
 
     let storage = match StorageManager::init(db_path) {
@@ -344,7 +345,7 @@ fn record_hotspot_trends(repo_root: &camino::Utf8Path, db_path: &std::path::Path
     drop(indexer);
 
     // Re-open read-only for hotspot calculation
-    let storage = match StorageManager::open_read_only(repo_root) {
+    let storage = match StorageManager::open_read_only(&layout) {
         Ok(s) => s,
         Err(e) => {
             tracing::debug!("Post-commit hook: cannot re-open read-only storage: {}", e);

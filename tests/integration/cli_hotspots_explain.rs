@@ -4,6 +4,7 @@ use ledgerful::commands::hotspots::compute_hotspot_explanation;
 use ledgerful::commands::index::{IndexArgs, execute_index};
 use ledgerful::commands::init::execute_init;
 use ledgerful::git::repo::open_repo;
+use ledgerful::state::layout::Layout;
 use ledgerful::state::storage::StorageManager;
 use std::fs;
 use tempfile::tempdir;
@@ -48,7 +49,7 @@ fn test_hotspots_explain_reports_nonzero_metrics_for_known_hotspot() {
 
     let repo_root = Utf8Path::from_path(root).unwrap();
     let repo = open_repo(repo_root.as_std_path()).unwrap();
-    let storage = StorageManager::open_read_only_sqlite_only(repo_root).unwrap();
+    let storage = StorageManager::open_read_only_sqlite_only(&Layout::new(repo_root)).unwrap();
 
     let explanation = compute_hotspot_explanation(&storage, "src/lib.rs", &repo).unwrap();
 
@@ -89,7 +90,7 @@ fn test_hotspots_explain_unknown_entity_returns_zero_without_error() {
 
     let repo_root = Utf8Path::from_path(root).unwrap();
     let repo = open_repo(repo_root.as_std_path()).unwrap();
-    let storage = StorageManager::open_read_only_sqlite_only(repo_root).unwrap();
+    let storage = StorageManager::open_read_only_sqlite_only(&Layout::new(repo_root)).unwrap();
 
     let explanation =
         compute_hotspot_explanation(&storage, "src/does_not_exist.rs", &repo).unwrap();

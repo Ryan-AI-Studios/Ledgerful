@@ -1,6 +1,7 @@
 use crate::commands::dx1_templates::write_cedar_template;
 use crate::commands::helpers::get_layout;
 use crate::output::table::Table;
+use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use crate::util::term::prompt_yes_no;
 use clap::{Args, Subcommand};
@@ -46,7 +47,7 @@ fn collect_changed_files() -> Result<HashSet<String>> {
 
 /// Open CozoDB storage in read-only mode and return the Cozo engine.
 fn open_cozo(root: &camino::Utf8Path) -> Result<crate::state::storage_cozo::CozoStorage> {
-    let storage = StorageManager::open_read_only(root)?;
+    let storage = StorageManager::open_read_only(&Layout::new(root))?;
     storage
         .cozo
         .ok_or_else(|| miette::miette!("CozoDB not available"))
@@ -225,7 +226,7 @@ fn execute_boundaries(json: bool, layout: &crate::state::layout::Layout) -> Resu
     // graph (for the policy-node + graph-populated checks) and the SQLite
     // `api_routes` table (to count detected HTTP routes for the DX1 Cedar
     // template bootstrap offer).
-    let storage = StorageManager::open_read_only(&layout.root)?;
+    let storage = StorageManager::open_read_only(layout)?;
     let cozo = storage
         .cozo
         .as_ref()

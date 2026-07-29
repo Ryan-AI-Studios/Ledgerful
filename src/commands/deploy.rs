@@ -1,4 +1,4 @@
-use crate::commands::helpers::{get_layout, get_repo_root};
+use crate::commands::helpers::get_layout;
 use crate::config::load::load_config;
 use crate::impact::packet::{DeployManifestChange, ManifestType};
 use crate::output::empty::{EmptyReason, config_enable_hint, format_json_empty_state};
@@ -46,13 +46,14 @@ pub fn execute_deploy(args: DeployArgs) -> Result<()> {
         Err(crate::git::GitError::RepoDiscoveryFailed { .. }) => false,
         Err(e) => return Err(e.into()),
     };
-    let root = if in_git_repo {
-        get_repo_root()?
+    let layout = if in_git_repo {
+        get_layout()?
     } else {
-        camino::Utf8PathBuf::from_path_buf(current_dir)
-            .map_err(|_| miette::miette!("Current directory is not valid UTF-8"))?
+        let root = camino::Utf8PathBuf::from_path_buf(current_dir)
+            .map_err(|_| miette::miette!("Current directory is not valid UTF-8"))?;
+        Layout::new(&root)
     };
-    let layout = Layout::new(&root);
+    let root = layout.root.clone();
     let config = load_config(&layout).unwrap_or_default();
     // Initialize the storage at the repo-root layout's ledger path so the
     // deploy enrichment uses the SAME repo-root `config` for gating as for
@@ -239,7 +240,7 @@ pub enum CiSubcommands {
 
 pub fn execute_ci(args: CiArgs) -> Result<()> {
     let layout = get_layout()?;
-    let storage = StorageManager::open_read_only(&layout.root)?;
+    let storage = StorageManager::open_read_only(&layout)?;
     let conn = storage.get_connection();
 
     match args.command {

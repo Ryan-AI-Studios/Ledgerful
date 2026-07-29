@@ -278,7 +278,7 @@ fn gate_mode_transition_writes_ledger_entry() {
 
     write_mode_transition_entry(&layout, "observe", "enforce").unwrap();
 
-    let storage = StorageManager::open_read_only_sqlite_only(&root).unwrap();
+    let storage = StorageManager::open_read_only_sqlite_only(&Layout::new(&root)).unwrap();
     let conn = storage.get_connection();
     let (summary, entry_type): (String, String) = conn
         .query_row(

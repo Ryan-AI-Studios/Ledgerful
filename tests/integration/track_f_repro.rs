@@ -1,5 +1,6 @@
 use crate::common::{git_add_and_commit, setup_git_repo};
 use camino::Utf8Path;
+use ledgerful::state::layout::Layout;
 use ledgerful::state::storage::StorageManager;
 use std::fs;
 use std::process::Command;
@@ -37,7 +38,8 @@ fn test_f8_index_exclusions_ignored_by_scan() {
         .output()
         .unwrap();
 
-    let storage = StorageManager::open_read_only(Utf8Path::from_path(root).unwrap()).unwrap();
+    let storage =
+        StorageManager::open_read_only(&Layout::new(Utf8Path::from_path(root).unwrap())).unwrap();
     let conn = storage.get_connection();
 
     // ignore_me.rs should not be in project_files
@@ -249,7 +251,8 @@ fn test_f13_data_models_pruning() {
         .output()
         .unwrap();
 
-    let storage = StorageManager::open_read_only(Utf8Path::from_path(root).unwrap()).unwrap();
+    let storage =
+        StorageManager::open_read_only(&Layout::new(Utf8Path::from_path(root).unwrap())).unwrap();
     let count: i64 = storage
         .get_connection()
         .query_row(
@@ -270,7 +273,8 @@ fn test_f13_data_models_pruning() {
         .output()
         .unwrap();
 
-    let storage = StorageManager::open_read_only(Utf8Path::from_path(root).unwrap()).unwrap();
+    let storage =
+        StorageManager::open_read_only(&Layout::new(Utf8Path::from_path(root).unwrap())).unwrap();
     let count: i64 = storage
         .get_connection()
         .query_row(
@@ -304,7 +308,8 @@ fn test_f13_serialize_only_struct_excluded() {
         .output()
         .unwrap();
 
-    let storage = StorageManager::open_read_only(Utf8Path::from_path(root).unwrap()).unwrap();
+    let storage =
+        StorageManager::open_read_only(&Layout::new(Utf8Path::from_path(root).unwrap())).unwrap();
     let conn = storage.get_connection();
 
     let valid_count: i64 = conn

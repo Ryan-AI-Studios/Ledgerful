@@ -1,21 +1,19 @@
 use crate::bridge::model::{BridgeRecord, deserialize_record};
 use crate::config::load::load_config;
-use crate::state::layout::Layout;
 use crate::util::query::sanitize_fts5_query;
-use miette::{IntoDiagnostic, Result};
+use miette::Result;
 use std::io::Read;
 use std::process::{Command, Stdio};
 use std::time::Duration;
 use wait_timeout::ChildExt;
 
 fn provider_command() -> String {
-    let current_dir = std::env::current_dir()
-        .into_diagnostic()
-        .unwrap_or_default();
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
-    load_config(&layout)
-        .map(|c| c.bridge.provider_command)
-        .unwrap_or_else(|_| "ai-brains".to_string())
+    match crate::commands::helpers::get_layout() {
+        Ok(layout) => load_config(&layout)
+            .map(|c| c.bridge.provider_command)
+            .unwrap_or_else(|_| "ai-brains".to_string()),
+        Err(_) => "ai-brains".to_string(),
+    }
 }
 
 pub fn query_external_cli(query: &str) -> Result<Vec<BridgeRecord>> {

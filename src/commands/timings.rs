@@ -4,7 +4,7 @@
 //! explain sentences, prune, and opt-in/opt-out. Never performs network I/O.
 
 use crate::output::table::build_premium_table;
-use crate::state::layout::Layout;
+
 use crate::state::storage::StorageManager;
 use crate::state::storage::timings::{
     TimingQuery, count_timings, is_self_timing_enabled, prune_timings, query_timings,
@@ -70,8 +70,7 @@ pub fn execute_timings(args: TimingsArgs) -> Result<()> {
         return execute_prune(&args);
     }
 
-    let current_dir = std::env::current_dir().into_diagnostic()?;
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    let layout = crate::commands::helpers::get_layout()?;
     let db_path = layout.state_subdir().join("ledger.db");
     if !db_path.exists() {
         if args.json {
@@ -414,8 +413,7 @@ fn execute_prune(args: &TimingsArgs) -> Result<()> {
         .ok_or_else(|| miette::miette!("--prune requires --older-than Nd (e.g. 90d)"))?;
     let days = parse_days_spec(older)?;
 
-    let current_dir = std::env::current_dir().into_diagnostic()?;
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    let layout = crate::commands::helpers::get_layout()?;
     let db_path = layout.state_subdir().join("ledger.db");
     if !db_path.exists() {
         println!("No local ledger database; nothing to prune.");

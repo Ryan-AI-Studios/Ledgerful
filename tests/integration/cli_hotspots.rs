@@ -2,6 +2,7 @@ use crate::common::{DirGuard, git_add_and_commit, setup_git_repo};
 use camino::Utf8Path;
 use ledgerful::commands::index::{IndexArgs, execute_index};
 use ledgerful::commands::init::execute_init;
+use ledgerful::state::layout::Layout;
 use ledgerful::state::storage::StorageManager;
 use std::fs;
 use std::process::Command;
@@ -87,7 +88,7 @@ fn setup_young_indexed_repo() -> tempfile::TempDir {
 
 fn hotspot_history_count(root: &std::path::Path) -> i64 {
     let repo_root = Utf8Path::from_path(root).unwrap();
-    let storage = StorageManager::open_read_only_sqlite_only(repo_root).unwrap();
+    let storage = StorageManager::open_read_only_sqlite_only(&Layout::new(repo_root)).unwrap();
     let conn = storage.get_connection();
     conn.query_row("SELECT COUNT(*) FROM hotspot_history", [], |row| row.get(0))
         .unwrap()
@@ -95,7 +96,7 @@ fn hotspot_history_count(root: &std::path::Path) -> i64 {
 
 fn hotspot_trends_count(root: &std::path::Path) -> i64 {
     let repo_root = Utf8Path::from_path(root).unwrap();
-    let storage = StorageManager::open_read_only_sqlite_only(repo_root).unwrap();
+    let storage = StorageManager::open_read_only_sqlite_only(&Layout::new(repo_root)).unwrap();
     let conn = storage.get_connection();
     conn.query_row("SELECT COUNT(*) FROM hotspot_trends", [], |row| row.get(0))
         .unwrap()

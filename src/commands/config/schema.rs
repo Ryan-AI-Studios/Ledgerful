@@ -1,14 +1,12 @@
+use crate::commands::helpers::get_layout;
 use crate::index::env_schema::EnvDeclaration;
 use crate::index::env_schema::EnvSourceKind;
 use crate::output::table::Table;
-use crate::state::layout::Layout;
 use miette::{IntoDiagnostic, Result};
 
 pub fn execute_config_schema(json: bool) -> Result<()> {
-    let current_dir = std::env::current_dir()
-        .map_err(|e| miette::miette!("Failed to get current directory: {e}"))?;
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
-    let storage = crate::state::storage::StorageManager::open_read_only(&layout.root)?;
+    let layout = get_layout()?;
+    let storage = crate::state::storage::StorageManager::open_read_only(&layout)?;
     let conn = storage.get_connection();
 
     let mut stmt = conn.prepare(

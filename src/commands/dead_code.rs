@@ -90,7 +90,7 @@ pub fn execute_dead_code_with_prompt(
     let layout = get_layout()?;
     let mut config = load_ledger_config(&layout)?;
 
-    let storage = crate::state::storage::StorageManager::open_read_only(&layout.root)?;
+    let storage = crate::state::storage::StorageManager::open_read_only(&layout)?;
     let threshold_days = config.index.stale_threshold_days;
 
     let storage = if auto_index {

@@ -111,7 +111,7 @@ fn fetch_verify_health(layout: &Layout) -> Result<VerificationHealthResponse> {
         });
     }
 
-    let storage = StorageManager::open_read_only_sqlite_only(&layout.root)?;
+    let storage = StorageManager::open_read_only_sqlite_only(layout)?;
     let latest = storage.get_latest_verification_run()?;
 
     let Some((_id, timestamp, overall_pass)) = latest else {
@@ -181,7 +181,7 @@ fn fetch_verify_history(layout: &Layout, days: u64) -> Result<Vec<VerificationTr
         return Ok(Vec::new());
     }
 
-    let storage = StorageManager::open_read_only_sqlite_only(&layout.root)?;
+    let storage = StorageManager::open_read_only_sqlite_only(layout)?;
     let cutoff = iso_cutoff_now(days);
     let rows = storage.get_verification_history(&cutoff)?;
     Ok(rows
@@ -221,7 +221,7 @@ fn fetch_verify_steps(layout: &Layout) -> Result<Vec<VerificationStepResponse>> 
         return Ok(Vec::new());
     }
 
-    let storage = StorageManager::open_read_only_sqlite_only(&layout.root)?;
+    let storage = StorageManager::open_read_only_sqlite_only(layout)?;
     let rows = storage.get_verification_step_stats(VERIFY_STEPS_RECENT_RUN_COUNT)?;
     // Friendly `name` lookup: command -> latest plan step `description`.
     // Falls back to `command` when no `plan_json`/parse error/no matching step.
@@ -376,7 +376,7 @@ fn fetch_hotspot_trend(layout: &Layout, days: u64, limit: usize) -> Result<Hotsp
     };
 
     let config = load_ledger_config(layout).unwrap_or_default();
-    let storage = StorageManager::open_read_only_sqlite_only(&layout.root)?;
+    let storage = StorageManager::open_read_only_sqlite_only(layout)?;
 
     let half_life = config.hotspots.decay_half_life as f64;
     let max_commits = config.hotspots.max_commits;
@@ -524,7 +524,7 @@ pub async fn trends_handler(
 }
 
 fn fetch_trends(layout: &Layout, days: u64) -> Result<TrendsResponse> {
-    let storage = match StorageManager::open_read_only_sqlite_only(&layout.root) {
+    let storage = match StorageManager::open_read_only_sqlite_only(layout) {
         Ok(s) => s,
         Err(e) => {
             let db_path = layout.state_subdir().join("ledger.db");
@@ -746,7 +746,7 @@ fn fetch_endpoints_changed(layout: &Layout) -> Result<Vec<AffectedContract>> {
     }
 
     let config = load_ledger_config(layout).unwrap_or_default();
-    let storage = match StorageManager::open_read_only_sqlite_only(&layout.root) {
+    let storage = match StorageManager::open_read_only_sqlite_only(layout) {
         Ok(s) => s,
         Err(e) => {
             tracing::warn!("Storage not available for /api/endpoints/changed: {e}");
@@ -878,7 +878,7 @@ fn fetch_compliance_summary(layout: &Layout) -> Result<ComplianceSummaryResponse
         });
     }
 
-    let storage = StorageManager::open_read_only_sqlite_only(&layout.root)?;
+    let storage = StorageManager::open_read_only_sqlite_only(layout)?;
     let conn = storage.get_connection();
 
     // Load config to determine whether signing is required and pin list
@@ -966,7 +966,7 @@ fn fetch_compliance_signatures(layout: &Layout) -> Result<Vec<ComplianceSignatur
         return Ok(Vec::new());
     }
 
-    let storage = StorageManager::open_read_only_sqlite_only(&layout.root)?;
+    let storage = StorageManager::open_read_only_sqlite_only(layout)?;
     let conn = storage.get_connection();
     let intent = load_config(layout).unwrap_or_default().intent;
     let require_signing = intent.require_signing;

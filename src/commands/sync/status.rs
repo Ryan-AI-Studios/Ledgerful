@@ -1,13 +1,10 @@
-use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
-use miette::{IntoDiagnostic, Result, miette};
+use miette::{Result, miette};
 use rusqlite::OptionalExtension;
-use std::env;
 use std::path::PathBuf;
 
 pub fn handle() -> Result<()> {
-    let current_dir = env::current_dir().into_diagnostic()?;
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    let layout = crate::commands::helpers::get_layout()?;
     let config = crate::config::load::load_config(&layout)?;
 
     let storage_path = layout.state_subdir().join("ledger.db");

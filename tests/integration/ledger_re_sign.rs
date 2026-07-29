@@ -4,6 +4,7 @@ use ledgerful::commands::ledger_re_sign::execute_ledger_re_sign_with_keys_dir;
 use ledgerful::config::model::Config;
 use ledgerful::ledger::crypto::{LedgerSignInput, sign_ledger_entry_in_v2};
 use ledgerful::ledger::*;
+use ledgerful::state::layout::Layout;
 use ledgerful::state::storage::StorageManager;
 use serial_test::serial;
 use std::collections::hash_map::DefaultHasher;
@@ -153,7 +154,7 @@ fn corrupted_ledger_re_sign_all_invalid_repairs_to_valid() {
     execute_ledger_re_sign_with_keys_dir(None, true, false, true, Some(keys.clone())).unwrap();
 
     // All repaired rows now verify as valid.
-    let verify_storage = StorageManager::open_read_only_sqlite_only(&root).unwrap();
+    let verify_storage = StorageManager::open_read_only_sqlite_only(&Layout::new(&root)).unwrap();
     let db = ledgerful::ledger::db::LedgerDb::new(verify_storage.get_connection());
     let entries = db.get_all_committed_ledger_entries().unwrap();
     // Filter out the maintenance entry we created.
@@ -317,7 +318,7 @@ fn batch_re_sign_emits_one_maintenance_entry() {
 
     execute_ledger_re_sign_with_keys_dir(None, true, false, true, Some(keys.clone())).unwrap();
 
-    let verify_storage = StorageManager::open_read_only_sqlite_only(&root).unwrap();
+    let verify_storage = StorageManager::open_read_only_sqlite_only(&Layout::new(&root)).unwrap();
     let db = ledgerful::ledger::db::LedgerDb::new(verify_storage.get_connection());
     let entries = db.get_all_committed_ledger_entries().unwrap();
     let maintenance: Vec<_> = entries
@@ -588,7 +589,7 @@ fn maintenance_entry_is_signed_when_signing_required() {
     )
     .unwrap();
 
-    let verify_storage = StorageManager::open_read_only_sqlite_only(&root).unwrap();
+    let verify_storage = StorageManager::open_read_only_sqlite_only(&Layout::new(&root)).unwrap();
     let db = ledgerful::ledger::db::LedgerDb::new(verify_storage.get_connection());
     let entries = db.get_all_committed_ledger_entries().unwrap();
     let maintenance: Vec<_> = entries

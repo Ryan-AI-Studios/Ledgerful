@@ -1,12 +1,10 @@
+use crate::commands::helpers::get_layout;
 use crate::config::model::VerifyMode;
-use crate::state::layout::Layout;
 use miette::Result;
 use owo_colors::OwoColorize;
 
 pub fn execute_config_view(json: bool, section: Option<String>, key: Option<String>) -> Result<()> {
-    let current_dir = std::env::current_dir()
-        .map_err(|e| miette::miette!("Failed to get current directory: {e}"))?;
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    let layout = get_layout()?;
     let config = crate::config::load_config(&layout)?;
 
     let mut val = serde_json::to_value(&config)

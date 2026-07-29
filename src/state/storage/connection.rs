@@ -107,19 +107,22 @@ impl StorageManager {
     /// Open storage in read-only mode, skipping migration checks.
     /// This is a fast-path for read-only commands that do not write to storage.
     ///
+    /// Uses [`Layout::state_subdir`] so linked worktrees open the shared ledger
+    /// rather than inventing `{worktree}/.ledgerful`.
+    ///
     /// Returns `Err` if the SQLite database file does not exist.
-    pub fn open_read_only(root: &Utf8Path) -> Result<Self> {
-        Self::open_read_only_with_options(root, true)
+    pub fn open_read_only(layout: &Layout) -> Result<Self> {
+        Self::open_read_only_with_options(layout, true)
     }
 
     /// Open storage in read-only mode, skipping migration checks and NOT opening CozoDB.
     /// This is the fastest path for commands that only need metadata or transaction status.
-    pub fn open_read_only_sqlite_only(root: &Utf8Path) -> Result<Self> {
-        Self::open_read_only_with_options(root, false)
+    pub fn open_read_only_sqlite_only(layout: &Layout) -> Result<Self> {
+        Self::open_read_only_with_options(layout, false)
     }
 
-    fn open_read_only_with_options(root: &Utf8Path, include_cozo: bool) -> Result<Self> {
-        let db_path = Layout::new(root).state_subdir().join("ledger.db");
+    fn open_read_only_with_options(layout: &Layout, include_cozo: bool) -> Result<Self> {
+        let db_path = layout.state_subdir().join("ledger.db");
 
         if !db_path.exists() {
             return Err(miette::miette!(
@@ -166,7 +169,7 @@ impl StorageManager {
             conn,
             cozo,
             is_read_only: true,
-            root_path: root.to_path_buf(),
+            root_path: layout.root.clone(),
         })
     }
 
@@ -281,7 +284,7 @@ mod tests {
         // Call open_read_only — in RED phase this delegates to init which
         // runs migrations, so the test will fail. In GREEN phase it skips
         // migrations and the test passes.
-        let storage = StorageManager::open_read_only(root).unwrap();
+        let storage = StorageManager::open_read_only(&layout).unwrap();
 
         // Verify no migrations ran — user_version should still be 0
         let version: i64 = storage
@@ -302,7 +305,7 @@ mod tests {
         // In RED phase open_read_only delegates to init which creates the
         // file via Connection::open, so the test fails. In GREEN phase
         // open_read_only checks path existence first and returns Err.
-        let result = StorageManager::open_read_only(root);
+        let result = StorageManager::open_read_only(&layout);
         assert!(
             result.is_err(),
             "open_read_only should fail without a db file"

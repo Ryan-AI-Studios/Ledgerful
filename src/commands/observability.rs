@@ -31,7 +31,7 @@ pub enum ObservabilitySubcommands {
 
 pub fn execute_observability(args: ObservabilityArgs) -> Result<()> {
     let layout = get_layout()?;
-    let storage = StorageManager::open_read_only(&layout.root)?;
+    let storage = StorageManager::open_read_only(&layout)?;
     let cozo = storage
         .cozo
         .as_ref()

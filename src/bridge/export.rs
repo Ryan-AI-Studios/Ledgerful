@@ -51,7 +51,7 @@ pub struct ExportArgs {
 
 pub fn execute_export(args: ExportArgs) -> Result<()> {
     let layout = get_layout()?;
-    let storage = StorageManager::open_read_only_sqlite_only(&layout.root)?;
+    let storage = StorageManager::open_read_only_sqlite_only(&layout)?;
 
     let project_id = layout.get_project_id();
 

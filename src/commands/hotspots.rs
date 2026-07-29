@@ -24,9 +24,9 @@ pub fn execute_hotspots(args: HotspotArgs) -> Result<()> {
     let layout = get_layout()?;
 
     let storage = if args.semantic || args.centrality {
-        StorageManager::open_read_only(&layout.root)?
+        StorageManager::open_read_only(&layout)?
     } else {
-        StorageManager::open_read_only_sqlite_only(&layout.root)?
+        StorageManager::open_read_only_sqlite_only(&layout)?
     };
 
     // --- Staleness check ---

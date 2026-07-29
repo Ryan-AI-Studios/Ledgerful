@@ -938,7 +938,7 @@ pub fn execute_verify(
 ) -> Result<()> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    let layout = crate::commands::helpers::get_layout()?;
     let manual_requested = command_str.is_some();
 
     // 1. Initialize Context
@@ -961,7 +961,7 @@ pub fn execute_verify(
     ctx.suppress_human_output = json;
 
     // 2. Load Storage and Packet
-    ctx.storage = match StorageManager::open_read_only(&layout.root) {
+    ctx.storage = match StorageManager::open_read_only(&layout) {
         Ok(storage) => Some(storage),
         Err(err) => {
             if !no_predict {

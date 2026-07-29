@@ -6,7 +6,6 @@ use crate::federated::storage::{
 };
 use crate::git::repo::open_repo;
 use crate::index::storage::get_public_symbols;
-use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use camino::Utf8PathBuf;
 use chrono::Utc;
@@ -18,20 +17,20 @@ use std::fs;
 pub fn execute_federate_export(dry_run: bool, out: Option<String>) -> Result<()> {
     let current_dir = env::current_dir().into_diagnostic()?;
     let repo = open_repo(&current_dir).into_diagnostic()?;
-    let repo_root = repo
+    let _repo_root = repo
         .workdir()
         .ok_or_else(|| miette::miette!("Could not determine repository root"))?
         .to_path_buf();
 
-    let layout = Layout::new(repo_root.to_string_lossy().as_ref());
+    let layout = crate::commands::helpers::get_layout()?;
     let db_path = layout.state_subdir().join("ledger.db");
     let storage = StorageManager::init(db_path.as_std_path())?;
 
-    let repo_name = repo_root
+    let repo_name = layout
+        .root
         .file_name()
-        .and_then(|s| s.to_str())
-        .ok_or_else(|| miette::miette!("Could not determine repository name for export"))?
-        .to_string();
+        .map(|s| s.to_string())
+        .ok_or_else(|| miette::miette!("Could not determine repository name for export"))?;
 
     if !dry_run && out.is_none() {
         println!("Exporting public interfaces for {}...", repo_name.cyan());
@@ -103,7 +102,7 @@ pub fn execute_federate_scan() -> Result<()> {
 
     let utf8_repo_root = Utf8PathBuf::from_path_buf(repo_root.clone())
         .map_err(|_| miette::miette!("Invalid UTF-8 path"))?;
-    let layout = Layout::new(repo_root.to_string_lossy().as_ref());
+    let layout = crate::commands::helpers::get_layout()?;
     let db_path = layout.state_subdir().join("ledger.db");
     let mut storage = StorageManager::init(db_path.as_std_path())?;
 
@@ -237,12 +236,9 @@ pub fn execute_federate_scan() -> Result<()> {
 
 pub fn execute_federate_status() -> Result<()> {
     let current_dir = env::current_dir().into_diagnostic()?;
-    let repo = open_repo(&current_dir).into_diagnostic()?;
-    let repo_root = repo
-        .workdir()
-        .ok_or_else(|| miette::miette!("Could not determine repository root"))?;
+    let _repo = open_repo(&current_dir).into_diagnostic()?;
 
-    let layout = Layout::new(repo_root.to_string_lossy().as_ref());
+    let layout = crate::commands::helpers::get_layout()?;
     let db_path = layout.state_subdir().join("ledger.db");
     let storage = StorageManager::init(db_path.as_std_path())?;
 

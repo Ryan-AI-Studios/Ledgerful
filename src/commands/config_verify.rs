@@ -416,8 +416,8 @@ impl ConfigSection for SemanticSection {
             },
         });
 
-        let rebuild_threshold_explicit = if let Ok(current_dir) = std::env::current_dir() {
-            let layout = crate::state::layout::Layout::new(current_dir.to_string_lossy().as_ref());
+        let rebuild_threshold_explicit = if let Ok(layout) = crate::commands::helpers::get_layout()
+        {
             let path = layout.config_file();
             if path.exists() {
                 if let Ok(content) = std::fs::read_to_string(&path) {

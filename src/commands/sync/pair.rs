@@ -1,16 +1,12 @@
-use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use ed25519_dalek::VerifyingKey;
-use miette::{IntoDiagnostic, Result, miette};
-use std::env;
+use miette::{Result, miette};
 use std::fs;
 
 pub fn handle(code: Option<String>) -> Result<()> {
-    let current_dir = env::current_dir().into_diagnostic()?;
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    let layout = crate::commands::helpers::get_layout()?;
 
-    let cg_dir = layout.root.join(".ledgerful");
-    let sync_dir = cg_dir.join("sync");
+    let sync_dir = layout.state_dir.join("sync");
     let pub_path = sync_dir.join("device.pub");
 
     if !pub_path.exists() {

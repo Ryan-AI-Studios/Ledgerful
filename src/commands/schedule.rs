@@ -5,6 +5,7 @@ use std::fmt::Write as _;
 use std::fs;
 use std::process::Command;
 
+use crate::commands::helpers::get_layout;
 use crate::state::layout::Layout;
 
 const TASK_NAME_PREFIX: &str = "LedgerfulNightlyIndex";
@@ -67,16 +68,6 @@ pub enum ScheduleSubcommands {
     RunNightly,
 }
 
-fn get_repo_root() -> Result<Utf8PathBuf> {
-    let current_dir = env::current_dir().into_diagnostic()?;
-    let discovered = gix::discover(&current_dir).into_diagnostic()?;
-    let root = discovered
-        .workdir()
-        .ok_or_else(|| miette::miette!("Failed to find work directory for repository"))?;
-    Utf8PathBuf::from_path_buf(root.to_path_buf())
-        .map_err(|_| miette::miette!("Repository root is not valid UTF-8"))
-}
-
 fn resolve_ledgerful_binary() -> Result<Utf8PathBuf> {
     // Legitimate: schedule jobs re-exec this binary, not an untrusted path.
     // nosemgrep: rust.lang.security.current-exe.current-exe
@@ -86,26 +77,23 @@ fn resolve_ledgerful_binary() -> Result<Utf8PathBuf> {
 }
 
 fn get_log_path(layout: &Layout) -> Utf8PathBuf {
-    layout
-        .root
-        .join(".ledgerful")
-        .join("logs")
-        .join("nightly.log")
+    layout.logs_dir().join("nightly.log")
 }
 
 pub fn execute_setup_nightly(dry_run: bool, uninstall: bool) -> Result<()> {
-    let root = get_repo_root()?;
-    let layout = Layout::new(root.clone());
-    let log_dir = layout.root.join(".ledgerful").join("logs");
+    let layout = get_layout()?;
+    let root = layout.root.clone();
+    let log_dir = layout.logs_dir();
     if !dry_run {
         fs::create_dir_all(log_dir.as_std_path()).into_diagnostic()?;
     }
 
     let binary = resolve_ledgerful_binary()?;
 
+    let log_path = get_log_path(&layout);
     match env::consts::OS {
-        "windows" => setup_windows(&root, &binary, dry_run, uninstall),
-        "macos" | "linux" => setup_unix(&root, &binary, dry_run, uninstall),
+        "windows" => setup_windows(&root, &binary, &log_path, dry_run, uninstall),
+        "macos" | "linux" => setup_unix(&root, &binary, &log_path, dry_run, uninstall),
         other => Err(miette::miette!(
             "OS '{}' is not supported by schedule setup-nightly",
             other
@@ -117,10 +105,10 @@ pub fn execute_setup_nightly(dry_run: bool, uninstall: bool) -> Result<()> {
 fn setup_windows(
     root: &Utf8PathBuf,
     binary: &Utf8PathBuf,
+    log_path: &Utf8PathBuf,
     dry_run: bool,
     uninstall: bool,
 ) -> Result<()> {
-    let log_path = root.join(".ledgerful").join("logs").join("nightly.log");
     let task_name = task_name(root);
 
     if uninstall {
@@ -134,7 +122,7 @@ fn setup_windows(
 
     // Route through the pure syntax helper so production and tests share one
     // code path (M3 from Claude cross-review).
-    let arg_strings = windows_schtasks_args(binary, &log_path, &task_name)?;
+    let arg_strings = windows_schtasks_args(binary, log_path, &task_name)?;
     let args: Vec<&str> = arg_strings.iter().map(|s| s.as_str()).collect();
     let task_command = arg_strings
         .iter()
@@ -156,6 +144,7 @@ fn setup_windows(
 fn setup_windows(
     _root: &Utf8PathBuf,
     _binary: &Utf8PathBuf,
+    _log_path: &Utf8PathBuf,
     _dry_run: bool,
     _uninstall: bool,
 ) -> Result<()> {
@@ -184,6 +173,7 @@ fn run_schtasks(args: &[&str]) -> Result<()> {
 fn setup_unix(
     _root: &Utf8PathBuf,
     _binary: &Utf8PathBuf,
+    _log_path: &Utf8PathBuf,
     _dry_run: bool,
     _uninstall: bool,
 ) -> Result<()> {
@@ -196,14 +186,14 @@ fn setup_unix(
 fn setup_unix(
     root: &Utf8PathBuf,
     binary: &Utf8PathBuf,
+    log_path: &Utf8PathBuf,
     dry_run: bool,
     uninstall: bool,
 ) -> Result<()> {
-    let log_path = root.join(".ledgerful").join("logs").join("nightly.log");
     let marker = cron_marker(root);
     // Route through the pure syntax helper so production and tests share one
     // code path (M3 from Claude cross-review).
-    let cron_line = unix_cron_line(binary, root, &log_path, &marker)?;
+    let cron_line = unix_cron_line(binary, root, log_path, &marker)?;
 
     if uninstall {
         return remove_cron_line(&marker, &cron_line, dry_run);
@@ -336,8 +326,7 @@ fn remove_cron_line(marker: &str, _new_entry: &str, dry_run: bool) -> Result<()>
 }
 
 pub fn execute_run_nightly() -> Result<()> {
-    let root = get_repo_root()?;
-    let layout = Layout::new(root);
+    let layout = get_layout()?;
     let log_path = get_log_path(&layout);
     let log_dir = log_path
         .parent()

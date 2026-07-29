@@ -404,7 +404,7 @@ pub fn try_auto_index(storage: StorageManager, threshold_days: u64) -> Result<St
         indexer.incremental_index()?;
 
         // Re-open in read-only mode for the caller
-        StorageManager::open_read_only(&root)
+        StorageManager::open_read_only(&Layout::new(&root))
     } else {
         Ok(storage)
     }

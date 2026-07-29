@@ -54,7 +54,7 @@ impl EndpointsArgs {
 
 pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
     let layout = get_layout()?;
-    let storage = StorageManager::open_read_only(&layout.root)?;
+    let storage = StorageManager::open_read_only(&layout)?;
     let conn = storage.get_connection();
 
     // Build set of changed file paths when --changed is requested.

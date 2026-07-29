@@ -863,8 +863,8 @@ fn control_export__chain_verification_passes() {
         "exported chain head signature must verify"
     );
 
-    let storage =
-        StorageManager::open_read_only_sqlite_only(&repo.root).expect("storage should open");
+    let storage = StorageManager::open_read_only_sqlite_only(&Layout::new(&repo.root))
+        .expect("storage should open");
     let db = LedgerDb::new(storage.get_connection());
     let entries = db.get_all_committed_ledger_entries().unwrap();
     assert_eq!(

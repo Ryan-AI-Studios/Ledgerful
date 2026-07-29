@@ -16,18 +16,14 @@ use tracing::info;
 const ARC_DIAGRAM_HTML: &str = include_str!("../../templates/arc_diagram.html");
 
 pub fn execute_viz_server(port: u16, bind: String, open: bool, stop: bool) -> Result<()> {
-    // Resolve repository root dynamically to ensure PID is found correctly
-    // regardless of where in the repo the command is executed.
-    let current_dir = std::env::current_dir().into_diagnostic()?;
-    let layout = if let Ok(repo) = gix::discover(&current_dir) {
-        Layout::new(
-            repo.workdir()
-                .unwrap_or_else(|| repo.path())
-                .to_string_lossy()
-                .as_ref(),
-        )
-    } else {
-        Layout::new(current_dir.to_string_lossy().as_ref())
+    // Resolve layout (shared state for linked worktrees) so PID/state live
+    // under the correct `.ledgerful` home regardless of nested cwd.
+    let layout = match crate::commands::helpers::get_layout() {
+        Ok(l) => l,
+        Err(_) => {
+            let current_dir = std::env::current_dir().into_diagnostic()?;
+            Layout::new(current_dir.to_string_lossy().as_ref())
+        }
     };
 
     if stop {
@@ -86,8 +82,13 @@ async fn start_server(bind: String, port: u16) -> Result<()> {
     let snapshot = Arc::new(RwLock::new(None::<GraphSnapshot>));
     let (broadcast_tx, _broadcast_rx) = broadcast::channel::<String>(16);
 
-    let current_dir = std::env::current_dir().into_diagnostic()?;
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    let layout = match crate::commands::helpers::get_layout() {
+        Ok(l) => l,
+        Err(_) => {
+            let current_dir = std::env::current_dir().into_diagnostic()?;
+            Layout::new(current_dir.to_string_lossy().as_ref())
+        }
+    };
     let db_path = layout.state_subdir().join("ledger.db");
 
     // Spawn polling task

@@ -1,5 +1,6 @@
 use crate::common::setup_git_repo;
 use camino::Utf8Path;
+use ledgerful::state::layout::Layout;
 use ledgerful::state::storage::StorageManager;
 use std::fs;
 use std::process::Command;
@@ -45,7 +46,7 @@ fn test_config_diff_identifies_references() {
     assert!(!stdout.contains("- MY_VAR"), "Output was: {}", stdout);
 
     // Check database directly
-    let storage = StorageManager::open_read_only(root_utf8).unwrap();
+    let storage = StorageManager::open_read_only(&Layout::new(root_utf8)).unwrap();
     let conn = storage.get_connection();
     let count: i64 = conn
         .query_row(
@@ -83,7 +84,7 @@ fn test_option_env_detected() {
         .output()
         .unwrap();
 
-    let storage = StorageManager::open_read_only(root_utf8).unwrap();
+    let storage = StorageManager::open_read_only(&Layout::new(root_utf8)).unwrap();
     let conn = storage.get_connection();
     let count: i64 = conn
         .query_row(
@@ -121,7 +122,7 @@ fn test_import_meta_env_detected() {
         .output()
         .unwrap();
 
-    let storage = StorageManager::open_read_only(root_utf8).unwrap();
+    let storage = StorageManager::open_read_only(&Layout::new(root_utf8)).unwrap();
     let conn = storage.get_connection();
     let count: i64 = conn
         .query_row(
@@ -164,7 +165,7 @@ fn test_orphan_cleanup_on_file_deletion() {
         .unwrap();
 
     {
-        let storage = StorageManager::open_read_only(root_utf8).unwrap();
+        let storage = StorageManager::open_read_only(&Layout::new(root_utf8)).unwrap();
         let conn = storage.get_connection();
         let count: i64 = conn
             .query_row(
@@ -192,7 +193,7 @@ fn test_orphan_cleanup_on_file_deletion() {
         .output()
         .unwrap();
 
-    let storage = StorageManager::open_read_only(root_utf8).unwrap();
+    let storage = StorageManager::open_read_only(&Layout::new(root_utf8)).unwrap();
     let conn = storage.get_connection();
     let count: i64 = conn
         .query_row(

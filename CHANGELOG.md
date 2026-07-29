@@ -17,6 +17,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Linked worktrees share `.ledgerful` with the primary worktree (0108):** state (ledger DB,
+  config, keys, reports, search index) resolves via git common-dir to the main checkout;
+  submodules keep private state. Nested cwd no longer creates orphan `{subdir}/.ledgerful`.
+  Override with absolute `LEDGERFUL_STATE_DIR`.
 - **MCP npm channel engine pin (0101):** published `@ledgerful/mcp-server` was still shipping
   `ledgerfulEngineTag` `v0.1.9` (registry `0.1.11`, last modified 2026-07-21) while the engine
   release tag was `v0.2.3`. Republish as `0.1.12` with pin `v0.2.3`. The npm channel is now gated:

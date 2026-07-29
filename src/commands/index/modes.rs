@@ -1,8 +1,9 @@
+use super::IndexArgs;
 use super::graph::{execute_contracts_index, execute_docs_index};
 use super::output::{IndexOutputStats, print_human_output, print_json_output};
 use super::repair::execute_repair_metadata;
 use super::semantic::{execute_semantic_dry_run, execute_semantic_index};
-use super::{IndexArgs, get_layout};
+use crate::commands::helpers::get_layout;
 use crate::config::load::load_config;
 use crate::index::staleness::{EmptyIndexReason, IndexFreshnessState};
 use crate::index::{ProjectIndexer, ServiceIndexStats};

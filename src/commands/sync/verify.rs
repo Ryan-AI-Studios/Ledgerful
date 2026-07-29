@@ -1,8 +1,6 @@
-use crate::state::layout::Layout;
 use crate::sync::bundle::Bundle;
 use miette::{IntoDiagnostic, Result, miette};
 use std::collections::HashMap;
-use std::env;
 use std::fs;
 use std::path::Path;
 
@@ -27,9 +25,8 @@ pub fn handle(bundle_path: &str) -> Result<()> {
         .map_err(|e| miette!("Failed to decrypt bundle: {}", e))?;
 
     // 2. Load known peer keys
-    let current_dir = env::current_dir().into_diagnostic()?;
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
-    let peers_dir = layout.root.join(".ledgerful").join("sync").join("peers");
+    let layout = crate::commands::helpers::get_layout()?;
+    let peers_dir = layout.state_dir.join("sync").join("peers");
 
     let mut verify_keys = HashMap::new();
     if peers_dir.exists() {

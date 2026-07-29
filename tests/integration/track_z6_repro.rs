@@ -1,5 +1,6 @@
 use crate::common::setup_git_repo;
 use camino::Utf8Path;
+use ledgerful::state::layout::Layout;
 use ledgerful::state::storage::StorageManager;
 use std::fs;
 use std::process::Command;
@@ -54,7 +55,7 @@ fn test_ledger_graph_edges_ingestion() {
     eprintln!("Commit stdout: {}", stdout);
 
     // Check CozoDB
-    let storage = StorageManager::open_read_only(root_utf8).unwrap();
+    let storage = StorageManager::open_read_only(&Layout::new(root_utf8)).unwrap();
     let cozo = storage.cozo.as_ref().expect("CozoDB should be initialized");
 
     // 1. Verify transaction node

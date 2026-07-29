@@ -1,11 +1,9 @@
+use crate::commands::helpers::get_layout;
 use crate::policy::load as policy_load;
-use crate::state::layout::Layout;
 use miette::Result;
 
 pub fn execute_config_verify(json: bool, section: Option<&str>, verbose: bool) -> Result<()> {
-    let current_dir = std::env::current_dir()
-        .map_err(|e| miette::miette!("Failed to get current directory: {e}"))?;
-    let layout = Layout::new(current_dir.to_string_lossy().as_ref());
+    let layout = get_layout()?;
 
     let mut success = true;
     let mut errors = Vec::new();

@@ -1,7 +1,6 @@
 use camino::Utf8PathBuf;
 use miette::Result;
 use owo_colors::OwoColorize;
-use std::env;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -21,11 +20,8 @@ use crate::watch::debounce::Watcher;
 const TEMPORAL_CHECK_INTERVAL: usize = 10;
 
 pub fn execute_watch(interval_ms: u64, json_output: bool, no_graph_sync: bool) -> Result<()> {
-    let current_dir = env::current_dir()
-        .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
-    let path = Utf8PathBuf::from_path_buf(current_dir)
-        .map_err(|e| miette::miette!("Invalid UTF-8 path: {:?}", e))?;
-    let layout = Layout::new(path.as_str());
+    let layout = crate::commands::helpers::get_layout()?;
+    let path = layout.root.clone();
     let config = load_config(&layout)?;
     let running = Arc::new(AtomicBool::new(true));
     let signal = running.clone();
