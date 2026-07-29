@@ -399,8 +399,7 @@ pub fn try_auto_index(
         );
 
         // Open write DB under resolved state_dir (shared on linked worktrees).
-        let write_storage =
-            StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
+        let write_storage = StorageManager::init_with_layout(layout)?;
 
         use crate::config::model::Config;
         // Index analysis root is the current worktree workdir, not state parent.

@@ -26,8 +26,34 @@ impl StorageManager {
         &self.root_path
     }
 
+    /// Open write-mode storage for a path-shaped `ledger.db`.
+    ///
+    /// `root_path` is derived as parent of `.ledgerful` from the DB path
+    /// (`…/root/.ledgerful/state/ledger.db` → `…/root`). Prefer
+    /// [`Self::init_with_layout`] in production so linked worktrees keep the
+    /// analysis work root while sharing main's state directory.
     pub fn init(db_path: &Path) -> Result<Self> {
-        debug!("StorageManager::init called with {:?}", db_path);
+        let root_path = derive_root_from_db_path(db_path)?;
+        Self::init_at(db_path, root_path)
+    }
+
+    /// Open write-mode storage using a resolved [`Layout`].
+    ///
+    /// Opens `layout.state_subdir()/ledger.db` with the same migrations/WAL/Cozo
+    /// setup as [`Self::init`], but sets `root_path` to `layout.root` (the
+    /// current worktree / analysis root). Required for linked worktrees where
+    /// state lives under the main checkout while analysis targets the linked tree.
+    pub fn init_with_layout(layout: &Layout) -> Result<Self> {
+        let db_path = layout.state_subdir().join("ledger.db");
+        debug!(
+            "StorageManager::init_with_layout db={:?} root={:?}",
+            db_path, layout.root
+        );
+        Self::init_at(db_path.as_std_path(), layout.root.clone())
+    }
+
+    fn init_at(db_path: &Path, root_path: Utf8PathBuf) -> Result<Self> {
+        debug!("StorageManager::init_at called with {:?}", db_path);
         // Captured BEFORE `Connection::open`, which itself creates the file:
         // this is the only reliable way to tell "brand-new project" (no
         // prior ledger.db) apart from "existing project, stale schema"
@@ -57,15 +83,7 @@ impl StorageManager {
             None
         };
 
-        let root_path = db_path
-            .parent() // state/
-            .and_then(|p| p.parent()) // .ledgerful/
-            .and_then(|p| p.parent()) // root/
-            .unwrap_or(Path::new("."));
-        let root_path = Utf8PathBuf::from_path_buf(root_path.to_path_buf())
-            .map_err(|_| miette::miette!("Invalid UTF-8 in root path"))?;
-
-        debug!("Initialized storage at {:?}", db_path);
+        debug!("Initialized storage at {:?} root={:?}", db_path, root_path);
         Ok(Self {
             conn,
             cozo,
@@ -216,6 +234,17 @@ impl StorageManager {
     }
 }
 
+/// Infer repo root from a conventional `…/root/.ledgerful/state/ledger.db` path.
+fn derive_root_from_db_path(db_path: &Path) -> Result<Utf8PathBuf> {
+    let root_path = db_path
+        .parent() // state/
+        .and_then(|p| p.parent()) // .ledgerful/
+        .and_then(|p| p.parent()) // root/
+        .unwrap_or(Path::new("."));
+    Utf8PathBuf::from_path_buf(root_path.to_path_buf())
+        .map_err(|_| miette::miette!("Invalid UTF-8 in root path"))
+}
+
 #[cfg(test)]
 pub(crate) fn in_memory_storage() -> StorageManager {
     let conn = Connection::open_in_memory().unwrap();
@@ -310,5 +339,83 @@ mod tests {
             result.is_err(),
             "open_read_only should fail without a db file"
         );
+    }
+
+    #[test]
+    fn init_with_layout_keeps_work_root_when_state_is_shared() {
+        // Linked-worktree shape: work_root ≠ parent-of-state, but both open
+        // the same absolute ledger.db and write-mode root_path stays work_root.
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        let linked = tmp.path().join("linked");
+        std::fs::create_dir_all(&main).unwrap();
+        std::fs::create_dir_all(&linked).unwrap();
+
+        let work = Utf8PathBuf::from_path_buf(linked.clone()).unwrap();
+        let state = Utf8PathBuf::from_path_buf(main.join(".ledgerful")).unwrap();
+        let layout = Layout::from_roots(&work, &state);
+        layout.ensure_state_dir().unwrap();
+
+        let db_expected = layout.state_subdir().join("ledger.db");
+        let write = StorageManager::init_with_layout(&layout).unwrap();
+        assert_eq!(
+            write.root_path(),
+            layout.root.as_path(),
+            "write-mode root_path must be the analysis work root, not state parent"
+        );
+        assert_ne!(
+            write.root_path().as_str().replace('\\', "/"),
+            state.parent().unwrap().as_str().replace('\\', "/"),
+            "root_path must not collapse to main when state is under main"
+        );
+
+        // Trivial row so both layouts share the same physical DB.
+        write
+            .get_connection()
+            .execute(
+                "CREATE TABLE IF NOT EXISTS _wt_probe (k TEXT PRIMARY KEY, v TEXT)",
+                [],
+            )
+            .unwrap();
+        write
+            .get_connection()
+            .execute(
+                "INSERT INTO _wt_probe (k, v) VALUES ('shared', 'from-linked')",
+                [],
+            )
+            .unwrap();
+        let _ = write.shutdown();
+
+        let main_layout =
+            Layout::from_roots(Utf8PathBuf::from_path_buf(main.clone()).unwrap(), &state);
+        assert_eq!(
+            main_layout.state_subdir().join("ledger.db"),
+            db_expected,
+            "main and linked layouts must resolve the same ledger.db path"
+        );
+        let read = StorageManager::open_read_only(&main_layout).unwrap();
+        assert_eq!(
+            read.root_path(),
+            main_layout.root.as_path(),
+            "read-only root_path follows the layout that opened it"
+        );
+        let v: String = read
+            .get_connection()
+            .query_row("SELECT v FROM _wt_probe WHERE k = 'shared'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(v, "from-linked");
+    }
+
+    #[test]
+    fn init_path_shaped_still_derives_root_from_db() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        let db_path = layout.state_subdir().join("ledger.db");
+        let storage = StorageManager::init(db_path.as_std_path()).unwrap();
+        assert_eq!(storage.root_path(), layout.root.as_path());
     }
 }

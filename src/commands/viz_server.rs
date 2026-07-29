@@ -18,13 +18,8 @@ const ARC_DIAGRAM_HTML: &str = include_str!("../../templates/arc_diagram.html");
 pub fn execute_viz_server(port: u16, bind: String, open: bool, stop: bool) -> Result<()> {
     // Resolve layout (shared state for linked worktrees) so PID/state live
     // under the correct `.ledgerful` home regardless of nested cwd.
-    let layout = match crate::commands::helpers::get_layout() {
-        Ok(l) => l,
-        Err(_) => {
-            let current_dir = std::env::current_dir().into_diagnostic()?;
-            Layout::new(current_dir.to_string_lossy().as_ref())
-        }
-    };
+    // Non-git → Layout::new(cwd); discover-ok + resolve-fail propagates.
+    let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git()?;
 
     if stop {
         return crate::commands::pid::stop(&layout.pid_file());
@@ -82,21 +77,14 @@ async fn start_server(bind: String, port: u16) -> Result<()> {
     let snapshot = Arc::new(RwLock::new(None::<GraphSnapshot>));
     let (broadcast_tx, _broadcast_rx) = broadcast::channel::<String>(16);
 
-    let layout = match crate::commands::helpers::get_layout() {
-        Ok(l) => l,
-        Err(_) => {
-            let current_dir = std::env::current_dir().into_diagnostic()?;
-            Layout::new(current_dir.to_string_lossy().as_ref())
-        }
-    };
-    let db_path = layout.state_subdir().join("ledger.db");
+    let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git()?;
 
     // Spawn polling task
     let snapshot_clone = Arc::clone(&snapshot);
     let broadcast_tx_clone = broadcast_tx.clone();
-    let db_path_clone = db_path.clone().into_std_path_buf();
+    let layout_for_poll = layout.clone();
     tokio::spawn(async move {
-        run_polling(snapshot_clone, broadcast_tx_clone, db_path_clone).await;
+        run_polling(snapshot_clone, broadcast_tx_clone, layout_for_poll).await;
     });
 
     // Spawn heartbeat task
@@ -151,9 +139,9 @@ async fn start_server(bind: String, port: u16) -> Result<()> {
 async fn run_polling(
     snapshot: Arc<RwLock<Option<GraphSnapshot>>>,
     broadcast_tx: broadcast::Sender<String>,
-    db_path: std::path::PathBuf,
+    layout: Layout,
 ) {
-    let storage = match StorageManager::init(&db_path) {
+    let storage = match StorageManager::init_with_layout(&layout) {
         Ok(s) => s,
         Err(e) => {
             tracing::error!("Failed to initialize storage: {}", e);

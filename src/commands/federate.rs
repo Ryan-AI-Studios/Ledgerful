@@ -23,8 +23,7 @@ pub fn execute_federate_export(dry_run: bool, out: Option<String>) -> Result<()>
         .to_path_buf();
 
     let layout = crate::commands::helpers::get_layout()?;
-    let db_path = layout.state_subdir().join("ledger.db");
-    let storage = StorageManager::init(db_path.as_std_path())?;
+    let storage = StorageManager::init_with_layout(&layout)?;
 
     let repo_name = layout
         .root
@@ -103,8 +102,7 @@ pub fn execute_federate_scan() -> Result<()> {
     let utf8_repo_root = Utf8PathBuf::from_path_buf(repo_root.clone())
         .map_err(|_| miette::miette!("Invalid UTF-8 path"))?;
     let layout = crate::commands::helpers::get_layout()?;
-    let db_path = layout.state_subdir().join("ledger.db");
-    let mut storage = StorageManager::init(db_path.as_std_path())?;
+    let mut storage = StorageManager::init_with_layout(&layout)?;
 
     let local_packet = storage
         .get_latest_packet()?
@@ -239,8 +237,7 @@ pub fn execute_federate_status() -> Result<()> {
     let _repo = open_repo(&current_dir).into_diagnostic()?;
 
     let layout = crate::commands::helpers::get_layout()?;
-    let db_path = layout.state_subdir().join("ledger.db");
-    let storage = StorageManager::init(db_path.as_std_path())?;
+    let storage = StorageManager::init_with_layout(&layout)?;
 
     let links = get_federated_links(storage.get_connection())?;
 

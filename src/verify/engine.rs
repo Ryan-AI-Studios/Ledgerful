@@ -183,8 +183,7 @@ impl VerifyEngine {
     }
 
     fn persist_verify_report(layout: &Layout, report: &VerificationReport) {
-        let db_path = layout.state_subdir().join("ledger.db");
-        let Ok(mut storage) = StorageManager::init(db_path.as_std_path()) else {
+        let Ok(mut storage) = StorageManager::init_with_layout(layout) else {
             warn!("Could not initialize SQLite for verification report persistence");
             return;
         };
@@ -240,8 +239,7 @@ impl VerifyEngine {
             return;
         };
 
-        let db_path = layout.state_subdir().join("ledger.db");
-        let Ok(storage) = StorageManager::init(db_path.as_std_path()) else {
+        let Ok(storage) = StorageManager::init_with_layout(layout) else {
             warn!("Failed to open storage for semantic test outcome recording");
             return;
         };

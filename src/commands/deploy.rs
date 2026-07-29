@@ -64,8 +64,7 @@ pub fn execute_deploy(args: DeployArgs) -> Result<()> {
     // empty state without analyzing a diff and must not require a
     // `.ledgerful/state/` directory to exist).
     let storage = if in_git_repo {
-        let db_path = layout.state_subdir().join("ledger.db");
-        Some(StorageManager::init(db_path.as_std_path())?)
+        Some(StorageManager::init_with_layout(&layout)?)
     } else {
         None
     };

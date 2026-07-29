@@ -34,8 +34,7 @@ pub fn execute_viz(
         return execute_viz_services(output_path, layout);
     }
 
-    let db_path = layout.state_subdir().join("ledger.db");
-    let storage = StorageManager::init(db_path.as_std_path())?;
+    let storage = StorageManager::init_with_layout(&layout)?;
 
     let cozo = storage
         .cozo
@@ -437,8 +436,7 @@ fn generate_html(nodes: &[VizNode], edges: &[VizEdge]) -> String {
 
 /// Renders the service boundary and communication graph as an HTML file.
 fn execute_viz_services(output_path: Option<PathBuf>, layout: Layout) -> Result<()> {
-    let db_path = layout.state_subdir().join("ledger.db");
-    let storage = StorageManager::init(db_path.as_std_path())?;
+    let storage = StorageManager::init_with_layout(&layout)?;
 
     let cozo = storage
         .cozo

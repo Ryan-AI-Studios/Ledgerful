@@ -7,8 +7,7 @@ pub fn handle() -> Result<()> {
     let layout = crate::commands::helpers::get_layout()?;
     let config = crate::config::load::load_config(&layout)?;
 
-    let storage_path = layout.state_subdir().join("ledger.db");
-    let storage = StorageManager::init(storage_path.as_std_path())?;
+    let storage = StorageManager::init_with_layout(&layout)?;
     let conn = storage.get_connection();
 
     let (last_extract_hlc, last_apply_hlc, device_id): (Option<String>, Option<String>, String) =

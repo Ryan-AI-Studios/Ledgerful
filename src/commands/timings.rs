@@ -87,7 +87,7 @@ pub fn execute_timings(args: TimingsArgs) -> Result<()> {
         return Ok(());
     }
 
-    let storage = StorageManager::init(db_path.as_std_path())?;
+    let storage = StorageManager::init_with_layout(&layout)?;
     let conn = storage.get_connection();
 
     if !table_exists(conn)? {
@@ -419,7 +419,7 @@ fn execute_prune(args: &TimingsArgs) -> Result<()> {
         println!("No local ledger database; nothing to prune.");
         return Ok(());
     }
-    let storage = StorageManager::init(db_path.as_std_path())?;
+    let storage = StorageManager::init_with_layout(&layout)?;
     let conn = storage.get_connection();
     if !table_exists(conn)? {
         println!("command_timings table not available; nothing to prune.");

@@ -29,8 +29,7 @@ pub fn execute_impact_silent_with_snapshot(
     let config = load_config(&layout).unwrap_or_default();
 
     // Persist to SQLite and run Orchestrated Enrichment
-    let db_path = layout.state_subdir().join("ledger.db");
-    let storage = crate::state::storage::StorageManager::init(db_path.as_std_path())?;
+    let storage = crate::state::storage::StorageManager::init_with_layout(&layout)?;
 
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
     orchestrator.run(&mut packet, &storage, &config, &current_dir)?;
@@ -84,8 +83,7 @@ pub fn execute_impact_silent() -> Result<crate::impact::packet::ImpactPacket> {
     let config = load_config(&layout).unwrap_or_default();
 
     // Persist to SQLite and run Orchestrated Enrichment
-    let db_path = layout.state_subdir().join("ledger.db");
-    let storage = crate::state::storage::StorageManager::init(db_path.as_std_path())?;
+    let storage = crate::state::storage::StorageManager::init_with_layout(&layout)?;
 
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
     orchestrator.run(&mut packet, &storage, &config, &current_dir)?;
@@ -279,8 +277,7 @@ pub fn execute_impact(
     }
 
     // Persist to SQLite and run Orchestrated Enrichment
-    let db_path = layout.state_subdir().join("ledger.db");
-    let storage = crate::state::storage::StorageManager::init(db_path.as_std_path())?;
+    let storage = crate::state::storage::StorageManager::init_with_layout(&layout)?;
 
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
     orchestrator.run(&mut packet, &storage, &config, &current_dir)?;

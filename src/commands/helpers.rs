@@ -106,14 +106,43 @@ pub fn get_repo_root() -> Result<Utf8PathBuf> {
 }
 
 /// Discover once: work root = current worktree; state_dir via [`resolve_state_dir`].
+///
+/// Fails if the current directory is not inside a git repository, or if state
+/// resolution fails (bare repo, missing main parent, bad override). Prefer this
+/// for commands that require a repo.
 pub fn get_layout() -> Result<Layout> {
     let current_dir = env::current_dir().into_diagnostic()?;
     let repo = gix::discover(&current_dir).into_diagnostic()?;
+    layout_from_discovered_repo(&repo)
+}
+
+/// Resolve layout for repo-scoped commands that also tolerate a non-git cwd.
+///
+/// Policy (fail-closed on linked-worktree resolve bugs):
+/// - If `gix::discover` **succeeds** → must use [`resolve_state_dir`] +
+///   [`Layout::from_roots`]; resolution errors **propagate** (never invent
+///   private `{cwd}/.ledgerful` for a broken linked worktree).
+/// - If `gix::discover` **fails** (not a git repo) → `Layout::new(cwd)` is OK.
+///
+/// Use this instead of `match get_layout() { Ok => …, Err => Layout::new(cwd) }`,
+/// which collapses bare/missing-main resolve failures into a private state tree.
+pub fn get_layout_or_cwd_if_not_git() -> Result<Layout> {
+    let current_dir = env::current_dir().into_diagnostic()?;
+    match gix::discover(&current_dir) {
+        Ok(repo) => layout_from_discovered_repo(&repo),
+        Err(_) => {
+            let root = utf8_path(&current_dir, "Current directory")?;
+            Ok(Layout::new(root))
+        }
+    }
+}
+
+fn layout_from_discovered_repo(repo: &gix::Repository) -> Result<Layout> {
     let work_root = repo
         .workdir()
         .ok_or_else(|| miette::miette!("Failed to find work directory for repository"))?;
     let work_root = utf8_path(work_root, "Repository root")?;
-    let state_dir = resolve_state_dir(&repo)?;
+    let state_dir = resolve_state_dir(repo)?;
     Ok(Layout::from_roots(work_root, state_dir))
 }
 
@@ -447,6 +476,85 @@ mod tests {
             clean(&linked.join(STATE_DIR)),
             "must not use private linked/.ledgerful"
         );
+    }
+
+    #[test]
+    fn linked_worktree_storage_init_shares_db_and_keeps_work_root() {
+        // DoD-1 strength: real git worktree add + init_with_layout writes a row
+        // visible from main via the same absolute ledger.db path.
+        use crate::state::storage::StorageManager;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        init_repo(&main);
+        let linked = tmp.path().join("linked");
+        let out = git(
+            &["worktree", "add", linked.to_str().unwrap(), "HEAD"],
+            &main,
+        );
+        assert!(
+            out.status.success(),
+            "worktree add failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let main_repo = gix::discover(&main).unwrap();
+        let linked_repo = gix::discover(&linked).unwrap();
+        let main_state = resolve_state_dir(&main_repo).unwrap();
+        let linked_state = resolve_state_dir(&linked_repo).unwrap();
+        assert_eq!(
+            canonicalize_for_compare(main_state.as_std_path()),
+            canonicalize_for_compare(linked_state.as_std_path())
+        );
+
+        let main_workdir = utf8_path(main_repo.workdir().unwrap(), "main workdir").unwrap();
+        let linked_workdir = utf8_path(linked_repo.workdir().unwrap(), "linked workdir").unwrap();
+        let main_layout = Layout::from_roots(&main_workdir, &main_state);
+        let linked_layout = Layout::from_roots(&linked_workdir, &linked_state);
+        main_layout.ensure_state_dir().unwrap();
+
+        let linked_db = linked_layout.state_subdir().join("ledger.db");
+        let main_db = main_layout.state_subdir().join("ledger.db");
+        assert_eq!(
+            canonicalize_for_compare(linked_db.as_std_path()),
+            canonicalize_for_compare(main_db.as_std_path()),
+            "both layouts must open the same absolute ledger.db"
+        );
+
+        let write = StorageManager::init_with_layout(&linked_layout).unwrap();
+        assert_eq!(
+            canonicalize_for_compare(write.root_path().as_std_path()),
+            canonicalize_for_compare(linked.as_path()),
+            "write-mode root_path must stay the linked worktree"
+        );
+        write
+            .get_connection()
+            .execute(
+                "CREATE TABLE IF NOT EXISTS _wt_shared (k TEXT PRIMARY KEY, v TEXT)",
+                [],
+            )
+            .unwrap();
+        write
+            .get_connection()
+            .execute(
+                "INSERT INTO _wt_shared (k, v) VALUES ('probe', 'from-linked')",
+                [],
+            )
+            .unwrap();
+        let _ = write.shutdown();
+
+        let read = StorageManager::open_read_only(&main_layout).unwrap();
+        assert_eq!(
+            canonicalize_for_compare(read.root_path().as_std_path()),
+            canonicalize_for_compare(main.as_path())
+        );
+        let v: String = read
+            .get_connection()
+            .query_row("SELECT v FROM _wt_shared WHERE k = 'probe'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(v, "from-linked");
     }
 
     #[test]

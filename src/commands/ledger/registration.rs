@@ -6,7 +6,7 @@ use owo_colors::OwoColorize;
 
 pub fn execute_ledger_register_rule(term: &str, category: &str, reason: &str) -> Result<()> {
     let layout = get_layout()?;
-    let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
+    let mut storage = StorageManager::init_with_layout(&layout)?;
     let config = load_ledger_config(&layout)?;
     let tx_mgr = TransactionManager::new(&mut storage, layout.root.into(), config);
 
@@ -29,7 +29,7 @@ pub fn execute_ledger_register_validator(
     timeout: u64,
 ) -> Result<()> {
     let layout = get_layout()?;
-    let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
+    let mut storage = StorageManager::init_with_layout(&layout)?;
     let config = load_ledger_config(&layout)?;
     let tx_mgr = TransactionManager::new(&mut storage, layout.root.into(), config);
 

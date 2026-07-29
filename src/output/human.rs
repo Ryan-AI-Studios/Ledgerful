@@ -146,15 +146,13 @@ pub fn print_scan_summary(snapshot: &crate::git::RepoSnapshot) {
     println!("{:<15} {}", "State:".bold(), state_str);
 
     if !snapshot.changes.is_empty() {
-        // Prefer shared state via get_layout (linked worktrees). Non-git cwd
-        // falls back to Layout::new for ignore-pattern config only — no DB open.
-        let layout = match crate::commands::helpers::get_layout() {
+        // Prefer shared state (linked worktrees). Non-git → Layout::new(cwd) for
+        // ignore-pattern config only — no DB open. Resolve-after-discover fails closed.
+        let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
             Ok(l) => l,
             Err(_) => {
-                let current_dir =
-                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                let root = camino::Utf8PathBuf::from_path_buf(current_dir)
-                    .unwrap_or_else(|_| camino::Utf8PathBuf::from("."));
+                // Rare: bad UTF-8 cwd. Use empty defaults without inventing state.
+                let root = camino::Utf8PathBuf::from(".");
                 crate::state::layout::Layout::new(root)
             }
         };

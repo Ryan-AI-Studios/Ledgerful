@@ -10,8 +10,7 @@ pub fn write_mode_transition_entry(
     };
     use crate::state::storage::StorageManager;
 
-    let db_path = layout.state_subdir().join("ledger.db");
-    let mut storage = StorageManager::init(db_path.as_std_path())?;
+    let mut storage = StorageManager::init_with_layout(layout)?;
     let config = crate::commands::helpers::load_ledger_config(layout)?;
     let mut tx_mgr = TransactionManager::new(&mut storage, layout.root.clone().into(), config);
 

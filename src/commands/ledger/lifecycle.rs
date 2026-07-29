@@ -46,7 +46,7 @@ pub struct LedgerCommitGitOptions {
 pub fn execute_ledger_start(entity: String, category: &str, message: &str) -> Result<()> {
     let category = resolve_start_category(category)?;
     let layout = get_layout()?;
-    let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
+    let mut storage = StorageManager::init_with_layout(&layout)?;
     let config = load_ledger_config(&layout)?;
     let mut tx_mgr = TransactionManager::new(&mut storage, layout.root.into(), config);
 
@@ -72,7 +72,7 @@ pub fn execute_ledger_commit(
     git_options: LedgerCommitGitOptions,
 ) -> Result<()> {
     let layout = get_layout()?;
-    let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
+    let mut storage = StorageManager::init_with_layout(&layout)?;
     let config = load_ledger_config(&layout)?;
 
     let mut tx_mgr =
@@ -214,7 +214,7 @@ fn display_git_commit_command(message: &str, signoff: bool) -> String {
 
 pub fn execute_ledger_rollback(tx_id: Option<String>, reason: String) -> Result<()> {
     let layout = get_layout()?;
-    let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
+    let mut storage = StorageManager::init_with_layout(&layout)?;
     let config = load_ledger_config(&layout)?;
     let mut tx_mgr = TransactionManager::new(&mut storage, layout.root.into(), config);
 
@@ -303,7 +303,7 @@ pub fn execute_ledger_recover_orphan(
         }
     }
 
-    let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
+    let mut storage = StorageManager::init_with_layout(&layout)?;
     let config = load_ledger_config(&layout)?;
     let mut tx_mgr =
         TransactionManager::new(&mut storage, layout.root.clone().into(), config.clone());
@@ -419,7 +419,7 @@ pub fn execute_ledger_atomic(
 ) -> Result<()> {
     let category = Category::from_str(category, true).map_err(|e| miette::miette!("{}", e))?;
     let layout = get_layout()?;
-    let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
+    let mut storage = StorageManager::init_with_layout(&layout)?;
     let config = load_ledger_config(&layout)?;
     let mut tx_mgr = TransactionManager::new(&mut storage, layout.root.into(), config);
 
@@ -446,7 +446,7 @@ pub fn execute_ledger_atomic(
 
 pub fn execute_ledger_resume(tx_id: Option<String>) -> Result<()> {
     let layout = get_layout()?;
-    let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
+    let mut storage = StorageManager::init_with_layout(&layout)?;
     let config = load_ledger_config(&layout)?;
     let tx_mgr = TransactionManager::new(&mut storage, layout.root.into(), config);
 
@@ -481,7 +481,7 @@ pub fn execute_ledger_note(
     let final_message = resolve_note_message(note, message)?;
 
     let layout = get_layout()?;
-    let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
+    let mut storage = StorageManager::init_with_layout(&layout)?;
     let config = load_ledger_config(&layout)?;
     let mut tx_mgr = TransactionManager::new(&mut storage, layout.root.into(), config);
 

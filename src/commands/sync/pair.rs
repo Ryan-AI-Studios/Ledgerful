@@ -21,8 +21,7 @@ pub fn handle(code: Option<String>) -> Result<()> {
     let _verifying_key = VerifyingKey::try_from(pub_key_bytes.as_slice())
         .map_err(|e| miette!("Invalid public key: {}", e))?;
 
-    let storage_path = layout.state_subdir().join("ledger.db");
-    let storage = StorageManager::init(storage_path.as_std_path())?;
+    let storage = StorageManager::init_with_layout(&layout)?;
     let conn = storage.get_connection();
 
     let device_id: String = conn

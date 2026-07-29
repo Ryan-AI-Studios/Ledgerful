@@ -48,7 +48,7 @@ pub fn execute_index(args: IndexArgs) -> Result<()> {
     }
 
     let db_path = layout.state_subdir().join("ledger.db");
-    let storage = StorageManager::init(db_path.as_std_path())?;
+    let storage = StorageManager::init_with_layout(&layout)?;
     let repo_path = layout.root.clone();
     // ── Mode: Repair Metadata ──────────────────────────────────────────────
     if args.repair_metadata {

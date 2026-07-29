@@ -12,7 +12,7 @@ pub fn execute_ledger_reconcile(
     reason: Option<String>,
 ) -> Result<()> {
     let layout = get_layout()?;
-    let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
+    let mut storage = StorageManager::init_with_layout(&layout)?;
     let config = load_ledger_config(&layout)?;
     let mut tx_mgr = TransactionManager::new(&mut storage, layout.root.into(), config);
 
@@ -33,7 +33,7 @@ pub fn execute_ledger_adopt(
 ) -> Result<()> {
     let category = Category::from_str(category, true).map_err(|e| miette::miette!("{}", e))?;
     let layout = get_layout()?;
-    let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
+    let mut storage = StorageManager::init_with_layout(&layout)?;
     let config = load_ledger_config(&layout)?;
     let mut tx_mgr = TransactionManager::new(&mut storage, layout.root.into(), config);
 
@@ -185,7 +185,7 @@ pub fn execute_ledger_gc(
 
     let layout = get_layout()?;
     let protected = gc_protected_sidecar_tx(&layout);
-    let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
+    let mut storage = StorageManager::init_with_layout(&layout)?;
     let config = load_ledger_config(&layout)?;
 
     let mut tx_mgr = TransactionManager::new(&mut storage, layout.root.into(), config);
@@ -474,7 +474,7 @@ pub fn execute_ledger_hook_repair(force: bool) -> Result<()> {
 
     if force {
         println!("Repairing hook state (force)...");
-        let storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
+        let storage = StorageManager::init_with_layout(&layout)?;
         let db = LedgerDb::new(storage.get_connection());
         let now = chrono::Utc::now().to_rfc3339();
         let _ = db.update_transaction_status(&pending.tx_id, "ROLLBACK", Some(&now));

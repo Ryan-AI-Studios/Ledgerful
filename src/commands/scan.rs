@@ -112,8 +112,7 @@ fn maybe_auto_analyze_graph(
     // analysis needs a writable CozoDB/SQLite handle. Use the caller's
     // resolved layout (shared state_dir on linked worktrees) — never invent
     // Layout::new(project_root) here.
-    let db_path = layout.state_subdir().join("ledger.db");
-    let write_storage = StorageManager::init(db_path.as_std_path())?;
+    let write_storage = StorageManager::init_with_layout(layout)?;
 
     crate::index::run_graph_analysis(
         write_storage,

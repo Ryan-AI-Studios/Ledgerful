@@ -35,8 +35,7 @@ pub fn execute_ask(
     let config = load_ledger_config(&layout)?;
 
     layout.ensure_state_dir()?;
-    let storage_path = layout.state_subdir().join("ledger.db");
-    let storage = StorageManager::init(storage_path.as_std_path())?;
+    let storage = StorageManager::init_with_layout(&layout)?;
 
     // --- Staleness check ---
     let threshold = config.index.stale_threshold_days;

@@ -1,7 +1,6 @@
 use crate::common::{DirGuard, TempEnv, non_interactive, setup_git_repo};
 use ledgerful::commands::init::execute_init;
 use ledgerful::config::model::GlobalRollupConfig;
-use ledgerful::state::layout::Layout;
 use ledgerful::state::rollup::{
     GlobalTimingsArgs, build_global_posture, build_global_timings_summary,
     execute_ledger_status_global, execute_timings_global, set_global_rollup_enabled,

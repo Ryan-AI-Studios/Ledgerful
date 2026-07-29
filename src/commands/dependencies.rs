@@ -219,8 +219,7 @@ pub fn execute_dependencies(args: DependenciesArgs) -> Result<()> {
             let result = crate::index::advisories::OsvImporter::import_from_json(path)?;
 
             // Open writeable storage to populate KG
-            let db_path = layout.state_subdir().join("ledger.db");
-            let storage = StorageManager::init(db_path.as_std_path())?;
+            let storage = StorageManager::init_with_layout(&layout)?;
             if let Some(cozo) = &storage.cozo {
                 crate::index::advisories::OsvImporter::populate_kg(cozo, &result, "audit-tx")?;
             }

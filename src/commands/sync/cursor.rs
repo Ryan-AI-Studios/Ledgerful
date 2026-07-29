@@ -5,8 +5,7 @@ use rusqlite::OptionalExtension;
 pub fn handle(set: Option<String>) -> Result<()> {
     let layout = crate::commands::helpers::get_layout()?;
 
-    let storage_path = layout.state_subdir().join("ledger.db");
-    let storage = StorageManager::init(storage_path.as_std_path())?;
+    let storage = StorageManager::init_with_layout(&layout)?;
     let conn = storage.get_connection();
 
     if let Some(new_hlc) = set {

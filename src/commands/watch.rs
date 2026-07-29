@@ -48,7 +48,6 @@ pub fn execute_watch(interval_ms: u64, json_output: bool, no_graph_sync: bool) -
     };
 
     let batch_path = layout.state_subdir().join("current-batch.json");
-    let db_path = layout.state_subdir().join("ledger.db");
     let repo_root = path.clone();
     let config_for_callback = config.clone();
     let callback = Box::new(move |batch: WatchBatch| {
@@ -84,7 +83,7 @@ pub fn execute_watch(interval_ms: u64, json_output: bool, no_graph_sync: bool) -
             tracing::warn!("Failed to save watch batch JSON: {err}");
         }
 
-        if let Ok(mut storage) = StorageManager::init(db_path.as_std_path()) {
+        if let Ok(mut storage) = StorageManager::init_with_layout(&layout) {
             if let Ok(batch_json) = serde_json::to_string(&batch) {
                 let _ = storage.save_batch(
                     &batch.timestamp.to_rfc3339(),

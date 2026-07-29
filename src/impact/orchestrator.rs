@@ -205,26 +205,24 @@ impl ImpactOrchestrator {
             }
         }
 
-        // 3. Execute Analysis (Scoring) — shared state_dir for linked worktrees
-        // via get_layout. Layout::new(project_root) only when not in a git repo.
-        let layout = match crate::commands::helpers::get_layout() {
-            Ok(l) => l,
-            Err(_) => {
-                let root = match camino::Utf8PathBuf::from_path_buf(project_root.to_path_buf()) {
-                    Ok(p) => p,
-                    Err(_) => {
-                        warn!("project_root is not valid UTF-8; using '.' as layout root");
-                        camino::Utf8PathBuf::from(".")
-                    }
-                };
-                crate::state::layout::Layout::new(root)
-            }
-        };
-        let rules = match crate::policy::load::load_rules(&layout) {
-            Ok(r) => r,
+        // 3. Execute Analysis (Scoring) — load policy rules via resolved layout.
+        // Rules-only: soft-fail to defaults. Never invent private worktree state
+        // when git discover succeeded but resolve failed (fail-closed).
+        let rules = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
+            Ok(layout) => match crate::policy::load::load_rules(&layout) {
+                Ok(r) => r,
+                Err(e) => {
+                    warn!("Failed to load policy rules: {}", e);
+                    context.add_warning(format!("Failed to load policy rules: {}", e));
+                    crate::policy::rules::Rules::default()
+                }
+            },
             Err(e) => {
-                warn!("Failed to load policy rules: {}", e);
-                context.add_warning(format!("Failed to load policy rules: {}", e));
+                warn!(
+                    "Failed to resolve layout for policy rules (no private state invent): {}",
+                    e
+                );
+                context.add_warning(format!("Failed to resolve layout for policy rules: {e}"));
                 crate::policy::rules::Rules::default()
             }
         };

@@ -370,9 +370,7 @@ fn run_incremental_index_for_changed_files(
     use crate::index::ProjectIndexer;
     use crate::state::storage::StorageManager;
 
-    let db_path = layout.state_subdir().join("ledger.db");
-
-    let storage = StorageManager::init(db_path.as_std_path())
+    let storage = StorageManager::init_with_layout(layout)
         .map_err(|e| format!("failed to open storage for auto-index: {e}"))?;
 
     let mut full_config = crate::config::load::load_config(layout).unwrap_or_else(|err| {

@@ -619,7 +619,6 @@ fn is_demo_repo(layout: &crate::state::layout::Layout) -> bool {
 fn dispatch_export(command: ExportCommands) -> Result<()> {
     use crate::export::soc2::generate_soc2_export_with_options;
     use crate::export::soc2_control::generate_soc2_control_export;
-    use crate::state::layout::Layout;
     use owo_colors::OwoColorize;
 
     match command {
@@ -636,16 +635,8 @@ fn dispatch_export(command: ExportCommands) -> Result<()> {
             }
 
             // Shared state_dir for linked worktrees; Layout::new only when not in a repo.
-            let layout = match crate::commands::helpers::get_layout() {
-                Ok(l) => l,
-                Err(_) => {
-                    let root =
-                        std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-                    let root = camino::Utf8PathBuf::from_path_buf(root)
-                        .map_err(|_| miette::miette!("export root path is not valid UTF-8"))?;
-                    Layout::new(root)
-                }
-            };
+            // Resolve errors after git discover fail closed (no private state invent).
+            let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git()?;
 
             let is_demo = is_demo_repo(&layout);
             let keys_dir = if is_demo {

@@ -27,8 +27,7 @@ pub fn execute_doctor() -> Result<()> {
     let tools = check_tools();
 
     layout.ensure_state_dir()?;
-    let storage_path = layout.state_subdir().join("ledger.db");
-    let storage = StorageManager::init(storage_path.as_std_path())?;
+    let storage = StorageManager::init_with_layout(&layout)?;
 
     let platform_str = format!("{:?}", platform);
     let shell_str = format!("{:?}", shell);

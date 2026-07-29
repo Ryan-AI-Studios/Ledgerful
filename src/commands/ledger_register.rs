@@ -111,7 +111,7 @@ pub(crate) fn execute_ledger_register(
     force: bool,
 ) -> Result<()> {
     let layout = get_layout()?;
-    let storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
+    let storage = StorageManager::init_with_layout(&layout)?;
     let db = LedgerDb::new(storage.get_connection());
 
     match rule_type {

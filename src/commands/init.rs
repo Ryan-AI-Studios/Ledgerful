@@ -382,8 +382,7 @@ pub fn execute_init(no_gitignore: bool, enforce: bool) -> Result<()> {
     }
 
     // 6. Initialize ledger storage database
-    let db_path = layout.state_subdir().join("ledger.db");
-    crate::state::storage::StorageManager::init(db_path.as_std_path())?;
+    crate::state::storage::StorageManager::init_with_layout(&layout)?;
 
     // 7. Print the deterministic detected profile, evidence, and current commands.
     use owo_colors::OwoColorize;
@@ -476,8 +475,7 @@ pub(crate) fn write_initial_mode_ledger_entry(
     };
     use crate::state::storage::StorageManager;
 
-    let db_path = layout.state_subdir().join("ledger.db");
-    let mut storage = StorageManager::init(db_path.as_std_path())?;
+    let mut storage = StorageManager::init_with_layout(layout)?;
     let config = crate::commands::helpers::load_ledger_config(layout)?;
     let mut tx_mgr = TransactionManager::new(&mut storage, layout.root.clone().into(), config);
 

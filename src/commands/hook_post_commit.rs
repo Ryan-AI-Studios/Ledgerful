@@ -56,6 +56,7 @@ pub fn execute_hook_post_commit_for_layout(layout: &crate::state::layout::Layout
         .as_std_path()
         .to_path_buf();
     let repo_root = layout.root.clone();
+    let layout_for_worker = layout.clone();
     let (done_tx, done_rx) = mpsc::channel();
     let _handle = thread::Builder::new()
         .name("post-commit-worker".to_string())
@@ -69,7 +70,7 @@ pub fn execute_hook_post_commit_for_layout(layout: &crate::state::layout::Layout
             // Best-effort bounded catch-up: if project_trend_days is empty or
             // stale, backfill from existing hotspot_trends data (90-day window).
             // Idempotent, safe to run on every commit.
-            if let Ok(storage) = StorageManager::init(&db_path)
+            if let Ok(storage) = StorageManager::init_with_layout(&layout_for_worker)
                 && let Err(e) = catch_up_project_trends(&storage, 90)
             {
                 tracing::debug!("Post-commit hook: catch-up failed: {}", e);
@@ -157,7 +158,7 @@ fn promote_pending_ledger_tx(layout: &crate::state::layout::Layout) -> Result<()
         Some(VerificationStatus::Unverified)
     };
 
-    let mut storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())?;
+    let mut storage = StorageManager::init_with_layout(layout)?;
     let mut tx_mgr =
         TransactionManager::new(&mut storage, layout.root.clone().into(), config.clone());
 
@@ -318,11 +319,28 @@ fn record_hotspot_trends(repo_root: &camino::Utf8Path, db_path: &std::path::Path
         }
     };
 
-    // Prefer shared state resolution (linked worktrees); fall back to work root.
-    let layout = get_layout().unwrap_or_else(|_| crate::state::layout::Layout::new(repo_root));
+    // Reconstruct layout from known work root + state home of the shared db_path
+    // (never Layout::new(repo_root) — that invents private linked-worktree state).
+    // db_path is …/.ledgerful/state/ledger.db → state_dir is parent of "state/".
+    let layout = {
+        let state_dir = db_path
+            .parent()
+            .and_then(|state_subdir| state_subdir.parent())
+            .and_then(|p| camino::Utf8PathBuf::from_path_buf(p.to_path_buf()).ok());
+        match state_dir {
+            Some(sd) => crate::state::layout::Layout::from_roots(repo_root, sd),
+            None => {
+                tracing::debug!(
+                    "Post-commit hook: cannot derive state_dir from db_path {}",
+                    db_path.display()
+                );
+                return Ok(());
+            }
+        }
+    };
     let config = load_ledger_config(&layout).unwrap_or_default();
 
-    let storage = match StorageManager::init(db_path) {
+    let storage = match StorageManager::init_with_layout(&layout) {
         Ok(s) => s,
         Err(e) => {
             tracing::debug!("Post-commit hook: cannot open storage: {}", e);

@@ -205,9 +205,8 @@ pub fn execute_dead_code_with_prompt(
         } else {
             let removed = run_prune_loop(prompt, targets)?;
             if !removed.is_empty() {
-                let mut write_storage = crate::state::storage::StorageManager::init(
-                    layout.state_subdir().join("ledger.db").as_std_path(),
-                )?;
+                let mut write_storage =
+                    crate::state::storage::StorageManager::init_with_layout(&layout)?;
                 start_prune_transaction(&mut write_storage, &removed, &layout.root)?;
                 let _ = write_storage.shutdown();
             }

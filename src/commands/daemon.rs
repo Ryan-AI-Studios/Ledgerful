@@ -1,9 +1,7 @@
 #[cfg(feature = "daemon")]
 use crate::daemon::{Backend, lifecycle::DaemonLifecycle, state::ReadOnlyStorage};
 #[cfg(feature = "daemon")]
-use camino::Utf8PathBuf;
-#[cfg(feature = "daemon")]
-use miette::{IntoDiagnostic, Result, miette};
+use miette::{IntoDiagnostic, Result};
 #[cfg(feature = "daemon")]
 use std::env;
 #[cfg(feature = "daemon")]
@@ -14,16 +12,8 @@ use tower_lsp_server::{LspService, Server};
 #[cfg(feature = "daemon")]
 pub fn execute_daemon(_interval_ms: u64) -> Result<()> {
     // 1. Resolve work root + shared state (linked worktrees → main .ledgerful).
-    // Non-git cwd falls back to Layout::new(cwd) so private state still works.
-    let layout = match crate::commands::helpers::get_layout() {
-        Ok(l) => l,
-        Err(_) => {
-            let current_dir = env::current_dir().into_diagnostic()?;
-            let root = Utf8PathBuf::from_path_buf(current_dir)
-                .map_err(|_| miette!("Invalid UTF-8 path in current directory"))?;
-            crate::state::layout::Layout::new(root)
-        }
-    };
+    // Non-git cwd → Layout::new(cwd). Resolve errors after discover fail closed.
+    let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git()?;
     let root = layout.root.clone();
     let db_path = layout.state_subdir().join("ledger.db");
 
