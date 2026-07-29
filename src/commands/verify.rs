@@ -126,11 +126,12 @@ impl VerifyCliStepJson {
     }
 }
 
-/// Where a per-entry signature status line is emitted (0093 DoD-5).
+/// Where a per-entry signature status line is emitted (0093 DoD-5 / 0100).
 ///
 /// `RawStderr` lines use `eprintln!` and are **never** suppressed by the
-/// three-state `cli_summary` filter (default / quiet / machine). Filtered
-/// detail uses `tracing::debug!(target: "cli_summary", …)`.
+/// four-state `cli_summary` filter (default/quiet → INFO, verbose → DEBUG,
+/// machine → WARN). Filtered detail uses
+/// `tracing::debug!(target: "cli_summary", …)`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SigEntryStream {
     /// Hard failures: INVALID crypto, and UNSIGNED when signing is required.

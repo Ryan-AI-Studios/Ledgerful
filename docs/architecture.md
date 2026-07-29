@@ -55,7 +55,7 @@ CLI
 - `mcp` starts the optional MCP stdio server for AI-agent integration.
 - `search` runs regex/semantic code search over the Tantivy + CozoDB index.
 - `ask` invokes Gemini or a local LLM for analysis, suggestions, and narrative reporting.
-- `dead-code` detects high-confidence dead code via graph reachability + git inactivity.
+- `dead-code` reports heuristic high-confidence dead-code *candidates* via graph reachability + git inactivity (not proof of dead code).
 - `viz-server` serves a WebSocket-fed arc diagram of the Knowledge Graph.
 - `ledger` manages the transactional provenance ledger (start, commit, search, audit, re-sign, graph).
 - `gate` manages observe/enforce mode transitions with signed audit entries.

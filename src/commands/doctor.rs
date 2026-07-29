@@ -11,6 +11,11 @@ use std::env;
 use crate::state::reports::write_clean_tree_tombstone;
 use crate::state::storage::StorageManager;
 
+/// Soft-pin warning when `intent.trusted_public_keys` is empty (0072 / 0100 DoD-3).
+/// Shares vocabulary with [`crate::ledger::crypto::SignatureTrustStatus::ValidUnknownKey`]:
+/// "unknown key", pin, trusted / trusted_public_keys.
+pub const SIG_PIN_WARNING: &str = "Warning [sig-pin]: no intent.trusted_public_keys pinned; crypto-valid signatures report VALID (unknown key). Pin keys after init or re-sign.";
+
 pub fn execute_doctor() -> Result<()> {
     let current_dir = env::current_dir().into_diagnostic()?;
     let layout = Layout::new(current_dir.to_string_lossy().as_ref());
@@ -379,11 +384,9 @@ pub fn execute_doctor() -> Result<()> {
     }
     // Soft pin warn when no trusted keys are configured.
     if config.intent.trusted_public_keys.is_empty() {
-        report.index_health.push(
-            "Warning [sig-pin]: no intent.trusted_public_keys pinned; crypto-valid signatures report VALID (unknown key). Pin keys after init or re-sign."
-                .yellow()
-                .to_string(),
-        );
+        report
+            .index_health
+            .push(SIG_PIN_WARNING.yellow().to_string());
     }
     if config.intent.min_sig_version < 2 {
         report.index_health.push(
@@ -1182,13 +1185,40 @@ mod tests {
         )];
         let report = DoctorReport {
             index_health: vec![
-                "Warning [sig-pin]: no intent.trusted_public_keys pinned; crypto-valid signatures report VALID (unknown key). Pin keys after init or re-sign.".to_string(),
+                SIG_PIN_WARNING.to_string(),
                 "Search index: OK (0 documents)".to_string(),
             ],
             ..sample_report(&tools)
         };
         assert_eq!(count_doctor_warnings(&report, false, 0), 1);
         assert_eq!(count_doctor_warnings(&report, true, 3), 5);
+    }
+
+    /// 0100 DoD-3 / F-002: verify + doctor share unknown-key / pin / trusted terms.
+    #[test]
+    fn dod3_unknown_key_vocabulary_shared_across_verify_and_doctor() {
+        use crate::ledger::crypto::SignatureTrustStatus;
+
+        let verify_status = SignatureTrustStatus::ValidUnknownKey.as_str();
+        assert!(
+            verify_status.to_ascii_lowercase().contains("unknown key"),
+            "ValidUnknownKey must contain 'unknown key': {verify_status}"
+        );
+
+        let doctor = SIG_PIN_WARNING;
+        let doctor_lc = doctor.to_ascii_lowercase();
+        assert!(
+            doctor_lc.contains("unknown key"),
+            "doctor sig-pin must contain 'unknown key': {doctor}"
+        );
+        assert!(
+            doctor_lc.contains("pin") || doctor.contains("Pin"),
+            "doctor sig-pin must mention pin: {doctor}"
+        );
+        assert!(
+            doctor_lc.contains("trusted") || doctor_lc.contains("trusted_public_keys"),
+            "doctor sig-pin must mention trusted keys: {doctor}"
+        );
     }
 
     #[test]
