@@ -26,7 +26,43 @@ pub struct DoctorReport<'a> {
     pub target_triple: &'a str,
 }
 
-pub fn print_doctor_report(report: &DoctorReport) {
+/// Pure summary text for doctor aggregate-first header (0100 DoD-5).
+///
+/// Priority: critical → soft failures → warnings/hints → all-pass.
+/// Exit code still tracks `critical` only (unchanged policy).
+pub fn format_doctor_summary_text(critical: u64, soft_failures: u64, warnings: u64) -> String {
+    if critical > 0 {
+        format!("✗ Doctor: {critical} CRITICAL issue(s)")
+    } else if soft_failures > 0 {
+        format!("✗ Doctor: {soft_failures} issue(s) found")
+    } else if warnings > 0 {
+        format!("✓ Doctor: 0 failures, {warnings} warning(s)/hint(s)")
+    } else {
+        "✓ Doctor: all checks passed".to_string()
+    }
+}
+
+/// Counters for the doctor aggregate-first header.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DoctorSummaryCounts {
+    pub critical: u64,
+    pub soft_failures: u64,
+    pub warnings: u64,
+}
+
+pub fn print_doctor_report(report: &DoctorReport, summary: &DoctorSummaryCounts) {
+    // Aggregate-first (0100 DoD-5): first meaningful lines are the status.
+    let summary_text =
+        format_doctor_summary_text(summary.critical, summary.soft_failures, summary.warnings);
+    // DoD-5: aggregate is the literal first line (no leading blank). Codex R1 P2.
+    if summary.critical > 0 || summary.soft_failures > 0 {
+        println!("{}", summary_text.red().bold());
+    } else if summary.warnings > 0 {
+        println!("{}", summary_text.yellow().bold());
+    } else {
+        println!("{}", summary_text.green().bold());
+    }
+
     println!("\nLedgerful Doctor - Environment Health Check");
     println!("==================================================");
     println!("{:<20} {}", "Environment:", report.platform);
@@ -57,9 +93,9 @@ pub fn print_doctor_report(report: &DoctorReport) {
         println!("WSL Support:         Active (Mounted)");
     }
 
+    // Core health: ask backend + native graph stay here; optional model /
+    // accelerator lines move under Optional Accelerators (0100 DoD-6).
     println!("\nActive Ask Backend:  {}", report.active_ask_backend);
-    println!("Embedding Model:     {}", report.embedding_model_status);
-    println!("Completion Model:    {}", report.completion_model_status);
     println!("Native Graph:        {}", report.native_graph_status);
 
     if !report.index_health.is_empty() {
@@ -68,7 +104,20 @@ pub fn print_doctor_report(report: &DoctorReport) {
             println!("  • {}", health);
         }
     }
+
+    // Optional accelerators: embedding/completion status (severity unchanged —
+    // partial-config still fails count_doctor_failures). SCIP/sccache hints
+    // are appended by doctor after this call under the same section.
+    println!("\n── Optional Accelerators ──────────────────────");
+    println!("Embedding Model:     {}", report.embedding_model_status);
+    println!("Completion Model:    {}", report.completion_model_status);
 }
+
+/// Honest-ceiling footer for dead-code human output (0100 Option 1 / DoD-4).
+pub const DEAD_CODE_HONESTY_FOOTER: &str = "Heuristic evidence — not proof of dead code. Factors include reachability, git activity, and test coverage.";
+
+/// Empty-state copy when no findings pass the confidence threshold.
+pub const DEAD_CODE_EMPTY_STATE: &str = "No findings above threshold (heuristic analysis).";
 
 pub fn print_scan_summary(snapshot: &crate::git::RepoSnapshot) {
     println!("\n{}", "Ledgerful Git Scan Summary".bold().underline());
@@ -311,7 +360,7 @@ pub fn print_dead_code_summary(
 ) {
     println!("\n{}", "Dead Code Analysis".bold());
     if findings.is_empty() {
-        println!("  No dead code found above threshold.");
+        println!("  {DEAD_CODE_EMPTY_STATE}");
     } else {
         let mut table = Table::new();
         table
@@ -336,6 +385,8 @@ pub fn print_dead_code_summary(
         }
         println!("{table}");
     }
+    // 0100 Option 1: honest-ceiling footer (title kept; not proof of dead code).
+    println!("  {DEAD_CODE_HONESTY_FOOTER}");
 
     // DX4: the broad `HINT: Derived traits ...` warning was removed because
     // derive-based and standard-trait false positives are now suppressed
@@ -351,7 +402,8 @@ pub fn print_dead_code_grouped(findings: &[DeadCodeFinding]) {
     println!("\n{}", "Dead Code Analysis (grouped by file)".bold());
 
     if findings.is_empty() {
-        println!("  No dead code found above threshold.");
+        println!("  {DEAD_CODE_EMPTY_STATE}");
+        println!("  {DEAD_CODE_HONESTY_FOOTER}");
         return;
     }
 
@@ -410,6 +462,7 @@ pub fn print_dead_code_grouped(findings: &[DeadCodeFinding]) {
         ]);
     }
     println!("{table}");
+    println!("  {DEAD_CODE_HONESTY_FOOTER}");
 }
 
 pub fn print_dead_code_explanation(findings: &[DeadCodeFinding], file_path: &str) {
@@ -423,9 +476,10 @@ pub fn print_dead_code_explanation_struct(
 ) {
     if explanation.symbols.is_empty() {
         println!(
-            "\nNo dead code findings for '{}' above threshold.",
+            "\nNo findings for '{}' above threshold (heuristic analysis).",
             explanation.file
         );
+        println!("  {DEAD_CODE_HONESTY_FOOTER}");
         return;
     }
 
@@ -453,6 +507,7 @@ pub fn print_dead_code_explanation_struct(
         }
         println!();
     }
+    println!("  {DEAD_CODE_HONESTY_FOOTER}");
 }
 
 pub fn print_verify_plan(plan: &VerificationPlan) {
@@ -504,5 +559,38 @@ pub fn print_verify_result(name: &str, _timeout: u64, result: &ExecutionResult) 
             "FAILURE".red().bold(),
             name
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn doctor_summary_text_four_way() {
+        assert_eq!(
+            format_doctor_summary_text(1, 0, 0),
+            "✗ Doctor: 1 CRITICAL issue(s)"
+        );
+        assert_eq!(
+            format_doctor_summary_text(0, 2, 0),
+            "✗ Doctor: 2 issue(s) found"
+        );
+        assert_eq!(
+            format_doctor_summary_text(0, 0, 3),
+            "✓ Doctor: 0 failures, 3 warning(s)/hint(s)"
+        );
+        assert_eq!(
+            format_doctor_summary_text(0, 0, 0),
+            "✓ Doctor: all checks passed"
+        );
+    }
+
+    #[test]
+    fn dead_code_honesty_strings_present() {
+        assert!(DEAD_CODE_HONESTY_FOOTER.contains("Heuristic evidence"));
+        assert!(DEAD_CODE_HONESTY_FOOTER.contains("not proof of dead code"));
+        assert!(DEAD_CODE_EMPTY_STATE.contains("heuristic analysis"));
+        assert!(!DEAD_CODE_EMPTY_STATE.contains("No dead code found"));
     }
 }

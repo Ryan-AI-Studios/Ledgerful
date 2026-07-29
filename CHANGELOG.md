@@ -25,6 +25,25 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **CLI output scannability (0100, user-visible defaults):**
+  - `verify --signatures` is **summary-first** by default: per-entry `VALID`/`SKIP`
+    lines are hidden (cli_summary layer `INFO`); use **`--verbose`** to restore
+    the previous per-entry dump (`DEBUG`). `--quiet` / `LEDGERFUL_QUIET=1` stay
+    equivalent to the new default for signatures. Machine mode still `WARN`.
+    `INVALID` / required-`UNSIGNED` remain raw stderr and are never suppressed.
+    Unknown-key per-entry status stays `VALID (unknown key)` (yellow/amber, not
+    green); doctor `[sig-pin]` wording already uses the same terms.
+  - `dead-code` keeps the title **Dead Code Analysis** and adds an honest-ceiling
+    footer (heuristic evidence, not proof). Empty state: *"No findings above
+    threshold (heuristic analysis)."* Command name and `--json` contract unchanged.
+  - `doctor` prints an aggregate status line first (CRITICAL / issues / warnings /
+    all-pass) and groups embedding, completion, SCIP, and sccache under
+    **Optional Accelerators**. Exit still tracks `critical_count` only; partial-
+    config failures stay failures (0096).
+  - `search` human output emits `… and more results (use --limit N to see more)`
+    when results are truncated (overfetch; no exact remaining count; no JSON fields).
+  - `config --help` includes examples using real subcommands (`view`, `verify`,
+    `set key=value`, `diff`).
 - **SCIP augments the native index (0095, user-visible):** `--auto-scip` /
   `--scip <PATH>` no longer early-return or replace the native pipeline. SCIP
   runs once: after `build_call_graph` without `--analyze-graph`, or only inside
@@ -44,9 +63,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (level-split writer). Machine mode (`--json`, `scan --format json`, `mcp`)
   filters the layer to `WARN` so human lines cannot corrupt JSON on stdout.
   Per-entry signature `VALID`/`SKIP` lines are demoted to `debug!` so `--quiet`
-  can hide them while the aggregate stays at `info!`; **default interactive
-  verbosity is unchanged** (summary filter remains `DEBUG`). Double-emitted
-  observe would-block / CRITICAL messages now emit once via `cli_summary` only.
+  / default can hide them while the aggregate stays at `info!`. **0100** moved
+  the product default summary filter from `DEBUG` to `INFO`; use `--verbose` for
+  per-entry detail. Double-emitted observe would-block / CRITICAL messages now
+  emit once via `cli_summary` only.
 - **Machine mode silences normal_layer progress INFO (0093 R1):** under `--json`
   / machine mode the non-`cli_summary` EnvFilter is raised to `WARN`, so a
   successful `verify --json` has empty stderr. `WARN`/`ERROR` still pass.

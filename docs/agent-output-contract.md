@@ -28,17 +28,19 @@ not precede or follow that JSON on stdout.
 
 ---
 
-## Three verbosity states (`cli_summary` layer)
+## Four verbosity states (`cli_summary` layer)
 
 | State | Filter | Selected by | Effect |
 |---|---|---|---|
-| **Default** | `DEBUG` | anything else | Per-entry signature detail and aggregate both visible (unchanged from pre-0093) |
-| **Quiet** | `INFO` | `--quiet` / `-q` / `LEDGERFUL_QUIET=1` | Hide per-entry `VALID`/`SKIP` detail; **keep aggregate** |
+| **Default** | `INFO` | anything else (track 0100) | Aggregate visible; **hide** per-entry `VALID`/`SKIP` detail |
+| **Verbose** | `DEBUG` | `--verbose` / `-v` | Restore per-entry signature detail + aggregate (pre-0100 default) |
+| **Quiet** | `INFO` | `--quiet` / `-q` / `LEDGERFUL_QUIET=1` | Same filter as default for signatures (hide per-entry; **keep aggregate**) |
 | **Machine** | `WARN` | `--json` on any subcommand, `scan --format json`, `mcp` | No human `cli_summary` line reaches stdout |
 
-Machine mode wins over quiet if both are set. **`--json` selects machine mode,
-not quiet** — quiet would still emit aggregate `info!` lines around the JSON
-payload.
+**Precedence:** machine → `WARN` (wins over everything); else if verbose →
+`DEBUG` (explicit `-v` wins over quiet); else → `INFO`. **`--json` selects
+machine mode, not quiet** — quiet would still emit aggregate `info!` lines
+around the JSON payload.
 
 **Machine mode also raises the non-`cli_summary` (`normal_layer`) EnvFilter to
 `WARN`**, so progress `INFO` lines (for example `Running verification command

@@ -105,7 +105,11 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         // On Err: print *failure* message (never Ready "no matches") and fall through.
         // On Ok([]): print empty-result once in the empty branch below.
         // Never both (P3 double-emit). JSON Err emits record_kind "semantic_error".
-        let (results, query_succeeded) = match semantic_engine.query(&args.query, args.limit) {
+        // Overfetch limit+1 so human output can show "and more" without claiming K (0100 DoD-8).
+        let semantic_fetch = args.limit.saturating_add(1);
+        let (mut results, query_succeeded) = match semantic_engine
+            .query(&args.query, semantic_fetch)
+        {
             Ok(r) => (r, true),
             Err(e) => {
                 // Unconfigured / unreachable / Ready runtime failure: degrade to BM25
@@ -138,6 +142,8 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         };
 
         if !results.is_empty() {
+            let truncated = results.len() > args.limit;
+            results.truncate(args.limit);
             if args.json {
                 for (path, name, offset, dist) in results {
                     let record = BridgeRecord {
@@ -168,6 +174,9 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                         offset,
                         dist
                     );
+                }
+                if truncated {
+                    print_search_truncation_affordance();
                 }
                 println!();
             }
@@ -248,15 +257,20 @@ fn perform_search(
     use_regex: bool,
     use_hybrid: bool,
 ) -> Result<()> {
+    // Overfetch by one so human path can emit a truncation affordance without
+    // claiming an exact "K more" total (0100 DoD-7). JSON still truncates to
+    // `args.limit` with no new fields.
+    let overfetch = args.limit.saturating_add(1);
+
     if use_hybrid {
         if !args.json {
             println!("[Search Mode: Hybrid]");
         }
         let filter = RegexFilter::new(&engine);
         let regex_matches = filter
-            .search(root, &args.query, args.limit)
+            .search(root, &args.query, overfetch)
             .unwrap_or_default();
-        let bm25_results = engine.search(&args.query, args.limit).unwrap_or_default();
+        let bm25_results = engine.search(&args.query, overfetch).unwrap_or_default();
 
         struct MergedResult {
             path: String,
@@ -329,6 +343,7 @@ fn perform_search(
                 .partial_cmp(&score_a)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
+        let truncated = merged_results.len() > args.limit;
         merged_results.truncate(args.limit);
 
         if merged_results.is_empty() {
@@ -404,6 +419,9 @@ fn perform_search(
                         display.trim()
                     );
                 }
+                if truncated {
+                    print_search_truncation_affordance();
+                }
                 println!();
             }
         }
@@ -412,7 +430,9 @@ fn perform_search(
             println!("[Search Mode: Regex]");
         }
         let filter = RegexFilter::new(&engine);
-        let matches = filter.search(root, &args.query, args.limit)?;
+        let mut matches = filter.search(root, &args.query, overfetch)?;
+        let truncated = matches.len() > args.limit;
+        matches.truncate(args.limit);
 
         if args.json {
             for m in matches {
@@ -452,6 +472,9 @@ fn perform_search(
                         m.content.trim()
                     );
                 }
+                if truncated {
+                    print_search_truncation_affordance();
+                }
             }
             println!();
         }
@@ -459,7 +482,9 @@ fn perform_search(
         if !args.json {
             println!("[Search Mode: BM25]");
         }
-        let results = engine.search(&args.query, args.limit)?;
+        let mut results = engine.search(&args.query, overfetch)?;
+        let truncated = results.len() > args.limit;
+        results.truncate(args.limit);
 
         if results.is_empty() {
             handle_fuzzy_fallback(&engine, args);
@@ -503,12 +528,21 @@ fn perform_search(
                         println!("  {}", display.trim());
                     }
                 }
+                if truncated {
+                    print_search_truncation_affordance();
+                }
                 println!();
             }
         }
     }
 
     Ok(())
+}
+
+/// Human-only truncation affordance (0100 DoD-7). No exact remaining count —
+/// engines do not always return a total. JSON paths never call this.
+fn print_search_truncation_affordance() {
+    println!("… and more results (use --limit N to see more)");
 }
 
 /// Apply bold emphasis to byte ranges in a plain snippet via owo_colors.
@@ -550,7 +584,9 @@ fn handle_fuzzy_fallback(engine: &TantivySearchEngine, args: &SearchArgs) {
     if !args.json {
         println!("{}", "Falling back to fuzzy search...".yellow());
     }
-    let fuzzy_matches = match engine.search_fuzzy(&args.query, args.limit) {
+    // Overfetch limit+1 for human truncation affordance (0100 DoD-8; codex R1).
+    let fuzzy_fetch = args.limit.saturating_add(1);
+    let mut fuzzy_matches = match engine.search_fuzzy(&args.query, fuzzy_fetch) {
         Ok(matches) => matches,
         Err(e) => {
             tracing::warn!("Fuzzy search fallback failed: {}", e);
@@ -573,6 +609,8 @@ fn handle_fuzzy_fallback(engine: &TantivySearchEngine, args: &SearchArgs) {
             );
         }
     } else {
+        let truncated = fuzzy_matches.len() > args.limit;
+        fuzzy_matches.truncate(args.limit);
         if args.json {
             for m in fuzzy_matches {
                 let record = BridgeRecord {
@@ -616,6 +654,9 @@ fn handle_fuzzy_fallback(engine: &TantivySearchEngine, args: &SearchArgs) {
                     let display = emphasize_snippet(&snippet, ranges);
                     println!("  {}", display.trim());
                 }
+            }
+            if truncated {
+                print_search_truncation_affordance();
             }
             println!();
         }
