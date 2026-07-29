@@ -702,13 +702,20 @@ jobs:
               missing=1
             fi
           done
-          # Signature set: at least one .sig / .pem / .bundle present (sign job covers archives + SBOMs)
+          # Signature set: cosign keyless publishes **.bundle** on the GitHub Release
+          # (observed v0.2.1 and v0.2.3). The sign job still writes .sig/.pem into the
+          # job artifact, but softprops/action-gh-release has only ever attached
+          # .bundle assets — requiring .sig/.pem here is a false fail. Require bundles.
+          bundles=(release-assets/*.bundle)
+          if [ "${#bundles[@]}" -lt 1 ]; then
+            echo "error: expected cosign .bundle signature artifacts on the release" >&2
+            missing=1
+          fi
+          # Optional notice if detached .sig/.pem ever appear (forward-compatible)
           sigs=(release-assets/*.sig)
           pems=(release-assets/*.pem)
-          bundles=(release-assets/*.bundle)
-          if [ "${#sigs[@]}" -lt 1 ] || [ "${#pems[@]}" -lt 1 ] || [ "${#bundles[@]}" -lt 1 ]; then
-            echo "error: expected .sig / .pem / .bundle signature artifacts" >&2
-            missing=1
+          if [ "${#sigs[@]}" -lt 1 ] || [ "${#pems[@]}" -lt 1 ]; then
+            echo "::notice::release has .bundle only (no detached .sig/.pem assets) — matches cosign keyless publish history"
           fi
           if [ "$missing" -ne 0 ]; then
             ls -la release-assets >&2 || true
