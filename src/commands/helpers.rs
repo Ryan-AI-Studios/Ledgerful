@@ -168,24 +168,20 @@ fn canonicalize_for_compare(path: &Path) -> PathBuf {
     // Walk up to an existing ancestor, then re-append the missing tail.
     let mut ancestor = path;
     let mut missing: Vec<&std::ffi::OsStr> = Vec::new();
-    loop {
-        if let Some(parent) = ancestor.parent() {
-            if parent.as_os_str().is_empty() {
-                break;
-            }
-            if let Some(name) = ancestor.file_name() {
-                missing.push(name);
-            }
-            ancestor = parent;
-            if let Ok(c) = dunce::canonicalize(ancestor) {
-                let mut out = c;
-                for name in missing.into_iter().rev() {
-                    out.push(name);
-                }
-                return out;
-            }
-        } else {
+    while let Some(parent) = ancestor.parent() {
+        if parent.as_os_str().is_empty() {
             break;
+        }
+        if let Some(name) = ancestor.file_name() {
+            missing.push(name);
+        }
+        ancestor = parent;
+        if let Ok(c) = dunce::canonicalize(ancestor) {
+            let mut out = c;
+            for name in missing.into_iter().rev() {
+                out.push(name);
+            }
+            return out;
         }
     }
     use path_clean::PathClean;
