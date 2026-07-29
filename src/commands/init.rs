@@ -1,13 +1,22 @@
+use crate::commands::hook_repair::{HooksDirResolution, resolve_hooks_dir};
 use crate::config::ConfigError;
 use crate::config::starter::{publish_starter_config, starter_config_contents};
 use crate::git::ignore::add_to_gitignore;
 use crate::policy::defaults::DEFAULT_RULES;
 use crate::state::layout::Layout;
-use camino::Utf8PathBuf;
+use camino::{Utf8Path, Utf8PathBuf};
 use miette::{IntoDiagnostic, Result};
 use std::fs;
 use std::io::Write as IoWrite;
 use tracing::info;
+
+/// Shared hooks directory for install (linked worktrees via commondir — not `root/.git/hooks`).
+fn hooks_dir_for_install(root: &Utf8Path) -> Option<Utf8PathBuf> {
+    match resolve_hooks_dir(root) {
+        HooksDirResolution::Found { hooks_dir } => Some(hooks_dir),
+        HooksDirResolution::OutsideRepo { .. } | HooksDirResolution::CannotLook { .. } => None,
+    }
+}
 
 const HOOK_MARKER: &str = "# ledgerful-ledger-gate";
 const HOOK_BLOCK_TEMPLATE: &str = "\
@@ -42,12 +51,9 @@ fi
 ";
 
 fn install_git_hook(root: &Utf8PathBuf, hook_name: &str, bypass_command: &str) -> Result<bool> {
-    let git_dir = root.join(".git");
-    if !git_dir.exists() {
+    let Some(hooks_dir) = hooks_dir_for_install(root) else {
         return Ok(false);
-    }
-
-    let hooks_dir = git_dir.join("hooks");
+    };
     fs::create_dir_all(&hooks_dir).into_diagnostic()?;
 
     let hook_path = hooks_dir.join(hook_name);
@@ -107,12 +113,9 @@ fi
 ";
 
 fn install_commit_msg_hook(root: &Utf8PathBuf) -> Result<bool> {
-    let git_dir = root.join(".git");
-    if !git_dir.exists() {
+    let Some(hooks_dir) = hooks_dir_for_install(root) else {
         return Ok(false);
-    }
-
-    let hooks_dir = git_dir.join("hooks");
+    };
     fs::create_dir_all(&hooks_dir).into_diagnostic()?;
 
     let hook_path = hooks_dir.join("commit-msg");
@@ -148,12 +151,9 @@ fn install_commit_msg_hook(root: &Utf8PathBuf) -> Result<bool> {
 }
 
 fn install_post_commit_hook(root: &Utf8PathBuf) -> Result<bool> {
-    let git_dir = root.join(".git");
-    if !git_dir.exists() {
+    let Some(hooks_dir) = hooks_dir_for_install(root) else {
         return Ok(false);
-    }
-
-    let hooks_dir = git_dir.join("hooks");
+    };
     fs::create_dir_all(&hooks_dir).into_diagnostic()?;
 
     let hook_path = hooks_dir.join("post-commit");
@@ -231,7 +231,10 @@ const VERIFY_GATE_MARKER: &str = "# ledgerful-verify-gate";
 /// already present. This is separate from `install_git_hook` because the
 /// verify block is pre-push-only and has its own marker for idempotency.
 fn install_pre_push_verify_block(root: &Utf8PathBuf) -> Result<()> {
-    let hook_path = root.join(".git").join("hooks").join("pre-push");
+    let Some(hooks_dir) = hooks_dir_for_install(root) else {
+        return Ok(());
+    };
+    let hook_path = hooks_dir.join("pre-push");
     if !hook_path.exists() {
         return Ok(());
     }
