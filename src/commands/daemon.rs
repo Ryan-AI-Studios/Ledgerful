@@ -13,20 +13,19 @@ use tower_lsp_server::{LspService, Server};
 
 #[cfg(feature = "daemon")]
 pub fn execute_daemon(_interval_ms: u64) -> Result<()> {
-    // 1. Resolve repository root
-    let current_dir = env::current_dir().into_diagnostic()?;
-    let root = match gix::discover(&current_dir) {
-        Ok(repo) => {
-            let path = repo
-                .workdir()
-                .ok_or_else(|| miette!("Repo discovery failed: no workdir found"))?
-                .to_path_buf();
-            Utf8PathBuf::from_path_buf(path)
-                .map_err(|_| miette!("Invalid UTF-8 path in repo root"))?
+    // 1. Resolve work root + shared state (linked worktrees → main .ledgerful).
+    // Non-git cwd falls back to Layout::new(cwd) so private state still works.
+    let layout = match crate::commands::helpers::get_layout() {
+        Ok(l) => l,
+        Err(_) => {
+            let current_dir = env::current_dir().into_diagnostic()?;
+            let root = Utf8PathBuf::from_path_buf(current_dir)
+                .map_err(|_| miette!("Invalid UTF-8 path in current directory"))?;
+            crate::state::layout::Layout::new(root)
         }
-        Err(_) => Utf8PathBuf::from_path_buf(current_dir)
-            .map_err(|_| miette!("Invalid UTF-8 path in current directory"))?,
     };
+    let root = layout.root.clone();
+    let db_path = layout.state_subdir().join("ledger.db");
 
     let parent_pid = env::var("LEDGERFUL_PARENT_PID")
         .ok()
@@ -43,7 +42,6 @@ pub fn execute_daemon(_interval_ms: u64) -> Result<()> {
         let lifecycle = DaemonLifecycle::new(root.as_std_path(), parent_pid);
         lifecycle.setup()?;
 
-        let db_path = root.join(".ledgerful").join("state").join("ledger.db");
         let storage = ReadOnlyStorage::new(db_path.as_std_path());
 
         let (service, socket) =

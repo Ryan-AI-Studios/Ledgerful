@@ -6,7 +6,6 @@ use ledgerful::ledger::*;
 use ledgerful::platform::urn::build_urn;
 use ledgerful::state::graph_kinds::NodeKind;
 use ledgerful::state::layout::Layout;
-use ledgerful::state::layout::Layout;
 use ledgerful::state::storage::StorageManager;
 use std::fs;
 use tempfile::tempdir;

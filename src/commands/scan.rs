@@ -95,6 +95,7 @@ fn maybe_auto_analyze_graph(
     storage: &StorageManager,
     project_root: &std::path::Path,
     config: &crate::config::model::Config,
+    layout: &Layout,
 ) -> Result<()> {
     if !changes_include_observability_config(changes) {
         return Ok(());
@@ -108,16 +109,9 @@ fn maybe_auto_analyze_graph(
     );
 
     // Re-open storage in write mode: `storage` may be read-only, and graph
-    // analysis needs a writable CozoDB/SQLite handle. Use resolved state_dir
-    // (shared across linked worktrees).
-    let layout = match crate::commands::helpers::get_layout() {
-        Ok(l) => l,
-        Err(_) => {
-            let root = camino::Utf8PathBuf::from_path_buf(project_root.to_path_buf())
-                .map_err(|_| miette::miette!("Repository root is not valid UTF-8"))?;
-            Layout::new(root)
-        }
-    };
+    // analysis needs a writable CozoDB/SQLite handle. Use the caller's
+    // resolved layout (shared state_dir on linked worktrees) — never invent
+    // Layout::new(project_root) here.
     let db_path = layout.state_subdir().join("ledger.db");
     let write_storage = StorageManager::init(db_path.as_std_path())?;
 
@@ -129,7 +123,7 @@ fn maybe_auto_analyze_graph(
         false,
         false,
         None,
-        None,
+        Some(layout),
     )
     .map(|_| ())
 }
@@ -491,6 +485,7 @@ pub fn execute_scan(
                     &read_only_storage,
                     &current_dir,
                     &config,
+                    &layout,
                 )?;
             } else {
                 tracing::debug!(

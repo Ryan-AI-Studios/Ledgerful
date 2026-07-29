@@ -146,11 +146,18 @@ pub fn print_scan_summary(snapshot: &crate::git::RepoSnapshot) {
     println!("{:<15} {}", "State:".bold(), state_str);
 
     if !snapshot.changes.is_empty() {
-        let layout = crate::commands::helpers::get_layout().unwrap_or_else(|_| {
-            let current_dir =
-                std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
-            crate::state::layout::Layout::new(current_dir.to_string_lossy().as_ref())
-        });
+        // Prefer shared state via get_layout (linked worktrees). Non-git cwd
+        // falls back to Layout::new for ignore-pattern config only — no DB open.
+        let layout = match crate::commands::helpers::get_layout() {
+            Ok(l) => l,
+            Err(_) => {
+                let current_dir =
+                    std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."));
+                let root = camino::Utf8PathBuf::from_path_buf(current_dir)
+                    .unwrap_or_else(|_| camino::Utf8PathBuf::from("."));
+                crate::state::layout::Layout::new(root)
+            }
+        };
         let config = crate::config::load::load_config(&layout).unwrap_or_default();
         let ignore_set = if !config.watch.ignore_patterns.is_empty() {
             let mut builder = globset::GlobSetBuilder::new();

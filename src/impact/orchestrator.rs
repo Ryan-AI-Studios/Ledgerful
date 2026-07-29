@@ -205,10 +205,21 @@ impl ImpactOrchestrator {
             }
         }
 
-        // 3. Execute Analysis (Scoring) — resolve shared state for linked worktrees.
-        let layout = crate::commands::helpers::get_layout().unwrap_or_else(|_| {
-            crate::state::layout::Layout::new(project_root.to_string_lossy().as_ref())
-        });
+        // 3. Execute Analysis (Scoring) — shared state_dir for linked worktrees
+        // via get_layout. Layout::new(project_root) only when not in a git repo.
+        let layout = match crate::commands::helpers::get_layout() {
+            Ok(l) => l,
+            Err(_) => {
+                let root = match camino::Utf8PathBuf::from_path_buf(project_root.to_path_buf()) {
+                    Ok(p) => p,
+                    Err(_) => {
+                        warn!("project_root is not valid UTF-8; using '.' as layout root");
+                        camino::Utf8PathBuf::from(".")
+                    }
+                };
+                crate::state::layout::Layout::new(root)
+            }
+        };
         let rules = match crate::policy::load::load_rules(&layout) {
             Ok(r) => r,
             Err(e) => {

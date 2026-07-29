@@ -94,7 +94,7 @@ pub fn execute_dead_code_with_prompt(
     let threshold_days = config.index.stale_threshold_days;
 
     let storage = if auto_index {
-        crate::index::staleness::try_auto_index(storage, threshold_days)?
+        crate::index::staleness::try_auto_index(storage, threshold_days, &layout)?
     } else if explain.is_none() {
         let _ = warn_if_stale(&storage, threshold_days);
         storage

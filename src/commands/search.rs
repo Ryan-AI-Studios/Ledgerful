@@ -33,7 +33,7 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         if let Some(storage) = storage_opt {
             let threshold = config.index.stale_threshold_days;
             if args.auto_index {
-                crate::index::staleness::try_auto_index(storage, threshold)?;
+                crate::index::staleness::try_auto_index(storage, threshold, &layout)?;
             } else {
                 let is_stale = warn_if_stale(&storage, threshold);
                 if is_stale && !args.json && crate::util::term::is_interactive() {
@@ -44,7 +44,7 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                             .prompt()
                     {
                         println!("Running auto-indexing...");
-                        crate::index::staleness::try_auto_index(storage, threshold)?;
+                        crate::index::staleness::try_auto_index(storage, threshold, &layout)?;
                     }
                 }
             }

@@ -260,29 +260,37 @@ fn install_pre_push_verify_block(root: &Utf8PathBuf) -> Result<()> {
 }
 
 pub fn execute_init(no_gitignore: bool, enforce: bool) -> Result<()> {
-    // 1. Discover repository root
-    let root = match gix::discover(".") {
+    // 1. Discover work root + shared state dir (linked worktrees share main).
+    // Non-git cwd keeps Layout::new (private state under cwd) intentionally.
+    let (root, layout) = match gix::discover(".") {
         Ok(repo) => {
             let path = repo
                 .workdir()
                 .ok_or(crate::commands::CommandError::RepoDiscoveryFailed)?
                 .to_path_buf();
             info!("Discovered git repository root at: {:?}", path);
-            Utf8PathBuf::from_path_buf(path)
-                .map_err(|_| crate::commands::CommandError::RepoDiscoveryFailed)?
+            let work_root = Utf8PathBuf::from_path_buf(path)
+                .map_err(|_| crate::commands::CommandError::RepoDiscoveryFailed)?;
+            let state_dir = crate::commands::helpers::resolve_state_dir(&repo)?;
+            let layout = Layout::from_roots(&work_root, state_dir);
+            (work_root, layout)
         }
         Err(e) => {
             info!(
                 "gix::discover failed: {:?}. Using current directory as root",
                 e
             );
-            Utf8PathBuf::from_path_buf(std::env::current_dir().into_diagnostic()?)
-                .map_err(|_| crate::commands::CommandError::RepoDiscoveryFailed)?
+            let root = Utf8PathBuf::from_path_buf(std::env::current_dir().into_diagnostic()?)
+                .map_err(|_| crate::commands::CommandError::RepoDiscoveryFailed)?;
+            let layout = Layout::new(&root);
+            (root, layout)
         }
     };
 
-    info!("Resolved root for initialization: {}", root);
-    let layout = Layout::new(&root);
+    info!(
+        "Resolved init work_root={} state_dir={}",
+        layout.root, layout.state_dir
+    );
 
     // 2. Ensure directory layout
     layout.ensure_state_dir()?;

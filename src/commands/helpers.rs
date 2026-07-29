@@ -357,4 +357,140 @@ mod tests {
             "shared state differs from work-local .ledgerful"
         );
     }
+
+    #[test]
+    fn nested_subdir_discover_state_is_work_root_not_nested() {
+        // Discover from a nested subdirectory must not place state under nested/.ledgerful.
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        init_repo(&main);
+        let nested = main.join("src").join("deep");
+        fs::create_dir_all(&nested).unwrap();
+
+        let repo = gix::discover(&nested).unwrap();
+        let state = resolve_state_dir(&repo).unwrap();
+        let expected = main.join(STATE_DIR);
+        let nested_private = nested.join(STATE_DIR);
+
+        let clean = |p: &std::path::Path| canonicalize_for_compare(p);
+        assert_eq!(
+            clean(state.as_std_path()),
+            clean(&expected),
+            "nested cwd discover must resolve state to work_root/.ledgerful, got {state}"
+        );
+        assert_ne!(
+            clean(state.as_std_path()),
+            clean(&nested_private),
+            "state_dir must not be nested/.ledgerful"
+        );
+
+        let workdir = repo.workdir().expect("workdir");
+        let work_root = Utf8PathBuf::from_path_buf(workdir.to_path_buf()).unwrap();
+        let layout = Layout::from_roots(&work_root, &state);
+        assert_eq!(
+            clean(layout.state_dir.as_std_path()),
+            clean(&expected),
+            "from_roots must keep resolve_state_dir result"
+        );
+        // work_root is the repo root (may contain `..` from discover; compare canonically)
+        assert_eq!(
+            clean(layout.root.as_std_path()),
+            clean(&main),
+            "work_root must be the repository root, not the nested start path"
+        );
+    }
+
+    #[test]
+    fn linked_worktree_from_roots_layout_matches_main_state() {
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        init_repo(&main);
+        let linked = tmp.path().join("linked");
+        let out = git(
+            &["worktree", "add", linked.to_str().unwrap(), "HEAD"],
+            &main,
+        );
+        assert!(
+            out.status.success(),
+            "worktree add failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let main_state = main.join(STATE_DIR);
+        fs::create_dir_all(&main_state).unwrap();
+        // Sentinel proves shared state home (not invented under linked).
+        fs::write(main_state.join("shared-marker"), "ok").unwrap();
+
+        let linked_repo = gix::discover(&linked).unwrap();
+        let state = resolve_state_dir(&linked_repo).unwrap();
+        let workdir = linked_repo.workdir().expect("linked workdir");
+        let work_root = Utf8PathBuf::from_path_buf(workdir.to_path_buf()).unwrap();
+        let layout = Layout::from_roots(&work_root, &state);
+
+        let clean = |p: &std::path::Path| canonicalize_for_compare(p);
+        assert_eq!(
+            clean(layout.state_dir.as_std_path()),
+            clean(&main_state),
+            "linked layout.state_dir must be main/.ledgerful"
+        );
+        assert_eq!(
+            clean(layout.root.as_std_path()),
+            clean(&linked),
+            "linked layout.root must remain the linked worktree workdir"
+        );
+        assert!(
+            layout.state_dir.join("shared-marker").exists(),
+            "shared marker under main state must be visible via resolved layout"
+        );
+        assert_ne!(
+            clean(layout.state_dir.as_std_path()),
+            clean(&linked.join(STATE_DIR)),
+            "must not use private linked/.ledgerful"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn linked_worktree_absolute_env_override_wins() {
+        mod env_guard {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/integration/common/env_guard.rs"
+            ));
+        }
+        use env_guard::TempEnv;
+
+        let tmp = tempfile::tempdir().unwrap();
+        let main = tmp.path().join("main");
+        init_repo(&main);
+        let linked = tmp.path().join("linked");
+        let out = git(
+            &["worktree", "add", linked.to_str().unwrap(), "HEAD"],
+            &main,
+        );
+        assert!(
+            out.status.success(),
+            "worktree add failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+
+        let override_dir = tmp.path().join("custom-state-home");
+        fs::create_dir_all(&override_dir).unwrap();
+        let override_str = override_dir.to_string_lossy().to_string();
+        let _guard = TempEnv::set(LEDGERFUL_STATE_DIR_ENV, &override_str);
+
+        let linked_repo = gix::discover(&linked).unwrap();
+        let state = resolve_state_dir(&linked_repo).unwrap();
+        let clean = |p: &std::path::Path| canonicalize_for_compare(p);
+        assert_eq!(
+            clean(state.as_std_path()),
+            clean(&override_dir),
+            "LEDGERFUL_STATE_DIR absolute override must win over linked-main default"
+        );
+        assert_ne!(
+            clean(state.as_std_path()),
+            clean(&main.join(STATE_DIR)),
+            "override must not fall through to main/.ledgerful"
+        );
+    }
 }

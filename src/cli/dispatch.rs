@@ -635,6 +635,7 @@ fn dispatch_export(command: ExportCommands) -> Result<()> {
                 ));
             }
 
+            // Shared state_dir for linked worktrees; Layout::new only when not in a repo.
             let layout = match crate::commands::helpers::get_layout() {
                 Ok(l) => l,
                 Err(_) => {
