@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Parser matrix for has_dated_changelog_section (plan step 9 / 0098 Gate B).
+# Parser matrix for release-changelog helpers (0098 Gate B + 0101 section body).
 # Run from repo root: bash scripts/test-release-changelog.sh
 set -euo pipefail
 
@@ -35,6 +35,32 @@ assert_missing() {
     fail=$((fail + 1))
   else
     echo "PASS: ${name} (correctly ignored)"
+    pass=$((pass + 1))
+  fi
+}
+
+assert_content() {
+  local name="$1"
+  local key="$2"
+  local file="$3"
+  if changelog_section_has_content "$key" "$file"; then
+    echo "PASS: ${name} (has content)"
+    pass=$((pass + 1))
+  else
+    echo "FAIL: ${name} — expected content for [${key}]" >&2
+    fail=$((fail + 1))
+  fi
+}
+
+assert_empty_content() {
+  local name="$1"
+  local key="$2"
+  local file="$3"
+  if changelog_section_has_content "$key" "$file"; then
+    echo "FAIL: ${name} — expected effectively empty for [${key}]" >&2
+    fail=$((fail + 1))
+  else
+    echo "PASS: ${name} (effectively empty)"
     pass=$((pass + 1))
   fi
 }
@@ -114,6 +140,106 @@ cat >"$TMP/footer.md" <<'EOF'
 EOF
 assert_missing "Keep-a-Changelog link footer for 0.2.3 (forward defence)" "0.2.3" "$TMP/footer.md"
 assert_has "footer file still has dated 0.2.1" "0.2.1" "$TMP/footer.md"
+
+# --- 0101: section body content (Gate A dated body + pre-bump Unreleased) ---
+
+# 6. Truly empty Unreleased body → empty
+cat >"$TMP/empty-unreleased.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+## [0.2.3] - 2026-07-29
+
+### Fixed
+- something
+EOF
+assert_empty_content "truly empty Unreleased" "Unreleased" "$TMP/empty-unreleased.md"
+assert_content "dated 0.2.3 with bullet has content" "0.2.3" "$TMP/empty-unreleased.md"
+
+# 7. Heading-only (### Added, no items) → empty
+cat >"$TMP/heading-only.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+### Added
+
+## [0.2.3] - 2026-07-29
+
+### Fixed
+- real fix
+EOF
+assert_empty_content "heading-only Unreleased (### Added, no items)" "Unreleased" "$TMP/heading-only.md"
+
+# 8. Whitespace / comment-only → empty
+cat >"$TMP/comment-only.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+<!-- pending -->
+
+## [0.2.3] - 2026-07-29
+
+- item
+EOF
+assert_empty_content "whitespace/comment-only Unreleased" "Unreleased" "$TMP/comment-only.md"
+
+# 9. One real entry → content
+cat >"$TMP/one-entry.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+### Fixed
+- real work
+
+## [0.2.3] - 2026-07-29
+EOF
+assert_content "one real Unreleased entry" "Unreleased" "$TMP/one-entry.md"
+assert_empty_content "dated 0.2.3 bare heading after Unreleased with content" "0.2.3" "$TMP/one-entry.md"
+
+# 10. Pre-bump script: empty → exit 1; with content → exit 0
+UNREL_SCRIPT="${SCRIPT_DIR}/changelog-unreleased.sh"
+assert_unrel_rc() {
+  local name="$1"
+  local file="$2"
+  local want="$3"
+  local rc=0
+  set +e
+  bash "$UNREL_SCRIPT" "$file" >/dev/null 2>&1
+  rc=$?
+  set -e
+  if [ "$rc" -eq "$want" ]; then
+    echo "PASS: ${name} (exit ${rc})"
+    pass=$((pass + 1))
+  else
+    echo "FAIL: ${name} — expected exit ${want}, got ${rc}" >&2
+    fail=$((fail + 1))
+  fi
+}
+assert_unrel_rc "changelog-unreleased.sh empty Unreleased (i)" "$TMP/empty-unreleased.md" 1
+assert_unrel_rc "changelog-unreleased.sh heading-only (ii)" "$TMP/heading-only.md" 1
+assert_unrel_rc "changelog-unreleased.sh comment-only (iii)" "$TMP/comment-only.md" 1
+assert_unrel_rc "changelog-unreleased.sh one real entry (iv)" "$TMP/one-entry.md" 0
+
+# 11. Gate A body check via temp tree (helpers already covered; script path)
+GATE_A="${SCRIPT_DIR}/check-release-tag.sh"
+# Build a temp tree that looks enough like the repo for Gate A path checks we care about:
+# only body helper is unit-tested fully; dated empty body must be detected by has_content.
+cat >"$TMP/empty-dated.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+- wip
+
+## [0.9.9] - 2026-07-29
+
+EOF
+assert_empty_content "empty dated body for 0.9.9" "0.9.9" "$TMP/empty-dated.md"
+assert_has "empty-dated file still has heading for 0.9.9" "0.9.9" "$TMP/empty-dated.md"
 
 echo ""
 echo "release-changelog parser matrix: ${pass} passed, ${fail} failed"

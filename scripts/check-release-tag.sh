@@ -7,7 +7,11 @@
 # Asserts against the working tree:
 #   (a) Cargo.toml version == tag without leading v
 #   (b) CHANGELOG.md has a dated ## [version] - YYYY-MM-DD section
+#   (b2) that dated section has a non-empty body (not heading-only / empty)
 #   (c) mcp-server/package.json ledgerfulEngineTag == tag
+#
+# Does NOT require non-empty [Unreleased] — at tag time empty Unreleased is
+# healthy (0101 §2.6a). Use scripts/changelog-unreleased.sh before the cut.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -53,6 +57,14 @@ if ! has_dated_changelog_section "$version" "CHANGELOG.md"; then
   exit 1
 fi
 echo "ok: CHANGELOG has dated section for ${version}"
+
+# (b2) dated section body must be non-empty (0101 tag-time half of §2.6a)
+if ! changelog_section_has_content "$version" "CHANGELOG.md"; then
+  echo "error: CHANGELOG dated section for ${version} has an empty body (no bullets/items)" >&2
+  echo "error: Gate A requires real release notes under '## [${version}] - …', not a bare heading" >&2
+  exit 1
+fi
+echo "ok: CHANGELOG dated section for ${version} has content"
 
 # (c) MCP engine pin
 mcp_tag="$(mcp_engine_tag "mcp-server/package.json")"

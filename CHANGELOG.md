@@ -6,6 +6,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **MCP npm channel engine pin (0101):** published `@ledgerful/mcp-server` was still shipping
+  `ledgerfulEngineTag` `v0.1.9` (registry `0.1.11`, last modified 2026-07-21) while the engine
+  release tag was `v0.2.3`. Republish as `0.1.12` with pin `v0.2.3`. The npm channel is now gated:
+  Gate B asserts the published pin against the newest release tag; `release.yml` gains an
+  `npm-publish` job (`needs: [publish]`, trusted publishing / OIDC, Node 24) so the registry
+  cannot silently lag the engine again.
+
 ## [0.2.3] - 2026-07-29
 
 > Note: 0.2.2 was prepared on 2026-07-27 but never tagged; rolled into 0.2.3.
