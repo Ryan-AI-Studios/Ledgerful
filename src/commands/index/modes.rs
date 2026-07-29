@@ -283,114 +283,265 @@ fn execute_main_mode(
     Ok(())
 }
 
+/// Severity of a check-mode message.
+/// Errors always go to stderr. Info (warnings/status) go to stdout in human mode
+/// and stderr under `--json` so stdout stays pure JSON.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CheckMsgKind {
+    Error,
+    Info,
+}
+
+/// Typed verdict for `index --check`: one place decides messages and exit flags.
+#[derive(Debug)]
+struct CheckVerdict {
+    messages: Vec<(CheckMsgKind, String)>,
+    exit_missing: bool,
+    exit_indeterminate: bool,
+    exit_strict_stale: bool,
+}
+
+/// Collapse the is_missing / empty / stale / strict ladder into a single verdict.
+/// Used by both the human and `--json` branches so messages cannot drift apart.
+fn decide_check_verdict(
+    status: &crate::index::orchestrator::IndexStatus,
+    is_missing: bool,
+    strict: bool,
+) -> CheckVerdict {
+    let is_empty_expected = status
+        .assessment
+        .as_ref()
+        .map(|a| {
+            matches!(
+                a.state,
+                IndexFreshnessState::FreshEmpty | IndexFreshnessState::StaleEmpty
+            ) && matches!(
+                a.empty_reason,
+                Some(EmptyIndexReason::NoSupportedFiles)
+                    | Some(EmptyIndexReason::AllIndexableCandidatesIgnored)
+            )
+        })
+        .unwrap_or(false);
+
+    let is_indeterminate = matches!(
+        status.assessment.as_ref().map(|a| &a.state),
+        Some(IndexFreshnessState::Indeterminate)
+    );
+
+    let mut messages = Vec::new();
+    let mut exit_missing = false;
+    let mut exit_indeterminate = false;
+    let mut exit_strict_stale = false;
+
+    if let Some(assessment) = &status.assessment {
+        match assessment.state {
+            IndexFreshnessState::FreshEmpty | IndexFreshnessState::StaleEmpty => {
+                match assessment.empty_reason {
+                    Some(EmptyIndexReason::NoSupportedFiles)
+                    | Some(EmptyIndexReason::AllIndexableCandidatesIgnored) => {
+                        messages.push((
+                            CheckMsgKind::Info,
+                            "Index is up to date (0 indexable files).".to_string(),
+                        ));
+                    }
+                    Some(EmptyIndexReason::RepositoryEmpty) => {
+                        messages.push((
+                            CheckMsgKind::Error,
+                            "Error: Index is missing or empty. Run 'ledgerful index' to build it."
+                                .to_string(),
+                        ));
+                        exit_missing = true;
+                    }
+                    _ => {
+                        if is_missing {
+                            messages.push((
+                                CheckMsgKind::Error,
+                                "Error: Index is missing or empty. Run 'ledgerful index' to build it."
+                                    .to_string(),
+                            ));
+                            exit_missing = true;
+                        } else {
+                            messages.push((CheckMsgKind::Info, "Index is up to date.".to_string()));
+                        }
+                    }
+                }
+            }
+            IndexFreshnessState::Indeterminate => {
+                messages.push((
+                    CheckMsgKind::Error,
+                    "Error: Index state is indeterminate (metadata corruption or mismatch). Run 'ledgerful index --repair-metadata' to repair."
+                        .to_string(),
+                ));
+                exit_indeterminate = true;
+            }
+            _ => {
+                if is_missing {
+                    messages.push((
+                        CheckMsgKind::Error,
+                        "Error: Index is missing or empty. Run 'ledgerful index' to build it."
+                            .to_string(),
+                    ));
+                    exit_missing = true;
+                } else if status.stale_files > 0 {
+                    if strict {
+                        messages.push((
+                            CheckMsgKind::Error,
+                            format!(
+                                "Error: Index is stale ({} files) and --strict is enabled.",
+                                status.stale_files
+                            ),
+                        ));
+                        exit_strict_stale = true;
+                    } else {
+                        messages.push((
+                            CheckMsgKind::Info,
+                            format!(
+                                "Warning: Index is stale ({} files). Run 'ledgerful index --incremental' to update.",
+                                status.stale_files
+                            ),
+                        ));
+                    }
+                } else {
+                    messages.push((CheckMsgKind::Info, "Index is up to date.".to_string()));
+                }
+            }
+        }
+    } else {
+        // Fallback if assessment is missing for some reason
+        if is_missing {
+            messages.push((
+                CheckMsgKind::Error,
+                "Error: Index is missing or empty. Run 'ledgerful index' to build it.".to_string(),
+            ));
+            exit_missing = true;
+        } else if status.stale_files > 0 {
+            if strict {
+                messages.push((
+                    CheckMsgKind::Error,
+                    format!(
+                        "Error: Index is stale ({} files) and --strict is enabled.",
+                        status.stale_files
+                    ),
+                ));
+                exit_strict_stale = true;
+            } else {
+                messages.push((
+                    CheckMsgKind::Info,
+                    format!(
+                        "Warning: Index is stale ({} files). Run 'ledgerful index --incremental' to update.",
+                        status.stale_files
+                    ),
+                ));
+            }
+        } else {
+            messages.push((CheckMsgKind::Info, "Index is up to date.".to_string()));
+        }
+    }
+
+    // Align exit flags with the process::exit sites (missing must respect empty-expected).
+    if is_missing && !is_empty_expected {
+        exit_missing = true;
+        if !messages.iter().any(|(k, _)| *k == CheckMsgKind::Error) {
+            messages.push((
+                CheckMsgKind::Error,
+                "Error: Index is missing or empty. Run 'ledgerful index' to build it.".to_string(),
+            ));
+        }
+    }
+    if is_indeterminate {
+        exit_indeterminate = true;
+        if !messages
+            .iter()
+            .any(|(k, m)| *k == CheckMsgKind::Error && m.contains("indeterminate"))
+        {
+            messages.push((
+                CheckMsgKind::Error,
+                "Error: Index state is indeterminate (metadata corruption or mismatch). Run 'ledgerful index --repair-metadata' to repair."
+                    .to_string(),
+            ));
+        }
+    }
+    if status.stale_files > 0 && strict {
+        exit_strict_stale = true;
+        if !messages
+            .iter()
+            .any(|(k, m)| *k == CheckMsgKind::Error && m.contains("--strict"))
+        {
+            messages.push((
+                CheckMsgKind::Error,
+                format!(
+                    "Error: Index is stale ({} files) and --strict is enabled.",
+                    status.stale_files
+                ),
+            ));
+        }
+    }
+
+    CheckVerdict {
+        messages,
+        exit_missing,
+        exit_indeterminate,
+        exit_strict_stale,
+    }
+}
+
+fn emit_check_messages(messages: &[(CheckMsgKind, String)], json: bool) {
+    for (kind, msg) in messages {
+        match kind {
+            CheckMsgKind::Error => eprintln!("{msg}"),
+            // Under --json, keep stdout pure JSON: route info to stderr.
+            CheckMsgKind::Info if json => eprintln!("{msg}"),
+            CheckMsgKind::Info => println!("{msg}"),
+        }
+    }
+}
+
+fn print_check_status_block(status: &crate::index::orchestrator::IndexStatus) {
+    println!("Index Status:");
+    println!("  Files indexed:   {}", status.total_files);
+    println!("  Symbols indexed: {}", status.total_symbols);
+    println!("  Stale files:     {}", status.stale_files);
+    if let Some(last) = &status.last_indexed_at {
+        println!("  Last indexed:    {last}");
+    } else {
+        println!("  Last indexed:     never");
+    }
+}
+
 /// Check mode: report index health and staleness, exiting on missing or strict-stale.
+/// Mirrors `execute_main_mode`'s `if args.json { … } else { … }` split so human
+/// prose is never nested inside the JSON branch (operator-surface-policy §3).
 fn execute_check_mode(indexer: &mut ProjectIndexer, args: &IndexArgs) -> Result<()> {
     let status = indexer.check_status()?;
     let discovered = indexer.discover_files()?;
     let is_missing = status.total_files == 0 && !discovered.is_empty();
 
+    let verdict = decide_check_verdict(&status, is_missing, args.strict);
+
+    let will_exit = verdict.exit_missing || verdict.exit_indeterminate || verdict.exit_strict_stale;
+
     if args.json {
         let output = serde_json::to_string_pretty(&status).into_diagnostic()?;
-        println!("{}", output);
-
-        if let Some(assessment) = &status.assessment {
-            match assessment.state {
-                IndexFreshnessState::FreshEmpty | IndexFreshnessState::StaleEmpty => {
-                    match assessment.empty_reason {
-                        Some(EmptyIndexReason::NoSupportedFiles)
-                        | Some(EmptyIndexReason::AllIndexableCandidatesIgnored) => {
-                            println!("Index is up to date (0 indexable files).");
-                        }
-                        Some(EmptyIndexReason::RepositoryEmpty) => {
-                            eprintln!(
-                                "Error: Index is missing or empty. Run 'ledgerful index' to build it."
-                            );
-                        }
-                        _ => {
-                            if is_missing {
-                                eprintln!(
-                                    "Error: Index is missing or empty. Run 'ledgerful index' to build it."
-                                );
-                            } else {
-                                println!("Index is up to date.");
-                            }
-                        }
-                    }
-                }
-                IndexFreshnessState::Indeterminate => {
-                    eprintln!(
-                        "Error: Index state is indeterminate (metadata corruption or mismatch). Run 'ledgerful index --repair-metadata' to repair."
-                    );
-                }
-                _ => {
-                    if is_missing {
-                        eprintln!(
-                            "Error: Index is missing or empty. Run 'ledgerful index' to build it."
-                        );
-                    } else if status.stale_files > 0 {
-                        if args.strict {
-                            eprintln!(
-                                "Error: Index is stale ({} files) and --strict is enabled.",
-                                status.stale_files
-                            );
-                        } else {
-                            println!(
-                                "Warning: Index is stale ({} files). Run 'ledgerful index --incremental' to update.",
-                                status.stale_files
-                            );
-                        }
-                    } else {
-                        println!("Index is up to date.");
-                    }
-                }
-            }
-        } else {
-            // Fallback if assessment is missing for some reason
-            if is_missing {
-                eprintln!("Error: Index is missing or empty. Run 'ledgerful index' to build it.");
-            } else if status.stale_files > 0 {
-                if args.strict {
-                    eprintln!(
-                        "Error: Index is stale ({} files) and --strict is enabled.",
-                        status.stale_files
-                    );
-                } else {
-                    println!(
-                        "Warning: Index is stale ({} files). Run 'ledgerful index --incremental' to update.",
-                        status.stale_files
-                    );
-                }
-            } else {
-                println!("Index is up to date.");
-            }
-        }
-
-        println!("Index Status:");
-        println!("  Files indexed:   {}", status.total_files);
-        println!("  Symbols indexed: {}", status.total_symbols);
-        println!("  Stale files:     {}", status.stale_files);
-        if let Some(last) = &status.last_indexed_at {
-            println!("  Last indexed:    {}", last);
-        } else {
-            println!("  Last indexed:     never");
+        println!("{output}");
+        // Messages on stderr only — stdout is the JSON payload.
+        emit_check_messages(&verdict.messages, true);
+    } else {
+        emit_check_messages(&verdict.messages, false);
+        // Status block is the healthy/warning human report. On exit-1 paths keep
+        // stdout empty so CI gates see diagnostics only on stderr (DoD-2).
+        if !will_exit {
+            print_check_status_block(&status);
         }
     }
 
-    let is_empty_expected = status.assessment.as_ref().map(|a| {
-        (a.state == crate::index::staleness::IndexFreshnessState::FreshEmpty || a.state == crate::index::staleness::IndexFreshnessState::StaleEmpty) &&
-        matches!(a.empty_reason, Some(crate::index::staleness::EmptyIndexReason::NoSupportedFiles) | Some(crate::index::staleness::EmptyIndexReason::AllIndexableCandidatesIgnored))
-    }).unwrap_or(false);
-
-    if is_missing && !is_empty_expected {
+    // Emit messages first (above); then exit so both paths diagnose before process::exit.
+    if verdict.exit_missing {
         std::process::exit(1);
     }
-    if matches!(
-        status.assessment.as_ref().map(|a| &a.state),
-        Some(crate::index::staleness::IndexFreshnessState::Indeterminate)
-    ) {
+    if verdict.exit_indeterminate {
         std::process::exit(1);
     }
-    if status.stale_files > 0 && args.strict {
+    if verdict.exit_strict_stale {
         std::process::exit(1);
     }
     Ok(())
