@@ -69,3 +69,19 @@ pub fn git_cmd(dir: &Path, args: &[&str]) {
         );
     }
 }
+
+/// Run the ledgerful binary as a subprocess and capture stdout/stderr separately.
+/// Required for paths that call `process::exit` (e.g. `index --check --strict`).
+#[allow(dead_code)]
+pub fn run_cli(dir: &Path, args: &[&str]) -> (String, String, i32) {
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_ledgerful"))
+        .args(args)
+        .current_dir(dir)
+        .output()
+        .expect("failed to run ledgerful");
+    (
+        String::from_utf8_lossy(&output.stdout).into_owned(),
+        String::from_utf8_lossy(&output.stderr).into_owned(),
+        output.status.code().unwrap_or(-1),
+    )
+}
