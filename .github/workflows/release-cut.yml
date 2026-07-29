@@ -50,6 +50,9 @@ jobs:
     timeout-minutes: 30
     permissions:
       contents: read
+      # Open-PR guard uses GITHUB_TOKEN + gh pr list (plan step 15 read path).
+      # Unspecified permissions default to none — listing PRs needs pull-requests: read.
+      pull-requests: read
     steps:
       # persist-credentials: false — default GITHUB_TOKEN extraheader would
       # outrank gh auth setup-git for git push (cli/cli#10905). PAT is the
