@@ -155,12 +155,38 @@ fn utf8_path(path: &Path, label: &str) -> Result<Utf8PathBuf> {
         .map_err(|_| miette::miette!("{label} is not valid UTF-8: {}", path.display()))
 }
 
-/// Canonicalize for path equality on Windows (symlinks / short names / drive case).
-/// Falls back to `path_clean` so relative `..` segments collapse when the path
-/// does not yet exist on disk (common for freshly created worktree gitdirs).
+/// Canonicalize for path equality (Windows drive case; macOS `/var` ↔ `/private/var`).
+///
+/// When `path` does not exist yet (fresh `.ledgerful` / worktree gitdirs),
+/// canonicalize the longest existing ancestor and re-join the remainder so
+/// both sides of a comparison share the same resolved prefix (avoids macOS
+/// tempfile `/var/folders` vs `/private/var/folders` mismatches).
 fn canonicalize_for_compare(path: &Path) -> PathBuf {
     if let Ok(c) = dunce::canonicalize(path) {
         return c;
+    }
+    // Walk up to an existing ancestor, then re-append the missing tail.
+    let mut ancestor = path;
+    let mut missing: Vec<&std::ffi::OsStr> = Vec::new();
+    loop {
+        if let Some(parent) = ancestor.parent() {
+            if parent.as_os_str().is_empty() {
+                break;
+            }
+            if let Some(name) = ancestor.file_name() {
+                missing.push(name);
+            }
+            ancestor = parent;
+            if let Ok(c) = dunce::canonicalize(ancestor) {
+                let mut out = c;
+                for name in missing.into_iter().rev() {
+                    out.push(name);
+                }
+                return out;
+            }
+        } else {
+            break;
+        }
     }
     use path_clean::PathClean;
     path.clean()
