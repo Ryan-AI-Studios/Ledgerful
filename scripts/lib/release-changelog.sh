@@ -150,6 +150,8 @@ changelog_section_has_content() {
   local body
   local line
   local trimmed
+  # Track multi-line HTML comments so middle lines do not count as content.
+  local in_html_comment=0
   if [ -z "$key" ]; then
     echo "error: changelog_section_has_content requires VERSION or Unreleased" >&2
     return 2
@@ -162,15 +164,22 @@ changelog_section_has_content() {
     if [ -z "$trimmed" ]; then
       continue
     fi
-    # HTML comments (single-line; multi-line open/close treated as non-content
-    # when the line is only a comment delimiter or fully wrapped).
+    # HTML comments: single-line fully wrapped, multi-line open/close, and all
+    # interior lines while open (codex P2 — middle lines must not count).
+    if [ "$in_html_comment" -eq 1 ]; then
+      if [[ "$trimmed" == *'-->'* ]]; then
+        in_html_comment=0
+      fi
+      continue
+    fi
     if [[ "$trimmed" =~ ^\<!--.*--\>$ ]]; then
       continue
     fi
     if [[ "$trimmed" =~ ^\<!-- ]]; then
-      continue
-    fi
-    if [[ "$trimmed" =~ --\>$ ]]; then
+      # Open without close on same line → enter multi-line comment.
+      if [[ "$trimmed" != *'-->'* ]]; then
+        in_html_comment=1
+      fi
       continue
     fi
     # ### heading-only lines do not count as content.

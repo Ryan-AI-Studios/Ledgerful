@@ -186,6 +186,23 @@ cat >"$TMP/comment-only.md" <<'EOF'
 EOF
 assert_empty_content "whitespace/comment-only Unreleased" "Unreleased" "$TMP/comment-only.md"
 
+# 8b. Multi-line HTML comment (middle lines must not count as content)
+cat >"$TMP/multiline-comment.md" <<'EOF'
+# Changelog
+
+## [Unreleased]
+
+<!--
+placeholder that looks like content
+still inside the comment
+-->
+
+## [0.2.3] - 2026-07-29
+
+- item
+EOF
+assert_empty_content "multi-line HTML comment Unreleased (middle lines ignored)" "Unreleased" "$TMP/multiline-comment.md"
+
 # 9. One real entry → content
 cat >"$TMP/one-entry.md" <<'EOF'
 # Changelog
