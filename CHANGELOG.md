@@ -6,6 +6,41 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.3] - 2026-07-29
+
+> Note: 0.2.2 was prepared on 2026-07-27 but never tagged; rolled into 0.2.3.
+
+### Added
+
+- **Release-state gates (0098 Part A):** scheduled Gate B (`scripts/check-release-state.sh` +
+  `release-state.yml`) fails when `Cargo.toml` has a dated CHANGELOG section but no matching
+  remote tag; Gate A (`scripts/check-release-tag.sh`) blocks `release.yml` before any build when
+  the tag disagrees with `Cargo.toml`, dated CHANGELOG, or `mcp-server` `ledgerfulEngineTag`.
+  Post-publish `verify-assets` / `verify-manifests` smoke the published Linux binary `--version`
+  and live tap/bucket manifests. Frontend SPA SHA is resolved at release time (record in notes).
+
+### Changed
+
+- **Release pipeline fail-loud (0098 Part A):** missing `MANIFEST_PUSH_TOKEN` hard-fails
+  `bump-manifests` (was silent `exit 0`); intentional `WINGET_TOKEN` skip emits `::notice::`.
+  Dead `workflow_dispatch` `tag` input removed — recover via
+  `gh workflow run release.yml --ref vX.Y.Z`. Concurrency group on the release ref with
+  `cancel-in-progress: false`.
+
+### Fixed
+
+- **MCP engine download pin (0098):** `mcp-server/package.json` `ledgerfulEngineTag` now tracks
+  the engine release tag (`v0.2.3`). Previously pinned at `v0.1.9`, so `@ledgerful/mcp-server`
+  tarballs published with engine releases `v0.2.0`/`v0.2.1` downloaded a `v0.1.9` engine on
+  `postinstall` (failure only `console.warn`ed). Tests assert a literal tag and that the pin
+  matches `Cargo.toml`.
+- **`--open` handoff reliability (0090 follow-up):** bind the web listener **before**
+  opening the browser so the SPA can load and call `POST /api/session/exchange`
+  immediately. On Windows, open the handoff URL via `ShellExecuteW` so `#c=<code>`
+  is not stripped (cmd `start` treats `#` as a batch comment). Optional
+  `LEDGERFUL_WEB_OPEN_URL_FILE` writes the open URL for integration harnesses
+  instead of launching a browser.
+
 ### Added
 
 - **SCIP doctor hints (0095):** `doctor` reports per-language SCIP capability
@@ -194,17 +229,6 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `signatureDeltas` on the impact packet. Shape changes raise a distinct risk
   reason (`Signature changed: …`); renames are cosmetic (recorded, not scored).
   TypeScript/Python extractors deferred to Part B. See `docs/Signature-Diff.md`.
-
-## [0.2.2] - 2026-07-27
-
-### Fixed
-
-- **`--open` handoff reliability (0090 follow-up):** bind the web listener **before**
-  opening the browser so the SPA can load and call `POST /api/session/exchange`
-  immediately. On Windows, open the handoff URL via `ShellExecuteW` so `#c=<code>`
-  is not stripped (cmd `start` treats `#` as a batch comment). Optional
-  `LEDGERFUL_WEB_OPEN_URL_FILE` writes the open URL for integration harnesses
-  instead of launching a browser.
 
 ## [0.2.1] - 2026-07-26
 

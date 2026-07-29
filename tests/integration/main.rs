@@ -106,6 +106,7 @@ mod policy_check;
 mod policy_integration;
 mod predictor;
 mod repro_w2_extraction;
+mod require_secret;
 mod risk_analysis;
 mod rollup;
 mod rust_parser_modular;

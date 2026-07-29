@@ -1,0 +1,41 @@
+# Gate B — scheduled release-state drift detector (0098 Part A).
+# Fails when main has a dated CHANGELOG section for Cargo.toml's version but
+# the matching remote tag is missing (half-executed release).
+#
+# Watch for red runs: Actions → "Release state" (there is no pager; a scheduled
+# red with no subscriber is silent unless someone looks).
+# Schedule can lag under load (normal); public-repo schedules auto-disable after
+# ~60 days of inactivity and re-enable on workflow_dispatch or any push.
+name: Release state
+
+on:
+  schedule:
+    # Non-top-of-hour weekday slot (GitHub high-load is top-of-hour).
+    - cron: "40 15 * * 1-5"
+      timezone: "America/New_York"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check-release-state:
+    name: Check release state
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Parser matrix (Gate B / Gate A shared changelog section test)
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/test-release-changelog.sh scripts/lib/release-changelog.sh
+          scripts/test-release-changelog.sh
+      - name: Run Gate B
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/check-release-state.sh
+          scripts/check-release-state.sh

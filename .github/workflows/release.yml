@@ -5,17 +5,43 @@ on:
     tags:
       - "v*"
   # Allow re-running a release for an existing tag without retagging (ops recovery).
+  # Recover with: gh workflow run release.yml --ref vX.Y.Z
+  # (GITHUB_REF_NAME becomes the tag; do not reintroduce a separate version input.)
   workflow_dispatch:
     inputs:
-      tag:
-        description: "Existing tag to release (e.g. v0.1.9). Must already exist on the repo."
-        required: true
+      frontend_ref:
+        description: "Optional ledgerful-frontend git ref/SHA to embed (empty = resolve main at run time)"
+        required: false
         type: string
+        default: ""
+
+# Do not cancel an in-flight real release mid-publish (queued duplicate is preferable).
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
 
 permissions:
   contents: write
 
 jobs:
+  # Gate A — fail before any build when tag disagrees with tree (0098).
+  # workflow_dispatch --ref vX.Y.Z sets GITHUB_REF_NAME to the tag, so recovery
+  # cannot skip preflight.
+  preflight:
+    name: Release preflight (Gate A)
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: check-release-tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/check-release-tag.sh
+          scripts/check-release-tag.sh "${GITHUB_REF_NAME}"
+
   web-build:
     # windows-latest, not ubuntu-latest: ledgerful-frontend's gating ci.yml only ever runs `npm run
     # build` (the CSP script-hash-manifest generation/check) on windows-latest. A separate, non-gating
@@ -31,32 +57,67 @@ jobs:
     # Switching this job to windows-latest matches the only environment this manifest has ever
     # actually been proven against. The frontend-side "Linux parity" claim vs. no gating Linux
     # enforcement is a real cross-repo gap, logged to deferred.md — not fixed here.
+    needs: preflight
     runs-on: windows-latest
     timeout-minutes: 15
     permissions:
       contents: read
+    outputs:
+      frontend_sha: ${{ steps.resolve.outputs.sha }}
     steps:
-      # Public frontend repo — no PAT required for checkout. Pinned (not `main`) so a release build is
-      # reproducible and not a moving target. Bumped 2026-07-25 (0087) from 4a1df7e2 (track 0054,
-      # 2026-07-13) — that pin had never been updated since it was introduced (0042 R3), so every
-      # release since v0.1.9 embedded a 12-day-stale SPA missing 0076/0077/0080/0081/0083's fixes.
-      # Every future engine release cut MUST re-verify this SHA is current `ledgerful-frontend` main
-      # before tagging (`git rev-parse main` in that repo) — do not assume it's still fresh.
+      # Public frontend repo — no PAT required. SHA is resolved at run time (0098 / spec §2.3 P3):
+      # use workflow_dispatch frontend_ref when set, else ledgerful-frontend main via git ls-remote.
+      # Resolve-and-record (job output + release body + step summary) buys post-hoc reproducibility.
+      - name: Resolve frontend SHA
+        id: resolve
+        shell: bash
+        env:
+          INPUT_FRONTEND_REF: ${{ inputs.frontend_ref }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_FRONTEND_REF:-}" ]; then
+            sha="${INPUT_FRONTEND_REF}"
+            echo "Using workflow_dispatch frontend_ref=${sha}"
+          else
+            sha="$(git ls-remote https://github.com/Ryan-AI-Studios/ledgerful-frontend.git refs/heads/main | awk '{print $1; exit}')"
+            if [ -z "$sha" ]; then
+              echo "error: could not resolve ledgerful-frontend main via git ls-remote" >&2
+              exit 1
+            fi
+            echo "Resolved ledgerful-frontend main=${sha}"
+          fi
+          echo "sha=${sha}" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Embedded SPA"
+            echo ""
+            echo "frontend_sha: \`${sha}\`"
+          } >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Ryan-AI-Studios/ledgerful-frontend
-          ref: 91dd03989533c809a79f8030ced2ca048c2c5db0 # frontend main 2026-07-26 (0085 FE + #30)
+          ref: ${{ steps.resolve.outputs.sha }}
           path: ledgerful-frontend
-      # Node 24, not 22: ledgerful-frontend has required >=24 since track 0083
-      # (package.json engines), and 0081's committed CSP script-hash manifest
-      # was generated/verified under Node 24 CI parity. Building under 22
-      # compiles different inline-script output and fails the manifest-drift
-      # check by design (discovered 2026-07-25 when the v0.2.0 release run
-      # failed here right after the stale frontend ref pin was fixed — this
-      # bug predates that fix, it was just never exercised by the old pin).
+      # Node 24 is explicit and deterministic (0087). Do NOT switch to
+      # node-version-file: package.json — resolving engines ranges can float the
+      # build Node version (the failure class 0087 spent three tag attempts on).
+      # The engines guard below is forward defence only: with the SPA SHA floating
+      # to frontend main, the frontend can raise its Node floor with no edit here.
+      # It is NOT fixing a current mismatch (this job is already Node 24).
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: 24
+      - name: Node engines guard (frontend package.json)
+        shell: bash
+        run: |
+          set -euo pipefail
+          engines="$(node -p "require('./ledgerful-frontend/package.json').engines.node")"
+          node_v="$(node -v)"
+          echo "engines.node=${engines} node -v=${node_v}"
+          if ! npx --yes semver -r "${engines}" "${node_v}"; then
+            echo "error: Node ${node_v} does not satisfy ledgerful-frontend engines.node '${engines}'" >&2
+            echo "error: raise release.yml node-version (keep it explicit; do not float via node-version-file)" >&2
+            exit 1
+          fi
       - run: npm ci
         working-directory: ledgerful-frontend
       - run: npm run build
@@ -166,8 +227,8 @@ jobs:
           $hash = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
           "$hash  $archiveName" | Set-Content -Path "$archivePath.sha256" -Encoding ascii
       - name: Attest build provenance
-        # Gated on public repo/Enterprise Cloud. actions/attest needs a public repo or GitHub Enterprise Cloud;
-        # this step is skipped while ledgerful remains private and will activate automatically when the repository becomes public.
+        # actions/attest requires a public repo or GitHub Enterprise Cloud.
+        # Repo is public; keep the private-repo fallback below in case visibility changes.
         # Uses actions/attest in default SLSA build-provenance mode (no custom predicate-type/predicate needed).
         if: github.event.repository.visibility == 'public' || github.event.repository.visibility == 'internal'
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6
@@ -236,8 +297,8 @@ jobs:
           popd
           LEDGERFUL_MCP_COMMAND="$scratch/node_modules/.bin/ledgerful-mcp" node test/smoke-local.js
       - name: Attest MCP package provenance
-        # Gated on public repo/Enterprise Cloud. actions/attest needs a public repo or GitHub Enterprise Cloud;
-        # this step is skipped while ledgerful remains private and will activate automatically when the repository becomes public.
+        # actions/attest requires a public repo or GitHub Enterprise Cloud.
+        # Repo is public; keep the private-repo fallback below in case visibility changes.
         if: github.event.repository.visibility == 'public' || github.event.repository.visibility == 'internal'
         uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6
         with:
@@ -259,6 +320,7 @@ jobs:
   # so generated once here rather than per build-matrix entry.
   sbom:
     name: Generate SBOM (CycloneDX)
+    needs: preflight
     runs-on: ubuntu-latest
     timeout-minutes: 30
     permissions:
@@ -278,7 +340,7 @@ jobs:
         run: cargo install cargo-cyclonedx --locked
       - name: Install jsonschema (for SBOM validation)
         run: pip install jsonschema
-      - name: Engine SBOM (all features â€” must match the --all-features release build)
+      - name: Engine SBOM (all features — must match the --all-features release build)
         shell: bash
         run: |
           set -euo pipefail
@@ -357,8 +419,8 @@ jobs:
         shell: bash
         run: echo "value=${GITHUB_REF_NAME#v}" >> $GITHUB_OUTPUT
       - name: Attest engine SBOM
-        # Gated on public repo/Enterprise Cloud. actions/attest-sbom needs a public repo or GitHub Enterprise Cloud;
-        # this step is skipped while ledgerful remains private and will activate automatically when the repository becomes public.
+        # actions/attest-sbom requires a public repo or GitHub Enterprise Cloud.
+        # Repo is public; keep the private-repo fallback below in case visibility changes.
         # The SBOM is lockfile-derived and target-independent, so it is bound to all release archives.
         # Note: GitHub Actions context does not expose enterprise status; a private Enterprise Cloud
         # repo will skip this step until the repo visibility is changed.
@@ -426,6 +488,7 @@ jobs:
   publish:
     name: Publish GitHub Release
     needs:
+      - web-build
       - build
       - mcp-package
       - sbom
@@ -438,8 +501,8 @@ jobs:
           path: dist
           merge-multiple: true
       - name: Verify GitHub attestations (public repo only)
-        # Gated on public repo/Enterprise Cloud. gh attestation verify needs the artifact to have been attested by
-        # GitHub; skipped while ledgerful remains private and will activate automatically when the repository becomes public.
+        # gh attestation verify needs the artifact to have been attested by GitHub.
+        # Repo is public; keep the private-repo fallback below in case visibility changes.
         if: github.event.repository.visibility == 'public' || github.event.repository.visibility == 'internal'
         shell: bash
         env:
@@ -461,8 +524,16 @@ jobs:
           set -euo pipefail
           echo "Skipping GitHub attestation verification: repository is not public and this is not GitHub Enterprise Cloud."
           echo "Verification will run automatically once the repo is public (when the repository becomes public)."
+      - name: Compose release notes
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "Embedded SPA: ${{ needs.web-build.outputs.frontend_sha }}"
+          } > notes.md
       - uses: softprops/action-gh-release@3d0d9888cb7fd7b750713d6e236d1fcb99157228 # v3.0.2
         with:
+          body_path: notes.md
           files: |
             dist/*.tar.gz
             dist/*.zip
@@ -475,8 +546,10 @@ jobs:
 
   # 0051-PackageManagerDistribution: bump brew/scoop manifests from published .sha256
   # files. Always validates the bump script (dry-run + write to workspace). Pushing
-  # to Ryan-AI-Studios/homebrew-tap and Ryan-AI-Studios/scoop-bucket is gated on
+  # to Ryan-AI-Studios/homebrew-tap and Ryan-AI-Studios/scoop-bucket requires
   # MANIFEST_PUSH_TOKEN (fine-grained PAT with contents:write on those repos).
+  # Failure after publish is loud and recoverable by design (re-run push_one by hand
+  # per docs/package-distribution.md) — do not change back to exit 0 on missing token.
   bump-manifests:
     name: Bump package manifests
     needs: publish
@@ -527,21 +600,21 @@ jobs:
           cat bumped/scoop/ledgerful.json
       # NOTE: secrets context is NOT allowed in `if:` expressions (causes
       # "Unrecognized named-value: 'secrets'" and 0-job workflow failures).
-      # Gate push vs skip inside the shell with env presence.
-      - name: Push to homebrew-tap + scoop-bucket (or skip)
+      # Gate push vs fail inside the shell with env presence (require-secret.sh).
+      - name: Push to homebrew-tap + scoop-bucket
         shell: bash
         env:
-          # Keep MANIFEST_PUSH_TOKEN for the presence skip-check below.
+          # Keep MANIFEST_PUSH_TOKEN for require-secret.sh.
           # GH_TOKEN at step level + `gh auth setup-git` so clone and later
           # `git push` authenticate without embedding the PAT in a URL (0082 RT-X9).
           MANIFEST_PUSH_TOKEN: ${{ secrets.MANIFEST_PUSH_TOKEN }}
           GH_TOKEN: ${{ secrets.MANIFEST_PUSH_TOKEN }}
         run: |
           set -euo pipefail
-          if [ -z "${MANIFEST_PUSH_TOKEN}" ]; then
-            echo "skip push (no MANIFEST_PUSH_TOKEN secret) — bump validation above still ran"
-            exit 0
-          fi
+          chmod +x scripts/require-secret.sh
+          # Hard-fail when misconfigured (0098). Loud after publish is intentional:
+          # published release + unbumped manifests is recoverable; silent skip is not.
+          scripts/require-secret.sh MANIFEST_PUSH_TOKEN
           # Configure git to use gh as credential helper for the whole step
           # (clone + later `git push`). GH_TOKEN alone authenticates `gh`
           # commands; setup-git is required for plain `git` (0082 RT-X9 / codex P2).
@@ -571,6 +644,135 @@ jobs:
           # Tap dest is root-only ledgerful.rb (not Formula/ledgerful.rb).
           push_one "Ryan-AI-Studios/homebrew-tap" "bumped/homebrew/ledgerful.rb" "ledgerful.rb"
           push_one "Ryan-AI-Studios/scoop-bucket" "bumped/scoop/ledgerful.json" "ledgerful.json"
+          {
+            echo "### Manifest push"
+            echo ""
+            echo "Pushed v${version} to Ryan-AI-Studios/homebrew-tap and Ryan-AI-Studios/scoop-bucket."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Post-publish asset smoke (0098). needs: publish only so a failed bump-manifests
+  # (missing token) does not delete version verification.
+  verify-assets:
+    name: Verify published assets
+    needs: publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - name: Assert assets + Linux --version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tag="${GITHUB_REF_NAME}"
+          version="${tag#v}"
+          mkdir -p release-assets
+          gh release download "$tag" \
+            --repo "${{ github.repository }}" \
+            --dir release-assets \
+            --clobber
+
+          expected=(
+            "ledgerful-x86_64-unknown-linux-gnu.tar.gz"
+            "ledgerful-x86_64-unknown-linux-gnu.tar.gz.sha256"
+            "ledgerful-x86_64-pc-windows-msvc.zip"
+            "ledgerful-x86_64-pc-windows-msvc.zip.sha256"
+            "ledgerful-x86_64-apple-darwin.tar.gz"
+            "ledgerful-x86_64-apple-darwin.tar.gz.sha256"
+            "ledgerful-aarch64-apple-darwin.tar.gz"
+            "ledgerful-aarch64-apple-darwin.tar.gz.sha256"
+            "ledgerful-${version}.cdx.json"
+            "ledgerful-mcp-server-${version}.cdx.json"
+          )
+          # MCP tgz name is npm pack style; accept any .tgz
+          shopt -s nullglob
+          tgz=(release-assets/*.tgz)
+          if [ "${#tgz[@]}" -lt 1 ]; then
+            echo "error: expected at least one .tgz MCP package asset" >&2
+            ls -la release-assets >&2 || true
+            exit 1
+          fi
+
+          missing=0
+          for f in "${expected[@]}"; do
+            if [ ! -f "release-assets/${f}" ]; then
+              echo "error: missing expected asset: ${f}" >&2
+              missing=1
+            fi
+          done
+          # Signature set: at least one .sig / .pem / .bundle present (sign job covers archives + SBOMs)
+          sigs=(release-assets/*.sig)
+          pems=(release-assets/*.pem)
+          bundles=(release-assets/*.bundle)
+          if [ "${#sigs[@]}" -lt 1 ] || [ "${#pems[@]}" -lt 1 ] || [ "${#bundles[@]}" -lt 1 ]; then
+            echo "error: expected .sig / .pem / .bundle signature artifacts" >&2
+            missing=1
+          fi
+          if [ "$missing" -ne 0 ]; then
+            ls -la release-assets >&2 || true
+            exit 1
+          fi
+
+          tar -xzf release-assets/ledgerful-x86_64-unknown-linux-gnu.tar.gz -C release-assets
+          bin="release-assets/ledgerful-x86_64-unknown-linux-gnu/ledgerful"
+          chmod +x "$bin"
+          got="$("$bin" --version)"
+          echo "binary --version: ${got}"
+          # Accept "ledgerful 0.2.3" or bare version
+          if ! printf '%s\n' "$got" | grep -Eq "(^| )${version}( |$)"; then
+            echo "error: --version '${got}' does not report expected version ${version}" >&2
+            exit 1
+          fi
+          {
+            echo "### verify-assets"
+            echo ""
+            echo "Linux archive --version: \`${got}\` (expected ${version})"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+  # Live tap/bucket version check (0098). needs: bump-manifests. Reads live via
+  # gh api — never from this job's own bumped/ output.
+  verify-manifests:
+    name: Verify live package manifests
+    needs: bump-manifests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Read homebrew-tap + scoop-bucket live
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          version="${GITHUB_REF_NAME#v}"
+
+          # Live file contents (base64) from default branch
+          brew_b64="$(gh api repos/Ryan-AI-Studios/homebrew-tap/contents/ledgerful.rb --jq .content)"
+          scoop_b64="$(gh api repos/Ryan-AI-Studios/scoop-bucket/contents/ledgerful.json --jq .content)"
+          brew_rb="$(printf '%s' "$brew_b64" | tr -d '\n' | base64 -d)"
+          scoop_json="$(printf '%s' "$scoop_b64" | tr -d '\n' | base64 -d)"
+
+          echo "---- live ledgerful.rb (version lines) ----"
+          printf '%s\n' "$brew_rb" | grep -E 'version |url ' | head -n 20 || true
+          echo "---- live ledgerful.json ----"
+          printf '%s\n' "$scoop_json"
+
+          if ! printf '%s\n' "$brew_rb" | grep -Eq "version \"${version}\""; then
+            echo "error: homebrew-tap ledgerful.rb does not report version \"${version}\"" >&2
+            exit 1
+          fi
+          if ! printf '%s\n' "$scoop_json" | grep -Eq "\"version\"[[:space:]]*:[[:space:]]*\"${version}\""; then
+            echo "error: scoop-bucket ledgerful.json does not report version \"${version}\"" >&2
+            exit 1
+          fi
+          {
+            echo "### verify-manifests"
+            echo ""
+            echo "Live homebrew-tap and scoop-bucket report version ${version}."
+          } >> "$GITHUB_STEP_SUMMARY"
 
   # 0051 winget: subsequent version bumps via SHA-pinned winget-releaser.
   # First-time package submission must exist in microsoft/winget-pkgs first
@@ -595,7 +797,12 @@ jobs:
             echo "present=true" >> "$GITHUB_OUTPUT"
           else
             echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "skip winget-release (no WINGET_TOKEN secret) — leave unset until Ledgerful.Ledgerful exists on winget-pkgs"
+            echo "::notice::winget-release skipped — WINGET_TOKEN intentionally unset (see planner-handoff §5.1 / package-distribution.md)"
+            {
+              echo "### winget-release"
+              echo ""
+              echo "Skipped — \`WINGET_TOKEN\` intentionally unset (first-package PR / etiquette; see docs/package-distribution.md)."
+            } >> "$GITHUB_STEP_SUMMARY"
           fi
       - name: WinGet Releaser
         if: steps.winget_token.outputs.present == 'true'
