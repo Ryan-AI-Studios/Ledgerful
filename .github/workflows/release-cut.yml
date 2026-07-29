@@ -12,6 +12,8 @@
 # Credential: secrets.RELEASE_CUT_TOKEN (fine-grained PAT, contents+PR write on
 # Ledgerful only; no workflows:write, no commit_statuses:write, no expiration).
 # Never embed the token in a URL — use gh auth setup-git (0082 RT-X9).
+# Checkout uses persist-credentials: false so the default GITHUB_TOKEN
+# extraheader does not outrank the PAT for git push (cli/cli#10905 / F1).
 name: Release cut
 
 on:
@@ -49,28 +51,35 @@ jobs:
     permissions:
       contents: read
     steps:
+      # persist-credentials: false — default GITHUB_TOKEN extraheader would
+      # outrank gh auth setup-git for git push (cli/cli#10905). PAT is the
+      # only write credential (setup-git + GH_TOKEN = RELEASE_CUT_TOKEN).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          # Full history not required; default token is read-only — push uses PAT.
           fetch-depth: 0
+          persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
-        with:
-          toolchain: stable
-
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
+      # No rust-toolchain / rust-cache: prepare-release-cut.sh edits Cargo.lock
+      # offline (package version only). If LEDGERFUL_PREPARE_USE_CARGO=1 becomes
+      # the default lock path, re-add dtolnay/rust-toolchain + Swatinem/rust-cache.
 
       - name: Open-PR guard + Unreleased + version + prepare + PR
         shell: bash
         env:
+          # RELEASE_CUT_TOKEN for require-secret.sh; GH_TOKEN for gh + setup-git.
+          RELEASE_CUT_TOKEN: ${{ secrets.RELEASE_CUT_TOKEN }}
           GH_TOKEN: ${{ secrets.RELEASE_CUT_TOKEN }}
           INPUT_VERSION: ${{ github.event.inputs.version || '' }}
           INPUT_DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         run: |
           set -euo pipefail
-          chmod +x scripts/prepare-release-cut.sh \
+          chmod +x scripts/require-secret.sh \
+            scripts/prepare-release-cut.sh \
             scripts/changelog-unreleased.sh \
             scripts/lib/release-changelog.sh
+
+          # Fail loud before any gh/git write when PAT is missing (F2).
+          scripts/require-secret.sh RELEASE_CUT_TOKEN
 
           # shellcheck source=scripts/lib/release-changelog.sh
           source scripts/lib/release-changelog.sh
@@ -131,19 +140,19 @@ jobs:
           echo "Plan: cut v${version} (current ${current}) on branch ${branch}"
           echo "Would touch: CHANGELOG.md Cargo.toml Cargo.lock mcp-server/package.json"
 
-          # --- 4. Ensure release-cut label exists ---------------------------
+          # --- 4. dry_run stops before any write (label create / push / PR) --
+          if [ "${INPUT_DRY_RUN}" = "true" ]; then
+            echo "::notice::dry_run: would prepare v${version} on ${branch}; files: CHANGELOG.md Cargo.toml Cargo.lock mcp-server/package.json"
+            exit 0
+          fi
+
+          # --- 5. Ensure release-cut label exists (after dry_run) -----------
           # gh pr create --label fails hard on a missing label; missing label
           # also means a merged PR never tags (Phase 3 keys on the label).
           gh label create release-cut \
             --description "Automated release cut PR — do not remove" \
             --color 0E8A16 \
             --force
-
-          # --- 5. dry_run stops before any push/PR --------------------------
-          if [ "${INPUT_DRY_RUN}" = "true" ]; then
-            echo "::notice::dry_run: would prepare v${version} on ${branch}; files: CHANGELOG.md Cargo.toml Cargo.lock mcp-server/package.json"
-            exit 0
-          fi
 
           # --- 6. Branch must not already exist on remote -------------------
           if git ls-remote --exit-code --heads origin "${branch}" >/dev/null 2>&1; then
@@ -164,7 +173,9 @@ jobs:
           git status --short
           git commit -m "chore(release): cut v${version}"
 
-          # GH_TOKEN authenticates gh; setup-git wires git push (0082 RT-X9).
+          # GH_TOKEN authenticates gh; setup-git wires git push. Checkout
+          # used persist-credentials: false so GITHUB_TOKEN extraheader does
+          # not outrank the PAT (cli/cli#10905 / 0104 F1).
           gh auth setup-git
           git push -u origin "HEAD:${branch}"
 
@@ -214,18 +225,23 @@ jobs:
     permissions:
       contents: read
     steps:
+      # Same PAT-only git auth as prepare (cli/cli#10905 / F1).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           fetch-depth: 0
+          persist-credentials: false
 
       - name: Tag merge commit and push
         shell: bash
         env:
+          RELEASE_CUT_TOKEN: ${{ secrets.RELEASE_CUT_TOKEN }}
           GH_TOKEN: ${{ secrets.RELEASE_CUT_TOKEN }}
           HEAD_REF: ${{ github.event.pull_request.head.ref }}
           MERGE_SHA: ${{ github.event.pull_request.merge_commit_sha }}
         run: |
           set -euo pipefail
+          chmod +x scripts/require-secret.sh
+          scripts/require-secret.sh RELEASE_CUT_TOKEN
 
           # Version travels only on the branch name (title is editable).
           # release/vX.Y.Z → X.Y.Z
@@ -261,6 +277,7 @@ jobs:
 
           git tag "${tag}" "${MERGE_SHA}"
           # PAT so the tag push starts release.yml (GITHUB_TOKEN would not).
+          # Checkout used persist-credentials: false so PAT is the write cred.
           gh auth setup-git
           git push origin "${tag}"
 
