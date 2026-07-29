@@ -159,9 +159,9 @@ awk -v ver="$version" '
 mv "$cargo_tmp" "Cargo.toml"
 
 # 3. Cargo.lock: version field of package name = "ledgerful" only.
-# Offline-safe; for a pure version bump this matches cargo update -w (0098 Phase 0).
-# Production CI also has cargo available; optional LEDGERFUL_PREPARE_USE_CARGO=1 runs
-# cargo update -p ledgerful --precise <version> after the edit when desired.
+# Offline-safe; for a pure version-only bump this matches cargo update -w
+# (0098 Phase 0). No silent cargo fallback — fail loud if the package block
+# is missing. Do not reintroduce `|| true` cargo paths (codex 0104 P2).
 lock_tmp="$(mktemp)"
 awk -v ver="$version" '
   BEGIN { in_pkg = 0; done = 0 }
@@ -182,15 +182,6 @@ awk -v ver="$version" '
   }
 ' "Cargo.lock" >"$lock_tmp"
 mv "$lock_tmp" "Cargo.lock"
-
-if [ "${LEDGERFUL_PREPARE_USE_CARGO:-}" = "1" ]; then
-  if command -v cargo >/dev/null 2>&1; then
-    # Best-effort lock refresh; awk edit already set the package version.
-    cargo update -p ledgerful --precise "$version" 2>/dev/null \
-      || cargo update -w 2>/dev/null \
-      || true
-  fi
-fi
 
 # 4. mcp-server/package.json: both ledgerfulEngineTag and version (patch bump).
 mcp_path="mcp-server/package.json"

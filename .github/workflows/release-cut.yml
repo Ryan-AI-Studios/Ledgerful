@@ -60,15 +60,15 @@ jobs:
           persist-credentials: false
 
       # No rust-toolchain / rust-cache: prepare-release-cut.sh edits Cargo.lock
-      # offline (package version only). If LEDGERFUL_PREPARE_USE_CARGO=1 becomes
-      # the default lock path, re-add dtolnay/rust-toolchain + Swatinem/rust-cache.
+      # offline (ledgerful package version only; no cargo invocation).
 
       - name: Open-PR guard + Unreleased + version + prepare + PR
         shell: bash
         env:
-          # RELEASE_CUT_TOKEN for require-secret.sh; GH_TOKEN for gh + setup-git.
+          # Plan step 15: GITHUB_TOKEN for read-only gh; PAT only for writes.
+          # RELEASE_CUT_TOKEN is checked before write path and assigned to GH_TOKEN then.
           RELEASE_CUT_TOKEN: ${{ secrets.RELEASE_CUT_TOKEN }}
-          GH_TOKEN: ${{ secrets.RELEASE_CUT_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           INPUT_VERSION: ${{ github.event.inputs.version || '' }}
           INPUT_DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         run: |
@@ -78,13 +78,10 @@ jobs:
             scripts/changelog-unreleased.sh \
             scripts/lib/release-changelog.sh
 
-          # Fail loud before any gh/git write when PAT is missing (F2).
-          scripts/require-secret.sh RELEASE_CUT_TOKEN
-
           # shellcheck source=scripts/lib/release-changelog.sh
           source scripts/lib/release-changelog.sh
 
-          # --- 1. Open-PR guard (label, not --head) -------------------------
+          # --- 1. Open-PR guard (label, not --head) — read-only GITHUB_TOKEN ---
           # Version-named branches mean --head would miss an open cut for a
           # different computed version and stack a second PR. Label is identity.
           open_prs="$(gh pr list --label release-cut --state open --json number,headRefName --jq 'length')"
@@ -146,7 +143,15 @@ jobs:
             exit 0
           fi
 
-          # --- 5. Ensure release-cut label exists (after dry_run) -----------
+          # --- 5. Elevate to PAT for writes only (plan step 15) -------------
+          # Fail loud when PAT is missing before any write.
+          scripts/require-secret.sh RELEASE_CUT_TOKEN
+          export GH_TOKEN="${RELEASE_CUT_TOKEN}"
+          # Checkout used persist-credentials: false so GITHUB_TOKEN extraheader
+          # does not outrank the PAT (cli/cli#10905 / 0104 F1).
+          gh auth setup-git
+
+          # --- 6. Ensure release-cut label exists (after dry_run) -----------
           # gh pr create --label fails hard on a missing label; missing label
           # also means a merged PR never tags (Phase 3 keys on the label).
           gh label create release-cut \
@@ -154,7 +159,7 @@ jobs:
             --color 0E8A16 \
             --force
 
-          # --- 6. Branch must not already exist on remote -------------------
+          # --- 7. Branch must not already exist on remote -------------------
           if git ls-remote --exit-code --heads origin "${branch}" >/dev/null 2>&1; then
             echo "::error::remote branch ${branch} already exists — refuse to overwrite"
             echo "::error::inspect the abandoned cut, then: git push origin --delete ${branch}"
@@ -163,23 +168,19 @@ jobs:
 
           git checkout -B "${branch}"
 
-          # --- 7. Prepare four files ----------------------------------------
+          # --- 8. Prepare four files ----------------------------------------
           bash scripts/prepare-release-cut.sh "${version}"
 
-          # --- 8. Commit + push with PAT (gh auth setup-git, not URL) -------
+          # --- 9. Commit + push with PAT ------------------------------------
           git config user.name "ledgerful-release-cut[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add CHANGELOG.md Cargo.toml Cargo.lock mcp-server/package.json
           git status --short
           git commit -m "chore(release): cut v${version}"
 
-          # GH_TOKEN authenticates gh; setup-git wires git push. Checkout
-          # used persist-credentials: false so GITHUB_TOKEN extraheader does
-          # not outrank the PAT (cli/cli#10905 / 0104 F1).
-          gh auth setup-git
           git push -u origin "HEAD:${branch}"
 
-          # --- 9. Open PR ---------------------------------------------------
+          # --- 10. Open PR --------------------------------------------------
           body="$(cat <<EOF
           ## Release cut v${version}
 
