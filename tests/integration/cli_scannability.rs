@@ -104,6 +104,7 @@ fn has_per_entry_valid_tx_line(text: &str) -> bool {
 }
 
 /// Doctor leads with an aggregate status line (0100 DoD-5).
+/// Codex R1 P2: aggregate must be the literal first line (no leading blank).
 #[test]
 fn doctor_first_meaningful_line_is_aggregate() {
     let tmp = tempdir().unwrap();
@@ -119,14 +120,10 @@ fn doctor_first_meaningful_line_is_aggregate() {
         "doctor without CRITICAL should exit 0; stderr={_stderr}"
     );
 
-    let first = stdout
-        .lines()
-        .map(str::trim)
-        .find(|l| !l.is_empty())
-        .unwrap_or("");
+    let first_line = stdout.lines().next().unwrap_or("").trim();
     assert!(
-        first.contains("Doctor:"),
-        "first non-empty line must be aggregate status, got: {first:?}\nfull:\n{stdout}"
+        first_line.contains("Doctor:"),
+        "literal first line must be aggregate status, got: {first_line:?}\nfull:\n{stdout}"
     );
     assert!(
         stdout.contains("Optional Accelerators"),
@@ -320,7 +317,41 @@ fn verify_signatures_quiet_wiring() {
     );
 }
 
-/// F-004: INVALID hard failures stay on raw stderr at default / quiet / verbose.
+/// Empty-search degraded path (DoD-9 plan step 31).
+#[test]
+fn search_empty_results_is_honest() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("only.txt"), "nothing relevant here").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let (stdout, stderr, code) = run_cli(
+        root,
+        &[
+            "search",
+            "zzznomatchtoken0100scannability",
+            "--index",
+            "--limit",
+            "2",
+        ],
+    );
+    assert_eq!(code, 0, "empty search should exit 0; stderr={stderr}");
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        combined.contains("No matches")
+            || combined.contains("no matches")
+            || combined.contains("HINT")
+            || combined.contains("Falling back"),
+        "empty/degraded search should say so; out:\n{combined}"
+    );
+    assert!(
+        !combined.contains("and more results"),
+        "empty search must not claim more results; out:\n{combined}"
+    );
+}
+
+/// F-004 / codex R1 P2: INVALID hard failures stay on raw stderr at default / quiet / verbose.
 #[test]
 #[serial(cwd, env)]
 fn verify_signatures_invalid_visible_on_stderr_all_levels() {
@@ -364,6 +395,65 @@ fn verify_signatures_invalid_visible_on_stderr_all_levels() {
         );
         // Hard failures must not be filter-gated onto stdout-only paths.
         let _ = stdout;
+    }
+}
+
+/// Codex R1 P2 DoD-2: required-UNSIGNED hard failures stay on raw stderr at all levels.
+#[test]
+#[serial(cwd, env)]
+fn verify_signatures_required_unsigned_visible_on_stderr_all_levels() {
+    let _ni = non_interactive();
+    let fixture = setup_signed_ledger_fixture(2);
+    let root = fixture.root.as_path();
+
+    // Enable require_signing so UNSIGNED rows are hard failures (RawStderr).
+    {
+        let config_path = root.join(".ledgerful").join("config.toml");
+        let mut cfg = fs::read_to_string(&config_path).unwrap_or_default();
+        if cfg.contains("require_signing") {
+            cfg = cfg.replace("require_signing = false", "require_signing = true");
+            if !cfg.contains("require_signing = true") {
+                cfg.push_str("\n[intent]\nrequire_signing = true\n");
+            }
+        } else if cfg.contains("[intent]") {
+            cfg = cfg.replace("[intent]", "[intent]\nrequire_signing = true");
+        } else {
+            cfg.push_str("\n[intent]\nrequire_signing = true\n");
+        }
+        fs::write(&config_path, cfg).expect("write require_signing config");
+    }
+
+    // Clear one signature so the row is UNSIGNED under require_signing.
+    {
+        let storage = StorageManager::init(&fixture.db_path).unwrap();
+        let conn = storage.get_connection();
+        let updated = conn
+            .execute(
+                "UPDATE ledger_entries SET signature = NULL WHERE rowid = (
+                    SELECT rowid FROM ledger_entries
+                    ORDER BY committed_at DESC LIMIT 1
+                )",
+                [],
+            )
+            .expect("clear signature");
+        assert!(updated >= 1, "expected to clear at least one signature");
+    }
+
+    for args in [
+        ["verify", "--signatures"].as_slice(),
+        ["verify", "--signatures", "--quiet"].as_slice(),
+        ["verify", "--signatures", "--verbose"].as_slice(),
+    ] {
+        let (stdout, stderr, code) = run_cli(root, args);
+        // sig_exit: unsigned-under-require is exit 3 (not INVALID's 1).
+        assert_eq!(
+            code, 3,
+            "required UNSIGNED should exit 3 for args={args:?}; stdout={stdout} stderr={stderr}"
+        );
+        assert!(
+            stderr.contains("UNSIGNED"),
+            "UNSIGNED must appear on stderr at all verbosity levels; args={args:?}\nstderr:\n{stderr}\nstdout:\n{stdout}"
+        );
     }
 }
 

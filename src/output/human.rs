@@ -54,12 +54,13 @@ pub fn print_doctor_report(report: &DoctorReport, summary: &DoctorSummaryCounts)
     // Aggregate-first (0100 DoD-5): first meaningful lines are the status.
     let summary_text =
         format_doctor_summary_text(summary.critical, summary.soft_failures, summary.warnings);
+    // DoD-5: aggregate is the literal first line (no leading blank). Codex R1 P2.
     if summary.critical > 0 || summary.soft_failures > 0 {
-        println!("\n{}", summary_text.red().bold());
+        println!("{}", summary_text.red().bold());
     } else if summary.warnings > 0 {
-        println!("\n{}", summary_text.yellow().bold());
+        println!("{}", summary_text.yellow().bold());
     } else {
-        println!("\n{}", summary_text.green().bold());
+        println!("{}", summary_text.green().bold());
     }
 
     println!("\nLedgerful Doctor - Environment Health Check");

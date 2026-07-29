@@ -105,7 +105,11 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         // On Err: print *failure* message (never Ready "no matches") and fall through.
         // On Ok([]): print empty-result once in the empty branch below.
         // Never both (P3 double-emit). JSON Err emits record_kind "semantic_error".
-        let (results, query_succeeded) = match semantic_engine.query(&args.query, args.limit) {
+        // Overfetch limit+1 so human output can show "and more" without claiming K (0100 DoD-8).
+        let semantic_fetch = args.limit.saturating_add(1);
+        let (mut results, query_succeeded) = match semantic_engine
+            .query(&args.query, semantic_fetch)
+        {
             Ok(r) => (r, true),
             Err(e) => {
                 // Unconfigured / unreachable / Ready runtime failure: degrade to BM25
@@ -138,6 +142,8 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         };
 
         if !results.is_empty() {
+            let truncated = results.len() > args.limit;
+            results.truncate(args.limit);
             if args.json {
                 for (path, name, offset, dist) in results {
                     let record = BridgeRecord {
@@ -168,6 +174,9 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                         offset,
                         dist
                     );
+                }
+                if truncated {
+                    print_search_truncation_affordance();
                 }
                 println!();
             }
@@ -575,7 +584,9 @@ fn handle_fuzzy_fallback(engine: &TantivySearchEngine, args: &SearchArgs) {
     if !args.json {
         println!("{}", "Falling back to fuzzy search...".yellow());
     }
-    let fuzzy_matches = match engine.search_fuzzy(&args.query, args.limit) {
+    // Overfetch limit+1 for human truncation affordance (0100 DoD-8; codex R1).
+    let fuzzy_fetch = args.limit.saturating_add(1);
+    let mut fuzzy_matches = match engine.search_fuzzy(&args.query, fuzzy_fetch) {
         Ok(matches) => matches,
         Err(e) => {
             tracing::warn!("Fuzzy search fallback failed: {}", e);
@@ -598,6 +609,8 @@ fn handle_fuzzy_fallback(engine: &TantivySearchEngine, args: &SearchArgs) {
             );
         }
     } else {
+        let truncated = fuzzy_matches.len() > args.limit;
+        fuzzy_matches.truncate(args.limit);
         if args.json {
             for m in fuzzy_matches {
                 let record = BridgeRecord {
@@ -641,6 +654,9 @@ fn handle_fuzzy_fallback(engine: &TantivySearchEngine, args: &SearchArgs) {
                     let display = emphasize_snippet(&snippet, ranges);
                     println!("  {}", display.trim());
                 }
+            }
+            if truncated {
+                print_search_truncation_affordance();
             }
             println!();
         }
