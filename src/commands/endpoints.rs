@@ -175,14 +175,14 @@ pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
         table.set_header(vec!["Method", "Path", "Framework", "Service", "Auth"]);
 
         for (method, path, _handler, framework, auth_json, service, _consumers, _) in &rows {
-            let auth_str = if let Some(aj) = auth_json {
-                if aj == "[]" || aj == "null" {
-                    "None".to_string()
-                } else {
-                    aj.clone()
-                }
-            } else {
-                "Unknown".to_string()
+            // Parse as Option<Vec<String>> — the writer's exact type
+            // (routes.rs serializes Option<Vec<String>>). Every real state is a
+            // success arm: "null" → Ok(None), "[]" → Ok(Some([])), '["a"]' → Ok(Some).
+            // Neighbours parse Vec<String> and recover null via parse failure;
+            // we deliberately do not copy that pattern here.
+            let auth_str = match auth_json {
+                Some(aj) => format_auth_requirements(aj),
+                None => "Unknown".to_string(),
             };
 
             table.add_row(vec![
@@ -210,4 +210,41 @@ pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Format stored `auth_requirements` JSON for the human Auth column.
+///
+/// Parses as `Option<Vec<String>>` — the writer's exact type — so `"null"`,
+/// `"[]"`, and non-empty arrays are all success arms. Empty / null → `"None"`.
+/// Preserves stored order for determinism.
+fn format_auth_requirements(aj: &str) -> String {
+    match serde_json::from_str::<Option<Vec<String>>>(aj) {
+        Ok(None) => "None".to_string(),
+        Ok(Some(v)) if v.is_empty() => "None".to_string(),
+        Ok(Some(v)) => v.join(", "),
+        // Writer cannot produce malformed data; stable fallback for hand-edited rows.
+        Err(_) => "None".to_string(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_auth_requirements;
+
+    /// Four shapes `routes.rs` can write — all must land in the Ok arm.
+    #[test]
+    fn format_auth_requirements_writer_shapes() {
+        assert_eq!(format_auth_requirements("null"), "None");
+        assert_eq!(format_auth_requirements("[]"), "None");
+        assert_eq!(format_auth_requirements(r#"["secured"]"#), "secured");
+        assert_eq!(format_auth_requirements(r#"["a","b"]"#), "a, b");
+    }
+
+    #[test]
+    fn format_auth_requirements_ok_arm_not_error_recovery() {
+        // Unlike neighbours that parse Vec and recover null via Err, null must parse Ok.
+        let parsed: Result<Option<Vec<String>>, _> = serde_json::from_str("null");
+        assert!(parsed.is_ok());
+        assert_eq!(parsed.unwrap(), None);
+    }
 }

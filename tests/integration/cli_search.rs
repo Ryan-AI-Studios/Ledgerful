@@ -206,3 +206,171 @@ fn test_search_ranking_prose_query() {
         "Expected doc.md to rank well for prose query"
     );
 }
+
+/// DoD-4: human search over a fixture with `&&` and quotes has no HTML entities.
+///
+/// Do NOT assert the absence of escape sequences here. Colour is ungated by design
+/// (spec §2.4); a subprocess pipe is not a TTY, so a correct implementation emits
+/// `\u{1b}` on this path. Escapes are covered by the source grep and the --json
+/// payload assertion below.
+#[test]
+fn test_search_human_no_html_entities() {
+    use crate::common::{git_add_and_commit, run_cli};
+
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _guard = DirGuard::new(root);
+
+    fs::write(
+        root.join("snippet_src.rs"),
+        r#"
+pub fn entity_probe_func() {
+    if a && b {
+        let _q = "quoted string";
+    }
+}
+"#,
+    )
+    .unwrap();
+    git_add_and_commit(root, "snippet_src.rs");
+
+    // search --index builds the Tantivy index without a full `ledgerful index`.
+    // Identifier query → hybrid path (the one that used to pollute via highlighted HTML).
+    let (stdout, stderr, code) = run_cli(root, &["search", "entity_probe_func", "--index"]);
+    assert_eq!(
+        code, 0,
+        "search must succeed; stderr={stderr}; stdout={stdout}"
+    );
+
+    for entity in ["&quot;", "&amp;", "&lt;", "&gt;", "&#39;"] {
+        assert!(
+            !stdout.contains(entity),
+            "DoD-4: human search must not contain HTML entity {entity}; stdout={stdout}"
+        );
+    }
+    // Positive: highlighting survived. Strip ANSI first — ungated owo_colors
+    // inserts escapes around match ranges, so a raw contains() on the plain
+    // identifier can fail against a correct emphasized rendering (spec §2.4).
+    let stripped: String = {
+        let mut out = String::new();
+        let mut chars = stdout.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' {
+                // Skip CSI sequence: ESC [ ... final-byte
+                if chars.peek() == Some(&'[') {
+                    chars.next();
+                    for sc in chars.by_ref() {
+                        if ('@'..='~').contains(&sc) {
+                            break;
+                        }
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    };
+    assert!(
+        stripped.contains("entity_probe_func"),
+        "matched term must still appear after stripping colour: {stripped}"
+    );
+    assert!(
+        stdout.contains("Hybrid") || stdout.contains("snippet_src"),
+        "expected hybrid/search result header: {stdout}"
+    );
+}
+
+/// DoD-5: `search <identifier> --json` — every line parses as JSON and no content
+/// value contains escapes or HTML entities.
+///
+/// Query MUST be identifier-shaped. A spaced query silently takes the already-clean
+/// BM25 path and would pass against unfixed code.
+#[test]
+fn test_search_json_content_plain() {
+    use crate::common::{git_add_and_commit, run_cli};
+
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _guard = DirGuard::new(root);
+
+    fs::write(
+        root.join("snippet_src.rs"),
+        r#"
+pub fn json_probe_func() {
+    if a && b {
+        let _q = "quoted string";
+    }
+}
+"#,
+    )
+    .unwrap();
+    git_add_and_commit(root, "snippet_src.rs");
+
+    let (stdout, stderr, code) = run_cli(root, &["search", "json_probe_func", "--index", "--json"]);
+    assert_eq!(
+        code, 0,
+        "search --json must succeed; stderr={stderr}; stdout={stdout}"
+    );
+    assert!(!stdout.trim().is_empty(), "expected at least one JSON line");
+
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|e| {
+            panic!("DoD-5: every stdout line must parse as JSON: {e}; line={line}");
+        });
+        if let Some(content) = v.pointer("/payload/content").and_then(|c| c.as_str()) {
+            assert!(
+                !content.contains('\u{1b}'),
+                "DoD-5: content must not contain escape sequences: {content}"
+            );
+            for entity in ["&quot;", "&amp;", "&lt;", "&gt;", "&#39;"] {
+                assert!(
+                    !content.contains(entity),
+                    "DoD-5: content must not contain HTML entity {entity}: {content}"
+                );
+            }
+        }
+    }
+}
+
+/// DoD-6: non-ASCII (CJK + 4-byte emoji) produces a snippet without panic
+/// and without a broken code point. Exercises track-owned truncation arithmetic.
+#[test]
+fn test_search_non_ascii_snippet_safe() {
+    use crate::common::{git_add_and_commit, run_cli};
+
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _guard = DirGuard::new(root);
+
+    // Long prefix so truncation can land near multi-byte chars.
+    let prefix = "x".repeat(200);
+    fs::write(
+        root.join("unicode_src.rs"),
+        format!(
+            "// {prefix}\npub fn unicode_snippet_target() {{\n    let s = \"中文emoji😀boundary\";\n}}\n"
+        ),
+    )
+    .unwrap();
+    git_add_and_commit(root, "unicode_src.rs");
+
+    let (stdout, stderr, code) = run_cli(root, &["search", "unicode_snippet_target", "--index"]);
+    assert_eq!(
+        code, 0,
+        "non-ASCII search must not panic; stderr={stderr}; stdout={stdout}"
+    );
+    assert!(
+        !stdout.contains('\u{FFFD}'),
+        "snippet must not contain replacement char: {stdout}"
+    );
+    assert!(
+        stdout.contains("unicode_snippet_target")
+            || stdout.contains("中文")
+            || stdout.contains("emoji")
+            || stdout.contains("boundary"),
+        "expected a usable snippet: {stdout}"
+    );
+}

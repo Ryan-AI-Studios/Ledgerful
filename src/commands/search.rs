@@ -261,7 +261,10 @@ fn perform_search(
         struct MergedResult {
             path: String,
             line_number: Option<usize>,
+            /// Plain fragment for JSON and for emphasis application at print time.
             content: String,
+            /// Byte ranges into `content` for ungated owo_colors emphasis (human only).
+            highlight_ranges: Vec<(usize, usize)>,
             score: Option<f32>,
             is_regex: bool,
         }
@@ -270,16 +273,17 @@ fn perform_search(
             std::collections::HashMap::new();
 
         for r in bm25_results {
+            // Seed from plain fragment (not pre-rendered highlighted). Emphasis
+            // is applied only on the human path; --json stays plain (DoD-5).
+            let content = r.snippet.clone().unwrap_or_default();
+            let highlight_ranges = r.highlight_ranges.unwrap_or_default();
             merged.insert(
                 (r.path.clone(), r.line_number),
                 MergedResult {
                     path: r.path,
                     line_number: r.line_number,
-                    content: r
-                        .highlighted
-                        .clone()
-                        .or_else(|| r.snippet.clone())
-                        .unwrap_or_default(),
+                    content,
+                    highlight_ranges,
                     score: Some(r.score),
                     is_regex: false,
                 },
@@ -309,6 +313,7 @@ fn perform_search(
                         path: m.path,
                         line_number: Some(m.line_number),
                         content: m.content,
+                        highlight_ranges: Vec::new(),
                         score: Some(boost),
                         is_regex: true,
                     },
@@ -387,12 +392,16 @@ fn perform_search(
                     } else {
                         String::new()
                     };
+                    // Apply emphasis at print time (ungated owo_colors, like neighbours).
+                    // Do NOT assert absence of escapes in human stdout tests — a pipe is
+                    // not a TTY and nothing gates colour (spec §2.4).
+                    let display = emphasize_snippet(&res.content, &res.highlight_ranges);
                     println!(
                         "{} {}{} {}",
                         source_label,
                         format!("{}{}", res.path.cyan(), line_info).bold(),
                         score_info.yellow(),
-                        res.content.trim()
+                        display.trim()
                     );
                 }
                 println!();
@@ -488,8 +497,10 @@ fn perform_search(
                         format!("{}{}", r.path.cyan(), line_info).bold(),
                         owo_colors::OwoColorize::yellow(&r.score)
                     );
-                    if let Some(snippet) = r.highlighted {
-                        println!("  {}", snippet.trim());
+                    if let Some(snippet) = r.snippet {
+                        let ranges = r.highlight_ranges.as_deref().unwrap_or(&[]);
+                        let display = emphasize_snippet(&snippet, ranges);
+                        println!("  {}", display.trim());
                     }
                 }
                 println!();
@@ -498,6 +509,41 @@ fn perform_search(
     }
 
     Ok(())
+}
+
+/// Apply bold emphasis to byte ranges in a plain snippet via owo_colors.
+/// Ranges that are out of bounds or mid-character are skipped.
+fn emphasize_snippet(fragment: &str, ranges: &[(usize, usize)]) -> String {
+    if ranges.is_empty() {
+        return fragment.to_string();
+    }
+    let mut sorted: Vec<(usize, usize)> = ranges
+        .iter()
+        .copied()
+        .filter(|(s, e)| {
+            *s <= *e
+                && *e <= fragment.len()
+                && fragment.is_char_boundary(*s)
+                && fragment.is_char_boundary(*e)
+        })
+        .collect();
+    sorted.sort_by_key(|(s, e)| (*s, *e));
+
+    let mut out = String::new();
+    let mut last = 0usize;
+    for (start, end) in sorted {
+        if start < last {
+            continue;
+        }
+        out.push_str(&fragment[last..start]);
+        let piece = &fragment[start..end];
+        out.push_str(&piece.bold().to_string());
+        last = end;
+    }
+    if last <= fragment.len() && fragment.is_char_boundary(last) {
+        out.push_str(&fragment[last..]);
+    }
+    out
 }
 
 fn handle_fuzzy_fallback(engine: &TantivySearchEngine, args: &SearchArgs) {
@@ -565,8 +611,10 @@ fn handle_fuzzy_fallback(engine: &TantivySearchEngine, args: &SearchArgs) {
                     format!("{}{}", m.path.cyan(), line_info).bold(),
                     owo_colors::OwoColorize::yellow(&m.score)
                 );
-                if let Some(snippet) = m.highlighted {
-                    println!("  {}", snippet.trim());
+                if let Some(snippet) = m.snippet {
+                    let ranges = m.highlight_ranges.as_deref().unwrap_or(&[]);
+                    let display = emphasize_snippet(&snippet, ranges);
+                    println!("  {}", display.trim());
                 }
             }
             println!();

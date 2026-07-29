@@ -2,10 +2,8 @@ use camino::Utf8PathBuf;
 use miette::{IntoDiagnostic, Result};
 use std::env;
 
-pub use crate::commands::index::check::execute_index_check;
 pub use crate::commands::index::modes::execute_index;
 
-pub(crate) mod check;
 pub(crate) mod graph;
 pub(crate) mod modes;
 pub(crate) mod output;
