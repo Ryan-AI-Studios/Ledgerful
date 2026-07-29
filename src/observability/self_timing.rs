@@ -290,7 +290,7 @@ impl Drop for TimedCommand {
 }
 
 fn persist_batch(rows: &[TimingRow]) -> miette::Result<()> {
-    let layout = match crate::commands::helpers::get_layout() {
+    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
         Ok(l) => l,
         Err(_) => return Ok(()), // not in a resolvable worktree — skip quietly
     };

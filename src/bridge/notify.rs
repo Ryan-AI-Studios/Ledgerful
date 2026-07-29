@@ -16,7 +16,7 @@ static ALERTED_PAIRS: LazyLock<Mutex<HashSet<(String, String)>>> =
     LazyLock::new(|| Mutex::new(HashSet::new()));
 
 pub fn push_verify_results(results: Vec<BridgeVerifyOutcome>) {
-    let layout = match crate::commands::helpers::get_layout() {
+    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
         Ok(l) => l,
         Err(_) => return,
     };
@@ -70,7 +70,7 @@ pub fn push_risk_alert(
     risk_level: &str,
     threshold: f64,
 ) {
-    let layout = match crate::commands::helpers::get_layout() {
+    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
         Ok(l) => l,
         Err(e) => {
             tracing::debug!("Risk alert skipped: cannot resolve layout: {:?}", e);

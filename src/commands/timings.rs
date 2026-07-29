@@ -70,7 +70,7 @@ pub fn execute_timings(args: TimingsArgs) -> Result<()> {
         return execute_prune(&args);
     }
 
-    let layout = crate::commands::helpers::get_layout()?;
+    let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git()?;
     let db_path = layout.state_subdir().join("ledger.db");
     if !db_path.exists() {
         if args.json {
@@ -413,7 +413,7 @@ fn execute_prune(args: &TimingsArgs) -> Result<()> {
         .ok_or_else(|| miette::miette!("--prune requires --older-than Nd (e.g. 90d)"))?;
     let days = parse_days_spec(older)?;
 
-    let layout = crate::commands::helpers::get_layout()?;
+    let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git()?;
     let db_path = layout.state_subdir().join("ledger.db");
     if !db_path.exists() {
         println!("No local ledger database; nothing to prune.");

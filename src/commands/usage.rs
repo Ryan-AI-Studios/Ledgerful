@@ -258,7 +258,7 @@ fn today_utc() -> String {
 /// connection open) fails. Callers must treat `None` as a no-op — the
 /// dispatch hook is best-effort and must never panic the host command.
 fn open_counter_store() -> Option<rusqlite::Connection> {
-    let layout = crate::commands::helpers::get_layout().ok()?;
+    let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git().ok()?;
     let db_path = layout.state_subdir().join(USAGE_DB_FILENAME);
     if !db_path.as_std_path().exists() {
         return None;

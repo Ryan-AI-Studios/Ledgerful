@@ -20,7 +20,7 @@ pub fn execute_doctor() -> Result<()> {
     let current_dir = env::current_dir().into_diagnostic()?;
     // Resolve via git discover so nested cwd and linked worktrees share the
     // correct state home (0108). Never treat cwd as repo root.
-    let layout = crate::commands::helpers::get_layout()?;
+    let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git()?;
 
     let platform = current_platform();
     let shell = detect_shell();

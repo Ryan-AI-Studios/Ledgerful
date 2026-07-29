@@ -8,7 +8,7 @@ use std::time::Duration;
 use wait_timeout::ChildExt;
 
 fn provider_command() -> String {
-    match crate::commands::helpers::get_layout() {
+    match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
         Ok(layout) => load_config(&layout)
             .map(|c| c.bridge.provider_command)
             .unwrap_or_else(|_| "ai-brains".to_string()),

@@ -937,7 +937,7 @@ pub fn execute_verify(
 ) -> Result<()> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
-    let layout = crate::commands::helpers::get_layout()?;
+    let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git()?;
     let manual_requested = command_str.is_some();
 
     // 1. Initialize Context

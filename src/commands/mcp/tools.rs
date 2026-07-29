@@ -109,7 +109,7 @@ pub fn dispatch_tool(name: &str, params: Value) -> Value {
 }
 
 fn handle_ledger_status(_params: Value) -> Value {
-    let layout = match crate::commands::helpers::get_layout() {
+    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
         Ok(l) => l,
         Err(e) => return error_response(&format!("Failed to get layout: {}", e)),
     };
@@ -146,7 +146,7 @@ fn handle_ledger_status(_params: Value) -> Value {
 
 fn handle_hotspots(params: Value) -> Value {
     let limit = params["limit"].as_u64().unwrap_or(10) as usize;
-    let layout = match crate::commands::helpers::get_layout() {
+    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
         Ok(l) => l,
         Err(e) => return error_response(&format!("Failed to get layout: {}", e)),
     };
@@ -216,7 +216,7 @@ fn handle_search(params: Value) -> Value {
 }
 
 fn handle_ledger_search(params: Value) -> Value {
-    let layout = match crate::commands::helpers::get_layout() {
+    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
         Ok(l) => l,
         Err(e) => return error_response(&format!("Failed to get layout: {}", e)),
     };
@@ -310,7 +310,7 @@ fn handle_security_boundaries(_params: Value) -> Value {
 }
 
 fn handle_dead_code(params: Value) -> Value {
-    let layout = match crate::commands::helpers::get_layout() {
+    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
         Ok(l) => l,
         Err(e) => return error_response(&format!("Failed to get layout: {}", e)),
     };
@@ -337,7 +337,7 @@ fn handle_dead_code(params: Value) -> Value {
 }
 
 fn handle_verify_plan(_params: Value) -> Value {
-    let layout = match crate::commands::helpers::get_layout() {
+    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
         Ok(l) => l,
         Err(e) => return error_response(&format!("Failed to get layout: {}", e)),
     };
