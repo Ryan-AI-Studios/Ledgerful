@@ -56,6 +56,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **CLI output defects (0099):** four incorrect CLI surfaces:
+  - `index --check` now prints a human status on success (was silent); the
+    human report is no longer nested inside the `--json` branch, so
+    `--json` stdout is a single parseable document and warnings go to stderr.
+  - `index --check --strict` on a stale index prints its reason on **stderr**
+    before exiting 1 (was a silent CI-gate failure).
+  - Search snippets no longer round-trip through HTML: `&&` and quotes render
+    as plain text (not `&amp;&amp;` / `&quot;`), raw `\x1b` literals are gone
+    from the engine, and hybrid `search --json` `content` is plain (no
+    escapes or entities). Human search still applies ungated `owo_colors`
+    emphasis like its neighbours — **piped colour gating is a separate track**
+    (spec §2.4; `if_supports_color` remains unused repo-wide).
+  - `endpoints` Auth column parses `Option<Vec<String>>` and shows human text
+    (e.g. `secured`) instead of raw JSON like `["secured"]`.
 - **SCIP exclusive call sites + always re-apply (0095 review):** with
   `--analyze-graph`, SCIP runs only inside `run_graph_analysis` (not also in
   `execute_main_mode`). Requested augment always re-applies edges (idempotent);

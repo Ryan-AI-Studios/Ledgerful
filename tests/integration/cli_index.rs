@@ -1,35 +1,127 @@
 use camino::Utf8Path;
-use ledgerful::commands::index::{IndexArgs, execute_index, execute_index_check};
+use ledgerful::commands::index::{IndexArgs, execute_index};
 use std::fs;
 use tempfile::tempdir;
 
-use crate::common::{DirGuard, setup_git_repo};
+use crate::common::{DirGuard, run_cli, setup_git_repo};
 
-/// Check mode on a missing index in an empty repo should report fresh
-/// (no exit because there are no source files).
+/// DoD-1: healthy `index --check` prints non-empty human stdout and exits 0.
+/// Uses subprocess because the live path may call process::exit on other branches.
 #[test]
-fn test_index_check_missing_no_files() {
+fn test_index_check_healthy_prints_status() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
 
-    let _guard = DirGuard::from_utf8(root);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src").join("lib.rs"), "pub fn check_target() {}").unwrap();
 
-    let result = execute_index_check(tmp.path(), 3, false, false);
-    assert!(result.is_ok());
+    let _guard = DirGuard::from_utf8(root);
+    ledgerful::state::layout::Layout::new(root)
+        .ensure_state_dir()
+        .unwrap();
+
+    let index_result = execute_index(IndexArgs {
+        ..Default::default()
+    });
+    assert!(index_result.is_ok(), "index must succeed: {index_result:?}");
+
+    // Live path: `index --check` (not the deleted execute_index_check).
+    let (stdout, _stderr, code) = run_cli(tmp.path(), &["index", "--check"]);
+    assert_eq!(code, 0, "healthy check must exit 0; stdout={stdout}");
+    assert!(
+        !stdout.trim().is_empty(),
+        "DoD-1: healthy check must print non-empty stdout, got empty"
+    );
+    assert!(
+        stdout.contains("Index")
+            || stdout.contains("up to date")
+            || stdout.contains("Files indexed"),
+        "expected human status text, got: {stdout}"
+    );
 }
 
-/// Check mode JSON output on an empty repo should return valid JSON.
+/// DoD-3: `index --check --json` entire stdout parses as a single JSON document.
 #[test]
-fn test_index_check_json_empty_repo() {
+fn test_index_check_json_is_pure() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
 
-    let _guard = DirGuard::from_utf8(root);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("src").join("lib.rs"),
+        "pub fn check_json_target() {}",
+    )
+    .unwrap();
 
-    let result = execute_index_check(tmp.path(), 3, true, false);
-    assert!(result.is_ok());
+    let _guard = DirGuard::from_utf8(root);
+    ledgerful::state::layout::Layout::new(root)
+        .ensure_state_dir()
+        .unwrap();
+
+    let index_result = execute_index(IndexArgs {
+        ..Default::default()
+    });
+    assert!(index_result.is_ok(), "index must succeed: {index_result:?}");
+
+    let (stdout, _stderr, code) = run_cli(tmp.path(), &["index", "--check", "--json"]);
+    assert_eq!(code, 0, "check --json must exit 0; stdout={stdout}");
+    // Assert by parsing the *entire* stdout — absence greps pass on empty output.
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("DoD-3: entire stdout must parse as JSON: {e}; stdout={stdout}");
+    });
+    assert!(parsed.is_object(), "expected JSON object, got {parsed}");
+}
+
+/// DoD-2: `index --check --strict` on a stale index prints reason on stderr and exits 1.
+///
+/// Must use `run_cli` (subprocess): the live path calls `process::exit(1)`, which
+/// would kill an in-process test binary. Do not "simplify" this back in-process.
+#[test]
+fn test_index_check_strict_stale_exits_with_reason() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src").join("lib.rs"), "pub fn strict_target() {}").unwrap();
+
+    let _guard = DirGuard::from_utf8(root);
+    ledgerful::state::layout::Layout::new(root)
+        .ensure_state_dir()
+        .unwrap();
+
+    let index_result = execute_index(IndexArgs {
+        ..Default::default()
+    });
+    assert!(index_result.is_ok(), "index must succeed: {index_result:?}");
+
+    // Make index stale by editing a source file after indexing.
+    fs::write(
+        root.join("src").join("lib.rs"),
+        "pub fn strict_target() {}\npub fn extra() {}",
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["index", "--check", "--strict"]);
+    assert_eq!(
+        code, 1,
+        "DoD-2: strict stale must exit 1; stdout={stdout}; stderr={stderr}"
+    );
+    assert!(
+        stdout.trim().is_empty(),
+        "strict failure reason belongs on stderr, not stdout: {stdout}"
+    );
+    assert!(
+        !stderr.trim().is_empty(),
+        "DoD-2: strict stale must print reason on stderr"
+    );
+    let lower = stderr.to_lowercase();
+    assert!(
+        lower.contains("stale") || lower.contains("strict"),
+        "stderr must name staleness/strict: {stderr}"
+    );
 }
 
 /// Semantic dry-run on a fresh repo should succeed and print a report.
