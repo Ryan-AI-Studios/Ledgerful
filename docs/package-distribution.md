@@ -55,6 +55,13 @@ Two gates keep half-executed releases from going unnoticed:
 
 Gate B is scheduled, not a PR gate — a short red window between a merged release commit and the tag push is expected. **Where to look for a red run:** Actions → *Release state*. A scheduled red has no pager; someone must watch that workflow.
 
+**Schedule operational facts** (normal, not bugs):
+
+- Delivery can **lag under load** (GitHub high-load includes the start of every hour — the cron is non-top-of-hour for that reason).
+- A **missed day is harmless**: the next run sees a larger `[Unreleased]` (or the same half-executed state if still untagged).
+- On a **public** repo, scheduled workflows **auto-disable after ~60 days of repository inactivity**. Re-enable with a `workflow_dispatch` run or any push.
+- Parser unit matrix: `bash scripts/test-release-changelog.sh` (also run as the first step of `release-state.yml`).
+
 `ci.yml` / `smoke.yml` frontend `ref:` drift is **reported only** by Gate B (warnings do not fail the job). Do not refresh those pins without resolving the Node 24 + Linux CSP gap (see track 0098 / `deferred.md`).
 
 ### Ops recovery — re-run a release without retagging
