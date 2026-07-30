@@ -17,6 +17,7 @@ use base64::{Engine as _, engine::general_purpose::URL_SAFE_NO_PAD};
 use ed25519_dalek::VerifyingKey;
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use zeroize::Zeroizing;
 
 /// Invite version prefix (literal).
 pub const INVITE_PREFIX: &str = "LF-PAIR-1";
@@ -50,8 +51,11 @@ pub enum TrustOutcome {
 }
 
 /// Derive a 32-byte pair-invite key from the team secret.
-pub fn derive_pair_key(secret: &[u8]) -> [u8; 32] {
-    blake3::derive_key(PAIR_KDF_CONTEXT, secret)
+///
+/// Wrapped in [`Zeroizing`] so the derived key is wiped on drop (same pattern as
+/// [`crate::sync::crypto::derive_bundle_key`]).
+pub fn derive_pair_key(secret: &[u8]) -> Zeroizing<[u8; 32]> {
+    Zeroizing::new(blake3::derive_key(PAIR_KDF_CONTEXT, secret))
 }
 
 /// Full 32-byte keyed MAC over the pair-invite message.
@@ -201,6 +205,14 @@ pub fn load_peer_keys(sync_dir: &Path) -> Result<HashMap<String, [u8; 32]>, Stri
         let name = entry.file_name().to_string_lossy().into_owned();
         if let Some(peer_id) = name.strip_suffix(".pub") {
             // Temp names must not match `*.pub` — e.g. `.{id}.pub.tmp` is ignored here.
+            // Skip path-unsafe stems (empty, `unknown`, `.`/`..`, slash/backslash, etc.).
+            if let Err(msg) = validate_device_id_for_path(peer_id) {
+                eprintln!(
+                    "Warning: skipping peer file with path-unsafe id {}: {msg}",
+                    path.display()
+                );
+                continue;
+            }
             names.push((peer_id.to_string(), path));
         }
     }
@@ -394,24 +406,72 @@ mod tests {
         );
     }
 
+    /// 32-byte encoding whose Edwards y-coordinate is not on the curve.
+    ///
+    /// All-zero is **accepted** by ed25519-dalek 2.x (ZIP-215); y=2 is not a
+    /// square residue and fails `CompressedEdwardsY::decompress`.
+    fn invalid_curve_pub_fixture() -> [u8; 32] {
+        let mut bad = [0u8; 32];
+        bad[0] = 2;
+        bad
+    }
+
     #[test]
     fn bad_curve_point_rejected_on_trust() {
         let tmp = tempdir().unwrap();
         let sync_dir = tmp.path().join("sync");
         std::fs::create_dir_all(&sync_dir).unwrap();
-        // 32 garbage bytes that fail curve validation with high probability.
-        let garbage = [0u8; 32]; // identity/small-order rejection or invalid point
-        // All-zero may or may not pass depending on dalek; use a known non-canonical pattern.
-        let mut bad = [0xFFu8; 32];
-        bad[31] = 0xFF;
-        // If from_bytes accepts this (unlikely), still exercise path; otherwise expect Err.
+        let bad = invalid_curve_pub_fixture();
+        assert!(
+            VerifyingKey::from_bytes(&bad).is_err(),
+            "fixture must be invalid under ed25519-dalek 2.x"
+        );
         let result = trust_peer(&sync_dir, "device-badcurve", &bad, false);
-        // Also verify VerifyingKey path: if dalek accepts, trust would succeed — assert curve check intent.
-        if VerifyingKey::from_bytes(&bad).is_err() {
-            assert!(result.is_err());
-            assert!(!peers_dir(&sync_dir).join("device-badcurve.pub").exists());
-        }
-        let _ = garbage;
+        assert!(
+            result.is_err(),
+            "trust_peer must reject invalid curve point, got: {result:?}"
+        );
+        assert!(!peers_dir(&sync_dir).join("device-badcurve.pub").exists());
+    }
+
+    #[test]
+    fn load_peer_keys_skips_unsafe_stems_and_does_not_insert_self() {
+        let tmp = tempdir().unwrap();
+        let sync_dir = tmp.path().join("sync");
+        let dir = peers_dir(&sync_dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let (_sk, pk) = sample_keypair();
+
+        // Valid trusted peer under peers/.
+        assert_eq!(
+            trust_peer(&sync_dir, "device-good", &pk, false).unwrap(),
+            TrustOutcome::NewlyTrusted
+        );
+
+        // device.pub outside peers/ must never be loaded by load_peer_keys.
+        std::fs::write(sync_dir.join("device.pub"), pk).unwrap();
+
+        // Path-unsafe stems under peers/: skipped (not inserted).
+        std::fs::write(dir.join("unknown.pub"), pk).unwrap();
+        // Empty stem after strip_suffix(".pub") → rejected by validate_device_id_for_path.
+        std::fs::write(dir.join(".pub"), pk).unwrap();
+
+        let map = load_peer_keys(&sync_dir).unwrap();
+        assert!(
+            map.contains_key("device-good"),
+            "valid peer must load: {map:?}"
+        );
+        assert!(
+            !map.contains_key("unknown"),
+            "unknown.pub stem must be skipped: {map:?}"
+        );
+        assert!(!map.contains_key(""), "empty stem must be skipped: {map:?}");
+        // load_peer_keys never auto-inserts self (self-insert is call-site only).
+        assert_eq!(
+            map.len(),
+            1,
+            "only path-safe peers/*.pub entries; self not auto-inserted: {map:?}"
+        );
     }
 
     #[test]

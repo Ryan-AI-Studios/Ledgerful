@@ -113,12 +113,18 @@ pub fn handle() -> Result<()> {
     println!("  Last Received:  {last_bundle}");
 
     // Peer trust store: `{state_dir}/sync/peers/*.pub` (0111).
+    // Do not mask list errors as "0 peers" — surface the failure clearly.
     let sync_dir = layout.state_dir.join("sync");
-    let peers = crate::sync::peers::list_peers(sync_dir.as_std_path()).unwrap_or_default();
-    if peers.is_empty() {
-        println!("  Peers:          0 (pair with `ledgerful sync pair` / accept invite)");
-    } else {
-        println!("  Peers:          {} ({})", peers.len(), peers.join(", "));
+    match crate::sync::peers::list_peers(sync_dir.as_std_path()) {
+        Ok(peers) if peers.is_empty() => {
+            println!("  Peers:          0 (pair with `ledgerful sync pair` / accept invite)");
+        }
+        Ok(peers) => {
+            println!("  Peers:          {} ({})", peers.len(), peers.join(", "));
+        }
+        Err(e) => {
+            println!("  Peers:          error: {e}");
+        }
     }
 
     Ok(())

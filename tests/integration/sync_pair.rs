@@ -172,7 +172,9 @@ fn path_unsafe_device_id_rejected() {
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
 fn path_unsafe_invite_rejects_before_write() {
-    // Craft invite with unsafe device_id (`..`) — 4-part parse, path-validate before write.
+    // Craft invites with path-unsafe ids that still parse as 4 `.` parts (valid MAC).
+    // Accept must fail at path validation with path/device messaging — no peer write.
+    // (`..` embeds extra dots and fails parse; covered separately below.)
     let secret = TEST_SECRET.as_bytes();
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -182,33 +184,114 @@ fn path_unsafe_invite_rejects_before_write() {
     init_device(root);
     let pk = read_pub(root);
 
-    let invite = format_invite_v1("..", &pk, secret);
-    let err = handle_sync_pair(Some(invite), false, None, false).expect_err("path unsafe");
-    let msg = format!("{err:#}").to_lowercase();
-    assert!(
-        msg.contains("path")
-            || msg.contains("unsafe")
-            || msg.contains("..")
-            || msg.contains("device_id")
-            || msg.contains("invalid"),
-        "got: {msg}"
-    );
-    let peers = root.join(".ledgerful/sync/peers");
-    assert!(!peers.exists() || std::fs::read_dir(peers.as_std_path()).unwrap().count() == 0);
+    let mut bad_ids: Vec<&str> = vec!["a/b", "unknown"];
+    // Backslash is path-unsafe on all platforms; still a single invite field (no `.`).
+    bad_ids.push(r"a\b");
+
+    for bad_id in bad_ids {
+        let invite = format_invite_v1(bad_id, &pk, secret);
+        let parsed = parse_invite(&invite).expect("path-unsafe id without '.' must still parse");
+        assert_eq!(parsed.device_id, bad_id);
+
+        let err = handle_sync_pair(Some(invite), false, None, false)
+            .expect_err(&format!("path unsafe id {bad_id:?}"));
+        let msg = format!("{err:#}").to_lowercase();
+        assert!(
+            msg.contains("path")
+                || msg.contains("unsafe")
+                || msg.contains("device")
+                || msg.contains("unknown")
+                || msg.contains('/')
+                || msg.contains('\\'),
+            "expected path/device messaging for {bad_id:?}, got: {msg}"
+        );
+        let peers = root.join(".ledgerful/sync/peers");
+        assert!(
+            !peers.exists() || std::fs::read_dir(peers.as_std_path()).unwrap().count() == 0,
+            "no peer write for path-unsafe id {bad_id:?}"
+        );
+    }
 }
 
 #[test]
 #[cfg(feature = "sync")]
-fn invalid_curve_point_rejected_before_write() {
+fn path_unsafe_dotdot_invite_fails_parse() {
+    // `..` as device_id injects extra `.` separators → not 4 parts after split.
+    let secret = TEST_SECRET.as_bytes();
+    let pk = [9u8; 32];
+    let invite = format_invite_v1("..", &pk, secret);
+    assert!(
+        parse_invite(&invite).is_err(),
+        "`..` device_id must fail parse (extra dots), invite={invite}"
+    );
+}
+
+/// 32-byte encoding whose Edwards y-coordinate is not on the curve.
+///
+/// All-zero is accepted by ed25519-dalek 2.x (ZIP-215); y=2 fails decompress.
+#[cfg(feature = "sync")]
+fn invalid_curve_pub_fixture() -> [u8; 32] {
+    let mut bad = [0u8; 32];
+    bad[0] = 2;
+    bad
+}
+
+#[test]
+#[cfg(feature = "sync")]
+fn invalid_curve_point_rejected_on_trust_path() {
+    let bad = invalid_curve_pub_fixture();
+    assert!(
+        ed25519_dalek::VerifyingKey::from_bytes(&bad).is_err(),
+        "fixture must be invalid under ed25519-dalek 2.x"
+    );
+
     let tmp = tempdir().unwrap();
     let sync_dir = tmp.path().join("sync");
     std::fs::create_dir_all(&sync_dir).unwrap();
-    let mut bad = [0xFFu8; 32];
-    bad[0] = 0x01;
-    if ed25519_dalek::VerifyingKey::from_bytes(&bad).is_err() {
-        assert!(trust_peer(&sync_dir, "device-badcurve", &bad, false).is_err());
-        assert!(!sync_dir.join("peers/device-badcurve.pub").exists());
-    }
+    assert!(trust_peer(&sync_dir, "device-badcurve", &bad, false).is_err());
+    assert!(!sync_dir.join("peers/device-badcurve.pub").exists());
+}
+
+#[test]
+#[cfg(feature = "sync")]
+#[serial_test::serial(env)]
+fn invalid_curve_point_rejected_on_accept_path() {
+    // Build a real invite with invalid pub under a valid MAC; accept must fail at curve check.
+    let bad = invalid_curve_pub_fixture();
+    assert!(
+        ed25519_dalek::VerifyingKey::from_bytes(&bad).is_err(),
+        "fixture must be invalid under ed25519-dalek 2.x"
+    );
+
+    let secret = TEST_SECRET.as_bytes();
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+    let _g = DirGuard::from_utf8(root);
+    let _s = TempEnv::set("LEDGERFUL_SYNC_SECRET", TEST_SECRET);
+    init_device(root);
+
+    let invite = format_invite_v1("device-badcurve", &bad, secret);
+    // MAC verifies (crypto does not enforce curve on pub bytes); accept must fail at trust.
+    assert!(
+        verify_invite(secret, &invite).is_ok(),
+        "MAC over bad pub must verify so accept reaches curve check"
+    );
+    let err = handle_sync_pair(Some(invite), false, None, false)
+        .expect_err("invalid curve must fail accept");
+    let msg = format!("{err:#}").to_lowercase();
+    assert!(
+        msg.contains("curve")
+            || msg.contains("public key")
+            || msg.contains("invalid")
+            || msg.contains("ed25519"),
+        "expected curve/key messaging, got: {msg}"
+    );
+    let peers = root.join(".ledgerful/sync/peers");
+    assert!(
+        !peers.exists() || std::fs::read_dir(peers.as_std_path()).unwrap().count() == 0,
+        "no peer file written for invalid curve point"
+    );
 }
 
 #[test]
