@@ -190,7 +190,8 @@ pub fn incremental_index(indexer: &mut ProjectIndexer) -> Result<super::IndexSta
         .collect();
     deleted_paths.sort();
     for relative in &deleted_paths {
-        row_helpers::delete_file_index_dependents(indexer.storage.get_connection(), relative)?;
+        // Match watch-delete: prune dependents + symbols, then mark file DELETED.
+        row_helpers::delete_file_symbols(&mut indexer.storage, relative)?;
         indexer
             .storage
             .get_connection()
