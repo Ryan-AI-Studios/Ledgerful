@@ -81,6 +81,40 @@ fn doctor_json_stdout_is_pure_schema_v1() {
     assert!(v["environment"]["workRoot"].is_string());
 }
 
+/// 0109: malformed config is a structured warn, not a hard abort (JSON still pure).
+#[test]
+fn doctor_malformed_config_emits_legacy_config_warn_json() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+
+    let state = root.join(".ledgerful");
+    fs::create_dir_all(state.join("state")).unwrap();
+    // Deliberately invalid TOML
+    fs::write(state.join("config.toml"), "[[[not valid toml").unwrap();
+
+    let (stdout, stderr, code) = run_cli(root, &["doctor", "--json"]);
+    assert_eq!(
+        code, 0,
+        "malformed config is warn/migration, not block; exit should be 0; stderr={stderr}"
+    );
+    assert!(
+        !stdout.contains("Ledgerful Doctor"),
+        "human banner on malformed config path:\n{stdout}"
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must still be pure JSON");
+    assert_eq!(v["readyForPublish"], true);
+    let findings = v["findings"].as_array().expect("findings array");
+    assert!(
+        findings.iter().any(|f| {
+            f["code"] == "legacy-config" && f["severity"] == "warn" && f["category"] == "migration"
+        }),
+        "expected legacy-config warn finding: {v}"
+    );
+}
+
 /// 0109 / 0074 residual: exit 1 when a block finding is present (enforce + intent never).
 #[test]
 fn doctor_exit_1_on_block_finding() {
