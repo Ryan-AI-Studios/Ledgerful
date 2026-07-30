@@ -118,6 +118,27 @@ where the native-span resolver hits; stdlib/external symbols must not appear as 
 
 A prior native index is **no longer required** for `--auto-scip`: native indexing always runs first.
 
+## Structural blast radius (0106)
+
+`ledgerful impact` and `ledgerful scan --impact` enrich the ImpactPacket with
+additive **`blastRadius`** (call-graph punchlist). This is **not** deploy
+`highBlastResources`.
+
+| Rule | Behavior |
+|------|----------|
+| Default depth | **1** (direct reverse callers of changed symbols) |
+| `--blast-depth 2` | Hop 2 only from nodes reached via high-confidence discovery edges, along high-confidence expansion edges |
+| High confidence | `resolution_status = RESOLVED` **or** `evidence` starts with `scip:` |
+| Never expand | AMBIGUOUS / UNRESOLVED / CAPPED (AMBIGUOUS may appear on hop-1 punchlist with labels) |
+| Seed join | `file_path` + `symbol_name` and/or `qualified_name` — **never** bare name alone |
+| Caps | Fan-out 50/hop, total 200 (config); CLI max depth 2; config ceiling 3 |
+| Query path | No SCIP generate / full reindex |
+
+`structural_couplings` is **derived** from blast hop-1. Depth-1 + confidence
+filters are a portable floor, not a complete or compiler-proven call graph.
+Read `blastRadius.mustTouchFiles` / edges before edits; use `--json` for the
+full edge list.
+
 ## What this cannot do
 
 The following remain out of reach of a name+path heuristic:

@@ -19,6 +19,10 @@ pub struct ImpactPacket {
     pub changes: Vec<super::ChangedFile>,
     pub temporal_couplings: Vec<super::TemporalCoupling>,
     pub structural_couplings: Vec<super::StructuralCoupling>,
+    /// Structural call-graph blast radius (≠ deploy `highBlastResources`).
+    /// Omitted from JSON when empty.
+    #[serde(default, skip_serializing_if = "super::blast_radius_skip")]
+    pub blast_radius: Option<super::BlastRadius>,
     pub centrality_risks: Vec<super::CentralityRisk>,
     #[serde(default)]
     pub logging_coverage_delta: Vec<super::CoverageDelta>,
@@ -78,6 +82,7 @@ impl ImpactPacket {
         self.changes.is_empty()
             && self.temporal_couplings.is_empty()
             && self.structural_couplings.is_empty()
+            && self.blast_radius.is_none()
             && self.centrality_risks.is_empty()
             && self.logging_coverage_delta.is_empty()
             && self.error_handling_delta.is_empty()
@@ -121,6 +126,7 @@ impl Default for ImpactPacket {
             changes: Vec::new(),
             temporal_couplings: Vec::new(),
             structural_couplings: Vec::new(),
+            blast_radius: None,
             centrality_risks: Vec::new(),
             logging_coverage_delta: Vec::new(),
             error_handling_delta: Vec::new(),
@@ -182,6 +188,17 @@ impl ImpactPacket {
         self.changes.sort_unstable();
         self.temporal_couplings.sort_unstable();
         self.structural_couplings.sort_unstable();
+        if let Some(ref mut blast) = self.blast_radius {
+            blast.edges.sort_unstable();
+            blast.must_touch_files.sort_unstable();
+            blast.must_touch_files.dedup();
+            blast.must_touch_symbols.sort_unstable();
+            blast.must_touch_symbols.dedup();
+            blast.test_hints.sort_unstable();
+            blast.test_hints.dedup();
+            blast.honesty_notes.sort_unstable();
+            blast.honesty_notes.dedup();
+        }
         self.centrality_risks.sort_unstable();
         self.logging_coverage_delta.sort_unstable();
         self.error_handling_delta.sort_unstable();
@@ -335,6 +352,7 @@ impl ImpactPacket {
         // Phase 3: Strip temporal and structural couplings
         self.temporal_couplings.clear();
         self.structural_couplings.clear();
+        self.blast_radius = None;
         self.centrality_risks.clear();
         self.logging_coverage_delta.clear();
         self.error_handling_delta.clear();

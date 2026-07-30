@@ -69,6 +69,18 @@ impl Default for IndexConfig {
 pub struct ImpactConfig {
     #[serde(default = "default_risk_weights")]
     pub risk_weights: HashMap<String, f64>,
+    /// Default structural blast hop depth (product default 1).
+    #[serde(default = "default_blast_depth")]
+    pub blast_depth: u32,
+    /// Hard ceiling for blast depth (config max 3; CLI max is 2).
+    #[serde(default = "default_blast_depth_max")]
+    pub blast_depth_max: u32,
+    /// Max edges retained per hop after pair collapse.
+    #[serde(default = "default_blast_fanout_per_hop")]
+    pub blast_fanout_per_hop: usize,
+    /// Max total edges across all hops.
+    #[serde(default = "default_blast_total_edges")]
+    pub blast_total_edges: usize,
 }
 
 fn default_risk_weights() -> HashMap<String, f64> {
@@ -85,10 +97,30 @@ fn default_risk_weights() -> HashMap<String, f64> {
     weights
 }
 
+fn default_blast_depth() -> u32 {
+    1
+}
+
+fn default_blast_depth_max() -> u32 {
+    3
+}
+
+fn default_blast_fanout_per_hop() -> usize {
+    50
+}
+
+fn default_blast_total_edges() -> usize {
+    200
+}
+
 impl Default for ImpactConfig {
     fn default() -> Self {
         Self {
             risk_weights: default_risk_weights(),
+            blast_depth: default_blast_depth(),
+            blast_depth_max: default_blast_depth_max(),
+            blast_fanout_per_hop: default_blast_fanout_per_hop(),
+            blast_total_edges: default_blast_total_edges(),
         }
     }
 }

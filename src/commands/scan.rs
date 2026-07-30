@@ -327,6 +327,27 @@ fn validate_scan_args(
     Ok(())
 }
 
+/// Reject `--blast-depth` without a path that runs impact enrichment (no silent no-op).
+fn validate_blast_depth_requires_impact(
+    run_impact: bool,
+    pr: &Option<String>,
+    blast_depth: Option<u32>,
+) -> Result<()> {
+    if blast_depth.is_some() && !run_impact {
+        // --pr is a separate PR-scan surface and does not run impact enrichment.
+        if pr.is_some() {
+            return Err(miette::miette!(
+                "--blast-depth is not used with --pr; use scan --impact --blast-depth N (or impact --blast-depth N)"
+            ));
+        }
+        return Err(miette::miette!(
+            "--blast-depth requires --impact (structural blast is part of impact enrichment)"
+        ));
+    }
+    Ok(())
+}
+
+/// Scan entrypoint (default blast depth from config).
 pub fn execute_scan(
     run_impact: bool,
     summary: bool,
@@ -336,10 +357,26 @@ pub fn execute_scan(
     pr: Option<String>,
     format: Option<String>,
 ) -> Result<()> {
+    execute_scan_with_blast_depth(run_impact, summary, json, out, base_ref, pr, format, None)
+}
+
+/// Scan entrypoint with optional CLI `--blast-depth` (DoD-9 dual surface).
+#[allow(clippy::too_many_arguments)]
+pub fn execute_scan_with_blast_depth(
+    run_impact: bool,
+    summary: bool,
+    json: bool,
+    out: Option<PathBuf>,
+    base_ref: Option<String>,
+    pr: Option<String>,
+    format: Option<String>,
+    blast_depth: Option<u32>,
+) -> Result<()> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
 
     validate_scan_args(&pr, &base_ref, &format, run_impact, summary, json, &out)?;
+    validate_blast_depth_requires_impact(run_impact, &pr, blast_depth)?;
 
     let repo = open_repo(&current_dir)?;
     let (head_hash, branch_name) = get_head_info(&repo)?;
@@ -495,10 +532,14 @@ pub fn execute_scan(
 
         // Always use the snapshot derived above so that --base-ref changes are
         // passed through regardless of whether --json / --out is set.
+        // Thread --blast-depth so scan --impact matches impact CLI (DoD-9).
         let impact_packet = if base_ref.is_some() {
-            crate::commands::impact::execute_impact_silent_with_snapshot(snapshot)?
+            crate::commands::impact::execute_impact_silent_with_snapshot_and_depth(
+                snapshot,
+                blast_depth,
+            )?
         } else {
-            crate::commands::impact::execute_impact_silent()?
+            crate::commands::impact::execute_impact_silent_with_depth(blast_depth)?
         };
 
         if write_impact_json {
@@ -712,5 +753,27 @@ mod tests {
         assert!(is_missing_base_commit_error("bad revision 'main'"));
         assert!(is_missing_base_commit_error("does not exist: 'main'"));
         assert!(!is_missing_base_commit_error("some other git failure"));
+    }
+
+    #[test]
+    fn blast_depth_requires_impact_flag() {
+        // Silent no-op banned (codex R1 P2 / 0106 DoD-9).
+        let err = validate_blast_depth_requires_impact(false, &None, Some(2))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("--impact"),
+            "expected require --impact, got {err}"
+        );
+        assert!(validate_blast_depth_requires_impact(true, &None, Some(2)).is_ok());
+        assert!(validate_blast_depth_requires_impact(false, &None, None).is_ok());
+        let pr_err =
+            validate_blast_depth_requires_impact(false, &Some("main...HEAD".into()), Some(2))
+                .unwrap_err()
+                .to_string();
+        assert!(
+            pr_err.contains("--pr") || pr_err.contains("impact"),
+            "expected pr rejection, got {pr_err}"
+        );
     }
 }

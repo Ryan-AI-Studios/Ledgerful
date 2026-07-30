@@ -60,7 +60,17 @@ pub fn run_with(cli: Cli) -> Result<()> {
             base_ref,
             pr,
             format,
-        } => crate::commands::scan::execute_scan(impact, summary, json, out, base_ref, pr, format),
+            blast_depth,
+        } => crate::commands::scan::execute_scan_with_blast_depth(
+            impact,
+            summary,
+            json,
+            out,
+            base_ref,
+            pr,
+            format,
+            blast_depth,
+        ),
         Commands::Impact {
             all_parents,
             summary,
@@ -68,13 +78,15 @@ pub fn run_with(cli: Cli) -> Result<()> {
             dead_code,
             json,
             out,
-        } => crate::commands::impact::execute_impact(
+            blast_depth,
+        } => crate::commands::impact::execute_impact_with_blast_depth(
             all_parents,
             summary,
             telemetry,
             dead_code,
             json,
             out,
+            blast_depth,
         ),
         Commands::Index {
             incremental,

@@ -86,6 +86,11 @@ pub enum Commands {
         /// (human-readable). Requires --pr.
         #[arg(long, value_name = "FORMAT")]
         format: Option<String>,
+        /// Structural call-graph blast hop depth (default 1; max 2 on CLI).
+        /// Not deploy highBlastResources. Hop > 1 only walks high-confidence edges
+        /// (RESOLVED or scip:). Not a complete call graph.
+        #[arg(long, value_name = "N")]
+        blast_depth: Option<u32>,
     },
     /// Analyze impact of current changes
     Impact {
@@ -107,6 +112,11 @@ pub enum Commands {
         /// Write output to file
         #[arg(short, long)]
         out: Option<PathBuf>,
+        /// Structural call-graph blast hop depth (default 1; max 2 on CLI).
+        /// Not deploy highBlastResources. Hop > 1 only walks high-confidence edges
+        /// (RESOLVED or scip:). Not a complete call graph.
+        #[arg(long, value_name = "N")]
+        blast_depth: Option<u32>,
     },
     /// Index the project for search and discovery
     Index {
@@ -1022,6 +1032,7 @@ impl Commands {
                 base_ref,
                 pr,
                 format,
+                blast_depth,
             } => {
                 if *impact {
                     f.push("impact");
@@ -1044,6 +1055,9 @@ impl Commands {
                 if format.is_some() {
                     f.push("format");
                 }
+                if blast_depth.is_some() {
+                    f.push("blast_depth");
+                }
             }
             Commands::Impact {
                 all_parents,
@@ -1052,6 +1066,7 @@ impl Commands {
                 dead_code,
                 json,
                 out,
+                blast_depth,
             } => {
                 if *all_parents {
                     f.push("all_parents");
@@ -1070,6 +1085,9 @@ impl Commands {
                 }
                 if out.is_some() {
                     f.push("out");
+                }
+                if blast_depth.is_some() {
+                    f.push("blast_depth");
                 }
             }
             Commands::Index {

@@ -18,6 +18,14 @@ use std::env;
 pub fn execute_impact_silent_with_snapshot(
     snapshot: crate::git::RepoSnapshot,
 ) -> Result<crate::impact::packet::ImpactPacket> {
+    execute_impact_silent_with_snapshot_and_depth(snapshot, None)
+}
+
+/// Like [`execute_impact_silent_with_snapshot`] with optional CLI `--blast-depth`.
+pub fn execute_impact_silent_with_snapshot_and_depth(
+    snapshot: crate::git::RepoSnapshot,
+    blast_depth: Option<u32>,
+) -> Result<crate::impact::packet::ImpactPacket> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
 
@@ -26,7 +34,14 @@ pub fn execute_impact_silent_with_snapshot(
     let mut packet = crate::impact::orchestrator::map_snapshot_to_packet(snapshot, &current_dir)?;
 
     // Load main config for temporal analysis
-    let config = load_config(&layout).unwrap_or_default();
+    let mut config = load_config(&layout).unwrap_or_default();
+    if let Some(note) = crate::impact::enrichment::blast::apply_cli_blast_depth(
+        &mut config.impact.blast_depth,
+        config.impact.blast_depth_max,
+        blast_depth,
+    ) {
+        packet.analysis_warnings.push(note);
+    }
 
     // Persist to SQLite and run Orchestrated Enrichment
     let storage = crate::state::storage::StorageManager::init_with_layout(&layout)?;
@@ -52,6 +67,13 @@ pub fn execute_impact_silent_with_snapshot(
 }
 
 pub fn execute_impact_silent() -> Result<crate::impact::packet::ImpactPacket> {
+    execute_impact_silent_with_depth(None)
+}
+
+/// Like [`execute_impact_silent`] with optional CLI `--blast-depth`.
+pub fn execute_impact_silent_with_depth(
+    blast_depth: Option<u32>,
+) -> Result<crate::impact::packet::ImpactPacket> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
 
@@ -80,7 +102,14 @@ pub fn execute_impact_silent() -> Result<crate::impact::packet::ImpactPacket> {
     let mut packet = crate::impact::orchestrator::map_snapshot_to_packet(snapshot, &current_dir)?;
 
     // Load main config for temporal analysis
-    let config = load_config(&layout).unwrap_or_default();
+    let mut config = load_config(&layout).unwrap_or_default();
+    if let Some(note) = crate::impact::enrichment::blast::apply_cli_blast_depth(
+        &mut config.impact.blast_depth,
+        config.impact.blast_depth_max,
+        blast_depth,
+    ) {
+        packet.analysis_warnings.push(note);
+    }
 
     // Persist to SQLite and run Orchestrated Enrichment
     let storage = crate::state::storage::StorageManager::init_with_layout(&layout)?;
@@ -232,13 +261,35 @@ pub fn execute_impact_human(
     Ok(())
 }
 
+/// Impact entrypoint (default blast depth from config).
 pub fn execute_impact(
+    all_parents: bool,
+    summary: bool,
+    telemetry_coverage: bool,
+    dead_code: bool,
+    json: bool,
+    out: Option<std::path::PathBuf>,
+) -> Result<()> {
+    execute_impact_with_blast_depth(
+        all_parents,
+        summary,
+        telemetry_coverage,
+        dead_code,
+        json,
+        out,
+        None,
+    )
+}
+
+/// Impact entrypoint with optional CLI `--blast-depth` (DoD-9 dual surface).
+pub fn execute_impact_with_blast_depth(
     all_parents: bool,
     summary: bool,
     _telemetry_coverage: bool,
     dead_code: bool,
     json: bool,
     out: Option<std::path::PathBuf>,
+    blast_depth: Option<u32>,
 ) -> Result<()> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
@@ -275,6 +326,14 @@ pub fn execute_impact(
     if dead_code {
         config.dead_code.enabled = true;
     }
+    // Structural blast depth (CLI max 2; clamp with honesty note rather than hard-fail)
+    if let Some(note) = crate::impact::enrichment::blast::apply_cli_blast_depth(
+        &mut config.impact.blast_depth,
+        config.impact.blast_depth_max,
+        blast_depth,
+    ) {
+        packet.analysis_warnings.push(note);
+    }
 
     // Persist to SQLite and run Orchestrated Enrichment
     let storage = crate::state::storage::StorageManager::init_with_layout(&layout)?;
@@ -299,7 +358,8 @@ pub fn execute_impact(
 
     storage.shutdown()?;
 
-    // Handle --json and --out: serialize to stdout or file
+    // Handle --json and --out: serialize to stdout or file.
+    // Pure JSON on --json (0093/0106): no human chatter on stdout when --json is set.
     if json || out.is_some() {
         let json_output = serde_json::to_string_pretty(&packet)
             .map_err(|e| miette::miette!("Failed to serialize impact report: {}", e))?;
@@ -312,11 +372,13 @@ pub fn execute_impact(
                     e
                 )
             })?;
-            // Product result path (0093): belongs on stdout.
-            println!(
-                "Wrote impact report to {}",
-                path.display().to_string().cyan()
-            );
+            // Human-only confirmation when not in machine/json mode.
+            if !json {
+                println!(
+                    "Wrote impact report to {}",
+                    path.display().to_string().cyan()
+                );
+            }
         } else {
             println!("{}", json_output);
         }
