@@ -741,18 +741,28 @@ fn sync_doctor_findings(
         ));
     }
     // 0111: enabled with zero trusted peers — actionable next step; never sole-blocks publish.
+    // Do not treat list IO errors as zero peers (honesty — same class as status R1-04).
     #[cfg(feature = "sync")]
     if keys_ok && sot_ok {
         let sync_dir = layout.state_dir.join("sync");
-        let peer_count = crate::sync::peers::list_peers(sync_dir.as_std_path())
-            .map(|p| p.len())
-            .unwrap_or(0);
-        if peer_count == 0 {
-            findings.push(DoctorFinding::warn(
-                "sync-enabled-no-peers",
-                DoctorCategory::Optional,
-                "[sync].enabled=true but no trusted peers under sync/peers/. Exchange LF-PAIR-1 invites with `ledgerful sync pair` (mutual accept) or disable sync. See docs/team-sync.md.",
-            ));
+        match crate::sync::peers::list_peers(sync_dir.as_std_path()) {
+            Ok(peers) if peers.is_empty() => {
+                findings.push(DoctorFinding::warn(
+                    "sync-enabled-no-peers",
+                    DoctorCategory::Optional,
+                    "[sync].enabled=true but no trusted peers under sync/peers/. Exchange LF-PAIR-1 invites with `ledgerful sync pair` (mutual accept) or disable sync. See docs/team-sync.md.",
+                ));
+            }
+            Ok(_) => {}
+            Err(e) => {
+                findings.push(DoctorFinding::warn(
+                    "sync-peers-list-error",
+                    DoctorCategory::Optional,
+                    format!(
+                        "[sync].enabled=true but trusted peer list could not be read: {e}. Check permissions on sync/peers/. See docs/team-sync.md."
+                    ),
+                ));
+            }
         }
     }
     findings
