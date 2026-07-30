@@ -649,8 +649,12 @@ pub fn try_auto_index(
     // Open write DB under resolved state_dir (shared on linked worktrees).
     let write_storage = StorageManager::init_with_layout(layout)?;
 
+    // Prefer repo config (ignore patterns, thresholds) over bare defaults.
+    let index_config =
+        crate::config::load::load_config(layout).unwrap_or_else(|_| Config::default());
+
     // Index analysis root is the current worktree workdir, not state parent.
-    let mut indexer = ProjectIndexer::new(write_storage, layout.root.clone(), Config::default());
+    let mut indexer = ProjectIndexer::new(write_storage, layout.root.clone(), index_config);
     match action {
         AutoIndexAction::FullBootstrap => {
             indexer.full_index()?;

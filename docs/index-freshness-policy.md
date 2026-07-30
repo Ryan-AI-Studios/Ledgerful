@@ -12,7 +12,7 @@ Related: `docs/Features.md`, `docs/Call-Resolution.md` (SCIP / analyze-graph),
 | Tier | How it runs | What it may do | What it must never do |
 |---|---|---|---|
 | **Light continuous** | User starts `ledgerful watch` (foreground) | Debounced FS events → incremental native index/graph sync (`IncrementalSyncEngine`); **mega-batch safety** below | SCIP generate; silent OS service; unbounded branch-switch chew |
-| **Light on-demand** | `--auto-index` on **exactly five** commands: `search`, `ask`, `hotspots`, `dead-code`, `verify` | Refresh when **time-stale**, **never-indexed / missing**, or **drift-stale** (content-hash vs worktree); **full bootstrap** when no usable floor exists | SCIP; surprise `--analyze-graph`; “incremental only” that fails on empty DB |
+| **Light on-demand** | Shared path: `--auto-index` on **`search`, `ask`, `hotspots`, `dead-code`** via `try_auto_index`. **`verify --auto-index`** is a **separate** scoped path (see below). | Shared path: refresh when **time-stale**, **never-indexed / missing**, or **drift-stale** (content-hash vs worktree); **full bootstrap** when no usable floor exists | SCIP; surprise `--analyze-graph`; “incremental only” that fails on empty DB |
 | **Heavy scheduled / explicit** | `schedule setup-nightly` / `run-nightly` **or** user `index --full` / `--auto-scip` / `--analyze-graph` | Full graph analysis / optional SCIP | Default-idle trigger; run without install/opt-in |
 
 **Not an indexing tier:** `ledgerful daemon` (feature-gated LSP / risk-alert IPC;
@@ -49,7 +49,16 @@ Never SCIP. Never `--analyze-graph` on this path.
   `project_files.content_hash` (includes never-stored / new files). Covers
   **same-day** agent edits that time-only checks would miss.
 
-Both signals matter. `--auto-index` runs when either fires.
+Both signals matter. Shared-path `--auto-index` runs when either fires.
+
+### `verify --auto-index` (not `try_auto_index`)
+
+`verify --auto-index` only helps **`--scope fast`** when `test_mapping` is empty or
+stale relative to the impact packet `head_hash`. It runs a **changed-files
+incremental** refresh and retries scoped test selection — it does **not** perform
+the general time/drift/bootstrap `try_auto_index` refresh used by search/ask/
+hotspots/dead-code. For a full symbol/search floor, use those commands or
+`ledgerful index --incremental` / `--full`. See `docs/verify-performance.md`.
 
 ## Watch mega-batch safety
 
@@ -100,7 +109,9 @@ Need readiness?
   → ledgerful index --check [--json]   # age / floor signals
 
 Need fresher symbols/search same session?
-  → prefer --auto-index on: search | ask | hotspots | dead-code | verify
+  → prefer --auto-index on: search | ask | hotspots | dead-code
+    (time-stale + content-hash drift + full bootstrap)
+  → verify --auto-index only repairs test_mapping for --scope fast (not general index)
   → else: ledgerful index --incremental   # or --full if never indexed / mega-batch
 
 Continuous local session?

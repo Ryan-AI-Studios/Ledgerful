@@ -89,16 +89,23 @@ pub fn execute_dead_code_with_prompt(
 ) -> Result<()> {
     let layout = get_layout()?;
     let mut config = load_ledger_config(&layout)?;
-
-    let storage = crate::state::storage::StorageManager::open_read_only(&layout)?;
     let threshold_days = config.index.stale_threshold_days;
 
     let storage = if auto_index {
+        // Missing DB must still bootstrap under --auto-index (DoD-3).
+        let storage = match crate::state::storage::StorageManager::open_read_only(&layout) {
+            Ok(s) => s,
+            Err(_) => {
+                layout.ensure_state_dir()?;
+                crate::state::storage::StorageManager::init_with_layout(&layout)?
+            }
+        };
         crate::index::staleness::try_auto_index(storage, threshold_days, &layout)?
-    } else if explain.is_none() {
-        let _ = warn_if_stale(&storage, threshold_days);
-        storage
     } else {
+        let storage = crate::state::storage::StorageManager::open_read_only(&layout)?;
+        if explain.is_none() {
+            let _ = warn_if_stale(&storage, threshold_days);
+        }
         storage
     };
 

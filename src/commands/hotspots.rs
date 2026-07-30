@@ -23,18 +23,31 @@ pub fn execute_hotspots(args: HotspotArgs) -> Result<()> {
     let repo = open_repo(&current_dir)?;
     let layout = get_layout()?;
 
-    let storage = if args.semantic || args.centrality {
-        StorageManager::open_read_only(&layout)?
-    } else {
-        StorageManager::open_read_only_sqlite_only(&layout)?
-    };
-
     // --- Staleness check ---
     let config = load_config(&layout).unwrap_or_default();
     let threshold_days = config.index.stale_threshold_days;
+    let need_cozo = args.semantic || args.centrality;
     let storage = if args.auto_index {
+        // Missing DB must still bootstrap under --auto-index (DoD-3).
+        let opened = if need_cozo {
+            StorageManager::open_read_only(&layout)
+        } else {
+            StorageManager::open_read_only_sqlite_only(&layout)
+        };
+        let storage = match opened {
+            Ok(s) => s,
+            Err(_) => {
+                layout.ensure_state_dir()?;
+                StorageManager::init_with_layout(&layout)?
+            }
+        };
         crate::index::staleness::try_auto_index(storage, threshold_days, &layout)?
     } else {
+        let storage = if need_cozo {
+            StorageManager::open_read_only(&layout)?
+        } else {
+            StorageManager::open_read_only_sqlite_only(&layout)?
+        };
         let _ = warn_if_stale(&storage, threshold_days);
         storage
     };

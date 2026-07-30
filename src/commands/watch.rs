@@ -321,4 +321,69 @@ mod tests {
         ]);
         assert_eq!(unique_batch_path_count(&batch), 2);
     }
+
+    /// Composition: when unique paths hit the threshold, the watch path must
+    /// refuse process_batch **and** mark the index time-stale (DoD-5 wiring).
+    #[test]
+    fn mega_batch_skip_marks_index_stale() {
+        use crate::index::staleness::{
+            STALE_EPOCH_RFC3339, check_index_staleness, mark_index_stale,
+        };
+        use crate::state::migrations::get_migrations;
+        use crate::state::storage::StorageManager;
+        use chrono::Utc;
+        use rusqlite::Connection;
+
+        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = conn;
+        get_migrations().to_latest(&mut conn).unwrap();
+        let mut storage = StorageManager::init_from_conn(conn);
+        let now = Utc::now().to_rfc3339();
+        storage
+            .get_connection()
+            .execute(
+                "INSERT INTO project_files (file_path, parse_status, last_indexed_at, content_hash) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params!["src/a.rs", "OK", &now, "abc"],
+            )
+            .unwrap();
+        storage
+            .get_connection()
+            .execute(
+                "INSERT OR REPLACE INTO index_metadata (key, value) VALUES ('last_indexed_at', ?1)",
+                [&now],
+            )
+            .unwrap();
+        assert!(
+            check_index_staleness(&storage, 3).is_none(),
+            "fresh index should not be time-stale before mega-batch mark"
+        );
+
+        let mut events = Vec::new();
+        for i in 0..DEFAULT_MEGA_BATCH_THRESHOLD {
+            events.push(WatchEvent {
+                path: Utf8PathBuf::from(format!("src/f{i}.rs")),
+                kind: WatchEventKind::Modify,
+            });
+        }
+        let batch = WatchBatch::new(events);
+        let path_count = unique_batch_path_count(&batch);
+        assert!(
+            should_skip_mega_batch(path_count, DEFAULT_MEGA_BATCH_THRESHOLD),
+            "synthetic batch must trip mega-batch safety"
+        );
+        // Production branch: skip process_batch + mark_index_stale
+        mark_index_stale(&mut storage).unwrap();
+        let warning = check_index_staleness(&storage, 3).expect("must be time-stale after mark");
+        assert!(!warning.is_missing);
+        let stored: String = storage
+            .get_connection()
+            .query_row(
+                "SELECT value FROM index_metadata WHERE key = 'last_indexed_at'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, STALE_EPOCH_RFC3339);
+    }
 }

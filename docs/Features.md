@@ -42,12 +42,13 @@ Compiler-grade search and conceptual discovery.
 
 *   **Trigram Regex Search**: Sub-millisecond regex discovery using Tantivy and custom Trigram pre-filters.
 *   **Index freshness policy (three tiers)**: light continuous (`watch` + mega-batch safety), light
-    on-demand (`--auto-index` on `search` / `ask` / `hotspots` / `dead-code` / `verify` with
-    time-stale **and** content-hash drift-stale, full bootstrap when never indexed), heavy
-    scheduled/explicit (`schedule setup-nightly` → `index --analyze-graph`, or user
-    `index --full` / `--auto-scip`). `scan --impact` has **no** `--auto-index`.
-    `ledgerful daemon` is an LSP **reader**, not an indexer. No idle SCIP / silent always-on
-    reindex. See **`docs/index-freshness-policy.md`**.
+    on-demand (`--auto-index` on `search` / `ask` / `hotspots` / `dead-code` with time-stale
+    **and** content-hash drift-stale, full bootstrap when never indexed), heavy scheduled/explicit
+    (`schedule setup-nightly` → `index --analyze-graph`, or user `index --full` / `--auto-scip`).
+    `verify --auto-index` is a **separate** `--scope fast` `test_mapping` refresh (not the shared
+    drift/bootstrap path). `scan --impact` has **no** `--auto-index`. `ledgerful daemon` is an
+    LSP **reader**, not an indexer. No idle SCIP / silent always-on reindex. See
+    **`docs/index-freshness-policy.md`**.
 *   **SCIP augment (optional)**: `index --auto-scip` / `index --scip <path>` run **after** the native
     call graph and add precise cross-file **reference edges** onto native `project_symbols` ids
     (`structural_edges` with `evidence=scip:ref`). SCIP does **not** write symbols, does not replace
