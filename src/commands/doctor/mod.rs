@@ -100,7 +100,16 @@ pub fn execute_doctor(json: bool) -> Result<()> {
     }
 
     // --- Intelligence Probes ---
-    let config = crate::config::load::load_config(&layout)?;
+    // Soft-load config: malformed/unreadable config must not abort doctor (0109).
+    // Structured `legacy-config` findings come from `doctor_config_findings` later;
+    // continue probes with defaults so `--json` / readyForPublish still work.
+    let config = match crate::config::load::load_config(&layout) {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::debug!("doctor config load failed (continuing with defaults): {e}");
+            crate::config::model::Config::default()
+        }
+    };
     let mut model_config = config.local_model.clone();
     model_config.timeout_secs = 2;
 
