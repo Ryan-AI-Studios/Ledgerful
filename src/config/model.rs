@@ -51,6 +51,7 @@ mod tests {
         let config = Config::default();
         assert!(!config.core.strict);
         assert_eq!(config.watch.debounce_ms, 1000);
+        assert_eq!(config.watch.mega_batch_threshold, 1000);
         assert!(
             config
                 .watch
