@@ -58,7 +58,7 @@ impl ScipToolchain {
         match self {
             Self::RustAnalyzer => "rustup component add rust-analyzer",
             Self::ScipTypescript => "npm install -g @sourcegraph/scip-typescript",
-            Self::ScipPython => "pip install scip-python",
+            Self::ScipPython => "npm install -g @sourcegraph/scip-python",
         }
     }
 
@@ -363,5 +363,18 @@ mod tests {
         assert!(!is_capable("totally-fake-scip-tool-0095"));
         set_capability_for_test("totally-fake-scip-tool-0095", true);
         assert!(is_capable("totally-fake-scip-tool-0095"));
+    }
+
+    #[test]
+    fn scip_python_install_hint_is_npm_not_pip() {
+        let hint = ScipToolchain::ScipPython.install_hint();
+        assert!(
+            hint.contains("npm") && hint.contains("@sourcegraph/scip-python"),
+            "scip-python must advertise npm package, got: {hint}"
+        );
+        assert!(
+            !hint.contains("pip"),
+            "scip-python is not on PyPI; install_hint must not say pip: {hint}"
+        );
     }
 }

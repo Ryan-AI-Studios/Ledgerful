@@ -232,3 +232,85 @@ pub fn build_kg_native(
 
     Ok(())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::model::Config;
+    use crate::scip::ScipRunStatus;
+    use crate::state::layout::Layout;
+    use crate::state::storage::connection::in_memory_storage;
+
+    /// 0095 P3 / 0105 roll-in: when Cozo is unavailable but SCIP is requested,
+    /// still attempt SQLite-side SCIP augment and return zeroed centrality +
+    /// an explicit scip status (not silent skip of SCIP).
+    #[test]
+    fn cozo_unavailable_still_attempts_scip_when_requested() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8 temp path");
+        let layout = Layout::new(&root);
+        let storage = in_memory_storage();
+        assert!(
+            storage.cozo.is_none(),
+            "in_memory_storage must have cozo=None for this branch"
+        );
+        let config = Config::default();
+        let missing = tmp.path().join("definitely-missing-0105.scip");
+
+        let (cent, scip) = run_graph_analysis(
+            storage,
+            tmp.path(),
+            &config,
+            false,
+            true,
+            false,
+            Some(missing),
+            Some(&layout),
+        )
+        .expect("Cozo-missing path must not hard-fail");
+
+        assert_eq!(cent.entry_points_count, 0);
+        assert_eq!(cent.symbols_computed, 0);
+        assert_eq!(cent.max_reachable, 0);
+
+        let scip = scip.expect("SCIP requested → Some(ScipIndexJson)");
+        assert!(
+            matches!(scip.status, ScipRunStatus::Failed | ScipRunStatus::Success),
+            "requested SCIP must not be DidNotRun when Cozo is missing; got {:?}",
+            scip.status
+        );
+        // Missing path should fail (not invent success).
+        assert!(
+            matches!(scip.status, ScipRunStatus::Failed),
+            "missing SCIP file should report failed; got {:?} msg={:?}",
+            scip.status,
+            scip.message
+        );
+    }
+
+    #[test]
+    fn cozo_unavailable_without_scip_returns_none_scip() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8 temp path");
+        let layout = Layout::new(&root);
+        let storage = in_memory_storage();
+        let config = Config::default();
+
+        let (cent, scip) = run_graph_analysis(
+            storage,
+            tmp.path(),
+            &config,
+            false,
+            true,
+            false,
+            None,
+            Some(&layout),
+        )
+        .expect("ok");
+
+        assert_eq!(cent.max_reachable, 0);
+        assert!(scip.is_none());
+    }
+}

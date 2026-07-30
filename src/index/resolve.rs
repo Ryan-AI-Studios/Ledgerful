@@ -1111,6 +1111,23 @@ mod tests {
                 "Call-Resolution.md must not affirm banned certainty phrase: {phrase:?}"
             );
         }
+
+        // 0105: tracked skill must not re-advertise SCIP as universal "compiler-grade".
+        let skill = include_str!("../../docs/Ledgerful/skill.md").to_lowercase();
+        assert!(
+            !skill.contains("compiler-grade"),
+            "docs/Ledgerful/skill.md must not claim compiler-grade SCIP (0105 honesty)"
+        );
+        assert!(
+            skill.contains("auto-scip") || skill.contains("--auto-scip"),
+            "skill must document optional --auto-scip"
+        );
+        assert!(
+            skill.contains("scip.status")
+                || skill.contains("edges_added")
+                || skill.contains("off by default"),
+            "skill must mention SCIP opt-in / json fields honesty"
+        );
         // Required honest framing present in full doc
         assert!(
             lower.contains("unique-local-candidate") || lower.contains("unique local candidate"),

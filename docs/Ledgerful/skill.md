@@ -142,11 +142,13 @@ Before searching the web or reading files manually, query Ledgerful's symbol ind
 # Always refresh the index first (incremental, fast)
 ledgerful index --incremental
 
-# Optional: SCIP edge augment after native call graph (off by default).
+# Optional: SCIP edge augment after native call graph (OFF by default).
+# Use for precision work / impact prep — not a universal quality KPI.
 # Requires a capable indexer (capability probe). Adds structural_edges with
 # evidence=scip:ref onto native symbols only — does not replace the native index.
-# ledgerful index --auto-scip
-# ledgerful index --scip path/to/index.scip
+# Under --json, read scip.status, scip.edges_added, scip.edges_updated.
+# ledgerful index --auto-scip --json
+# ledgerful index --scip path/to/index.scip --json
 
 # Find a function, struct, or type by name
 ledgerful search "handleGetUser"
