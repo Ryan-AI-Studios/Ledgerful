@@ -92,6 +92,90 @@ fn test_apply_inserts_new_entries() {
     assert_eq!(count, 1);
 }
 
+/// 0110: apply must update last_apply_hlc without clobbering local SoT device_id.
+#[test]
+#[cfg(feature = "sync")]
+fn apply_updates_last_apply_hlc_preserves_local_device_id() {
+    let dir = tempdir().unwrap();
+    let db_path = dir.path().join("ledger.db");
+    let _storage = StorageManager::init(&db_path).unwrap();
+    let mut conn = Connection::open(&db_path).unwrap();
+
+    let local_id = "device-local-sot";
+    conn.execute(
+        "INSERT INTO sync_state (id, device_id) VALUES (1, ?1)",
+        [local_id],
+    )
+    .unwrap();
+
+    let remote_id = "device-remote-peer";
+    let bundle_hlc = HLC {
+        physical_ms: 2000,
+        logical: 0,
+        node_id: remote_id.to_string(),
+    };
+    let entry = Entry {
+        tx_id: "tx-preserve-id".to_string(),
+        category: "FEATURE".to_string(),
+        entry_type: "COMMIT".to_string(),
+        entity: "src/lib.rs".to_string(),
+        entity_normalized: "src/lib.rs".to_string(),
+        change_type: "MODIFY".to_string(),
+        summary: "Remote entry".to_string(),
+        reason: "Apply identity isolation".to_string(),
+        is_breaking: false,
+        committed_at: chrono::Utc::now(),
+        origin: "LOCAL".to_string(),
+        trace_id: None,
+        signature: Some("sig".to_string()),
+        public_key: Some("pub".to_string()),
+        risk: None,
+        verification_status: None,
+        verification_basis: None,
+        outcome_notes: None,
+        related_tickets: None,
+        entry_hlc: HLC {
+            physical_ms: 2001,
+            logical: 0,
+            node_id: remote_id.to_string(),
+        },
+    };
+    let manifest = Manifest {
+        version: 1,
+        device_id: remote_id.to_string(),
+        bundle_hlc: bundle_hlc.clone(),
+        manifest_sha256: "fake".to_string(),
+        entry_count: 1,
+        entries: vec![entry],
+        tombstones: vec![],
+    };
+    let bundle = Bundle {
+        manifest,
+        signature: [0u8; 64],
+        device_pub: [0u8; 32],
+    };
+    let mut device_keys = HashMap::new();
+    device_keys.insert(remote_id.to_string(), [0u8; 32]);
+
+    apply(&bundle, &mut conn, &device_keys).expect("apply");
+
+    let (stored_id, last_apply): (String, Option<String>) = conn
+        .query_row(
+            "SELECT device_id, last_apply_hlc FROM sync_state WHERE id = 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(
+        stored_id, local_id,
+        "apply must not overwrite local SoT device_id with remote manifest id"
+    );
+    assert!(
+        last_apply.is_some(),
+        "apply should set last_apply_hlc when advancing"
+    );
+}
+
 #[test]
 #[cfg(feature = "sync")]
 fn test_apply_idempotent() {
