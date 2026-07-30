@@ -92,6 +92,18 @@ pub const STALE_EPOCH_RFC3339: &str = "1970-01-01T00:00:00Z";
 /// Max sample paths retained on drift / staleness warnings.
 const DRIFT_SAMPLE_LIMIT: usize = 5;
 
+/// Whether a stored `project_files` path is a code source subject to discovery.
+/// Enrichment rows (README, CI YAML, `.env.example`, …) are excluded so delete
+/// drift does not false-positive against non-code index material.
+fn is_supported_code_path(relative_path: &str) -> bool {
+    use crate::index::orchestrator::{BINARY_EXTENSIONS, SUPPORTED_EXTENSIONS};
+    let ext = std::path::Path::new(relative_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    SUPPORTED_EXTENSIONS.contains(&ext) && !BINARY_EXTENSIONS.contains(&ext)
+}
+
 pub fn assess_index_freshness(
     storage: &StorageManager,
     threshold_days: u64,
@@ -350,10 +362,12 @@ pub fn count_content_hash_drift(
         }
     }
 
-    // Indexed files removed from the worktree are also drift (DoD-4 deletions).
+    // Indexed **code** files removed from the worktree are also drift (DoD-4).
+    // Ignore enrichment-only rows (docs, CI, .env.example, …) which are not part of
+    // supported-extension discovery and must not trigger false deletes.
     let mut deleted: Vec<String> = stored
         .keys()
-        .filter(|path| !seen_stored.contains(*path))
+        .filter(|path| !seen_stored.contains(*path) && is_supported_code_path(path))
         .cloned()
         .collect();
     deleted.sort();
@@ -1017,6 +1031,29 @@ mod tests {
                 time_stale: false,
                 drift_stale: true,
             }
+        );
+    }
+
+    #[test]
+    fn content_hash_drift_ignores_enrichment_only_rows() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        write_utf8(root.join("src/lib.rs").as_std_path(), "fn a() {}\n");
+
+        let storage = in_memory_storage();
+        let now = Utc::now().to_rfc3339();
+        insert_file_with_hash(&storage, "src/lib.rs", "fn a() {}\n", &now);
+        // Enrichment material not in SUPPORTED_EXTENSIONS discovery.
+        insert_file_with_hash(&storage, "README.md", "# readme\n", &now);
+        insert_file_with_hash(&storage, ".env.example", "FOO=1\n", &now);
+        insert_file_with_hash(&storage, ".github/workflows/ci.yml", "name: ci\n", &now);
+        set_last_indexed_at(&storage, &now);
+
+        let drift = count_content_hash_drift(&storage, &root).unwrap();
+        assert!(
+            !drift.is_dirty(),
+            "enrichment-only rows must not false-positive delete drift: {:?}",
+            drift
         );
     }
 

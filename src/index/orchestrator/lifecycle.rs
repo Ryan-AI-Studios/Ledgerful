@@ -180,10 +180,12 @@ pub fn incremental_index(indexer: &mut ProjectIndexer) -> Result<super::IndexSta
         }
     }
 
-    // Reconcile deletions: rows still active in SQLite but gone from the worktree.
+    // Reconcile deletions for **code** sources only. Enrichment rows (docs, CI,
+    // .env.example, …) are stored outside supported-extension discovery and must
+    // not be treated as worktree removals on light-path incremental refresh.
     let mut deleted_paths: Vec<String> = existing_files
         .keys()
-        .filter(|path| !current_relatives.contains(*path))
+        .filter(|path| !current_relatives.contains(*path) && is_supported_code_source_path(path))
         .cloned()
         .collect();
     deleted_paths.sort();
@@ -484,6 +486,15 @@ pub fn store_index_metadata(indexer: &mut ProjectIndexer) -> Result<()> {
 
     tx.commit().into_diagnostic()?;
     Ok(())
+}
+
+/// Code sources that `discover_files` can see (not enrichment-only rows).
+fn is_supported_code_source_path(relative_path: &str) -> bool {
+    let ext = std::path::Path::new(relative_path)
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("");
+    super::SUPPORTED_EXTENSIONS.contains(&ext) && !super::BINARY_EXTENSIONS.contains(&ext)
 }
 
 pub fn load_existing_files(storage: &StorageManager) -> Result<HashMap<String, ProjectFile>> {
