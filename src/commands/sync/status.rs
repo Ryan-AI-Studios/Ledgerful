@@ -27,9 +27,15 @@ pub fn handle() -> Result<()> {
         .unwrap_or((None, None, None));
 
     let key_path = layout.state_dir.join("sync").join("device.key");
-    let initialized = key_path.exists() || device_id.is_some();
+    let pub_path = layout.state_dir.join("sync").join("device.pub");
+    // Initialized only when keys AND a non-empty SoT device_id are present (0110 codex P2-02).
+    let sot_ok = device_id
+        .as_ref()
+        .is_some_and(|id| !id.trim().is_empty() && id != "unknown");
+    let initialized = key_path.exists() && pub_path.exists() && sot_ok;
     let device_display = device_id
         .clone()
+        .filter(|id| !id.trim().is_empty())
         .unwrap_or_else(|| "not set (run sync init)".to_string());
 
     let sync_target = config.sync.target.clone();
@@ -85,7 +91,7 @@ pub fn handle() -> Result<()> {
     println!("Team Sync Status [Experimental]");
     println!("  Enabled:        {}", config.sync.enabled);
     println!(
-        "  Initialized:    {} (keys or SoT device_id)",
+        "  Initialized:    {} (device.key + device.pub + SoT device_id)",
         if initialized { "yes" } else { "no" }
     );
     println!("  Device ID (SoT): {device_display}");

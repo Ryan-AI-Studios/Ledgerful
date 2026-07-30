@@ -710,11 +710,27 @@ fn sync_doctor_findings(
 
     let mut findings = Vec::new();
     let key_path = layout.state_dir.join("sync").join("device.key");
-    if !key_path.exists() {
+    let pub_path = layout.state_dir.join("sync").join("device.pub");
+    let keys_ok = key_path.exists() && pub_path.exists();
+
+    // SoT: non-empty sync_state.device_id (row id=1). Missing DB is treated as uninitialized.
+    let sot_ok = (|| {
+        let storage = crate::state::storage::StorageManager::init_with_layout(layout).ok()?;
+        let conn = storage.get_connection();
+        let id: Option<String> = conn
+            .query_row("SELECT device_id FROM sync_state WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .ok();
+        id.filter(|s| !s.trim().is_empty() && s != "unknown")
+    })()
+    .is_some();
+
+    if !keys_ok || !sot_ok {
         findings.push(DoctorFinding::warn(
             "sync-enabled-not-initialized",
             DoctorCategory::Optional,
-            "[sync].enabled=true but device.key is missing. Run `ledgerful sync init` (Experimental) or set enabled=false. See docs/team-sync.md.",
+            "[sync].enabled=true but team sync is not fully initialized (need device.key + device.pub + sync_state.device_id). Run `ledgerful sync init` (Experimental) or set enabled=false. See docs/team-sync.md.",
         ));
     }
     if config.sync.target.trim().is_empty() {

@@ -165,6 +165,39 @@ fn pair_accept_fails_closed_seeded_sot_nyi_not_missing_row() {
         !msg.to_lowercase().contains("paired successfully"),
         "must never claim success: {msg}"
     );
+    // Fail-closed: no peer store, no auto-enable.
+    let layout = ledgerful::state::layout::Layout::new(root);
+    let config = ledgerful::config::load::load_config(&layout).unwrap();
+    assert!(!config.sync.enabled, "pair accept must not enable sync");
+    let peers_dir = root.join(".ledgerful/sync/peers");
+    assert!(
+        !peers_dir.exists() || std::fs::read_dir(peers_dir.as_std_path()).unwrap().count() == 0,
+        "pair accept must not write peer material"
+    );
+}
+
+#[test]
+#[cfg(feature = "sync")]
+#[serial_test::serial(env)]
+fn sync_init_empty_secret_does_not_write_keys() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+    let _guard = DirGuard::from_utf8(root);
+
+    ledgerful::commands::init::execute_init(false, false).unwrap();
+
+    let err = handle_sync_init(false, Some(String::new())).expect_err("empty secret must fail");
+    let msg = format!("{err:#}");
+    assert!(
+        msg.to_lowercase().contains("empty") || msg.to_lowercase().contains("secret"),
+        "expected empty-secret error, got: {msg}"
+    );
+    let key = root.join(".ledgerful/sync/device.key");
+    assert!(
+        !key.exists(),
+        "empty secret must not leave device.key on disk"
+    );
 }
 
 #[test]
