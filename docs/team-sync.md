@@ -44,7 +44,7 @@ schedule = "0 3 * * *"      # display-only; not auto-installed
 1. **Both devices:** `ledgerful sync init` (keys + SoT `device_id`; `enabled` stays false).
 2. **Share team secret** out-of-band (password manager). Set `LEDGERFUL_SYNC_SECRET` for automation.
    Prefer **not** pasting the secret into the same chat as the invite.
-3. **Device A:** `ledgerful sync pair` → prints one-line invite  
+3. **Device A:** `ledgerful sync pair` → prints one-line invite
    `LF-PAIR-1.<device_id>.<b64url_pub>.<b64url_tag>`
 4. **Device B:** `ledgerful sync pair '<invite-from-A>'` → writes `sync/peers/<A-id>.pub`
 5. **Mutual:** B generates its invite; A accepts. Two-way trust requires **both** accepts.
@@ -76,11 +76,11 @@ Apply updates `last_apply_hlc` only (`ON CONFLICT DO UPDATE SET last_apply_hlc =
 - **AEAD:** XChaCha20-Poly1305 (chacha20poly1305 **0.11**)
 - **Device identity:** Ed25519 (ed25519-dalek **2.x** — **no** 3.0 bump); accept requires
   `VerifyingKey::from_bytes` (curve check), not mere length
-- **Pair invite MAC (0111):**  
-  `key = blake3::derive_key("ledgerful team-sync pair v1", secret)`  
-  `msg = b"pair-invite-v1\0" || device_id || pub32`  
-  `tag = keyed_hash(key, msg)[0..16]` verified with constant-time `ct_eq`  
-  Encoding: `base64` **URL_SAFE_NO_PAD**, `.`-delimited `LF-PAIR-1…`
+- **Pair invite MAC (0111):**
+  - `key = blake3::derive_key("ledgerful team-sync pair v1", secret)`
+  - `msg = b"pair-invite-v1\0" || device_id || pub32`
+  - `tag = keyed_hash(key, msg)[0..16]` verified with constant-time `ct_eq`
+  - Encoding: `base64` **URL_SAFE_NO_PAD**, `.`-delimited `LF-PAIR-1…`
 - **KDF honesty:** invite MAC uses a **fast** blake3 derive (captured invite ≈ offline oracle on
   the team secret). Bundle encryption still uses **Argon2id**. Accepted for v1 under the
   high-entropy secret assumption; re-trigger slow invite KDF if weak secrets are ever allowed.
