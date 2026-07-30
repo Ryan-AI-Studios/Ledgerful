@@ -529,7 +529,11 @@ pub enum Commands {
         #[arg(long = "no-graph-sync")]
         no_graph_sync: bool,
     },
-    /// Team ledger synchronization
+    /// Team ledger synchronization [Experimental]
+    ///
+    /// Opt-in forever (`[sync].enabled = false` by default). Pairing accept,
+    /// multi-device apply, and Available marketing land in later tracks
+    /// (0111–0113). See docs/team-sync.md.
     #[cfg(feature = "sync")]
     Sync {
         #[command(subcommand)]
@@ -2324,40 +2328,43 @@ impl Commands {
 #[cfg(feature = "sync")]
 #[derive(Subcommand, Debug)]
 pub enum SyncSubcommands {
-    /// Initialize sync for this device
+    /// Initialize team sync for this device [Experimental]
     Init {
-        /// Force re-initialization (overwrites existing key)
+        /// Force re-initialization (overwrites key material + device_id SoT)
         #[arg(short, long)]
         force: bool,
         /// Inject a test secret (hex encoded) for non-interactive use
         #[arg(long, hide = true)]
         with_secret: Option<String>,
     },
-    /// Generate or accept a pairing code
+    /// Generate a provisional pairing code, or accept a peer code [Experimental]
+    ///
+    /// Accept is fail-closed until track 0111 (peer store). Without a code,
+    /// prints a provisional Experimental pairing code after init.
     Pair {
-        /// The pairing code to accept
+        /// The pairing code to accept (not implemented yet — fail-closed)
         code: Option<String>,
     },
-    /// Run the sync loop
+    /// Run the sync loop [Experimental]
     Run {
         /// Run only once and exit
         #[arg(long)]
         once: bool,
     },
-    /// Show sync status
+    /// Show team sync status [Experimental]
     Status,
-    /// Verify the integrity of sync bundles
+    /// Verify the integrity of sync bundles [Experimental]
     Verify {
         /// Path to the bundle file
         path: String,
     },
-    /// Manage sync cursors
+    /// Manage sync cursors [Experimental]
     Cursor {
         /// Set a specific cursor HLC
         #[arg(long)]
         set: Option<String>,
     },
-    /// Show sync logs
+    /// Show sync logs [Experimental]
     Log {
         /// Number of lines to tail
         #[arg(long, short)]
