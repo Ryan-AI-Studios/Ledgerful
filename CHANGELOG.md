@@ -8,12 +8,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Team Sync pairing and peer trust (0111):** real `LF-PAIR-1.<device_id>.<b64url_pub>.<b64url_tag>`
+  pairing invites bound with `blake3::derive_key` + `keyed_hash` (16-byte tag, `ct_eq`); accept
+  path-validates `device_id`, curve-checks with `VerifyingKey::from_bytes`, and persists
+  `sync/peers/{device_id}.pub` via non-`*.pub` temp + rename. `sync pair --list` / `--revoke` /
+  `--force` (re-key); mutual exclusion on invite vs list vs revoke. Fallible `load_peer_keys`
+  (no panic on malformed peers); self-insert stays at apply call site. Status shows real peer
+  count/ids; doctor optional `sync-enabled-no-peers` when enabled with zero peers. Pairing
+  **never** sets `[sync].enabled = true`. Docs/skill mutual-pair + `init --force` re-pair honesty.
+  No crypto dep majors (dalek 3 / argon2 RC / base64 0.23 declined). See track 0111.
 - **Team Sync opt-in foundation (0110):** `sync` is now a **default** Cargo feature (release
   already shipped it via `--all-features`; MCP-npm remains `--no-default-features --features
   mcp,export`). Runtime stays forever opt-in (`[sync].enabled = false`; `sync init` never enables).
   Layout-aware init writes keys under `{state_dir}/sync/` and upserts SoT `sync_state.device_id`;
-  pair accept fails closed (NYI until 0111); disabled `sync run` explains opt-in before any secret
-  prompt; status is Experimental with peers not available; light doctor warns only when
+  disabled `sync run` explains opt-in before any secret prompt; light doctor warns only when
   enabled-but-misconfigured. Docs: `docs/team-sync.md`; skill honesty for Team Sync vs watch
   Real-time Sync. OpenAPI `SyncStatusResponse` left unchanged (CLI-first). See track 0110.
 - **Index freshness policy (0107):** three-tier model documented in

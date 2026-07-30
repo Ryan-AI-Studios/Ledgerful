@@ -740,6 +740,21 @@ fn sync_doctor_findings(
             "[sync].enabled=true but [sync].target is empty. Set a shared-folder target (e.g. dir:///path) or disable sync. See docs/team-sync.md.",
         ));
     }
+    // 0111: enabled with zero trusted peers — actionable next step; never sole-blocks publish.
+    #[cfg(feature = "sync")]
+    if keys_ok && sot_ok {
+        let sync_dir = layout.state_dir.join("sync");
+        let peer_count = crate::sync::peers::list_peers(sync_dir.as_std_path())
+            .map(|p| p.len())
+            .unwrap_or(0);
+        if peer_count == 0 {
+            findings.push(DoctorFinding::warn(
+                "sync-enabled-no-peers",
+                DoctorCategory::Optional,
+                "[sync].enabled=true but no trusted peers under sync/peers/. Exchange LF-PAIR-1 invites with `ledgerful sync pair` (mutual accept) or disable sync. See docs/team-sync.md.",
+            ));
+        }
+    }
     findings
 }
 

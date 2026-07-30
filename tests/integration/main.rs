@@ -147,6 +147,8 @@ mod sync_hlc;
 #[cfg(feature = "sync")]
 mod sync_init;
 #[cfg(feature = "sync")]
+mod sync_pair;
+#[cfg(feature = "sync")]
 mod sync_transport;
 mod timings;
 mod track_ta12;

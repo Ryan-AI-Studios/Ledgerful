@@ -20,7 +20,7 @@ pub fn handle(_once: bool) -> Result<()> {
 See docs/team-sync.md."
         );
         println!();
-        println!("When ready (after init + pairing — pairing accept lands in 0111):");
+        println!("When ready (after init + mutual pairing):");
         println!("  1. ledgerful sync init");
         println!("  2. Set [sync].target (e.g. dir:///path/to/shared)");
         println!("  3. Set [sync].enabled = true via config set");

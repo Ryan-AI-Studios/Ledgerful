@@ -531,9 +531,9 @@ pub enum Commands {
     },
     /// Team ledger synchronization [Experimental]
     ///
-    /// Opt-in forever (`[sync].enabled = false` by default). Pairing accept,
-    /// multi-device apply, and Available marketing land in later tracks
-    /// (0111–0113). See docs/team-sync.md.
+    /// Opt-in forever (`[sync].enabled = false` by default). Pairing invite
+    /// accept and peer trust land in 0111; multi-device apply polish and
+    /// Available marketing land in 0112–0113. See docs/team-sync.md.
     #[cfg(feature = "sync")]
     Sync {
         #[command(subcommand)]
@@ -2293,7 +2293,25 @@ impl Commands {
                         f.push("with_secret");
                     }
                 }
-                SyncSubcommands::Pair { .. } => {}
+                SyncSubcommands::Pair {
+                    code,
+                    list,
+                    revoke,
+                    force,
+                } => {
+                    if code.is_some() {
+                        f.push("code");
+                    }
+                    if *list {
+                        f.push("list");
+                    }
+                    if revoke.is_some() {
+                        f.push("revoke");
+                    }
+                    if *force {
+                        f.push("force");
+                    }
+                }
                 SyncSubcommands::Run { once } => {
                     if *once {
                         f.push("once");
@@ -2337,13 +2355,25 @@ pub enum SyncSubcommands {
         #[arg(long, hide = true)]
         with_secret: Option<String>,
     },
-    /// Generate a provisional pairing code, or accept a peer code [Experimental]
+    /// Generate or accept a pairing invite, list/revoke peers [Experimental]
     ///
-    /// Accept is fail-closed until track 0111 (peer store). Without a code,
-    /// prints a provisional Experimental pairing code after init.
+    /// Without an invite: print a self-contained `LF-PAIR-1…` invite (requires
+    /// `LEDGERFUL_SYNC_SECRET` and prior `sync init`). Accept with
+    /// `sync pair <invite>` under the same team secret. Mutual accept for
+    /// two-way trust. Never sets `[sync].enabled = true`.
     Pair {
-        /// The pairing code to accept (not implemented yet — fail-closed)
+        /// Pairing invite from peer (`LF-PAIR-1...`) [Experimental]
+        #[arg(conflicts_with_all = ["list", "revoke"])]
         code: Option<String>,
+        /// List trusted peers
+        #[arg(long, conflicts_with_all = ["code", "revoke"])]
+        list: bool,
+        /// Revoke trust for a device_id
+        #[arg(long, conflicts_with_all = ["code", "list"])]
+        revoke: Option<String>,
+        /// Replace existing peer pubkey on re-pair
+        #[arg(long)]
+        force: bool,
     },
     /// Run the sync loop [Experimental]
     Run {

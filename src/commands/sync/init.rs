@@ -155,7 +155,9 @@ pub fn handle(force: bool, with_secret: Option<String>) -> Result<()> {
     println!();
     println!("Next steps (Experimental ladder):");
     println!("  1. ledgerful sync status");
-    println!("  2. ledgerful sync pair          # provisional code (accept is NYI — 0111)");
+    println!(
+        "  2. ledgerful sync pair          # print LF-PAIR-1 invite; peer: sync pair <invite>"
+    );
     println!("  3. Set [sync].target and [sync].enabled = true only when ready to merge");
     println!("See docs/team-sync.md");
     Ok(())

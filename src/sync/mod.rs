@@ -17,6 +17,8 @@ pub mod crypto;
 #[cfg(feature = "sync")]
 pub mod extract;
 #[cfg(feature = "sync")]
+pub mod peers;
+#[cfg(feature = "sync")]
 pub mod transport;
 
 #[cfg(feature = "sync")]
@@ -31,8 +33,6 @@ use crate::sync::transport::SyncTarget;
 use ed25519_dalek::SigningKey;
 #[cfg(feature = "sync")]
 use rusqlite::Connection;
-#[cfg(feature = "sync")]
-use std::collections::HashMap;
 #[cfg(feature = "sync")]
 use std::path::Path;
 
@@ -135,24 +135,10 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
         .list_incoming()
         .map_err(|e| miette::miette!("Transport list failed: {}", e))?;
 
-    // Load peer keys
-    let mut peer_keys = HashMap::new();
-    let peers_dir = sync_dir.join("peers");
-    if peers_dir.exists() {
-        for entry in std::fs::read_dir(peers_dir).into_diagnostic()? {
-            let entry = entry.into_diagnostic()?;
-            if entry.file_type().into_diagnostic()?.is_file() {
-                let name = entry.file_name().to_string_lossy().to_string();
-                if let Some(peer_id) = name.strip_suffix(".pub") {
-                    let bytes = std::fs::read(entry.path()).into_diagnostic()?;
-                    let mut key = [0u8; 32];
-                    key.copy_from_slice(&bytes);
-                    peer_keys.insert(peer_id.to_string(), key);
-                }
-            }
-        }
-    }
-    // Add our own key to peer_keys to allow self-apply if needed (though usually we skip our own)
+    // Load peer keys (peers only; fallible — no copy_from_slice panic on malformed *.pub).
+    let mut peer_keys = peers::load_peer_keys(&sync_dir)
+        .map_err(|e| miette::miette!("Failed to load peer keys: {e}"))?;
+    // Self-insert stays at the call site (do not fold local key into load_peer_keys).
     peer_keys.insert(device_id.clone(), sign_key.verifying_key().to_bytes());
 
     for bundle_path in incoming {

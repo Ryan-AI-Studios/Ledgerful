@@ -1,6 +1,7 @@
 # Team Sync (Experimental)
 
-**Status:** Experimental foundation (track **0110**). Not multi-device ready.
+**Status:** Experimental (tracks **0110** foundation + **0111** pairing/peer trust). Not
+Available marketing; multi-device apply polish is **0112**.
 
 Team Sync moves **encrypted ledger entry bundles** between developer devices so
 gitignored `.ledgerful/` ledgers can consolidate without putting secrets or
@@ -13,8 +14,8 @@ Git **never** consolidates `.ledgerful/` — only opt-in team sync can.
 | Control | Default | Notes |
 |---|---|---|
 | Cargo feature `sync` | **on** in default builds (0110) | MCP-npm job still builds without it |
-| `[sync].enabled` | **`false`** | `sync init` never sets this true |
-| Pair accept / peer store | **not implemented** | track **0111** |
+| `[sync].enabled` | **`false`** | `sync init` and **`sync pair` never** set this true |
+| Pair accept / peer store | **real (0111)** | `LF-PAIR-1…` invite + `sync/peers/{device_id}.pub` |
 | Two-device apply polish | deferred | track **0112** |
 | Wizard / Available marketing | deferred | track **0113** |
 
@@ -33,10 +34,29 @@ schedule = "0 3 * * *"      # display-only; not auto-installed
 
 | Track | Owns |
 |---|---|
-| **0110** (this) | Feature posture, fail-closed pair, layout-aware init, SoT `device_id`, disabled-run honesty, Experimental docs/skill, light doctor |
-| **0111** | Real pair accept, peer store/revoke, pair-code crypto review (blake3 construction) |
+| **0110** | Feature posture, fail-closed pair stub, layout-aware init, SoT `device_id`, disabled-run honesty, Experimental docs/skill, light doctor |
+| **0111** (this) | Real pair invite/accept, peer store/list/revoke, keyed blake3 MAC, status/doctor peer honesty |
 | **0112** | Encrypted transport E2E, apply bounds, quarantine UX, two-device golden path |
-| **0113** | Wizard/status UX, Available label decision |
+| **0113** | Wizard/status UX, Available label decision, secret rotation UX |
+
+## Two-device mutual pairing (golden path)
+
+1. **Both devices:** `ledgerful sync init` (keys + SoT `device_id`; `enabled` stays false).
+2. **Share team secret** out-of-band (password manager). Set `LEDGERFUL_SYNC_SECRET` for automation.
+   Prefer **not** pasting the secret into the same chat as the invite.
+3. **Device A:** `ledgerful sync pair` → prints one-line invite  
+   `LF-PAIR-1.<device_id>.<b64url_pub>.<b64url_tag>`
+4. **Device B:** `ledgerful sync pair '<invite-from-A>'` → writes `sync/peers/<A-id>.pub`
+5. **Mutual:** B generates its invite; A accepts. Two-way trust requires **both** accepts.
+6. **List / revoke:** `ledgerful sync pair --list` · `ledgerful sync pair --revoke <device_id>`
+7. **Enable only when ready:** set `[sync].enabled = true` and a shared-folder `target` yourself.
+   Pairing **never** enables sync.
+
+### `init --force` re-pair
+
+`sync init --force` mints a **new** local `device_id` + keypair. Peers that already trusted the
+**old** id will reject new bundles as unknown device until you **re-pair mutually** (new invites
+both ways). Document this before force-reinit on a live mesh.
 
 ## Identity isolation
 
@@ -45,16 +65,25 @@ schedule = "0 3 * * *"      # display-only; not auto-installed
 | `device.key` / `device.pub` | `{state_dir}/sync/` (layout `.ledgerful/sync`) | **Never** in bundle payload; never imported from peers |
 | **Local `device_id` SoT** | SQLite `sync_state.device_id` (row `id=1`) | Written by `sync init` / `--force`. pair, status, verify, **run** all read this SoT |
 | `config.sync.device_id` | Optional **mirror** only | Written via `toml_edit` helpers; must agree with SoT after init |
+| Peer trust store | `{state_dir}/sync/peers/{device_id}.pub` | FS-only SoT for apply; only paired pubs + explicit self key may verify |
 | Remote `manifest.device_id` | Bundle metadata | Identifies **sender** for peer key lookup; **must never** overwrite local SoT |
 
 Apply updates `last_apply_hlc` only (`ON CONFLICT DO UPDATE SET last_apply_hlc = …`) and does **not** set `device_id` from the remote manifest.
 
 ## Algorithms (honest names)
 
-- **KDF:** Argon2id (pin: argon2 **0.5.x** — no 0.6 RC in 0110)
+- **Bundle KDF:** Argon2id (pin: argon2 **0.5.x** — no 0.6 RC)
 - **AEAD:** XChaCha20-Poly1305 (chacha20poly1305 **0.11**)
-- **Device identity:** Ed25519 (ed25519-dalek **2.x** — **no** 3.0 bump in 0110)
-- **Pair provisional code:** `blake3::hash(team_secret || device.pub)` — non-standard MAC-like use; **0111** reviews construction (not rewritten here)
+- **Device identity:** Ed25519 (ed25519-dalek **2.x** — **no** 3.0 bump); accept requires
+  `VerifyingKey::from_bytes` (curve check), not mere length
+- **Pair invite MAC (0111):**  
+  `key = blake3::derive_key("ledgerful team-sync pair v1", secret)`  
+  `msg = b"pair-invite-v1\0" || device_id || pub32`  
+  `tag = keyed_hash(key, msg)[0..16]` verified with constant-time `ct_eq`  
+  Encoding: `base64` **URL_SAFE_NO_PAD**, `.`-delimited `LF-PAIR-1…`
+- **KDF honesty:** invite MAC uses a **fast** blake3 derive (captured invite ≈ offline oracle on
+  the team secret). Bundle encryption still uses **Argon2id**. Accepted for v1 under the
+  high-entropy secret assumption; re-trigger slow invite KDF if weak secrets are ever allowed.
 - **Bundle file extension:** `.zip.gpg` is a **misnomer** — ciphertext is XChaCha20-Poly1305 over a zip, not OpenPGP. Rename deferred (likely 0112).
 
 Secrets: keep the team secret out of git, logs, and success banners. Prefer a password manager + `LEDGERFUL_SYNC_SECRET` for automation.
@@ -70,7 +99,7 @@ v1 target scheme: `dir://<absolute-path>` — a shared folder (SMB, Dropbox-styl
 | **Team Sync** / `ledgerful sync` | This feature — encrypted ledger entry bundles between devices |
 | **Real-time Sync** / `watch` IncrementalSync | Knowledge-graph / index refresh while watching the worktree |
 | **Ledger Federation** / `federate` | Sibling-repository ledger export/import for cross-repo provenance |
-| OpenAPI `/api/sync/status` | Dashboard DTO (`device_id` + HLC timestamps). **CLI-first** for enabled/init (0110 left DTO unchanged) |
+| OpenAPI `/api/sync/status` | Dashboard DTO (`device_id` + HLC timestamps). **CLI-first** for peers/enabled (DTO unchanged in 0111) |
 | **bridge** | AI-Brains NDJSON interchange — not team sync |
 | **schedule** | Nightly index jobs — not team sync |
 
@@ -79,21 +108,33 @@ v1 target scheme: `dir://<absolute-path>` — a shared folder (SMB, Dropbox-styl
 ```bash
 ledgerful sync --help          # marked Experimental
 ledgerful sync init            # keys + SoT device_id; enabled stays false
-ledgerful sync status          # Experimental banner; peers not available
-ledgerful sync pair            # provisional code (needs LEDGERFUL_SYNC_SECRET)
-ledgerful sync pair BOGUS      # fail-closed NYI (0111)
+ledgerful sync status          # peer count/ids from local trust store
+ledgerful sync pair            # print LF-PAIR-1 invite (needs LEDGERFUL_SYNC_SECRET)
+ledgerful sync pair '<invite>' # accept; writes peers/{device_id}.pub; never enables
+ledgerful sync pair --list
+ledgerful sync pair --revoke <device_id>
+ledgerful sync pair --force '<invite>'  # re-key same device_id
 ledgerful sync run --once      # clear message when disabled; no secret prompt
 ```
 
-Doctor: if `enabled=true` without init or empty target → **warn** / optional. Mere “sync disabled” never sole-sets `readyForPublish=false`.
+Doctor: if `enabled=true` without init, empty target, or **zero peers** → **warn** / optional
+(`sync-enabled-no-peers` never sole-blocks publish). Mere “sync disabled” never sole-sets
+`readyForPublish=false`.
 
-## Threat sketch (foundation)
+## Threat sketch
 
-- **No silent merge:** default `enabled=false`; disabled `run` does not write outbox.
-- **No fake pairing:** accept fails closed until peer store exists.
-- **Local identity isolation:** keys FS-only; SoT device_id never imported from bundles.
-- **Secret hygiene:** not written by init; not printed on success.
-- **Shared-folder trust:** anyone with folder write can drop ciphertext; apply must verify signatures against known peers (0111+) and quarantine failures (engine path exists; polish 0112).
+- **No silent merge:** default `enabled=false`; disabled `run` does not write outbox; **pair never enables**.
+- **Invite proves shared secret + (device_id, pubkey) binding** — not interactive liveness or MitM
+  resistance if the secret already leaked.
+- **Team secret alone** is not enough to inject a peer without an invite string; holders of the
+  secret can still forge invites for **new** device_ids (accepted shared-secret threat). Mitigate
+  with revoke + secret rotation (rotation UX → 0113).
+- **Local identity isolation:** keys FS-only; SoT device_id never imported from bundles; peer
+  `.pub` files never enter bundles.
+- **Path-safe device_id** on accept (no `.` `/` `\` traversal) before any peer write; temp files
+  do not match `*.pub`.
+- **Shared-folder trust:** anyone with folder write can drop ciphertext; apply verifies signatures
+  against known peers and quarantines failures (polish → 0112).
 - **Not a complete threat model:** re-evaluate before Available (0113).
 
 ## Performance
