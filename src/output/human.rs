@@ -1,5 +1,7 @@
 use crate::exec::ExecutionResult;
-use crate::impact::packet::{DeadCodeFinding, Hotspot, ImpactPacket, RiskLevel, TemporalCoupling};
+use crate::impact::packet::{
+    BlastRadius, DeadCodeFinding, Hotspot, ImpactPacket, RiskLevel, TemporalCoupling,
+};
 use crate::observability::signal::{ObservabilitySignal, SignalSeverity};
 use crate::platform::env::ExecutableStatus;
 use crate::verify::plan::VerificationPlan;
@@ -268,6 +270,12 @@ pub fn print_impact_summary(packet: &ImpactPacket) {
         print_hotspots(&packet.hotspots);
     }
 
+    if let Some(ref blast) = packet.blast_radius
+        && !blast.is_empty_for_serde()
+    {
+        print_structural_blast(blast);
+    }
+
     if !packet.temporal_couplings.is_empty() {
         print_temporal_couplings(&packet.temporal_couplings);
     }
@@ -283,6 +291,76 @@ pub fn print_impact_brief(packet: &ImpactPacket) {
         RiskLevel::High => println!("Impact Analysis: Risk is {}", risk.red().bold()),
         RiskLevel::Medium => println!("Impact Analysis: Risk is {}", risk.yellow().bold()),
         RiskLevel::Low => println!("Impact Analysis: Risk is {}", risk.green().bold()),
+    }
+    if let Some(ref blast) = packet.blast_radius
+        && !blast.edges.is_empty()
+    {
+        println!(
+            "  Structural blast: {} edge(s), {} must-touch file(s) (depth {})",
+            blast.edges.len(),
+            blast.must_touch_files.len(),
+            blast.depth_applied
+        );
+    }
+}
+
+/// Structural call-graph blast (≠ deploy high-blast resources).
+fn print_structural_blast(blast: &BlastRadius) {
+    println!(
+        "\n{}",
+        "Structural blast radius (call graph — not deploy high-blast resources)"
+            .bold()
+            .underline()
+    );
+    println!(
+        "  Depth applied: {} (requested {})",
+        blast.depth_applied, blast.depth_requested
+    );
+
+    if !blast.must_touch_files.is_empty() {
+        println!("  Must-touch files:");
+        for path in blast.must_touch_files.iter().take(20) {
+            println!("    - {path}");
+        }
+        if blast.must_touch_files.len() > 20 {
+            println!(
+                "    … and {} more (full list: impact --json)",
+                blast.must_touch_files.len() - 20
+            );
+        }
+    }
+
+    if !blast.edges.is_empty() {
+        println!("  Top callers (hop · status · evidence):");
+        for edge in blast.edges.iter().take(15) {
+            let evidence = if edge.evidence.is_empty() {
+                "-"
+            } else {
+                edge.evidence.as_str()
+            };
+            println!(
+                "    - hop{} {}@{} → {}  [{} {}]",
+                edge.hop,
+                edge.from_symbol,
+                edge.from_file,
+                edge.to_symbol,
+                edge.resolution_status,
+                evidence
+            );
+        }
+        if blast.edges.len() > 15 {
+            println!(
+                "    … and {} more edges (full edges: impact --json)",
+                blast.edges.len() - 15
+            );
+        }
+    }
+
+    if !blast.honesty_notes.is_empty() {
+        println!("  Notes:");
+        for note in &blast.honesty_notes {
+            println!("    - {note}");
+        }
     }
 }
 

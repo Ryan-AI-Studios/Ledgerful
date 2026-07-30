@@ -10,6 +10,9 @@ pub use self::intelligence::*;
 mod risk;
 pub use self::risk::*;
 
+mod blast;
+pub use self::blast::*;
+
 mod serialization;
 
 mod surfaces;
@@ -153,6 +156,27 @@ mod schema_golden_tests {
                 callee_symbol_name: "y".to_string(),
                 caller_file_path: PathBuf::from("x.rs"),
             }],
+            // Populated → present in exact-key set; empty/default omits blastRadius.
+            blast_radius: Some(BlastRadius {
+                depth_requested: 1,
+                depth_applied: 1,
+                edges: vec![BlastEdge {
+                    hop: 1,
+                    direction: "caller".to_string(),
+                    from_symbol: "x".to_string(),
+                    from_file: "x.rs".to_string(),
+                    to_symbol: "y".to_string(),
+                    to_file: "y.rs".to_string(),
+                    resolution_status: "RESOLVED".to_string(),
+                    evidence: "scip:ref".to_string(),
+                    confidence: Some(1.0),
+                    expandable: true,
+                }],
+                must_touch_files: vec!["x.rs".to_string()],
+                must_touch_symbols: vec!["x".to_string()],
+                test_hints: vec!["t.rs::test_y".to_string()],
+                honesty_notes: vec!["sample note".to_string()],
+            }),
             centrality_risks: vec![CentralityRisk {
                 symbol_name: "main".to_string(),
                 entrypoints_reachable: 3,
@@ -452,7 +476,7 @@ mod schema_golden_tests {
         // Exact shape verification via serde_json::Value
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
 
-        // Top-level exact key set (35 keys — no more, no less)
+        // Top-level exact key set (36 keys with populated blastRadius — no more, no less)
         assert_exact_keys(
             &value,
             &[
@@ -466,6 +490,7 @@ mod schema_golden_tests {
                 "changes",
                 "temporalCouplings",
                 "structuralCouplings",
+                "blastRadius",
                 "centralityRisks",
                 "loggingCoverageDelta",
                 "errorHandlingDelta",
@@ -614,6 +639,38 @@ mod schema_golden_tests {
         assert_exact_keys(
             &sc[0],
             &["callerSymbolName", "calleeSymbolName", "callerFilePath"],
+        );
+
+        // blastRadius
+        let br = &value["blastRadius"];
+        assert_exact_keys(
+            br,
+            &[
+                "depthRequested",
+                "depthApplied",
+                "edges",
+                "mustTouchFiles",
+                "mustTouchSymbols",
+                "testHints",
+                "honestyNotes",
+            ],
+        );
+        let br_edges = br["edges"].as_array().unwrap();
+        assert_eq!(br_edges.len(), 1);
+        assert_exact_keys(
+            &br_edges[0],
+            &[
+                "hop",
+                "direction",
+                "fromSymbol",
+                "fromFile",
+                "toSymbol",
+                "toFile",
+                "resolutionStatus",
+                "evidence",
+                "confidence",
+                "expandable",
+            ],
         );
 
         // centralityRisks[0]
@@ -871,6 +928,7 @@ mod schema_golden_tests {
                 "changes",
                 "temporalCouplings",
                 "structuralCouplings",
+                "blastRadius",
                 "centralityRisks",
                 "loggingCoverageDelta",
                 "errorHandlingDelta",
@@ -969,6 +1027,10 @@ mod schema_golden_tests {
         assert!(
             !json.contains("deadCodeFindings"),
             "deadCodeFindings should be omitted when empty"
+        );
+        assert!(
+            !json.contains("blastRadius"),
+            "blastRadius should be omitted when empty/None"
         );
         assert!(
             !json.contains("sdkDependenciesDelta"),
@@ -2628,6 +2690,23 @@ mod facade_compat_tests {
             caller_symbol_name: "x".to_string(),
             callee_symbol_name: "y".to_string(),
             caller_file_path: std::path::PathBuf::from("x.rs"),
+        };
+        let _ = BlastRadius {
+            depth_requested: 1,
+            depth_applied: 1,
+            ..Default::default()
+        };
+        let _ = BlastEdge {
+            hop: 1,
+            direction: "caller".to_string(),
+            from_symbol: "a".to_string(),
+            from_file: "a.rs".to_string(),
+            to_symbol: "b".to_string(),
+            to_file: "b.rs".to_string(),
+            resolution_status: "RESOLVED".to_string(),
+            evidence: "scip:ref".to_string(),
+            confidence: None,
+            expandable: true,
         };
         let _ = CentralityRisk {
             symbol_name: "main".to_string(),

@@ -84,7 +84,7 @@ ledgerful doctor --json
 - **Code Symbol Index**: Tree-sitter parsing of Rust, TypeScript, and Python — extracts every public function, struct, enum, trait, module, and HTTP route into the Knowledge Graph.
 - **Call Graph**: Tracks function call relationships (`Direct`, `MethodCall`, `TraitDispatch`, `Dynamic`, `External`) so you can answer "what calls this function?" and "what does this function depend on?".
 - **Knowledge Graph**: Durable, billion-edge relational and vector storage (CozoDB-redux/Sled) with native code-aware tokenization (Tree-Sitter).
-- **Impact Analysis**: Deep "blast radius" analysis across 20+ specialized providers (Infra, Contracts, Observability, Temporal).
+- **Impact Analysis**: Deep impact analysis across 20+ specialized providers (Infra, Contracts, Observability, Temporal). Structural **`blastRadius`** is depth-1 by default (`--blast-depth 2` only high-confidence + transitive); must-touch punchlist — not a complete call graph; ≠ deploy high-blast resources.
 - **Cryptographic Provenance**: Mathematical proof of intent via Ed25519 signing of every ledger entry. Offline verification via `verify --signatures`.
 - **Intent Capture TUI**: Interactive terminal UI for auditing and refining LLM-drafted intent payloads during the git commit process.
 - **Real-time Sync**: Incremental Knowledge Graph updates, AST re-parsing, and code-aware symbol indexing via the `watch` command.

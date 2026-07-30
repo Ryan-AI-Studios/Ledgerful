@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Bounded structural blast radius (0106):** `impact` / `scan --impact` emit additive
+  `blastRadius` (must-touch files/symbols, evidence-tagged edges, optional test hints from
+  `test_mapping`). Default depth **1**; `--blast-depth 2` walks only high-confidence edges
+  (RESOLVED or `scip:`) with transitive confidence (AMBIGUOUS hop-1 listed, never expanded).
+  Seeds join by file+name / qualified_name (never bare name). `structural_couplings` derived
+  from hop-1. Not a complete call graph; ≠ deploy `highBlastResources`. See
+  `docs/Call-Resolution.md`.
 - **Doctor severity + publish readiness (0109):** structured findings `block|warn|info` with
   required `category` and stable `code`. `ledgerful doctor --json` emits pure schema-v1 JSON
   (`schemaVersion` u32 `1`, `readyForPublish`, `summary`, `findings`, `environment`).
