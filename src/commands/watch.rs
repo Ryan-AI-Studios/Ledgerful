@@ -10,6 +10,7 @@ use crate::config::load::load_config;
 use crate::impact::temporal::{GixHistoryProvider, TemporalEngine};
 use crate::index::incremental::IncrementalSyncEngine;
 use crate::index::orchestrator::ProjectIndexer;
+use crate::index::staleness::mark_index_stale;
 use crate::ledger::drift::DriftManager;
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
@@ -18,6 +19,26 @@ use crate::watch::debounce::Watcher;
 
 /// Throttle temporal coupling checks to every Nth batch.
 const TEMPORAL_CHECK_INTERVAL: usize = 10;
+
+/// Default unique-path count at which a single debounced batch is refused.
+///
+/// Branch switches and bulk refactors can produce multi-thousand path batches;
+/// chewing them incrementally freezes the foreground watch loop. Prefer
+/// marking STALE and asking for `ledgerful index --full`.
+pub const DEFAULT_MEGA_BATCH_THRESHOLD: usize = 1000;
+
+/// Whether a batch should skip unbounded incremental processing.
+pub fn should_skip_mega_batch(path_count: usize, threshold: usize) -> bool {
+    path_count >= threshold
+}
+
+/// Count unique event paths in a batch (deterministic, order-independent).
+pub fn unique_batch_path_count(batch: &WatchBatch) -> usize {
+    let mut paths: Vec<&str> = batch.events.iter().map(|ev| ev.path.as_str()).collect();
+    paths.sort_unstable();
+    paths.dedup();
+    paths.len()
+}
 
 pub fn execute_watch(interval_ms: u64, json_output: bool, no_graph_sync: bool) -> Result<()> {
     let layout = crate::commands::helpers::get_layout()?;
@@ -105,24 +126,44 @@ pub fn execute_watch(interval_ms: u64, json_output: bool, no_graph_sync: bool) -
                 }
             }
 
-            // Incremental graph sync
+            // Incremental graph sync (with mega-batch safety).
             if !no_graph_sync {
-                let indexer =
-                    ProjectIndexer::new(storage, repo_root.clone(), config_for_callback.clone());
-                let mut engine = IncrementalSyncEngine::new(indexer, repo_root.clone());
-                match engine.process_batch(&batch) {
-                    Ok(delta) => {
-                        tracing::info!(
-                            "Incremental sync: {} files, +{} nodes, -{} nodes, +{} edges, -{} edges",
-                            delta.files_processed,
-                            delta.nodes_added,
-                            delta.nodes_removed,
-                            delta.edges_added,
-                            delta.edges_removed,
-                        );
+                let threshold = config_for_callback.watch.mega_batch_threshold.max(1);
+                let path_count = unique_batch_path_count(&batch);
+                if should_skip_mega_batch(path_count, threshold) {
+                    if let Err(e) = mark_index_stale(&mut storage) {
+                        tracing::warn!("Failed to mark index STALE after mega-batch: {e}");
                     }
-                    Err(e) => {
-                        tracing::warn!("Incremental graph sync failed: {}", e);
+                    let msg = format!(
+                        "Watch batch too large ({path_count} unique paths >= {threshold}); \
+                         skipped incremental sync and marked index STALE. \
+                         Run `ledgerful index --full` to rebuild."
+                    );
+                    if !json_output {
+                        println!("{} {}", "WARN".bold().yellow(), msg);
+                    }
+                    tracing::warn!("{msg}");
+                } else {
+                    let indexer = ProjectIndexer::new(
+                        storage,
+                        repo_root.clone(),
+                        config_for_callback.clone(),
+                    );
+                    let mut engine = IncrementalSyncEngine::new(indexer, repo_root.clone());
+                    match engine.process_batch(&batch) {
+                        Ok(delta) => {
+                            tracing::info!(
+                                "Incremental sync: {} files, +{} nodes, -{} nodes, +{} edges, -{} edges",
+                                delta.files_processed,
+                                delta.nodes_added,
+                                delta.nodes_removed,
+                                delta.edges_added,
+                                delta.edges_removed,
+                            );
+                        }
+                        Err(e) => {
+                            tracing::warn!("Incremental graph sync failed: {}", e);
+                        }
                     }
                 }
             }
@@ -244,5 +285,105 @@ fn check_temporal_coupling_alerts(batch: &WatchBatch, layout: &Layout, repo_root
             risk_level,
             threshold,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::watch::batch::{WatchEvent, WatchEventKind};
+
+    #[test]
+    fn mega_batch_threshold_decision() {
+        assert!(!should_skip_mega_batch(0, DEFAULT_MEGA_BATCH_THRESHOLD));
+        assert!(!should_skip_mega_batch(999, DEFAULT_MEGA_BATCH_THRESHOLD));
+        assert!(should_skip_mega_batch(1000, DEFAULT_MEGA_BATCH_THRESHOLD));
+        assert!(should_skip_mega_batch(10_000, DEFAULT_MEGA_BATCH_THRESHOLD));
+        assert!(!should_skip_mega_batch(5, 10));
+        assert!(should_skip_mega_batch(10, 10));
+    }
+
+    #[test]
+    fn unique_path_count_dedups() {
+        let batch = WatchBatch::new(vec![
+            WatchEvent {
+                path: Utf8PathBuf::from("src/a.rs"),
+                kind: WatchEventKind::Modify,
+            },
+            WatchEvent {
+                path: Utf8PathBuf::from("src/b.rs"),
+                kind: WatchEventKind::Create,
+            },
+            WatchEvent {
+                path: Utf8PathBuf::from("src/a.rs"),
+                kind: WatchEventKind::Modify,
+            },
+        ]);
+        assert_eq!(unique_batch_path_count(&batch), 2);
+    }
+
+    /// Composition: when unique paths hit the threshold, the watch path must
+    /// refuse process_batch **and** mark the index time-stale (DoD-5 wiring).
+    #[test]
+    fn mega_batch_skip_marks_index_stale() {
+        use crate::index::staleness::{
+            STALE_EPOCH_RFC3339, check_index_staleness, mark_index_stale,
+        };
+        use crate::state::migrations::get_migrations;
+        use crate::state::storage::StorageManager;
+        use chrono::Utc;
+        use rusqlite::Connection;
+
+        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = conn;
+        get_migrations().to_latest(&mut conn).unwrap();
+        let mut storage = StorageManager::init_from_conn(conn);
+        let now = Utc::now().to_rfc3339();
+        storage
+            .get_connection()
+            .execute(
+                "INSERT INTO project_files (file_path, parse_status, last_indexed_at, content_hash) \
+                 VALUES (?1, ?2, ?3, ?4)",
+                rusqlite::params!["src/a.rs", "OK", &now, "abc"],
+            )
+            .unwrap();
+        storage
+            .get_connection()
+            .execute(
+                "INSERT OR REPLACE INTO index_metadata (key, value) VALUES ('last_indexed_at', ?1)",
+                [&now],
+            )
+            .unwrap();
+        assert!(
+            check_index_staleness(&storage, 3).is_none(),
+            "fresh index should not be time-stale before mega-batch mark"
+        );
+
+        let mut events = Vec::new();
+        for i in 0..DEFAULT_MEGA_BATCH_THRESHOLD {
+            events.push(WatchEvent {
+                path: Utf8PathBuf::from(format!("src/f{i}.rs")),
+                kind: WatchEventKind::Modify,
+            });
+        }
+        let batch = WatchBatch::new(events);
+        let path_count = unique_batch_path_count(&batch);
+        assert!(
+            should_skip_mega_batch(path_count, DEFAULT_MEGA_BATCH_THRESHOLD),
+            "synthetic batch must trip mega-batch safety"
+        );
+        // Production branch: skip process_batch + mark_index_stale
+        mark_index_stale(&mut storage).unwrap();
+        let warning = check_index_staleness(&storage, 3).expect("must be time-stale after mark");
+        assert!(!warning.is_missing);
+        let stored: String = storage
+            .get_connection()
+            .query_row(
+                "SELECT value FROM index_metadata WHERE key = 'last_indexed_at'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(stored, STALE_EPOCH_RFC3339);
     }
 }

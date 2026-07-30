@@ -80,6 +80,14 @@ fn get_log_path(layout: &Layout) -> Utf8PathBuf {
     layout.logs_dir().join("nightly.log")
 }
 
+/// Default nightly index argv (heavy tier). Must **not** include `--auto-scip`.
+///
+/// Kept pure for unit tests (DoD-6). Honesty: `index --analyze-graph` destroys
+/// and rebuilds structural edges on its second pipeline pass (0095 residual).
+pub fn nightly_index_args() -> &'static [&'static str] {
+    &["index", "--analyze-graph"]
+}
+
 pub fn execute_setup_nightly(dry_run: bool, uninstall: bool) -> Result<()> {
     let layout = get_layout()?;
     let root = layout.root.clone();
@@ -351,16 +359,17 @@ pub fn execute_run_nightly() -> Result<()> {
     )
     .into_diagnostic()?;
 
-    // 2. ledgerful index --analyze-graph
+    // 2. ledgerful index --analyze-graph (heavy path; never --auto-scip by default)
     let index_status = Command::new(resolve_ledgerful_binary()?.as_std_path())
-        .args(["index", "--analyze-graph"])
+        .args(nightly_index_args())
         .current_dir(layout.root.as_std_path())
         .status()
         .into_diagnostic()?;
     append_log(
         &log_path,
         &format!(
-            "ledgerful index --analyze-graph finished with status {}",
+            "ledgerful {} finished with status {}",
+            nightly_index_args().join(" "),
             index_status.code().unwrap_or(-1)
         ),
     )
@@ -638,5 +647,15 @@ mod tests {
         assert_ne!(marker_a, marker_b, "different repos need different markers");
         assert_eq!(cron_marker(&root_a), cron_marker(&root_a));
         assert!(marker_a.starts_with("# ledgerful-nightly:"));
+    }
+
+    #[test]
+    fn nightly_index_args_exclude_auto_scip() {
+        let args = nightly_index_args();
+        assert_eq!(args, &["index", "--analyze-graph"]);
+        assert!(
+            !args.iter().any(|a| a.contains("scip")),
+            "default nightly must not pass --auto-scip or any scip flag: {args:?}"
+        );
     }
 }

@@ -28,24 +28,30 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
     // --- Staleness check (applies to both semantic and BM25 paths) ---
     if !args.index {
         let config = load_config(&layout)?;
+        let threshold = config.index.stale_threshold_days;
         let storage_opt = StorageManager::open_read_only(&layout).ok();
 
-        if let Some(storage) = storage_opt {
-            let threshold = config.index.stale_threshold_days;
-            if args.auto_index {
-                crate::index::staleness::try_auto_index(storage, threshold, &layout)?;
-            } else {
-                let is_stale = warn_if_stale(&storage, threshold);
-                if is_stale && !args.json && crate::util::term::is_interactive() {
-                    use inquire::Confirm;
-                    if let Ok(true) =
-                        Confirm::new("Index is stale. Would you like to run auto-index now?")
-                            .with_default(true)
-                            .prompt()
-                    {
-                        println!("Running auto-indexing...");
-                        crate::index::staleness::try_auto_index(storage, threshold, &layout)?;
-                    }
+        if args.auto_index {
+            // Missing DB must still bootstrap under --auto-index (same as ask).
+            let storage = match storage_opt {
+                Some(s) => s,
+                None => {
+                    layout.ensure_state_dir()?;
+                    StorageManager::init_with_layout(&layout)?
+                }
+            };
+            crate::index::staleness::try_auto_index(storage, threshold, &layout)?;
+        } else if let Some(storage) = storage_opt {
+            let is_stale = warn_if_stale(&storage, threshold);
+            if is_stale && !args.json && crate::util::term::is_interactive() {
+                use inquire::Confirm;
+                if let Ok(true) =
+                    Confirm::new("Index is stale. Would you like to run auto-index now?")
+                        .with_default(true)
+                        .prompt()
+                {
+                    println!("Running auto-indexing...");
+                    crate::index::staleness::try_auto_index(storage, threshold, &layout)?;
                 }
             }
         }

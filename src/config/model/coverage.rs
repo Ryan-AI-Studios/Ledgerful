@@ -313,6 +313,12 @@ pub struct WatchConfig {
     pub debounce_ms: u64,
     #[serde(default = "default_ignore_patterns")]
     pub ignore_patterns: Vec<String>,
+    /// Unique paths in a single debounced batch at/above which watch refuses
+    /// unbounded incremental sync, marks the index STALE, and asks for
+    /// `ledgerful index --full`. Default **1000**. Additive serde default —
+    /// older configs omit this key safely.
+    #[serde(default = "default_mega_batch_threshold")]
+    pub mega_batch_threshold: usize,
 }
 
 impl Default for WatchConfig {
@@ -320,11 +326,16 @@ impl Default for WatchConfig {
         Self {
             debounce_ms: default_debounce_ms(),
             ignore_patterns: default_ignore_patterns(),
+            mega_batch_threshold: default_mega_batch_threshold(),
         }
     }
 }
 
 fn default_debounce_ms() -> u64 {
+    1000
+}
+
+fn default_mega_batch_threshold() -> usize {
     1000
 }
 fn default_ignore_patterns() -> Vec<String> {
