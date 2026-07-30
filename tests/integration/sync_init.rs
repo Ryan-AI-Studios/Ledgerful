@@ -136,7 +136,7 @@ fn sync_init_force_rewrites_keys_and_sot_device_id_together() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn pair_accept_fails_closed_seeded_sot_nyi_not_missing_row() {
+fn pair_accept_fails_closed_on_bogus_invite_not_missing_row() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -147,14 +147,15 @@ fn pair_accept_fails_closed_seeded_sot_nyi_not_missing_row() {
     // Seed keys + sync_state via fixed init (avoids false-green on missing-row).
     handle_sync_init(false, Some(TEST_SECRET.to_string())).unwrap();
 
-    let err = handle_sync_pair(Some("bogus-pair-code".to_string()))
-        .expect_err("pair accept must fail closed");
+    let err = handle_sync_pair(Some("bogus-pair-code".to_string()), false, None, false)
+        .expect_err("pair accept must fail closed on bogus invite");
     let msg = format!("{err:#}");
     assert!(
-        msg.to_lowercase().contains("not implemented")
-            || msg.to_lowercase().contains("0111")
-            || msg.to_lowercase().contains("experimental"),
-        "expected NYI/not-implemented message, got: {msg}"
+        msg.to_lowercase().contains("invalid")
+            || msg.to_lowercase().contains("invite")
+            || msg.to_lowercase().contains("secret")
+            || msg.to_lowercase().contains("unsupported"),
+        "expected invalid-invite message, got: {msg}"
     );
     assert!(
         !msg.to_lowercase().contains("no rows")
@@ -162,7 +163,8 @@ fn pair_accept_fails_closed_seeded_sot_nyi_not_missing_row() {
         "must not be a false-green missing-row error: {msg}"
     );
     assert!(
-        !msg.to_lowercase().contains("paired successfully"),
+        !msg.to_lowercase().contains("paired successfully")
+            && !msg.to_lowercase().contains("trusted peer"),
         "must never claim success: {msg}"
     );
     // Fail-closed: no peer store, no auto-enable.
@@ -203,7 +205,7 @@ fn sync_init_empty_secret_does_not_write_keys() {
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]
-fn pair_without_code_after_init_emits_experimental_provisional_code() {
+fn pair_without_code_after_init_emits_experimental_invite() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     setup_git_repo(tmp.path());
@@ -213,7 +215,8 @@ fn pair_without_code_after_init_emits_experimental_provisional_code() {
     ledgerful::commands::init::execute_init(false, false).unwrap();
     handle_sync_init(false, Some(TEST_SECRET.to_string())).unwrap();
 
-    handle_sync_pair(None).expect("provisional code gen should succeed after init");
+    handle_sync_pair(None, false, None, false)
+        .expect("LF-PAIR-1 invite gen should succeed after init");
 }
 
 #[test]

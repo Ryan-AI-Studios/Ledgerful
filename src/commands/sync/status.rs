@@ -3,7 +3,7 @@ use miette::{Result, miette};
 use rusqlite::OptionalExtension;
 use std::path::PathBuf;
 
-/// Show Experimental team sync status (CLI-first; peers not available until 0111).
+/// Show Experimental team sync status (CLI-first; peer list from local trust store).
 pub fn handle() -> Result<()> {
     let layout = crate::commands::helpers::get_layout()?;
     let config = crate::config::load::load_config(&layout)?;
@@ -111,8 +111,21 @@ pub fn handle() -> Result<()> {
     println!("  Outbox Count:   {outbox_count}");
     println!("  Inbox Count:    {inbox_count}");
     println!("  Last Received:  {last_bundle}");
-    // Peers are not listed until 0111 peer store — do not claim pair lists devices.
-    println!("  Peers:          not available (0) — pairing accept lands in track 0111");
+
+    // Peer trust store: `{state_dir}/sync/peers/*.pub` (0111).
+    // Do not mask list errors as "0 peers" — surface the failure clearly.
+    let sync_dir = layout.state_dir.join("sync");
+    match crate::sync::peers::list_peers(sync_dir.as_std_path()) {
+        Ok(peers) if peers.is_empty() => {
+            println!("  Peers:          0 (pair with `ledgerful sync pair` / accept invite)");
+        }
+        Ok(peers) => {
+            println!("  Peers:          {} ({})", peers.len(), peers.join(", "));
+        }
+        Err(e) => {
+            println!("  Peers:          error: {e}");
+        }
+    }
 
     Ok(())
 }

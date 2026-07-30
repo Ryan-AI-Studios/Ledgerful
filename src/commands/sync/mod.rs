@@ -12,7 +12,12 @@ use miette::Result;
 pub fn handle(subcommand: SyncSubcommands) -> Result<()> {
     match subcommand {
         SyncSubcommands::Init { force, with_secret } => init::handle(force, with_secret),
-        SyncSubcommands::Pair { code } => pair::handle(code),
+        SyncSubcommands::Pair {
+            code,
+            list,
+            revoke,
+            force,
+        } => pair::handle(code, list, revoke, force),
         SyncSubcommands::Run { once } => run::handle(once),
         SyncSubcommands::Status => status::handle(),
         SyncSubcommands::Verify { path } => verify::handle(&path),
