@@ -46,8 +46,10 @@ Never SCIP. Never `--analyze-graph` on this path.
 - **Time-stale:** `last_indexed_at` older than `index.stale_threshold_days` (default **3**).
   Covers quiet multi-day lag even when the tree looks unchanged.
 - **Drift-stale:** worktree supported-source content hashes differ from
-  `project_files.content_hash` (includes never-stored / new files). Covers
-  **same-day** agent edits that time-only checks would miss.
+  `project_files.content_hash` (includes never-stored / new files **and** indexed
+  files removed from the worktree). Covers **same-day** agent edits and deletes
+  that time-only checks would miss. Incremental refresh marks missing rows
+  `DELETED` and prunes dependents.
 
 Both signals matter. Shared-path `--auto-index` runs when either fires.
 

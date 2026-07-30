@@ -154,12 +154,15 @@ pub fn incremental_index(indexer: &mut ProjectIndexer) -> Result<super::IndexSta
 
     let existing_files = load_existing_files(&indexer.storage)?;
     let mut files_to_reindex = Vec::new();
+    let mut current_relatives: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for file_path in &current_files {
         let relative = file_path
             .strip_prefix(&indexer.repo_path)
             .unwrap_or(file_path)
-            .to_string();
+            .to_string()
+            .replace('\\', "/");
+        current_relatives.insert(relative.clone());
         if let Some(existing) = existing_files.get(&relative) {
             match crate::util::fs::read_to_string_with_encoding(file_path.as_std_path()) {
                 Ok(content) => {
@@ -177,7 +180,28 @@ pub fn incremental_index(indexer: &mut ProjectIndexer) -> Result<super::IndexSta
         }
     }
 
+    // Reconcile deletions: rows still active in SQLite but gone from the worktree.
+    let mut deleted_paths: Vec<String> = existing_files
+        .keys()
+        .filter(|path| !current_relatives.contains(*path))
+        .cloned()
+        .collect();
+    deleted_paths.sort();
+    for relative in &deleted_paths {
+        row_helpers::delete_file_index_dependents(indexer.storage.get_connection(), relative)?;
+        indexer
+            .storage
+            .get_connection()
+            .execute(
+                "UPDATE project_files SET parse_status = 'DELETED' WHERE file_path = ?1",
+                [relative],
+            )
+            .into_diagnostic()?;
+    }
+
     if files_to_reindex.is_empty() {
+        // Deletion-only refresh still advances index metadata so time-fresh +
+        // content-clean is honest after auto-index.
         store_index_metadata(indexer)?;
         // Still report existing indexed size (no new walk) when nothing changed.
         report_indexed_repo_size_for_timing(&indexer.storage);
@@ -485,7 +509,12 @@ pub fn load_existing_files(storage: &StorageManager) -> Result<HashMap<String, P
         .into_diagnostic()?;
     Ok(rows
         .into_iter()
-        .map(|pf| (pf.file_path.clone(), pf))
+        .map(|mut pf| {
+            // Normalize so Windows backslash rows still match discovery paths.
+            pf.file_path = pf.file_path.replace('\\', "/");
+            let key = pf.file_path.clone();
+            (key, pf)
+        })
         .collect())
 }
 

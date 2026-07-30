@@ -207,7 +207,8 @@ pub fn assess_index_freshness_at(
         state = IndexFreshnessState::NeverIndexed; // Actually shouldn't happen
     }
 
-    // Unindexed files logic placeholder (content-hash drift fills this in try_auto_index).
+    // Age-only assess stays cheap: worktree unindexed count lives in
+    // content-hash drift (`try_auto_index` / `count_content_hash_drift`).
     let unindexed_files = 0;
 
     let mut sample_paths = Vec::new();
@@ -308,6 +309,7 @@ pub fn count_content_hash_drift(
     let mut changed_or_unindexed = 0usize;
     let mut unindexed = 0usize;
     let mut sample_paths = Vec::new();
+    let mut seen_stored: std::collections::HashSet<String> = std::collections::HashSet::new();
 
     for file_path in &discovered {
         let relative = file_path
@@ -315,6 +317,7 @@ pub fn count_content_hash_drift(
             .unwrap_or(file_path)
             .as_str()
             .replace('\\', "/");
+        seen_stored.insert(relative.clone());
 
         let current_hash =
             match crate::util::fs::read_to_string_with_encoding(file_path.as_std_path()) {
@@ -344,6 +347,20 @@ pub fn count_content_hash_drift(
                     sample_paths.push(relative);
                 }
             }
+        }
+    }
+
+    // Indexed files removed from the worktree are also drift (DoD-4 deletions).
+    let mut deleted: Vec<String> = stored
+        .keys()
+        .filter(|path| !seen_stored.contains(*path))
+        .cloned()
+        .collect();
+    deleted.sort();
+    for path in deleted {
+        changed_or_unindexed += 1;
+        if sample_paths.len() < DRIFT_SAMPLE_LIMIT {
+            sample_paths.push(path);
         }
     }
 
@@ -973,6 +990,34 @@ mod tests {
         assert!(drift.is_dirty());
         assert_eq!(drift.unindexed, 1);
         assert!(drift.sample_paths.iter().any(|p| p == "src/new.rs"));
+    }
+
+    #[test]
+    fn content_hash_drift_detects_deleted_worktree_file() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        write_utf8(root.join("src/lib.rs").as_std_path(), "fn a() {}\n");
+        // Indexed path gone from the worktree (same-day delete).
+        let storage = in_memory_storage();
+        let now = Utc::now().to_rfc3339();
+        insert_file_with_hash(&storage, "src/lib.rs", "fn a() {}\n", &now);
+        insert_file_with_hash(&storage, "src/gone.rs", "fn gone() {}\n", &now);
+        set_last_indexed_at(&storage, &now);
+
+        let drift = count_content_hash_drift(&storage, &root).unwrap();
+        assert!(drift.is_dirty(), "deleted indexed file must count as drift");
+        assert!(
+            drift.changed_or_unindexed >= 1,
+            "expected at least the deleted path"
+        );
+        assert!(drift.sample_paths.iter().any(|p| p == "src/gone.rs"));
+        assert_eq!(
+            plan_auto_index_action(&assess_index_freshness(&storage, 3), &drift),
+            AutoIndexAction::Incremental {
+                time_stale: false,
+                drift_stale: true,
+            }
+        );
     }
 
     #[test]
