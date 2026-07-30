@@ -331,11 +331,14 @@ mod tests {
 
         let storage = StorageManager::init_from_conn(conn);
         let config = crate::config::model::Config::default();
+        // Use real repo root (not a hard-coded Windows path) so temporal
+        // open_repo succeeds on Linux/macOS CI runners.
+        let project_root = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let context = EnrichmentContext {
             storage: &storage,
             config: &config,
             file_id_map: HashMap::new(),
-            project_root: PathBuf::from(r"C:\dev\ledgerful"),
+            project_root,
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
         };
