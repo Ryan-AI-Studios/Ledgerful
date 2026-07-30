@@ -53,7 +53,8 @@ fn doctor_json_stdout_is_pure_schema_v1() {
         "VRAM section leaked:\n{stdout}"
     );
     assert!(
-        !stdout.contains("Cold or CI builds may benefit") || stdout.contains("\"code\": \"sccache-hint\""),
+        !stdout.contains("Cold or CI builds may benefit")
+            || stdout.contains("\"code\": \"sccache-hint\""),
         "sccache should appear only as structured finding, got:\n{stdout}"
     );
     // Human-only Hint: prefix must not appear (structured findings have no Hint:).
