@@ -32,6 +32,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **scip-python install hint uses npm (0105):** doctor / capability messages now say
+  `npm install -g @sourcegraph/scip-python` (package is not on PyPI; the old
+  `pip install scip-python` hint 404'd).
+- **Agent skill SCIP honesty (0105):** skill no longer advertises “compiler-grade”
+  SCIP as universal. SCIP remains optional (`index --auto-scip` / `--scip`, default
+  off); agents should read `scip.status` / `edges_added` under `--json`.
 - **Linked worktrees share `.ledgerful` with the primary worktree (0108):** state (ledger DB,
   config, keys, reports, search index) resolves via git common-dir to the main checkout;
   submodules keep private state. Nested cwd no longer creates orphan `{subdir}/.ledgerful`.
