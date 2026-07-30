@@ -359,7 +359,11 @@ pub enum Commands {
         dry_run: bool,
     },
     /// Health check for Ledgerful and local model stack
-    Doctor,
+    Doctor {
+        /// Emit pure schema-v1 JSON on stdout (severity, readyForPublish, findings)
+        #[arg(long)]
+        json: bool,
+    },
     /// Quick status check of the project ledger and pending transactions
     Status,
     /// Configuration management
@@ -715,7 +719,7 @@ impl Commands {
             Commands::Ask { .. } => false,
             Commands::Intent { .. } => false,
             Commands::Reset { .. } => false,
-            Commands::Doctor => false,
+            Commands::Doctor { json } => *json,
             Commands::Status => false,
             Commands::Timings { json, .. } => *json,
             Commands::Config { command } => match command {
@@ -857,7 +861,7 @@ impl Commands {
                 IntentCommands::Demo => "intent_demo",
             },
             Commands::Reset { .. } => "reset",
-            Commands::Doctor => "doctor",
+            Commands::Doctor { .. } => "doctor",
             Commands::Status => "status",
             Commands::Timings { .. } => "timings",
             Commands::Config { command } => match command {
@@ -964,6 +968,12 @@ mod machine_output_tests {
         assert!(!parse(&["verify", "--signatures"]).is_machine_output());
         assert!(!parse(&["ledger", "status"]).is_machine_output());
         assert!(!parse(&["scan", "--impact"]).is_machine_output());
+    }
+
+    #[test]
+    fn doctor_json_is_machine_output() {
+        assert!(parse(&["doctor", "--json"]).is_machine_output());
+        assert!(!parse(&["doctor"]).is_machine_output());
     }
 
     #[test]
@@ -1875,7 +1885,11 @@ impl Commands {
                     f.push("json");
                 }
             }
-            Commands::Doctor => {}
+            Commands::Doctor { json } => {
+                if *json {
+                    f.push("json");
+                }
+            }
             Commands::Status => {}
             Commands::Gate { command } => match command {
                 // `mode` is a positional optional value, not a long flag.

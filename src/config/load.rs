@@ -109,8 +109,10 @@ fn sanitize_verify_steps(config: &mut Config) {
 }
 
 /// Doctor-facing findings for config staleness / unknown keys. Sorted, empty
-/// when clean. Severity is WARNING (not CRITICAL).
-pub fn doctor_config_findings(layout: &Layout) -> Vec<String> {
+/// when clean. Severity is **warn** / category **migration** (0109).
+pub fn doctor_config_findings(layout: &Layout) -> Vec<crate::commands::doctor::DoctorFinding> {
+    use crate::commands::doctor::{DoctorCategory, DoctorFinding};
+
     let path = layout.config_file();
     if !path.exists() {
         return Vec::new();
@@ -120,13 +122,21 @@ pub fn doctor_config_findings(layout: &Layout) -> Vec<String> {
         Ok((_cfg, unknown)) if unknown.is_empty() => Vec::new(),
         Ok((_cfg, unknown)) => {
             let keys = unknown.join(", ");
-            vec![format!(
-                "Warning [legacy-config]: unknown or retired config key(s) ignored: {keys}. Review `{path}` or run `ledgerful init` to refresh starter config (unknown keys are never a hard error)."
+            vec![DoctorFinding::warn(
+                "legacy-config",
+                DoctorCategory::Migration,
+                format!(
+                    "unknown or retired config key(s) ignored: {keys}. Review `{path}` or run `ledgerful init` to refresh starter config (unknown keys are never a hard error)."
+                ),
             )]
         }
         Err(e) => {
-            vec![format!(
-                "Warning [legacy-config]: failed to parse `{path}`: {e}. Using defaults at runtime; fix the file or run `ledgerful init --force` carefully."
+            vec![DoctorFinding::warn(
+                "legacy-config",
+                DoctorCategory::Migration,
+                format!(
+                    "failed to parse `{path}`: {e}. Using defaults at runtime; fix the file or run `ledgerful init --force` carefully."
+                ),
             )]
         }
     }
@@ -259,7 +269,9 @@ x = 1
         );
         let findings = doctor_config_findings(&layout);
         assert!(
-            findings.iter().any(|f| f.contains("legacy-config")),
+            findings
+                .iter()
+                .any(|f| f.code == "legacy-config" || f.message.contains("legacy-config")),
             "doctor must name remediation: {findings:?}"
         );
     }

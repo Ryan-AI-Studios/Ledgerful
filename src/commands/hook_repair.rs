@@ -1050,14 +1050,18 @@ fn print_report(report: &HookRepairReport) {
 // Doctor helpers (detection only — no rewrite)
 // ---------------------------------------------------------------------------
 
-/// Scan hooks for legacy migration residue. Returns sorted warning strings
+/// Scan hooks for legacy migration residue. Returns sorted structured findings
 /// (empty when clean). Does not modify any file.
 ///
 /// RT-H5 detection half only: reports gate-present-but-inert when a gate
 /// marker exists but every invocation still names the retired binary (binary
 /// missing → guard skips → commit/push proceeds). Enforcement (absolute-path
-/// pin, fail-closed) is out of scope for 0094.
-pub fn doctor_legacy_hook_findings(repo_root: &Utf8Path) -> Vec<String> {
+/// pin, fail-closed) is out of scope for 0094. Severity **warn** / migration.
+pub fn doctor_legacy_hook_findings(
+    repo_root: &Utf8Path,
+) -> Vec<crate::commands::doctor::DoctorFinding> {
+    use crate::commands::doctor::{DoctorCategory, DoctorFinding};
+
     let mut findings = Vec::new();
 
     if detect_third_party_hook_manager(repo_root).is_some() {
@@ -1067,11 +1071,14 @@ pub fn doctor_legacy_hook_findings(repo_root: &Utf8Path) -> Vec<String> {
     let hooks_dir = match resolve_hooks_dir(repo_root) {
         HooksDirResolution::Found { hooks_dir } => hooks_dir,
         HooksDirResolution::OutsideRepo { hooks_dir } => {
-            findings.push(format!(
-                "Warning [legacy-hooks]: hooks path '{}' is outside the repository; run `ledgerful update --repair-hooks` will refuse rewrite",
-                hooks_dir
+            findings.push(DoctorFinding::warn(
+                "legacy-hooks",
+                DoctorCategory::Migration,
+                format!(
+                    "hooks path '{hooks_dir}' is outside the repository; run `ledgerful update --repair-hooks` will refuse rewrite"
+                ),
             ));
-            findings.sort();
+            findings.sort_by(|a, b| a.code.cmp(&b.code).then(a.message.cmp(&b.message)));
             return findings;
         }
         HooksDirResolution::CannotLook { reason } => {
@@ -1136,29 +1143,37 @@ pub fn doctor_legacy_hook_findings(repo_root: &Utf8Path) -> Vec<String> {
     }
 
     if legacy_markers {
-        findings.push(
-            "Warning [legacy-hooks]: hook marker comments still use the retired product name; run `ledgerful update --repair-hooks`".to_string(),
-        );
+        findings.push(DoctorFinding::warn(
+            "legacy-hooks",
+            DoctorCategory::Migration,
+            "hook marker comments still use the retired product name; run `ledgerful update --repair-hooks`",
+        ));
     }
     if legacy_invocations {
-        findings.push(
-            "Warning [legacy-hooks]: hooks still invoke the retired binary; run `ledgerful update --repair-hooks`".to_string(),
-        );
+        findings.push(DoctorFinding::warn(
+            "legacy-hooks",
+            DoctorCategory::Migration,
+            "hooks still invoke the retired binary; run `ledgerful update --repair-hooks`",
+        ));
     }
     if duplicate_gates {
-        findings.push(
-            "Warning [legacy-hooks]: duplicate gate blocks (legacy + current markers); run `ledgerful update --repair-hooks`".to_string(),
-        );
+        findings.push(DoctorFinding::warn(
+            "legacy-hooks",
+            DoctorCategory::Migration,
+            "duplicate gate blocks (legacy + current markers); run `ledgerful update --repair-hooks`",
+        ));
     }
     if inert_gate {
         // RT-H5 detection only (0094): gate present but names missing binary → no-op.
-        findings.push(
-            "Warning [legacy-hooks]: gate marker present but invocations name the retired binary (gate is inert if that binary is absent); run `ledgerful update --repair-hooks`".to_string(),
-        );
+        findings.push(DoctorFinding::warn(
+            "legacy-hooks",
+            DoctorCategory::Migration,
+            "gate marker present but invocations name the retired binary (gate is inert if that binary is absent); run `ledgerful update --repair-hooks`",
+        ));
     }
     let _ = residual_after_shape;
 
-    findings.sort();
+    findings.sort_by(|a, b| a.code.cmp(&b.code).then(a.message.cmp(&b.message)));
     findings.dedup();
     findings
 }

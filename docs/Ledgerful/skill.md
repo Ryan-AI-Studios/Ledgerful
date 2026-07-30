@@ -41,8 +41,15 @@ Use Ledgerful when:
 From the repository root, inspect whether Ledgerful is available:
 
 ```bash
-ledgerful doctor
+# Prefer --json when parsing; branch on readyForPublish (zero block findings).
+ledgerful doctor --json
+# Human: ledgerful doctor
 ```
+
+**`readyForPublish == true`** means the publish-environment path is fit to enter
+(no lifecycle/tool **block** findings). It does **not** mean `verify` passed,
+tests are green, or CI is green. Optional backends (embedding/completion/SCIP/
+sccache/gemini) never set `readyForPublish=false`. See `docs/doctor-severity.md`.
 
 If the command is unavailable, do not invent Ledgerful output. Tell the user it is not installed or not on `PATH`, then continue with normal repository inspection.
 
@@ -61,14 +68,14 @@ iwr https://raw.githubusercontent.com/Ryan-AI-Studios/Ledgerful/main/install/ins
 After installing, open a new terminal if needed and re-run:
 
 ```bash
-ledgerful doctor
+ledgerful doctor --json
 ```
 
 If the repo has not been initialized and the user wants Ledgerful used here:
 
 ```bash
 ledgerful init
-ledgerful doctor
+ledgerful doctor --json
 ```
 
 ## Core Capabilities
@@ -228,6 +235,7 @@ Steps that omit `timeout_secs` inherit `default_timeout_secs`. Invalid steps (em
 
 ```bash
 # Default workflow
+ledgerful doctor --json          # branch on .readyForPublish
 ledgerful scan --impact
 ledgerful verify
 ledgerful hotspots
@@ -358,6 +366,18 @@ ledgerful update --migrate --force
 ledgerful index --semantic
 ```
 
+## Publish Hygiene (dual green)
+
+Do **not** collapse these signals:
+
+| Signal | Means | Does **not** mean |
+|---|---|---|
+| `doctor` / `readyForPublish` | Zero **block** doctor findings; env fit to enter publish path | Verify/tests/CI green |
+| Pre-push hook | `verify --scope fast` + ledger cleanliness | Full fmt/clippy/nextest/CI |
+| `verify --scope full` / CI | Repo full gate | Doctor readiness |
+
+Doctor green ≠ pre-push green ≠ full CI. Full definition: `docs/doctor-severity.md`.
+
 ## When To Skip
 
 Skip Ledgerful only for trivial formatting, simple dependency lockfile updates, binary/media changes, temporary scratch files, or when the user explicitly says to bypass it.
@@ -368,6 +388,7 @@ Skip Ledgerful only for trivial formatting, simple dependency lockfile updates, 
 - If `ledger status` shows unaudited drift, reconcile or adopt before continuing unless the user directs otherwise.
 - If `scan --impact` cannot complete, continue cautiously and include the error in the final report.
 - If a command reports that the index is `[STALE]`, append `--auto-index` to commands like `search`, `ask`, `hotspots`, or `dead-code` to automatically refresh it.
+- Prefer **`--json`** when an agent must parse command output (including `doctor --json`).
 - Do not edit `.ledgerful/` state files directly.
 
 ## Safety Notes

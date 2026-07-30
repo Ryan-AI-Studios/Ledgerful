@@ -238,7 +238,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
             yes,
             dry_run,
         ),
-        Commands::Doctor => crate::commands::doctor::execute_doctor(),
+        Commands::Doctor { json } => crate::commands::doctor::execute_doctor(json),
         Commands::Status => crate::commands::ledger::execute_ledger_status(
             None, false, false, false, false, false, false, None, false, false, false, false,
         ),

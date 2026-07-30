@@ -1,3 +1,10 @@
+mod finding;
+
+pub use finding::{
+    DoctorCategory, DoctorFinding, DoctorSeverity, DoctorSummary, dashboard_failures,
+    ready_for_publish, summarize,
+};
+
 use crate::output::human::print_doctor_report;
 use crate::platform::env::ExecutableStatus;
 use crate::platform::{check_tools, classify_path, current_platform, detect_shell};
@@ -14,9 +21,14 @@ use crate::state::storage::StorageManager;
 /// Soft-pin warning when `intent.trusted_public_keys` is empty (0072 / 0100 DoD-3).
 /// Shares vocabulary with [`crate::ledger::crypto::SignatureTrustStatus::ValidUnknownKey`]:
 /// "unknown key", pin, trusted / trusted_public_keys.
-pub const SIG_PIN_WARNING: &str = "Warning [sig-pin]: no intent.trusted_public_keys pinned; crypto-valid signatures report VALID (unknown key). Pin keys after init or re-sign.";
+/// Message text only (no severity prefix) — severity lives on [`DoctorFinding`].
+pub const SIG_PIN_WARNING: &str = "no intent.trusted_public_keys pinned; crypto-valid signatures report VALID (unknown key). Pin keys after init or re-sign.";
 
-pub fn execute_doctor() -> Result<()> {
+/// Run doctor health checks.
+///
+/// When `json` is true, stdout is pure schema-v1 JSON only (no human banners,
+/// sccache/SCIP/VRAM printers). Exit code is 1 iff any **block** finding.
+pub fn execute_doctor(json: bool) -> Result<()> {
     let current_dir = env::current_dir().into_diagnostic()?;
     // Resolve via git discover so nested cwd and linked worktrees share the
     // correct state home (0108). Never treat cwd as repo root.
@@ -34,12 +46,40 @@ pub fn execute_doctor() -> Result<()> {
     let path_kind_str = format!("{:?}", classify_path(&current_dir));
     let work_root_str = layout.root.to_string();
     let state_dir_str = layout.state_dir.to_string();
+    let path_display = current_dir.to_string_lossy().into_owned();
+
+    let mut findings: Vec<DoctorFinding> = Vec::new();
+
+    // Per-tool identity (0109): git missing = block; gemini missing = info/optional.
+    for (name, status) in &tools {
+        if matches!(status, ExecutableStatus::NotFound) {
+            if name == "git" {
+                findings.push(DoctorFinding::block(
+                    "tool-git",
+                    DoctorCategory::Tools,
+                    "git NOT FOUND — required for publish-environment path",
+                ));
+            } else if name == "gemini" || name == "gemini-cli" {
+                findings.push(DoctorFinding::info(
+                    "tool-gemini",
+                    DoctorCategory::Optional,
+                    format!("{name} NOT FOUND (optional ask backend CLI)"),
+                ));
+            } else {
+                findings.push(DoctorFinding::warn(
+                    format!("tool-{name}"),
+                    DoctorCategory::Tools,
+                    format!("{name} NOT FOUND"),
+                ));
+            }
+        }
+    }
 
     let mut report = crate::output::human::DoctorReport {
         platform: &platform_str,
         shell: &shell_str,
         tools: &tools,
-        path_display: &current_dir.to_string_lossy(),
+        path_display: &path_display,
         path_kind: &path_kind_str,
         work_root: &work_root_str,
         state_dir: &state_dir_str,
@@ -55,8 +95,8 @@ pub fn execute_doctor() -> Result<()> {
 
     // Split-brain residue: local worktree `.ledgerful/state/ledger.db` exists
     // and is not the same file as the resolved shared ledger (detect only).
-    if let Some(warn) = split_brain_ledger_warning(&layout) {
-        report.index_health.push(warn);
+    if let Some(f) = split_brain_ledger_finding(&layout) {
+        findings.push(f);
     }
 
     // --- Intelligence Probes ---
@@ -66,25 +106,38 @@ pub fn execute_doctor() -> Result<()> {
 
     report.active_ask_backend = format_active_ask_backend(&config);
 
-    report
-        .index_health
-        .push(format_gate_mode_status(&layout, &config));
-
-    // DoD-6 / DoD-11: use shared availability helper so partial config
-    // (model name set, base_url empty) is not reported healthy, and so
-    // 0095 can extend the same shape for optional toolchains.
-    // Drive failure counting from `is_failure`, not display-string matching alone.
-    {
-        let avail = format_embedding_backend_availability(&config.local_model, &model_config);
-        report.embedding_model_status = avail.display;
-        report.embedding_model_failed = avail.is_failure;
-        if let Some(detail) = avail.debug_detail {
-            tracing::debug!("Full embedding model error: {}", detail);
+    // Gate mode: mismatch → warn finding; ok/no-history → display only (omit finding).
+    match gate_mode_status(&layout, &config) {
+        GateModeOutcome::Ok(line) | GateModeOutcome::NoHistory(line) => {
+            report.index_health.push(line);
+        }
+        GateModeOutcome::Mismatch { display, finding } => {
+            report.index_health.push(display);
+            findings.push(finding);
         }
     }
 
+    // Embedding: structured findings from BackendAvailabilityReport (optional).
+    {
+        let avail = format_embedding_backend_availability(&config.local_model, &model_config);
+        report.embedding_model_status = avail.display.clone();
+        report.embedding_model_failed = avail.is_failure;
+        if let Some(detail) = &avail.debug_detail {
+            tracing::debug!("Full embedding model error: {}", detail);
+        }
+        if let Some(f) = embedding_finding(&config.local_model, &avail) {
+            findings.push(f);
+        }
+    }
+
+    // Completion model (optional).
     if config.local_model.generation_model.is_empty() {
         report.completion_model_status = "Not configured".yellow().to_string();
+        findings.push(DoctorFinding::info(
+            "completion-not-configured",
+            DoctorCategory::Optional,
+            "Completion model not configured",
+        ));
     } else {
         match probe_with_retry(|| crate::local_model::client::ping_completions(&model_config)) {
             ProbeResult::Healthy(model) => {
@@ -137,6 +190,13 @@ pub fn execute_doctor() -> Result<()> {
                     detail_hint
                 );
                 tracing::debug!("Full completion model error: {}", err);
+                findings.push(DoctorFinding::warn(
+                    "completion-unreachable",
+                    DoctorCategory::Optional,
+                    format!(
+                        "Completion model unreachable ({truncated}{retry_suffix}){detail_hint}"
+                    ),
+                ));
             }
         }
     }
@@ -177,19 +237,33 @@ pub fn execute_doctor() -> Result<()> {
                     node_count, edge_count
                 );
             }
-            Err(e) => report.native_graph_status = format!("Error ({})", e.red()),
+            Err(e) => {
+                report.native_graph_status = format!("Error ({})", e.red());
+                findings.push(DoctorFinding::warn(
+                    "graph-error",
+                    DoctorCategory::Index,
+                    format!("Native graph error ({e})"),
+                ));
+            }
         }
     } else {
         report.native_graph_status = "Not initialized".to_string();
+        findings.push(DoctorFinding::info(
+            "graph-not-initialized",
+            DoctorCategory::Index,
+            "Native graph not initialized",
+        ));
     }
 
     // --- Index Health Probes ---
     // 1. Tantivy Search Index
     let index_path = layout.search_index_dir();
     if !index_path.exists() {
-        report
-            .index_health
-            .push("Search index: Missing (run 'ledgerful index')".to_string());
+        findings.push(DoctorFinding::warn(
+            "search-missing",
+            DoctorCategory::Index,
+            "Search index: Missing (run 'ledgerful index')",
+        ));
     } else {
         let engine = crate::search::tantivy_engine::TantivySearchEngine::open_or_create(
             index_path.as_std_path(),
@@ -197,9 +271,10 @@ pub fn execute_doctor() -> Result<()> {
         match engine {
             Ok(e) => {
                 if let Err(err) = e.verify_index_integrity(index_path.as_std_path()) {
-                    report.index_health.push(format!(
-                        "Search index: Corrupt ({}) - run 'ledgerful index --full'",
-                        err.red()
+                    findings.push(DoctorFinding::warn(
+                        "search-corrupt",
+                        DoctorCategory::Index,
+                        format!("Search index: Corrupt ({err}) - run 'ledgerful index --full'"),
                     ));
                 } else {
                     let docs = e.document_count();
@@ -208,9 +283,13 @@ pub fn execute_doctor() -> Result<()> {
                         .push(format!("Search index: OK ({} documents)", docs));
                 }
             }
-            Err(e) => report
-                .index_health
-                .push(format!("Search index: Load failed ({})", e.red())),
+            Err(e) => {
+                findings.push(DoctorFinding::warn(
+                    "search-load-failed",
+                    DoctorCategory::Index,
+                    format!("Search index: Load failed ({e})"),
+                ));
+            }
         }
     }
 
@@ -219,25 +298,27 @@ pub fn execute_doctor() -> Result<()> {
         crate::index::staleness::check_index_staleness(&storage, config.index.stale_threshold_days)
     {
         if stale_res.is_missing {
-            report
-                .index_health
-                .push("Graph state: Empty (never indexed)".yellow().to_string());
+            findings.push(DoctorFinding::warn(
+                "graph-empty",
+                DoctorCategory::Index,
+                "Graph state: Empty (never indexed)",
+            ));
         } else {
-            report.index_health.push(
+            findings.push(DoctorFinding::warn(
+                "graph-stale",
+                DoctorCategory::Index,
                 format!(
                     "Graph state: STALE ({} files affected) - run 'ledgerful index'",
                     stale_res.stale_files
-                )
-                .yellow()
-                .to_string(),
-            );
+                ),
+            ));
         }
+    } else if total_nodes == 0 && total_edges == 0 {
+        report.index_health.push(
+            "Graph state: Current (run 'ledgerful index --analyze-graph' to populate the knowledge graph)".to_string(),
+        );
     } else {
-        if total_nodes == 0 && total_edges == 0 {
-            report.index_health.push("Graph state: Current (run 'ledgerful index --analyze-graph' to populate the knowledge graph)".to_string());
-        } else {
-            report.index_health.push("Graph state: Current".to_string());
-        }
+        report.index_health.push("Graph state: Current".to_string());
     }
 
     // 3. Impact Report Freshness
@@ -245,7 +326,6 @@ pub fn execute_doctor() -> Result<()> {
         && let Ok((head_hash, branch_name)) = crate::git::repo::get_head_info(&repo)
     {
         let changes = crate::git::status::get_repo_status(&repo).unwrap_or_default();
-        // Filter ignored changes like scan does
         let filtered = crate::git::ignore::filter_ignored_changes(
             changes,
             &config.watch.ignore_patterns,
@@ -263,11 +343,11 @@ pub fn execute_doctor() -> Result<()> {
         let freshness = crate::state::reports::check_impact_freshness(&layout, &snapshot);
         match freshness {
             crate::state::reports::ImpactFreshness::Missing => {
-                report.index_health.push(
-                    "Impact report: None (run 'ledgerful scan --impact')"
-                        .yellow()
-                        .to_string(),
-                );
+                findings.push(DoctorFinding::warn(
+                    "impact-missing",
+                    DoctorCategory::Index,
+                    "Impact report: None (run 'ledgerful scan --impact')",
+                ));
             }
             crate::state::reports::ImpactFreshness::CurrentClean => {
                 report
@@ -298,215 +378,205 @@ pub fn execute_doctor() -> Result<()> {
                         }
                         Err(e) => {
                             tracing::debug!("Failed to auto-refresh impact report: {e}");
-                            report.index_health.push(
+                            findings.push(DoctorFinding::warn(
+                                "impact-stale",
+                                DoctorCategory::Index,
                                 format!(
-                                    "Impact report: STALE ({}) — run 'ledgerful impact' or 'ledgerful scan --impact' to refresh",
-                                    reason
-                                )
-                                .yellow()
-                                .to_string(),
-                            );
+                                    "Impact report: STALE ({reason}) — run 'ledgerful impact' or 'ledgerful scan --impact' to refresh"
+                                ),
+                            ));
                         }
                     }
                 } else {
-                    report.index_health.push(
+                    findings.push(DoctorFinding::warn(
+                        "impact-stale",
+                        DoctorCategory::Index,
                         format!(
-                            "Impact report: STALE ({}) — run 'ledgerful impact' or 'ledgerful scan --impact' to refresh",
-                            reason
-                        )
-                        .yellow()
-                        .to_string(),
-                    );
+                            "Impact report: STALE ({reason}) — run 'ledgerful impact' or 'ledgerful scan --impact' to refresh"
+                        ),
+                    ));
                 }
             }
             crate::state::reports::ImpactFreshness::Corrupt { reason } => {
-                report.index_health.push(
-                    format!("Impact report: Corrupt ({})", reason)
-                        .red()
-                        .to_string(),
-                );
+                // Impact-corrupt stays warn (not block): publish path does not require impact.
+                findings.push(DoctorFinding::warn(
+                    "impact-corrupt",
+                    DoctorCategory::Index,
+                    format!("Impact report: Corrupt ({reason})"),
+                ));
             }
         }
     }
 
     // Track 0043: warn on oversized / high-cardinality timing tables.
-    for w in crate::commands::timings::doctor_timing_warnings(storage.get_connection()) {
-        report
-            .index_health
-            .push(format!("Warning: {w}").yellow().to_string());
+    for (i, w) in crate::commands::timings::doctor_timing_warnings(storage.get_connection())
+        .into_iter()
+        .enumerate()
+    {
+        findings.push(DoctorFinding::warn(
+            format!("timings-{i}"),
+            DoctorCategory::Other,
+            w,
+        ));
     }
 
-    // Track 0074: lifecycle integrity CRITICAL / WARN codes.
-    let mut critical_count: u64 = 0;
+    // Track 0074: lifecycle integrity block codes.
     let lifecycle = crate::commands::ledger::detect_lifecycle_signals(&layout);
     if lifecycle.promote_orphan {
-        critical_count += 1;
-        report.index_health.push(
+        findings.push(DoctorFinding::block(
+            crate::commands::hook_sidecar::CODE_PROMOTE_ORPHAN,
+            DoctorCategory::Lifecycle,
             format!(
-                "CRITICAL [{}]: promote-failed or HEAD-matching orphan retained (tx={}). Recover with: {}",
-                crate::commands::hook_sidecar::CODE_PROMOTE_ORPHAN,
+                "promote-failed or HEAD-matching orphan retained (tx={}). Recover with: {}",
                 lifecycle
                     .promote_orphan_tx_id
                     .as_deref()
                     .unwrap_or("unknown"),
                 crate::commands::hook_sidecar::RECOVER_HINT
-            )
-            .red()
-            .to_string(),
-        );
+            ),
+        ));
     }
     if lifecycle.head_uncovered && config.gate.is_enforce() {
-        // Surface HEAD_UNCOVERED even when promote_orphan also applies; count once
-        // only if promote_orphan did not already increment.
-        // Honesty: minimum signal = promote_failed OR HEAD-matching pending
-        // sidecar — not a full material-HEAD-without-row scan.
-        if !lifecycle.promote_orphan {
-            critical_count += 1;
-        }
-        report.index_health.push(
+        findings.push(DoctorFinding::block(
+            crate::commands::hook_sidecar::CODE_HEAD_UNCOVERED,
+            DoctorCategory::Lifecycle,
             format!(
-                "CRITICAL [{}]: HEAD uncovered via promote-fail/HEAD-matching pending sidecar under enforce (message-hash heuristic; not a full material-HEAD-without-row scan). Recover with: {}",
-                crate::commands::hook_sidecar::CODE_HEAD_UNCOVERED,
+                "HEAD uncovered via promote-fail/HEAD-matching pending sidecar under enforce (message-hash heuristic; not a full material-HEAD-without-row scan). Recover with: {}",
                 crate::commands::hook_sidecar::RECOVER_HINT
-            )
-            .red()
-            .to_string(),
-        );
+            ),
+        ));
     }
     if config.gate.is_enforce() && config.intent.required == "never" {
-        critical_count += 1;
-        report.index_health.push(
-            format!(
-                "CRITICAL [{}]: intent.required=never is incompatible with gate mode enforce.",
-                crate::commands::hook_sidecar::CODE_INTENT_NEVER_UNDER_ENFORCE
-            )
-            .red()
-            .to_string(),
-        );
+        findings.push(DoctorFinding::block(
+            crate::commands::hook_sidecar::CODE_INTENT_NEVER_UNDER_ENFORCE,
+            DoctorCategory::Lifecycle,
+            "intent.required=never is incompatible with gate mode enforce.",
+        ));
     }
-    // 0072 M2: enforce without require_signing is CRITICAL.
+    // 0072 M2: enforce without require_signing is block.
     if config.gate.is_enforce() && !config.intent.require_signing {
-        critical_count += 1;
-        report.index_health.push(
-            "CRITICAL [sig-require]: gate.mode=enforce but intent.require_signing=false. Unsigned rows will not fail verify --signatures."
-                .red()
-                .to_string(),
-        );
+        findings.push(DoctorFinding::block(
+            "sig-require",
+            DoctorCategory::Lifecycle,
+            "gate.mode=enforce but intent.require_signing=false. Unsigned rows will not fail verify --signatures.",
+        ));
     }
     // Soft pin warn when no trusted keys are configured.
     if config.intent.trusted_public_keys.is_empty() {
-        report
-            .index_health
-            .push(SIG_PIN_WARNING.yellow().to_string());
+        findings.push(DoctorFinding::warn(
+            "sig-pin",
+            DoctorCategory::Signing,
+            SIG_PIN_WARNING,
+        ));
     }
     if config.intent.min_sig_version < 2 {
-        report.index_health.push(
+        findings.push(DoctorFinding::warn(
+            "sig-version",
+            DoctorCategory::Signing,
             format!(
-                "Warning [sig-version]: intent.min_sig_version={} still accepts legacy v1 signatures. After `ledger re-sign --all`, set min_sig_version=2 to close the downgrade path.",
+                "intent.min_sig_version={} still accepts legacy v1 signatures. After `ledger re-sign --all`, set min_sig_version=2 to close the downgrade path.",
                 config.intent.min_sig_version
-            )
-            .yellow()
-            .to_string(),
-        );
+            ),
+        ));
     }
     // Legacy phantom Verified without a bound verification run (forward-only flag).
     if let Ok(count) = count_phantom_verified(storage.get_connection())
         && count > 0
     {
-        report.index_health.push(
+        findings.push(DoctorFinding::warn(
+            crate::commands::hook_sidecar::CODE_PHANTOM_PROMOTED_WITHOUT_VERIFY,
+            DoctorCategory::Signing,
             format!(
-                "Warning [{}]: {} committed row(s) have verification_status=Verified with no bound verification_results row (legacy promote phantoms; forward-only).",
-                crate::commands::hook_sidecar::CODE_PHANTOM_PROMOTED_WITHOUT_VERIFY,
-                count
-            )
-            .yellow()
-            .to_string(),
-        );
+                "{count} committed row(s) have verification_status=Verified with no bound verification_results row (legacy promote phantoms; forward-only)."
+            ),
+        ));
     }
 
-    // 0094: four-surface legacy-migration residue (WARNING only — never CRITICAL).
-    // Silent on a clean repo (R5). Each finding names an exact remediation.
-    // RT-H5 enforcement half (absolute-path pin, fail-closed) is out of scope;
-    // doctor reports gate-present-but-inert detection only.
+    // 0094: four-surface legacy-migration residue (warn only — never block).
     if let Some(root) = camino::Utf8Path::from_path(&current_dir) {
-        let mut legacy_findings = collect_legacy_migration_findings(root, &layout);
-        legacy_findings.sort();
-        for f in legacy_findings {
-            report.index_health.push(f.yellow().to_string());
-        }
+        let mut legacy = collect_legacy_migration_findings(root, &layout);
+        legacy.sort_by(|a, b| a.code.cmp(&b.code).then(a.message.cmp(&b.message)));
+        findings.extend(legacy);
     }
 
-    // Aggregate-first counters (0100 DoD-5). soft_failures feed the summary
-    // and dashboard; critical alone drives exit 1 (policy unchanged).
-    let soft_failures = count_doctor_failures(&report);
-    let sccache_hint_active = std::env::var("RUSTC_WRAPPER").is_err();
-    let scip_findings = collect_scip_findings(&config);
-    let warnings = count_doctor_warnings(&report, sccache_hint_active, scip_findings.len());
+    // SCIP + sccache → info / optional
+    findings.extend(collect_scip_findings(&config));
+    if let Some(f) = sccache_hint_finding() {
+        findings.push(f);
+    }
+
+    // Deterministic ordering for JSON/tests.
+    findings.sort_by(|a, b| {
+        a.code
+            .cmp(&b.code)
+            .then(a.message.cmp(&b.message))
+            .then(a.severity.as_str().cmp(b.severity.as_str()))
+    });
+
+    let counts = summarize(&findings);
     let summary = crate::output::human::DoctorSummaryCounts {
-        critical: critical_count,
-        soft_failures,
-        warnings,
+        block: counts.block,
+        warn: counts.warn,
+        info: counts.info,
     };
+    let ready = ready_for_publish(&findings);
 
-    print_doctor_report(&report, &summary);
-    // SCIP / sccache continue under the Optional Accelerators section opened
-    // by print_doctor_report (embedding/completion already printed there).
-    print_sccache_hint();
-    print_scip_findings_lines(&scip_findings);
-    print_vram_section();
-
-    // Persist a summary so the web dashboard's `health_score` formula
-    // (see `compute_health_score` in `src/commands/web/server.rs`) can
-    // apply the `doctor_failures` penalty. The file is intentionally
-    // minimal — a single `failures: u64` count and a timestamp — and
-    // lives in `state_subdir()` (the same location as `ledger.db`) so
-    // the writer and reader agree on the path. The M8 DoD at
-    // `conductor/trackM8/spec.md:90` requires this signal to be
-    // derivable; without this write the `doctor_failures` term in the
-    // health-score formula would always be 0 and a failing doctor
-    // run would not move the dashboard off "healthy".
-    if let Err(e) = write_doctor_results(&layout, &report) {
+    // Persist dashboard signal from the same findings list (before exit).
+    if let Err(e) = write_doctor_results(&layout, &findings) {
         tracing::warn!("Failed to write doctor-results.json: {}", e);
     }
 
-    // DoD-6: doctor exit non-zero when any CRITICAL present.
-    if critical_count > 0 {
-        eprintln!(
-            "\n{} {} CRITICAL finding(s). Exit 1.",
-            "Doctor:".red().bold(),
-            critical_count
-        );
+    if json {
+        let body = json!({
+            "schemaVersion": 1u32,
+            "readyForPublish": ready,
+            "summary": {
+                "block": counts.block,
+                "warn": counts.warn,
+                "info": counts.info,
+            },
+            "findings": findings,
+            "environment": {
+                "platform": platform_str,
+                "shell": shell_str,
+                "workRoot": work_root_str,
+                "stateDir": state_dir_str,
+                "pathDisplay": path_display,
+                "targetTriple": env!("TARGET"),
+            },
+        });
+        let pretty = serde_json::to_string_pretty(&body).into_diagnostic()?;
+        println!("{pretty}");
+    } else {
+        print_doctor_report(&report, &summary, &findings);
+        print_vram_section();
+    }
+
+    // Complete side effects before process::exit on block (§3.9).
+    drop(storage);
+
+    if counts.block > 0 {
+        if !json {
+            eprintln!(
+                "\n{} {} block finding(s). Exit 1.",
+                "Doctor:".red().bold(),
+                counts.block
+            );
+        } else {
+            eprintln!("Doctor: {} block finding(s). Exit 1.", counts.block);
+        }
         std::process::exit(1);
     }
 
     Ok(())
 }
 
-/// Count yellow Warning lines in index_health plus optional-hint emissions
-/// (sccache / SCIP). Used only for the aggregate-first summary line.
-fn count_doctor_warnings(
-    report: &crate::output::human::DoctorReport,
-    sccache_hint: bool,
-    scip_finding_count: usize,
-) -> u64 {
-    let mut n: u64 = 0;
-    for line in &report.index_health {
-        // Lines are pre-coloured with owo_colors; "Warning" remains in the
-        // string content after ANSI codes.
-        if line.contains("Warning") {
-            n += 1;
-        }
-    }
-    if sccache_hint {
-        n += 1;
-    }
-    n = n.saturating_add(scip_finding_count as u64);
-    n
-}
-
-/// Four-surface legacy migration checks (0094 DoD-6). Returns sorted WARNING
-/// strings with remediation commands. Empty on a fully migrated repo.
-fn collect_legacy_migration_findings(root: &camino::Utf8Path, layout: &Layout) -> Vec<String> {
+/// Four-surface legacy migration checks (0094 DoD-6). Structured findings with
+/// remediation in messages. Empty on a fully migrated repo.
+fn collect_legacy_migration_findings(
+    root: &camino::Utf8Path,
+    layout: &Layout,
+) -> Vec<DoctorFinding> {
     let mut findings = Vec::new();
 
     // 1. Legacy state directory still present (report only — never merge/delete).
@@ -514,14 +584,22 @@ fn collect_legacy_migration_findings(root: &camino::Utf8Path, layout: &Layout) -
     if legacy_dir.is_dir() {
         let ledger_db = legacy_dir.join("state").join("ledger.db");
         if ledger_db.is_file() {
-            findings.push(format!(
-                "Warning [legacy-state]: retired state directory `{}` still present and contains ledger.db (not merged automatically). Current state is `{}`. After verifying the active ledger, remove the legacy directory manually if unused.",
-                legacy_dir, layout.state_dir
+            findings.push(DoctorFinding::warn(
+                "legacy-state",
+                DoctorCategory::Migration,
+                format!(
+                    "retired state directory `{legacy_dir}` still present and contains ledger.db (not merged automatically). Current state is `{}`. After verifying the active ledger, remove the legacy directory manually if unused.",
+                    layout.state_dir
+                ),
             ));
         } else {
-            findings.push(format!(
-                "Warning [legacy-state]: retired state directory `{}` still present (empty or no ledger.db). Safe to remove manually after confirming `{}` is current.",
-                legacy_dir, layout.state_dir
+            findings.push(DoctorFinding::warn(
+                "legacy-state",
+                DoctorCategory::Migration,
+                format!(
+                    "retired state directory `{legacy_dir}` still present (empty or no ledger.db). Safe to remove manually after confirming `{}` is current.",
+                    layout.state_dir
+                ),
             ));
         }
     }
@@ -537,13 +615,13 @@ fn collect_legacy_migration_findings(root: &camino::Utf8Path, layout: &Layout) -
     // 4. Config staleness / unknown keys (serde_ignored; no deny_unknown_fields).
     findings.extend(crate::config::load::doctor_config_findings(layout));
 
-    findings.sort();
+    findings.sort_by(|a, b| a.code.cmp(&b.code).then(a.message.cmp(&b.message)));
     findings.dedup();
     findings
 }
 
 /// Warn when `.gitignore` mentions the retired state path but not `.ledgerful/`.
-fn doctor_gitignore_legacy_findings(root: &camino::Utf8Path) -> Vec<String> {
+fn doctor_gitignore_legacy_findings(root: &camino::Utf8Path) -> Vec<DoctorFinding> {
     let gi_path = root.join(".gitignore");
     if !gi_path.is_file() {
         return Vec::new();
@@ -565,9 +643,11 @@ fn doctor_gitignore_legacy_findings(root: &camino::Utf8Path) -> Vec<String> {
         .lines()
         .any(|l| crate::git::ignore::gitignore_patterns_equivalent(l, ".ledgerful/"));
     if has_legacy && !has_current {
-        vec![
-            "Warning [legacy-gitignore]: `.gitignore` names the retired state path but not `.ledgerful/`. Run `ledgerful init` (ensures `.ledgerful/` is gitignored) or add `.ledgerful/` to `.gitignore` manually.".to_string(),
-        ]
+        vec![DoctorFinding::warn(
+            "legacy-gitignore",
+            DoctorCategory::Migration,
+            "`.gitignore` names the retired state path but not `.ledgerful/`. Run `ledgerful init` (ensures `.ledgerful/` is gitignored) or add `.ledgerful/` to `.gitignore` manually.",
+        )]
     } else {
         Vec::new()
     }
@@ -590,102 +670,122 @@ fn count_phantom_verified(conn: &rusqlite::Connection) -> Result<i64> {
 }
 
 /// Optional informational hint: suggest sccache for cold/CI builds when no
-/// `RUSTC_WRAPPER` is set. `RUSTC_WRAPPER=sccache` caches dependency crates
-/// (the expensive, stable part of the graph); `RUSTC_WORKSPACE_WRAPPER` would
-/// only wrap workspace members and skip dependency caching, so it is not
-/// recommended here. sccache requires `CARGO_INCREMENTAL=0` — it cannot cache
-/// incrementally-compiled crates. This is guidance only; verify does not wire
-/// sccache into its command generation.
-///
-/// Printed under the Optional Accelerators section opened by
-/// `print_doctor_report` (0100).
-fn print_sccache_hint() {
+/// `RUSTC_WRAPPER` is set. Severity **info** / category **optional** (0109).
+fn sccache_hint_finding() -> Option<DoctorFinding> {
     if std::env::var("RUSTC_WRAPPER").is_err() {
-        println!(
-            "{} Cold or CI builds may benefit from sccache v0.16.0+. \
-             Set {} and {}. Note: do not combine with {}; use one or the other.",
-            "Hint:".cyan().bold(),
-            "RUSTC_WRAPPER=sccache".cyan(),
-            "CARGO_INCREMENTAL=0".cyan(),
-            "CARGO_INCREMENTAL=1".cyan()
-        );
+        Some(DoctorFinding::info(
+            "sccache-hint",
+            DoctorCategory::Optional,
+            "Cold or CI builds may benefit from sccache 0.17.0+. Set RUSTC_WRAPPER=sccache and CARGO_INCREMENTAL=0. Note: do not combine with CARGO_INCREMENTAL=1; use one or the other.",
+        ))
+    } else {
+        None
     }
 }
 
-/// SCIP availability hints (0095 DoD-13). Optional accelerators — never put
-/// indexers in `DoctorReport.tools` (NotFound counts as failure). Absence is
-/// not a doctor failure. Sorted findings via [`collect_scip_findings`].
+/// Per-language SCIP capability + process-policy report for doctor (0095/0109).
 ///
-/// Printed under the Optional Accelerators section (0100); no extra blank
-/// header — callers already opened the section.
-fn print_scip_findings_lines(findings: &[String]) {
-    for line in findings {
-        println!("{} {}", "Hint:".cyan().bold(), line);
-    }
-}
-
-/// Per-language SCIP capability + process-policy report for doctor (0095).
-///
-/// Returns a **sorted** `Vec<String>` of human-readable lines for each wired
-/// language (available, policy-blocked, or missing) plus a Go upstream-exists /
-/// not-wired note. Findings are **never empty** in practice (Go note is always
-/// included). Never contributes to `count_doctor_failures`.
-///
-/// A tool that passes the capability probe but is denied by
-/// `verify.process_policy` is reported as **not runnable**, matching runtime
-/// `generate()` which calls `check_policy` with the configured policy.
-fn collect_scip_findings(config: &crate::config::model::Config) -> Vec<String> {
+/// Structured findings with new `scip-*` codes; severity Info, category Optional.
+/// Go note is always included. Never blocks publish readiness or dashboard failures.
+fn collect_scip_findings(config: &crate::config::model::Config) -> Vec<DoctorFinding> {
     use crate::platform::process_policy::check_policy;
     use crate::scip::ScipToolchain;
 
     let policy = config.verify.effective_process_policy();
     let mut findings = Vec::new();
     for (tool, available) in ScipToolchain::probe_all_languages() {
+        let lang = tool.language_label().to_ascii_lowercase();
         if available {
             match check_policy(tool.exe_name(), &policy) {
-                Ok(()) => findings.push(format!(
-                    "SCIP {}: {} available — `ledgerful index --auto-scip` can add reference edges on native symbols",
-                    tool.language_label(),
-                    tool.exe_name()
+                Ok(()) => findings.push(DoctorFinding::info(
+                    format!("scip-{lang}-available"),
+                    DoctorCategory::Optional,
+                    format!(
+                        "SCIP {}: {} available — `ledgerful index --auto-scip` can add reference edges on native symbols",
+                        tool.language_label(),
+                        tool.exe_name()
+                    ),
                 )),
-                Err(e) => findings.push(format!(
-                    "SCIP {}: {} present but blocked by process policy ({e}) — adjust verify.allowed_commands / denied_commands or install is not enough for --auto-scip",
-                    tool.language_label(),
-                    tool.exe_name()
+                Err(e) => findings.push(DoctorFinding::info(
+                    format!("scip-{lang}-policy-blocked"),
+                    DoctorCategory::Optional,
+                    format!(
+                        "SCIP {}: {} present but blocked by process policy ({e}) — adjust verify.allowed_commands / denied_commands or install is not enough for --auto-scip",
+                        tool.language_label(),
+                        tool.exe_name()
+                    ),
                 )),
             }
         } else {
-            findings.push(format!(
-                "SCIP {}: {} not available (capability probe). Install with `{}` to enable cross-file references via --auto-scip",
-                tool.language_label(),
-                tool.exe_name(),
-                tool.install_hint()
+            findings.push(DoctorFinding::info(
+                format!("scip-{lang}-missing"),
+                DoctorCategory::Optional,
+                format!(
+                    "SCIP {}: {} not available (capability probe). Install with `{}` to enable cross-file references via --auto-scip",
+                    tool.language_label(),
+                    tool.exe_name(),
+                    tool.install_hint()
+                ),
             ));
         }
     }
     // Go: upstream indexer exists, not wired in this track (spec §2.11 / §4)
-    findings.push(
-        "SCIP Go: upstream scip-go exists, not wired here — native Go tree-sitter path only"
-            .to_string(),
-    );
-    findings.sort();
+    findings.push(DoctorFinding::info(
+        "scip-go-not-wired",
+        DoctorCategory::Optional,
+        "SCIP Go: upstream scip-go exists, not wired here — native Go tree-sitter path only",
+    ));
+    findings.sort_by(|a, b| a.code.cmp(&b.code).then(a.message.cmp(&b.message)));
     findings
+}
+
+/// Map embedding backend availability to an optional finding (0109).
+fn embedding_finding(
+    config: &crate::config::model::LocalModelConfig,
+    avail: &BackendAvailabilityReport,
+) -> Option<DoctorFinding> {
+    use crate::embed::client::is_embedding_backend_configured;
+    use crate::semantic::BackendStatus;
+
+    match avail.status {
+        BackendStatus::Ready => None,
+        BackendStatus::NotConfigured => {
+            // Partial: model name set without URL → warn; fully empty → info.
+            let partial = !config.embedding_model.trim().is_empty()
+                && !is_embedding_backend_configured(config);
+            if partial {
+                Some(DoctorFinding::warn(
+                    "embed-partial-config",
+                    DoctorCategory::Optional,
+                    "Embedding model partially configured (model name set without URL) — not healthy Ready",
+                ))
+            } else {
+                Some(DoctorFinding::info(
+                    "embed-not-configured",
+                    DoctorCategory::Optional,
+                    "Embedding model not configured",
+                ))
+            }
+        }
+        BackendStatus::Unreachable => Some(DoctorFinding::warn(
+            "embed-unreachable",
+            DoctorCategory::Optional,
+            "Embedding model unreachable",
+        )),
+    }
 }
 
 /// Result of a doctor availability probe for an optional/advertised backend.
 ///
-/// **DoD-11 seam for 0095:** SCIP and other optional toolchains should reuse
-/// this shape. Callers choose whether `is_failure` contributes to
-/// `count_doctor_failures` and whether the display lands on
-/// `DoctorReport.tools` (where any `NotFound` is a failure — optional
-/// accelerators must **not** go there) vs a dedicated status field.
-/// Semantic embedding is an advertised capability, so absence is a failure;
-/// optional SCIP absence is not.
+/// **DoD-11 seam for 0095/0109:** SCIP and other optional toolchains reuse this
+/// shape. `is_failure` means the backend is **not Ready** for display honesty
+/// (0096 partial-config); severity lives on structured [`DoctorFinding`]s
+/// (optional category — never blocks publish, never dashboard failures alone).
 #[derive(Debug, Clone)]
 pub struct BackendAvailabilityReport {
     /// Colored/human display string for the doctor line.
     pub display: String,
-    /// Whether this should increment `count_doctor_failures`.
+    /// Whether the backend is not Ready (display honesty; not soft-fail count).
     pub is_failure: bool,
     /// Orthogonal backend axis (mirrors semantic readiness).
     pub status: crate::semantic::BackendStatus,
@@ -804,85 +904,37 @@ fn format_embedding_backend_availability(
     }
 }
 
-/// Count the number of failed checks in a doctor report.
+/// Persist `doctor-results.json` for the web dashboard health score.
 ///
-/// Heuristic, by design: a check is "failed" if any of these are true:
-/// - a required tool is `ExecutableStatus::NotFound`,
-/// - the embedding model failed (`embedding_model_failed` from
-///   `BackendAvailabilityReport::is_failure`, or legacy display strings
-///   "Not configured" / "unreachable"),
-/// - the completion model is "Not configured" or "unreachable",
-/// - the native graph is "Not initialized" or starts with "Error",
-/// - any `index_health` line contains the markers "Corrupt", "Missing",
-///   "STALE", or "Load failed" (case-sensitive substring match against
-///   the prefix labels produced by `execute_doctor` above).
-///
-/// The exact markers are kept in sync with the string literals
-/// produced in `execute_doctor`; the test
-/// `test_doctor_results_count_failures` asserts the mapping.
-fn count_doctor_failures(report: &crate::output::human::DoctorReport) -> u64 {
-    let mut failures: u64 = 0;
-
-    for (_name, status) in report.tools {
-        if matches!(status, ExecutableStatus::NotFound) {
-            failures += 1;
-        }
-    }
-
-    let lower = |s: &String| s.to_ascii_lowercase();
-    // Prefer the explicit is_failure flag; keep string fallback for tests
-    // and any path that only sets display without the flag.
-    if report.embedding_model_failed
-        || report.embedding_model_status.starts_with("Not configured")
-        || lower(&report.embedding_model_status).contains("unreachable")
-    {
-        failures += 1;
-    }
-    if report.completion_model_status.starts_with("Not configured")
-        || lower(&report.completion_model_status).contains("unreachable")
-    {
-        failures += 1;
-    }
-    if report.native_graph_status == "Not initialized"
-        || report.native_graph_status.starts_with("Error")
-    {
-        failures += 1;
-    }
-
-    for line in &report.index_health {
-        if line.contains("Corrupt")
-            || line.contains("Missing")
-            || line.contains("STALE")
-            || line.contains("Load failed")
-            || line.contains("CRITICAL")
-        {
-            failures += 1;
-        }
-    }
-
-    failures
-}
-
-/// Persist a minimal `doctor-results.json` summary to the state's
-/// subdir so the web dashboard's health score can read it.
-///
-/// Schema (per `conductor/trackM8/spec.md` DoD + the M8 review H1
-/// recommendation in `output/m8-opencode-1.md`):
+/// Schema (0109 additive):
 /// ```json
-/// { "failures": N, "timestamp": "RFC3339" }
+/// {
+///   "failures": N,
+///   "timestamp": "RFC3339",
+///   "readyForPublish": bool,
+///   "block": u64,
+///   "warn": u64,
+///   "info": u64
+/// }
 /// ```
 ///
-/// Returns `Err` on I/O failure; the caller logs a warning and
-/// continues (we never want to abort a successful doctor run because
-/// the dashboard-cache write failed).
-fn write_doctor_results(
-    layout: &Layout,
-    report: &crate::output::human::DoctorReport,
-) -> Result<()> {
-    let failures = count_doctor_failures(report);
+/// **`failures`** = [`dashboard_failures`] — `count(block) + count(warn where
+/// category != optional)`. Same findings list as human/JSON output. Optional
+/// backends never contribute. Legacy readers that only look at `failures`
+/// still work; legacy `results: [{passed}]` array shape is accepted on read
+/// only (writers no longer emit it).
+///
+/// Returns `Err` on I/O failure; the caller logs a warning and continues.
+fn write_doctor_results(layout: &Layout, findings: &[DoctorFinding]) -> Result<()> {
+    let counts = summarize(findings);
+    let failures = dashboard_failures(findings);
     let body = json!({
         "failures": failures,
         "timestamp": Utc::now().to_rfc3339(),
+        "readyForPublish": ready_for_publish(findings),
+        "block": counts.block,
+        "warn": counts.warn,
+        "info": counts.info,
     });
     let path = layout.state_subdir().join("doctor-results.json");
     std::fs::write(
@@ -1059,27 +1111,41 @@ fn format_active_ask_backend_with(
     }
 }
 
-fn format_gate_mode_status(
+enum GateModeOutcome {
+    Ok(String),
+    NoHistory(String),
+    Mismatch {
+        display: String,
+        finding: DoctorFinding,
+    },
+}
+
+/// Gate mode vs ledger history. Mismatch → warn finding; ok/no-history omit finding.
+fn gate_mode_status(
     layout: &crate::state::layout::Layout,
     config: &crate::config::model::Config,
-) -> String {
+) -> GateModeOutcome {
     let effective_mode = config.gate.mode.clone();
     let ledger_mode = crate::ledger::mode_history::current_mode_from_ledger(layout);
 
     match ledger_mode {
-        Some(ledger_mode) if ledger_mode == effective_mode => {
-            format!("Gate mode: {} (matches ledger history)", effective_mode)
+        Some(ledger_mode) if ledger_mode == effective_mode => GateModeOutcome::Ok(format!(
+            "Gate mode: {} (matches ledger history)",
+            effective_mode
+        )),
+        Some(ledger_mode) => {
+            let message = format!(
+                "Gate mode: {effective_mode} (ledger history shows {ledger_mode}; run `ledgerful gate mode {ledger_mode}`)"
+            );
+            GateModeOutcome::Mismatch {
+                display: message.clone().yellow().to_string(),
+                finding: DoctorFinding::warn("gate-mode-mismatch", DoctorCategory::Gate, message),
+            }
         }
-        Some(ledger_mode) => format!(
-            "Gate mode: {} (WARNING: ledger history shows {}; run `ledgerful gate mode {}`)",
-            effective_mode, ledger_mode, ledger_mode
-        )
-        .yellow()
-        .to_string(),
-        None => format!(
+        None => GateModeOutcome::NoHistory(format!(
             "Gate mode: {} (no ledger transition history yet)",
             effective_mode
-        ),
+        )),
     }
 }
 
@@ -1099,7 +1165,7 @@ fn parse_url_host(url: &str) -> Option<String> {
 
 /// WARN when a worktree-local `ledger.db` exists and is not the resolved shared DB.
 /// Detection only — never deletes or merges orphan state (0108 DoD-7).
-pub(crate) fn split_brain_ledger_warning(layout: &Layout) -> Option<String> {
+pub(crate) fn split_brain_ledger_finding(layout: &Layout) -> Option<DoctorFinding> {
     use crate::state::layout::{STATE_DIR, STATE_SUBDIR};
 
     let local_db = layout
@@ -1115,13 +1181,22 @@ pub(crate) fn split_brain_ledger_warning(layout: &Layout) -> Option<String> {
     let shared_canon = dunce::canonicalize(shared_db.as_std_path()).ok();
     match (local_canon, shared_canon) {
         (Some(local), Some(shared)) if local == shared => None,
-        _ => Some(format!(
-            "Warning [worktree-split-brain]: local ledger.db at {} exists and differs from \
-             resolved shared state {}; linked worktrees share the main worktree's `.ledgerful` \
-             — remove the orphan local state only after confirming it is unused",
-            local_db, shared_db
+        _ => Some(DoctorFinding::warn(
+            "worktree-split-brain",
+            DoctorCategory::Layout,
+            format!(
+                "local ledger.db at {local_db} exists and differs from resolved shared state \
+                 {shared_db}; linked worktrees share the main worktree's `.ledgerful` \
+                 — remove the orphan local state only after confirming it is unused"
+            ),
         )),
     }
+}
+
+/// Back-compat alias used by 0108 tests that assert message content.
+#[cfg(test)]
+pub(crate) fn split_brain_ledger_warning(layout: &Layout) -> Option<String> {
+    split_brain_ledger_finding(layout).map(|f| format!("Warning [{}]: {}", f.code, f.message))
 }
 
 fn print_vram_section() {
@@ -1199,39 +1274,43 @@ mod tests {
         use crate::output::human::format_doctor_summary_text;
         assert_eq!(
             format_doctor_summary_text(2, 5, 3),
-            "✗ Doctor: 2 CRITICAL issue(s)"
+            "✗ Doctor: 2 block issue(s)"
         );
         assert_eq!(
             format_doctor_summary_text(0, 3, 2),
-            "✗ Doctor: 3 issue(s) found"
+            "✓ Doctor: ready for publish env · 3 warning(s)"
         );
         assert_eq!(
             format_doctor_summary_text(0, 0, 4),
-            "✓ Doctor: 0 failures, 4 warning(s)/hint(s)"
+            "✓ Doctor: ready for publish env · 4 hint(s)"
         );
         assert_eq!(
             format_doctor_summary_text(0, 0, 0),
             "✓ Doctor: all checks passed"
         );
-        // Soft failures win over warnings when critical is zero.
-        assert!(format_doctor_summary_text(0, 1, 9).contains("issue(s) found"));
+        // Block wins; warn never uses red soft-fail "issue(s) found".
+        assert!(!format_doctor_summary_text(0, 1, 9).contains("issue(s) found"));
+        assert!(format_doctor_summary_text(0, 1, 9).contains("ready for publish"));
     }
 
     #[test]
-    fn count_doctor_warnings_includes_warning_lines_and_hints() {
-        let tools = vec![(
-            "git".to_string(),
-            ExecutableStatus::Found(PathBuf::from("git")),
-        )];
-        let report = DoctorReport {
-            index_health: vec![
-                SIG_PIN_WARNING.to_string(),
-                "Search index: OK (0 documents)".to_string(),
-            ],
-            ..sample_report(&tools)
-        };
-        assert_eq!(count_doctor_warnings(&report, false, 0), 1);
-        assert_eq!(count_doctor_warnings(&report, true, 3), 5);
+    fn classify_optional_warn_excluded_from_dashboard_failures() {
+        let findings = vec![
+            DoctorFinding::warn("sig-pin", DoctorCategory::Signing, SIG_PIN_WARNING),
+            DoctorFinding::info("sccache-hint", DoctorCategory::Optional, "sccache hint"),
+            DoctorFinding::info(
+                "scip-go-not-wired",
+                DoctorCategory::Optional,
+                "go not wired",
+            ),
+            DoctorFinding::warn("embed-unreachable", DoctorCategory::Optional, "embed down"),
+        ];
+        assert_eq!(dashboard_failures(&findings), 1); // sig-pin only
+        assert!(ready_for_publish(&findings));
+        let s = summarize(&findings);
+        assert_eq!(s.warn, 2);
+        assert_eq!(s.info, 2);
+        assert_eq!(s.block, 0);
     }
 
     /// 0100 DoD-3 / F-002: verify + doctor share unknown-key / pin / trusted terms.
@@ -1262,53 +1341,62 @@ mod tests {
     }
 
     #[test]
-    fn test_doctor_results_count_failures_clean() {
-        let tools = vec![(
-            "git".to_string(),
-            ExecutableStatus::Found(PathBuf::from("git")),
-        )];
-        let report = sample_report(&tools);
-        assert_eq!(count_doctor_failures(&report), 0);
+    fn test_dashboard_failures_clean() {
+        let findings: Vec<DoctorFinding> = Vec::new();
+        assert_eq!(dashboard_failures(&findings), 0);
+        assert!(ready_for_publish(&findings));
     }
 
     #[test]
-    fn test_doctor_results_count_failures_reachable_after_retry() {
-        let tools = vec![(
-            "git".to_string(),
-            ExecutableStatus::Found(PathBuf::from("git")),
-        )];
-        let report = DoctorReport {
-            embedding_model_status: "nomic-embed-text (768 dims) @ http://127.0.0.1:8083 (reachable after retry: flaky/transient - 2 retries)".to_string(),
-            completion_model_status: "gemma-4-E4B-it-Q6_K.gguf @ http://127.0.0.1:8081 (reachable after retry: flaky/transient - 1 retry)".to_string(),
-            ..sample_report(&tools)
-        };
-        // Reachable after retry should not count as a failure
-        assert_eq!(count_doctor_failures(&report), 0);
-    }
-
-    #[test]
-    fn test_doctor_results_count_failures_dirty() {
-        let tools = vec![
-            (
-                "git".to_string(),
-                ExecutableStatus::Found(PathBuf::from("git")),
+    fn test_dashboard_failures_formula_samples() {
+        // Optional backends (info/warn) excluded; index warn + block included.
+        let findings = vec![
+            DoctorFinding::block("tool-git", DoctorCategory::Tools, "git missing"),
+            DoctorFinding::warn(
+                "search-corrupt",
+                DoctorCategory::Index,
+                "Search index corrupt",
             ),
-            ("cargo".to_string(), ExecutableStatus::NotFound),
+            DoctorFinding::warn("graph-stale", DoctorCategory::Index, "Graph STALE"),
+            DoctorFinding::info(
+                "embed-not-configured",
+                DoctorCategory::Optional,
+                "embed not configured",
+            ),
+            DoctorFinding::warn(
+                "completion-unreachable",
+                DoctorCategory::Optional,
+                "completion down",
+            ),
+            DoctorFinding::info(
+                "graph-not-initialized",
+                DoctorCategory::Index,
+                "graph not init",
+            ),
+            DoctorFinding::warn("impact-corrupt", DoctorCategory::Index, "impact corrupt"),
         ];
-        let report = DoctorReport {
-            embedding_model_status: "Not configured".to_string(),
-            completion_model_status: "unreachable (connection refused)".to_string(),
-            native_graph_status: "Not initialized".to_string(),
-            index_health: vec![
-                "Search index: Missing (run 'ledgerful index')".to_string(),
-                "Graph state: STALE (5 files affected) - run 'ledgerful index'".to_string(),
-                "Search index: Corrupt (bad segment) - run 'ledgerful index --full'".to_string(),
-            ],
-            ..sample_report(&tools)
-        };
-        // 1 missing tool + 1 unconfigured embedding + 1 unreachable completion +
-        // 1 not-initialized graph + 3 index_health lines = 7
-        assert_eq!(count_doctor_failures(&report), 7);
+        // block + search-corrupt + graph-stale + impact-corrupt = 4
+        assert_eq!(dashboard_failures(&findings), 4);
+        assert!(!ready_for_publish(&findings));
+    }
+
+    #[test]
+    fn test_optional_not_configured_not_dashboard_failure() {
+        let findings = vec![
+            DoctorFinding::info(
+                "embed-not-configured",
+                DoctorCategory::Optional,
+                "not configured",
+            ),
+            DoctorFinding::info(
+                "completion-not-configured",
+                DoctorCategory::Optional,
+                "not configured",
+            ),
+            DoctorFinding::info("tool-gemini", DoctorCategory::Optional, "gemini missing"),
+        ];
+        assert_eq!(dashboard_failures(&findings), 0);
+        assert!(ready_for_publish(&findings));
     }
 
     /// DoD-6: partial config (model name set, base_url empty) is Not configured
@@ -1339,28 +1427,13 @@ mod tests {
             report.display
         );
 
-        // count_doctor_failures must count the plain status string.
-        let tools = vec![(
-            "git".to_string(),
-            ExecutableStatus::Found(PathBuf::from("git")),
-        )];
-        let doctor = DoctorReport {
-            embedding_model_status: "Not configured".to_string(),
-            ..sample_report(&tools)
-        };
-        assert_eq!(count_doctor_failures(&doctor), 1);
-
-        // is_failure flag alone (non-matching display) must still count.
-        let doctor_flag = DoctorReport {
-            embedding_model_status: "backend unavailable (custom wording)".to_string(),
-            embedding_model_failed: true,
-            ..sample_report(&tools)
-        };
-        assert_eq!(
-            count_doctor_failures(&doctor_flag),
-            1,
-            "embedding_model_failed must drive failure count even when display lacks legacy prefixes"
-        );
+        // Partial config → optional warn finding; never dashboard failures / never block.
+        let finding = embedding_finding(&config, &report).expect("partial finding");
+        assert_eq!(finding.code, "embed-partial-config");
+        assert_eq!(finding.severity, DoctorSeverity::Warn);
+        assert_eq!(finding.category, DoctorCategory::Optional);
+        assert_eq!(dashboard_failures(std::slice::from_ref(&finding)), 0);
+        assert!(ready_for_publish(std::slice::from_ref(&finding)));
     }
 
     /// DoD-6: fully empty config (default install) is also Not configured.
@@ -1380,21 +1453,27 @@ mod tests {
         );
     }
 
-    /// 0095 DoD-13: SCIP findings never go in tools; absence is not a failure.
+    /// 0095 DoD-13 / 0109: SCIP findings are info/optional; never block or dashboard.
     #[test]
     fn scip_findings_sorted_and_mention_go_unwired() {
         let config = crate::config::model::Config::default();
         let findings = collect_scip_findings(&config);
         assert!(!findings.is_empty(), "expected at least Go unwired line");
         let mut sorted = findings.clone();
-        sorted.sort();
+        sorted.sort_by(|a, b| a.code.cmp(&b.code).then(a.message.cmp(&b.message)));
         assert_eq!(findings, sorted, "findings must be sorted");
         assert!(
             findings
                 .iter()
-                .any(|f| f.contains("scip-go") || f.contains("not wired")),
+                .any(|f| f.code == "scip-go-not-wired" || f.message.contains("not wired")),
             "must report Go as upstream/not wired: {findings:?}"
         );
+        for f in &findings {
+            assert_eq!(f.severity, DoctorSeverity::Info);
+            assert_eq!(f.category, DoctorCategory::Optional);
+        }
+        assert_eq!(dashboard_failures(&findings), 0);
+        assert!(ready_for_publish(&findings));
     }
 
     /// Doctor must not advertise SCIP as runnable when process policy denies it.
@@ -1402,58 +1481,49 @@ mod tests {
     fn scip_findings_report_policy_block_when_denied() {
         let mut config = crate::config::model::Config::default();
         config.verify.denied_commands = vec!["rust-analyzer".to_string()];
-        // Force capability true via inject if available; otherwise the probe may
-        // already fail and we only assert the deny path when available.
         let findings = collect_scip_findings(&config);
-        // Either the probe says not available, or it says blocked by policy —
-        // never a plain "available — can add reference edges" for a denied exe.
         for f in &findings {
-            if f.contains("rust-analyzer") || f.contains("Rust") {
+            if f.message.contains("rust-analyzer") || f.message.contains("Rust") {
                 assert!(
-                    !f.contains("available —"),
-                    "denied rust-analyzer must not look freely available: {f}"
+                    !f.message.contains("available —"),
+                    "denied rust-analyzer must not look freely available: {}",
+                    f.message
                 );
             }
         }
         assert!(
             findings
                 .iter()
-                .any(|f| f.contains("blocked by process policy")
-                    || f.contains("not available")
-                    || f.contains("scip-go")),
+                .any(|f| f.message.contains("blocked by process policy")
+                    || f.message.contains("not available")
+                    || f.code == "scip-go-not-wired"),
             "expected policy or probe messaging: {findings:?}"
         );
     }
 
     #[test]
-    fn doctor_zero_failures_without_scip_indexers_in_tools() {
-        // Indexers must not appear in DoctorReport.tools (NotFound = failure).
+    fn doctor_zero_dashboard_failures_without_scip_indexers_in_tools() {
+        // Indexers must not appear in DoctorReport.tools.
         let tools = vec![(
             "git".to_string(),
             ExecutableStatus::Found(PathBuf::from("git")),
         )];
-        let report = sample_report(&tools);
-        assert_eq!(count_doctor_failures(&report), 0);
-        // Ensure we don't accidentally count SCIP-ish tool names
+        let _report = sample_report(&tools);
         assert!(
             !tools
                 .iter()
                 .any(|(n, _)| n.contains("scip") || n.contains("rust-analyzer"))
         );
+        // SCIP absence alone is not a dashboard failure.
+        let scip = collect_scip_findings(&crate::config::model::Config::default());
+        assert_eq!(dashboard_failures(&scip), 0);
     }
 
     #[test]
-    fn test_doctor_results_count_failures_graph_qualifier_does_not_fail() {
-        let tools = vec![(
-            "git".to_string(),
-            ExecutableStatus::Found(PathBuf::from("git")),
-        )];
-        let report = DoctorReport {
-            index_health: vec!["Graph state: Current (run 'ledgerful index --analyze-graph' to populate the knowledge graph)".to_string()],
-            ..sample_report(&tools)
-        };
-        // The qualifier shouldn't count as a failure
-        assert_eq!(count_doctor_failures(&report), 0);
+    fn graph_current_status_is_not_a_finding() {
+        // Healthy graph status lines are display-only (not findings).
+        let findings: Vec<DoctorFinding> = Vec::new();
+        assert_eq!(dashboard_failures(&findings), 0);
     }
 
     #[test]
@@ -1512,18 +1582,52 @@ mod tests {
         let layout = Layout::new(root);
         layout.ensure_state_dir().expect("ensure_state_dir");
 
-        let tools = vec![("git".to_string(), ExecutableStatus::NotFound)];
-        let report = DoctorReport {
-            embedding_model_status: "Not configured".to_string(),
-            ..sample_report(&tools)
-        };
-        write_doctor_results(&layout, &report).expect("write_doctor_results");
+        let findings = vec![
+            DoctorFinding::block("tool-git", DoctorCategory::Tools, "git missing"),
+            DoctorFinding::info(
+                "embed-not-configured",
+                DoctorCategory::Optional,
+                "embed not configured",
+            ),
+            DoctorFinding::warn("sig-pin", DoctorCategory::Signing, SIG_PIN_WARNING),
+        ];
+        write_doctor_results(&layout, &findings).expect("write_doctor_results");
 
         let path = layout.state_subdir().join("doctor-results.json");
         let body = std::fs::read_to_string(path.as_std_path()).expect("read back");
         let json: serde_json::Value = serde_json::from_str(&body).expect("parse");
+        // failures = block(1) + non-optional warn sig-pin(1) = 2; optional excluded
         assert_eq!(json["failures"].as_u64(), Some(2));
+        assert_eq!(json["readyForPublish"], false);
+        assert_eq!(json["block"].as_u64(), Some(1));
+        assert_eq!(json["warn"].as_u64(), Some(1));
+        assert_eq!(json["info"].as_u64(), Some(1));
         assert!(json["timestamp"].as_str().is_some());
+        assert!(json.get("readyForPublishDefinition").is_none());
+    }
+
+    #[test]
+    fn write_doctor_results_optional_only_zero_failures_ready() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = Utf8Path::from_path(tmp.path()).expect("utf8 path");
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().expect("ensure_state_dir");
+
+        let findings = vec![
+            DoctorFinding::info("embed-not-configured", DoctorCategory::Optional, "embed"),
+            DoctorFinding::warn(
+                "completion-unreachable",
+                DoctorCategory::Optional,
+                "completion",
+            ),
+            DoctorFinding::info("tool-gemini", DoctorCategory::Optional, "gemini"),
+        ];
+        write_doctor_results(&layout, &findings).expect("write");
+        let path = layout.state_subdir().join("doctor-results.json");
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path.as_std_path()).unwrap()).unwrap();
+        assert_eq!(json["failures"].as_u64(), Some(0));
+        assert_eq!(json["readyForPublish"], true);
     }
 
     #[test]
@@ -1699,6 +1803,19 @@ mod tests {
         );
     }
 
+    #[test]
+    fn git_missing_is_block_gemini_missing_is_info() {
+        // Classification table sample (tools loop identity).
+        let git = DoctorFinding::block("tool-git", DoctorCategory::Tools, "git NOT FOUND");
+        let gemini =
+            DoctorFinding::info("tool-gemini", DoctorCategory::Optional, "gemini NOT FOUND");
+        assert_eq!(git.severity, DoctorSeverity::Block);
+        assert_eq!(gemini.severity, DoctorSeverity::Info);
+        assert!(!ready_for_publish(std::slice::from_ref(&git)));
+        assert!(ready_for_publish(std::slice::from_ref(&gemini)));
+        assert_eq!(dashboard_failures(&[git, gemini]), 1);
+    }
+
     /// DoD-6: Design-shaped residue produces expected finding categories.
     #[test]
     fn legacy_findings_report_four_surfaces() {
@@ -1738,28 +1855,34 @@ mod tests {
 
         let findings = collect_legacy_migration_findings(root, &layout);
         assert!(
-            findings.iter().any(|f| f.contains("legacy-state")),
+            findings.iter().any(|f| f.code == "legacy-state"),
             "state: {findings:?}"
         );
         assert!(
-            findings.iter().any(|f| f.contains("legacy-hooks")),
+            findings.iter().any(|f| f.code == "legacy-hooks"),
             "hooks: {findings:?}"
         );
         assert!(
-            findings.iter().any(|f| f.contains("legacy-gitignore")),
+            findings.iter().any(|f| f.code == "legacy-gitignore"),
             "gitignore: {findings:?}"
         );
         assert!(
-            findings.iter().any(|f| f.contains("legacy-config")),
+            findings.iter().any(|f| f.code == "legacy-config"),
             "config: {findings:?}"
         );
+        for f in &findings {
+            assert_eq!(f.severity, DoctorSeverity::Warn);
+            assert_eq!(f.category, DoctorCategory::Migration);
+        }
         // Deterministic sort.
         let mut sorted = findings.clone();
-        sorted.sort();
+        sorted.sort_by(|a, b| a.code.cmp(&b.code).then(a.message.cmp(&b.message)));
         assert_eq!(findings, sorted);
         // Remediation commands named.
         assert!(
-            findings.iter().any(|f| f.contains("update --repair-hooks")),
+            findings
+                .iter()
+                .any(|f| f.message.contains("update --repair-hooks")),
             "must name repair command: {findings:?}"
         );
     }
@@ -1820,23 +1943,23 @@ mod tests {
         // is reported with remediation, not auto-rewritten (spec §4).
         let findings = collect_legacy_migration_findings(root, &layout);
         assert!(
-            !findings.iter().any(|f| f.contains("legacy-hooks")),
+            !findings.iter().any(|f| f.code == "legacy-hooks"),
             "hooks clean after repair: {findings:?}"
         );
         assert!(
-            !findings.iter().any(|f| f.contains("legacy-gitignore")),
+            !findings.iter().any(|f| f.code == "legacy-gitignore"),
             "gitignore has .ledgerful/ after migrate: {findings:?}"
         );
         assert!(
-            !findings.iter().any(|f| f.contains("legacy-state")),
+            !findings.iter().any(|f| f.code == "legacy-state"),
             "legacy dir renamed away: {findings:?}"
         );
         // Config residual is allowed and must name explicit remediation
         // (review/init) — never silent auto-rewrite.
-        if let Some(cfg_f) = findings.iter().find(|f| f.contains("legacy-config")) {
+        if let Some(cfg_f) = findings.iter().find(|f| f.code == "legacy-config") {
             assert!(
-                cfg_f.contains("init") || cfg_f.contains("Review"),
-                "config finding must name remediation: {cfg_f}"
+                cfg_f.message.contains("init") || cfg_f.message.contains("Review"),
+                "config finding must name remediation: {cfg_f:?}"
             );
         }
     }
