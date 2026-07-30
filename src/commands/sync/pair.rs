@@ -37,6 +37,11 @@ pub fn handle(code: Option<String>) -> Result<()> {
                 "Failed to read SoT device_id from sync_state: {e}. Run `ledgerful sync init` first."
             )
         })?;
+    if device_id.trim().is_empty() || device_id == "unknown" {
+        return Err(miette!(
+            "SoT device_id is empty or invalid. Run `ledgerful sync init` (or --force) to mint a device identity."
+        ));
+    }
 
     match code {
         Some(_c) => {
