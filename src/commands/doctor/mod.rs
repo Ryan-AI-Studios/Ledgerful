@@ -514,6 +514,9 @@ pub fn execute_doctor(json: bool) -> Result<()> {
         findings.push(f);
     }
 
+    // 0110: light team-sync findings (warn/info only). Disabled sync never blocks publish.
+    findings.extend(sync_doctor_findings(&layout, &config));
+
     // Deterministic ordering for JSON/tests.
     findings.sort_by(|a, b| {
         a.code
@@ -690,6 +693,38 @@ fn sccache_hint_finding() -> Option<DoctorFinding> {
     } else {
         None
     }
+}
+
+/// 0110: light team-sync honesty findings.
+///
+/// Only emit when `[sync].enabled = true` and init/target are incomplete.
+/// Severity is **warn** / category **optional** so sync-off never sole-blocks
+/// `readyForPublish`. See `docs/team-sync.md`.
+fn sync_doctor_findings(
+    layout: &Layout,
+    config: &crate::config::model::Config,
+) -> Vec<DoctorFinding> {
+    if !config.sync.enabled {
+        return Vec::new();
+    }
+
+    let mut findings = Vec::new();
+    let key_path = layout.state_dir.join("sync").join("device.key");
+    if !key_path.exists() {
+        findings.push(DoctorFinding::warn(
+            "sync-enabled-not-initialized",
+            DoctorCategory::Optional,
+            "[sync].enabled=true but device.key is missing. Run `ledgerful sync init` (Experimental) or set enabled=false. See docs/team-sync.md.",
+        ));
+    }
+    if config.sync.target.trim().is_empty() {
+        findings.push(DoctorFinding::warn(
+            "sync-enabled-empty-target",
+            DoctorCategory::Optional,
+            "[sync].enabled=true but [sync].target is empty. Set a shared-folder target (e.g. dir:///path) or disable sync. See docs/team-sync.md.",
+        ));
+    }
+    findings
 }
 
 /// Per-language SCIP capability + process-policy report for doctor (0095/0109).
