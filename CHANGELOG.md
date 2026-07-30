@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Index freshness policy (0107):** three-tier model documented in
+  `docs/index-freshness-policy.md` — light continuous (`watch` + mega-batch safety), light
+  on-demand (`--auto-index` on `search` / `ask` / `hotspots` / `dead-code` / `verify` with
+  **time-stale and content-hash drift-stale**, full bootstrap when never indexed), heavy
+  scheduled/explicit (`schedule` / `index --full` / `--auto-scip`). `scan` has no `--auto-index`.
+  Daemon is an LSP reader, not an indexer. No idle SCIP. Watch skips batches ≥1000 unique paths,
+  marks index STALE, and suggests `index --full`. Optional `watch.mega_batch_threshold` config.
 - **Bounded structural blast radius (0106):** `impact` / `scan --impact` emit additive
   `blastRadius` (must-touch files/symbols, evidence-tagged edges, optional test hints from
   `test_mapping`). Default depth **1**; `--blast-depth 2` walks only high-confidence edges

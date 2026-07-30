@@ -389,7 +389,14 @@ Skip Ledgerful only for trivial formatting, simple dependency lockfile updates, 
 - If `ledgerful` is unavailable, continue with normal repo tools and tell the user Ledgerful signals were unavailable.
 - If `ledger status` shows unaudited drift, reconcile or adopt before continuing unless the user directs otherwise.
 - If `scan --impact` cannot complete, continue cautiously and include the error in the final report.
-- If a command reports that the index is `[STALE]`, append `--auto-index` to commands like `search`, `ask`, `hotspots`, or `dead-code` to automatically refresh it.
+- If a command reports that the index is `[STALE]`, append `--auto-index` to commands that support
+  it: **`search`, `ask`, `hotspots`, `dead-code`, `verify`** (prefer passing it proactively when
+  unsure). Time-stale **and** content-hash drift-stale both trigger refresh; never-indexed runs a
+  full bootstrap. Never idle SCIP.
+- **`scan` / `scan --impact` have no `--auto-index`** — refresh with `index` / doctor / check first.
+- Continuous session: `ledgerful watch`. Overnight heavy: `schedule setup-nightly` (opt-in;
+  `index --analyze-graph`, no default `--auto-scip`).
+- Doctor green ≠ index fresh. Full policy: `docs/index-freshness-policy.md`.
 - Prefer **`--json`** when an agent must parse command output (including `doctor --json`).
 - Do not edit `.ledgerful/` state files directly.
 

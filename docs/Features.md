@@ -41,6 +41,13 @@ Understand the "blast radius" of any change before it is committed.
 Compiler-grade search and conceptual discovery.
 
 *   **Trigram Regex Search**: Sub-millisecond regex discovery using Tantivy and custom Trigram pre-filters.
+*   **Index freshness policy (three tiers)**: light continuous (`watch` + mega-batch safety), light
+    on-demand (`--auto-index` on `search` / `ask` / `hotspots` / `dead-code` / `verify` with
+    time-stale **and** content-hash drift-stale, full bootstrap when never indexed), heavy
+    scheduled/explicit (`schedule setup-nightly` → `index --analyze-graph`, or user
+    `index --full` / `--auto-scip`). `scan --impact` has **no** `--auto-index`.
+    `ledgerful daemon` is an LSP **reader**, not an indexer. No idle SCIP / silent always-on
+    reindex. See **`docs/index-freshness-policy.md`**.
 *   **SCIP augment (optional)**: `index --auto-scip` / `index --scip <path>` run **after** the native
     call graph and add precise cross-file **reference edges** onto native `project_symbols` ids
     (`structural_edges` with `evidence=scip:ref`). SCIP does **not** write symbols, does not replace
@@ -87,9 +94,9 @@ Ledgerful is "Gemini-ready," providing high-signal, sanitized context to Large L
 Built for the modern developer's environment.
 
 *   **Local-First & Offline**: All core features (including embeddings and search) work without external services.
-*   **LSP Daemon**: Optional background server providing diagnostics, Hover, and CodeLens directly in your IDE.
+*   **LSP Daemon**: Optional background server providing diagnostics, Hover, and CodeLens directly in your IDE. Ships with `--all-features` release builds; it **reads** the existing index and does **not** run as a background indexer (see `docs/index-freshness-policy.md`).
 *   **Windows & WSL Resilience**: First-class support for Windows PowerShell and WSL environments.
-*   **Health Diagnostics**: `doctor` command verifies toolchain health and environment readiness, including the active ask backend (Gemini Cloud vs Local).
+*   **Health Diagnostics**: `doctor` command verifies toolchain health and environment readiness, including the active ask backend (Gemini Cloud vs Local). Doctor green ≠ index fresh.
 * **Dead Code Pruning**: `dead-code --prune` interactively removes high-confidence dead-code *candidates* (heuristic evidence, not proof) with `inquire` prompts, wrapped in a pending ledger transaction for verifiable safety.
-* **Nightly Scheduler**: `schedule setup-nightly` installs a cross-platform nightly task (Windows schtasks / Unix crontab) that runs `git fetch` + `index --analyze-graph` to keep the search/observability cache warm without workday file-lock contention.
+* **Nightly Scheduler**: `schedule setup-nightly` installs a cross-platform nightly task (Windows schtasks / Unix crontab) that runs `git fetch` + `index --analyze-graph` (no `--auto-scip` by default) to keep the search/observability cache warm without workday file-lock contention. Opt-in only — not installed by `init`.
 * **PR Scan Surface**: `scan --pr <range> --format json` emits a stable, versioned, deterministic PR diff report for CI integration. See `docs/pr-scan-schema.md` for the schema contract.
