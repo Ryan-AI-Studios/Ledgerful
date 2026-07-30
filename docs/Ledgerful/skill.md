@@ -87,7 +87,7 @@ ledgerful doctor --json
 - **Impact Analysis**: Deep impact analysis across 20+ specialized providers (Infra, Contracts, Observability, Temporal). Structural **`blastRadius`** is depth-1 by default (`--blast-depth 2` only high-confidence + transitive); must-touch punchlist — not a complete call graph; ≠ deploy high-blast resources.
 - **Cryptographic Provenance**: Mathematical proof of intent via Ed25519 signing of every ledger entry. Offline verification via `verify --signatures`.
 - **Intent Capture TUI**: Interactive terminal UI for auditing and refining LLM-drafted intent payloads during the git commit process.
-- **Real-time Sync**: Incremental Knowledge Graph updates, AST re-parsing, and code-aware symbol indexing via the `watch` command.
+- **Real-time Sync (watch)**: Incremental Knowledge Graph updates, AST re-parsing, and code-aware symbol indexing via the `watch` command — **not** team ledger sync.
 - **Predictable Verification**: Bayesian test reordering and CI failure prediction.
 - **Scoped Verification**: `ledgerful verify --scope fast` uses the `test_mapping` index to run only the tests covering changed files (nextest filtersets), falling back to the full suite when shared infrastructure is touched. The pre-push hook uses `--scope fast`; CI uses `--scope full`.
 - **Documentation Generation**: Export Knowledge Graph data to Markdown/Mermaid passive documentation (`index --export-docs`).
@@ -103,7 +103,7 @@ ledgerful doctor --json
 - **Hotspot Trends**: Persistent hotspot and temporal coupling snapshots with trend deltas. `ledgerful hotspots trend` / `hotspots explain`.
 - **Ledger Graph**: Per-transaction entity neighborhood view. `ledgerful ledger graph <tx-id>`.
 - **Security Boundaries**: Cedar policy parsing with cross-surface links. `ledgerful security boundaries` / `security impact --changed`.
-- **Team Sync**: Decentralized team ledger synchronization via `ledgerful sync` (optional `sync` feature).
+- **Team Sync [Experimental]**: Opt-in encrypted ledger entry bundles via `ledgerful sync` (default feature; `[sync].enabled = false` forever until you opt in). Pair accept / multi-device ready land later (0111–0113). See `docs/team-sync.md`. Not the same as watch “Real-time Sync”.
 - **Bridge Export/Import**: Local versioned NDJSON interchange for hotspots, ledger entries, and MADR data via `ledgerful bridge export --hotspots --ledger [--madr] [--stdout]` and `ledgerful bridge import --input <records.ndjson>`. The bridge is **off by default**; run it only after opting in.
 
 ## Bridge Opt-In
