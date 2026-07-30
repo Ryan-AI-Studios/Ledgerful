@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Team Sync opt-in foundation (0110):** `sync` is now a **default** Cargo feature (release
+  already shipped it via `--all-features`; MCP-npm remains `--no-default-features --features
+  mcp,export`). Runtime stays forever opt-in (`[sync].enabled = false`; `sync init` never enables).
+  Layout-aware init writes keys under `{state_dir}/sync/` and upserts SoT `sync_state.device_id`;
+  pair accept fails closed (NYI until 0111); disabled `sync run` explains opt-in before any secret
+  prompt; status is Experimental with peers not available; light doctor warns only when
+  enabled-but-misconfigured. Docs: `docs/team-sync.md`; skill honesty for Team Sync vs watch
+  Real-time Sync. OpenAPI `SyncStatusResponse` left unchanged (CLI-first). See track 0110.
 - **Index freshness policy (0107):** three-tier model documented in
   `docs/index-freshness-policy.md` — light continuous (`watch` + mega-batch safety), light
   on-demand (`--auto-index` on `search` / `ask` / `hotspots` / `dead-code` with **time-stale and

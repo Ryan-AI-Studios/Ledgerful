@@ -36,6 +36,15 @@ use std::collections::HashMap;
 #[cfg(feature = "sync")]
 use std::path::Path;
 
+/// Run one sync cycle (extract → put → list → apply → trim).
+///
+/// `state_dir` is the layout state home (typically `{work_root}/.ledgerful`):
+/// - keys: `{state_dir}/sync/`
+/// - ledger DB: `{state_dir}/state/ledger.db`
+///
+/// Local `device_id` is read from SoT `sync_state.device_id` (not config-only).
+/// Callers should refuse when `!enabled` with a user-visible message; this
+/// silent return remains defense-in-depth only.
 #[cfg(feature = "sync")]
 pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Result<()> {
     use miette::IntoDiagnostic;
@@ -44,7 +53,7 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
         return Ok(());
     }
 
-    let sync_dir = state_dir.join(".ledgerful").join("sync");
+    let sync_dir = state_dir.join("sync");
     if !sync_dir.exists() {
         return Err(miette::miette!(
             "Sync is not initialized. Run 'ledgerful sync init' first."
@@ -66,18 +75,25 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
             .map_err(|_| miette::miette!("Invalid device key length"))?,
     );
 
-    let device_id = config
-        .sync
-        .device_id
-        .as_ref()
-        .ok_or_else(|| miette::miette!("device_id not configured"))?;
+    let db_path = state_dir.join("state").join("ledger.db");
+    let mut conn = Connection::open(&db_path).into_diagnostic()?;
+
+    // SoT: sync_state.device_id (init writes this). Config mirror is optional.
+    let device_id = match crate::sync::state::SyncState::load(&conn)? {
+        Some(s) if !s.device_id.is_empty() && s.device_id != "unknown" => s.device_id,
+        _ => {
+            return Err(miette::miette!(
+                "device_id SoT missing in sync_state. Run 'ledgerful sync init' first."
+            ));
+        }
+    };
 
     let target = SyncTarget::parse(&config.sync.target).into_diagnostic()?;
-    let transport = target.connect(device_id);
+    let transport = target.connect(&device_id);
 
     // 1. Extract
     println!("Extracting local deltas...");
-    match extract::extract(state_dir, device_id, &sign_key, config.sync.batch_size) {
+    match extract::extract(state_dir, &device_id, &sign_key, config.sync.batch_size) {
         Ok(bundle) => {
             if bundle.manifest.entry_count > 0 || !bundle.manifest.tombstones.is_empty() {
                 println!(
@@ -139,18 +155,14 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
     // Add our own key to peer_keys to allow self-apply if needed (though usually we skip our own)
     peer_keys.insert(device_id.clone(), sign_key.verifying_key().to_bytes());
 
-    let db_path = state_dir.join("state").join("ledger.db");
-    let mut conn = Connection::open(&db_path).into_diagnostic()?;
-
     for bundle_path in incoming {
         let name = bundle_path
             .file_name()
-            .unwrap()
-            .to_string_lossy()
-            .to_string();
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| "unknown".to_string());
 
         // Skip our own bundles if they appear in incoming (depending on transport)
-        if name.contains(device_id) {
+        if name.contains(&device_id) {
             continue;
         }
 

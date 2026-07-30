@@ -3,17 +3,16 @@ use std::fs::File;
 use std::io::{BufRead, BufReader};
 
 pub fn handle(tail: Option<usize>) -> Result<()> {
-    let cg_dir = std::env::current_dir()
-        .map_err(|e| miette!("Failed to get current dir: {}", e))?
-        .join(".ledgerful");
-    let log_path = cg_dir.join("sync").join("sync.log");
+    let layout = crate::commands::helpers::get_layout()?;
+    let log_path = layout.state_dir.join("sync").join("sync.log");
 
     if !log_path.exists() {
-        println!("No sync log found at {}", log_path.display());
+        println!("No sync log found at {log_path}");
         return Ok(());
     }
 
-    let file = File::open(&log_path).map_err(|e| miette!("Failed to open log file: {}", e))?;
+    let file = File::open(log_path.as_std_path())
+        .map_err(|e| miette!("Failed to open log file: {}", e))?;
     let reader = BufReader::new(file);
     let lines: Vec<String> = reader.lines().map_while(Result::ok).collect();
 
@@ -24,7 +23,7 @@ pub fn handle(tail: Option<usize>) -> Result<()> {
         0
     };
 
-    println!("Recent Sync Logs ({}):", log_path.display());
+    println!("Recent Sync Logs ({log_path}):");
     for line in &lines[start..] {
         println!("{}", line);
     }

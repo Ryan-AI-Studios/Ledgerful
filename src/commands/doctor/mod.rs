@@ -514,6 +514,9 @@ pub fn execute_doctor(json: bool) -> Result<()> {
         findings.push(f);
     }
 
+    // 0110: light team-sync findings (warn/info only). Disabled sync never blocks publish.
+    findings.extend(sync_doctor_findings(&layout, &config));
+
     // Deterministic ordering for JSON/tests.
     findings.sort_by(|a, b| {
         a.code
@@ -690,6 +693,54 @@ fn sccache_hint_finding() -> Option<DoctorFinding> {
     } else {
         None
     }
+}
+
+/// 0110: light team-sync honesty findings.
+///
+/// Only emit when `[sync].enabled = true` and init/target are incomplete.
+/// Severity is **warn** / category **optional** so sync-off never sole-blocks
+/// `readyForPublish`. See `docs/team-sync.md`.
+fn sync_doctor_findings(
+    layout: &Layout,
+    config: &crate::config::model::Config,
+) -> Vec<DoctorFinding> {
+    if !config.sync.enabled {
+        return Vec::new();
+    }
+
+    let mut findings = Vec::new();
+    let key_path = layout.state_dir.join("sync").join("device.key");
+    let pub_path = layout.state_dir.join("sync").join("device.pub");
+    let keys_ok = key_path.exists() && pub_path.exists();
+
+    // SoT: non-empty sync_state.device_id (row id=1). Missing DB is treated as uninitialized.
+    let sot_ok = (|| {
+        let storage = crate::state::storage::StorageManager::init_with_layout(layout).ok()?;
+        let conn = storage.get_connection();
+        let id: Option<String> = conn
+            .query_row("SELECT device_id FROM sync_state WHERE id = 1", [], |row| {
+                row.get(0)
+            })
+            .ok();
+        id.filter(|s| !s.trim().is_empty() && s != "unknown")
+    })()
+    .is_some();
+
+    if !keys_ok || !sot_ok {
+        findings.push(DoctorFinding::warn(
+            "sync-enabled-not-initialized",
+            DoctorCategory::Optional,
+            "[sync].enabled=true but team sync is not fully initialized (need device.key + device.pub + sync_state.device_id). Run `ledgerful sync init` (Experimental) or set enabled=false. See docs/team-sync.md.",
+        ));
+    }
+    if config.sync.target.trim().is_empty() {
+        findings.push(DoctorFinding::warn(
+            "sync-enabled-empty-target",
+            DoctorCategory::Optional,
+            "[sync].enabled=true but [sync].target is empty. Set a shared-folder target (e.g. dir:///path) or disable sync. See docs/team-sync.md.",
+        ));
+    }
+    findings
 }
 
 /// Per-language SCIP capability + process-policy report for doctor (0095/0109).

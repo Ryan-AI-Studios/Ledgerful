@@ -1,5 +1,7 @@
+use crate::state::storage::StorageManager;
 use crate::sync::bundle::Bundle;
 use miette::{IntoDiagnostic, Result, miette};
+use rusqlite::OptionalExtension;
 use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
@@ -34,7 +36,10 @@ pub fn handle(bundle_path: &str) -> Result<()> {
             let entry = entry.into_diagnostic()?;
             let path = entry.path();
             if path.extension().is_some_and(|ext| ext == "pub") {
-                let device_id = path.file_stem().unwrap().to_string_lossy().to_string();
+                let Some(stem) = path.file_stem() else {
+                    continue;
+                };
+                let device_id = stem.to_string_lossy().to_string();
                 let key_bytes = fs::read(&path).into_diagnostic()?;
                 if key_bytes.len() == 32 {
                     let mut arr = [0u8; 32];
@@ -45,23 +50,20 @@ pub fn handle(bundle_path: &str) -> Result<()> {
         }
     }
 
-    // Also include our own public key for self-verification
-    let own_pub_path = layout
-        .root
-        .join(".ledgerful")
-        .join("sync")
-        .join("device.pub");
+    // Also include our own public key for self-verification (aligned with init/run/pair/status).
+    let own_pub_path = layout.state_dir.join("sync").join("device.pub");
     if own_pub_path.exists() {
-        // We need the device_id too. Get it from DB.
-        let storage_path = layout.state_subdir().join("ledger.db");
-        let storage = storage_manager_init_minimal(storage_path.as_std_path())?;
+        let storage = StorageManager::init_with_layout(&layout)?;
         let device_id: String = storage
+            .get_connection()
             .query_row("SELECT device_id FROM sync_state WHERE id = 1", [], |row| {
                 row.get(0)
             })
-            .unwrap_or_else(|_| "unknown".to_string());
+            .optional()
+            .map_err(|e| miette!("Failed to query sync_state device_id: {e}"))?
+            .unwrap_or_else(|| "unknown".to_string());
 
-        let key_bytes = fs::read(&own_pub_path).into_diagnostic()?;
+        let key_bytes = fs::read(own_pub_path.as_std_path()).into_diagnostic()?;
         if key_bytes.len() == 32 {
             let mut arr = [0u8; 32];
             arr.copy_from_slice(&key_bytes);
@@ -82,9 +84,4 @@ pub fn handle(bundle_path: &str) -> Result<()> {
     println!("  Integrity:      Valid (SHA-256)");
 
     Ok(())
-}
-
-// Helper to avoid full StorageManager init which might be overkill or cause issues if already initialized
-fn storage_manager_init_minimal(db_path: &Path) -> Result<rusqlite::Connection> {
-    rusqlite::Connection::open(db_path).into_diagnostic()
 }
