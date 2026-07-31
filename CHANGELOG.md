@@ -6,6 +6,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **MCP release pin tests no longer hardcode a third engine tag:** `mcp-server/test/platform.test.js`
+  uses Cargo.toml as the external SoT for `ledgerfulEngineTag` (with `releaseBaseUrl` wiring
+  checks). Removes the hand-maintained `EXPECTED_ENGINE_TAG` that lagged prepare-release-cut’s
+  four-file bump and failed the v0.2.4 release after full multi-OS builds. Release Gate A now
+  runs `node --test test/platform.test.js` before native builds so pin drift fails in seconds.
+
 ## [0.2.4] - 2026-07-31
 
 ### Fixed

@@ -10,6 +10,10 @@
 #   mcp-server/package.json   — ledgerfulEngineTag → vX.Y.Z AND patch-bump version
 #                               (0101 DoD-8: pin move without wrapper bump fails npm publish)
 #
+# MCP unit tests must NOT hardcode a third engine tag (e.g. EXPECTED_ENGINE_TAG).
+# platform.test.js asserts pin ≡ Cargo.toml; prepare never rewrites test files.
+# Release preflight runs those pin tests before multi-OS builds.
+#
 # Call from the repo root:
 #   bash scripts/prepare-release-cut.sh <version>
 # Version: X.Y.Z or vX.Y.Z
