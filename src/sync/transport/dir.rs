@@ -97,7 +97,44 @@ impl DirTransport {
             )
             .into());
         }
-        Ok(self.devices_dir().join(&id.peer_id).join(&id.name))
+        let peer_dir = self.devices_dir().join(&id.peer_id);
+        // Re-validate on every get/move (list→get TOCTOU: peer dir swapped to symlink).
+        if !Self::is_regular_non_symlink_dir(&peer_dir) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "peer directory is missing, not a directory, or is a symlink: {}",
+                    id.peer_id
+                ),
+            )
+            .into());
+        }
+        Ok(peer_dir.join(&id.name))
+    }
+
+    /// Read at most `MAX_BUNDLE_SIZE` bytes (grows after open still bounded by take).
+    fn read_bundle_capped(path: &Path) -> Result<Vec<u8>> {
+        use std::io::Read;
+        let mut file = fs::File::open(path)?;
+        // Re-check after open: path must still be a non-symlink regular file.
+        if !Self::is_regular_non_symlink_file(path) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                "bundle path is not a regular non-symlink file after open",
+            )
+            .into());
+        }
+        let mut buf = Vec::new();
+        let mut limited = (&mut file).take(MAX_BUNDLE_SIZE as u64 + 1);
+        limited.read_to_end(&mut buf)?;
+        if buf.len() > MAX_BUNDLE_SIZE {
+            return Err(std::io::Error::other(format!(
+                "Bundle exceeds maximum size ({} bytes cap)",
+                MAX_BUNDLE_SIZE
+            ))
+            .into());
+        }
+        Ok(buf)
     }
 }
 
@@ -221,18 +258,7 @@ impl Transport for DirTransport {
             )
             .into());
         }
-        let meta = fs::symlink_metadata(&path)?;
-        if meta.len() as usize > MAX_BUNDLE_SIZE {
-            return Err(std::io::Error::other(format!(
-                "Bundle exceeds maximum size ({} > {} bytes): {}/{}",
-                meta.len(),
-                MAX_BUNDLE_SIZE,
-                id.peer_id,
-                id.name
-            ))
-            .into());
-        }
-        Ok(fs::read(path)?)
+        Self::read_bundle_capped(&path)
     }
 
     fn move_to_processed(&self, id: &IncomingBundle) -> Result<()> {
