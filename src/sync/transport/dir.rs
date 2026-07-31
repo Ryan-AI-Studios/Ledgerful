@@ -82,6 +82,36 @@ impl DirTransport {
         }
     }
 
+    /// Create `path` if missing, then require it is a non-symlink directory
+    /// (rejects pre-planted junction/symlink destinations under the share).
+    fn ensure_regular_dir(path: &Path) -> Result<()> {
+        if path.exists() {
+            if !Self::is_regular_non_symlink_dir(path) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!(
+                        "path is not a regular directory (symlink/junction?): {}",
+                        path.display()
+                    ),
+                )
+                .into());
+            }
+            return Ok(());
+        }
+        fs::create_dir_all(path)?;
+        if !Self::is_regular_non_symlink_dir(path) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "path is not a regular directory after create (symlink/junction?): {}",
+                    path.display()
+                ),
+            )
+            .into());
+        }
+        Ok(())
+    }
+
     fn peer_bundle_path(&self, id: &IncomingBundle) -> Result<PathBuf> {
         if !Self::is_safe_peer_id(&id.peer_id) {
             return Err(std::io::Error::new(
@@ -170,12 +200,12 @@ impl Transport for DirTransport {
 
     fn put_outgoing_bytes(&self, name: &str, content: &[u8]) -> Result<()> {
         let outbox = self.outbox_dir();
-        fs::create_dir_all(&outbox)?;
+        Self::ensure_regular_dir(&outbox)?;
 
         // Same-volume temp under outbox/.tmp/ — never OS temp (EXDEV on NAS/USB).
         // Temp names use `.part` so they do not match is_bundle_filename.
         let tmp_dir = self.outbox_tmp_dir();
-        fs::create_dir_all(&tmp_dir)?;
+        Self::ensure_regular_dir(&tmp_dir)?;
 
         let nanos = SystemTime::now()
             .duration_since(UNIX_EPOCH)
@@ -263,7 +293,7 @@ impl Transport for DirTransport {
 
     fn move_to_processed(&self, id: &IncomingBundle) -> Result<()> {
         let processed = self.processed_dir();
-        fs::create_dir_all(&processed)?;
+        Self::ensure_regular_dir(&processed)?;
 
         let src = self.peer_bundle_path(id)?;
         if !Self::is_regular_non_symlink_file(&src) {
@@ -281,6 +311,13 @@ impl Transport for DirTransport {
         let dest_name = format!("{}__{}", id.peer_id, id.name);
         let dest = processed.join(dest_name);
         if dest.exists() {
+            if !Self::is_regular_non_symlink_file(&dest) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("processed dest is not a regular file: {}", dest.display()),
+                )
+                .into());
+            }
             fs::remove_file(&dest)?;
         }
         if fs::rename(&src, &dest).is_err() {
@@ -292,7 +329,7 @@ impl Transport for DirTransport {
 
     fn move_to_quarantine(&self, id: &IncomingBundle) -> Result<()> {
         let quarantine = self.quarantine_dir();
-        fs::create_dir_all(&quarantine)?;
+        Self::ensure_regular_dir(&quarantine)?;
 
         let src = self.peer_bundle_path(id)?;
         if !Self::is_regular_non_symlink_file(&src) {
@@ -309,6 +346,13 @@ impl Transport for DirTransport {
         let dest_name = format!("{}__{}", id.peer_id, id.name);
         let dest = quarantine.join(dest_name);
         if dest.exists() {
+            if !Self::is_regular_non_symlink_file(&dest) {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    format!("quarantine dest is not a regular file: {}", dest.display()),
+                )
+                .into());
+            }
             fs::remove_file(&dest)?;
         }
         if fs::rename(&src, &dest).is_err() {
@@ -323,14 +367,29 @@ impl Transport for DirTransport {
         if !processed.exists() {
             return Ok(0);
         }
+        if !Self::is_regular_non_symlink_dir(&processed) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!(
+                    "processed path is not a regular directory (symlink/junction?): {}",
+                    processed.display()
+                ),
+            )
+            .into());
+        }
 
         let mut count = 0;
         for entry in fs::read_dir(processed)? {
             let entry = entry?;
-            let metadata = entry.metadata()?;
+            let path = entry.path();
+            // Only trim regular files — never follow symlink entries.
+            if !Self::is_regular_non_symlink_file(&path) {
+                continue;
+            }
+            let metadata = fs::symlink_metadata(&path)?;
             let modified = metadata.modified()?;
             if modified < older_than {
-                fs::remove_file(entry.path())?;
+                fs::remove_file(path)?;
                 count += 1;
             }
         }
