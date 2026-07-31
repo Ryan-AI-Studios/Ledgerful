@@ -143,6 +143,8 @@ mod sync_crypto;
 #[cfg(feature = "sync")]
 mod sync_extract;
 #[cfg(feature = "sync")]
+mod sync_golden;
+#[cfg(feature = "sync")]
 mod sync_hlc;
 #[cfg(feature = "sync")]
 mod sync_init;

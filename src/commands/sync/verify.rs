@@ -1,10 +1,11 @@
 use crate::state::storage::StorageManager;
 use crate::sync::bundle::Bundle;
-use miette::{IntoDiagnostic, Result, miette};
+use crate::sync::peers::load_peer_keys;
+use miette::{Result, miette};
 use rusqlite::OptionalExtension;
-use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
+use zeroize::Zeroizing;
 
 pub fn handle(bundle_path: &str) -> Result<()> {
     let path = Path::new(bundle_path);
@@ -12,11 +13,13 @@ pub fn handle(bundle_path: &str) -> Result<()> {
         return Err(miette!("Bundle file not found: {}", bundle_path));
     }
 
-    let team_secret = std::env::var("LEDGERFUL_SYNC_SECRET").map_err(|_| {
-        miette!(
-            "LEDGERFUL_SYNC_SECRET environment variable not set. It is required to verify bundles."
-        )
-    })?;
+    let team_secret: Zeroizing<String> = Zeroizing::new(
+        std::env::var("LEDGERFUL_SYNC_SECRET").map_err(|_| {
+            miette!(
+                "LEDGERFUL_SYNC_SECRET environment variable not set. It is required to verify bundles."
+            )
+        })?,
+    );
 
     println!("Verifying bundle: {}", bundle_path);
 
@@ -26,48 +29,39 @@ pub fn handle(bundle_path: &str) -> Result<()> {
     let zip_bytes = Bundle::decrypt(&data, team_secret.as_bytes())
         .map_err(|e| miette!("Failed to decrypt bundle: {}", e))?;
 
-    // 2. Load known peer keys
+    // 2. Load known peer keys via shared fallible path (curve-checked; no copy_from_slice panic).
     let layout = crate::commands::helpers::get_layout()?;
-    let peers_dir = layout.state_dir.join("sync").join("peers");
+    let sync_dir = layout.state_dir.join("sync");
+    let mut verify_keys = load_peer_keys(sync_dir.as_std_path())
+        .map_err(|e| miette!("Failed to load peer keys: {e}"))?;
 
-    let mut verify_keys = HashMap::new();
-    if peers_dir.exists() {
-        for entry in fs::read_dir(peers_dir).into_diagnostic()? {
-            let entry = entry.into_diagnostic()?;
-            let path = entry.path();
-            if path.extension().is_some_and(|ext| ext == "pub") {
-                let Some(stem) = path.file_stem() else {
-                    continue;
-                };
-                let device_id = stem.to_string_lossy().to_string();
-                let key_bytes = fs::read(&path).into_diagnostic()?;
-                if key_bytes.len() == 32 {
-                    let mut arr = [0u8; 32];
-                    arr.copy_from_slice(&key_bytes);
-                    verify_keys.insert(device_id, arr);
-                }
-            }
-        }
-    }
-
-    // Also include our own public key for self-verification (aligned with init/run/pair/status).
-    let own_pub_path = layout.state_dir.join("sync").join("device.pub");
+    // Self-insert from SoT device.pub (aligned with run) — not folded into load_peer_keys.
+    let own_pub_path = sync_dir.join("device.pub");
     if own_pub_path.exists() {
         let storage = StorageManager::init_with_layout(&layout)?;
-        let device_id: String = storage
+        let device_id: Option<String> = storage
             .get_connection()
             .query_row("SELECT device_id FROM sync_state WHERE id = 1", [], |row| {
                 row.get(0)
             })
             .optional()
-            .map_err(|e| miette!("Failed to query sync_state device_id: {e}"))?
-            .unwrap_or_else(|| "unknown".to_string());
+            .map_err(|e| miette!("Failed to query sync_state device_id: {e}"))?;
 
-        let key_bytes = fs::read(own_pub_path.as_std_path()).into_diagnostic()?;
-        if key_bytes.len() == 32 {
-            let mut arr = [0u8; 32];
-            arr.copy_from_slice(&key_bytes);
-            verify_keys.insert(device_id, arr);
+        if let Some(device_id) = device_id
+            && !device_id.is_empty()
+            && device_id != "unknown"
+        {
+            let key_bytes = fs::read(own_pub_path.as_std_path())
+                .map_err(|e| miette!("Failed to read device.pub: {e}"))?;
+            if key_bytes.len() == 32 {
+                let mut arr = [0u8; 32];
+                arr.copy_from_slice(&key_bytes);
+                // Curve-check before insert (same posture as trust_peer / load_peer_keys).
+                if ed25519_dalek::VerifyingKey::from_bytes(&arr).is_ok() {
+                    verify_keys.insert(device_id, arr);
+                }
+            }
+            // Wrong-length keys are skipped (no panic) — consistent with load_peer_keys.
         }
     }
 

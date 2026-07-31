@@ -3,6 +3,7 @@ use crate::config::load::load_config;
 use miette::{IntoDiagnostic, Result};
 use rpassword::read_password;
 use std::env;
+use zeroize::Zeroizing;
 
 /// Run team sync once the user has opted in.
 ///
@@ -45,11 +46,11 @@ Set a shared-folder target, e.g. `ledgerful config set sync.target=\"dir:///path
         ));
     }
 
-    let team_secret = if let Ok(secret) = env::var("LEDGERFUL_SYNC_SECRET") {
-        secret
+    let team_secret: Zeroizing<String> = if let Ok(secret) = env::var("LEDGERFUL_SYNC_SECRET") {
+        Zeroizing::new(secret)
     } else {
         println!("Enter team sync secret (12-word phrase):");
-        read_password().into_diagnostic()?
+        Zeroizing::new(read_password().into_diagnostic()?)
     };
 
     if team_secret.trim().is_empty() {

@@ -39,7 +39,7 @@ fn test_bundle_serialize_round_trip() {
         entry_hlc: hlc.clone(),
     }];
 
-    let manifest = Manifest {
+    let mut manifest = Manifest {
         version: 1,
         device_id: device_id.clone(),
         bundle_hlc: hlc.clone(),
@@ -50,7 +50,7 @@ fn test_bundle_serialize_round_trip() {
     };
 
     // Build bundle
-    let (zip_bytes, signature) = Bundle::build(manifest, &signing_key).unwrap();
+    let (zip_bytes, signature) = Bundle::build(&mut manifest, &signing_key).unwrap();
 
     let mut verify_keys = HashMap::new();
     verify_keys.insert(device_id.clone(), public_key.to_bytes());
@@ -83,15 +83,14 @@ fn test_bundle_filename_format() {
         tombstones: vec![],
     };
 
-    // We expect something like: 2024-06-15T03-00-00-123Z-0001-ws-box-a1b2c3d4.zip.gpg
-    // Note: filenames can't have colons on Windows easily, so let's use hyphens or just ISO8601-lite
-    // The plan said: 2026-06-15T03:00:00.123Z-0001-ws-box-a1b2c3d4.zip.gpg
-    // Wait, 2026-06-15T03:00:00.123Z has colons.
-
+    // Honest extension: `.lfbundle` (not OpenPGP). Dual-read of legacy `*.gpg` is transport-only.
     let filename = manifest.filename();
     assert!(filename.contains("ws-box"));
     assert!(filename.contains("a1b2c3d4"));
-    assert!(filename.ends_with(".zip.gpg"));
+    assert!(
+        filename.ends_with(".lfbundle"),
+        "expected .lfbundle, got {filename}"
+    );
 }
 
 #[test]
@@ -102,7 +101,7 @@ fn test_bundle_rejects_wrong_signing_key() {
     let public_key_b = signing_key_b.verifying_key();
 
     let device_id = "test-device".to_string();
-    let manifest = Manifest {
+    let mut manifest = Manifest {
         version: 1,
         device_id: device_id.clone(),
         bundle_hlc: HLC {
@@ -117,7 +116,7 @@ fn test_bundle_rejects_wrong_signing_key() {
     };
 
     // Signed with A
-    let (zip_bytes, _) = Bundle::build(manifest, &signing_key_a).unwrap();
+    let (zip_bytes, _) = Bundle::build(&mut manifest, &signing_key_a).unwrap();
 
     // Verifying with B
     let mut verify_keys = HashMap::new();
@@ -139,7 +138,7 @@ fn test_bundle_rejects_tampered_manifest() {
     let public_key = signing_key.verifying_key();
 
     let device_id = "test-device".to_string();
-    let manifest = Manifest {
+    let mut manifest = Manifest {
         version: 1,
         device_id: device_id.clone(),
         bundle_hlc: HLC {
@@ -153,7 +152,7 @@ fn test_bundle_rejects_tampered_manifest() {
         tombstones: vec![],
     };
 
-    let (zip_bytes, _) = Bundle::build(manifest, &signing_key).unwrap();
+    let (zip_bytes, _) = Bundle::build(&mut manifest, &signing_key).unwrap();
 
     // Tamper with ZIP (find manifest.json and change it)
     let mut tampered_zip = zip_bytes.clone();
@@ -263,7 +262,7 @@ fn test_bundle_invalid_signature_is_rejected_before_full_deserialization() {
         })
         .collect();
 
-    let manifest = Manifest {
+    let mut manifest = Manifest {
         version: 1,
         device_id: device_id.clone(),
         bundle_hlc: HLC {
@@ -277,7 +276,7 @@ fn test_bundle_invalid_signature_is_rejected_before_full_deserialization() {
         tombstones: vec![],
     };
 
-    let (zip_bytes, _signature) = Bundle::build(manifest, &signing_key_a).unwrap();
+    let (zip_bytes, _signature) = Bundle::build(&mut manifest, &signing_key_a).unwrap();
 
     // Verify with key B (same device_id, wrong key) — signature must fail.
     let mut verify_keys = HashMap::new();

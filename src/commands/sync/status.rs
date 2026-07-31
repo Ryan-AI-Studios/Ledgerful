@@ -46,9 +46,13 @@ pub fn handle() -> Result<()> {
     };
 
     // Count inbox/outbox if target is a directory and we know our device_id.
+    // Use the same bundle filter as transport (`.lfbundle` write + dual-read `gpg`).
+    // Only count files that match `is_bundle_filename` — never directories (e.g. `.tmp`).
     let mut inbox_count = 0;
     let mut outbox_count = 0;
-    let mut last_bundle = String::from("None");
+    // Use Option so max name is not biased by a sentinel like "None"
+    // (HLC filenames start with digits and compare less than "None").
+    let mut last_bundle_name: Option<String> = None;
 
     if let Some(ref did) = device_id
         && let Some(path_str) = sync_target.strip_prefix("dir://")
@@ -59,7 +63,15 @@ pub fn handle() -> Result<()> {
         if outbox_path.exists()
             && let Ok(entries) = std::fs::read_dir(outbox_path)
         {
-            outbox_count = entries.filter(|e| e.is_ok()).count();
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.is_file()
+                    && let Some(name) = path.file_name().and_then(|n| n.to_str())
+                    && crate::sync::transport::is_bundle_filename(name)
+                {
+                    outbox_count += 1;
+                }
+            }
         }
 
         let devices_path = base_path.join("devices");
@@ -71,15 +83,15 @@ pub fn handle() -> Result<()> {
                     && let Ok(peer_entries) = std::fs::read_dir(entry.path())
                 {
                     for peer_entry in peer_entries.flatten() {
-                        if peer_entry
-                            .path()
-                            .extension()
-                            .is_some_and(|ext| ext == "gpg")
+                        let path = peer_entry.path();
+                        if path.is_file()
+                            && let Some(name) = path.file_name().and_then(|n| n.to_str())
+                            && crate::sync::transport::is_bundle_filename(name)
                         {
                             inbox_count += 1;
-                            let name = peer_entry.file_name().to_string_lossy().into_owned();
-                            if name > last_bundle {
-                                last_bundle = name;
+                            match &last_bundle_name {
+                                Some(cur) if name <= cur.as_str() => {}
+                                _ => last_bundle_name = Some(name.to_string()),
                             }
                         }
                     }
@@ -87,6 +99,7 @@ pub fn handle() -> Result<()> {
             }
         }
     }
+    let last_bundle = last_bundle_name.unwrap_or_else(|| "None".to_string());
 
     println!("Team Sync Status [Experimental]");
     println!("  Enabled:        {}", config.sync.enabled);

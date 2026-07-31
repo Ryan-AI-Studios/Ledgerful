@@ -13,9 +13,11 @@ pub struct SyncState {
 
 impl SyncState {
     pub fn load(conn: &Connection) -> Result<Option<Self>> {
-        let mut stmt = conn.prepare(
-            "SELECT last_extract_hlc, last_apply_hlc, last_run_at, device_id FROM sync_state WHERE id = 1"
-        ).into_diagnostic()?;
+        let mut stmt = conn
+            .prepare(
+                "SELECT last_extract_hlc, last_apply_hlc, last_run_at, device_id FROM sync_state WHERE id = 1",
+            )
+            .into_diagnostic()?;
 
         let mut rows = stmt.query([]).into_diagnostic()?;
 
@@ -42,6 +44,9 @@ impl SyncState {
         }
     }
 
+    /// Full-row upsert. **Do not** call from extract when `last_apply_hlc` may be
+    /// `None` — that writes NULL and clobbers a prior apply cursor. Prefer
+    /// [`Self::save_extract_cursor`] for extract watermark updates.
     pub fn save(&self, conn: &Connection) -> Result<()> {
         let last_extract_hlc = self.last_extract_hlc.as_ref().map(|h| h.to_string());
         let last_apply_hlc = self.last_apply_hlc.as_ref().map(|h| h.to_string());
@@ -60,6 +65,33 @@ impl SyncState {
                 last_apply_hlc,
                 last_run_at,
                 &self.device_id,
+            ),
+        )
+        .into_diagnostic()?;
+
+        Ok(())
+    }
+
+    /// Partial upsert for extract: advances extract watermark / run time / device_id
+    /// only. **`last_apply_hlc` is never written** (absent from the SET clause), so a
+    /// prior apply cursor survives extract.
+    pub fn save_extract_cursor(
+        conn: &Connection,
+        last_extract_hlc: &HLC,
+        device_id: &str,
+        last_run_at: chrono::DateTime<chrono::Utc>,
+    ) -> Result<()> {
+        conn.execute(
+            "INSERT INTO sync_state (id, last_extract_hlc, device_id, last_run_at)
+             VALUES (1, ?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET
+                last_extract_hlc = excluded.last_extract_hlc,
+                last_run_at = excluded.last_run_at,
+                device_id = excluded.device_id",
+            (
+                last_extract_hlc.to_string(),
+                device_id,
+                last_run_at.to_rfc3339(),
             ),
         )
         .into_diagnostic()?;

@@ -8,6 +8,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Team Sync secure transport and apply (0112):** extract cursor integrity (partial upsert never
+  nulls `last_apply_hlc`; empty extract → `NoNewEntries` without watermark advance; tombstone
+  delta filter; single signed zip from extract — run encrypts only). Transport writes **`.lfbundle`**
+  with dual-read last-dot `lfbundle|gpg`; peer-scoped `IncomingBundle { peer_id, name }` identity
+  through get/move; same-volume put under outbox `.tmp/` (no OS-temp EXDEV). Wired
+  `max_clock_drift_seconds` (ahead-only quarantine); run/verify secrets via `Zeroizing`; verify uses
+  `load_peer_keys` + self-insert. Two-layout full-crypto golden path + poison quarantine tests.
+  Docs/skill honesty: consolidation works Experimental, not Available. No crypto dep majors.
+  See track 0112.
 - **Team Sync pairing and peer trust (0111):** real `LF-PAIR-1.<device_id>.<b64url_pub>.<b64url_tag>`
   pairing invites bound with `blake3::derive_key` + `keyed_hash` (16-byte tag, `ct_eq`); accept
   path-validates `device_id`, curve-checks with `VerifyingKey::from_bytes`, and persists
