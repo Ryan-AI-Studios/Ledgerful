@@ -1,5 +1,13 @@
 #[cfg(feature = "mcp")]
+pub mod install;
+#[cfg(feature = "mcp")]
+pub mod launcher;
+#[cfg(feature = "mcp")]
 pub mod manifest;
+#[cfg(feature = "mcp")]
+pub mod merge;
+#[cfg(feature = "mcp")]
+pub mod platforms;
 #[cfg(feature = "mcp")]
 pub mod sanitize;
 #[cfg(feature = "mcp")]

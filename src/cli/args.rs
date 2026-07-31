@@ -616,9 +616,12 @@ pub enum Commands {
         #[command(subcommand)]
         command: UsageCommands,
     },
-    /// Run the MCP server (stdio transport)
+    /// Run the MCP server (stdio) or install/uninstall host platform config
     #[cfg(feature = "mcp")]
-    Mcp,
+    Mcp {
+        #[command(subcommand)]
+        command: Option<McpCommands>,
+    },
     /// Print the canonical OpenAPI JSON spec for this build to stdout
     #[cfg(any(feature = "openapi", feature = "web"))]
     Openapi,
@@ -783,7 +786,12 @@ impl Commands {
             #[cfg(feature = "usage-metrics")]
             Commands::Usage { .. } => false,
             #[cfg(feature = "mcp")]
-            Commands::Mcp => true,
+            Commands::Mcp { command } => match command {
+                None | Some(McpCommands::Serve) => true,
+                Some(McpCommands::Install { json, .. })
+                | Some(McpCommands::Uninstall { json, .. })
+                | Some(McpCommands::Status { json }) => *json,
+            },
             #[cfg(any(feature = "openapi", feature = "web"))]
             Commands::Openapi => true,
         }
@@ -953,7 +961,12 @@ impl Commands {
                 UsageCommands::ShowPayload => "usage_show_payload",
             },
             #[cfg(feature = "mcp")]
-            Commands::Mcp => "mcp",
+            Commands::Mcp { command } => match command {
+                None | Some(McpCommands::Serve) => "mcp",
+                Some(McpCommands::Install { .. }) => "mcp_install",
+                Some(McpCommands::Uninstall { .. }) => "mcp_uninstall",
+                Some(McpCommands::Status { .. }) => "mcp_status",
+            },
             #[cfg(any(feature = "openapi", feature = "web"))]
             Commands::Openapi => "openapi",
         }
@@ -992,7 +1005,24 @@ mod machine_output_tests {
     #[test]
     fn machine_mode_selected_for_mcp() {
         #[cfg(feature = "mcp")]
-        assert!(parse(&["mcp"]).is_machine_output());
+        {
+            assert!(parse(&["mcp"]).is_machine_output());
+            assert!(parse(&["mcp", "serve"]).is_machine_output());
+            assert!(!parse(&["mcp", "install"]).is_machine_output());
+            assert!(parse(&["mcp", "install", "--json"]).is_machine_output());
+            assert!(!parse(&["mcp", "uninstall"]).is_machine_output());
+            assert!(parse(&["mcp", "uninstall", "--json"]).is_machine_output());
+            assert!(!parse(&["mcp", "status"]).is_machine_output());
+            assert!(parse(&["mcp", "status", "--json"]).is_machine_output());
+            assert_eq!(parse(&["mcp"]).command_name(), "mcp");
+            assert_eq!(parse(&["mcp", "serve"]).command_name(), "mcp");
+            assert_eq!(parse(&["mcp", "install"]).command_name(), "mcp_install");
+            assert_eq!(
+                parse(&["mcp", "uninstall"]).command_name(),
+                "mcp_uninstall"
+            );
+            assert_eq!(parse(&["mcp", "status"]).command_name(), "mcp_status");
+        }
     }
 
     #[test]
@@ -2387,12 +2417,158 @@ impl Commands {
             #[cfg(feature = "usage-metrics")]
             Commands::Usage { command: _ } => {}
             #[cfg(feature = "mcp")]
-            Commands::Mcp => {}
+            Commands::Mcp { command } => match command {
+                None | Some(McpCommands::Serve) => {}
+                Some(McpCommands::Install {
+                    platforms,
+                    scope,
+                    launcher,
+                    dry_run,
+                    force,
+                    no_backup,
+                    json,
+                }) => {
+                    if !platforms.is_empty() {
+                        f.push("platform");
+                    }
+                    if scope.is_some() {
+                        f.push("scope");
+                    }
+                    // launcher always has a default; record non-default only
+                    if *launcher != McpLauncher::Auto {
+                        f.push("launcher");
+                    }
+                    if *dry_run {
+                        f.push("dry_run");
+                    }
+                    if *force {
+                        f.push("force");
+                    }
+                    if *no_backup {
+                        f.push("no_backup");
+                    }
+                    if *json {
+                        f.push("json");
+                    }
+                }
+                Some(McpCommands::Uninstall {
+                    platforms,
+                    scope,
+                    dry_run,
+                    json,
+                }) => {
+                    if !platforms.is_empty() {
+                        f.push("platform");
+                    }
+                    if scope.is_some() {
+                        f.push("scope");
+                    }
+                    if *dry_run {
+                        f.push("dry_run");
+                    }
+                    if *json {
+                        f.push("json");
+                    }
+                }
+                Some(McpCommands::Status { json }) => {
+                    if *json {
+                        f.push("json");
+                    }
+                }
+            },
             #[cfg(any(feature = "openapi", feature = "web"))]
             Commands::Openapi => {}
         }
         f
     }
+}
+
+/// MCP stdio serve and host-platform install surface (feature `mcp`).
+///
+/// Bare `ledgerful mcp` (no subcommand) serves stdio. Subcommands wire agent
+/// host configs for the Top-N platforms only.
+#[cfg(feature = "mcp")]
+#[derive(Subcommand, Debug)]
+pub enum McpCommands {
+    /// Run the MCP server on stdio (default when no subcommand is given)
+    Serve,
+    /// Merge Ledgerful into agent host MCP configs (Top-N platforms)
+    Install {
+        /// Platform id (repeatable). Supported: claude-code, cursor, codex, copilot.
+        /// When omitted, detect from config presence / host binary on PATH.
+        #[arg(
+            long = "platform",
+            value_name = "ID",
+            action = clap::ArgAction::Append,
+            value_parser = crate::commands::mcp::install::parse_platform_id
+        )]
+        platforms: Vec<String>,
+        /// Config scope (user or project). Defaults per platform when omitted.
+        #[arg(long, value_enum)]
+        scope: Option<McpScope>,
+        /// How to launch the MCP server
+        #[arg(long, value_enum, default_value_t = McpLauncher::Auto)]
+        launcher: McpLauncher,
+        /// Report planned writes without mutating files
+        #[arg(long)]
+        dry_run: bool,
+        /// Replace an existing ledgerful entry even when command/args differ
+        #[arg(long)]
+        force: bool,
+        /// Skip creating a sibling `.bak` before writing (default: backup on)
+        #[arg(long = "no-backup", default_value_t = false)]
+        no_backup: bool,
+        /// Emit machine-readable JSON report
+        #[arg(long)]
+        json: bool,
+    },
+    /// Remove only the ledgerful MCP server entry from host configs
+    Uninstall {
+        /// Platform id (repeatable). Supported: claude-code, cursor, codex, copilot.
+        #[arg(
+            long = "platform",
+            value_name = "ID",
+            action = clap::ArgAction::Append,
+            value_parser = crate::commands::mcp::install::parse_platform_id
+        )]
+        platforms: Vec<String>,
+        /// Config scope (user or project). Defaults per platform when omitted.
+        #[arg(long, value_enum)]
+        scope: Option<McpScope>,
+        /// Report planned removals without mutating files
+        #[arg(long)]
+        dry_run: bool,
+        /// Emit machine-readable JSON report
+        #[arg(long)]
+        json: bool,
+    },
+    /// Report ledgerful MCP entry presence across Top-N platforms (no mutation)
+    Status {
+        /// Emit machine-readable JSON report
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+/// MCP host config scope.
+#[cfg(feature = "mcp")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum McpScope {
+    User,
+    Project,
+}
+
+/// MCP server launcher resolution mode.
+#[cfg(feature = "mcp")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, clap::ValueEnum)]
+pub enum McpLauncher {
+    /// Prefer PATH binary; fall back to npx with pin-lag warning
+    #[default]
+    Auto,
+    /// Require `ledgerful` on PATH (absolute path + args `["mcp"]`)
+    Path,
+    /// Use `npx -y @ledgerful/mcp-server` (Windows prefers `npx.cmd`)
+    Npx,
 }
 
 #[cfg(feature = "sync")]
