@@ -774,19 +774,10 @@ mod tests {
     use super::super::launcher::resolve_launcher;
     use super::*;
     use crate::cli::args::McpLauncher;
-    use std::sync::atomic::{AtomicU64, Ordering};
 
-    fn unique_temp() -> PathBuf {
-        static N: AtomicU64 = AtomicU64::new(0);
-        let n = N.fetch_add(1, Ordering::SeqCst);
-        let base = std::env::temp_dir().join(format!(
-            "ledgerful-mcp-install-{}-{}",
-            std::process::id(),
-            n
-        ));
-        let _ = fs::remove_dir_all(&base);
-        fs::create_dir_all(&base).expect("temp");
-        base
+    /// Secure unique temp root (`tempfile`), not shared `std::env::temp_dir()` fixed names.
+    fn unique_temp() -> tempfile::TempDir {
+        tempfile::tempdir().expect("tempdir")
     }
 
     fn env_at(root: &Path) -> InstallEnv {
@@ -815,7 +806,8 @@ mod tests {
 
     #[test]
     fn install_cursor_user_multi_server_preserves_foreign() {
-        let root = unique_temp();
+        let tmp = unique_temp();
+        let root = tmp.path();
         let env = env_at(&root);
         let paths = resolve_paths(
             PlatformId::Cursor,
@@ -862,7 +854,8 @@ mod tests {
 
     #[test]
     fn install_claude_user_top_level_not_projects() {
-        let root = unique_temp();
+        let tmp = unique_temp();
+        let root = tmp.path();
         let env = env_at(&root);
         let paths = resolve_paths(
             PlatformId::ClaudeCode,
@@ -906,7 +899,8 @@ mod tests {
 
     #[test]
     fn install_copilot_project_servers_and_type_stdio() {
-        let root = unique_temp();
+        let tmp = unique_temp();
+        let root = tmp.path();
         let env = env_at(&root);
         let paths = resolve_paths(
             PlatformId::Copilot,
@@ -936,7 +930,8 @@ mod tests {
 
     #[test]
     fn install_codex_toml_args_array_peer_preserved() {
-        let root = unique_temp();
+        let tmp = unique_temp();
+        let root = tmp.path();
         let env = env_at(&root);
         let paths = resolve_paths(
             PlatformId::Codex,
@@ -977,7 +972,8 @@ args = ["a"]
 
     #[test]
     fn install_dry_run_no_file_change() {
-        let root = unique_temp();
+        let tmp = unique_temp();
+        let root = tmp.path();
         let env = env_at(&root);
         let paths = resolve_paths(
             PlatformId::Cursor,
@@ -1006,7 +1002,8 @@ args = ["a"]
 
     #[test]
     fn uninstall_only_ledgerful_and_idempotent() {
-        let root = unique_temp();
+        let tmp = unique_temp();
+        let root = tmp.path();
         let env = env_at(&root);
         let paths = resolve_paths(
             PlatformId::Cursor,
@@ -1047,7 +1044,8 @@ args = ["a"]
 
     #[test]
     fn uninstall_dry_run_honesty_message() {
-        let root = unique_temp();
+        let tmp = unique_temp();
+        let root = tmp.path();
         let env = env_at(&root);
         let paths = resolve_paths(
             PlatformId::Cursor,
@@ -1084,7 +1082,8 @@ args = ["a"]
 
     #[test]
     fn install_force_false_skips_mismatched_entry() {
-        let root = unique_temp();
+        let tmp = unique_temp();
+        let root = tmp.path();
         let env = env_at(&root);
         let paths = resolve_paths(
             PlatformId::Cursor,
@@ -1117,7 +1116,8 @@ args = ["a"]
 
     #[test]
     fn install_jsonc_comment_fixture() {
-        let root = unique_temp();
+        let tmp = unique_temp();
+        let root = tmp.path();
         let env = env_at(&root);
         let paths = resolve_paths(
             PlatformId::ClaudeCode,
@@ -1155,7 +1155,8 @@ args = ["a"]
     #[test]
     fn install_explicit_platform_warns_when_host_binary_missing() {
         // env_at probes always return false (host not on PATH) but explicit install still writes.
-        let root = unique_temp();
+        let tmp = unique_temp();
+        let root = tmp.path();
         let env = env_at(&root);
         let r = install_one(
             PlatformId::Cursor,
@@ -1193,7 +1194,8 @@ args = ["a"]
 
     #[test]
     fn install_no_host_binary_warn_when_probe_finds_binary() {
-        let root = unique_temp();
+        let tmp = unique_temp();
+        let root = tmp.path();
         let mut env = env_at(&root);
         env.binary_probe = Some(|_| true);
         let r = install_one(
@@ -1229,7 +1231,8 @@ args = ["a"]
 
     #[test]
     fn atomic_write_create_and_replace_happy_path() {
-        let root = unique_temp();
+        let tmp = unique_temp();
+        let root = tmp.path();
         let path = root.join("mcp.json");
 
         atomic_write(&path, br#"{"v":1}"#).expect("create");
@@ -1250,7 +1253,8 @@ args = ["a"]
 
     #[test]
     fn status_one_includes_host_detected_when_config_exists() {
-        let root = unique_temp();
+        let tmp = unique_temp();
+        let root = tmp.path();
         let env = env_at(&root); // binary probe false; path existence still counts as detected
         let paths = resolve_paths(
             PlatformId::Cursor,
