@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-07-31
+
 ### Added
 
 - **Change-set test gaps (0115 engine):** Shared structural test-gap library
