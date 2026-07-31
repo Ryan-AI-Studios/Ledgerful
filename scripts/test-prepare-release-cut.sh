@@ -365,6 +365,44 @@ else
   assert_fail "version not greater than current refused" "out=${out8}"
 fi
 
+# --- 9. mode-only chmod noise must not break four-file invariant -------------
+# Reproduces release-cut.yml Linux failure: scripts committed 100644, CI
+# `chmod +x` dirties the tree; invariant must count content changes only.
+fx9="$TMP/mode-noise"
+make_fixture "$fx9"
+# Store scripts as non-executable in the index (matches main 100644 posture).
+git -C "$fx9" update-index --chmod=-x \
+  scripts/prepare-release-cut.sh \
+  scripts/changelog-unreleased.sh \
+  scripts/lib/release-changelog.sh 2>/dev/null || true
+git -C "$fx9" commit -q --allow-empty -m "scripts as 100644" || true
+# If update-index worked and left a mode change, commit it.
+if [ -n "$(git -C "$fx9" diff --cached --name-only 2>/dev/null || true)" ]; then
+  git -C "$fx9" commit -q -m "scripts as 100644"
+elif [ -n "$(git -C "$fx9" diff --name-only 2>/dev/null || true)" ]; then
+  git -C "$fx9" add -A
+  git -C "$fx9" commit -q -m "scripts as 100644"
+fi
+# Simulate CI chmod after checkout (mode-only dirty if index is 100644).
+chmod +x \
+  "$fx9/scripts/prepare-release-cut.sh" \
+  "$fx9/scripts/changelog-unreleased.sh" \
+  "$fx9/scripts/lib/release-changelog.sh"
+# Ensure filemode is tracked so chmod can create a mode-only diff when possible.
+git -C "$fx9" config core.fileMode true
+set +e
+out9="$(run_prepare "$fx9" "0.2.4" 2>&1)"
+rc9=$?
+set -e
+content9="$(git -C "$fx9" diff --name-only -G. | sed 's#\\#/#g' | sort -u)"
+expect9="$(printf '%s\n' "CHANGELOG.md" "Cargo.lock" "Cargo.toml" "mcp-server/package.json" | sort)"
+if [ "$rc9" -eq 0 ] && [ "$content9" = "$expect9" ]; then
+  assert_pass "mode-only chmod noise ignored by four-file invariant"
+else
+  assert_fail "mode-only chmod noise ignored by four-file invariant" \
+    "exit ${rc9}; content=${content9}; full=$(git -C "$fx9" diff --name-only | tr '\n' ' '); out=${out9}"
+fi
+
 echo ""
 echo "prepare-release-cut matrix: ${pass} passed, ${fail} failed"
 if [ "$fail" -ne 0 ]; then

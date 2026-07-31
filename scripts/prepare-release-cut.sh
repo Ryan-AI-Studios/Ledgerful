@@ -235,20 +235,30 @@ if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
   exit 2
 fi
 
-# Unstaged path list only (we have not staged). Normalize to forward slashes.
-actual_sorted="$(git diff --name-only | sed 's#\\#/#g' | sort -u)"
+# Content-bearing paths only. Mode-only noise (Linux CI `chmod +x` on scripts
+# still stored as 100644) must not break the invariant — observed failure
+# deferred.md 2026-07-31 / release-cut run 30559428279.
+# -G. selects diffs that add/remove any line content; pure filemode changes
+# have no matching patch text and are excluded.
+actual_sorted="$(git diff --name-only -G. | sed 's#\\#/#g' | sort -u)"
 expected_sorted="$(printf '%s\n' "CHANGELOG.md" "Cargo.lock" "Cargo.toml" "mcp-server/package.json" | sort)"
 
 if [ -z "$actual_sorted" ]; then
-  echo "error: no files changed after prepare — unexpected" >&2
+  echo "error: no content files changed after prepare — unexpected" >&2
   exit 1
 fi
 
 if [ "$actual_sorted" != "$expected_sorted" ]; then
-  echo "error: four-file invariant broken — expected exactly:" >&2
+  echo "error: four-file invariant broken — expected exactly (content changes):" >&2
   printf '%s\n' "$expected_sorted" | sed 's/^/  /' >&2
   echo "error: got:" >&2
   printf '%s\n' "$actual_sorted" | sed 's/^/  /' >&2
+  # Helpful when mode-only paths are present (should not fail above, but show).
+  mode_only="$(git diff --name-only | sed 's#\\#/#g' | sort -u)"
+  if [ "$mode_only" != "$actual_sorted" ]; then
+    echo "error: note — full name-only list (includes mode-only):" >&2
+    printf '%s\n' "$mode_only" | sed 's/^/  /' >&2
+  fi
   exit 1
 fi
 

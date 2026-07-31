@@ -76,6 +76,10 @@ jobs:
           INPUT_DRY_RUN: ${{ github.event.inputs.dry_run || 'false' }}
         run: |
           set -euo pipefail
+          # Mode-only noise from chmod must not dirtys the tree used by the
+          # four-file invariant. Prefer scripts already 100755 in git; also
+          # ignore filemode when measuring dirty paths after prepare.
+          git config core.fileMode false
           chmod +x scripts/require-secret.sh \
             scripts/prepare-release-cut.sh \
             scripts/changelog-unreleased.sh \
