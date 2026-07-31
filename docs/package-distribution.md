@@ -10,7 +10,7 @@ How Ledgerful reaches package managers. Distribution only — no engine runtime,
 | `cargo binstall --git …` | Engine-ready | `[package.metadata.binstall]` in `Cargo.toml`; uses release assets |
 | Homebrew tap | Live | Formula (CLI), not cask; tap-first (not homebrew-core); auto-bumped on each release |
 | Scoop bucket | Live | 64-bit portable `.zip` only; auto-bumped on each release |
-| winget (`Ledgerful.Ledgerful`) | Pending Microsoft review | First submission PR open; subsequent bumps via SHA-pinned `winget-releaser` |
+| winget (`Ledgerful.Ledgerful`) | Live (accepted 2026-07-30) | `winget install Ledgerful.Ledgerful`; community package may lag engine releases; subsequent bumps via SHA-pinned `winget-releaser` |
 | npm (`@ledgerful/mcp-server`) | Live | Independent wrapper version line; engine pin `ledgerfulEngineTag` (downloads release binary on install) |
 | crates.io `cargo install ledgerful` | **Not pursued** for distribution | Heavy native graph; prebuilt path preferred |
 
@@ -163,7 +163,7 @@ On each release, job `bump-manifests` (after `publish`):
 
 **Invariant:** the bump script reads hashes **only** from published `.sha256` files. It never recomputes hashes from archives.
 
-`WINGET_TOKEN` remains an intentional skip when unset (`::notice::` + step summary); that is deliberate until `Ledgerful.Ledgerful` exists on winget-pkgs.
+`WINGET_TOKEN` remains an intentional skip when unset (`::notice::` + step summary); that is deliberate when the secret is not configured — package `Ledgerful.Ledgerful` is live on winget, but automated version bumps still need the token.
 
 ### Local / CI fixture test
 
@@ -187,11 +187,13 @@ scripts/bump-manifests.sh \
 
 ## winget
 
-- Identifier: `Ledgerful.Ledgerful`
+- Identifier: `Ledgerful.Ledgerful` (accepted 2026-07-30; live on winget)
+- Install: `winget install Ledgerful.Ledgerful`
+- Note: community package version can lag GitHub engine releases (v0.2.4 area)
 - Action: `vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e` (tag v2, SHA-pinned)
 - Installer regex: portable `ledgerful-x86_64-pc-windows-msvc.zip`
 - Secret: `WINGET_TOKEN` (PAT that can open PRs against `microsoft/winget-pkgs` via fork)
-- **First-time package:** the action requires ≥1 version already in winget-pkgs. Bootstrap with `wingetcreate` / a manual PR; subsequent tags use this job when `WINGET_TOKEN` is set.
+- **Version bumps:** subsequent tags use this job when `WINGET_TOKEN` is set.
 
 ## Secrets checklist
 

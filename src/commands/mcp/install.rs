@@ -254,10 +254,10 @@ fn install_one(
             };
         }
         Ok(Some(existing)) if !force && existing.same_launcher_shape(&entry) => {
-            // Idempotent already-correct: still report would_write/written semantics.
-            // Treat as already present — report written if not dry-run would be no-op,
-            // but re-writing is fine; for honesty use skipped with message when identical.
-            // Spec: without force if different → skipped. Same shape can re-write.
+            // Spec: without force, different launcher shape → skipped above.
+            // Same launcher shape may re-write (idempotent refresh); fall through
+            // to dry-run would_write / live written — not skipped.
+            drop(existing);
         }
         Ok(_) => {}
         Err(e) => {
@@ -273,11 +273,14 @@ fn install_one(
         }
     }
 
+    // Explicit --platform still writes when the host binary is missing; warn only.
+    let host_binary_missing = !id
+        .detection_binaries()
+        .iter()
+        .any(|b| env.binary_present(b));
+
     if dry_run {
-        let mut msg = id.host_trust_message(scope).to_string();
-        if let Some(ref m) = launcher.message {
-            msg = format!("{m}; {msg}");
-        }
+        let msg = compose_install_message(id, scope, launcher, None, host_binary_missing);
         return PlatformReport {
             id: id.as_str().to_string(),
             path: path.display().to_string(),
@@ -291,13 +294,13 @@ fn install_one(
 
     match write_merged(id, &path, &entry, backup) {
         Ok(backup_msg) => {
-            let mut msg = id.host_trust_message(scope).to_string();
-            if let Some(b) = backup_msg {
-                msg = format!("{b}; {msg}");
-            }
-            if let Some(ref m) = launcher.message {
-                msg = format!("{m}; {msg}");
-            }
+            let msg = compose_install_message(
+                id,
+                scope,
+                launcher,
+                backup_msg.as_deref(),
+                host_binary_missing,
+            );
             PlatformReport {
                 id: id.as_str().to_string(),
                 path: path.display().to_string(),
@@ -318,6 +321,31 @@ fn install_one(
             message: Some(e),
         },
     }
+}
+
+/// Build install platform message: optional backup + launcher notes + host-trust + optional PATH warn.
+fn compose_install_message(
+    id: PlatformId,
+    scope: McpScope,
+    launcher: &ResolvedLauncher,
+    backup_msg: Option<&str>,
+    host_binary_missing: bool,
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(b) = backup_msg {
+        parts.push(b.to_string());
+    }
+    if let Some(ref m) = launcher.message {
+        parts.push(m.clone());
+    }
+    parts.push(id.host_trust_message(scope).to_string());
+    if host_binary_missing {
+        parts.push(format!(
+            "warn: host binary for `{}` not detected on PATH; config still written",
+            id.as_str()
+        ));
+    }
+    parts.join("; ")
 }
 
 fn uninstall_one(
@@ -1027,6 +1055,68 @@ args = ["a"]
         assert_eq!(r.status, "written", "{:?}", r.message);
         let content = fs::read_to_string(&paths.user).unwrap();
         assert!(content.contains("ledgerful"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn install_explicit_platform_warns_when_host_binary_missing() {
+        // env_at probes always return false (host not on PATH) but explicit install still writes.
+        let root = unique_temp();
+        let env = env_at(&root);
+        let r = install_one(
+            PlatformId::Cursor,
+            McpScope::User,
+            &path_launcher(),
+            false,
+            false,
+            false,
+            &env,
+        );
+        assert_eq!(r.status, "written", "{:?}", r.message);
+        let msg = r.message.as_deref().unwrap_or("");
+        assert!(
+            msg.contains("host binary") && msg.contains("not detected on PATH"),
+            "expected host-binary warn in message: {msg}"
+        );
+        assert!(
+            msg.contains("written ≠ connected")
+                || msg.contains("written != connected")
+                || msg.contains("Restart")
+                || msg.contains("reload"),
+            "host-trust still present: {msg}"
+        );
+        // Config file was created despite missing host binary.
+        let paths = resolve_paths(
+            PlatformId::Cursor,
+            &env.home,
+            &env.cwd,
+            env.appdata.as_deref(),
+        )
+        .unwrap();
+        assert!(paths.user.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn install_no_host_binary_warn_when_probe_finds_binary() {
+        let root = unique_temp();
+        let mut env = env_at(&root);
+        env.binary_probe = Some(|_| true);
+        let r = install_one(
+            PlatformId::Cursor,
+            McpScope::User,
+            &path_launcher(),
+            true, // dry-run
+            false,
+            false,
+            &env,
+        );
+        assert_eq!(r.status, "would_write", "{:?}", r.message);
+        let msg = r.message.as_deref().unwrap_or("");
+        assert!(
+            !msg.contains("not detected on PATH"),
+            "should not warn when host binary probe succeeds: {msg}"
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

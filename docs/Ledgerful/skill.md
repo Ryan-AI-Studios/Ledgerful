@@ -65,7 +65,7 @@ ledgerful mcp install
 
 Do **not** invent host-specific `mcp add` commands. Full registration, tools
 (including `change_context` first), and limitations:
-[`.agents/skills/ledgerful/references/mcp.md`](../../.agents/skills/ledgerful/references/mcp.md).
+[`references/mcp.md`](references/mcp.md).
 Bare `ledgerful mcp` still serves stdio.
 
 If installation is allowed, install Ledgerful like a normal CLI:
