@@ -1,3 +1,4 @@
+use crate::sync::bundle::MAX_BUNDLE_SIZE;
 use crate::sync::transport::{IncomingBundle, Result, Transport, is_bundle_filename};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -44,8 +45,59 @@ impl DirTransport {
         self.outbox_dir().join(".tmp")
     }
 
-    fn peer_bundle_path(&self, id: &IncomingBundle) -> PathBuf {
-        self.devices_dir().join(&id.peer_id).join(&id.name)
+    /// Single-component path segment (peer id): no separators, no `.` / `..`.
+    fn is_safe_peer_id(peer_id: &str) -> bool {
+        !peer_id.is_empty()
+            && peer_id != "."
+            && peer_id != ".."
+            && !peer_id.contains('/')
+            && !peer_id.contains('\\')
+            && !peer_id.contains('\0')
+    }
+
+    /// Bundle file name only (no directory components).
+    fn is_safe_bundle_name(name: &str) -> bool {
+        !name.is_empty()
+            && name != "."
+            && name != ".."
+            && !name.contains('/')
+            && !name.contains('\\')
+            && !name.contains('\0')
+            && is_bundle_filename(name)
+    }
+
+    /// Regular file that is not a symlink (hostile drop folders may plant links).
+    fn is_regular_non_symlink_file(path: &Path) -> bool {
+        match fs::symlink_metadata(path) {
+            Ok(meta) => meta.is_file() && !meta.file_type().is_symlink(),
+            Err(_) => false,
+        }
+    }
+
+    /// Directory that is not a symlink.
+    fn is_regular_non_symlink_dir(path: &Path) -> bool {
+        match fs::symlink_metadata(path) {
+            Ok(meta) => meta.is_dir() && !meta.file_type().is_symlink(),
+            Err(_) => false,
+        }
+    }
+
+    fn peer_bundle_path(&self, id: &IncomingBundle) -> Result<PathBuf> {
+        if !Self::is_safe_peer_id(&id.peer_id) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unsafe peer_id in bundle identity: {}", id.peer_id),
+            )
+            .into());
+        }
+        if !Self::is_safe_bundle_name(&id.name) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unsafe bundle name in identity: {}", id.name),
+            )
+            .into());
+        }
+        Ok(self.devices_dir().join(&id.peer_id).join(&id.name))
     }
 }
 
@@ -60,7 +112,7 @@ impl Transport for DirTransport {
         for entry in fs::read_dir(dir)? {
             let entry = entry?;
             let path = entry.path();
-            if path.is_file()
+            if Self::is_regular_non_symlink_file(&path)
                 && let Some(name) = path.file_name().and_then(|n| n.to_str())
                 && is_bundle_filename(name)
             {
@@ -130,24 +182,26 @@ impl Transport for DirTransport {
             let device_entry = device_entry?;
             let device_name = device_entry.file_name();
             let peer_id = device_name.to_string_lossy().into_owned();
-            if peer_id == self.device_id {
-                continue; // Skip self — peer-scoped list is SoT for self-skip
+            if peer_id == self.device_id || !Self::is_safe_peer_id(&peer_id) {
+                continue; // Skip self + unsafe/symlink-named peer components
             }
 
             let peer_dir = device_entry.path();
-            if peer_dir.is_dir() {
-                for bundle_entry in fs::read_dir(&peer_dir)? {
-                    let bundle_entry = bundle_entry?;
-                    let path = bundle_entry.path();
-                    if path.is_file()
-                        && let Some(name) = path.file_name().and_then(|n| n.to_str())
-                        && is_bundle_filename(name)
-                    {
-                        entries.push(IncomingBundle {
-                            peer_id: peer_id.clone(),
-                            name: name.to_string(),
-                        });
-                    }
+            // Refuse symlinked peer dirs (hostile shared-folder escape).
+            if !Self::is_regular_non_symlink_dir(&peer_dir) {
+                continue;
+            }
+            for bundle_entry in fs::read_dir(&peer_dir)? {
+                let bundle_entry = bundle_entry?;
+                let path = bundle_entry.path();
+                if Self::is_regular_non_symlink_file(&path)
+                    && let Some(name) = path.file_name().and_then(|n| n.to_str())
+                    && Self::is_safe_bundle_name(name)
+                {
+                    entries.push(IncomingBundle {
+                        peer_id: peer_id.clone(),
+                        name: name.to_string(),
+                    });
                 }
             }
         }
@@ -156,12 +210,26 @@ impl Transport for DirTransport {
     }
 
     fn get_incoming(&self, id: &IncomingBundle) -> Result<Vec<u8>> {
-        let path = self.peer_bundle_path(id);
-        if !path.exists() {
+        let path = self.peer_bundle_path(id)?;
+        if !Self::is_regular_non_symlink_file(&path) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Bundle not found for peer '{}': {}", id.peer_id, id.name),
+                format!(
+                    "Bundle not found or not a regular file for peer '{}': {}",
+                    id.peer_id, id.name
+                ),
             )
+            .into());
+        }
+        let meta = fs::symlink_metadata(&path)?;
+        if meta.len() as usize > MAX_BUNDLE_SIZE {
+            return Err(std::io::Error::other(format!(
+                "Bundle exceeds maximum size ({} > {} bytes): {}/{}",
+                meta.len(),
+                MAX_BUNDLE_SIZE,
+                id.peer_id,
+                id.name
+            ))
             .into());
         }
         Ok(fs::read(path)?)
@@ -171,11 +239,14 @@ impl Transport for DirTransport {
         let processed = self.processed_dir();
         fs::create_dir_all(&processed)?;
 
-        let src = self.peer_bundle_path(id);
-        if !src.exists() {
+        let src = self.peer_bundle_path(id)?;
+        if !Self::is_regular_non_symlink_file(&src) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Bundle not found for peer '{}': {}", id.peer_id, id.name),
+                format!(
+                    "Bundle not found or not a regular file for peer '{}': {}",
+                    id.peer_id, id.name
+                ),
             )
             .into());
         }
@@ -197,11 +268,14 @@ impl Transport for DirTransport {
         let quarantine = self.quarantine_dir();
         fs::create_dir_all(&quarantine)?;
 
-        let src = self.peer_bundle_path(id);
-        if !src.exists() {
+        let src = self.peer_bundle_path(id)?;
+        if !Self::is_regular_non_symlink_file(&src) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                format!("Bundle not found for peer '{}': {}", id.peer_id, id.name),
+                format!(
+                    "Bundle not found or not a regular file for peer '{}': {}",
+                    id.peer_id, id.name
+                ),
             )
             .into());
         }

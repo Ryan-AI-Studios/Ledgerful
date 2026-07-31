@@ -159,7 +159,11 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
         let encrypted = match transport.get_incoming(&id) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("Failed to get {}: {}. Skipping.", label, e);
+                // Cannot quarantine without a readable path (missing/symlink/oversize).
+                eprintln!(
+                    "Failed to get {}: {}. Skipping (not counted as quarantined).",
+                    label, e
+                );
                 continue;
             }
         };
@@ -172,10 +176,9 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
                     Ok(()) => quarantined += 1,
                     Err(move_err) => {
                         eprintln!(
-                            "Warning: failed to move {} to quarantine after decrypt error: {}. Bundle may be retried.",
+                            "Warning: failed to move {} to quarantine after decrypt error: {}. Bundle may be retried (not counted quarantined).",
                             label, move_err
                         );
-                        quarantined += 1;
                     }
                 }
                 continue;
@@ -190,10 +193,9 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
                     Ok(()) => quarantined += 1,
                     Err(move_err) => {
                         eprintln!(
-                            "Warning: failed to move {} to quarantine after parse error: {}. Bundle may be retried.",
+                            "Warning: failed to move {} to quarantine after parse error: {}. Bundle may be retried (not counted quarantined).",
                             label, move_err
                         );
-                        quarantined += 1;
                     }
                 }
                 continue;
@@ -213,10 +215,9 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
                 Ok(()) => quarantined += 1,
                 Err(move_err) => {
                     eprintln!(
-                        "Warning: failed to move {} to quarantine after clock-drift reject: {}. Bundle may be retried.",
+                        "Warning: failed to move {} to quarantine after clock-drift reject: {}. Bundle may be retried (not counted quarantined).",
                         label, move_err
                     );
-                    quarantined += 1;
                 }
             }
             continue;
@@ -244,10 +245,9 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
                     Ok(()) => quarantined += 1,
                     Err(move_err) => {
                         eprintln!(
-                            "Warning: failed to move {} to quarantine after apply error: {}. Bundle may be retried.",
+                            "Warning: failed to move {} to quarantine after apply error: {}. Bundle may be retried (not counted quarantined).",
                             label, move_err
                         );
-                        quarantined += 1;
                     }
                 }
             }

@@ -8,7 +8,9 @@ use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 use std::io::{Read, Write};
 
-const MAX_BUNDLE_SIZE: usize = 256 * 1024 * 1024;
+/// Maximum encrypted/zip payload accepted for team-sync bundles (256 MiB).
+/// Transport reads enforce this before decrypt to avoid memory exhaustion.
+pub const MAX_BUNDLE_SIZE: usize = 256 * 1024 * 1024;
 const MAX_MANIFEST_SIZE: usize = 64 * 1024 * 1024;
 const MAX_ENTRIES: usize = 1_000_000;
 const MAX_TOMBSTONES: usize = 1_000_000;
