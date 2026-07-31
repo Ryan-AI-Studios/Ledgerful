@@ -169,9 +169,33 @@ structure, doctor readiness, open ledger work, and a budgeted `readSet`.
     "mustTouchSymbolCount": 0
   },
   "testCoverage": {
-    "status": "empty",
-    "mappedCount": 0,
-    "unmappedHint": "see ledgerful tests / track 0115"
+    "status": "available",
+    "sourceSeedCount": 12,
+    "mappedCount": 7,
+    "fileMappedCount": 2,
+    "unmappedCount": 3,
+    "unmappedCapped": false,
+    "unmappedTotal": 3,
+    "unmapped": [
+      {
+        "symbol": "execute_foo",
+        "file": "src/commands/foo.rs",
+        "qualifiedName": "commands::foo::execute_foo",
+        "mappingKind": "none"
+      }
+    ],
+    "mappedSample": [
+      {
+        "symbol": "bar",
+        "file": "src/bar.rs",
+        "coveringTestCount": 2,
+        "mappingKind": "symbol"
+      }
+    ],
+    "notes": [
+      "Structural test_mapping only (IMPORT/NAMING_CONVENTION); not line coverage",
+      "LCOV COVERAGE mapping kind does not currently persist (DDL NOT NULL on test_symbol_id)"
+    ]
   },
   "doctor": {
     "status": "ok",
@@ -198,6 +222,7 @@ structure, doctor readiness, open ledger work, and a budgeted `readSet`.
 | `status` | string | `ready` \| `empty` \| `not_ready` |
 | `readSetCapped` / `readSetTotalCandidates` | bool / usize | **Required**; `true` / total when truncated by `--max-files` |
 | `blast` | object | **Counts only** — not full edges |
+| `testCoverage` | object | **0115 deepened** structural test-gap report (same schema as PR `testGaps`). Status: `available` \| `empty_mapping` \| `missing_table` \| `no_source_seeds` \| `unavailable`. **Never** bare `"empty"`. Empty `ImpactPacket.test_coverage` vec is **not** full cover — use these counts/status. Caps: unmapped ≤20, mappedSample ≤5. Notes always include structural + LCOV ceiling. |
 | `doctor` / `ledger` | object | **Always present** on successful builds (including `status=empty`) |
 | `doctor.topFindings` | array | Best-effort from sidecar `findings` when present; production `doctor-results.json` may omit findings, yielding `[]` even when `block > 0` — use `ledgerful doctor --json` for full detail |
 

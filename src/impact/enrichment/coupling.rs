@@ -1,7 +1,8 @@
 use crate::git::repo::open_repo;
 use crate::impact::enrichment::blast::{
-    BlastCaps, compute_blast, derive_structural_couplings, populate_test_coverage, resolve_seeds,
+    BlastCaps, compute_blast, derive_structural_couplings, resolve_seeds,
 };
+use crate::impact::enrichment::test_gaps::{TestGapsOpts, populate_test_coverage_and_gaps};
 use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
 use crate::impact::packet::ImpactPacket;
 use crate::impact::temporal::{GixHistoryProvider, TemporalEngine};
@@ -38,10 +39,16 @@ impl CouplingProvider {
         // DoD-5: test_coverage / testHints are independent of structural_edges.
         // Populate even when the call graph is empty so test_mapping is never
         // silently dropped just because callers were not indexed yet.
+        // Orchestrator shares one seed list; soft-empty vs mappedCount disagreement
+        // is surfaced via gap honesty notes (not silent).
         let mut test_hints: Vec<String> = Vec::new();
-        match populate_test_coverage(conn, &seeds) {
-            Ok((coverage, hints)) => {
+        let gap_opts = TestGapsOpts {
+            head_hash: packet.head_hash.clone(),
+        };
+        match populate_test_coverage_and_gaps(conn, &seeds, &gap_opts) {
+            Ok((coverage, hints, gaps)) => {
                 packet.test_coverage = coverage;
+                packet.test_gaps = Some(gaps);
                 test_hints = hints;
             }
             Err(e) => {
@@ -300,6 +307,14 @@ mod tests {
             "testHints populated from test_mapping: {:?}",
             blast.test_hints
         );
+        // Orchestrator attaches test_gaps with matching mapped set
+        let gaps = packet.test_gaps.as_ref().expect("test_gaps set");
+        assert_eq!(
+            gaps.status,
+            crate::impact::enrichment::test_gaps::TestGapsStatus::Available
+        );
+        assert_eq!(gaps.mapped_count, 1);
+        assert_eq!(gaps.unmapped_count, 0);
     }
 
     #[test]

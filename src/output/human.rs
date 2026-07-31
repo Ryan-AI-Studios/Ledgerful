@@ -283,6 +283,22 @@ pub fn print_impact_summary(packet: &ImpactPacket) {
     if !packet.observability.is_empty() {
         print_observability_signals(&packet.observability);
     }
+
+    if let Some(ref gaps) = packet.test_gaps {
+        println!(
+            "\nTest gaps: {} (mapped={}, fileMapped={}, unmapped={})",
+            gaps.status.as_str(),
+            gaps.mapped_count,
+            gaps.file_mapped_count,
+            gaps.unmapped_count
+        );
+        if gaps.unmapped_count > 0 {
+            eprintln!(
+                "warning: {} changed source symbol(s) lack structural test mapping",
+                gaps.unmapped_count
+            );
+        }
+    }
 }
 
 pub fn print_impact_brief(packet: &ImpactPacket) {
@@ -300,6 +316,14 @@ pub fn print_impact_brief(packet: &ImpactPacket) {
             blast.edges.len(),
             blast.must_touch_files.len(),
             blast.depth_applied
+        );
+    }
+    if let Some(ref gaps) = packet.test_gaps
+        && gaps.unmapped_count > 0
+    {
+        eprintln!(
+            "warning: {} changed source symbol(s) lack structural test mapping",
+            gaps.unmapped_count
         );
     }
 }

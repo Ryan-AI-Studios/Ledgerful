@@ -117,14 +117,9 @@ pub struct BlastSummary {
     pub must_touch_symbol_count: usize,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-#[serde(rename_all = "camelCase")]
-pub struct TestCoverageSummary {
-    pub status: String,
-    pub mapped_count: usize,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub unmapped_hint: Option<String>,
-}
+/// Deepened test-coverage / gap summary (0115). Re-exports the shared library
+/// report so change-context, impact, and scan --pr share one schema.
+pub type TestCoverageSummary = crate::impact::enrichment::test_gaps::TestGapsReport;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -239,7 +234,7 @@ pub fn build_change_context(
         must_touch_symbol_count: b.must_touch_symbols.len(),
     });
 
-    let test_coverage = Some(summarize_test_coverage(&impact.test_coverage));
+    let test_coverage = Some(summarize_test_coverage(storage, &impact));
 
     Ok(ChangeContextPacket {
         schema_version: CHANGE_CONTEXT_SCHEMA_VERSION,
@@ -354,6 +349,21 @@ fn print_human(packet: &ChangeContextPacket) {
         packet.read_set_capped,
         packet.read_set_total_candidates
     );
+    if let Some(ref cov) = packet.test_coverage {
+        println!(
+            "  testCoverage:     status={} mapped={} fileMapped={} unmapped={}",
+            cov.status.as_str(),
+            cov.mapped_count,
+            cov.file_mapped_count,
+            cov.unmapped_count
+        );
+        if cov.unmapped_count > 0 {
+            eprintln!(
+                "warning: {} production symbol(s)/file(s) lack structural test_mapping (not line coverage)",
+                cov.unmapped_count
+            );
+        }
+    }
     println!(
         "  doctor:           {} readyForPublish={} (block={} warn={} info={})",
         packet.doctor.status,
@@ -550,21 +560,24 @@ fn trim_reasons(reasons: &[String], detail: ChangeContextDetail) -> Vec<String> 
     reasons.iter().take(limit).cloned().collect()
 }
 
-fn summarize_test_coverage(
-    coverage: &[crate::impact::packet::TestCoverage],
-) -> TestCoverageSummary {
-    if coverage.is_empty() {
-        TestCoverageSummary {
-            status: "empty".to_string(),
-            mapped_count: 0,
-            unmapped_hint: Some("see ledgerful tests / track 0115".to_string()),
-        }
-    } else {
-        TestCoverageSummary {
-            status: "available".to_string(),
-            mapped_count: coverage.len(),
-            unmapped_hint: Some("see ledgerful tests / track 0115".to_string()),
-        }
+/// Prefer impact-attached gaps (shared orchestrator seeds); else recompute.
+fn summarize_test_coverage(storage: &StorageManager, impact: &ImpactPacket) -> TestCoverageSummary {
+    use crate::impact::enrichment::blast::resolve_seeds;
+    use crate::impact::enrichment::test_gaps::{
+        TestGapsOpts, compute_change_set_test_gaps_from_seeds,
+    };
+
+    if let Some(ref gaps) = impact.test_gaps {
+        return gaps.clone();
+    }
+
+    let conn = storage.get_connection();
+    let opts = TestGapsOpts {
+        head_hash: impact.head_hash.clone(),
+    };
+    match resolve_seeds(impact, conn) {
+        Ok(seeds) => compute_change_set_test_gaps_from_seeds(conn, &seeds, &opts),
+        Err(_) => crate::impact::enrichment::test_gaps::TestGapsReport::unavailable(),
     }
 }
 
@@ -1328,5 +1341,123 @@ mod tests {
             ChangeContextDetail::Standard
         );
         assert!(ChangeContextDetail::parse("deep").is_err());
+    }
+
+    #[test]
+    fn test_coverage_never_bare_empty_or_track_0115_handoff() {
+        use crate::impact::enrichment::test_gaps::TestGapsStatus;
+        use crate::state::migrations::get_migrations;
+
+        let tmp = tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let dir = tmp.path();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "T"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        fs::write(dir.join("README.md"), "hi").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        // Use real layout storage so build_change_context works end-to-end.
+        let storage =
+            StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+        let config = Config::default();
+        let opts = ChangeContextOpts::default();
+        let packet = build_change_context(&opts, &layout, &storage, &config).unwrap();
+
+        let cov = packet.test_coverage.as_ref().expect("testCoverage present");
+        // Never bare "empty"
+        assert_ne!(cov.status.as_str(), "empty");
+        assert!(matches!(
+            cov.status,
+            TestGapsStatus::Available
+                | TestGapsStatus::EmptyMapping
+                | TestGapsStatus::MissingTable
+                | TestGapsStatus::NoSourceSeeds
+                | TestGapsStatus::Unavailable
+        ));
+
+        let json = serde_json::to_string(&packet).unwrap();
+        assert!(
+            !json.contains("track 0115"),
+            "handoff string must be gone: {json}"
+        );
+        assert!(
+            !json.contains("see ledgerful tests"),
+            "handoff string must be gone: {json}"
+        );
+        // Guard testCoverage.status specifically (top-level packet status may be "empty").
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let tc_status = v["testCoverage"]["status"].as_str().unwrap_or("");
+        assert_ne!(tc_status, "empty", "testCoverage.status bare empty: {json}");
+        assert!(
+            matches!(
+                tc_status,
+                "available" | "empty_mapping" | "missing_table" | "no_source_seeds" | "unavailable"
+            ),
+            "unexpected testCoverage.status={tc_status}: {json}"
+        );
+        // Structural + LCOV ceiling always present
+        assert!(json.contains("Structural test_mapping"));
+        assert!(json.contains("LCOV COVERAGE"));
+        let _ = storage.shutdown();
+    }
+
+    #[test]
+    fn summarize_test_coverage_uses_impact_attached_gaps() {
+        use crate::impact::enrichment::test_gaps::{TestGapsReport, TestGapsStatus};
+
+        let tmp = tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        let storage =
+            StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+
+        let impact = ImpactPacket {
+            test_gaps: Some(TestGapsReport {
+                status: TestGapsStatus::Available,
+                source_seed_count: 3,
+                mapped_count: 1,
+                file_mapped_count: 1,
+                unmapped_count: 1,
+                unmapped_capped: false,
+                unmapped_total: 1,
+                unmapped: vec![],
+                mapped_sample: vec![],
+                notes: vec!["note".into()],
+            }),
+            ..ImpactPacket::default()
+        };
+        let summary = summarize_test_coverage(&storage, &impact);
+        assert_eq!(summary.status, TestGapsStatus::Available);
+        assert_eq!(summary.source_seed_count, 3);
+        assert_eq!(summary.mapped_count, 1);
+        assert_eq!(summary.unmapped_count, 1);
+        let _ = storage.shutdown();
     }
 }

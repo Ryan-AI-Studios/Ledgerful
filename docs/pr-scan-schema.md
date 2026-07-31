@@ -53,7 +53,22 @@ ledgerful scan --pr main...HEAD --format text
   "riskReasons": [],
   "analysisWarnings": [],
   "historyWindowCommits": 128,
-  "historyTruncated": false
+  "historyTruncated": false,
+  "testGaps": {
+    "status": "unavailable",
+    "sourceSeedCount": 0,
+    "mappedCount": 0,
+    "fileMappedCount": 0,
+    "unmappedCount": 0,
+    "unmappedCapped": false,
+    "unmappedTotal": 0,
+    "unmapped": [],
+    "mappedSample": [],
+    "notes": [
+      "Structural test_mapping only (IMPORT/NAMING_CONVENTION); not line coverage",
+      "LCOV COVERAGE mapping kind does not currently persist (DDL NOT NULL on test_symbol_id)"
+    ]
+  }
 }
 ```
 
@@ -81,6 +96,23 @@ ledgerful scan --pr main...HEAD --format text
 | `analysisWarnings` | array of strings | **Reserved.** Engine always emits `[]` today; not a live warning channel until a real source is wired deliberately. |
 | `historyWindowCommits` | integer (u32) | How many commits were walked for history enrichment (≤ bound, default 1000). |
 | `historyTruncated` | boolean | `true` if the walk stopped because it hit the max-commit bound. Without this, `churn` would look absolute when it is bounded. |
+| `testGaps` | object | **Always present** (0115, additive on schema **v2** — no v3 bump). Structural test-mapping gaps for changed source paths. Soft-opens `ledger.db` read-only only; never runs index or `init_with_layout`. CI without an index → `status: "unavailable"` (honest default, not a product failure). File-level only on this path (no symbol resolution). |
+
+### `testGaps` field reference
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | string | `available` \| `empty_mapping` \| `missing_table` \| `no_source_seeds` \| `unavailable`. Never bare `"empty"`. |
+| `sourceSeedCount` | integer | Non-test source paths considered. |
+| `mappedCount` | integer | Symbol-level mappings (0 on pure file-level PR path). |
+| `fileMappedCount` | integer | Paths with ≥1 covering test file via `tested_file_id`. |
+| `unmappedCount` / `unmappedTotal` | integer | Source paths with zero covering tests. |
+| `unmappedCapped` | boolean | `true` when `unmapped` list was truncated (cap **20**). |
+| `unmapped` | array | Capped unmapped entries (`file`, optional `symbol`/`qualifiedName`, `mappingKind: "none"`). |
+| `mappedSample` | array | Up to **5** mapped samples by covering count (`mappingKind: "symbol"` \| `"file"`). |
+| `notes` | array of strings | Always includes structural-only + LCOV COVERAGE ceiling honesty. |
+
+**Honesty:** this is **not** line coverage. LCOV `COVERAGE` mapping kind does not currently persist (DDL `test_symbol_id NOT NULL`). Do not invent coverage percentages or treat `unavailable` as a merge block. Empty mapped lists / `unavailable` / `empty_mapping` are **not** “fully covered.”
 
 ### What is deliberately not included
 
