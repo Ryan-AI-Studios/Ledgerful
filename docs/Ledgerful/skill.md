@@ -198,9 +198,12 @@ ledgerful impact --summary
 The packet includes `riskLevel`, `riskReasons`, doctor `readyForPublish`, open
 ledger transactions, blast **counts** (not full edges), and deepened
 `testCoverage` (structural test-gap status/counts/capped unmapped — **not** line
-coverage; LCOV COVERAGE rows do not currently persist). Prefer
-`change-context` over reading `.ledgerful/reports/latest-impact.json` alone —
-change-context computes impact in-memory and does not rewrite that report.
+coverage; LCOV COVERAGE rows do not currently persist). Empty or missing mapping
+is **not** “fully covered”; use the status enum (`available` \| `empty_mapping` \|
+`missing_table` \| `no_source_seeds` \| `unavailable`) — never treat bare empty
+lists as complete coverage. Prefer `change-context` over reading
+`.ledgerful/reports/latest-impact.json` alone — change-context computes impact
+in-memory and does not rewrite that report.
 
 For entity-scoped deep-dives use `ledgerful tests <entity>`. On CI,
 `scan --pr --format json` always includes `testGaps`; without a local index the

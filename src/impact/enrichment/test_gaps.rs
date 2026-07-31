@@ -435,16 +435,43 @@ pub fn compute_change_set_test_gaps_from_files(
 
 /// One seed list → mapped `test_coverage` vec + hints + gap report.
 ///
-/// Ensures symbol-mapped set cannot drift between `populate_test_coverage` and
-/// gap classification.
+/// Both halves use the same seed list. If `populate_test_coverage` soft-collapses
+/// to an empty vec while gap classification still reports symbol-mapped seeds
+/// (or the reverse), attach an explicit honesty note — never leave silent drift.
 pub fn populate_test_coverage_and_gaps(
     conn: &Connection,
     seeds: &[Seed],
     opts: &TestGapsOpts,
 ) -> Result<(Vec<TestCoverage>, Vec<String>, TestGapsReport)> {
     let (coverage, hints) = populate_test_coverage(conn, seeds)?;
-    let gaps = compute_change_set_test_gaps_from_seeds(conn, seeds, opts);
+    let mut gaps = compute_change_set_test_gaps_from_seeds(conn, seeds, opts);
+    reconcile_coverage_and_gaps(&coverage, &mut gaps);
     Ok((coverage, hints, gaps))
+}
+
+/// Detect silent disagreement between populate's soft-empty path and gap counts.
+fn reconcile_coverage_and_gaps(coverage: &[TestCoverage], gaps: &mut TestGapsReport) {
+    let cov_n = coverage.len();
+    let map_n = gaps.mapped_count;
+    if cov_n == map_n {
+        return;
+    }
+    // Only surface when one side claims symbol mappings and the other does not
+    // (the soft-fail collapse class DoD-3 cares about).
+    if (cov_n == 0 && map_n > 0) || (cov_n > 0 && map_n == 0) {
+        gaps.notes.push(
+            "test_coverage vec and gap mappedCount disagree (populate soft-fail or partial join); trust status probes + gap counts, not empty vec as full cover"
+                .to_string(),
+        );
+        gaps.notes.sort();
+        gaps.notes.dedup();
+    } else if cov_n != map_n {
+        gaps.notes.push(format!(
+            "test_coverage.len()={cov_n} differs from gap mappedCount={map_n}; shared seed list but independent joins"
+        ));
+        gaps.notes.sort();
+        gaps.notes.dedup();
+    }
 }
 
 /// Soft-open helper for PR path: existence-check only, never creates state.
@@ -776,8 +803,61 @@ mod tests {
             populate_test_coverage_and_gaps(&conn, &seeds, &TestGapsOpts::default()).unwrap();
         assert_eq!(cov.len(), 1);
         assert_eq!(gaps.mapped_count, 1);
+        assert_eq!(
+            cov.len(),
+            gaps.mapped_count,
+            "happy path: symbol-mapped coverage set equals gap mappedCount"
+        );
         assert_eq!(gaps.unmapped_count, 0);
         assert_eq!(gaps.status, TestGapsStatus::Available);
+        assert!(
+            !gaps.notes.iter().any(|n| n.contains("disagree")),
+            "no honesty note on agreement path"
+        );
+    }
+
+    #[test]
+    fn test_gap_orchestrator_surfaces_soft_empty_disagreement() {
+        // Simulate populate soft-returning [] while gaps still report mappedCount > 0.
+        let mut gaps = TestGapsReport {
+            status: TestGapsStatus::Available,
+            source_seed_count: 1,
+            mapped_count: 2,
+            file_mapped_count: 0,
+            unmapped_count: 0,
+            unmapped_capped: false,
+            unmapped_total: 0,
+            unmapped: Vec::new(),
+            mapped_sample: Vec::new(),
+            notes: vec![STRUCTURAL_NOTE.to_string(), LCOV_NOTE.to_string()],
+        };
+        reconcile_coverage_and_gaps(&[], &mut gaps);
+        assert!(
+            gaps.notes.iter().any(|n| n.contains("disagree")),
+            "must not leave soft-empty vs mappedCount silent: {:?}",
+            gaps.notes
+        );
+
+        // Happy equality: no note added
+        let mut ok = TestGapsReport {
+            status: TestGapsStatus::Available,
+            source_seed_count: 1,
+            mapped_count: 1,
+            file_mapped_count: 0,
+            unmapped_count: 0,
+            unmapped_capped: false,
+            unmapped_total: 0,
+            unmapped: Vec::new(),
+            mapped_sample: Vec::new(),
+            notes: vec![STRUCTURAL_NOTE.to_string()],
+        };
+        let cov = vec![crate::impact::packet::TestCoverage {
+            changed_symbol: "x".into(),
+            changed_file: "src/x.rs".into(),
+            covering_tests: Vec::new(),
+        }];
+        reconcile_coverage_and_gaps(&cov, &mut ok);
+        assert!(!ok.notes.iter().any(|n| n.contains("disagree")));
     }
 
     #[test]

@@ -93,6 +93,9 @@ ledgerful scan --pr main...HEAD --format text
 | `changes[].isSensitive` | boolean | Whether the path matches a known sensitive-path pattern. Always emitted in v2. |
 | `riskLevel` | string | `low`, `medium`, or `high`. |
 | `riskReasons` | array of strings | Sorted alphabetically, deterministic reasons for the risk level. |
+| `analysisWarnings` | array of strings | **Reserved.** Engine always emits `[]` today; not a live warning channel until a real source is wired deliberately. |
+| `historyWindowCommits` | integer (u32) | How many commits were walked for history enrichment (≤ bound, default 1000). |
+| `historyTruncated` | boolean | `true` if the walk stopped because it hit the max-commit bound. Without this, `churn` would look absolute when it is bounded. |
 | `testGaps` | object | **Always present** (0115, additive on schema **v2** — no v3 bump). Structural test-mapping gaps for changed source paths. Soft-opens `ledger.db` read-only only; never runs index or `init_with_layout`. CI without an index → `status: "unavailable"` (honest default, not a product failure). File-level only on this path (no symbol resolution). |
 
 ### `testGaps` field reference
@@ -109,10 +112,7 @@ ledgerful scan --pr main...HEAD --format text
 | `mappedSample` | array | Up to **5** mapped samples by covering count (`mappingKind: "symbol"` \| `"file"`). |
 | `notes` | array of strings | Always includes structural-only + LCOV COVERAGE ceiling honesty. |
 
-**Honesty:** this is **not** line coverage. LCOV `COVERAGE` mapping kind does not currently persist (DDL `test_symbol_id NOT NULL`). Do not invent coverage percentages or treat `unavailable` as a merge block.
-| `analysisWarnings` | array of strings | **Reserved.** Engine always emits `[]` today; not a live warning channel until a real source is wired deliberately. |
-| `historyWindowCommits` | integer (u32) | How many commits were walked for history enrichment (≤ bound, default 1000). |
-| `historyTruncated` | boolean | `true` if the walk stopped because it hit the max-commit bound. Without this, `churn` would look absolute when it is bounded. |
+**Honesty:** this is **not** line coverage. LCOV `COVERAGE` mapping kind does not currently persist (DDL `test_symbol_id NOT NULL`). Do not invent coverage percentages or treat `unavailable` as a merge block. Empty mapped lists / `unavailable` / `empty_mapping` are **not** “fully covered.”
 
 ### What is deliberately not included
 

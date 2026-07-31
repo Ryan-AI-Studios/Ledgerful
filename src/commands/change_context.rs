@@ -349,6 +349,21 @@ fn print_human(packet: &ChangeContextPacket) {
         packet.read_set_capped,
         packet.read_set_total_candidates
     );
+    if let Some(ref cov) = packet.test_coverage {
+        println!(
+            "  testCoverage:     status={} mapped={} fileMapped={} unmapped={}",
+            cov.status.as_str(),
+            cov.mapped_count,
+            cov.file_mapped_count,
+            cov.unmapped_count
+        );
+        if cov.unmapped_count > 0 {
+            eprintln!(
+                "warning: {} production symbol(s)/file(s) lack structural test_mapping (not line coverage)",
+                cov.unmapped_count
+            );
+        }
+    }
     println!(
         "  doctor:           {} readyForPublish={} (block={} warn={} info={})",
         packet.doctor.status,
@@ -1395,10 +1410,16 @@ mod tests {
             !json.contains("see ledgerful tests"),
             "handoff string must be gone: {json}"
         );
+        // Guard testCoverage.status specifically (top-level packet status may be "empty").
+        let v: serde_json::Value = serde_json::from_str(&json).unwrap();
+        let tc_status = v["testCoverage"]["status"].as_str().unwrap_or("");
+        assert_ne!(tc_status, "empty", "testCoverage.status bare empty: {json}");
         assert!(
-            !json.to_lowercase().contains("\"status\":\"empty\"")
-                || json.contains("\"status\":\"empty_mapping\""),
-            "testCoverage must not use bare empty status: {json}"
+            matches!(
+                tc_status,
+                "available" | "empty_mapping" | "missing_table" | "no_source_seeds" | "unavailable"
+            ),
+            "unexpected testCoverage.status={tc_status}: {json}"
         );
         // Structural + LCOV ceiling always present
         assert!(json.contains("Structural test_mapping"));
