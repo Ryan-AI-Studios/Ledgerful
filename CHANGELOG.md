@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.4] - 2026-07-31
+
 ### Fixed
 
 - **Release-cut prepare four-file invariant ignores chmod mode noise (0104 residual):**
