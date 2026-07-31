@@ -6,6 +6,7 @@ const path = require("node:path");
 const { createFrameReader, encodeMessage } = require("./mcp-frame");
 
 const EXPECTED_TOOLS = [
+  "change_context",
   "scan",
   "search",
   "ask",

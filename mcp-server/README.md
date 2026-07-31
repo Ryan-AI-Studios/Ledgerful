@@ -40,6 +40,7 @@ The tool table is cross-checked against `src/commands/mcp/manifest.rs`.
 
 | Tool | Description |
 |---|---|
+| `change_context` | Budgeted agent change packet: impact risk, capped `readSet`, doctor readiness, and pending ledger (schemaVersion 1). Prefer after `doctor --json`. |
 | `scan` | Assess the impact and risk of uncommitted changes in the repository. |
 | `search` | High-precision regex and text discovery for code symbols. |
 | `ask` | Conceptual and semantic natural language queries about the codebase. |

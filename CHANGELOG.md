@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Agent change-context packet (0114):** `ledgerful change-context --json` and MCP
+  tool `change_context` emit a budgeted schemaVersion **1** packet composing
+  in-memory impact (risk, blast **counts**, thin testCoverage), doctor sidecar
+  readiness, pending ledger TXs, and a capped `readSet` with `readSetCapped` /
+  `readSetTotalCandidates`. Does **not** call silent-persist impact (no
+  `latest-impact.json` clobber). `--base-ref` time-travels structure only; doctor
+  and ledger stay present-tense. Skill Default Workflow prefers change-context
+  after doctor. See `docs/agent-output-contract.md`.
 - **Team Sync secure transport and apply (0112):** extract cursor integrity (partial upsert never
   nulls `last_apply_hlc`; empty extract → `NoNewEntries` without watermark advance; tombstone
   delta filter; single signed zip from extract — run encrypts only). Transport writes **`.lfbundle`**

@@ -88,6 +88,19 @@ pub fn run_with(cli: Cli) -> Result<()> {
             out,
             blast_depth,
         ),
+        Commands::ChangeContext {
+            json,
+            detail,
+            max_files,
+            base_ref,
+            blast_depth,
+        } => crate::commands::change_context::execute_change_context(
+            json,
+            Some(detail),
+            Some(max_files),
+            base_ref,
+            blast_depth,
+        ),
         Commands::Index {
             incremental,
             full,

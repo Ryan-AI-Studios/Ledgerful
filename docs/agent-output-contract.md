@@ -144,6 +144,103 @@ Observe-mode would-block diagnostics go to **stderr** via `cli_summary`
 
 ---
 
+## `change-context --json` schema (v1)
+
+Track **0114**. Canonical agent-consumable change packet composing impact
+structure, doctor readiness, open ledger work, and a budgeted `readSet`.
+
+```json
+{
+  "schemaVersion": 1,
+  "status": "ready",
+  "summary": "…",
+  "headHash": "…",
+  "baseRef": "origin/main",
+  "riskLevel": "medium",
+  "riskReasons": ["…"],
+  "readSet": [
+    { "path": "src/foo.rs", "reason": "changed", "priority": 1 }
+  ],
+  "readSetCapped": false,
+  "readSetTotalCandidates": 1,
+  "blast": {
+    "depth": 1,
+    "mustTouchFileCount": 0,
+    "mustTouchSymbolCount": 0
+  },
+  "testCoverage": {
+    "status": "empty",
+    "mappedCount": 0,
+    "unmappedHint": "see ledgerful tests / track 0115"
+  },
+  "doctor": {
+    "status": "ok",
+    "readyForPublish": true,
+    "block": 0,
+    "warn": 0,
+    "info": 0,
+    "topFindings": []
+  },
+  "ledger": {
+    "pendingCount": 0,
+    "activeTx": []
+  },
+  "analysisWarnings": [],
+  "nextActions": ["ledgerful verify --scope fast"],
+  "impactSchemaVersion": "v1"
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `schemaVersion` | u32 | Always **`1`** for this packet (doctor/verify style) |
+| `impactSchemaVersion` | string | Forwarded from `ImpactPacket.schema_version` (different field/type) |
+| `status` | string | `ready` \| `empty` \| `not_ready` |
+| `readSetCapped` / `readSetTotalCandidates` | bool / usize | **Required**; `true` / total when truncated by `--max-files` |
+| `blast` | object | **Counts only** — not full edges |
+| `doctor` / `ledger` | object | **Always present** on successful builds (including `status=empty`) |
+| `doctor.topFindings` | array | Best-effort from sidecar `findings` when present; production `doctor-results.json` may omit findings, yielding `[]` even when `block > 0` — use `ledgerful doctor --json` for full detail |
+
+| `status` | When |
+|---|---|
+| `ready` | Non-empty file changes, **or** clean tree with `ledger.pendingCount >= 1` |
+| `empty` | No file changes **and** `ledger.pendingCount == 0` (doctor still present) |
+| `not_ready` | Layout/impact hard failure; `reason` + `nextActions` set |
+
+### Stream rules
+
+- `--json` → **machine mode**: pure JSON on **stdout only** (0093).
+- Human mode (no `--json`): short summary (status, risk, readSet count, readyForPublish, next steps).
+
+### `--base-ref` present-tense rule
+
+**`--base-ref` only time-travels structural impact / `readSet` / risk.** Doctor and
+ledger always report **present-tense** local workspace/DB state. CI agents should
+still run `doctor --json` first; change-context will surface a missing/stale
+sidecar honestly when doctor has not run.
+
+### Truncation
+
+When `readSetCapped` is true, deep-dive with `ledgerful scan --impact --json`
+for the full change set. Do not assume a capped `readSet` is complete.
+
+### MCP
+
+Tool name: `change_context` (params: `detail`, `max_files`, `base_ref`,
+`blast_depth`). Same builder as the CLI; impact is in-memory and does **not**
+rewrite `.ledgerful/reports/latest-impact.json`.
+
+### Invocation
+
+```powershell
+ledgerful doctor --json
+ledgerful change-context --json
+ledgerful change-context --json --detail minimal --max-files 5
+ledgerful change-context --json --base-ref HEAD~1
+```
+
+---
+
 ## Exit codes
 
 ### `verify` / signature path (`sig_exit`)

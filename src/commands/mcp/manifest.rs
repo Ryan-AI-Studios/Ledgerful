@@ -6,6 +6,33 @@ pub struct ToolDescriptor {
 
 pub const INVENTORY: &[ToolDescriptor] = &[
     ToolDescriptor {
+        name: "change_context",
+        description: "Budgeted agent change packet: impact risk, capped readSet, doctor readiness, and pending ledger (schemaVersion 1). Prefer after doctor --json.",
+        schema_json: r#"{
+            "type": "object",
+            "properties": {
+                "detail": {
+                    "type": "string",
+                    "description": "minimal (default) or standard",
+                    "default": "minimal"
+                },
+                "max_files": {
+                    "type": "integer",
+                    "description": "Cap on readSet length (default 20)",
+                    "default": 20
+                },
+                "base_ref": {
+                    "type": "string",
+                    "description": "Git ref for structural impact/readSet/risk only; doctor and ledger stay present-tense"
+                },
+                "blast_depth": {
+                    "type": "integer",
+                    "description": "Structural blast hop depth (default 1; max 2)"
+                }
+            }
+        }"#,
+    },
+    ToolDescriptor {
         name: "scan",
         description: "Assess the impact and risk of uncommitted changes in the repository.",
         schema_json: r#"{"type": "object", "properties": {}}"#,

@@ -184,19 +184,77 @@ fn missing_base_commit_error(base_ref: &str) -> miette::Error {
 
 /// Collect changed files by running `git diff --name-status <base_ref>...HEAD`.
 /// Returns a `Vec<FileChange>` with accurate `ChangeType` values per entry.
-fn files_changed_since(repo_root: &std::path::Path, base_ref: &str) -> Result<Vec<FileChange>> {
-    files_changed_between(repo_root, &format!("{}...HEAD", base_ref), base_ref)
+///
+/// `pub(crate)` so `change-context` can build a base-ref `RepoSnapshot` and run
+/// the in-memory impact path without calling silent-persist helpers.
+///
+/// Resolves `base_ref` to a commit OID first so option-like values
+/// (e.g. `--output=…`) cannot be interpreted as `git diff` options.
+pub(crate) fn files_changed_since(
+    repo_root: &std::path::Path,
+    base_ref: &str,
+) -> Result<Vec<FileChange>> {
+    let resolved = resolve_commit_oid(repo_root, base_ref)?;
+    files_changed_between(repo_root, &format!("{resolved}...HEAD"), base_ref)
+}
+
+/// Resolve a user-supplied revision to a full commit OID.
+///
+/// Rejects empty / option-like values, then uses
+/// `git rev-parse --verify --end-of-options <rev>^{commit}`.
+pub(crate) fn resolve_commit_oid(repo_root: &std::path::Path, rev: &str) -> Result<String> {
+    let rev = rev.trim();
+    if rev.is_empty() {
+        return Err(miette::miette!("git revision must not be empty"));
+    }
+    if rev.starts_with('-') {
+        return Err(miette::miette!(
+            "git revision must not start with '-': refused option-like ref '{rev}'"
+        ));
+    }
+    let peel = format!("{rev}^{{commit}}");
+    let output = Command::new("git")
+        .args(["rev-parse", "--verify", "--end-of-options", &peel])
+        .current_dir(repo_root)
+        .output()
+        .map_err(|e| miette::miette!("Failed to run git rev-parse: {e}"))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if is_missing_base_commit_error(&stderr) {
+            return Err(missing_base_commit_error(rev));
+        }
+        return Err(miette::miette!(
+            "git rev-parse --verify failed for '{rev}': {}",
+            stderr.trim()
+        ));
+    }
+    let oid = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    if oid.is_empty() || oid.starts_with('-') {
+        return Err(miette::miette!(
+            "git rev-parse returned an unusable OID for '{rev}'"
+        ));
+    }
+    Ok(oid)
 }
 
 /// Collect changed files by running `git diff --name-status <range>`.
 /// `base_ref_for_errors` is used when formatting the missing-base-commit hint.
+///
+/// Prefer resolved commit OIDs in `range` (see [`resolve_commit_oid`]) so
+/// untrusted ref strings cannot inject git options.
 pub(crate) fn files_changed_between(
     repo_root: &std::path::Path,
     range: &str,
     base_ref_for_errors: &str,
 ) -> Result<Vec<FileChange>> {
+    // Guard residual option injection if a caller passes a raw range.
+    if range.trim_start().starts_with('-') {
+        return Err(miette::miette!(
+            "git diff range must not start with '-': refused '{range}'"
+        ));
+    }
     let output = Command::new("git")
-        .args(["diff", "--name-status", range])
+        .args(["diff", "--name-status", "--end-of-options", range])
         .current_dir(repo_root)
         .output()
         .map_err(|e| miette::miette!("Failed to run git diff: {}", e))?;
@@ -652,6 +710,22 @@ mod tests {
     use crate::state::migrations::get_migrations;
     use chrono::Utc;
     use rusqlite::Connection;
+
+    #[test]
+    fn resolve_commit_oid_rejects_option_like_ref() {
+        let err = resolve_commit_oid(std::path::Path::new("."), "--output=evil")
+            .expect_err("option-like ref must fail before git option parse");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("must not start with") || msg.contains("option-like"),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn resolve_commit_oid_rejects_empty() {
+        assert!(resolve_commit_oid(std::path::Path::new("."), "   ").is_err());
+    }
 
     #[test]
     fn observability_config_patterns_match_expected_files() {
