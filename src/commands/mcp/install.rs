@@ -9,13 +9,13 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use toml_edit::DocumentMut;
 
-use super::launcher::{resolve_launcher_from_path, ResolvedLauncher};
+use super::launcher::{ResolvedLauncher, resolve_launcher_from_path};
 use super::merge::{
-    get_json_server, get_toml_server, merge_json_server, merge_toml_server, parse_jsonc,
-    remove_json_server, remove_toml_server, serialize_json, ServerEntry,
+    ServerEntry, get_json_server, get_toml_server, merge_json_server, merge_toml_server,
+    parse_jsonc, remove_json_server, remove_toml_server, serialize_json,
 };
 use super::platforms::{
-    is_detected, path_for_scope, resolve_paths, ConfigFormat, PlatformId, PLATFORM_IDS,
+    ConfigFormat, PLATFORM_IDS, PlatformId, is_detected, path_for_scope, resolve_paths,
 };
 use crate::cli::args::{McpLauncher, McpScope};
 
@@ -173,12 +173,7 @@ fn select_targets(
     // Detect
     let mut found = Vec::new();
     for &id in PlatformId::all() {
-        let paths = match resolve_paths(
-            id,
-            &env.home,
-            &env.cwd,
-            env.appdata.as_deref(),
-        ) {
+        let paths = match resolve_paths(id, &env.home, &env.cwd, env.appdata.as_deref()) {
             Ok(p) => p,
             Err(_) => continue,
         };
@@ -447,9 +442,7 @@ fn status_one(id: PlatformId, scope: McpScope, env: &InstallEnv) -> PlatformRepo
             command: None,
             args: None,
             message: Some(if detected {
-                format!(
-                    "scope={scope:?}; host detected but config path missing; not connected"
-                )
+                format!("scope={scope:?}; host detected but config path missing; not connected")
             } else {
                 format!("scope={scope:?}; no config and host not detected")
             }),
@@ -565,8 +558,7 @@ fn write_merged(
 }
 
 fn write_removed(id: PlatformId, path: &Path, backup: bool) -> Result<(), String> {
-    let content =
-        fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    let content = fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
 
     let new_content = match id.config_format() {
         ConfigFormat::Json => {
@@ -598,10 +590,7 @@ fn write_sibling_backup(path: &Path) -> Result<String, String> {
         .map(|m| m.len())
         .map_err(|e| format!("stat {}: {e}", path.display()))?;
     fs::copy(path, &bak).map_err(|e| format!("backup to {}: {e}", bak.display()))?;
-    Ok(format!(
-        "backed up {bytes} bytes to {}",
-        bak.display()
-    ))
+    Ok(format!("backed up {bytes} bytes to {}", bak.display()))
 }
 
 fn sibling_bak(path: &Path) -> PathBuf {
@@ -635,15 +624,13 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), String> {
         match fs::rename(&tmp_path, path) {
             Ok(()) => Ok(()),
             Err(_) => {
-                fs::remove_file(path)
-                    .map_err(|e| format!("replace {}: {e}", path.display()))?;
+                fs::remove_file(path).map_err(|e| format!("replace {}: {e}", path.display()))?;
                 fs::rename(&tmp_path, path)
                     .map_err(|e| format!("rename temp over {}: {e}", path.display()))
             }
         }
     } else {
-        fs::rename(&tmp_path, path)
-            .map_err(|e| format!("rename temp over {}: {e}", path.display()))
+        fs::rename(&tmp_path, path).map_err(|e| format!("rename temp over {}: {e}", path.display()))
     }
 }
 
@@ -708,9 +695,9 @@ fn emit_report(
 
 #[cfg(test)]
 mod tests {
+    use super::super::launcher::resolve_launcher;
     use super::*;
     use crate::cli::args::McpLauncher;
-    use super::super::launcher::resolve_launcher;
     use std::sync::atomic::{AtomicU64, Ordering};
 
     fn unique_temp() -> PathBuf {
@@ -787,11 +774,13 @@ mod tests {
             serde_json::json!(["mcp"])
         );
         // backup created
-        assert!(paths.user.with_extension("json.bak").exists() || {
-            let mut bak = paths.user.as_os_str().to_os_string();
-            bak.push(".bak");
-            PathBuf::from(bak).exists()
-        });
+        assert!(
+            paths.user.with_extension("json.bak").exists() || {
+                let mut bak = paths.user.as_os_str().to_os_string();
+                bak.push(".bak");
+                PathBuf::from(bak).exists()
+            }
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

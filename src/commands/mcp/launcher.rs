@@ -100,7 +100,9 @@ fn path_to_command_string(path: &Path) -> String {
 }
 
 /// Probe PATH via the shared which helper (production entry).
-pub fn resolve_launcher_from_path(mode: crate::cli::args::McpLauncher) -> Result<ResolvedLauncher, String> {
+pub fn resolve_launcher_from_path(
+    mode: crate::cli::args::McpLauncher,
+) -> Result<ResolvedLauncher, String> {
     let which_ledgerful = crate::util::which::which("ledgerful");
     let which_npx = crate::util::which::which("npx");
     let which_npx_cmd = if cfg!(windows) {
@@ -146,7 +148,10 @@ mod tests {
         let r = resolve_launcher(McpLauncher::Npx, None, None, None).expect("npx always resolves");
         assert_eq!(r.mode, LauncherMode::Npx);
         assert!(r.args.iter().any(|a| a == "@ledgerful/mcp-server"));
-        assert_eq!(r.args, vec!["-y".to_string(), "@ledgerful/mcp-server".to_string()]);
+        assert_eq!(
+            r.args,
+            vec!["-y".to_string(), "@ledgerful/mcp-server".to_string()]
+        );
     }
 
     #[test]

@@ -364,22 +364,14 @@ pub fn run_with(cli: Cli) -> Result<()> {
                 no_backup,
                 json,
             }) => crate::commands::mcp::install::execute_install(
-                platforms,
-                scope,
-                launcher,
-                dry_run,
-                force,
-                !no_backup,
-                json,
+                platforms, scope, launcher, dry_run, force, !no_backup, json,
             ),
             Some(crate::cli::args::McpCommands::Uninstall {
                 platforms,
                 scope,
                 dry_run,
                 json,
-            }) => crate::commands::mcp::install::execute_uninstall(
-                platforms, scope, dry_run, json,
-            ),
+            }) => crate::commands::mcp::install::execute_uninstall(platforms, scope, dry_run, json),
             Some(crate::cli::args::McpCommands::Status { json }) => {
                 crate::commands::mcp::install::execute_status(json)
             }

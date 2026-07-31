@@ -26,12 +26,7 @@ impl ServerEntry {
         map.insert("command".to_string(), Value::String(self.command.clone()));
         map.insert(
             "args".to_string(),
-            Value::Array(
-                self.args
-                    .iter()
-                    .map(|a| Value::String(a.clone()))
-                    .collect(),
-            ),
+            Value::Array(self.args.iter().map(|a| Value::String(a.clone())).collect()),
         );
         Value::Object(map)
     }
@@ -97,9 +92,9 @@ pub fn merge_json_server(
         .as_object_mut()
         .ok_or_else(|| "top-level JSON value must be an object".to_string())?;
 
-    let parent = obj.entry(parent_key.to_string()).or_insert_with(|| {
-        Value::Object(Map::new())
-    });
+    let parent = obj
+        .entry(parent_key.to_string())
+        .or_insert_with(|| Value::Object(Map::new()));
     let parent_obj = parent.as_object_mut().ok_or_else(|| {
         format!("key `{parent_key}` exists but is not an object; refusing to overwrite")
     })?;
@@ -115,9 +110,9 @@ pub fn remove_json_server(root: &mut Value, parent_key: &str) -> Result<bool, St
     let Some(parent) = obj.get_mut(parent_key) else {
         return Ok(false);
     };
-    let parent_obj = parent.as_object_mut().ok_or_else(|| {
-        format!("key `{parent_key}` exists but is not an object")
-    })?;
+    let parent_obj = parent
+        .as_object_mut()
+        .ok_or_else(|| format!("key `{parent_key}` exists but is not an object"))?;
     Ok(parent_obj.remove(SERVER_NAME).is_some())
 }
 
@@ -289,17 +284,23 @@ mod tests {
 
     #[test]
     fn json_remove_only_ledgerful() {
-        let mut root = parse_jsonc(
-            r#"{"mcpServers":{"ledgerful":{"command":"x"},"other":{"command":"y"}}}"#,
-        )
-        .expect("parse");
+        let mut root =
+            parse_jsonc(r#"{"mcpServers":{"ledgerful":{"command":"x"},"other":{"command":"y"}}}"#)
+                .expect("parse");
         assert!(remove_json_server(&mut root, "mcpServers").expect("rm"));
         assert!(!remove_json_server(&mut root, "mcpServers").expect("idempotent"));
-        assert!(root["mcpServers"].as_object().unwrap().contains_key("other"));
-        assert!(!root["mcpServers"]
-            .as_object()
-            .unwrap()
-            .contains_key("ledgerful"));
+        assert!(
+            root["mcpServers"]
+                .as_object()
+                .unwrap()
+                .contains_key("other")
+        );
+        assert!(
+            !root["mcpServers"]
+                .as_object()
+                .unwrap()
+                .contains_key("ledgerful")
+        );
     }
 
     #[test]

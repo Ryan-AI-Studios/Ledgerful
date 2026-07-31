@@ -1017,10 +1017,7 @@ mod machine_output_tests {
             assert_eq!(parse(&["mcp"]).command_name(), "mcp");
             assert_eq!(parse(&["mcp", "serve"]).command_name(), "mcp");
             assert_eq!(parse(&["mcp", "install"]).command_name(), "mcp_install");
-            assert_eq!(
-                parse(&["mcp", "uninstall"]).command_name(),
-                "mcp_uninstall"
-            );
+            assert_eq!(parse(&["mcp", "uninstall"]).command_name(), "mcp_uninstall");
             assert_eq!(parse(&["mcp", "status"]).command_name(), "mcp_status");
         }
     }
