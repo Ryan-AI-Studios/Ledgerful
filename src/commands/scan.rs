@@ -531,7 +531,9 @@ pub fn execute_scan_with_blast_depth(
                 HistoryEnrichment::empty()
             }
         };
-        let report = PrScanReport::new(
+        // Soft-open test_gaps: existence-check only; never init_with_layout.
+        let test_gaps = compute_pr_scan_test_gaps(&layout, &snapshot);
+        let report = PrScanReport::new_with_test_gaps(
             PrScanContext {
                 base_ref: base,
                 head_ref: head,
@@ -542,6 +544,7 @@ pub fn execute_scan_with_blast_depth(
             &snapshot.changes,
             &[], // analysisWarnings reserved — always empty (0086)
             &history,
+            test_gaps,
         );
 
         if format.as_deref() == Some("json") {
@@ -552,6 +555,12 @@ pub fn execute_scan_with_blast_depth(
                 println!("{}", json_output);
             }
         } else {
+            if report.test_gaps.unmapped_count > 0 {
+                eprintln!(
+                    "warning: {} changed source path(s) lack structural test mapping (see testGaps)",
+                    report.test_gaps.unmapped_count
+                );
+            }
             print_pr_scan_summary(&report);
         }
         return Ok(());
@@ -620,6 +629,41 @@ pub fn execute_scan_with_blast_depth(
     Ok(())
 }
 
+/// Soft-open structural test gaps for PR scan (0115).
+///
+/// - Missing `ledger.db` → `unavailable` without creating any state.
+/// - Open via `open_read_only_sqlite_only` only (never `init_with_layout`).
+/// - File-level path only (no `resolve_seeds`).
+fn compute_pr_scan_test_gaps(
+    layout: &Layout,
+    snapshot: &RepoSnapshot,
+) -> crate::impact::enrichment::test_gaps::TestGapsReport {
+    use crate::impact::enrichment::test_gaps::{
+        TestGapsOpts, TestGapsReport, compute_change_set_test_gaps_from_files,
+    };
+
+    let db_path = layout.state_subdir().join("ledger.db");
+    if !db_path.exists() {
+        return TestGapsReport::unavailable();
+    }
+
+    let storage = match StorageManager::open_read_only_sqlite_only(layout) {
+        Ok(s) => s,
+        Err(_) => return TestGapsReport::unavailable(),
+    };
+    let conn = storage.get_connection();
+    let paths: Vec<String> = snapshot
+        .changes
+        .iter()
+        .map(|c| c.path.to_string_lossy().replace('\\', "/"))
+        .collect();
+    let path_refs: Vec<&str> = paths.iter().map(|s| s.as_str()).collect();
+    let opts = TestGapsOpts {
+        head_hash: snapshot.head_hash.clone(),
+    };
+    compute_change_set_test_gaps_from_files(conn, &path_refs, &opts)
+}
+
 /// Human-readable summary for `scan --pr --format text`.
 fn print_pr_scan_summary(report: &PrScanReport) {
     use owo_colors::OwoColorize;
@@ -675,6 +719,13 @@ fn print_pr_scan_summary(report: &PrScanReport) {
             println!("  • {}", warning);
         }
     }
+
+    println!(
+        "{:<15} {} (unmapped={})",
+        "Test gaps:".bold(),
+        report.test_gaps.status.as_str(),
+        report.test_gaps.unmapped_count
+    );
 
     if !report.changes.is_empty() {
         let mut table = Table::new();
@@ -774,6 +825,35 @@ mod tests {
         let storage = StorageManager::init_from_conn(conn);
 
         assert!(!graph_is_missing_or_stale(&storage, 3));
+    }
+
+    #[test]
+    fn pr_test_gaps_unavailable_without_db_does_not_create_state() {
+        use crate::impact::enrichment::test_gaps::TestGapsStatus;
+        use tempfile::tempdir;
+
+        let tmp = tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        // Do NOT create .ledgerful or ledger.db
+        let snapshot = RepoSnapshot {
+            head_hash: Some("abc".into()),
+            branch_name: Some("feature".into()),
+            is_clean: false,
+            changes: vec![FileChange {
+                path: PathBuf::from("src/lib.rs"),
+                change_type: ChangeType::Modified,
+                is_staged: true,
+            }],
+        };
+        let gaps = compute_pr_scan_test_gaps(&layout, &snapshot);
+        assert_eq!(gaps.status, TestGapsStatus::Unavailable);
+        // Soft-open must not create .ledgerful
+        assert!(
+            !layout.state_dir.exists(),
+            ".ledgerful must not be created by PR soft-open"
+        );
+        assert!(!layout.state_subdir().join("ledger.db").exists());
     }
 
     #[test]

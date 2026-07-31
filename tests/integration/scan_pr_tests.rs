@@ -72,6 +72,17 @@ fn pr_scan_json_emits_schema_version_and_sorted_changes() {
         assert!(c["churn"].as_u64().unwrap() >= 1);
         assert!(c.get("isSensitive").and_then(|v| v.as_bool()).is_some());
     }
+    // 0115: testGaps always present; no ledger.db → unavailable.
+    // Soft-open must not create ledger.db (scan may write reports under .ledgerful/).
+    assert_eq!(parsed["testGaps"]["status"], "unavailable");
+    assert!(
+        !root
+            .join(".ledgerful")
+            .join("state")
+            .join("ledger.db")
+            .exists(),
+        "scan --pr soft-open must not create ledger.db"
+    );
     let raw = serde_json::to_string(&parsed).unwrap();
     assert!(!raw.contains("lastContributor"));
     assert!(!raw.contains("\"author\""));
@@ -408,7 +419,22 @@ fn pr_scan_golden_output_matches_fixture() {
         "riskReasons": ["sensitive path touched: Cargo.toml"],
         "analysisWarnings": [],
         "historyWindowCommits": 3,
-        "historyTruncated": false
+        "historyTruncated": false,
+        "testGaps": {
+            "status": "unavailable",
+            "sourceSeedCount": 0,
+            "mappedCount": 0,
+            "fileMappedCount": 0,
+            "unmappedCount": 0,
+            "unmappedCapped": false,
+            "unmappedTotal": 0,
+            "unmapped": [],
+            "mappedSample": [],
+            "notes": [
+                "LCOV COVERAGE mapping kind does not currently persist (DDL NOT NULL on test_symbol_id)",
+                "Structural test_mapping only (IMPORT/NAMING_CONVENTION); not line coverage"
+            ]
+        }
     });
 
     assert_eq!(

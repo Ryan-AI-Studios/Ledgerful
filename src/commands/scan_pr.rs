@@ -24,6 +24,7 @@
 
 use crate::git::metadata::{PathHistoryEntry, PathHistoryResult, lookup_path_history};
 use crate::git::{ChangeType, FileChange};
+use crate::impact::enrichment::test_gaps::TestGapsReport;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeSet, HashMap};
@@ -167,6 +168,9 @@ pub struct PrScanReport {
     pub history_window_commits: u32,
     /// `true` if the history walk stopped at the max-commit bound.
     pub history_truncated: bool,
+    /// Change-set structural test gaps (0115). Always present on schema v2;
+    /// `status: unavailable` when no index DB (honest CI default).
+    pub test_gaps: TestGapsReport,
 }
 
 /// Identity + cleanliness inputs for [`PrScanReport::new`].
@@ -194,6 +198,23 @@ impl PrScanReport {
         changes: &[FileChange],
         warnings: &[String],
         history: &HistoryEnrichment,
+    ) -> Self {
+        Self::new_with_test_gaps(
+            ctx,
+            changes,
+            warnings,
+            history,
+            TestGapsReport::unavailable(),
+        )
+    }
+
+    /// Build a report with an explicit test-gaps payload (production PR path).
+    pub fn new_with_test_gaps(
+        ctx: PrScanContext,
+        changes: &[FileChange],
+        warnings: &[String],
+        history: &HistoryEnrichment,
+        test_gaps: TestGapsReport,
     ) -> Self {
         let mut pr_changes: Vec<PrChange> = changes
             .iter()
@@ -231,6 +252,7 @@ impl PrScanReport {
             analysis_warnings,
             history_window_commits: history.history_window_commits,
             history_truncated: history.history_truncated,
+            test_gaps,
         }
     }
 }
@@ -594,5 +616,70 @@ mod tests {
         assert_eq!(value["historyTruncated"], false);
         assert_eq!(value["changes"][0]["churn"], 0);
         assert_eq!(value["changes"][0]["isSensitive"], false);
+    }
+
+    #[test]
+    fn test_gaps_always_present_default_unavailable() {
+        let changes = vec![make_change("src/lib.rs", ChangeType::Modified)];
+        let report = report_with(&changes, None, None, &[], &empty_history());
+        assert_eq!(report.schema_version, 2);
+        assert_eq!(
+            report.test_gaps.status,
+            crate::impact::enrichment::test_gaps::TestGapsStatus::Unavailable
+        );
+        let value = serde_json::to_value(&report).expect("serialize");
+        assert!(value.get("testGaps").is_some(), "testGaps must always emit");
+        assert_eq!(value["testGaps"]["status"], "unavailable");
+        assert!(value["testGaps"]["notes"].as_array().unwrap().len() >= 2);
+    }
+
+    #[test]
+    fn test_gaps_available_payload_serializes_camel_case() {
+        use crate::impact::enrichment::test_gaps::{
+            LCOV_NOTE, MappedSampleEntry, STRUCTURAL_NOTE, TestGapsReport, TestGapsStatus,
+            UnmappedGapEntry,
+        };
+        let gaps = TestGapsReport {
+            status: TestGapsStatus::Available,
+            source_seed_count: 2,
+            mapped_count: 0,
+            file_mapped_count: 1,
+            unmapped_count: 1,
+            unmapped_capped: false,
+            unmapped_total: 1,
+            unmapped: vec![UnmappedGapEntry {
+                symbol: String::new(),
+                file: "src/bare.rs".into(),
+                qualified_name: None,
+                mapping_kind: "none".into(),
+            }],
+            mapped_sample: vec![MappedSampleEntry {
+                symbol: String::new(),
+                file: "src/foo.rs".into(),
+                covering_test_count: 1,
+                mapping_kind: "file".into(),
+            }],
+            notes: vec![STRUCTURAL_NOTE.into(), LCOV_NOTE.into()],
+        };
+        let changes = vec![make_change("src/lib.rs", ChangeType::Modified)];
+        let report = PrScanReport::new_with_test_gaps(
+            PrScanContext {
+                base_ref: "main".into(),
+                head_ref: "HEAD".into(),
+                head_hash: None,
+                branch_name: None,
+                tree_clean: false,
+            },
+            &changes,
+            &[],
+            &empty_history(),
+            gaps,
+        );
+        let value = serde_json::to_value(&report).expect("serialize");
+        assert_eq!(value["schemaVersion"], 2);
+        assert_eq!(value["testGaps"]["status"], "available");
+        assert_eq!(value["testGaps"]["unmappedCount"], 1);
+        assert_eq!(value["testGaps"]["fileMappedCount"], 1);
+        assert_eq!(value["testGaps"]["unmapped"][0]["file"], "src/bare.rs");
     }
 }

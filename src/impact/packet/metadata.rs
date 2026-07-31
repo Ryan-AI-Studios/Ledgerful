@@ -36,6 +36,10 @@ pub struct ImpactPacket {
     pub env_var_deps: Vec<EnvVarDep>,
     #[serde(default)]
     pub test_coverage: Vec<super::TestCoverage>,
+    /// Change-set test-gap summary (0115). Omitted when not computed.
+    /// Empty `test_coverage` vec is **not** full cover — use this status field.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub test_gaps: Option<crate::impact::enrichment::test_gaps::TestGapsReport>,
     #[serde(default)]
     pub runtime_usage_delta: Vec<super::RuntimeUsageDelta>,
     /// Function-signature deltas (not Ed25519). Empty omitted from JSON.
@@ -90,6 +94,7 @@ impl ImpactPacket {
             && self.infrastructure_dirs.is_empty()
             && self.env_var_deps.is_empty()
             && self.test_coverage.is_empty()
+            && self.test_gaps.is_none()
             && self.runtime_usage_delta.is_empty()
             && self.signature_deltas.is_empty()
             && self.hotspots.is_empty()
@@ -134,6 +139,7 @@ impl Default for ImpactPacket {
             infrastructure_dirs: Vec::new(),
             env_var_deps: Vec::new(),
             test_coverage: Vec::new(),
+            test_gaps: None,
             runtime_usage_delta: Vec::new(),
             signature_deltas: Vec::new(),
             hotspots: Vec::new(),
@@ -360,6 +366,7 @@ impl ImpactPacket {
         self.infrastructure_dirs.clear();
         self.env_var_deps.clear();
         self.test_coverage.clear();
+        self.test_gaps = None;
         self.runtime_usage_delta.clear();
         self.signature_deltas.clear();
         self.relevant_decisions.clear();

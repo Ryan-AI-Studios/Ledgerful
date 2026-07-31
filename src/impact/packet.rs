@@ -206,6 +206,8 @@ mod schema_golden_tests {
                     mapping_kind: "direct".to_string(),
                 }],
             }],
+            // Optional; omitted from exact-key set when None (skip_serializing_if).
+            test_gaps: None,
             runtime_usage_delta: vec![RuntimeUsageDelta {
                 file_path: "f.rs".to_string(),
                 env_vars_previous_count: 0,
