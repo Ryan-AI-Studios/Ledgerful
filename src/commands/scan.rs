@@ -184,7 +184,13 @@ fn missing_base_commit_error(base_ref: &str) -> miette::Error {
 
 /// Collect changed files by running `git diff --name-status <base_ref>...HEAD`.
 /// Returns a `Vec<FileChange>` with accurate `ChangeType` values per entry.
-fn files_changed_since(repo_root: &std::path::Path, base_ref: &str) -> Result<Vec<FileChange>> {
+///
+/// `pub(crate)` so `change-context` can build a base-ref `RepoSnapshot` and run
+/// the in-memory impact path without calling silent-persist helpers.
+pub(crate) fn files_changed_since(
+    repo_root: &std::path::Path,
+    base_ref: &str,
+) -> Result<Vec<FileChange>> {
     files_changed_between(repo_root, &format!("{}...HEAD", base_ref), base_ref)
 }
 

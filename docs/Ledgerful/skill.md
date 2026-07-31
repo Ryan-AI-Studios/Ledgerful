@@ -1,6 +1,6 @@
 ---
 name: ledgerful
-description: Use Ledgerful for local-first change intelligence before, during, and after code edits. Trigger this skill whenever a repository contains Ledgerful, the user asks about impact analysis, blast radius, risk, verification planning, hotspots, temporal coupling, Gemini-assisted review, or wants an AI agent to make safer changes with evidence from `ledgerful scan`, `impact`, `verify`, or `ask`.
+description: Use Ledgerful for local-first change intelligence before, during, and after code edits. Trigger this skill whenever a repository contains Ledgerful, the user asks about impact analysis, blast radius, risk, verification planning, hotspots, temporal coupling, Gemini-assisted review, or wants an AI agent to make safer changes with evidence from `ledgerful change-context`, `scan`, `impact`, `verify`, or `ask`.
 ---
 
 # Ledgerful
@@ -172,35 +172,38 @@ ledgerful dead-code --include-traits  # include standard traits (Eq, Clone, Debu
 
 > **Heuristic note**: Dead code analysis blends graph reachability, git inactivity, and test coverage. Results are probabilistic, not definitive. Common false-positive patterns: traits derived via `#[derive(...)]` (suppressed by default), types ending in `Provider`/`Chunk`/`Record`/`Result` (receive a confidence penalty).
 
-## Core Workflow
+## Core Workflow (Default)
 
-Before making a meaningful edit:
+After `doctor --json`, prefer the budgeted agent change packet before bulk file reads:
 
 ```bash
-ledgerful scan --impact
+ledgerful doctor --json
+ledgerful change-context --json
+# CI / fixed base for structure only: --base-ref origin/main
+# (doctor + ledger always report present workspace state)
 ```
 
-For quick triage:
+Use `readSet` paths first. If `readSetCapped` is true, deep-dive with:
+
+```bash
+ledgerful scan --impact --json
+```
+
+For human triage:
 
 ```bash
 ledgerful impact --summary
 ```
 
-Read the generated report at `.ledgerful/reports/latest-impact.json`. Use the report to identify:
-
-- `riskLevel`
-- `riskReasons`
-- changed files
-- public symbols and imports
-- runtime usage (environment variables, config keys)
-- temporal couplings
-- hotspots
-- federated/cross-repo impact if present
+The packet includes `riskLevel`, `riskReasons`, doctor `readyForPublish`, open
+ledger transactions, and blast **counts** (not full edges). Prefer
+`change-context` over reading `.ledgerful/reports/latest-impact.json` alone —
+change-context computes impact in-memory and does not rewrite that report.
 
 After making edits:
 
 ```bash
-ledgerful scan --impact
+ledgerful change-context --json
 ledgerful verify
 ```
 
@@ -238,7 +241,8 @@ Steps that omit `timeout_secs` inherit `default_timeout_secs`. Invalid steps (em
 ```bash
 # Default workflow
 ledgerful doctor --json          # branch on .readyForPublish
-ledgerful scan --impact
+ledgerful change-context --json  # budgeted readSet + risk + doctor + ledger
+# if readSetCapped: ledgerful scan --impact --json
 ledgerful verify
 ledgerful hotspots
 ledgerful federate status

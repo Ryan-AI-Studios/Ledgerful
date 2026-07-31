@@ -208,13 +208,26 @@ pub fn compute_impact_in_memory_at(
         changes,
     };
 
+    compute_impact_from_snapshot_in_memory(storage, config, project_root, snapshot)
+}
+
+/// In-memory impact from a pre-built [`RepoSnapshot`] (e.g. `--base-ref` diff).
+///
+/// Mirrors [`compute_impact_in_memory_at`]'s enrich → finalize → redact path
+/// and **never** calls `save_packet` or `write_impact_report`. Used by
+/// `change-context` so base-ref structure can time-travel without clobbering
+/// `latest-impact.json`.
+pub fn compute_impact_from_snapshot_in_memory(
+    storage: &crate::state::storage::StorageManager,
+    config: &crate::config::model::Config,
+    project_root: &std::path::Path,
+    snapshot: RepoSnapshot,
+) -> Result<crate::impact::packet::ImpactPacket> {
     let mut packet = crate::impact::orchestrator::map_snapshot_to_packet(snapshot, project_root)?;
 
-    // Run Orchestrated Enrichment using the caller's storage (read-only).
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
     orchestrator.run(&mut packet, storage, config, project_root)?;
 
-    // Post-processing: Finalize and Redact (no persist / no report write).
     packet.finalize();
     crate::impact::redact::redact_secrets(&mut packet);
 

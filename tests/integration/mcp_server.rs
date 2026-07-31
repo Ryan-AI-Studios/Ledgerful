@@ -41,13 +41,21 @@ mod tests {
     }
 
     #[test]
-    fn test_tools_list_returns_ten_tools() {
+    fn test_tools_list_returns_eleven_tools() {
         let tmp = tempdir().unwrap();
         let _root = Utf8Path::from_path(tmp.path()).unwrap();
         setup_git_repo(tmp.path());
 
         let tool_count = ledgerful::commands::mcp::get_tool_count();
-        assert_eq!(tool_count, 10, "Expected 10 MCP tools in the manifest");
+        assert_eq!(tool_count, 11, "Expected 11 MCP tools in the manifest");
+        let names: Vec<_> = ledgerful::commands::mcp::INVENTORY
+            .iter()
+            .map(|t| t.name)
+            .collect();
+        assert!(
+            names.contains(&"change_context"),
+            "change_context must be in MCP inventory: {names:?}"
+        );
     }
 
     #[test]

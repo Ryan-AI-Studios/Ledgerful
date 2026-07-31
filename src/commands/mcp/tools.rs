@@ -94,6 +94,7 @@ where
 
 pub fn dispatch_tool(name: &str, params: Value) -> Value {
     match name {
+        "change_context" => handle_change_context(params),
         "ledger_status" => handle_ledger_status(params),
         "hotspots" => handle_hotspots(params),
         "scan" => handle_scan(params),
@@ -106,6 +107,54 @@ pub fn dispatch_tool(name: &str, params: Value) -> Value {
         "verify_plan" => handle_verify_plan(params),
         _ => error_response(&format!("Tool {} not implemented yet.", name)),
     }
+}
+
+fn handle_change_context(params: Value) -> Value {
+    use crate::commands::change_context::{
+        ChangeContextDetail, ChangeContextOpts, DEFAULT_MAX_FILES, build_change_context,
+    };
+
+    let detail = match params["detail"].as_str() {
+        Some(s) => match ChangeContextDetail::parse(s) {
+            Ok(d) => d,
+            Err(e) => return error_response(&format!("{e}")),
+        },
+        None => ChangeContextDetail::Minimal,
+    };
+    let max_files = params["max_files"]
+        .as_u64()
+        .map(|n| n as usize)
+        .unwrap_or(DEFAULT_MAX_FILES)
+        .max(1);
+    let base_ref = params["base_ref"].as_str().map(|s| s.to_string());
+    let blast_depth = params["blast_depth"].as_u64().map(|n| n as u32);
+
+    let opts = ChangeContextOpts {
+        detail,
+        max_files,
+        base_ref,
+        blast_depth,
+    };
+
+    let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
+        Ok(l) => l,
+        Err(e) => return error_response(&format!("Failed to get layout: {}", e)),
+    };
+    let config = crate::config::load_config(&layout).unwrap_or_default();
+    let storage = match crate::state::storage::StorageManager::init_with_layout(&layout) {
+        Ok(s) => s,
+        Err(e) => return error_response(&format!("Failed to open storage: {}", e)),
+    };
+
+    let packet = match build_change_context(&opts, &layout, &storage, &config) {
+        Ok(p) => p,
+        Err(e) => {
+            let _ = storage.shutdown();
+            return error_response(&format!("change_context failed: {e}"));
+        }
+    };
+    let _ = storage.shutdown();
+    json_response(&packet)
 }
 
 fn handle_ledger_status(_params: Value) -> Value {
@@ -400,6 +449,86 @@ fn json_response<T: serde::Serialize>(data: &T) -> Value {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn change_context_is_dispatched() {
+        // Inventory name must route; unknown tools error.
+        let unknown = dispatch_tool("not_a_real_tool", serde_json::json!({}));
+        assert_eq!(unknown["isError"], true);
+
+        // change_context is registered (may return layout error outside a repo,
+        // but must not be "not implemented").
+        let names: Vec<_> = crate::commands::mcp::INVENTORY
+            .iter()
+            .map(|t| t.name)
+            .collect();
+        assert!(names.contains(&"change_context"));
+    }
+
+    /// F-0114-03: shared builder (same path as `handle_change_context`) emits
+    /// schemaVersion 1 + doctor + ledger + readSetCapped on a hermetic repo.
+    #[test]
+    fn change_context_builder_emits_schema_keys() {
+        use crate::commands::change_context::{ChangeContextOpts, build_change_context};
+        use crate::config::model::Config;
+        use crate::state::layout::Layout;
+        use crate::state::storage::StorageManager;
+        use std::fs;
+        use tempfile::tempdir;
+
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "T"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        fs::write(dir.join("README.md"), "hi").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+
+        let root = camino::Utf8Path::from_path(dir).unwrap();
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        let storage =
+            StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+        let config = Config::default();
+        let packet =
+            build_change_context(&ChangeContextOpts::default(), &layout, &storage, &config)
+                .unwrap();
+        let _ = storage.shutdown();
+
+        // Same serialization path as MCP `json_response(&packet)`.
+        let text = serde_json::to_string(&packet).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(v["schemaVersion"], 1);
+        assert!(v.get("doctor").is_some(), "doctor key missing: {v}");
+        assert!(v.get("ledger").is_some(), "ledger key missing: {v}");
+        assert!(
+            v.get("readSetCapped").is_some(),
+            "readSetCapped key missing: {v}"
+        );
+        assert!(v.get("readSet").is_some());
+        assert!(v.get("status").is_some());
+    }
 
     #[test]
     fn build_ask_args_default_forces_local_backend() {

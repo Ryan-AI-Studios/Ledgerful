@@ -1,6 +1,7 @@
 pub mod ask;
 pub mod ask_routing;
 pub mod bridge;
+pub mod change_context;
 pub mod config;
 pub mod config_verify;
 #[cfg(feature = "daemon")]

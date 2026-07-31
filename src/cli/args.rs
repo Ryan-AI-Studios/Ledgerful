@@ -118,6 +118,24 @@ pub enum Commands {
         #[arg(long, value_name = "N")]
         blast_depth: Option<u32>,
     },
+    /// Budgeted agent change packet (impact + doctor + ledger + readSet)
+    ChangeContext {
+        /// Emit pure schema-v1 JSON on stdout (0093 machine mode)
+        #[arg(long)]
+        json: bool,
+        /// Detail level: minimal (default) or standard
+        #[arg(long, value_name = "LEVEL", default_value = "minimal")]
+        detail: String,
+        /// Cap readSet length (default 20)
+        #[arg(long, value_name = "N", default_value_t = 20)]
+        max_files: usize,
+        /// Git ref for structural impact/readSet/risk (doctor+ledger stay present-tense)
+        #[arg(long, value_name = "REF")]
+        base_ref: Option<String>,
+        /// Structural blast hop depth (default 1; max 2 on CLI)
+        #[arg(long, value_name = "N")]
+        blast_depth: Option<u32>,
+    },
     /// Index the project for search and discovery
     Index {
         /// Perform incremental index (only changed files)
@@ -654,6 +672,7 @@ impl Commands {
                         .is_some_and(|f| f.eq_ignore_ascii_case("json"))
             }
             Commands::Impact { json, .. } => *json,
+            Commands::ChangeContext { json, .. } => *json,
             Commands::Index { json, .. } => *json,
             Commands::Search { json, .. } => *json,
             Commands::Hotspots { args } => {
@@ -789,6 +808,7 @@ impl Commands {
             Commands::Setup { .. } => "setup",
             Commands::Scan { .. } => "scan",
             Commands::Impact { .. } => "impact",
+            Commands::ChangeContext { .. } => "change_context",
             Commands::Index { .. } => "index",
             Commands::Search { .. } => "search",
             Commands::Hotspots { args } => match &args.command {
@@ -991,6 +1011,15 @@ mod machine_output_tests {
     }
 
     #[test]
+    fn change_context_json_is_machine_output() {
+        assert!(parse(&["change-context", "--json"]).is_machine_output());
+        assert!(!parse(&["change-context"]).is_machine_output());
+        let cmd = parse(&["change-context", "--json", "--base-ref", "HEAD~1"]);
+        assert!(cmd.is_machine_output());
+        assert_eq!(cmd.command_name(), "change_context");
+    }
+
+    #[test]
     fn quiet_does_not_imply_machine() {
         // Quiet is a separate state; only --json selects machine mode.
         let cli = Cli::try_parse_from(["ledgerful", "--quiet", "verify"]).unwrap();
@@ -1026,6 +1055,29 @@ impl Commands {
                 }
                 if *enforce {
                     f.push("enforce");
+                }
+            }
+            Commands::ChangeContext {
+                json,
+                detail,
+                max_files,
+                base_ref,
+                blast_depth,
+            } => {
+                if *json {
+                    f.push("json");
+                }
+                if detail != "minimal" {
+                    f.push("detail");
+                }
+                if *max_files != 20 {
+                    f.push("max_files");
+                }
+                if base_ref.is_some() {
+                    f.push("base_ref");
+                }
+                if blast_depth.is_some() {
+                    f.push("blast_depth");
                 }
             }
             Commands::Scan {
