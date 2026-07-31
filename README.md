@@ -26,7 +26,7 @@ cargo binstall --git https://github.com/Ryan-AI-Studios/Ledgerful
 **Package managers:**
 - **Homebrew:** `brew install Ryan-AI-Studios/tap/ledgerful`
 - **Scoop:** `scoop bucket add ledgerful https://github.com/Ryan-AI-Studios/scoop-bucket` then `scoop install ledgerful`
-- **winget:** pending Microsoft review (no install command yet)
+- **winget:** `winget install Ledgerful.Ledgerful` (accepted 2026-07-30; community package version may lag engine releases)
 - Apt and other distro packages are not planned. Manifests and release-time bump automation live under [`packaging/`](packaging/); channel details in [`docs/package-distribution.md`](docs/package-distribution.md).
 
 If `ledgerful --version` is older than the latest published release, you may have multiple installs on `PATH` — see the [PATH / version FAQ](docs/installation.md#path--version-faq-multiple-install-channels).
