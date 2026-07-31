@@ -6,6 +6,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Release-cut prepare four-file invariant ignores chmod mode noise (0104 residual):**
+  `prepare-release-cut.sh` counts **content** changes only (`git diff --name-only -G.`),
+  so Linux CI `chmod +x` on scripts still stored as `100644` no longer fails the cut
+  before push. Workflow sets `core.fileMode false` before chmod; release scripts are
+  `100755` in git. Regression case in `test-prepare-release-cut.sh`.
+
 ### Added
 
 - **Agent change-context packet (0114):** `ledgerful change-context --json` and MCP

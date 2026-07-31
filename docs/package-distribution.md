@@ -142,7 +142,8 @@ Tier-2 cut when there is work; a human still merges after `ai-reviewed` and the 
 ```bash
 bash scripts/changelog-unreleased.sh          # must exit 0
 bash scripts/prepare-release-cut.sh 0.2.4     # or v0.2.4
-# inspect: git diff --name-only  → exactly the four paths
+# inspect: git diff --name-only -G.  → exactly the four content paths
+# (mode-only chmod noise on scripts is ignored by the invariant)
 bash scripts/test-prepare-release-cut.sh
 ```
 
