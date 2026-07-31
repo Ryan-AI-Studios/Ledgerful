@@ -65,7 +65,12 @@ pub struct Entry {
     pub entry_hlc: HLC,
 }
 
+/// Written extension for new bundles (not OpenPGP — XChaCha20-Poly1305 over zip).
+pub const BUNDLE_EXT: &str = "lfbundle";
+
 impl Manifest {
+    /// Filename for a newly written bundle. Always `.lfbundle` (legacy `.gpg` dual-read
+    /// is transport-only — see [`crate::sync::transport::is_bundle_filename`]).
     pub fn filename(&self) -> String {
         let short_sha = if self.manifest_sha256.len() >= 8 {
             &self.manifest_sha256[..8]
@@ -73,13 +78,18 @@ impl Manifest {
             &self.manifest_sha256
         };
 
-        format!("{}-{}.zip.gpg", self.bundle_hlc, short_sha)
+        format!("{}-{}.{}", self.bundle_hlc, short_sha, BUNDLE_EXT)
     }
 }
 
 impl Bundle {
+    /// Build a signed zip. Fills `manifest.manifest_sha256` and `entry_count` in place
+    /// so callers can derive the correct [`Manifest::filename`] without rebuilding.
+    ///
+    /// Signature is over the exact `manifest.json` bytes written into the zip —
+    /// do not serialize/sign a second time.
     pub fn build(
-        mut manifest: Manifest,
+        manifest: &mut Manifest,
         sign_key: &SigningKey,
     ) -> Result<(Vec<u8>, [u8; 64]), String> {
         // 1. Calculate manifest_sha256 of entries + tombstones

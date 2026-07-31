@@ -35,6 +35,8 @@ use ed25519_dalek::SigningKey;
 use rusqlite::Connection;
 #[cfg(feature = "sync")]
 use std::path::Path;
+#[cfg(feature = "sync")]
+use std::time::{SystemTime, UNIX_EPOCH};
 
 /// Run one sync cycle (extract → put → list → apply → trim).
 ///
@@ -91,37 +93,39 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
     let target = SyncTarget::parse(&config.sync.target).into_diagnostic()?;
     let transport = target.connect(&device_id);
 
-    // 1. Extract
+    let mut exported = 0usize;
+    let mut imported = 0usize;
+    let mut updated = 0usize;
+    let mut skipped = 0usize;
+    let mut quarantined = 0usize;
+    let mut trimmed = 0usize;
+
+    // 1. Extract → encrypt → put → commit cursor (single signed zip; no rebuild).
+    // Export DB side-effects commit only after put succeeds so a failed upload
+    // does not permanently drop local deltas on retry.
     println!("Extracting local deltas...");
     match extract::extract(state_dir, &device_id, &sign_key, config.sync.batch_size) {
-        Ok(bundle) => {
-            if bundle.manifest.entry_count > 0 || !bundle.manifest.tombstones.is_empty() {
-                println!(
-                    "Bundle created with {} entries and {} tombstones",
-                    bundle.manifest.entry_count,
-                    bundle.manifest.tombstones.len()
-                );
+        Ok(extracted) => {
+            let entry_count = extracted.bundle.manifest.entry_count;
+            let tombstone_count = extracted.bundle.manifest.tombstones.len();
+            println!(
+                "Bundle created with {} entries and {} tombstones",
+                entry_count, tombstone_count
+            );
 
-                // 2. Encrypt and Upload
-                let zip_bytes = Bundle::build(bundle.manifest.clone(), &sign_key)
-                    .map_err(|e| miette::miette!("Failed to build ZIP: {}", e))?
-                    .0;
+            let encrypted = Bundle::encrypt(&extracted.zip_bytes, team_secret)
+                .map_err(|e| miette::miette!("Encryption failed: {}", e))?;
 
-                let encrypted = Bundle::encrypt(&zip_bytes, team_secret)
-                    .map_err(|e| miette::miette!("Encryption failed: {}", e))?;
+            let filename = extracted.bundle.manifest.filename();
+            transport
+                .put_outgoing_bytes(&filename, &encrypted)
+                .map_err(|e| miette::miette!("Transport put failed: {}", e))?;
 
-                let filename = bundle.manifest.filename();
-                let temp_dir = tempfile::tempdir().into_diagnostic()?;
-                let temp_path = temp_dir.path().join(&filename);
-                std::fs::write(&temp_path, &encrypted).into_diagnostic()?;
+            extract::commit_extract_export(state_dir, &extracted, &device_id)
+                .map_err(|e| miette::miette!("Failed to commit extract export state: {}", e))?;
 
-                transport
-                    .put_outgoing(&temp_path)
-                    .map_err(|e| miette::miette!("Transport put failed: {}", e))?;
-                println!("Uploaded bundle: {}", filename);
-            } else {
-                println!("No new entries to extract.");
-            }
+            println!("Uploaded bundle: {}", filename);
+            exported = 1;
         }
         Err(SyncError::NoNewEntries) => {
             println!("No new entries to extract.");
@@ -129,7 +133,7 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
         Err(e) => return Err(e).into_diagnostic(),
     }
 
-    // 3. Apply
+    // 2. Apply remote peer bundles
     println!("Fetching remote bundles...");
     let incoming = transport
         .list_incoming()
@@ -141,29 +145,39 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
     // Self-insert stays at the call site (do not fold local key into load_peer_keys).
     peer_keys.insert(device_id.clone(), sign_key.verifying_key().to_bytes());
 
-    for bundle_path in incoming {
-        let name = bundle_path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| "unknown".to_string());
+    let now_ms = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let max_ahead_ms = config.sync.max_clock_drift_seconds.saturating_mul(1000);
 
-        // Skip our own bundles if they appear in incoming (depending on transport)
-        if name.contains(&device_id) {
-            continue;
-        }
+    for id in incoming {
+        // Peer-scoped list already skips local outbox — no substring self-skip.
+        let label = format!("{}/{}", id.peer_id, id.name);
+        println!("Applying bundle: {}", label);
 
-        println!("Applying bundle: {}", name);
-        let encrypted = transport
-            .get_incoming(&name)
-            .map_err(|e| miette::miette!("Transport get failed: {}", e))?;
+        let encrypted = match transport.get_incoming(&id) {
+            Ok(b) => b,
+            Err(e) => {
+                eprintln!("Failed to get {}: {}. Skipping.", label, e);
+                continue;
+            }
+        };
 
         let zip_bytes = match Bundle::decrypt(&encrypted, team_secret) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("Failed to decrypt {}: {}. Quarantining.", name, e);
-                transport
-                    .move_to_quarantine(&name)
-                    .map_err(|e| miette::miette!("Transport move failed: {}", e))?;
+                eprintln!("Failed to decrypt {}: {}. Quarantining.", label, e);
+                match transport.move_to_quarantine(&id) {
+                    Ok(()) => quarantined += 1,
+                    Err(move_err) => {
+                        eprintln!(
+                            "Warning: failed to move {} to quarantine after decrypt error: {}. Bundle may be retried.",
+                            label, move_err
+                        );
+                        quarantined += 1;
+                    }
+                }
                 continue;
             }
         };
@@ -171,39 +185,82 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
         let bundle = match Bundle::parse(&zip_bytes, &peer_keys) {
             Ok(b) => b,
             Err(e) => {
-                eprintln!("Failed to parse {}: {}. Quarantining.", name, e);
-                transport
-                    .move_to_quarantine(&name)
-                    .map_err(|e| miette::miette!("Transport move failed: {}", e))?;
+                eprintln!("Failed to parse {}: {}. Quarantining.", label, e);
+                match transport.move_to_quarantine(&id) {
+                    Ok(()) => quarantined += 1,
+                    Err(move_err) => {
+                        eprintln!(
+                            "Warning: failed to move {} to quarantine after parse error: {}. Bundle may be retried.",
+                            label, move_err
+                        );
+                        quarantined += 1;
+                    }
+                }
                 continue;
             }
         };
+
+        // Ahead-only clock skew: reject remote bundle_hlc too far in the future.
+        if bundle.manifest.bundle_hlc.physical_ms > now_ms.saturating_add(max_ahead_ms) {
+            eprintln!(
+                "Bundle {} has future HLC (clock drift: remote {} ms vs local {} ms, max ahead {} s). Quarantining.",
+                label,
+                bundle.manifest.bundle_hlc.physical_ms,
+                now_ms,
+                config.sync.max_clock_drift_seconds
+            );
+            match transport.move_to_quarantine(&id) {
+                Ok(()) => quarantined += 1,
+                Err(move_err) => {
+                    eprintln!(
+                        "Warning: failed to move {} to quarantine after clock-drift reject: {}. Bundle may be retried.",
+                        label, move_err
+                    );
+                    quarantined += 1;
+                }
+            }
+            continue;
+        }
 
         match apply::apply(&bundle, &mut conn, &peer_keys) {
             Ok(report) => {
                 println!(
                     "Applied {}: {} inserted, {} updated, {} skipped",
-                    name, report.inserted, report.updated, report.skipped
+                    label, report.inserted, report.updated, report.skipped
                 );
-                transport
-                    .move_to_processed(&name)
-                    .map_err(|e| miette::miette!("Transport move failed: {}", e))?;
+                imported += report.inserted;
+                updated += report.updated;
+                skipped += report.skipped;
+                if let Err(move_err) = transport.move_to_processed(&id) {
+                    eprintln!(
+                        "Warning: applied {} but failed to move to processed: {}. Bundle may be re-applied (idempotent).",
+                        label, move_err
+                    );
+                }
             }
             Err(e) => {
-                eprintln!("Failed to apply {}: {}. Quarantining.", name, e);
-                transport
-                    .move_to_quarantine(&name)
-                    .map_err(|e| miette::miette!("Transport move failed: {}", e))?;
+                eprintln!("Failed to apply {}: {}. Quarantining.", label, e);
+                match transport.move_to_quarantine(&id) {
+                    Ok(()) => quarantined += 1,
+                    Err(move_err) => {
+                        eprintln!(
+                            "Warning: failed to move {} to quarantine after apply error: {}. Bundle may be retried.",
+                            label, move_err
+                        );
+                        quarantined += 1;
+                    }
+                }
             }
         }
     }
 
-    // 4. Cleanup
+    // 3. Cleanup
     let retention_days = config.sync.archive_retention_days;
     let older_than =
         std::time::SystemTime::now() - std::time::Duration::from_secs(retention_days * 24 * 3600);
     match transport.trim_processed(older_than) {
         Ok(count) => {
+            trimmed = count;
             if count > 0 {
                 println!("Trimmed {} old bundles from archive", count);
             }
@@ -211,6 +268,9 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
         Err(e) => eprintln!("Warning: Failed to trim archive: {}", e),
     }
 
-    println!("Sync complete.");
+    println!(
+        "Sync complete. exported={} imported={} updated={} skipped={} quarantined={} trimmed={}",
+        exported, imported, updated, skipped, quarantined, trimmed
+    );
     Ok(())
 }

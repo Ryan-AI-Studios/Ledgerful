@@ -10,6 +10,28 @@ pub type Result<T> = std::result::Result<T, SyncError>;
 pub mod dir;
 pub use dir::DirTransport;
 
+/// Written extension for new bundles (honest name — not OpenPGP).
+pub const BUNDLE_EXT: &str = "lfbundle";
+
+/// True when the last-dot extension is `lfbundle` (new) or `gpg` (legacy dual-read).
+/// Live pre-0112 filter was last-dot `gpg` (any `*.gpg`), not only `*.zip.gpg`.
+pub fn is_bundle_filename(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .and_then(|s| s.to_str())
+        .is_some_and(|ext| ext.eq_ignore_ascii_case(BUNDLE_EXT) || ext.eq_ignore_ascii_case("gpg"))
+}
+
+/// Resolved identity for an incoming peer bundle.
+///
+/// Must be threaded end-to-end through get → apply → move so a bare-name re-search
+/// cannot archive a different peer's same-named file after reading another.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct IncomingBundle {
+    pub peer_id: String,
+    pub name: String,
+}
+
 #[derive(Debug, Clone)]
 pub enum SyncTarget {
     Dir(PathBuf),
@@ -39,19 +61,27 @@ impl SyncTarget {
 
 pub trait Transport: Send + Sync {
     fn list_outgoing(&self) -> Result<Vec<PathBuf>>;
+    /// Path-based put (reads file). Prefer [`Self::put_outgoing_bytes`] for same-volume
+    /// atomic write without an OS-temp staging file.
     fn put_outgoing(&self, bundle: &Path) -> Result<()>;
-    fn list_incoming(&self) -> Result<Vec<PathBuf>>;
-    fn get_incoming(&self, name: &str) -> Result<Vec<u8>>;
-    fn move_to_processed(&self, name: &str) -> Result<()>;
-    fn move_to_quarantine(&self, name: &str) -> Result<()>;
+    /// Write encrypted bundle bytes under the device outbox using a **same-volume**
+    /// temp + rename (never OS temp → share, which fails EXDEV on NAS/USB mounts).
+    fn put_outgoing_bytes(&self, name: &str, content: &[u8]) -> Result<()>;
+    fn list_incoming(&self) -> Result<Vec<IncomingBundle>>;
+    fn get_incoming(&self, id: &IncomingBundle) -> Result<Vec<u8>>;
+    fn move_to_processed(&self, id: &IncomingBundle) -> Result<()>;
+    fn move_to_quarantine(&self, id: &IncomingBundle) -> Result<()>;
     fn trim_processed(&self, older_than: SystemTime) -> Result<usize>;
 }
 
+type PeerBundleMap = HashMap<(String, String), Vec<u8>>;
+
 pub struct InMemoryTransport {
     pub outgoing: Arc<RwLock<HashMap<String, Vec<u8>>>>,
-    pub incoming: Arc<RwLock<HashMap<String, Vec<u8>>>>,
-    pub processed: Arc<RwLock<HashMap<String, Vec<u8>>>>,
-    pub quarantine: Arc<RwLock<HashMap<String, Vec<u8>>>>,
+    /// Keyed by (peer_id, name) so identity is unambiguous.
+    pub incoming: Arc<RwLock<PeerBundleMap>>,
+    pub processed: Arc<RwLock<PeerBundleMap>>,
+    pub quarantine: Arc<RwLock<PeerBundleMap>>,
 }
 
 impl Default for InMemoryTransport {
@@ -70,32 +100,29 @@ impl InMemoryTransport {
         }
     }
 
-    pub fn put_outgoing_bytes(&self, name: &str, content: &[u8]) -> Result<()> {
-        self.outgoing
-            .write()
-            .insert(name.to_string(), content.to_vec());
-        Ok(())
-    }
-
-    pub fn add_incoming_bytes(&self, name: &str, content: &[u8]) -> Result<()> {
+    /// Seed an incoming peer bundle for tests.
+    pub fn add_incoming_bytes(&self, peer_id: &str, name: &str, content: &[u8]) -> Result<()> {
         self.incoming
             .write()
-            .insert(name.to_string(), content.to_vec());
+            .insert((peer_id.to_string(), name.to_string()), content.to_vec());
         Ok(())
     }
 }
 
 impl Transport for InMemoryTransport {
     fn list_outgoing(&self) -> Result<Vec<PathBuf>> {
-        Ok(self.outgoing.read().keys().map(PathBuf::from).collect())
+        let mut names: Vec<PathBuf> = self
+            .outgoing
+            .read()
+            .keys()
+            .filter(|n| is_bundle_filename(n))
+            .map(PathBuf::from)
+            .collect();
+        names.sort();
+        Ok(names)
     }
 
     fn put_outgoing(&self, bundle: &Path) -> Result<()> {
-        // In a real transport, this would read from the local file and upload.
-        // For InMemory, we might need a way to pass the bytes.
-        // But the trait says &Path. This is slightly awkward for InMemory.
-        // We'll assume the test uses put_outgoing_bytes for now,
-        // or we implement reading from the path if needed.
         let content = std::fs::read(bundle)?;
         let name = bundle
             .file_name()
@@ -104,25 +131,47 @@ impl Transport for InMemoryTransport {
             })?
             .to_string_lossy()
             .to_string();
+        self.put_outgoing_bytes(&name, &content)
+    }
 
-        self.outgoing.write().insert(name, content);
+    fn put_outgoing_bytes(&self, name: &str, content: &[u8]) -> Result<()> {
+        self.outgoing
+            .write()
+            .insert(name.to_string(), content.to_vec());
         Ok(())
     }
 
-    fn list_incoming(&self) -> Result<Vec<PathBuf>> {
-        Ok(self.incoming.read().keys().map(PathBuf::from).collect())
+    fn list_incoming(&self) -> Result<Vec<IncomingBundle>> {
+        let mut entries: Vec<IncomingBundle> = self
+            .incoming
+            .read()
+            .keys()
+            .filter(|(_, name)| is_bundle_filename(name))
+            .map(|(peer_id, name)| IncomingBundle {
+                peer_id: peer_id.clone(),
+                name: name.clone(),
+            })
+            .collect();
+        entries.sort_by(|a, b| (&a.peer_id, &a.name).cmp(&(&b.peer_id, &b.name)));
+        Ok(entries)
     }
 
-    fn get_incoming(&self, name: &str) -> Result<Vec<u8>> {
-        self.incoming.read().get(name).cloned().ok_or_else(|| {
-            std::io::Error::new(std::io::ErrorKind::NotFound, "Bundle not found in incoming").into()
-        })
+    fn get_incoming(&self, id: &IncomingBundle) -> Result<Vec<u8>> {
+        self.incoming
+            .read()
+            .get(&(id.peer_id.clone(), id.name.clone()))
+            .cloned()
+            .ok_or_else(|| {
+                std::io::Error::new(std::io::ErrorKind::NotFound, "Bundle not found in incoming")
+                    .into()
+            })
     }
 
-    fn move_to_processed(&self, name: &str) -> Result<()> {
+    fn move_to_processed(&self, id: &IncomingBundle) -> Result<()> {
+        let key = (id.peer_id.clone(), id.name.clone());
         let mut incoming = self.incoming.write();
-        if let Some(content) = incoming.remove(name) {
-            self.processed.write().insert(name.to_string(), content);
+        if let Some(content) = incoming.remove(&key) {
+            self.processed.write().insert(key, content);
             Ok(())
         } else {
             Err(
@@ -132,10 +181,11 @@ impl Transport for InMemoryTransport {
         }
     }
 
-    fn move_to_quarantine(&self, name: &str) -> Result<()> {
+    fn move_to_quarantine(&self, id: &IncomingBundle) -> Result<()> {
+        let key = (id.peer_id.clone(), id.name.clone());
         let mut incoming = self.incoming.write();
-        if let Some(content) = incoming.remove(name) {
-            self.quarantine.write().insert(name.to_string(), content);
+        if let Some(content) = incoming.remove(&key) {
+            self.quarantine.write().insert(key, content);
             Ok(())
         } else {
             Err(
@@ -147,7 +197,6 @@ impl Transport for InMemoryTransport {
 
     fn trim_processed(&self, _older_than: SystemTime) -> Result<usize> {
         // For InMemory, we don't have timestamps on the entries unless we store them.
-        // Let's just say we don't trim for now.
         Ok(0)
     }
 }

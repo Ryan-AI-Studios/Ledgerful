@@ -103,7 +103,7 @@ ledgerful doctor --json
 - **Hotspot Trends**: Persistent hotspot and temporal coupling snapshots with trend deltas. `ledgerful hotspots trend` / `hotspots explain`.
 - **Ledger Graph**: Per-transaction entity neighborhood view. `ledgerful ledger graph <tx-id>`.
 - **Security Boundaries**: Cedar policy parsing with cross-surface links. `ledgerful security boundaries` / `security impact --changed`.
-- **Team Sync [Experimental]**: Opt-in encrypted ledger entry bundles via `ledgerful sync` (default feature; `[sync].enabled = false` forever until you opt in). Pairing is real (`LF-PAIR-1` invite + `sync pair` accept/list/revoke; never auto-enables). Multi-device apply polish / Available land in 0112–0113. See `docs/team-sync.md`. Not the same as watch “Real-time Sync”.
+- **Team Sync [Experimental]**: Opt-in encrypted ledger entry bundles via `ledgerful sync` (default feature; `[sync].enabled = false` forever until you opt in). Pairing is real (`LF-PAIR-1` invite + `sync pair` accept/list/revoke; never auto-enables). Secure shared-folder transport/apply and multi-device consolidation are real (0112: `.lfbundle`, verify-then-apply, extract cursor integrity) — still **Experimental**, not Available. Wizard/Available → 0113. See `docs/team-sync.md`. Not the same as watch “Real-time Sync”.
 - **Bridge Export/Import**: Local versioned NDJSON interchange for hotspots, ledger entries, and MADR data via `ledgerful bridge export --hotspots --ledger [--madr] [--stdout]` and `ledgerful bridge import --input <records.ndjson>`. The bridge is **off by default**; run it only after opting in.
 
 ## Bridge Opt-In
