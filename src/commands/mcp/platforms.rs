@@ -40,12 +40,7 @@ impl PlatformId {
     }
 
     pub fn all() -> &'static [PlatformId] {
-        &[
-            Self::ClaudeCode,
-            Self::Cursor,
-            Self::Codex,
-            Self::Copilot,
-        ]
+        &[Self::ClaudeCode, Self::Cursor, Self::Codex, Self::Copilot]
     }
 
     /// Default scope when `--scope` is omitted.
@@ -92,19 +87,20 @@ impl PlatformId {
         matches!(self, Self::Copilot)
     }
 
-    /// Host-trust honesty message after a successful write (scope-aware).
+    /// Host-trust honesty message (scope-aware). Pair with status written|would_write;
+    /// never claims tools are live in a running host.
     pub fn host_trust_message(self, scope: crate::cli::args::McpScope) -> &'static str {
         match (self, scope) {
             (Self::Codex, crate::cli::args::McpScope::Project) => {
-                "Config written; Codex project MCP may stay inert until you confirm project trust in a Codex session (written ≠ connected)"
+                "Codex project MCP may stay inert until you confirm project trust in a Codex session (written ≠ connected)"
             }
             (Self::ClaudeCode, crate::cli::args::McpScope::Project) => {
-                "Config written; Claude Code may prompt to approve this server on first use (written ≠ connected)"
+                "Claude Code may prompt to approve this server on first use (written ≠ connected)"
             }
             (Self::Copilot, _) => {
-                "Config written; VS Code / Copilot may show an MCP trust dialog on first start (written ≠ connected)"
+                "VS Code / Copilot may show an MCP trust dialog on first start (written ≠ connected)"
             }
-            _ => "Config written; restart or reload the host agent to pick up tools (written ≠ connected)",
+            _ => "Restart or reload the host agent to pick up tools (written ≠ connected)",
         }
     }
 }
@@ -198,9 +194,7 @@ pub fn is_detected(
     if paths.user.exists() || paths.project.exists() {
         return true;
     }
-    id.detection_binaries()
-        .iter()
-        .any(|b| binary_present(b))
+    id.detection_binaries().iter().any(|b| binary_present(b))
 }
 
 #[cfg(test)]
@@ -241,9 +235,7 @@ mod tests {
         let c = resolve_paths(PlatformId::Cursor, &home, &cwd, None).unwrap();
         assert!(c.user.ends_with(".cursor/mcp.json") || c.user.ends_with(".cursor\\mcp.json"));
         let x = resolve_paths(PlatformId::Codex, &home, &cwd, None).unwrap();
-        assert!(
-            x.user.ends_with(".codex/config.toml") || x.user.ends_with(".codex\\config.toml")
-        );
+        assert!(x.user.ends_with(".codex/config.toml") || x.user.ends_with(".codex\\config.toml"));
     }
 
     #[test]
@@ -257,8 +249,7 @@ mod tests {
         );
         if cfg!(windows) {
             assert!(
-                p.user.ends_with("Code\\User\\mcp.json")
-                    || p.user.ends_with("Code/User/mcp.json")
+                p.user.ends_with("Code\\User\\mcp.json") || p.user.ends_with("Code/User/mcp.json")
             );
         }
     }
@@ -275,9 +266,6 @@ mod tests {
     fn copilot_uses_servers_key() {
         assert_eq!(PlatformId::Copilot.json_parent_key(), Some("servers"));
         assert!(PlatformId::Copilot.include_type_stdio());
-        assert_eq!(
-            PlatformId::ClaudeCode.json_parent_key(),
-            Some("mcpServers")
-        );
+        assert_eq!(PlatformId::ClaudeCode.json_parent_key(), Some("mcpServers"));
     }
 }
