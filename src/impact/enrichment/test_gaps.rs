@@ -268,16 +268,16 @@ fn file_covering_count(conn: &Connection, file_id: i64) -> Option<usize> {
     .map(|c| c as usize)
 }
 
-/// Resolve `project_files.id` for a normalized path (None if unknown).
-fn resolve_file_id(conn: &Connection, path: &str) -> Option<i64> {
+/// Resolve `project_files.id` for a normalized path.
+/// - `Ok(None)` — path not in index (honest unknown → treat as unmapped)
+/// - `Err` — query/schema failure (caller must emit `unavailable`, not unmapped)
+fn resolve_file_id(conn: &Connection, path: &str) -> Result<Option<i64>, rusqlite::Error> {
     conn.query_row(
         "SELECT id FROM project_files WHERE file_path = ?1",
         [path],
         |row| row.get(0),
     )
     .optional()
-    .ok()
-    .flatten()
 }
 
 /// Compute gaps from impact seeds (symbol + file-mapped classification).
@@ -333,7 +333,18 @@ pub fn compute_change_set_test_gaps_from_seeds(
             continue;
         }
 
-        let file_id = resolve_file_id(conn, &file);
+        let file_id = match resolve_file_id(conn, &file) {
+            Ok(id) => id,
+            Err(e) => {
+                return TestGapsReport::with_status(
+                    TestGapsStatus::Unavailable,
+                    source_seed_count,
+                    vec![format!(
+                        "project_files lookup failed during seed classification: {e}"
+                    )],
+                );
+            }
+        };
         let file_count = match file_id {
             Some(fid) => match file_covering_count(conn, fid) {
                 Some(c) => c,
@@ -426,7 +437,18 @@ pub fn compute_change_set_test_gaps_from_files(
     let mut mapped_all: Vec<MappedSampleEntry> = Vec::new();
 
     for file in &source_paths {
-        let file_id = resolve_file_id(conn, file);
+        let file_id = match resolve_file_id(conn, file) {
+            Ok(id) => id,
+            Err(e) => {
+                return TestGapsReport::with_status(
+                    TestGapsStatus::Unavailable,
+                    source_seed_count,
+                    vec![format!(
+                        "project_files lookup failed during file-level classification: {e}"
+                    )],
+                );
+            }
+        };
         let file_count = match file_id {
             Some(fid) => match file_covering_count(conn, fid) {
                 Some(c) => c,
@@ -867,10 +889,21 @@ mod tests {
 
     #[test]
     fn test_gap_query_failure_is_unavailable_not_empty_mapping() {
-        // Closed connection: probes must not collapse to missing_table/empty_mapping.
+        // Bare DB: missing table → missing_table (honest, not unavailable).
+        let bare = Connection::open_in_memory().unwrap();
+        let r = compute_change_set_test_gaps_from_files(
+            &bare,
+            &["src/foo.rs"],
+            &TestGapsOpts::default(),
+        );
+        assert_eq!(r.status, TestGapsStatus::MissingTable);
+
+        // Broken project_files: test_mapping exists with rows, but project_files
+        // is a view that errors — resolve_file_id must not become false unmapped.
         let conn = Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE test_mapping (
+                id INTEGER PRIMARY KEY,
                 test_symbol_id INTEGER NOT NULL,
                 test_file_id INTEGER NOT NULL,
                 tested_symbol_id INTEGER,
@@ -879,33 +912,31 @@ mod tests {
                 mapping_kind TEXT,
                 evidence TEXT,
                 last_indexed_at TEXT
-            );",
+            );
+            INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id, confidence, mapping_kind, evidence, last_indexed_at)
+            VALUES (1, 1, 1, 1, 1.0, 'IMPORT', 'x', 't');
+            CREATE VIEW project_files AS SELECT 1/0 AS id, 'src/foo.rs' AS file_path;",
         )
         .unwrap();
-        // Drop and leave a broken schema? Simpler: use a connection and then
-        // rename the table so COUNT fails after existence... Actually after
-        // DROP, sqlite_master says missing → missing_table is correct.
-        // Force COUNT failure with a view that errors: use RENAME then broken
-        // table. Better: open with a file, close underlying... hard with rusqlite.
-        // Use a table then REPLACE test_mapping with a non-table? Use ATTACH?
-        // Practical test: empty DB without migrations → missing_table is OK.
-        // Test that `with_status(Unavailable, …)` path from probe is used when
-        // we inject Err by closing via invalid SQL function.
-        let report = TestGapsReport::with_status(
-            TestGapsStatus::Unavailable,
-            1,
-            vec!["test_mapping COUNT(*) failed: simulated".into()],
-        );
-        assert_eq!(report.status, TestGapsStatus::Unavailable);
-        assert!(report.notes.iter().any(|n| n.contains("COUNT")));
-        // Real probe on bare in-memory with no tables → missing_table (honest).
-        let bare = Connection::open_in_memory().unwrap();
-        let r = compute_change_set_test_gaps_from_files(
-            &bare,
+        let report = compute_change_set_test_gaps_from_files(
+            &conn,
             &["src/foo.rs"],
             &TestGapsOpts::default(),
         );
-        assert_eq!(r.status, TestGapsStatus::MissingTable);
+        assert_eq!(
+            report.status,
+            TestGapsStatus::Unavailable,
+            "project_files query failure must not look like unmapped: {:?}",
+            report
+        );
+        assert!(
+            report
+                .notes
+                .iter()
+                .any(|n| n.contains("project_files") || n.contains("lookup failed")),
+            "notes={:?}",
+            report.notes
+        );
     }
 
     #[test]
