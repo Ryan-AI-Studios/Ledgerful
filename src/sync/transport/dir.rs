@@ -112,8 +112,6 @@ impl DirTransport {
         Ok(())
     }
 
-<<<<<<< Updated upstream
-=======
     fn require_regular_devices_dir(&self) -> Result<PathBuf> {
         let devices = self.devices_dir();
         if devices.exists() {
@@ -134,7 +132,6 @@ impl DirTransport {
         Ok(devices)
     }
 
->>>>>>> Stashed changes
     fn peer_bundle_path(&self, id: &IncomingBundle) -> Result<PathBuf> {
         if !Self::is_safe_peer_id(&id.peer_id) {
             return Err(std::io::Error::new(
@@ -150,12 +147,8 @@ impl DirTransport {
             )
             .into());
         }
-<<<<<<< Updated upstream
-        let peer_dir = self.devices_dir().join(&id.peer_id);
-=======
         let devices = self.require_regular_devices_dir()?;
         let peer_dir = devices.join(&id.peer_id);
->>>>>>> Stashed changes
         // Re-validate on every get/move (list→get TOCTOU: peer dir swapped to symlink).
         if !Self::is_regular_non_symlink_dir(&peer_dir) {
             return Err(std::io::Error::new(
@@ -237,8 +230,6 @@ impl Transport for DirTransport {
     }
 
     fn put_outgoing_bytes(&self, name: &str, content: &[u8]) -> Result<()> {
-<<<<<<< Updated upstream
-=======
         if !Self::is_safe_bundle_name(name) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
@@ -248,7 +239,6 @@ impl Transport for DirTransport {
         }
         // Refuse planted `devices` symlink that would redirect outbox outside share.
         self.require_regular_devices_dir()?;
->>>>>>> Stashed changes
         let outbox = self.outbox_dir();
         Self::ensure_regular_dir(&outbox)?;
 
@@ -270,8 +260,6 @@ impl Transport for DirTransport {
 
         // Windows: rename over existing may fail — remove first.
         if dest.exists() {
-<<<<<<< Updated upstream
-=======
             if !Self::is_regular_non_symlink_file(&dest) {
                 let _ = fs::remove_file(&tmp_path);
                 return Err(std::io::Error::new(
@@ -280,7 +268,6 @@ impl Transport for DirTransport {
                 )
                 .into());
             }
->>>>>>> Stashed changes
             fs::remove_file(&dest)?;
         }
         if let Err(e) = fs::rename(&tmp_path, &dest) {
@@ -363,10 +350,7 @@ impl Transport for DirTransport {
     }
 
     fn move_to_processed(&self, id: &IncomingBundle) -> Result<()> {
-<<<<<<< Updated upstream
-=======
         self.require_regular_devices_dir()?;
->>>>>>> Stashed changes
         let processed = self.processed_dir();
         Self::ensure_regular_dir(&processed)?;
 
@@ -403,10 +387,7 @@ impl Transport for DirTransport {
     }
 
     fn move_to_quarantine(&self, id: &IncomingBundle) -> Result<()> {
-<<<<<<< Updated upstream
-=======
         self.require_regular_devices_dir()?;
->>>>>>> Stashed changes
         let quarantine = self.quarantine_dir();
         Self::ensure_regular_dir(&quarantine)?;
 
