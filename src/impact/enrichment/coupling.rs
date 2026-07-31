@@ -39,7 +39,8 @@ impl CouplingProvider {
         // DoD-5: test_coverage / testHints are independent of structural_edges.
         // Populate even when the call graph is empty so test_mapping is never
         // silently dropped just because callers were not indexed yet.
-        // Orchestrator shares one seed list so mapped vec + gaps cannot drift.
+        // Orchestrator shares one seed list; soft-empty vs mappedCount disagreement
+        // is surfaced via gap honesty notes (not silent).
         let mut test_hints: Vec<String> = Vec::new();
         let gap_opts = TestGapsOpts {
             head_hash: packet.head_hash.clone(),
