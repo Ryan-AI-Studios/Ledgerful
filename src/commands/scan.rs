@@ -481,32 +481,36 @@ pub fn execute_scan_with_blast_depth(
         changes,
     };
 
-    // Working-tree diffs are empty in CI when --base-ref or --pr is used; skip get_diff_summary calls.
-    let mut diff_summaries = if base_ref.is_some() || pr.is_some() {
-        vec![]
-    } else {
-        snapshot
-            .changes
-            .iter()
-            .filter_map(|change| {
-                get_diff_summary(&repo, &change.path).map(|summary| ScanDiffSummary {
-                    path: change.path.to_string_lossy().to_string(),
-                    summary,
+    // PR path is intentionally index-free (0115 DoD-5): never create `.ledgerful`
+    // via write_scan_report / tombstone. Soft-open for testGaps is existence-check only.
+    if pr.is_none() {
+        // Working-tree diffs are empty when --base-ref is used; skip get_diff_summary.
+        let mut diff_summaries = if base_ref.is_some() {
+            vec![]
+        } else {
+            snapshot
+                .changes
+                .iter()
+                .filter_map(|change| {
+                    get_diff_summary(&repo, &change.path).map(|summary| ScanDiffSummary {
+                        path: change.path.to_string_lossy().to_string(),
+                        summary,
+                    })
                 })
-            })
-            .collect::<Vec<_>>()
-    };
-    diff_summaries.sort_by(|a, b| a.path.cmp(&b.path));
+                .collect::<Vec<_>>()
+        };
+        diff_summaries.sort_by(|a, b| a.path.cmp(&b.path));
 
-    let scan_report = ScanReport::from_snapshot(&snapshot, diff_summaries);
-    write_scan_report(&layout, &scan_report)?;
+        let scan_report = ScanReport::from_snapshot(&snapshot, diff_summaries);
+        write_scan_report(&layout, &scan_report)?;
 
-    if !run_impact && pr.is_none() && snapshot.is_clean {
-        write_clean_tree_tombstone(
-            &layout,
-            snapshot.head_hash.clone(),
-            snapshot.branch_name.clone(),
-        )?;
+        if !run_impact && snapshot.is_clean {
+            write_clean_tree_tombstone(
+                &layout,
+                snapshot.head_hash.clone(),
+                snapshot.branch_name.clone(),
+            )?;
+        }
     }
 
     let write_impact_json = json || out.is_some();
