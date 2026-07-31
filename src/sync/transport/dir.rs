@@ -132,6 +132,21 @@ impl DirTransport {
         Ok(devices)
     }
 
+    /// `devices/<local device_id>` must be a real directory (not a planted junction).
+    fn require_regular_local_device_dir(&self) -> Result<PathBuf> {
+        if !Self::is_safe_peer_id(&self.device_id) {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unsafe local device_id: {}", self.device_id),
+            )
+            .into());
+        }
+        let devices = self.require_regular_devices_dir()?;
+        let local = devices.join(&self.device_id);
+        Self::ensure_regular_dir(&local)?;
+        Ok(local)
+    }
+
     fn peer_bundle_path(&self, id: &IncomingBundle) -> Result<PathBuf> {
         if !Self::is_safe_peer_id(&id.peer_id) {
             return Err(std::io::Error::new(
@@ -191,6 +206,7 @@ impl DirTransport {
 
 impl Transport for DirTransport {
     fn list_outgoing(&self) -> Result<Vec<PathBuf>> {
+        self.require_regular_local_device_dir()?;
         let dir = self.outbox_dir();
         if !dir.exists() {
             return Ok(vec![]);
@@ -237,8 +253,8 @@ impl Transport for DirTransport {
             )
             .into());
         }
-        // Refuse planted `devices` symlink that would redirect outbox outside share.
-        self.require_regular_devices_dir()?;
+        // Refuse planted devices/ or local-device-id junctions that redirect outbox.
+        self.require_regular_local_device_dir()?;
         let outbox = self.outbox_dir();
         Self::ensure_regular_dir(&outbox)?;
 
@@ -350,7 +366,7 @@ impl Transport for DirTransport {
     }
 
     fn move_to_processed(&self, id: &IncomingBundle) -> Result<()> {
-        self.require_regular_devices_dir()?;
+        self.require_regular_local_device_dir()?;
         let processed = self.processed_dir();
         Self::ensure_regular_dir(&processed)?;
 
@@ -387,7 +403,7 @@ impl Transport for DirTransport {
     }
 
     fn move_to_quarantine(&self, id: &IncomingBundle) -> Result<()> {
-        self.require_regular_devices_dir()?;
+        self.require_regular_local_device_dir()?;
         let quarantine = self.quarantine_dir();
         Self::ensure_regular_dir(&quarantine)?;
 
@@ -423,16 +439,9 @@ impl Transport for DirTransport {
     }
 
     fn trim_processed(&self, older_than: SystemTime) -> Result<usize> {
-        let devices = self.devices_dir();
-        if devices.exists() && !Self::is_regular_non_symlink_dir(&devices) {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidInput,
-                format!(
-                    "devices path is not a regular directory (symlink/junction?): {}",
-                    devices.display()
-                ),
-            )
-            .into());
+        // Local device dir must not be a planted junction/symlink.
+        if self.devices_dir().exists() {
+            self.require_regular_local_device_dir()?;
         }
         let processed = self.processed_dir();
         if !processed.exists() {
