@@ -188,6 +188,83 @@ fn change_context_base_ref_accepted() {
 }
 
 #[test]
+fn change_context_invalid_base_ref_is_not_ready() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "hi").unwrap();
+    git_add_and_commit(root, "init");
+
+    let layout = Layout::new(root.to_string_lossy().as_ref());
+    layout.ensure_state_dir().unwrap();
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    storage.shutdown().unwrap();
+
+    let _guard = DirGuard::new(root);
+    let (stdout, stderr, code) = run_cli(
+        root,
+        &[
+            "change-context",
+            "--json",
+            "--base-ref",
+            "definitely-not-a-ref-0114",
+        ],
+    );
+    assert_eq!(code, 0, "stderr={stderr}");
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(
+        json["status"], "not_ready",
+        "invalid base-ref must yield not_ready: {json}"
+    );
+    assert!(
+        json["reason"].as_str().is_some_and(|r| !r.is_empty())
+            || json["summary"]
+                .as_str()
+                .is_some_and(|s| s.to_lowercase().contains("not ready")),
+        "must explain not_ready: {json}"
+    );
+    assert!(json.get("doctor").is_some());
+    assert!(json.get("ledger").is_some());
+    let next = json["nextActions"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !next.is_empty(),
+        "not_ready should suggest nextActions: {json}"
+    );
+}
+
+#[test]
+fn change_context_option_like_base_ref_is_not_ready() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "hi").unwrap();
+    git_add_and_commit(root, "init");
+
+    let layout = Layout::new(root.to_string_lossy().as_ref());
+    layout.ensure_state_dir().unwrap();
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    storage.shutdown().unwrap();
+
+    let poison = root.join("poisoned-out.txt");
+    // Use --base-ref=VALUE so clap does not re-parse the value as a flag.
+    let flag = format!("--base-ref=--output={}", poison.display());
+    let _guard = DirGuard::new(root);
+    let (stdout, stderr, code) = run_cli(root, &["change-context", "--json", &flag]);
+    assert_eq!(code, 0, "stderr={stderr} stdout={stdout}");
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(
+        json["status"], "not_ready",
+        "option-like base-ref must not succeed: {json}"
+    );
+    assert!(
+        !poison.exists(),
+        "option-like base-ref must not create poison file"
+    );
+}
+
+#[test]
 fn change_context_human_mode_nonempty() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();

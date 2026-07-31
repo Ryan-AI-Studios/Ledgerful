@@ -465,14 +465,13 @@ mod tests {
         assert!(names.contains(&"change_context"));
     }
 
-    /// F-0114-03: shared builder (same path as `handle_change_context`) emits
-    /// schemaVersion 1 + doctor + ledger + readSetCapped on a hermetic repo.
+    /// F-0114-03 / codex: full dispatch path (routing + handler + MCP serialize).
     #[test]
-    fn change_context_builder_emits_schema_keys() {
-        use crate::commands::change_context::{ChangeContextOpts, build_change_context};
-        use crate::config::model::Config;
+    #[serial_test::serial(cwd)]
+    fn change_context_dispatch_emits_schema_keys() {
         use crate::state::layout::Layout;
         use crate::state::storage::StorageManager;
+        use crate::tests::DirGuard;
         use std::fs;
         use tempfile::tempdir;
 
@@ -510,15 +509,22 @@ mod tests {
         layout.ensure_state_dir().unwrap();
         let storage =
             StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
-        let config = Config::default();
-        let packet =
-            build_change_context(&ChangeContextOpts::default(), &layout, &storage, &config)
-                .unwrap();
         let _ = storage.shutdown();
 
-        // Same serialization path as MCP `json_response(&packet)`.
-        let text = serde_json::to_string(&packet).unwrap();
-        let v: serde_json::Value = serde_json::from_str(&text).unwrap();
+        let _guard = DirGuard::new(dir);
+        let response = dispatch_tool("change_context", serde_json::json!({}));
+        assert_ne!(
+            response.get("isError"),
+            Some(&serde_json::Value::Bool(true)),
+            "dispatch must not error: {response}"
+        );
+        let text = response["content"][0]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("MCP text content missing: {response}"));
+        // Pretty JSON may include a leading BOM-safe strip; parse from first '{'.
+        let json_slice = text.find('{').map(|i| &text[i..]).unwrap_or(text);
+        let v: serde_json::Value = serde_json::from_str(json_slice)
+            .unwrap_or_else(|e| panic!("packet JSON ({e}): text={text:?} response={response}"));
         assert_eq!(v["schemaVersion"], 1);
         assert!(v.get("doctor").is_some(), "doctor key missing: {v}");
         assert!(v.get("ledger").is_some(), "ledger key missing: {v}");

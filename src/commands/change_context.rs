@@ -658,6 +658,15 @@ pub(crate) fn read_doctor_section(layout: &Layout) -> DoctorSection {
 }
 
 fn parse_doctor_sidecar(contents: &str, path: &Path) -> DoctorSection {
+    let error_section = || DoctorSection {
+        status: "error".to_string(),
+        ready_for_publish: false,
+        block: 0,
+        warn: 0,
+        info: 0,
+        top_findings: Vec::new(),
+    };
+
     let json: serde_json::Value = match serde_json::from_str(contents) {
         Ok(v) => v,
         Err(e) => {
@@ -665,24 +674,40 @@ fn parse_doctor_sidecar(contents: &str, path: &Path) -> DoctorSection {
                 "Failed to parse doctor-results.json at {}: {e}",
                 path.display()
             );
-            return DoctorSection {
-                status: "error".to_string(),
-                ready_for_publish: false,
-                block: 0,
-                warn: 0,
-                info: 0,
-                top_findings: Vec::new(),
-            };
+            return error_section();
         }
     };
 
-    let block = json.get("block").and_then(|v| v.as_u64()).unwrap_or(0);
-    let warn = json.get("warn").and_then(|v| v.as_u64()).unwrap_or(0);
-    let info = json.get("info").and_then(|v| v.as_u64()).unwrap_or(0);
-    let ready = json
-        .get("readyForPublish")
-        .and_then(|v| v.as_bool())
-        .unwrap_or(block == 0);
+    // Require production sidecar shape (doctor write_doctor_results). Incomplete
+    // objects must not default to readyForPublish=true (false-green).
+    let Some(block) = json.get("block").and_then(|v| v.as_u64()) else {
+        tracing::warn!(
+            "doctor-results.json missing numeric 'block' at {}",
+            path.display()
+        );
+        return error_section();
+    };
+    let Some(warn) = json.get("warn").and_then(|v| v.as_u64()) else {
+        tracing::warn!(
+            "doctor-results.json missing numeric 'warn' at {}",
+            path.display()
+        );
+        return error_section();
+    };
+    let Some(info) = json.get("info").and_then(|v| v.as_u64()) else {
+        tracing::warn!(
+            "doctor-results.json missing numeric 'info' at {}",
+            path.display()
+        );
+        return error_section();
+    };
+    let Some(ready) = json.get("readyForPublish").and_then(|v| v.as_bool()) else {
+        tracing::warn!(
+            "doctor-results.json missing boolean 'readyForPublish' at {}",
+            path.display()
+        );
+        return error_section();
+    };
 
     let mut top_findings = Vec::new();
     if let Some(arr) = json.get("findings").and_then(|v| v.as_array()) {
@@ -985,6 +1010,25 @@ mod tests {
         .unwrap();
         let section = read_doctor_section(&layout);
         assert_eq!(section.status, "stale");
+    }
+
+    #[test]
+    fn doctor_incomplete_sidecar_is_error_not_false_green() {
+        let tmp = tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        let path = layout.state_subdir().join("doctor-results.json");
+        // Timestamp alone must not default to readyForPublish=true.
+        fs::write(
+            path.as_std_path(),
+            r#"{"timestamp": "2099-01-01T00:00:00+00:00"}"#,
+        )
+        .unwrap();
+        let section = read_doctor_section(&layout);
+        assert_eq!(section.status, "error");
+        assert!(!section.ready_for_publish);
+        assert_eq!(section.block, 0);
     }
 
     #[test]
