@@ -321,19 +321,13 @@ impl<'a> TestMapper<'a> {
     }
 }
 
-fn is_test_function(name: &str, file_path: &str, language: Option<&str>) -> bool {
-    if name.starts_with("test_") || name.ends_with("_test") {
-        return true;
-    }
-    let normalized_path = file_path.replace('\\', "/");
-    if language == Some("Rust")
-        && (normalized_path.starts_with("tests/")
-            || normalized_path.contains("/tests/")
-            || normalized_path.ends_with("_test.rs")
-            || normalized_path.ends_with("_tests.rs"))
-    {
-        return true;
-    }
+/// Path-only test-file heuristic (language-independent).
+///
+/// Works with `language = None`. Includes directory layouts (`tests/`,
+/// `__tests__/`, …), co-located suffixes (`*_test.rs`, `*.test.ts`,
+/// `*_test.py`), and Go `*_test.go` / `_test.go` sibling convention.
+pub(crate) fn is_test_path(path: &str) -> bool {
+    let normalized_path = path.replace('\\', "/");
     if normalized_path.starts_with("tests/")
         || normalized_path.starts_with("test/")
         || normalized_path.contains("/tests/")
@@ -343,29 +337,45 @@ fn is_test_function(name: &str, file_path: &str, language: Option<&str>) -> bool
     {
         return true;
     }
-    if (language == Some("TypeScript") || language == Some("JavaScript"))
-        && (normalized_path.ends_with(".test.ts")
-            || normalized_path.ends_with(".test.tsx")
-            || normalized_path.ends_with(".test.js")
-            || normalized_path.ends_with(".test.jsx")
-            || normalized_path.ends_with(".spec.ts")
-            || normalized_path.ends_with(".spec.tsx")
-            || normalized_path.ends_with(".spec.js")
-            || normalized_path.ends_with(".spec.jsx"))
+    if normalized_path.ends_with("_test.rs")
+        || normalized_path.ends_with("_tests.rs")
+        || normalized_path.ends_with(".test.ts")
+        || normalized_path.ends_with(".test.tsx")
+        || normalized_path.ends_with(".test.js")
+        || normalized_path.ends_with(".test.jsx")
+        || normalized_path.ends_with(".spec.ts")
+        || normalized_path.ends_with(".spec.tsx")
+        || normalized_path.ends_with(".spec.js")
+        || normalized_path.ends_with(".spec.jsx")
+        || normalized_path.ends_with("_test.py")
+        || normalized_path.ends_with("_test.go")
     {
         return true;
     }
-    if language == Some("Python")
-        && (normalized_path.starts_with("tests/")
-            || normalized_path.starts_with("test/")
-            || normalized_path.contains("/tests/")
-            || normalized_path.contains("/test/")
-            || normalized_path.ends_with("_test.py")
-            || normalized_path.starts_with("test_"))
+    // Python files named test_*.py (path segment after final /)
+    if let Some(file_name) = normalized_path.rsplit('/').next()
+        && file_name.starts_with("test_")
+        && file_name.ends_with(".py")
     {
         return true;
     }
     false
+}
+
+/// Symbol-name (and optional language-aware) test heuristic.
+///
+/// Path-only classification belongs in [`is_test_path`]. Name conventions such
+/// as `test_*` / `*_test` are language-agnostic; `language` is reserved for
+/// future language-specific symbol rules and may be `None`.
+pub(crate) fn is_test_symbol(name: &str, _path: &str, _language: Option<&str>) -> bool {
+    if name.starts_with("test_") || name.ends_with("_test") {
+        return true;
+    }
+    false
+}
+
+fn is_test_function(name: &str, file_path: &str, language: Option<&str>) -> bool {
+    is_test_symbol(name, file_path, language) || is_test_path(file_path)
 }
 
 fn strip_test_prefix(name: &str) -> &str {
@@ -512,6 +522,42 @@ mod tests {
     fn test_is_test_function_prefix() {
         assert!(is_test_function("test_foo", "src/lib.rs", Some("Rust")));
     }
+
+    #[test]
+    fn test_is_test_symbol_name_conventions() {
+        assert!(is_test_symbol("test_foo", "src/lib.rs", None));
+        assert!(is_test_symbol("foo_test", "src/lib.rs", Some("Rust")));
+        assert!(!is_test_symbol("execute_foo", "src/lib.rs", None));
+    }
+
+    #[test]
+    fn test_is_test_path_generic_dirs() {
+        assert!(is_test_path("tests/integration/cli.rs"));
+        assert!(is_test_path("test/unit/foo.py"));
+        assert!(is_test_path("src/__tests__/foo.ts"));
+        assert!(is_test_path(r"src\__tests__\foo.ts"));
+        assert!(!is_test_path("src/commands/foo.rs"));
+    }
+
+    #[test]
+    fn test_is_test_path_language_suffixes_without_language() {
+        assert!(is_test_path("src/foo_test.rs"));
+        assert!(is_test_path("src/foo_tests.rs"));
+        assert!(is_test_path("src/foo.test.ts"));
+        assert!(is_test_path("src/foo.spec.tsx"));
+        assert!(is_test_path("pkg/foo_test.py"));
+        assert!(is_test_path("test_helpers.py"));
+    }
+
+    #[test]
+    fn test_is_test_path_go_test_file() {
+        assert!(is_test_path("pkg/foo_test.go"));
+        assert!(is_test_path("foo_test.go"));
+        assert!(is_test_path("internal/_test.go"));
+        assert!(!is_test_path("pkg/foo.go"));
+        assert!(!is_test_path("pkg/test_util.go"));
+    }
+
     #[test]
     fn test_strip_test_prefix() {
         assert_eq!(strip_test_prefix("test_foo"), "foo");
