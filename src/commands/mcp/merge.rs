@@ -60,7 +60,8 @@ impl ServerEntry {
     }
 }
 
-/// Parse host JSON (JSONC-tolerant). Empty/missing content → empty object.
+/// Parse host JSON (JSONC-tolerant). Empty/whitespace content → empty object.
+/// Top-level `null`, arrays, and scalars are rejected (must be an object).
 pub fn parse_jsonc(content: &str) -> Result<Value, String> {
     if content.trim().is_empty() {
         return Ok(Value::Object(Map::new()));
@@ -72,8 +73,6 @@ pub fn parse_jsonc(content: &str) -> Result<Value, String> {
             let v: Value = v;
             if v.is_object() {
                 Ok(v)
-            } else if v.is_null() {
-                Ok(Value::Object(Map::new()))
             } else {
                 Err("top-level JSON value must be an object".to_string())
             }
@@ -307,6 +306,19 @@ mod tests {
     fn json_reject_non_object_top_level() {
         let err = parse_jsonc("[1,2,3]").unwrap_err();
         assert!(err.contains("object"));
+    }
+
+    #[test]
+    fn parse_jsonc_null_is_err_empty_is_object() {
+        let err = parse_jsonc("null").unwrap_err();
+        assert!(
+            err.contains("object"),
+            "top-level null must not become {{}}: {err}"
+        );
+        let empty = parse_jsonc("").expect("empty → object");
+        assert!(empty.as_object().is_some_and(|m| m.is_empty()));
+        let ws = parse_jsonc("  \n\t  ").expect("whitespace → object");
+        assert!(ws.as_object().is_some_and(|m| m.is_empty()));
     }
 
     #[test]

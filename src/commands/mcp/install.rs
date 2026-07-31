@@ -417,7 +417,10 @@ fn uninstall_one(
             launcher: None,
             command: existing.as_ref().map(|e| e.command.clone()),
             args: existing.as_ref().map(|e| e.args.clone()),
-            message: Some("would remove ledgerful entry only".to_string()),
+            message: Some(
+                "would remove ledgerful entry only; other servers preserved; written ≠ connected (host may still cache tools until reload)"
+                    .to_string(),
+            ),
         };
     }
 
@@ -429,7 +432,10 @@ fn uninstall_one(
             launcher: None,
             command: None,
             args: None,
-            message: Some("removed ledgerful entry only; other servers preserved".to_string()),
+            message: Some(
+                "removed ledgerful entry only; other servers preserved; written ≠ connected (host may still cache tools until reload)"
+                    .to_string(),
+            ),
         },
         Err(e) => PlatformReport {
             id: id.as_str().to_string(),
@@ -486,7 +492,7 @@ fn status_one(id: PlatformId, scope: McpScope, env: &InstallEnv) -> PlatformRepo
             command: Some(entry.command),
             args: Some(entry.args),
             message: Some(format!(
-                "scope={scope:?}; ledgerful entry present in config (file presence only; not a live host connection)"
+                "scope={scope:?}; ledgerful entry present; host_detected={detected}; file presence only, not a live host connection"
             )),
         },
         Ok(None) => PlatformReport {
@@ -497,7 +503,7 @@ fn status_one(id: PlatformId, scope: McpScope, env: &InstallEnv) -> PlatformRepo
             command: None,
             args: None,
             message: Some(format!(
-                "scope={scope:?}; config exists but no ledgerful entry"
+                "scope={scope:?}; config exists but no ledgerful entry; host_detected={detected}; file presence only, not a live host connection"
             )),
         },
         Err(e) => PlatformReport {
@@ -627,15 +633,26 @@ fn sibling_bak(path: &Path) -> PathBuf {
     PathBuf::from(bak)
 }
 
-/// Same-directory temp + rename.
+/// Same-directory temp + rename. Never deletes the only copy of the target.
+///
+/// Replace sequence when `path` exists:
+/// 1. Write + sync `*.ledgerful-mcp-tmp`
+/// 2. Rename target → `*.ledgerful-mcp-prev`
+/// 3. Rename tmp → path; on success remove prev (best-effort)
+/// 4. On step-3 failure: rename prev back to path (restore), clean tmp (best-effort)
 fn atomic_write(path: &Path, data: &[u8]) -> Result<(), String> {
     let parent = path.parent().unwrap_or_else(|| Path::new("."));
     let file_name = path
         .file_name()
         .ok_or_else(|| format!("invalid path {}", path.display()))?;
+
     let mut tmp_name = file_name.to_os_string();
     tmp_name.push(".ledgerful-mcp-tmp");
     let tmp_path = parent.join(tmp_name);
+
+    let mut prev_name = file_name.to_os_string();
+    prev_name.push(".ledgerful-mcp-prev");
+    let prev_path = parent.join(prev_name);
 
     {
         let mut f = fs::File::create(&tmp_path)
@@ -646,19 +663,50 @@ fn atomic_write(path: &Path, data: &[u8]) -> Result<(), String> {
             .map_err(|e| format!("sync temp {}: {e}", tmp_path.display()))?;
     }
 
-    // Windows: rename over existing may fail — remove target first if needed.
-    if path.exists() {
-        // Try rename; on failure remove and retry.
-        match fs::rename(&tmp_path, path) {
+    if !path.exists() {
+        return match fs::rename(&tmp_path, path) {
             Ok(()) => Ok(()),
-            Err(_) => {
-                fs::remove_file(path).map_err(|e| format!("replace {}: {e}", path.display()))?;
-                fs::rename(&tmp_path, path)
-                    .map_err(|e| format!("rename temp over {}: {e}", path.display()))
+            Err(e) => {
+                let _ = fs::remove_file(&tmp_path);
+                Err(format!("rename temp over {}: {e}", path.display()))
+            }
+        };
+    }
+
+    // Drop a stale prev from a prior interrupted replace (best-effort).
+    if prev_path.exists() {
+        let _ = fs::remove_file(&prev_path);
+    }
+
+    if let Err(e) = fs::rename(path, &prev_path) {
+        let _ = fs::remove_file(&tmp_path);
+        return Err(format!(
+            "rename target aside before replace {}: {e}",
+            path.display()
+        ));
+    }
+
+    match fs::rename(&tmp_path, path) {
+        Ok(()) => {
+            let _ = fs::remove_file(&prev_path);
+            Ok(())
+        }
+        Err(e) => {
+            // Restore the only prior copy; never leave the target deleted.
+            let restore_err = fs::rename(&prev_path, path).err();
+            let _ = fs::remove_file(&tmp_path);
+            match restore_err {
+                None => Err(format!(
+                    "rename temp over {}: {e} (original restored)",
+                    path.display()
+                )),
+                Some(re) => Err(format!(
+                    "rename temp over {}: {e}; restore failed: {re} (original at {})",
+                    path.display(),
+                    prev_path.display()
+                )),
             }
         }
-    } else {
-        fs::rename(&tmp_path, path).map_err(|e| format!("rename temp over {}: {e}", path.display()))
     }
 }
 
@@ -976,6 +1024,15 @@ args = ["a"]
 
         let r1 = uninstall_one(PlatformId::Cursor, McpScope::User, false, &env);
         assert_eq!(r1.status, "written");
+        let msg = r1.message.as_deref().unwrap_or("");
+        assert!(
+            msg.contains("removed ledgerful entry only") && msg.contains("other servers preserved"),
+            "uninstall honesty base: {msg}"
+        );
+        assert!(
+            msg.contains("written ≠ connected") || msg.contains("written != connected"),
+            "uninstall written≠connected clause: {msg}"
+        );
         let content = fs::read_to_string(&paths.user).unwrap();
         let v: serde_json::Value = serde_json::from_str(&content).unwrap();
         assert!(v["mcpServers"].get("ledgerful").is_none());
@@ -985,6 +1042,43 @@ args = ["a"]
         assert_eq!(r2.status, "absent");
         // file still exists
         assert!(paths.user.exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn uninstall_dry_run_honesty_message() {
+        let root = unique_temp();
+        let env = env_at(&root);
+        let paths = resolve_paths(
+            PlatformId::Cursor,
+            &env.home,
+            &env.cwd,
+            env.appdata.as_deref(),
+        )
+        .unwrap();
+        fs::create_dir_all(paths.user.parent().unwrap()).unwrap();
+        fs::write(
+            &paths.user,
+            r#"{"mcpServers":{"ledgerful":{"command":"x","args":["mcp"]}}}"#,
+        )
+        .unwrap();
+        let r = uninstall_one(PlatformId::Cursor, McpScope::User, true, &env);
+        assert_eq!(r.status, "would_write");
+        let msg = r.message.as_deref().unwrap_or("");
+        assert!(
+            msg.contains("would remove ledgerful entry only"),
+            "dry-run base: {msg}"
+        );
+        assert!(
+            msg.contains("written ≠ connected") || msg.contains("written != connected"),
+            "dry-run written≠connected: {msg}"
+        );
+        // File unchanged
+        assert!(
+            fs::read_to_string(&paths.user)
+                .unwrap()
+                .contains("ledgerful")
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -1131,5 +1225,80 @@ args = ["a"]
         let l = path_launcher();
         assert!(l.command.ends_with("ledgerful") || l.command.ends_with("ledgerful.exe"));
         assert_eq!(l.args, vec!["mcp".to_string()]);
+    }
+
+    #[test]
+    fn atomic_write_create_and_replace_happy_path() {
+        let root = unique_temp();
+        let path = root.join("mcp.json");
+
+        atomic_write(&path, br#"{"v":1}"#).expect("create");
+        assert_eq!(fs::read_to_string(&path).unwrap(), r#"{"v":1}"#);
+        // No leftover temp/prev after success
+        assert!(!root.join("mcp.json.ledgerful-mcp-tmp").exists());
+        assert!(!root.join("mcp.json.ledgerful-mcp-prev").exists());
+
+        atomic_write(&path, br#"{"v":2}"#).expect("replace");
+        assert_eq!(fs::read_to_string(&path).unwrap(), r#"{"v":2}"#);
+        assert!(!root.join("mcp.json.ledgerful-mcp-tmp").exists());
+        assert!(!root.join("mcp.json.ledgerful-mcp-prev").exists());
+
+        // Document restore contract: if prev were left behind, a subsequent
+        // replace must not treat it as the live config (happy path cleans prev).
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn status_one_includes_host_detected_when_config_exists() {
+        let root = unique_temp();
+        let env = env_at(&root); // binary probe false; path existence still counts as detected
+        let paths = resolve_paths(
+            PlatformId::Cursor,
+            &env.home,
+            &env.cwd,
+            env.appdata.as_deref(),
+        )
+        .unwrap();
+        fs::create_dir_all(paths.user.parent().unwrap()).unwrap();
+
+        // Entry present — is_detected true because config path exists
+        fs::write(
+            &paths.user,
+            r#"{"mcpServers":{"ledgerful":{"command":"x","args":["mcp"]}}}"#,
+        )
+        .unwrap();
+        let present = status_one(PlatformId::Cursor, McpScope::User, &env);
+        assert_eq!(present.status, "written");
+        let msg = present.message.as_deref().unwrap_or("");
+        assert!(
+            msg.contains("host_detected=true") && msg.contains("ledgerful entry present"),
+            "present message: {msg}"
+        );
+        assert!(
+            msg.contains("file presence only") || msg.contains("not a live host connection"),
+            "honesty: {msg}"
+        );
+
+        // Entry absent, file exists — still host_detected=true (path exists)
+        fs::write(&paths.user, r#"{"mcpServers":{"other":{"command":"y"}}}"#).unwrap();
+        let absent = status_one(PlatformId::Cursor, McpScope::User, &env);
+        assert_eq!(absent.status, "absent");
+        let msg = absent.message.as_deref().unwrap_or("");
+        assert!(
+            msg.contains("host_detected=true") && msg.contains("no ledgerful entry"),
+            "absent-entry message: {msg}"
+        );
+
+        // No config file + probe false → host_detected=false path (missing-file branch)
+        fs::remove_file(&paths.user).unwrap();
+        let missing = status_one(PlatformId::Cursor, McpScope::User, &env);
+        assert_eq!(missing.status, "absent");
+        let msg = missing.message.as_deref().unwrap_or("");
+        assert!(
+            msg.contains("host not detected") || msg.contains("host_detected=false"),
+            "missing config, no binary: {msg}"
+        );
+
+        let _ = fs::remove_dir_all(&root);
     }
 }
