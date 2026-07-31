@@ -6,6 +6,23 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Change-set test gaps (0115 engine):** Shared structural test-gap library
+  (`impact/enrichment/test_gaps`) with probe-first status vocabulary
+  (`available` \| `empty_mapping` \| `missing_table` \| `no_source_seeds` \|
+  `unavailable`), symbol vs file-mapped classification, caps (unmapped 20 /
+  mappedSample 5), and always-on structural + LCOV ceiling notes. Wired into:
+  - **Impact** via orchestrator (same seeds as `test_coverage`; optional
+    `testGaps` on `ImpactPacket` — empty `test_coverage` vec ≠ full cover).
+  - **`change-context`** deepened `testCoverage` (full report; **removed**
+    “see track 0115” handoff; never bare `"empty"`).
+  - **`scan --pr`** always emits `testGaps` on schema **v2** (no v3); soft-open
+    read-only only (`unavailable` without creating `.ledgerful` / `ledger.db`);
+    file-level path only (no `resolve_seeds` / no `init_with_layout`).
+  Go `*_test.go` path heuristic in `is_test_path`. No DDL migration; no default
+  fail-on-gap. Sample: `output/0115/sample-test-gaps.json`.
+
 ## [0.2.4] - 2026-07-31
 
 ### Fixed
