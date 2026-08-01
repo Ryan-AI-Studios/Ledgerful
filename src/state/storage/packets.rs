@@ -43,7 +43,11 @@ impl StorageManager {
 
         if let Some(row) = rows.next().into_diagnostic()? {
             let json: String = row.get(0).into_diagnostic()?;
-            let packet: ImpactPacket = serde_json::from_str(&json).into_diagnostic()?;
+            let mut packet: ImpactPacket = serde_json::from_str(&json).into_diagnostic()?;
+            // Pre-0117 snapshots omit confidenceClass/confidenceSummary; recompute.
+            if let Some(ref mut blast) = packet.blast_radius {
+                blast.hydrate_confidence();
+            }
             Ok(Some(packet))
         } else {
             Ok(None)
@@ -64,8 +68,12 @@ impl StorageManager {
             .into_diagnostic()?;
 
         let mut packets = Vec::new();
-        for packet in rows {
-            packets.push(packet.into_diagnostic()?);
+        for row in rows {
+            let mut packet: ImpactPacket = row.into_diagnostic()?;
+            if let Some(ref mut blast) = packet.blast_radius {
+                blast.hydrate_confidence();
+            }
+            packets.push(packet);
         }
         Ok(packets)
     }

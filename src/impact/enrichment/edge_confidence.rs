@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 /// Product confidence class for a structural edge (SCREAMING_SNAKE in JSON).
 ///
 /// Derived from binding status + evidence path — not CRG EXTRACTED/INFERRED rename.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
 pub enum ConfidenceClass {
     /// `evidence` starts with `scip:` (checked before status).
@@ -24,6 +24,9 @@ pub enum ConfidenceClass {
     /// status == CAPPED — resolution budget; do not expand.
     Capped,
     /// Anything else — fail-soft; never promote to SCIP_BOUND / RESOLVED.
+    /// Also the serde default for pre-0117 snapshots missing `confidenceClass`
+    /// (hydrate from status+evidence after load when possible).
+    #[default]
     Unknown,
 }
 
