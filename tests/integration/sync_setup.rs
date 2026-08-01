@@ -331,6 +331,141 @@ fn status_next_action_when_incomplete() {
     handle_sync_status(true).expect("status --json");
 }
 
+/// P2-1: `sync status --json` stdout is a single pure JSON object.
+#[test]
+#[cfg(feature = "sync")]
+#[serial_test::serial(env)]
+fn status_json_stdout_is_pure_json_object() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+    let _guard = DirGuard::from_utf8(root);
+    let _secret = TempEnv::set("LEDGERFUL_SYNC_SECRET", TEST_SECRET);
+
+    ledgerful::commands::init::execute_init(false, false).unwrap();
+
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["sync", "status", "--json"]);
+    assert_eq!(
+        code, 0,
+        "status --json incomplete must exit 0; stderr={stderr}"
+    );
+    let trimmed = stdout.trim();
+    assert!(
+        !trimmed.contains("Set "),
+        "config set noise must not pollute JSON stdout:\n{trimmed}"
+    );
+    assert!(
+        !trimmed.contains("Team Sync Status"),
+        "human status banner must not pollute JSON stdout:\n{trimmed}"
+    );
+    let v: serde_json::Value = serde_json::from_str(trimmed).unwrap_or_else(|e| {
+        panic!("stdout must be a single pure JSON object: {e}; got:\n{trimmed}")
+    });
+    assert_eq!(v["schemaVersion"], 1);
+    assert!(v.get("nextAction").is_some());
+    assert!(v.get("enabled").is_some());
+    assert!(v.get("inboxCount").is_some());
+    assert!(v.get("outboxCount").is_some());
+}
+
+/// P2-2: refuse path must leave config.toml bytes identical and create no bak.
+#[test]
+#[cfg(feature = "sync")]
+#[serial_test::serial(env)]
+fn setup_enable_refuse_config_immutable_no_bak() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+    let _guard = DirGuard::from_utf8(root);
+    let _secret = TempEnv::set("LEDGERFUL_SYNC_SECRET", TEST_SECRET);
+
+    let _id = init_device(root);
+    // No peers → refuse.
+    let share = tmp.path().join("share");
+    fs::create_dir_all(&share).unwrap();
+    let target = format!("dir://{}", share.display().to_string().replace('\\', "/"));
+    let layout = ledgerful::state::layout::Layout::new(root);
+    ledgerful::commands::config::execute_config_set_in_quiet(
+        &layout,
+        &format!("sync.target=\"{target}\""),
+    )
+    .unwrap();
+
+    let config_path = layout.config_file();
+    let before = fs::read(config_path.as_std_path()).expect("config before refuse");
+    let bak = layout.state_dir.join("config.toml.bak");
+    // Ensure no stale bak from prior work.
+    let _ = fs::remove_file(bak.as_std_path());
+
+    let err = handle_sync_setup(true, false).expect_err("enable without peers must refuse");
+    let msg = format!("{err:#}").to_lowercase();
+    assert!(
+        msg.contains("refuse") || msg.contains("peer") || msg.contains("gate"),
+        "unexpected error: {msg}"
+    );
+
+    let after = fs::read(config_path.as_std_path()).expect("config after refuse");
+    assert_eq!(
+        before, after,
+        "refuse must not mutate config.toml (byte-identical)"
+    );
+    assert!(!bak.exists(), "refuse must not create config.toml.bak");
+    assert!(
+        !ledgerful::config::load::load_config(&layout)
+            .unwrap()
+            .sync
+            .enabled
+    );
+}
+
+/// P2-2: success path bak content equals pre-enable config bytes; enabled true after.
+#[test]
+#[cfg(feature = "sync")]
+#[serial_test::serial(env)]
+fn setup_enable_success_bak_matches_pre_enable_bytes() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+    let _guard = DirGuard::from_utf8(root);
+    let _secret = TempEnv::set("LEDGERFUL_SYNC_SECRET", TEST_SECRET);
+
+    let _id = init_device(root);
+    add_dummy_peer(root, "device-peer-bak-bytes");
+    let share = tmp.path().join("share");
+    fs::create_dir_all(&share).unwrap();
+    let target = format!("dir://{}", share.display().to_string().replace('\\', "/"));
+    let layout = ledgerful::state::layout::Layout::new(root);
+    ledgerful::commands::config::execute_config_set_in_quiet(
+        &layout,
+        &format!("sync.target=\"{target}\""),
+    )
+    .unwrap();
+
+    let config_path = layout.config_file();
+    let before = fs::read(config_path.as_std_path()).expect("config before enable");
+    let bak = layout.state_dir.join("config.toml.bak");
+    let _ = fs::remove_file(bak.as_std_path());
+
+    handle_sync_setup(true, false).expect("enable when green");
+
+    assert!(
+        bak.exists(),
+        "sibling config.toml.bak required on enable success"
+    );
+    let bak_bytes = fs::read(bak.as_std_path()).expect("bak after enable");
+    assert_eq!(
+        bak_bytes, before,
+        "bak must equal pre-enable config.toml bytes"
+    );
+    let cfg = ledgerful::config::load::load_config(&layout).unwrap();
+    assert!(cfg.sync.enabled, "enabled must be true after success");
+    let after = fs::read(config_path.as_std_path()).expect("config after enable");
+    assert_ne!(
+        after, before,
+        "enable must mutate config.toml (enabled=true)"
+    );
+}
+
 #[test]
 #[cfg(feature = "sync")]
 #[serial_test::serial(env)]

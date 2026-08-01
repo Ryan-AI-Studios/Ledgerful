@@ -83,7 +83,27 @@ pub struct ReadinessReport {
     pub secret_env_set: bool,
     pub enabled: bool,
     pub quarantine_count: u64,
+    /// Human-only honesty when quarantine count failed or timed out (not in JSON schema).
+    #[serde(skip)]
+    pub quarantine_note: Option<String>,
     pub next_action: String,
+}
+
+/// Hang-bounded shared-root count outcome for status counters.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct InboxOutboxScan {
+    pub inbox: u64,
+    pub outbox: u64,
+    pub last_bundle: Option<String>,
+    /// When set, human status should print this instead of numeric counters.
+    pub note: Option<String>,
+}
+
+/// Quarantine file count with optional human-only honesty note.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct QuarantineScan {
+    pub count: u64,
+    pub note: Option<String>,
 }
 
 impl ReadinessReport {
@@ -187,9 +207,16 @@ pub fn collect_readiness_with_timeout(
 
     let enabled = config.sync.enabled;
 
-    let quarantine_count = match (&device_id, &parsed) {
-        (Some(did), Some(SyncTarget::Dir(base))) => count_quarantine_files(base, did),
-        _ => 0,
+    // Shared-root FS scans only when the target probe already confirmed a regular dir.
+    // Counts themselves are hang-bounded with the same deadline (spec §2.3#9).
+    let quarantine = match (&device_id, &parsed, target_reachable) {
+        (Some(did), Some(SyncTarget::Dir(base)), TargetReachable::Yes) => {
+            count_quarantine_files_bounded(base.clone(), did.clone(), probe_timeout)
+        }
+        _ => QuarantineScan {
+            count: 0,
+            note: None,
+        },
     };
 
     let readiness = classify_readiness(
@@ -225,7 +252,8 @@ pub fn collect_readiness_with_timeout(
         target_reachable,
         secret_env_set,
         enabled,
-        quarantine_count,
+        quarantine_count: quarantine.count,
+        quarantine_note: quarantine.note,
         next_action,
     })
 }
@@ -307,16 +335,26 @@ fn compute_next_action(
     "ledgerful sync run --once".to_string()
 }
 
-/// Probe whether `path` is a directory, with a hard wall-clock timeout.
+/// Run `work` on a helper thread with a hard wall-clock deadline.
 ///
-/// NAS/SMB/OneDrive can hang on metadata; never block the CLI unbounded.
-pub fn probe_target_reachable(path: PathBuf, timeout: Duration) -> TargetReachable {
+/// NAS/SMB/OneDrive can hang on metadata/`read_dir`; never block the CLI unbounded.
+fn run_with_timeout<T: Send + 'static>(
+    timeout: Duration,
+    work: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, mpsc::RecvTimeoutError> {
     let (tx, rx) = mpsc::channel();
     thread::spawn(move || {
-        let ok = path.is_dir();
-        let _ = tx.send(ok);
+        let result = work();
+        let _ = tx.send(result);
     });
-    match rx.recv_timeout(timeout) {
+    rx.recv_timeout(timeout)
+}
+
+/// Probe whether `path` is a **regular non-symlink directory**, with a hard wall-clock timeout.
+///
+/// Uses [`is_regular_non_symlink_dir`] (not `Path::is_dir()`, which follows symlinks).
+pub fn probe_target_reachable(path: PathBuf, timeout: Duration) -> TargetReachable {
+    match run_with_timeout(timeout, move || is_regular_non_symlink_dir(&path)) {
         Ok(true) => TargetReachable::Yes,
         Ok(false) => TargetReachable::No,
         Err(mpsc::RecvTimeoutError::Timeout) => TargetReachable::Timeout,
@@ -324,29 +362,60 @@ pub fn probe_target_reachable(path: PathBuf, timeout: Duration) -> TargetReachab
     }
 }
 
+/// Hang-bounded quarantine count under `devices/<local_id>/quarantine/`.
+pub fn count_quarantine_files_bounded(
+    base: PathBuf,
+    device_id: String,
+    timeout: Duration,
+) -> QuarantineScan {
+    match run_with_timeout(timeout, move || count_quarantine_files(&base, &device_id)) {
+        Ok(scan) => scan,
+        Err(mpsc::RecvTimeoutError::Timeout) => QuarantineScan {
+            count: 0,
+            note: Some("unavailable (probe timed out)".to_string()),
+        },
+        Err(mpsc::RecvTimeoutError::Disconnected) => QuarantineScan {
+            count: 0,
+            note: Some("unavailable (probe failed)".to_string()),
+        },
+    }
+}
+
 /// Count regular non-symlink files under `devices/<local_id>/quarantine/`.
 ///
 /// Matches [`crate::sync::transport::dir::DirTransport`] symlink discipline
 /// (`symlink_metadata` + is_file + not symlink). Local device only.
-pub fn count_quarantine_files(base: &Path, device_id: &str) -> u64 {
+///
+/// On `read_dir` failure while the quarantine path is a regular dir, returns
+/// count 0 with an honesty note (does not pretend healthy zero silently).
+pub fn count_quarantine_files(base: &Path, device_id: &str) -> QuarantineScan {
     let qdir = base.join("devices").join(device_id).join("quarantine");
-    count_regular_non_symlink_files(&qdir)
+    match count_regular_non_symlink_files_detailed(&qdir) {
+        Ok(n) => QuarantineScan {
+            count: n,
+            note: None,
+        },
+        Err(e) => QuarantineScan {
+            count: 0,
+            note: Some(format!("unavailable ({e})")),
+        },
+    }
 }
 
-fn count_regular_non_symlink_files(dir: &Path) -> u64 {
+/// Count regular non-symlink files in `dir`. Missing / non-regular dir → 0.
+/// `read_dir` failure on a present regular dir → `Err`.
+fn count_regular_non_symlink_files_detailed(dir: &Path) -> Result<u64, String> {
     if !is_regular_non_symlink_dir(dir) {
-        return 0;
+        return Ok(0);
     }
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return 0;
-    };
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("read_dir failed: {e}"))?;
     let mut n = 0u64;
     for entry in entries.flatten() {
         if is_regular_non_symlink_file(&entry.path()) {
             n += 1;
         }
     }
-    n
+    Ok(n)
 }
 
 /// Regular file that is not a symlink (match DirTransport).
@@ -357,60 +426,127 @@ fn is_regular_non_symlink_file(path: &Path) -> bool {
     }
 }
 
-fn is_regular_non_symlink_dir(path: &Path) -> bool {
+/// Regular directory that is not a symlink (match DirTransport enable gate).
+pub fn is_regular_non_symlink_dir(path: &Path) -> bool {
     match std::fs::symlink_metadata(path) {
         Ok(meta) => meta.is_dir() && !meta.file_type().is_symlink(),
         Err(_) => false,
     }
 }
 
+/// Hang-bounded inbox/outbox scan for status (call only when target is reachable).
+pub fn count_inbox_outbox_bounded(
+    base: PathBuf,
+    device_id: String,
+    timeout: Duration,
+) -> InboxOutboxScan {
+    match run_with_timeout(timeout, move || count_inbox_outbox(&base, &device_id)) {
+        Ok(scan) => scan,
+        Err(mpsc::RecvTimeoutError::Timeout) => InboxOutboxScan {
+            inbox: 0,
+            outbox: 0,
+            last_bundle: None,
+            note: Some("unavailable (probe timed out)".to_string()),
+        },
+        Err(mpsc::RecvTimeoutError::Disconnected) => InboxOutboxScan {
+            inbox: 0,
+            outbox: 0,
+            last_bundle: None,
+            note: Some("unavailable (probe failed)".to_string()),
+        },
+    }
+}
+
 /// Count inbox/outbox bundle files under a parsed `dir://` root (status counters).
-pub fn count_inbox_outbox(base: &Path, device_id: &str) -> (u64, u64, Option<String>) {
+///
+/// Uses regular non-symlink file checks (DirTransport discipline). Symlink dirs
+/// and files are ignored. Top-level `read_dir` failures set [`InboxOutboxScan::note`].
+pub fn count_inbox_outbox(base: &Path, device_id: &str) -> InboxOutboxScan {
     let mut inbox_count = 0u64;
     let mut outbox_count = 0u64;
     let mut last_bundle_name: Option<String> = None;
+    let mut error: Option<String> = None;
 
     let outbox_path = base.join("devices").join(device_id);
-    if outbox_path.exists()
-        && let Ok(entries) = std::fs::read_dir(&outbox_path)
-    {
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_file()
-                && let Some(name) = path.file_name().and_then(|n| n.to_str())
-                && crate::sync::transport::is_bundle_filename(name)
-            {
-                outbox_count += 1;
+    if is_regular_non_symlink_dir(&outbox_path) {
+        match std::fs::read_dir(&outbox_path) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    let path = entry.path();
+                    if is_regular_non_symlink_file(&path)
+                        && let Some(name) = path.file_name().and_then(|n| n.to_str())
+                        && crate::sync::transport::is_bundle_filename(name)
+                    {
+                        outbox_count += 1;
+                    }
+                }
             }
+            Err(e) => error = Some(format!("outbox read_dir failed: {e}")),
         }
     }
 
     let devices_path = base.join("devices");
-    if devices_path.exists()
-        && let Ok(entries) = std::fs::read_dir(&devices_path)
-    {
-        for entry in entries.flatten() {
-            if entry.file_name() != device_id
-                && let Ok(peer_entries) = std::fs::read_dir(entry.path())
-            {
-                for peer_entry in peer_entries.flatten() {
-                    let path = peer_entry.path();
-                    if path.is_file()
-                        && let Some(name) = path.file_name().and_then(|n| n.to_str())
-                        && crate::sync::transport::is_bundle_filename(name)
-                    {
-                        inbox_count += 1;
-                        match &last_bundle_name {
-                            Some(cur) if name <= cur.as_str() => {}
-                            _ => last_bundle_name = Some(name.to_string()),
+    if is_regular_non_symlink_dir(&devices_path) {
+        match std::fs::read_dir(&devices_path) {
+            Ok(entries) => {
+                for entry in entries.flatten() {
+                    if entry.file_name() == device_id {
+                        continue;
+                    }
+                    let peer_path = entry.path();
+                    if !is_regular_non_symlink_dir(&peer_path) {
+                        continue;
+                    }
+                    match std::fs::read_dir(&peer_path) {
+                        Ok(peer_entries) => {
+                            for peer_entry in peer_entries.flatten() {
+                                let path = peer_entry.path();
+                                if is_regular_non_symlink_file(&path)
+                                    && let Some(name) = path.file_name().and_then(|n| n.to_str())
+                                    && crate::sync::transport::is_bundle_filename(name)
+                                {
+                                    inbox_count += 1;
+                                    match &last_bundle_name {
+                                        Some(cur) if name <= cur.as_str() => {}
+                                        _ => last_bundle_name = Some(name.to_string()),
+                                    }
+                                }
+                            }
+                        }
+                        Err(e) => {
+                            if error.is_none() {
+                                error = Some(format!("inbox peer read_dir failed: {e}"));
+                            }
                         }
                     }
+                }
+            }
+            Err(e) => {
+                if error.is_none() {
+                    error = Some(format!("devices read_dir failed: {e}"));
                 }
             }
         }
     }
 
-    (inbox_count, outbox_count, last_bundle_name)
+    let note = error.map(|e| format!("unavailable ({e})"));
+    // On I/O error, do not present partial counters as healthy zeros alone —
+    // status human path prints `note`; JSON still gets numeric 0s.
+    if note.is_some() {
+        InboxOutboxScan {
+            inbox: 0,
+            outbox: 0,
+            last_bundle: None,
+            note,
+        }
+    } else {
+        InboxOutboxScan {
+            inbox: inbox_count,
+            outbox: outbox_count,
+            last_bundle: last_bundle_name,
+            note: None,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -656,6 +792,61 @@ mod tests {
     }
 
     #[test]
+    fn probe_regular_dir_yes_file_path_no() {
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path().join("share");
+        fs::create_dir_all(&dir).unwrap();
+        let file = tmp.path().join("not-a-dir.txt");
+        fs::write(&file, b"x").unwrap();
+
+        assert_eq!(
+            probe_target_reachable(dir, Duration::from_secs(2)),
+            TargetReachable::Yes
+        );
+        assert_eq!(
+            probe_target_reachable(file, Duration::from_secs(2)),
+            TargetReachable::No
+        );
+    }
+
+    #[test]
+    fn probe_symlink_to_dir_is_not_yes() {
+        // Symlink-to-dir must not satisfy the regular-directory enable gate.
+        // On Windows, creating directory symlinks often requires elevation — skip if create fails.
+        let tmp = tempdir().unwrap();
+        let real = tmp.path().join("real-share");
+        fs::create_dir_all(&real).unwrap();
+        let link = tmp.path().join("link-share");
+
+        #[cfg(unix)]
+        {
+            std::os::unix::fs::symlink(&real, &link).expect("unix symlink dir");
+        }
+        #[cfg(windows)]
+        {
+            if std::os::windows::fs::symlink_dir(&real, &link).is_err() {
+                // No privilege / developer mode — cannot exercise symlink gate on this host.
+                return;
+            }
+        }
+
+        // path.is_dir() would follow and return true; we require non-symlink.
+        assert!(
+            real.is_dir(),
+            "sanity: Path::is_dir follows; real dir exists"
+        );
+        assert_eq!(
+            probe_target_reachable(link, Duration::from_secs(2)),
+            TargetReachable::No,
+            "symlink-to-dir must not be TargetReachable::Yes"
+        );
+        assert_eq!(
+            probe_target_reachable(real, Duration::from_secs(2)),
+            TargetReachable::Yes
+        );
+    }
+
+    #[test]
     fn quarantine_count_ignores_symlinks() {
         let tmp = tempdir().unwrap();
         let base = tmp.path();
@@ -679,12 +870,11 @@ mod tests {
             );
         }
 
-        let n = count_quarantine_files(base, "device-local");
+        let scan = count_quarantine_files(base, "device-local");
+        assert!(scan.note.is_none(), "healthy count must not set note");
+        let n = scan.count;
         // Two regular files; symlink (if created) ignored.
         assert!(n >= 2, "expected at least 2 regular files, got {n}");
-        // If symlink was created, ensure it was not counted as a third regular file...
-        // Actually symlink_metadata on the link itself: is_file() on Windows may vary.
-        // We only assert we never count more than the regular files present.
         let regular = fs::read_dir(&qdir)
             .unwrap()
             .flatten()
@@ -695,6 +885,14 @@ mod tests {
             })
             .count() as u64;
         assert_eq!(n, regular);
+    }
+
+    #[test]
+    fn quarantine_missing_dir_is_zero_without_note() {
+        let tmp = tempdir().unwrap();
+        let scan = count_quarantine_files(tmp.path(), "no-device");
+        assert_eq!(scan.count, 0);
+        assert!(scan.note.is_none());
     }
 
     #[test]

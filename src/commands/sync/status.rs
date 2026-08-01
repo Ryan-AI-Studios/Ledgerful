@@ -3,7 +3,10 @@
 //! All `dir://` path work uses [`crate::sync::transport::SyncTarget::parse`]
 //! (Windows `dir:///C:/…` form). Never prompts for the team secret.
 
-use super::readiness::{ReadinessReport, TargetReachable, collect_readiness, count_inbox_outbox};
+use super::readiness::{
+    InboxOutboxScan, ReadinessReport, TARGET_REACHABLE_TIMEOUT, TargetReachable, collect_readiness,
+    count_inbox_outbox_bounded,
+};
 use crate::state::storage::StorageManager;
 use crate::sync::transport::SyncTarget;
 use miette::{Result, miette};
@@ -31,20 +34,25 @@ pub fn handle(json: bool) -> Result<()> {
         .unwrap_or((None, None));
 
     // Inbox/outbox only via SyncTarget::parse (never naive strip_prefix).
-    let mut inbox_count = 0u64;
-    let mut outbox_count = 0u64;
-    let mut last_bundle_name: Option<String> = None;
-
-    if let Some(ref did) = report.device_id
+    // Scan shared root only when target_reachable==Yes; hang-bounded.
+    let scan = if let Some(ref did) = report.device_id
+        && report.target_reachable.is_reachable()
         && report.target_parse_ok
         && let Ok(SyncTarget::Dir(base)) = SyncTarget::parse(&report.target)
     {
-        let (in_c, out_c, last) = count_inbox_outbox(&base, did);
-        inbox_count = in_c;
-        outbox_count = out_c;
-        last_bundle_name = last;
-    }
-    let last_bundle = last_bundle_name.unwrap_or_else(|| "None".to_string());
+        count_inbox_outbox_bounded(base, did.clone(), TARGET_REACHABLE_TIMEOUT)
+    } else {
+        InboxOutboxScan {
+            inbox: 0,
+            outbox: 0,
+            last_bundle: None,
+            note: None,
+        }
+    };
+    let last_bundle = scan
+        .last_bundle
+        .clone()
+        .unwrap_or_else(|| "None".to_string());
 
     if json {
         emit_status_json(
@@ -52,8 +60,8 @@ pub fn handle(json: bool) -> Result<()> {
             &config.sync.schedule,
             last_extract_hlc.as_deref(),
             last_apply_hlc.as_deref(),
-            inbox_count,
-            outbox_count,
+            scan.inbox,
+            scan.outbox,
             &last_bundle,
         )?;
         return Ok(());
@@ -93,10 +101,19 @@ pub fn handle(json: bool) -> Result<()> {
         "  Last Apply:     {}",
         last_apply_hlc.unwrap_or_else(|| "Never".to_string())
     );
-    println!("  Outbox Count:   {outbox_count}");
-    println!("  Inbox Count:    {inbox_count}");
-    println!("  Last Received:  {last_bundle}");
-    println!("  Quarantined (this device): {}", report.quarantine_count);
+    if let Some(ref note) = scan.note {
+        println!("  Outbox Count:   {note}");
+        println!("  Inbox Count:    {note}");
+        println!("  Last Received:  {note}");
+    } else {
+        println!("  Outbox Count:   {}", scan.outbox);
+        println!("  Inbox Count:    {}", scan.inbox);
+        println!("  Last Received:  {last_bundle}");
+    }
+    match report.quarantine_note.as_deref() {
+        Some(note) => println!("  Quarantined (this device): {note}"),
+        None => println!("  Quarantined (this device): {}", report.quarantine_count),
+    }
 
     // Peer trust store — do not mask list errors as "0 peers".
     match (report.peer_count, report.peers_error.as_ref()) {

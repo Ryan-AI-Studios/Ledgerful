@@ -173,7 +173,10 @@ fn print_checklist(report: &ReadinessReport) {
         secret_hint(report.secret_env_set)
     );
     println!("  [{}] Enabled ([sync].enabled)", mark(report.enabled));
-    println!("  Quarantined (this device): {}", report.quarantine_count);
+    match report.quarantine_note.as_deref() {
+        Some(note) => println!("  Quarantined (this device): {note}"),
+        None => println!("  Quarantined (this device): {}", report.quarantine_count),
+    }
     println!();
     println!("  Readiness: {}", report.readiness.as_str());
     println!("  Next:      {}", report.next_action);
