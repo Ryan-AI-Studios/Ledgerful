@@ -26,7 +26,7 @@ cargo binstall --git https://github.com/Ryan-AI-Studios/Ledgerful
 **Package managers:**
 - **Homebrew:** `brew install Ryan-AI-Studios/tap/ledgerful`
 - **Scoop:** `scoop bucket add ledgerful https://github.com/Ryan-AI-Studios/scoop-bucket` then `scoop install ledgerful`
-- **winget:** pending Microsoft review (no install command yet)
+- **winget:** `winget install Ledgerful.Ledgerful` (accepted 2026-07-30; community package version may lag engine releases)
 - Apt and other distro packages are not planned. Manifests and release-time bump automation live under [`packaging/`](packaging/); channel details in [`docs/package-distribution.md`](docs/package-distribution.md).
 
 If `ledgerful --version` is older than the latest published release, you may have multiple installs on `PATH` — see the [PATH / version FAQ](docs/installation.md#path--version-faq-multiple-install-channels).
@@ -70,7 +70,7 @@ ledgerful ask "What should I verify next?"
 - `ask`: send sanitized impact context to Gemini or a local LLM. Supports natural-language `--semantic` codebase search.
 - `search`: sub-millisecond regex search via Tantivy trigrams and ranked BM25 codebase queries.
 - `hotspots`: rank files by temporal change frequency multiplied by complexity.
-- `mcp`: run the Model Context Protocol stdio server for AI agent integration.
+- `mcp`: run the Model Context Protocol stdio server for AI agent integration; also `mcp install|uninstall|status` for Top-N host config (claude-code, cursor, codex, copilot).
 - `viz`: export an interactive HTML Knowledge Graph visualization of codebase dependencies and risk heatmaps.
 - `federate`: export public interfaces, scan sibling repositories, and show known federated links.
 - `ledger`: transactional architectural memory (start, commit, rollback, audit, search, adr).
@@ -119,8 +119,38 @@ Use Gemini narrative reporting:
 ledgerful ask --narrative
 ```
 
-After the first tagged release and npm publish, use Ledgerful through
-MCP-compatible coding agents:
+### MCP agent install (Top-N platforms)
+
+Wire Ledgerful into supported agent hosts with one command (merge-only; never
+clobbers foreign MCP servers):
+
+```powershell
+# Detect hosts, or pick one: claude-code | cursor | codex | copilot
+ledgerful mcp install
+ledgerful mcp install --platform cursor --dry-run --json
+ledgerful mcp status --json
+ledgerful mcp uninstall --platform cursor
+```
+
+| Platform id   | Default scope | Config key / notes |
+|---------------|---------------|--------------------|
+| `claude-code` | user          | top-level `mcpServers` in `~/.claude.json` (not `projects[cwd]`) |
+| `cursor`      | user          | `mcpServers` in `~/.cursor/mcp.json` |
+| `codex`       | user          | `[mcp_servers.ledgerful]` in `~/.codex/config.toml` |
+| `copilot`     | project       | top-level **`servers`** + `"type":"stdio"` in `.vscode/mcp.json` |
+
+Launcher: **`--launcher auto`** (default) prefers a PATH `ledgerful` binary with
+args `["mcp"]`; falls back to `npx -y @ledgerful/mcp-server` (Windows prefers
+`npx.cmd`) with a pin-lag warning when the binary is missing. Prefer PATH over
+npx when both exist — published npm may lag the engine.
+
+**Written ≠ connected:** a successful install updates config files only. Hosts may
+still require trust/approve prompts (Codex project trust, Claude Code approve,
+VS Code MCP trust). Reload the host after install.
+
+Bare `ledgerful mcp` / `ledgerful mcp serve` still start the stdio server.
+
+Manual / npm wrapper (optional):
 
 ```powershell
 npx @ledgerful/mcp-server

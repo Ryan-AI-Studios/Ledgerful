@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **MCP agent platform install (0116):** `ledgerful mcp install|uninstall|status`
+  for Top-N hosts only (`claude-code`, `cursor`, `codex`, `copilot`). Merge-only
+  host config wiring (JSONC + Codex TOML), launcher `auto|path|npx` (PATH binary
+  preferred; Windows `npx.cmd`), sibling `.bak` + atomic write, dry-run/`--json`,
+  host-trust honesty (written ≠ connected). Bare `ledgerful mcp` / `mcp serve`
+  still starts the stdio server; install/uninstall/status are human unless
+  `--json`. Skill/docs teach install and list `change_context` first among MCP
+  tools. No version bump.
 - **Change-set test gaps (0115 engine):** Shared structural test-gap library
   (`impact/enrichment/test_gaps`) with probe-first status vocabulary
   (`available` \| `empty_mapping` \| `missing_table` \| `no_source_seeds` \|

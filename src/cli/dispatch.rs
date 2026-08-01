@@ -351,7 +351,31 @@ pub fn run_with(cli: Cli) -> Result<()> {
         #[cfg(feature = "usage-metrics")]
         Commands::Usage { command } => dispatch_usage(command),
         #[cfg(feature = "mcp")]
-        Commands::Mcp => crate::commands::mcp::execute_mcp_server(),
+        Commands::Mcp { command } => match command {
+            None | Some(crate::cli::args::McpCommands::Serve) => {
+                crate::commands::mcp::execute_mcp_server()
+            }
+            Some(crate::cli::args::McpCommands::Install {
+                platforms,
+                scope,
+                launcher,
+                dry_run,
+                force,
+                no_backup,
+                json,
+            }) => crate::commands::mcp::install::execute_install(
+                platforms, scope, launcher, dry_run, force, !no_backup, json,
+            ),
+            Some(crate::cli::args::McpCommands::Uninstall {
+                platforms,
+                scope,
+                dry_run,
+                json,
+            }) => crate::commands::mcp::install::execute_uninstall(platforms, scope, dry_run, json),
+            Some(crate::cli::args::McpCommands::Status { json }) => {
+                crate::commands::mcp::install::execute_status(json)
+            }
+        },
         Commands::Schedule { subcommand } => dispatch_schedule(subcommand),
         Commands::Demo {
             keep,

@@ -53,6 +53,21 @@ sccache/gemini) never set `readyForPublish=false`. See `docs/doctor-severity.md`
 
 If the command is unavailable, do not invent Ledgerful output. Tell the user it is not installed or not on `PATH`, then continue with normal repository inspection.
 
+### MCP host wiring (optional)
+
+To register Ledgerful as an MCP server in a supported agent host (Top-N only:
+`claude-code`, `cursor`, `codex`, `copilot`), prefer:
+
+```bash
+ledgerful mcp install
+# or: ledgerful mcp install --platform cursor --dry-run --json
+```
+
+Do **not** invent host-specific `mcp add` commands. Full registration, tools
+(including `change_context` first), and limitations:
+[`references/mcp.md`](references/mcp.md).
+Bare `ledgerful mcp` still serves stdio.
+
 If installation is allowed, install Ledgerful like a normal CLI:
 
 ```bash

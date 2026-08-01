@@ -22,13 +22,53 @@ backward-compatible CLI alias while the npm package carries the Ledgerful brand.
 
 ## Agent Configuration
 
-Use the installed bin as the MCP command:
+**Preferred:** install from a Ledgerful binary on PATH (merges host configs safely):
+
+```sh
+# Top-N only: claude-code, cursor, codex, copilot
+ledgerful mcp install
+ledgerful mcp install --platform cursor --dry-run --json
+ledgerful mcp status --json
+```
+
+- Prefer **PATH** `ledgerful` + args `["mcp"]` over npx when both exist.
+- **Copilot / VS Code** uses top-level **`servers`** with `"type": "stdio"` (not `mcpServers`).
+- Config write ≠ tools connected — reload the host; trust/approve prompts may still appear.
+
+### Manual snippet (Claude/Cursor-style `mcpServers`)
+
+```json
+{
+  "mcpServers": {
+    "ledgerful": {
+      "command": "ledgerful",
+      "args": ["mcp"]
+    }
+  }
+}
+```
+
+Or use the npm wrapper bin:
 
 ```json
 {
   "mcpServers": {
     "ledgerful": {
       "command": "ledgerful-mcp"
+    }
+  }
+}
+```
+
+### Copilot / VS Code (`.vscode/mcp.json`)
+
+```json
+{
+  "servers": {
+    "ledgerful": {
+      "type": "stdio",
+      "command": "ledgerful",
+      "args": ["mcp"]
     }
   }
 }
