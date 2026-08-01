@@ -437,7 +437,7 @@ fn describe_framework_keyword(
         },
         "no_unsigned_entries_gate" => "Ledgerful capability (not a bundle artifact)".to_string(),
         "verify_command" => {
-            "Ledgerful capability (not a bundle artifact); evidence produced by running `ledgerful verify --signatures --against-export <path>`".to_string()
+            "Ledgerful capability (not a bundle artifact); evidence produced by running `ledgerful verify --signatures --against-export <path>` (checkpoint: live extends or equals the retained head; `--exact` for snapshot equality)".to_string()
         },
         "scan_impact" => "Framework-level evidence category (not included in this bundle — produced by `ledgerful scan --impact`).".to_string(),
         "config_diff" => "Framework-level evidence category (not included in this bundle — produced by `ledgerful config diff`).".to_string(),
@@ -600,7 +600,7 @@ pub fn render_mapping_doc(mapping: &ControlMapping) -> String {
     lines.push("* `temporal_couplings` — Framework-level evidence category (not included in this bundle — produced by `ledgerful hotspots trend` and `ledgerful hotspots explain`).".to_string());
     lines.push("* `drift_detection` — Framework-level evidence category (not included in this bundle — produced by `ledgerful ledger status` and `ledgerful scan --impact`).".to_string());
     lines.push("* `no_unsigned_entries_gate` — Ledgerful capability (not a bundle artifact); enforced across the whole ledger / export bundle.".to_string());
-    lines.push("* `verify_command` — Ledgerful capability (not a bundle artifact); evidence produced by running `ledgerful verify --signatures --against-export <path>`.".to_string());
+    lines.push("* `verify_command` — Ledgerful capability (not a bundle artifact); evidence produced by running `ledgerful verify --signatures --against-export <path>` (checkpoint: live extends or equals the retained head; `--exact` for snapshot equality).".to_string());
     lines.push("* `drift_reconciliation` — Framework-level evidence category (not included in this bundle — produced by `ledgerful ledger reconcile` and `ledgerful ledger adopt`).".to_string());
     lines.push(String::new());
     lines.push("## Control provenance and honest limits".to_string());
