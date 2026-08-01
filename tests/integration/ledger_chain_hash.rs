@@ -381,6 +381,38 @@ fn chain__pre_chain_entries_without_prev_hash__against_export_of_same_ledger_pas
     let zip_bytes = generate_soc2_export(&layout).unwrap();
     std::fs::write(&export_path, &zip_bytes).unwrap();
 
+    // Prove synthesis kept both pre-chain rows (shared ordering must not collapse to 1).
+    {
+        let file = std::io::Cursor::new(&zip_bytes);
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut head_entry = archive.by_name("chain_head.json").unwrap();
+        let mut head_buf = Vec::new();
+        std::io::Read::read_to_end(&mut head_entry, &mut head_buf).unwrap();
+        let head: ledgerful::ledger::types::ChainHead = serde_json::from_slice(&head_buf).unwrap();
+        assert_eq!(
+            head.length, 2,
+            "synthesized pre-chain export head must report length 2, got {}",
+            head.length
+        );
+
+        // Optional: latest hash matches the second pre-chain entry (ordering by committed_at).
+        let mut storage = StorageManager::init(db_path.as_path()).unwrap();
+        let db = LedgerDb::new(storage.get_connection_mut());
+        let entries = db
+            .get_all_committed_ledger_entries()
+            .expect("read pre-chain entries");
+        let second = entries
+            .iter()
+            .find(|e| e.tx_id == "tx-prechain-002")
+            .expect("second pre-chain entry present");
+        let expected_hash =
+            ledgerful::ledger::crypto::compute_entry_hash_for_entry(second).unwrap();
+        assert_eq!(
+            head.latest_entry_hash, expected_hash,
+            "synthesized latest_entry_hash must match second pre-chain entry"
+        );
+    }
+
     // The local ledger exactly matches the export, so --against-export should
     // pass even though there is no stored chain head.
     verify_ledger_signatures_with_options(
@@ -1270,5 +1302,45 @@ fn chain__export_head_unsigned_with_require_signing__refuses() {
         msg.contains("Refusing to export an unsigned chain head")
             || msg.contains("require_signing"),
         "unsigned + require_signing must refuse export head, got: {msg}"
+    );
+}
+
+#[cfg(feature = "export")]
+#[test]
+#[serial(cwd, env)]
+fn chain__export_head_unsigned_with_broken_config__refuses() {
+    use ledgerful::export::head::prepare_chain_head_export;
+
+    let _env_non_interactive = non_interactive();
+    let setup = setup_initialized_repo();
+    let root = setup.root.clone();
+    let db_path = setup.db_path.clone();
+
+    commit_n_entries(&setup, 1, "unsigned broken config");
+
+    // Strip signatures from chain head while keeping length/hash.
+    let conn = rusqlite::Connection::open(db_path.as_path()).unwrap();
+    conn.execute(
+        "UPDATE chain_head SET head_signature = NULL, head_public_key = NULL",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    // Malformed config must fail closed (not unwrap_or_default → require_signing=false).
+    let cfg_path = root.join(".ledgerful").join("config.toml");
+    std::fs::write(
+        cfg_path.as_std_path(),
+        "this is not = valid toml {{\nrequire_signing is broken\n",
+    )
+    .unwrap();
+
+    let layout = Layout::new(root.as_str());
+    let err = prepare_chain_head_export(&layout).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("cannot load config")
+            || msg.contains("Refusing to export an unsigned chain head"),
+        "unsigned + broken config must refuse export head fail-closed, got: {msg}"
     );
 }

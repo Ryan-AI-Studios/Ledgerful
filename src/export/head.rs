@@ -25,9 +25,17 @@ pub fn prepare_chain_head_export(layout: &Layout) -> Result<ChainHead> {
     let sig = head.head_signature.as_deref().unwrap_or("");
     let pub_key = head.head_public_key.as_deref().unwrap_or("");
     let signed = !sig.is_empty() && !pub_key.is_empty();
-    let config = crate::config::load::load_config(layout).unwrap_or_default();
 
+    // Only evaluate require_signing for unsigned heads. Fail closed on config
+    // load errors so a malformed config cannot silently allow an unsigned export
+    // via Config::default() (require_signing=false).
     if !signed {
+        let config = crate::config::load::load_config(layout).map_err(|e| {
+            miette::miette!(
+                "Refusing to export an unsigned chain head: cannot load config to evaluate \
+                 require_signing ({e}). Fix .ledgerful/config.toml or ensure the chain head is signed."
+            )
+        })?;
         if config.intent.require_signing {
             return Err(miette::miette!(
                 "Refusing to export an unsigned chain head while intent.require_signing is true. \

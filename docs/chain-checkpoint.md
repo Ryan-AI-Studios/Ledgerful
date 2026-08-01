@@ -12,8 +12,11 @@ This is **not** local immutability, Rekor/CT, or a public transparency log.
 1. **Export a thin head** (or a full SOC2 zip — both work):
 
    ```powershell
+   New-Item -ItemType Directory -Force -Path .\checkpoints | Out-Null
    ledgerful export head --out .\checkpoints\head.json
    ```
+
+   (Or omit `--out` to write `./ledgerful-chain-head.json` in the current directory.)
 
 2. **Copy the file off this machine** (USB, object store, another host, CI
    artifact). Do **not** keep the only copy under `.ledgerful/` on the same disk.

@@ -1382,6 +1382,23 @@ mod export_path_tests {
         assert!(err.contains("Cargo.toml"));
     }
 
+    /// 0119 DoD: `export head` shares `validate_export_evidence_path` path-safety.
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn validate_export_evidence_path_refuses_cargo_toml() {
+        let (_tmp, root) = temp_repo();
+        let _guard = CwdGuard::enter(root.as_std_path());
+
+        let err = validate_export_evidence_path(std::path::Path::new("Cargo.toml"), false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            err.contains("Cargo.toml"),
+            "export evidence/head path safety must refuse Cargo.toml; got: {err}"
+        );
+    }
+
     #[serial_test::serial(cwd)]
     #[test]
     fn validate_export_path_refuses_state_directory() {

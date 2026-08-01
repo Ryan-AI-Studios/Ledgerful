@@ -2708,7 +2708,7 @@ pub enum ExportCommands {
         #[arg(long = "control")]
         control: Vec<String>,
     },
-    /// Export the live signed chain head as a thin JSON checkpoint
+    /// Export the live chain head as a thin JSON checkpoint
     Head {
         /// Output file path (default: ./ledgerful-chain-head.json)
         #[arg(short, long)]
