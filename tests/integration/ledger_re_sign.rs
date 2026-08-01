@@ -691,7 +691,7 @@ fn re_sign_then_verify_chain_passes() {
     // links to the correct new tail hash and the genesis prev_hash is None.
     let layout = ledgerful::state::layout::Layout::new(root.as_str());
     ledgerful::commands::verify::verify_ledger_signatures_with_options(
-        &layout, true, true, false, None,
+        &layout, true, true, false, None, false,
     )
     .expect("verify --chain must pass after re-sign");
 }

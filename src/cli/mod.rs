@@ -200,6 +200,10 @@ mod tests {
             force: false,
             control: Vec::new(),
         };
+        let _: ExportCommands = ExportCommands::Head {
+            out: None,
+            force: false,
+        };
         let _: Commands = Commands::Demo {
             keep: false,
             output: None,

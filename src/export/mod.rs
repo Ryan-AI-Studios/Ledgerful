@@ -7,5 +7,6 @@
 //! which is made available by the `export` feature (and also by `sync`).
 
 pub mod control_mapping;
+pub mod head;
 pub mod soc2;
 pub mod soc2_control;

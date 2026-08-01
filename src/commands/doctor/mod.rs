@@ -514,6 +514,11 @@ pub fn execute_doctor(json: bool) -> Result<()> {
         findings.push(f);
     }
 
+    // 0119: operator chain-head retention hygiene (info/optional only).
+    if let Some(f) = chain_checkpoint_practice_finding(storage.get_connection()) {
+        findings.push(f);
+    }
+
     // 0110: light team-sync findings (warn/info only). Disabled sync never blocks publish.
     findings.extend(sync_doctor_findings(&layout, &config));
 
@@ -693,6 +698,24 @@ fn sccache_hint_finding() -> Option<DoctorFinding> {
     } else {
         None
     }
+}
+
+/// 0119: when a signed chain head exists, remind operators to retain checkpoints
+/// off-machine. Info + Optional — never blocks readyForPublish / dashboard_failures.
+/// No head or unsigned head → no finding.
+fn chain_checkpoint_practice_finding(conn: &rusqlite::Connection) -> Option<DoctorFinding> {
+    let db = crate::ledger::db::LedgerDb::new(conn);
+    let head = db.get_chain_head().ok()??;
+    let sig = head.head_signature.as_deref().unwrap_or("");
+    let pub_key = head.head_public_key.as_deref().unwrap_or("");
+    if sig.is_empty() || pub_key.is_empty() {
+        return None;
+    }
+    Some(DoctorFinding::info(
+        "chain-checkpoint-practice",
+        DoctorCategory::Optional,
+        "Signed chain head present. Periodically run `ledgerful export head`, retain the file outside this machine and outside `.ledgerful/`, then `ledgerful verify --signatures --against-export <path>` (checkpoint: live must extend or equal the retained head). See docs/chain-checkpoint.md.",
+    ))
 }
 
 /// 0110: light team-sync honesty findings.
@@ -1376,6 +1399,66 @@ mod tests {
         // Block wins; warn never uses red soft-fail "issue(s) found".
         assert!(!format_doctor_summary_text(0, 1, 9).contains("issue(s) found"));
         assert!(format_doctor_summary_text(0, 1, 9).contains("ready for publish"));
+    }
+
+    #[test]
+    fn chain_checkpoint_practice_finding_signed_info_never_blocks() {
+        let finding = DoctorFinding::info(
+            "chain-checkpoint-practice",
+            DoctorCategory::Optional,
+            "Signed chain head present. Periodically run `ledgerful export head`...",
+        );
+        assert_eq!(finding.code, "chain-checkpoint-practice");
+        assert_eq!(finding.severity, DoctorSeverity::Info);
+        assert_eq!(finding.category, DoctorCategory::Optional);
+        assert_eq!(dashboard_failures(std::slice::from_ref(&finding)), 0);
+        assert!(ready_for_publish(std::slice::from_ref(&finding)));
+    }
+
+    #[test]
+    fn chain_checkpoint_practice_finding_none_without_signed_head() {
+        // Empty in-memory DB: no chain_head row → no finding.
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("ledger.db");
+        let conn = rusqlite::Connection::open(&db_path).expect("open");
+        conn.execute_batch(
+            "CREATE TABLE chain_head (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                latest_entry_hash TEXT NOT NULL,
+                genesis TEXT NOT NULL,
+                length INTEGER NOT NULL,
+                head_signature TEXT,
+                head_public_key TEXT,
+                updated_at TEXT NOT NULL
+            );",
+        )
+        .expect("schema");
+        assert!(chain_checkpoint_practice_finding(&conn).is_none());
+
+        conn.execute(
+            "INSERT INTO chain_head (id, latest_entry_hash, genesis, length, head_signature, head_public_key, updated_at)
+             VALUES (1, 'h', 'g', 1, NULL, NULL, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .expect("unsigned head");
+        assert!(
+            chain_checkpoint_practice_finding(&conn).is_none(),
+            "unsigned head must not emit practice finding"
+        );
+
+        conn.execute(
+            "UPDATE chain_head SET head_signature = 'sig', head_public_key = 'pk'",
+            [],
+        )
+        .expect("sign");
+        let f = chain_checkpoint_practice_finding(&conn).expect("signed head finding");
+        assert_eq!(f.code, "chain-checkpoint-practice");
+        assert_eq!(f.severity, DoctorSeverity::Info);
+        assert_eq!(f.category, DoctorCategory::Optional);
+        assert!(f.message.contains("export head"));
+        assert!(f.message.contains("against-export"));
+        assert_eq!(dashboard_failures(std::slice::from_ref(&f)), 0);
+        assert!(ready_for_publish(std::slice::from_ref(&f)));
     }
 
     #[test]

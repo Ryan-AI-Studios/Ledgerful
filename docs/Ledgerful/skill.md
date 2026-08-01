@@ -100,7 +100,7 @@ ledgerful doctor --json
 - **Call Graph**: Tracks function call relationships (`Direct`, `MethodCall`, `TraitDispatch`, `Dynamic`, `External`) so you can answer "what calls this function?" and "what does this function depend on?".
 - **Knowledge Graph**: Durable, billion-edge relational and vector storage (CozoDB-redux/Sled) with native code-aware tokenization (Tree-Sitter).
 - **Impact Analysis**: Deep impact analysis across 20+ specialized providers (Infra, Contracts, Observability, Temporal). Structural **`blastRadius`** is depth-1 by default (`--blast-depth 2` only high-confidence + transitive); must-touch punchlist — not a complete call graph; ≠ deploy high-blast resources. Edges carry `confidenceClass` (`SCIP_BOUND`/`RESOLVED`/…); change-context and blast expose `confidenceSummary` counts (not full edges on change-context).
-- **Cryptographic Provenance**: Mathematical proof of intent via Ed25519 signing of every ledger entry. Offline verification via `verify --signatures`.
+- **Cryptographic Provenance**: Mathematical proof of intent via Ed25519 signing of every ledger entry. Offline verification via `verify --signatures`. Chain continuity via `verify --signatures --chain`. Independent rollback detection: `export head` + off-machine retention + `verify --against-export` (checkpoint extends-or-equals; `--exact` for freeze). See `docs/chain-checkpoint.md`.
 - **Intent Capture TUI**: Interactive terminal UI for auditing and refining LLM-drafted intent payloads during the git commit process.
 - **Real-time Sync (watch)**: Incremental Knowledge Graph updates, AST re-parsing, and code-aware symbol indexing via the `watch` command — **not** team ledger sync.
 - **Predictable Verification**: Bayesian test reordering and CI failure prediction.
@@ -363,9 +363,18 @@ If `intent.require_signing = true` in `.ledgerful/config.toml`, all ledger entri
 
 ```bash
 ledgerful verify --signatures
+ledgerful verify --signatures --chain
 ```
 
-This performs an offline mathematical validation of every record against its signature and public key.
+This performs an offline mathematical validation of every record against its signature and public key, plus chain linkage of the presented chain.
+
+**Independent head retention (operator hygiene):**
+```bash
+ledgerful export head --out ./checkpoints/head.json
+# copy off-machine, then later:
+ledgerful verify --signatures --against-export ./checkpoints/head.json
+```
+Local `--chain` alone cannot detect full rollback when the adversary controls DB + head. See `docs/chain-checkpoint.md`.
 
 ## Repository Configuration
 

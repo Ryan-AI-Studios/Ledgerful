@@ -42,9 +42,9 @@ cd ./ledgerful-demo
 ledgerful verify --signatures --chain
 # expect: exit 0; summary includes VALID entries and/or "Chain verified"
 
-# 4. Retained-head proof (live head matches export)
+# 4. Retained-head proof (live chain extends or equals export checkpoint)
 ledgerful verify --signatures --against-export ./ledgerful-DEMO-evidence.zip
-# expect: exit 0 (live chain head matches retained export)
+# expect: exit 0 (live chain extends or equals retained export head)
 
 # Honesty: synthetic invoice-service · disposable keys (not production keyring) ·
 # observe mode (warns, does not enforce) · same crypto as production · not real
@@ -73,11 +73,11 @@ ledgerful verify --signatures --against-export ./ledgerful-DEMO-evidence.zip
 
 - `[DEMO]` markers on demo stdout and DEMO-marked ledger entry summaries
 - **`CRYPTO VALID — all signatures + chain verified`** (automated inside `demo`)
-- **`CRYPTO VALID — live chain head matches retained DEMO export`**
+- **`CRYPTO VALID — live chain extends or equals retained DEMO export`**
 - An openable zip: `ledgerful-DEMO-evidence.zip` (kept with `--keep`)
 - Gate mode notice: **observe**
 - Follow-up manual `verify --signatures --chain` / `--against-export` exit 0
-- **Honesty:** promoted DEMO ledger entries are **Unverified** (hook promote never sets Verified). `CRYPTO VALID` = signatures + chain integrity, not `verification_status = Verified`.
+- **Honesty:** promoted DEMO ledger entries are **Unverified** (hook promote never sets Verified). `CRYPTO VALID` = signatures + chain integrity, not `verification_status = Verified`. Against-export uses checkpoint (extends-or-equals) semantics; immediate demo equality is a subset.
 
 ## What the automated `demo` already does
 
