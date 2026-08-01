@@ -4,6 +4,35 @@ use crate::verify::results::VerificationReport;
 use crate::verify::suggestions::{Suggestion, SuggestionSeverity};
 use owo_colors::OwoColorize;
 
+/// Whether to print Suggested Actions / full human report chatter after verify.
+///
+/// Quiet green (`!verbose && overall_pass`) suppresses Suggested Actions so
+/// agent hooks see only the trailing "Verification passed" line (track 0121).
+pub fn should_print_suggested_actions(verbose: bool, overall_pass: bool) -> bool {
+    verbose || !overall_pass
+}
+
+/// Whether to print per-step SUCCESS lines during verify.
+pub fn should_print_success_step(verbose: bool) -> bool {
+    verbose
+}
+
+/// Label for a per-step verify result line, or `None` when quiet SUCCESS.
+///
+/// Pure companion to [`crate::output::human::print_verify_result`] so quiet
+/// suppression can be unit-tested without capturing stdout.
+pub fn verify_step_result_label(exit_code: i32, verbose: bool) -> Option<&'static str> {
+    if exit_code == 0 {
+        if should_print_success_step(verbose) {
+            Some("SUCCESS")
+        } else {
+            None
+        }
+    } else {
+        Some("FAILURE")
+    }
+}
+
 pub struct VerificationReporter;
 
 impl VerificationReporter {
@@ -152,5 +181,48 @@ impl VerificationReporter {
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        should_print_success_step, should_print_suggested_actions, verify_step_result_label,
+    };
+
+    #[test]
+    fn should_print_suggested_actions_quiet_green_suppresses() {
+        // Quiet green: no Suggested Actions / full human report chatter.
+        assert!(!should_print_suggested_actions(false, true));
+    }
+
+    #[test]
+    fn should_print_suggested_actions_verbose_green_prints() {
+        assert!(should_print_suggested_actions(true, true));
+    }
+
+    #[test]
+    fn should_print_suggested_actions_quiet_fail_prints() {
+        // After fail block, Suggested Actions still print without --verbose.
+        assert!(should_print_suggested_actions(false, false));
+    }
+
+    #[test]
+    fn should_print_suggested_actions_verbose_fail_prints() {
+        assert!(should_print_suggested_actions(true, false));
+    }
+
+    #[test]
+    fn should_print_success_step_only_when_verbose() {
+        assert!(!should_print_success_step(false));
+        assert!(should_print_success_step(true));
+    }
+
+    #[test]
+    fn verify_step_result_label_quiet_success_omits_success_text() {
+        assert_eq!(verify_step_result_label(0, false), None);
+        assert_eq!(verify_step_result_label(0, true), Some("SUCCESS"));
+        assert_eq!(verify_step_result_label(1, false), Some("FAILURE"));
+        assert_eq!(verify_step_result_label(1, true), Some("FAILURE"));
     }
 }

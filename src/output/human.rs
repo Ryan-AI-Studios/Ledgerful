@@ -763,7 +763,7 @@ pub fn print_verify_plan(plan: &VerificationPlan) {
 /// when called (caller already gates machine mode via `suppress_human_output`).
 pub fn print_verify_result(name: &str, _timeout: u64, result: &ExecutionResult, verbose: bool) {
     if result.exit_code == 0 {
-        if verbose {
+        if crate::output::verification::should_print_success_step(verbose) {
             println!(
                 "\n{} Verification passed for: {}",
                 "SUCCESS".green().bold(),
@@ -786,8 +786,31 @@ mod tests {
 
     #[test]
     fn print_verify_result_quiet_suppresses_success_keeps_failure() {
-        // Quiet (verbose=false): SUCCESS path is silent; FAILURE still prints.
-        // Smoke: must not panic either way.
+        use crate::output::verification::verify_step_result_label;
+
+        // Pure gate: SUCCESS text not emitted when verbose=false; FAILURE always.
+        assert_eq!(
+            verify_step_result_label(0, false),
+            None,
+            "quiet SUCCESS must not emit SUCCESS text"
+        );
+        assert_eq!(
+            verify_step_result_label(0, true),
+            Some("SUCCESS"),
+            "verbose SUCCESS must emit SUCCESS"
+        );
+        assert_eq!(
+            verify_step_result_label(1, false),
+            Some("FAILURE"),
+            "quiet FAILURE must still emit FAILURE"
+        );
+        assert_eq!(
+            verify_step_result_label(1, true),
+            Some("FAILURE"),
+            "verbose FAILURE must emit FAILURE"
+        );
+
+        // Smoke: production print path must not panic either way.
         let pass = ExecutionResult {
             exit_code: 0,
             stdout: String::new(),

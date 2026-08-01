@@ -1,5 +1,5 @@
 use crate::output::human::print_verify_plan;
-use crate::output::verification::VerificationReporter;
+use crate::output::verification::{VerificationReporter, should_print_suggested_actions};
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use crate::verify::engine::{VerificationContext, VerifyEngine};
@@ -1451,7 +1451,7 @@ pub fn execute_verify(
             println!("{block}");
         }
 
-        if verbose || !report.overall_pass {
+        if should_print_suggested_actions(verbose, report.overall_pass) {
             VerificationReporter::report(&ctx, &report);
         } else {
             // Quiet green: still surface prediction warnings on stderr; no
