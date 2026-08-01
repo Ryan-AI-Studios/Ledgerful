@@ -808,7 +808,7 @@ mod tests {
     fn install_cursor_user_multi_server_preserves_foreign() {
         let tmp = unique_temp();
         let root = tmp.path();
-        let env = env_at(&root);
+        let env = env_at(root);
         let paths = resolve_paths(
             PlatformId::Cursor,
             &env.home,
@@ -849,14 +849,14 @@ mod tests {
                 PathBuf::from(bak).exists()
             }
         );
-        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn install_claude_user_top_level_not_projects() {
         let tmp = unique_temp();
         let root = tmp.path();
-        let env = env_at(&root);
+        let env = env_at(root);
         let paths = resolve_paths(
             PlatformId::ClaudeCode,
             &env.home,
@@ -894,14 +894,14 @@ mod tests {
                 .get("ledgerful")
                 .is_none()
         );
-        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn install_copilot_project_servers_and_type_stdio() {
         let tmp = unique_temp();
         let root = tmp.path();
-        let env = env_at(&root);
+        let env = env_at(root);
         let paths = resolve_paths(
             PlatformId::Copilot,
             &env.home,
@@ -925,14 +925,14 @@ mod tests {
         assert!(v.get("mcpServers").is_none());
         assert_eq!(v["servers"]["ledgerful"]["type"], "stdio");
         assert!(v["servers"]["ledgerful"]["command"].is_string());
-        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn install_codex_toml_args_array_peer_preserved() {
         let tmp = unique_temp();
         let root = tmp.path();
-        let env = env_at(&root);
+        let env = env_at(root);
         let paths = resolve_paths(
             PlatformId::Codex,
             &env.home,
@@ -967,14 +967,14 @@ args = ["a"]
         let doc: DocumentMut = content.parse().unwrap();
         let entry = get_toml_server(&doc).unwrap();
         assert_eq!(entry.args, vec!["mcp".to_string()]);
-        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn install_dry_run_no_file_change() {
         let tmp = unique_temp();
         let root = tmp.path();
-        let env = env_at(&root);
+        let env = env_at(root);
         let paths = resolve_paths(
             PlatformId::Cursor,
             &env.home,
@@ -997,14 +997,14 @@ args = ["a"]
         );
         assert_eq!(r.status, "would_write");
         assert_eq!(fs::read_to_string(&paths.user).unwrap(), original);
-        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn uninstall_only_ledgerful_and_idempotent() {
         let tmp = unique_temp();
         let root = tmp.path();
-        let env = env_at(&root);
+        let env = env_at(root);
         let paths = resolve_paths(
             PlatformId::Cursor,
             &env.home,
@@ -1039,14 +1039,14 @@ args = ["a"]
         assert_eq!(r2.status, "absent");
         // file still exists
         assert!(paths.user.exists());
-        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn uninstall_dry_run_honesty_message() {
         let tmp = unique_temp();
         let root = tmp.path();
-        let env = env_at(&root);
+        let env = env_at(root);
         let paths = resolve_paths(
             PlatformId::Cursor,
             &env.home,
@@ -1077,14 +1077,14 @@ args = ["a"]
                 .unwrap()
                 .contains("ledgerful")
         );
-        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn install_force_false_skips_mismatched_entry() {
         let tmp = unique_temp();
         let root = tmp.path();
-        let env = env_at(&root);
+        let env = env_at(root);
         let paths = resolve_paths(
             PlatformId::Cursor,
             &env.home,
@@ -1111,14 +1111,14 @@ args = ["a"]
         assert_eq!(r.status, "skipped");
         let content = fs::read_to_string(&paths.user).unwrap();
         assert!(content.contains("old-bin"));
-        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn install_jsonc_comment_fixture() {
         let tmp = unique_temp();
         let root = tmp.path();
-        let env = env_at(&root);
+        let env = env_at(root);
         let paths = resolve_paths(
             PlatformId::ClaudeCode,
             &env.home,
@@ -1149,7 +1149,7 @@ args = ["a"]
         assert_eq!(r.status, "written", "{:?}", r.message);
         let content = fs::read_to_string(&paths.user).unwrap();
         assert!(content.contains("ledgerful"));
-        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1157,7 +1157,7 @@ args = ["a"]
         // env_at probes always return false (host not on PATH) but explicit install still writes.
         let tmp = unique_temp();
         let root = tmp.path();
-        let env = env_at(&root);
+        let env = env_at(root);
         let r = install_one(
             PlatformId::Cursor,
             McpScope::User,
@@ -1189,14 +1189,14 @@ args = ["a"]
         )
         .unwrap();
         assert!(paths.user.exists());
-        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn install_no_host_binary_warn_when_probe_finds_binary() {
         let tmp = unique_temp();
         let root = tmp.path();
-        let mut env = env_at(&root);
+        let mut env = env_at(root);
         env.binary_probe = Some(|_| true);
         let r = install_one(
             PlatformId::Cursor,
@@ -1213,7 +1213,7 @@ args = ["a"]
             !msg.contains("not detected on PATH"),
             "should not warn when host binary probe succeeds: {msg}"
         );
-        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1248,14 +1248,14 @@ args = ["a"]
 
         // Document restore contract: if prev were left behind, a subsequent
         // replace must not treat it as the live config (happy path cleans prev).
-        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(root);
     }
 
     #[test]
     fn status_one_includes_host_detected_when_config_exists() {
         let tmp = unique_temp();
         let root = tmp.path();
-        let env = env_at(&root); // binary probe false; path existence still counts as detected
+        let env = env_at(root); // binary probe false; path existence still counts as detected
         let paths = resolve_paths(
             PlatformId::Cursor,
             &env.home,
@@ -1303,6 +1303,6 @@ args = ["a"]
             "missing config, no binary: {msg}"
         );
 
-        let _ = fs::remove_dir_all(&root);
+        let _ = fs::remove_dir_all(root);
     }
 }
