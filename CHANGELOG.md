@@ -6,6 +6,23 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Agent hook verify failure contract (0121):** Default human `verify` (what
+  pre-push hooks run) is **quiet on success** (no per-step SUCCESS, no plan
+  banner, no Suggested Actions; one `Verification passed` line) and **loud on
+  fail** with a structured stdout block (`[Ledgerful] verify failed` + step /
+  command / exitCode / failureDetail / optional failedPaths). Formatter path
+  extraction for `cargo fmt`/`rustfmt --check` and `ruff format --check` (cap
+  50, `\`→`/`, never invent). Additive optional `failedPaths` on
+  `VerifyCliStepJson` (**schemaVersion stays 1**). Binary-first: PATH upgrade
+  alone improves hook UX without shell rewrite. Product templates stamped
+  `# ledgerful-*-gate:v2`; shared ensure supersedes init silent body-diff
+  rewrite. Doctor Info finding `hook-template-stale` +
+  `doctor --apply-hook-refresh` (+ `--dry-run`; reject with `--json`);
+  `update --repair-hooks` runs product-refresh after legacy repair. Docs:
+  agent-output-contract, installation fleet section, skill one-liner.
+
 ### Changed
 
 - **`verify --against-export` checkpoint default (0119 — behavior change):**

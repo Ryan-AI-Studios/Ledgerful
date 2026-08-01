@@ -1,4 +1,8 @@
 use crate::commands::hook_repair::{HooksDirResolution, resolve_hooks_dir};
+use crate::commands::hook_template::{
+    GateKind, INTENT_GATE_MARKER, LEDGER_GATE_MARKER, POST_COMMIT_GATE_MARKER,
+    ensure_gate_on_hook_file, intent_gate_block, ledger_gate_block, post_commit_gate_block,
+};
 use crate::config::ConfigError;
 use crate::config::starter::{publish_starter_config, starter_config_contents};
 use crate::git::ignore::add_to_gitignore;
@@ -18,38 +22,22 @@ fn hooks_dir_for_install(root: &Utf8Path) -> Option<Utf8PathBuf> {
     }
 }
 
-const HOOK_MARKER: &str = "# ledgerful-ledger-gate";
-const HOOK_BLOCK_TEMPLATE: &str = "\
-# ledgerful-ledger-gate: auto-installed by `ledgerful init`
-if command -v ledgerful &>/dev/null; then
-    if ! ledgerful ledger status --compact --exit-code --verify-signatures; then
-        echo \"[Ledgerful] Blocked by ledger state.\"
-        echo \"[Ledgerful] Resolve with:\"
-        echo \"[Ledgerful]   Pending tx:  ledgerful ledger commit <tx-id> --summary '...' --reason '...'\"
-        echo \"[Ledgerful]   Drift:       ledgerful ledger reconcile --all --reason '...'\"
-        echo \"[Ledgerful] Fix the issues or bypass with: {bypass_command}\"
-        exit 1
-    fi
-fi
-";
+fn set_executable_unix(hook_path: &Utf8Path) -> Result<()> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = fs::metadata(hook_path.as_std_path())
+            .into_diagnostic()?
+            .permissions();
+        perms.set_mode(0o755);
+        fs::set_permissions(hook_path.as_std_path(), perms).into_diagnostic()?;
+    }
+    let _ = hook_path;
+    Ok(())
+}
 
-/// Additional block appended to the pre-push hook only. Runs a fast scoped
-/// verification gate (`ledgerful verify --scope fast`) that uses
-/// `test_mapping` to run only the tests covering changed files, falling back
-/// to the full suite when shared infrastructure is touched. This keeps the
-/// pre-push gate fast (~30-60s for typical scoped changes) while CI runs the
-/// full suite. See `docs/Engineering.md` ("Test Tiers" section) for the full layered strategy.
-const PRE_PUSH_VERIFY_BLOCK: &str = "\
-# ledgerful-verify-gate: fast scoped verification (pre-push only)
-if command -v ledgerful &>/dev/null; then
-    if ! ledgerful verify --scope fast; then
-        echo \"[Ledgerful] Push blocked by verification failure.\"
-        echo \"[Ledgerful] Fix the issues or bypass with: {bypass_command}\"
-        exit 1
-    fi
-fi
-";
-
+/// Install or stamp-aware-upgrade the ledger-gate block on pre-commit / pre-push.
+/// Uses shared ensure (0121) — no independent body-diff silent rewrite.
 fn install_git_hook(root: &Utf8PathBuf, hook_name: &str, bypass_command: &str) -> Result<bool> {
     let Some(hooks_dir) = hooks_dir_for_install(root) else {
         return Ok(false);
@@ -57,60 +45,30 @@ fn install_git_hook(root: &Utf8PathBuf, hook_name: &str, bypass_command: &str) -
     fs::create_dir_all(&hooks_dir).into_diagnostic()?;
 
     let hook_path = hooks_dir.join(hook_name);
-    let hook_block = HOOK_BLOCK_TEMPLATE.replace("{bypass_command}", bypass_command);
+    let hook_block = ledger_gate_block(bypass_command);
 
     if hook_path.exists() {
-        let existing = fs::read_to_string(&hook_path).into_diagnostic()?;
-        if existing.contains(HOOK_MARKER) {
-            if !existing.contains(&hook_block) {
-                let re = regex::Regex::new(r"(?s)\n?# ledgerful-ledger-gate:.*?\nfi\nfi\n?")
-                    .into_diagnostic()?;
-                if re.is_match(&existing) {
-                    let upgraded = re.replace(&existing, format!("\n{}\n", hook_block).as_str());
-                    fs::write(&hook_path, upgraded.as_bytes()).into_diagnostic()?;
-                }
-            }
+        let existing = fs::read_to_string(hook_path.as_std_path()).into_diagnostic()?;
+        if existing.contains(LEDGER_GATE_MARKER) {
+            // Stamp-aware ensure: refresh stale product bodies only.
+            let _ = ensure_gate_on_hook_file(&hook_path, GateKind::Ledger, bypass_command, false)?;
             return Ok(false);
         }
         // Append to existing hook
         let mut file = fs::OpenOptions::new()
             .append(true)
-            .open(&hook_path)
+            .open(hook_path.as_std_path())
             .into_diagnostic()?;
-        let block = format!("\n{}\n", hook_block);
+        let block = format!("\n{hook_block}");
         file.write_all(block.as_bytes()).into_diagnostic()?;
     } else {
-        // Create new hook with shebang
-        let content = format!("#!/usr/bin/env bash\n\n{}\n", hook_block);
-        fs::write(&hook_path, content).into_diagnostic()?;
-        // Set executable bit on Unix; no-op on Windows
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&hook_path).into_diagnostic()?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&hook_path, perms).into_diagnostic()?;
-        }
+        let content = format!("#!/usr/bin/env bash\n\n{hook_block}");
+        fs::write(hook_path.as_std_path(), content).into_diagnostic()?;
+        set_executable_unix(&hook_path)?;
     }
 
     Ok(true)
 }
-
-const COMMIT_MSG_MARKER: &str = "# ledgerful-intent-gate";
-const COMMIT_MSG_HOOK_TEMPLATE: &str = "\
-# ledgerful-intent-gate: auto-installed by `ledgerful init`
-if command -v ledgerful &>/dev/null; then
-    ledgerful internal hook-commit-msg \"$1\"
-fi
-";
-
-const POST_COMMIT_MARKER: &str = "# ledgerful-post-commit-gate";
-const POST_COMMIT_HOOK_TEMPLATE: &str = "\
-# ledgerful-post-commit-gate: auto-installed by `ledgerful init`
-if command -v ledgerful &>/dev/null; then
-    ledgerful internal hook-post-commit \"$@\"
-fi
-";
 
 fn install_commit_msg_hook(root: &Utf8PathBuf) -> Result<bool> {
     let Some(hooks_dir) = hooks_dir_for_install(root) else {
@@ -119,32 +77,29 @@ fn install_commit_msg_hook(root: &Utf8PathBuf) -> Result<bool> {
     fs::create_dir_all(&hooks_dir).into_diagnostic()?;
 
     let hook_path = hooks_dir.join("commit-msg");
+    let template = intent_gate_block();
 
-    // Idempotent: skip if our block is already present
     if hook_path.exists() {
-        let existing = fs::read_to_string(&hook_path).into_diagnostic()?;
-        if existing.contains(COMMIT_MSG_MARKER) {
+        let existing = fs::read_to_string(hook_path.as_std_path()).into_diagnostic()?;
+        if existing.contains(INTENT_GATE_MARKER) {
+            let _ = ensure_gate_on_hook_file(
+                &hook_path,
+                GateKind::Intent,
+                "git commit --no-verify",
+                false,
+            )?;
             return Ok(false);
         }
-        // Append to existing hook
         let mut file = fs::OpenOptions::new()
             .append(true)
-            .open(&hook_path)
+            .open(hook_path.as_std_path())
             .into_diagnostic()?;
-        let block = format!("\n{}\n", COMMIT_MSG_HOOK_TEMPLATE);
+        let block = format!("\n{template}");
         file.write_all(block.as_bytes()).into_diagnostic()?;
     } else {
-        // Create new hook with shebang
-        let content = format!("#!/usr/bin/env bash\n\n{}\n", COMMIT_MSG_HOOK_TEMPLATE);
-        fs::write(&hook_path, content).into_diagnostic()?;
-        // Set executable bit on Unix; no-op on Windows
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&hook_path).into_diagnostic()?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&hook_path, perms).into_diagnostic()?;
-        }
+        let content = format!("#!/usr/bin/env bash\n\n{template}");
+        fs::write(hook_path.as_std_path(), content).into_diagnostic()?;
+        set_executable_unix(&hook_path)?;
     }
 
     Ok(true)
@@ -157,32 +112,29 @@ fn install_post_commit_hook(root: &Utf8PathBuf) -> Result<bool> {
     fs::create_dir_all(&hooks_dir).into_diagnostic()?;
 
     let hook_path = hooks_dir.join("post-commit");
+    let template = post_commit_gate_block();
 
-    // Idempotent: skip if our block is already present
     if hook_path.exists() {
-        let existing = fs::read_to_string(&hook_path).into_diagnostic()?;
-        if existing.contains(POST_COMMIT_MARKER) {
+        let existing = fs::read_to_string(hook_path.as_std_path()).into_diagnostic()?;
+        if existing.contains(POST_COMMIT_GATE_MARKER) {
+            let _ = ensure_gate_on_hook_file(
+                &hook_path,
+                GateKind::PostCommit,
+                "git commit --no-verify",
+                false,
+            )?;
             return Ok(false);
         }
-        // Append to existing hook
         let mut file = fs::OpenOptions::new()
             .append(true)
-            .open(&hook_path)
+            .open(hook_path.as_std_path())
             .into_diagnostic()?;
-        let block = format!("\n{}\n", POST_COMMIT_HOOK_TEMPLATE);
+        let block = format!("\n{template}");
         file.write_all(block.as_bytes()).into_diagnostic()?;
     } else {
-        // Create new hook with shebang
-        let content = format!("#!/usr/bin/env bash\n\n{}\n", POST_COMMIT_HOOK_TEMPLATE);
-        fs::write(&hook_path, content).into_diagnostic()?;
-        // Set executable bit on Unix; no-op on Windows
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let mut perms = fs::metadata(&hook_path).into_diagnostic()?.permissions();
-            perms.set_mode(0o755);
-            fs::set_permissions(&hook_path, perms).into_diagnostic()?;
-        }
+        let content = format!("#!/usr/bin/env bash\n\n{template}");
+        fs::write(hook_path.as_std_path(), content).into_diagnostic()?;
+        set_executable_unix(&hook_path)?;
     }
 
     Ok(true)
@@ -225,11 +177,8 @@ fn install_ledger_gate_hooks(root: &Utf8PathBuf) -> Result<Vec<&'static str>> {
     Ok(installed)
 }
 
-const VERIFY_GATE_MARKER: &str = "# ledgerful-verify-gate";
-
-/// Append the fast scoped verify block to the pre-push hook if it's not
-/// already present. This is separate from `install_git_hook` because the
-/// verify block is pre-push-only and has its own marker for idempotency.
+/// Append or stamp-aware-refresh the fast scoped verify block on pre-push.
+/// Shared ensure (0121) supersedes the prior silent body-diff rewrite.
 fn install_pre_push_verify_block(root: &Utf8PathBuf) -> Result<()> {
     let Some(hooks_dir) = hooks_dir_for_install(root) else {
         return Ok(());
@@ -238,27 +187,12 @@ fn install_pre_push_verify_block(root: &Utf8PathBuf) -> Result<()> {
     if !hook_path.exists() {
         return Ok(());
     }
-    let block = PRE_PUSH_VERIFY_BLOCK.replace("{bypass_command}", "git push --no-verify");
-    let existing = fs::read_to_string(&hook_path).into_diagnostic()?;
-    if existing.contains(VERIFY_GATE_MARKER) {
-        if !existing.contains(&block) {
-            // Upgrade existing block using regex
-            let re = regex::Regex::new(r"(?s)\n?# ledgerful-verify-gate:.*?\nfi\nfi\n?")
-                .into_diagnostic()?;
-            if re.is_match(&existing) {
-                let upgraded = re.replace(&existing, format!("\n{}\n", block).as_str());
-                fs::write(&hook_path, upgraded.as_bytes()).into_diagnostic()?;
-                return Ok(());
-            }
-        }
-        return Ok(());
-    }
-    let mut file = fs::OpenOptions::new()
-        .append(true)
-        .open(&hook_path)
-        .into_diagnostic()?;
-    let block = format!("\n{}\n", block);
-    file.write_all(block.as_bytes()).into_diagnostic()?;
+    let _ = ensure_gate_on_hook_file(
+        &hook_path,
+        GateKind::Verify,
+        "git push --no-verify",
+        true, // append if marker absent
+    )?;
     Ok(())
 }
 

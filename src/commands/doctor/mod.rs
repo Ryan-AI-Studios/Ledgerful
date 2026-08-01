@@ -28,11 +28,29 @@ pub const SIG_PIN_WARNING: &str = "no intent.trusted_public_keys pinned; crypto-
 ///
 /// When `json` is true, stdout is pure schema-v1 JSON only (no human banners,
 /// sccache/SCIP/VRAM printers). Exit code is 1 iff any **block** finding.
-pub fn execute_doctor(json: bool) -> Result<()> {
+///
+/// `--apply-hook-refresh` rewrites only known Ledgerful marker-bounded product
+/// templates (0121). Cannot be combined with `--json`.
+pub fn execute_doctor(json: bool, apply_hook_refresh: bool, dry_run: bool) -> Result<()> {
+    if json && apply_hook_refresh {
+        return Err(miette::miette!(
+            "doctor --json cannot be combined with --apply-hook-refresh"
+        ));
+    }
+
     let current_dir = env::current_dir().into_diagnostic()?;
     // Resolve via git discover so nested cwd and linked worktrees share the
     // correct state home (0108). Never treat cwd as repo root.
     let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git()?;
+
+    // Product hook template refresh is opt-in and always human (0121).
+    if apply_hook_refresh {
+        let root = layout.root.as_path();
+        let refresh = crate::commands::hook_template::refresh_product_templates_at(root, dry_run)?;
+        crate::commands::hook_template::print_refresh_report(&refresh);
+        // Continue into normal doctor findings so the post-refresh state is
+        // visible in the same run (detect-only after apply).
+    }
 
     let platform = current_platform();
     let shell = detect_shell();
@@ -502,11 +520,17 @@ pub fn execute_doctor(json: bool) -> Result<()> {
     }
 
     // 0094: four-surface legacy-migration residue (warn only — never block).
-    if let Some(root) = camino::Utf8Path::from_path(&current_dir) {
-        let mut legacy = collect_legacy_migration_findings(root, &layout);
+    // Prefer layout.root (git work root) over cwd for nested directories.
+    {
+        let mut legacy = collect_legacy_migration_findings(layout.root.as_path(), &layout);
         legacy.sort_by(|a, b| a.code.cmp(&b.code).then(a.message.cmp(&b.message)));
         findings.extend(legacy);
     }
+
+    // 0121: product hook template stamp drift (Info + Gate; never blocks publish).
+    findings.extend(
+        crate::commands::hook_template::hook_template_stale_findings(layout.root.as_path()),
+    );
 
     // SCIP + sccache → info / optional
     findings.extend(collect_scip_findings(&config));
@@ -1375,6 +1399,22 @@ mod tests {
             index_health: vec!["Search index: OK (0 documents)".to_string()],
             target_triple: "test",
         }
+    }
+
+    #[test]
+    fn doctor_json_plus_apply_hook_refresh_rejected() {
+        use crate::cli::Cli;
+        use clap::Parser;
+        // Rejected at execute_doctor entry (also covered by clap path when wired).
+        let err = execute_doctor(true, true, false).unwrap_err();
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("doctor --json cannot be combined with --apply-hook-refresh"),
+            "got {msg}"
+        );
+        // clap accepts the flags; rejection is in execute_doctor.
+        let parsed = Cli::try_parse_from(["ledgerful", "doctor", "--json", "--apply-hook-refresh"]);
+        assert!(parsed.is_ok(), "flags are parseable; combo rejected later");
     }
 
     #[test]

@@ -277,23 +277,21 @@ fn test_init_upgrades_old_ledgerful_owned_verify_gate() {
     setup_git_repo(tmp.path());
 
     let hooks_dir = root.join(".git").join("hooks");
-    let old_block = "\n# ledgerful-verify-gate: fast scoped verification (pre-push only)\n\
-if command -v ledgerful &>/dev/null; then\n\
-    if ! ledgerful verify --scope fast 2>/dev/null; then\n\
-        echo \"\"\n\
-        echo \"  Pre-push quality gate FAILED (ledgerful verify --scope fast).\"\n\
-        echo \"  Fix the above errors before pushing.\"\n\
-        echo \"\"\n\
-        echo \"  Bypass (not recommended): git push --no-verify\"\n\
-        exit 1\n\
-    fi\n\
-fi\n";
+    // Exact historical product body (unstamped) — stamp-aware ensure treats as stale.
+    // Customised bodies (different echo text) are **unknown** and left alone (0121).
+    let old_block = "\
+# ledgerful-verify-gate: fast scoped verification (pre-push only)
+if command -v ledgerful &>/dev/null; then
+    if ! ledgerful verify --scope fast; then
+        echo \"[Ledgerful] Push blocked by verification failure.\"
+        echo \"[Ledgerful] Fix the issues or bypass with: git push --no-verify\"
+        exit 1
+    fi
+fi
+";
     fs::write(
         hooks_dir.join("pre-push"),
-        format!(
-            "#!/usr/bin/env bash\necho existing user pre-push\n{}",
-            old_block
-        ),
+        format!("#!/usr/bin/env bash\necho existing user pre-push\n{old_block}"),
     )
     .unwrap();
 
@@ -309,12 +307,16 @@ fi\n";
         "Should retain user content"
     );
     assert!(
-        !pre_push.contains("Pre-push quality gate FAILED"),
-        "Old block should be removed"
+        pre_push.contains("# ledgerful-verify-gate:v2"),
+        "Historical product body should be stamp-refreshed to v2; got:\n{pre_push}"
     );
     assert!(
         pre_push.contains("[Ledgerful] Push blocked by verification failure."),
-        "New block should be inserted"
+        "Current product fail message should remain"
+    );
+    assert!(
+        !pre_push.contains("# ledgerful-verify-gate: fast scoped verification (pre-push only)"),
+        "Unstamped historical header should be replaced"
     );
 }
 

@@ -757,13 +757,19 @@ pub fn print_verify_plan(plan: &VerificationPlan) {
     }
 }
 
-pub fn print_verify_result(name: &str, _timeout: u64, result: &ExecutionResult) {
+/// Print per-step verify outcome.
+///
+/// SUCCESS lines only when `verbose` (quiet success by default). FAILURE always
+/// when called (caller already gates machine mode via `suppress_human_output`).
+pub fn print_verify_result(name: &str, _timeout: u64, result: &ExecutionResult, verbose: bool) {
     if result.exit_code == 0 {
-        println!(
-            "\n{} Verification passed for: {}",
-            "SUCCESS".green().bold(),
-            name
-        );
+        if verbose {
+            println!(
+                "\n{} Verification passed for: {}",
+                "SUCCESS".green().bold(),
+                name
+            );
+        }
     } else {
         println!(
             "\n{} Verification failed for: {}",
@@ -776,6 +782,31 @@ pub fn print_verify_result(name: &str, _timeout: u64, result: &ExecutionResult) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec::ExecutionResult;
+
+    #[test]
+    fn print_verify_result_quiet_suppresses_success_keeps_failure() {
+        // Quiet (verbose=false): SUCCESS path is silent; FAILURE still prints.
+        // Smoke: must not panic either way.
+        let pass = ExecutionResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration: std::time::Duration::from_millis(1),
+            truncated: false,
+        };
+        let fail = ExecutionResult {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: "err".into(),
+            duration: std::time::Duration::from_millis(1),
+            truncated: false,
+        };
+        print_verify_result("step", 30, &pass, false);
+        print_verify_result("step", 30, &pass, true);
+        print_verify_result("step", 30, &fail, false);
+        print_verify_result("step", 30, &fail, true);
+    }
 
     #[test]
     fn doctor_summary_text_four_way() {

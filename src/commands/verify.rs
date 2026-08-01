@@ -49,6 +49,10 @@ pub struct VerifyCliStepJson {
     pub duration_ms: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failure_detail: Option<String>,
+    /// Best-effort formatter paths (0121). Omitted when empty / pass.
+    /// `schemaVersion` stays **1** (additive optional field).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub failed_paths: Option<Vec<String>>,
 }
 
 /// Derive step status from exit code — single definition for DoD-10.
@@ -97,24 +101,24 @@ impl VerifyCliStepJson {
     pub fn from_result(result: &VerificationResult) -> Self {
         let status = step_status_from_exit_code(result.exit_code).to_string();
         let failure_detail = if result.exit_code != 0 {
-            let detail = if !result.stderr_summary.is_empty() {
-                result.stderr_summary.clone()
-            } else if !result.stdout_summary.is_empty() {
-                result.stdout_summary.clone()
-            } else {
-                format!("exit code {}", result.exit_code)
-            };
-            Some(detail)
+            Some(crate::verify::fail_block::failure_detail_from_result(
+                result,
+            ))
+        } else {
+            None
+        };
+        let failed_paths = if result.exit_code != 0 {
+            let paths = crate::verify::fail_block::extract_formatter_paths(
+                &result.command,
+                &result.stdout_summary,
+                &result.stderr_summary,
+            );
+            if paths.is_empty() { None } else { Some(paths) }
         } else {
             None
         };
         // Prefer description-like name from command; command is the full string.
-        let name = result
-            .command
-            .split_whitespace()
-            .take(3)
-            .collect::<Vec<_>>()
-            .join(" ");
+        let name = crate::verify::fail_block::step_name_from_command(&result.command);
         Self {
             name,
             command: result.command.clone(),
@@ -122,6 +126,7 @@ impl VerifyCliStepJson {
             exit_code: result.exit_code,
             duration_ms: result.duration_ms,
             failure_detail,
+            failed_paths,
         }
     }
 }
@@ -926,6 +931,7 @@ pub fn execute_verify(
     scope: crate::verify::plan::VerifyScope,
     auto_index: bool,
     json: bool,
+    verbose: bool,
 ) -> Result<()> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
@@ -949,7 +955,9 @@ pub fn execute_verify(
         health,
     );
     // Keep per-step SUCCESS/FAILURE println! off stdout when emitting JSON.
+    // Quiet success is orthogonal: never set suppress from `!verbose`.
     ctx.suppress_human_output = json;
+    ctx.verbose = verbose;
 
     // 2. Load Storage and Packet
     ctx.storage = match StorageManager::open_read_only(&layout) {
@@ -1035,7 +1043,8 @@ pub fn execute_verify(
         ),
         None => {
             if let Some(config_plan) = config_plan {
-                if !json {
+                // Plan banner only under --verbose (0121 quiet success).
+                if verbose && !json {
                     print_verify_plan(&config_plan);
                 }
                 (Some(config_plan.clone()), config_plan.steps)
@@ -1097,7 +1106,8 @@ pub fn execute_verify(
                     println!("{} {}", "ℹ".cyan(), reason.yellow());
                 }
 
-                if !json {
+                // Plan banner only under --verbose (0121 quiet success).
+                if verbose && !json {
                     print_verify_plan(&plan);
                 }
                 let steps = plan.steps.clone();
@@ -1431,9 +1441,26 @@ pub fn execute_verify(
     report = report.with_suggested_actions(suggestions);
 
     // 6. Final Reporting & IPC
-    // Human report is suppressed on --json so stdout carries only the payload.
+    // Ordering on fail (non-json): step FAILURE lines (during run) → structured
+    // fail block → Suggested Actions → miette on stderr.
+    // Quiet success: suppress Suggested Actions; one trailing ok line.
     if !json {
-        VerificationReporter::report(&ctx, &report);
+        if !report.overall_pass
+            && let Some(block) = crate::verify::fail_block::format_fail_block_from_report(&report)
+        {
+            println!("{block}");
+        }
+
+        if verbose || !report.overall_pass {
+            VerificationReporter::report(&ctx, &report);
+        } else {
+            // Quiet green: still surface prediction warnings on stderr; no
+            // Suggested Actions header on stdout.
+            if !report.prediction_warnings.is_empty() {
+                VerificationReporter::print_prediction_warnings(&report.prediction_warnings);
+            }
+            println!("Verification passed");
+        }
     }
 
     // Push results to bridge
@@ -2192,6 +2219,43 @@ mod verify_cli_json_tests {
         assert_eq!(payload.steps[1].failure_detail.as_deref(), Some("boom"));
         // DoD-10: ok == all steps pass == (would be exit 0)
         assert_eq!(payload.ok, payload.steps.iter().all(|s| s.exit_code == 0));
+    }
+
+    #[test]
+    fn failed_paths_additive_on_fmt_fail_schema_v1() {
+        let mut result = sample_result("cargo fmt --all -- --check", 1);
+        result.stderr_summary = "Diff in src/lib.rs:\nDiff in src/main.rs:\n".into();
+        let report = sample_report(vec![result], None);
+        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast);
+        assert_eq!(payload.schema_version, 1);
+        assert!(!payload.ok);
+        let paths = payload.steps[0].failed_paths.as_ref().expect("paths");
+        assert_eq!(
+            paths,
+            &vec!["src/lib.rs".to_string(), "src/main.rs".to_string()]
+        );
+        let json = payload.to_json_string().unwrap();
+        assert!(json.contains("\"failedPaths\""));
+        assert!(json.contains("src/lib.rs"));
+        // Pass steps omit the field.
+        let pass = VerifyCliJson::from_report(
+            &sample_report(vec![sample_result("cargo test", 0)], None),
+            VerifyScope::Full,
+        );
+        assert!(pass.steps[0].failed_paths.is_none());
+        assert!(!pass.to_json_string().unwrap().contains("failedPaths"));
+    }
+
+    #[test]
+    fn format_fail_block_header_from_report() {
+        let mut result = sample_result("cargo fmt --all -- --check", 1);
+        result.stderr_summary = "Diff in a.rs:\n".into();
+        let report = sample_report(vec![result], None);
+        let block =
+            crate::verify::fail_block::format_fail_block_from_report(&report).expect("fail block");
+        assert!(block.starts_with("[Ledgerful] verify failed\n"));
+        assert!(block.contains("exitCode: 1"));
+        assert!(block.contains("failedPaths: a.rs"));
     }
 
     #[test]

@@ -2,6 +2,7 @@ pub mod auto_policy;
 pub mod ci_predictor;
 pub mod engine;
 pub mod explanation;
+pub mod fail_block;
 pub mod ipc_verify;
 pub mod plan;
 pub mod predict;

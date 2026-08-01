@@ -21,6 +21,7 @@ pub mod hook_commit_msg;
 pub mod hook_post_commit;
 pub mod hook_repair;
 pub mod hook_sidecar;
+pub mod hook_template;
 pub mod hotspots;
 pub mod impact;
 pub mod index;

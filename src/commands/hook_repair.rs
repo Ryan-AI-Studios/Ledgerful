@@ -953,6 +953,19 @@ pub fn execute_hook_repair(dry_run: bool) -> Result<()> {
 
     let report = repair_hooks_at(&root, dry_run)?;
     print_report(&report);
+
+    // 0121: product template refresh after legacy repair (shared ensure SoT).
+    let product = crate::commands::hook_template::refresh_product_templates_at(&root, dry_run)?;
+    if product.refused.is_some()
+        || !product.refreshed.is_empty()
+        || !product.already_current.is_empty()
+        || !product.skipped_unknown.is_empty()
+        || !product.discovery_notes.is_empty()
+    {
+        println!();
+        println!("{} Product hook template refresh:", "INFO:".cyan().bold());
+        crate::commands::hook_template::print_refresh_report(&product);
+    }
     Ok(())
 }
 

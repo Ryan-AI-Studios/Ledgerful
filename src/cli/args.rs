@@ -397,6 +397,12 @@ pub enum Commands {
         /// Emit pure schema-v1 JSON on stdout (severity, readyForPublish, findings)
         #[arg(long)]
         json: bool,
+        /// Refresh stale Ledgerful marker-bounded hook blocks to current product templates
+        #[arg(long = "apply-hook-refresh")]
+        apply_hook_refresh: bool,
+        /// With `--apply-hook-refresh`, report would-refresh without writing
+        #[arg(long = "dry-run")]
+        dry_run: bool,
     },
     /// Quick status check of the project ledger and pending transactions
     Status,
@@ -761,7 +767,7 @@ impl Commands {
             Commands::Ask { .. } => false,
             Commands::Intent { .. } => false,
             Commands::Reset { .. } => false,
-            Commands::Doctor { json } => *json,
+            Commands::Doctor { json, .. } => *json,
             Commands::Status => false,
             Commands::Timings { json, .. } => *json,
             Commands::Config { command } => match command {
@@ -2012,9 +2018,19 @@ impl Commands {
                     f.push("json");
                 }
             }
-            Commands::Doctor { json } => {
+            Commands::Doctor {
+                json,
+                apply_hook_refresh,
+                dry_run,
+            } => {
                 if *json {
                     f.push("json");
+                }
+                if *apply_hook_refresh {
+                    f.push("apply-hook-refresh");
+                }
+                if *dry_run {
+                    f.push("dry-run");
                 }
             }
             Commands::Status => {}
