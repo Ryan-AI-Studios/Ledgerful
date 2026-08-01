@@ -8,6 +8,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Hook / ledger provenance SoT (0122):** Agent `ledger commit` / open PENDING
+  is intentional provenance SoT; commit-msg classifies after reading the raw
+  message and **before** adaptive trivial bypass, conventional well-formed
+  path, and LLM `draft_intent`. AlreadyCommitted (`Ledger: {uuid}` verified
+  COMMITTED) skips draft and does not open a second TX; LinkPending (msg ref
+  PENDING or exactly one global open PENDING) writes the sidecar for that id
+  without `start_change`; N>1 pending without a verified ref warns and falls
+  back. Binary-only PATH upgrade (no shell stamp / doctor SoT finding).
+  Multi-pending shared-worktree honesty: without `Ledger: {tx}` the hook does
+  not auto-pick among concurrent open PENDINGs.
+
 - **Agent hook verify failure contract (0121):** Default human `verify` (what
   pre-push hooks run) is **quiet on success** (no per-step SUCCESS, no plan
   banner, no Suggested Actions; one `Verification passed` line) and **loud on

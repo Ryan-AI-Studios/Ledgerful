@@ -354,8 +354,19 @@ ledgerful ledger note <entity> --message "Note content"
 
 Ledgerful uses a two-phase commit lifecycle to ensure zero phantom records:
 
-1. **`commit-msg`**: Launches the TUI to capture intent. Creates a `PENDING` transaction and a sidecar file.
+1. **`commit-msg`**: Captures intent (agent ledger SoT first; else TUI / conventional / silent LLM). Creates or links a `PENDING` transaction and a sidecar file.
 2. **`post-commit`**: Automatically promotes the `PENDING` transaction to `COMMITTED` once the Git commit is finalized. If the Git commit fails, the record remains pending or is safely rolled back.
+
+**Provenance source of truth (0122):** agent `ledger start` / `ledger commit` is intentional SoT. The commit-msg hook must not invent a parallel silent LLM intent or open a second TX when the agent already owns intent. Greppable lines use prefix `[Ledgerful] Provenance SoT:` (target `cli_summary`).
+
+| Agent action | Hook behavior |
+|---|---|
+| `ledger commit` + git msg with `Ledger: {tx}` | AlreadyCommitted (skip) |
+| `ledger start` only (one PENDING) | LinkPending |
+| N>1 PENDING, no `Ledger:` (incl. multi-worktree shared DB) | Ambiguous → HookFallback |
+| No ledger activity | HookFallback (LLM/silent/TUI) |
+
+**Message binding:** include `Ledger: {tx_id}` on its own line (default `--with-git` template), or optional `Ledger-Tx: {tx_id}`. Bare UUIDs in prose are ignored. Linked worktrees share one `.ledgerful` DB — concurrent multi-worktree agents with two open PENDINGs and no `Ledger:` line hit Ambiguous → HookFallback; always include the TX ref when disambiguation matters.
 
 ### Cryptographic Security
 
