@@ -171,11 +171,20 @@ mod schema_golden_tests {
                     evidence: "scip:ref".to_string(),
                     confidence: Some(1.0),
                     expandable: true,
+                    confidence_class:
+                        crate::impact::enrichment::edge_confidence::ConfidenceClass::ScipBound,
                 }],
                 must_touch_files: vec!["x.rs".to_string()],
                 must_touch_symbols: vec!["x".to_string()],
                 test_hints: vec!["t.rs::test_y".to_string()],
                 honesty_notes: vec!["sample note".to_string()],
+                confidence_summary:
+                    crate::impact::enrichment::edge_confidence::EdgeConfidenceSummary {
+                        scip_bound: 1,
+                        expandable: 1,
+                        total: 1,
+                        ..Default::default()
+                    },
             }),
             centrality_risks: vec![CentralityRisk {
                 symbol_name: "main".to_string(),
@@ -655,6 +664,7 @@ mod schema_golden_tests {
                 "mustTouchSymbols",
                 "testHints",
                 "honestyNotes",
+                "confidenceSummary",
             ],
         );
         let br_edges = br["edges"].as_array().unwrap();
@@ -672,8 +682,25 @@ mod schema_golden_tests {
                 "evidence",
                 "confidence",
                 "expandable",
+                "confidenceClass",
             ],
         );
+        assert_eq!(br_edges[0]["confidenceClass"], "SCIP_BOUND");
+        assert_exact_keys(
+            &br["confidenceSummary"],
+            &[
+                "scipBound",
+                "resolved",
+                "ambiguous",
+                "unresolved",
+                "capped",
+                "unknown",
+                "expandable",
+                "total",
+            ],
+        );
+        assert_eq!(br["confidenceSummary"]["scipBound"], 1);
+        assert_eq!(br["confidenceSummary"]["total"], 1);
 
         // centralityRisks[0]
         let cr = value["centralityRisks"].as_array().unwrap();
@@ -2709,6 +2736,8 @@ mod facade_compat_tests {
             evidence: "scip:ref".to_string(),
             confidence: None,
             expandable: true,
+            confidence_class:
+                crate::impact::enrichment::edge_confidence::ConfidenceClass::ScipBound,
         };
         let _ = CentralityRisk {
             symbol_name: "main".to_string(),

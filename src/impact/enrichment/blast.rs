@@ -4,6 +4,9 @@
 //! edges (RESOLVED or evidence `scip:`), along high-confidence expansion edges.
 //! Seed join is always file_path+symbol_name and/or qualified_name — never bare name.
 
+use crate::impact::enrichment::edge_confidence::{
+    EdgeConfidenceSummary, confidence_class, is_high_confidence as edge_is_high_confidence,
+};
 use crate::impact::packet::{
     BlastEdge, BlastRadius, CoveringTest, ImpactPacket, StructuralCoupling, TestCoverage,
 };
@@ -11,6 +14,10 @@ use miette::{IntoDiagnostic, Result};
 use rusqlite::{Connection, params_from_iter};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::path::PathBuf;
+
+/// High-confidence edge: non-null callee is assumed by caller; status/evidence rule.
+/// Thin wrapper over the shared classifier (0117).
+pub use super::edge_confidence::is_high_confidence;
 
 /// A seed symbol bound to the index (never bare-name alone).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,25 +53,6 @@ pub const BLAST_CLI_MAX: u32 = 2;
 /// Normalize path separators for deterministic seed matching.
 pub fn normalize_path(path: &str) -> String {
     path.replace('\\', "/")
-}
-
-/// High-confidence edge: non-null callee is assumed by caller; status/evidence rule.
-pub fn is_high_confidence(resolution_status: &str, evidence: &str) -> bool {
-    resolution_status == "RESOLVED" || evidence.starts_with("scip:")
-}
-
-/// Pair-collapse priority (higher wins). scip: preferred over bare RESOLVED.
-fn confidence_priority(resolution_status: &str, evidence: &str) -> u8 {
-    if evidence.starts_with("scip:") {
-        return 4;
-    }
-    match resolution_status {
-        "RESOLVED" => 3,
-        "AMBIGUOUS" => 2,
-        "UNRESOLVED" => 1,
-        "CAPPED" => 0,
-        _ => 0,
-    }
 }
 
 /// Resolve seed symbols from the impact packet against the index.
@@ -244,8 +232,10 @@ fn collapse_pairs(edges: Vec<RawEdge>) -> Vec<RawEdge> {
                 best.insert(key, edge);
             }
             Some(existing) => {
-                let new_p = confidence_priority(&edge.resolution_status, &edge.evidence);
-                let old_p = confidence_priority(&existing.resolution_status, &existing.evidence);
+                let new_p =
+                    confidence_class(&edge.resolution_status, &edge.evidence).collapse_priority();
+                let old_p = confidence_class(&existing.resolution_status, &existing.evidence)
+                    .collapse_priority();
                 // Prefer higher priority; on ties pick deterministic total order
                 // (evidence, then resolution_status) so serde/JSON is stable.
                 if new_p > old_p
@@ -270,7 +260,9 @@ fn collapse_pairs(edges: Vec<RawEdge>) -> Vec<RawEdge> {
 }
 
 fn raw_to_blast_edge(raw: &RawEdge, hop: u32) -> BlastEdge {
-    let expandable = is_high_confidence(&raw.resolution_status, &raw.evidence);
+    // Class computed only on post-collapse survivors (callers pass collapsed RawEdge).
+    let class = confidence_class(&raw.resolution_status, &raw.evidence);
+    let expandable = edge_is_high_confidence(&raw.resolution_status, &raw.evidence);
     BlastEdge {
         hop,
         direction: "caller".to_string(),
@@ -282,6 +274,7 @@ fn raw_to_blast_edge(raw: &RawEdge, hop: u32) -> BlastEdge {
         evidence: raw.evidence.clone(),
         confidence: raw.confidence,
         expandable,
+        confidence_class: class,
     }
 }
 
@@ -311,6 +304,7 @@ pub fn compute_blast(
         must_touch_symbols: Vec::new(),
         test_hints: Vec::new(),
         honesty_notes: Vec::new(),
+        confidence_summary: EdgeConfidenceSummary::default(),
     };
 
     if seeds.is_empty() {
@@ -425,6 +419,7 @@ pub fn compute_blast(
     }
 
     all_edges.sort_unstable();
+    result.confidence_summary = EdgeConfidenceSummary::from_blast_edges(&all_edges);
     result.edges = all_edges;
     result.must_touch_files = files.into_iter().collect();
     result.must_touch_symbols = symbols.into_iter().collect();
@@ -1000,6 +995,8 @@ mod tests {
                     evidence: "call_expr".into(),
                     confidence: Some(1.0),
                     expandable: true,
+                    confidence_class:
+                        crate::impact::enrichment::edge_confidence::ConfidenceClass::Resolved,
                 },
                 BlastEdge {
                     hop: 2,
@@ -1012,6 +1009,8 @@ mod tests {
                     evidence: "scip:ref".into(),
                     confidence: Some(1.0),
                     expandable: true,
+                    confidence_class:
+                        crate::impact::enrichment::edge_confidence::ConfidenceClass::ScipBound,
                 },
             ],
             ..Default::default()
@@ -1041,5 +1040,49 @@ mod tests {
         assert!(!is_high_confidence("AMBIGUOUS", "call_expr"));
         assert!(!is_high_confidence("UNRESOLVED", ""));
         assert!(!is_high_confidence("CAPPED", "call_expr"));
+    }
+
+    #[test]
+    fn blast_edge_confidence_class_scip_and_ambiguous() {
+        let conn = setup_conn();
+        let seed_f = insert_file(&conn, "src/seed.rs");
+        let a_f = insert_file(&conn, "src/a.rs");
+        let s_f = insert_file(&conn, "src/scip_caller.rs");
+        let seed = insert_symbol(&conn, seed_f, "seed_fn", "crate::seed_fn");
+        let a = insert_symbol(&conn, a_f, "a_fn", "crate::a_fn");
+        let sc = insert_symbol(&conn, s_f, "scip_fn", "crate::scip_fn");
+        insert_edge(&conn, a, a_f, seed, seed_f, "AMBIGUOUS", "call_expr");
+        insert_edge(&conn, sc, s_f, seed, seed_f, "RESOLVED", "scip:ref");
+
+        let packet = packet_with_symbol("src/seed.rs", "seed_fn", Some("crate::seed_fn"));
+        let seeds = resolve_seeds(&packet, &conn).unwrap();
+        let blast = compute_blast(&conn, &seeds, 1, 3, BlastCaps::default()).unwrap();
+
+        let amb = blast
+            .edges
+            .iter()
+            .find(|e| e.from_symbol == "a_fn")
+            .expect("AMBIGUOUS edge");
+        assert_eq!(
+            amb.confidence_class,
+            crate::impact::enrichment::edge_confidence::ConfidenceClass::Ambiguous
+        );
+        assert!(!amb.expandable);
+
+        let scip = blast
+            .edges
+            .iter()
+            .find(|e| e.from_symbol == "scip_fn")
+            .expect("SCIP edge");
+        assert_eq!(
+            scip.confidence_class,
+            crate::impact::enrichment::edge_confidence::ConfidenceClass::ScipBound
+        );
+        assert!(scip.expandable);
+
+        assert_eq!(blast.confidence_summary.ambiguous, 1);
+        assert_eq!(blast.confidence_summary.scip_bound, 1);
+        assert_eq!(blast.confidence_summary.total, 2);
+        assert_eq!(blast.confidence_summary.expandable, 1);
     }
 }

@@ -166,7 +166,17 @@ structure, doctor readiness, open ledger work, and a budgeted `readSet`.
   "blast": {
     "depth": 1,
     "mustTouchFileCount": 0,
-    "mustTouchSymbolCount": 0
+    "mustTouchSymbolCount": 0,
+    "confidenceSummary": {
+      "scipBound": 0,
+      "resolved": 0,
+      "ambiguous": 0,
+      "unresolved": 0,
+      "capped": 0,
+      "unknown": 0,
+      "expandable": 0,
+      "total": 0
+    }
   },
   "testCoverage": {
     "status": "available",
@@ -221,7 +231,7 @@ structure, doctor readiness, open ledger work, and a budgeted `readSet`.
 | `impactSchemaVersion` | string | Forwarded from `ImpactPacket.schema_version` (different field/type) |
 | `status` | string | `ready` \| `empty` \| `not_ready` |
 | `readSetCapped` / `readSetTotalCandidates` | bool / usize | **Required**; `true` / total when truncated by `--max-files` |
-| `blast` | object | **Counts only** — not full edges |
+| `blast` | object | **Counts only** — not full edges. Always includes nested `confidenceSummary` (class counts: `scipBound`, `resolved`, `ambiguous`, `unresolved`, `capped`, `unknown`, `expandable`, `total`) at both `minimal` and `standard` detail. Same shape as ImpactPacket `blastRadius.confidenceSummary`. Full edges remain on `impact --json` only (0114 token-budget fence). |
 | `testCoverage` | object | **0115 deepened** structural test-gap report (same schema as PR `testGaps`). Status: `available` \| `empty_mapping` \| `missing_table` \| `no_source_seeds` \| `unavailable`. **Never** bare `"empty"`. Empty `ImpactPacket.test_coverage` vec is **not** full cover — use these counts/status. Caps: unmapped ≤20, mappedSample ≤5. Notes always include structural + LCOV ceiling. |
 | `doctor` / `ledger` | object | **Always present** on successful builds (including `status=empty`) |
 | `doctor.topFindings` | array | Best-effort from sidecar `findings` when present; production `doctor-results.json` may omit findings, yielding `[]` even when `block > 0` — use `ledgerful doctor --json` for full detail |

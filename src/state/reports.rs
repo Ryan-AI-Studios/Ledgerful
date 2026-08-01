@@ -70,7 +70,11 @@ pub fn read_latest_impact_report(layout: &Layout) -> Result<Option<LatestImpactR
         return Ok(Some(LatestImpactReport::CleanTree(tombstone)));
     }
 
-    let packet: ImpactPacket = serde_json::from_str(&content).into_diagnostic()?;
+    let mut packet: ImpactPacket = serde_json::from_str(&content).into_diagnostic()?;
+    // Pre-0117 on-disk reports omit confidenceClass/confidenceSummary.
+    if let Some(ref mut blast) = packet.blast_radius {
+        blast.hydrate_confidence();
+    }
     Ok(Some(LatestImpactReport::Packet(Box::new(packet))))
 }
 

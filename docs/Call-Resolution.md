@@ -128,7 +128,7 @@ additive **`blastRadius`** (call-graph punchlist). This is **not** deploy
 |------|----------|
 | Default depth | **1** (direct reverse callers of changed symbols) |
 | `--blast-depth 2` | Hop 2 only from nodes reached via high-confidence discovery edges, along high-confidence expansion edges |
-| High confidence | `resolution_status = RESOLVED` **or** `evidence` starts with `scip:` |
+| High confidence | Product class `SCIP_BOUND` or `RESOLVED` (`evidence` starts with `scip:` **or** status `RESOLVED`) |
 | Never expand | AMBIGUOUS / UNRESOLVED / CAPPED (AMBIGUOUS may appear on hop-1 punchlist with labels) |
 | Seed join | `file_path` + `symbol_name` and/or `qualified_name` — **never** bare name alone |
 | Caps | Fan-out 50/hop, total 200 (config); CLI max depth 2; config ceiling 3 |
@@ -138,6 +138,72 @@ additive **`blastRadius`** (call-graph punchlist). This is **not** deploy
 filters are a portable floor, not a complete or compiler-proven call graph.
 Read `blastRadius.mustTouchFiles` / edges before edits; use `--json` for the
 full edge list.
+
+## Edge confidence product (0117)
+
+Blast edges carry always-present **`confidenceClass`** plus a blast-level
+**`confidenceSummary`** (class counts). Change-context exposes the **same
+counts** under `blast.confidenceSummary` (no edge dump — deliberate token
+budget). Schema versions stay ImpactPacket `"v1"` / change-context `1`.
+
+### Product classes
+
+Class is a pure function of `resolution_status` + `evidence` (scip prefix first):
+
+| `confidenceClass` | Predicate | Discount guidance |
+|-------------------|-----------|-------------------|
+| **`SCIP_BOUND`** | `evidence` starts with `scip:` | Highest available precision path; still not stack-graph completeness |
+| **`RESOLVED`** | status `RESOLVED` and not SCIP | Unique local candidate **heuristic** — floor, not certainty |
+| **`AMBIGUOUS`** | status `AMBIGUOUS` | Never expand; **blast count 0 on production index** (see ceiling) |
+| **`UNRESOLVED`** | status `UNRESOLVED` | Null-callee by construction; not on blast hop-1 |
+| **`CAPPED`** | status `CAPPED` | Resolution budget; do not expand |
+| **`UNKNOWN`** | anything else | Fail-soft; never promote to SCIP_BOUND / RESOLVED |
+
+`is_high_confidence` ≡ class is `SCIP_BOUND` or `RESOLVED`. Pair-collapse
+priority is class-derived (SCIP_BOUND > RESOLVED > AMBIGUOUS > UNRESOLVED >
+CAPPED/UNKNOWN) and bit-identical to the pre-0117 collapse order.
+
+Primary **production** blast split is **SCIP_BOUND vs RESOLVED** (bound reverse
+callers). Float `confidence` remains call-kind defaults — prefer class counts
+over treating 1.0 as compiler proof.
+
+### Bound-callee blast ceiling
+
+Hop-1 blast joins only rows with **non-null `callee_symbol_id`**. In the index
+pipeline, `AMBIGUOUS` and `UNRESOLVED` always write null callees, so they do
+**not** appear on real blast punchlists. They remain real index statuses (and
+full classifier classes for fixtures / future surfaces). Agents should **not**
+expect AMBIGUOUS to be a common blast tier today.
+
+Honesty: blast lists **bound reverse-callers only**; ambiguous/unresolved call
+sites stay in `structural_edges` with null callee and do not expand must-touch.
+
+### Cross-tool mapping (CRG + Graphify)
+
+Peers often tag edges EXTRACTED / INFERRED / AMBIGUOUS. That is an emerging
+**cross-tool convention**, not a Ledgerful rename target.
+
+| Peer tier | Closest Ledgerful idea | Caveat |
+|-----------|------------------------|--------|
+| EXTRACTED | Call-site existence (all tree-sitter edges) — **not** RESOLVED | Do not advertise RESOLVED as EXTRACTED |
+| INFERRED | RESOLVED (heuristic bind) / non-SCIP; Graphify may mean **LLM** links | Different mechanisms (CRG is AST/heuristic) |
+| AMBIGUOUS | AMBIGUOUS | Same discount posture; not on production blast punchlist |
+| (no peer) | SCIP_BOUND | Ledgerful SCIP augment path |
+
+### Agent metadata: `context_savings` vs `confidenceSummary`
+
+CRG MCP tools may ship `context_savings` (token estimates). Ledgerful ships
+`confidenceSummary` class counts on change-context / blast — **analogous
+agent-facing metadata, different signal**. CRG `get_impact_radius` returns full
+edges; Ledgerful **change-context is counts-only by design** (token budget).
+Full edges: `ledgerful impact --json` / `scan --impact --json`.
+
+### Ban list (claim hygiene)
+
+- Do **not** claim RESOLVED ≡ EXTRACTED or compiler-complete call graphs.
+- Do **not** claim “100% call graph” or completeness KPIs from RESOLVED%.
+- Do **not** market AMBIGUOUS as a common blast punchlist tier.
+- Do **not** dump full edges into change-context (0114 fence).
 
 ## What this cannot do
 

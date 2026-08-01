@@ -12,6 +12,7 @@ pub mod coverage;
 pub mod data_models;
 pub mod dead_code;
 pub mod deploy;
+pub mod edge_confidence;
 pub mod environment;
 pub mod federated;
 pub mod hotspots;
