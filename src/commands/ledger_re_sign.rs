@@ -430,6 +430,7 @@ pub fn execute_ledger_re_sign_with_keys_dir(
             &maintenance_entry.tx_id,
             &maintenance_entry.committed_at,
             &maintenance_entry.author,
+            is_upgrade_mode,
         )?;
 
         // Sign the maintenance entry so it has a stable hash for the chain head
@@ -683,8 +684,13 @@ fn insert_maintenance_transaction(
     tx_id: &str,
     committed_at: &str,
     _author: &str,
+    is_upgrade_mode: bool,
 ) -> Result<(), miette::Error> {
-    let planned = "Ledger signature re-sign / key-repair".to_string();
+    let planned = if is_upgrade_mode {
+        "Ledger signature upgrade / re-sign".to_string()
+    } else {
+        "Ledger signature re-sign / key-repair".to_string()
+    };
     let tx = crate::ledger::types::Transaction {
         tx_id: tx_id.to_string(),
         operation_id: None,
