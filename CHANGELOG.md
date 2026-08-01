@@ -8,6 +8,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Impact edge confidence classes + summaries (0117):** Shared classifier over
+  existing `resolution_status` + `evidence` yields product `confidenceClass`
+  (`SCIP_BOUND` \| `RESOLVED` \| `AMBIGUOUS` \| `UNRESOLVED` \| `CAPPED` \|
+  `UNKNOWN`) and always-present `confidenceSummary` counts on ImpactPacket
+  `blastRadius` and change-context `blast` (minimal + standard; **no** edges on
+  change-context). Hop expansion and pair-collapse share one helper; primary
+  production blast split is SCIP_BOUND vs RESOLVED. Bound-callee ceiling:
+  production hop-1 blast lists only non-null callees, so AMBIGUOUS/UNRESOLVED
+  stay off the live punchlist (they remain index statuses). Docs:
+  `docs/Call-Resolution.md`, `docs/agent-output-contract.md`. No migration; no
+  Cargo version bump.
 - **Team Sync low-friction ops (0113) — Available (opt-in shared-folder v1):**
   - `ledgerful sync setup` readiness checklist + Next command (never enables, never
     prompts for secret); `setup --enable` strict refuse matrix (init + ≥1 peer +

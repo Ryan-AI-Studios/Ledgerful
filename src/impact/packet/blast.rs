@@ -1,3 +1,4 @@
+use crate::impact::enrichment::edge_confidence::{ConfidenceClass, EdgeConfidenceSummary};
 use serde::{Deserialize, Serialize};
 
 /// One evidence-tagged call-graph edge in the structural blast radius.
@@ -19,6 +20,9 @@ pub struct BlastEdge {
     pub confidence: Option<f64>,
     /// Whether this edge's far node may seed hop N+1 (high-confidence discovery).
     pub expandable: bool,
+    /// Product confidence class (pure function of `resolution_status` + `evidence`).
+    /// Always present when edge is serialized. JSON key: `confidenceClass`.
+    pub confidence_class: ConfidenceClass,
 }
 
 impl Eq for BlastEdge {}
@@ -31,6 +35,8 @@ impl PartialOrd for BlastEdge {
 
 impl Ord for BlastEdge {
     fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        // confidence_class is intentionally omitted: it is a pure function of
+        // resolution_status + evidence, which are already ordered below.
         self.hop
             .cmp(&other.hop)
             .then_with(|| self.direction.cmp(&other.direction))
@@ -61,10 +67,15 @@ pub struct BlastRadius {
     pub test_hints: Vec<String>,
     #[serde(default)]
     pub honesty_notes: Vec<String>,
+    /// Aggregate edge confidence class counts. Always present when blast is
+    /// serialized (may be all zeros). JSON key: `confidenceSummary`.
+    #[serde(default)]
+    pub confidence_summary: EdgeConfidenceSummary,
 }
 
 impl BlastRadius {
     /// True when the section has nothing useful to emit (quiet packets stay small).
+    /// Zero-only `confidence_summary` does not keep an otherwise-empty blast alive.
     pub fn is_empty_for_serde(&self) -> bool {
         self.edges.is_empty()
             && self.must_touch_files.is_empty()

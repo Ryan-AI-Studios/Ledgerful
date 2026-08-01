@@ -311,8 +311,13 @@ pub fn print_impact_brief(packet: &ImpactPacket) {
     if let Some(ref blast) = packet.blast_radius
         && !blast.edges.is_empty()
     {
+        let s = &blast.confidence_summary;
+        let mut tier = format!("scipBound={} resolved={}", s.scip_bound, s.resolved);
+        if s.ambiguous > 0 {
+            tier.push_str(&format!(" ambiguous={}", s.ambiguous));
+        }
         println!(
-            "  Structural blast: {} edge(s), {} must-touch file(s) (depth {})",
+            "  Structural blast: {} edge(s), {} must-touch file(s) (depth {}; {tier})",
             blast.edges.len(),
             blast.must_touch_files.len(),
             blast.depth_applied
@@ -340,6 +345,25 @@ fn print_structural_blast(blast: &BlastRadius) {
         "  Depth applied: {} (requested {})",
         blast.depth_applied, blast.depth_requested
     );
+
+    let s = &blast.confidence_summary;
+    if s.total > 0 || !blast.edges.is_empty() {
+        println!(
+            "  Confidence: scipBound={} resolved={} ambiguous={} unresolved={} capped={} unknown={} expandable={} total={}",
+            s.scip_bound,
+            s.resolved,
+            s.ambiguous,
+            s.unresolved,
+            s.capped,
+            s.unknown,
+            s.expandable,
+            if s.total > 0 {
+                s.total
+            } else {
+                blast.edges.len()
+            }
+        );
+    }
 
     if !blast.must_touch_files.is_empty() {
         println!("  Must-touch files:");

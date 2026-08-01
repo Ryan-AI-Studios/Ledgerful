@@ -115,6 +115,9 @@ pub struct BlastSummary {
     pub depth: u32,
     pub must_touch_file_count: usize,
     pub must_touch_symbol_count: usize,
+    /// Class counts only (0117). Same shape as `blastRadius.confidenceSummary`.
+    /// Present at both `minimal` and `standard` detail. **No** edges array.
+    pub confidence_summary: crate::impact::enrichment::edge_confidence::EdgeConfidenceSummary,
 }
 
 /// Deepened test-coverage / gap summary (0115). Re-exports the shared library
@@ -232,6 +235,7 @@ pub fn build_change_context(
         depth: b.depth_applied,
         must_touch_file_count: b.must_touch_files.len(),
         must_touch_symbol_count: b.must_touch_symbols.len(),
+        confidence_summary: b.confidence_summary,
     });
 
     let test_coverage = Some(summarize_test_coverage(storage, &impact));
@@ -882,6 +886,7 @@ mod tests {
             must_touch_symbols: vec!["foo".to_string()],
             test_hints: Vec::new(),
             honesty_notes: Vec::new(),
+            ..Default::default()
         });
         impact.temporal_couplings = vec![TemporalCoupling {
             file_a: PathBuf::from("src/a.rs"),
@@ -1459,5 +1464,47 @@ mod tests {
         assert_eq!(summary.mapped_count, 1);
         assert_eq!(summary.unmapped_count, 1);
         let _ = storage.shutdown();
+    }
+
+    #[test]
+    fn change_context_blast_confidence_summary_counts_only_no_edges() {
+        use crate::impact::enrichment::edge_confidence::EdgeConfidenceSummary;
+
+        // Unit-level packet shape: BlastSummary carries counts, never edges.
+        let summary = BlastSummary {
+            depth: 1,
+            must_touch_file_count: 2,
+            must_touch_symbol_count: 1,
+            confidence_summary: EdgeConfidenceSummary {
+                scip_bound: 3,
+                resolved: 5,
+                ambiguous: 0,
+                unresolved: 0,
+                capped: 0,
+                unknown: 0,
+                expandable: 7,
+                total: 8,
+            },
+        };
+        let v = serde_json::to_value(&summary).unwrap();
+        assert!(
+            v.get("edges").is_none(),
+            "change-context must not dump edges"
+        );
+        assert_eq!(v["confidenceSummary"]["scipBound"], 3);
+        assert_eq!(v["confidenceSummary"]["resolved"], 5);
+        assert_eq!(v["confidenceSummary"]["total"], 8);
+        assert_eq!(v["depth"], 1);
+
+        // Both detail levels use the same BlastSummary shape (no detail gate on counts).
+        for detail in [ChangeContextDetail::Minimal, ChangeContextDetail::Standard] {
+            assert!(
+                matches!(
+                    detail,
+                    ChangeContextDetail::Minimal | ChangeContextDetail::Standard
+                ),
+                "detail levels are minimal|standard only"
+            );
+        }
     }
 }
