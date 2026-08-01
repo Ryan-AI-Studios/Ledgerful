@@ -108,11 +108,12 @@ pub fn extract_ledger_tx_ref(msg: &str) -> Option<String> {
 fn scan_ledger_uuid_lines(msg: &str, key: &str) -> Option<String> {
     for line in msg.lines() {
         let trimmed = line.trim();
-        // Case-insensitive key prefix; remainder must be only UUID (+ surrounding space already trimmed).
-        if trimmed.len() < key.len() {
+        // Case-insensitive ASCII key prefix. Use `get` so non-ASCII lines where
+        // `key.len()` is not a UTF-8 char boundary do not panic (codex P1).
+        let Some(head) = trimmed.get(..key.len()) else {
             continue;
-        }
-        if !trimmed[..key.len()].eq_ignore_ascii_case(key) {
+        };
+        if !head.eq_ignore_ascii_case(key) {
             continue;
         }
         let rest = trimmed[key.len()..].trim();
@@ -1302,6 +1303,18 @@ mod tests {
     #[test]
     fn extract_ledger_tx_ref_allows_surrounding_whitespace_on_line() {
         let msg = format!("  Ledger:   {SAMPLE_UUID}  ");
+        assert_eq!(extract_ledger_tx_ref(&msg).as_deref(), Some(SAMPLE_UUID));
+    }
+
+    #[test]
+    fn extract_ledger_tx_ref_non_ascii_lines_do_not_panic() {
+        // `key.len()` for "Ledger:" is 7 bytes; multi-byte UTF-8 lines must not
+        // panic when that index is not a char boundary (codex P1).
+        assert_eq!(extract_ledger_tx_ref("é😊é"), None);
+        assert_eq!(extract_ledger_tx_ref("日本語のコミット"), None);
+        assert_eq!(extract_ledger_tx_ref("feat: café ☕\n\nbody"), None);
+        // Valid Ledger: line still works when surrounded by non-ASCII.
+        let msg = format!("feat: café\n\nLedger: {SAMPLE_UUID}\n\n日本語");
         assert_eq!(extract_ledger_tx_ref(&msg).as_deref(), Some(SAMPLE_UUID));
     }
 
