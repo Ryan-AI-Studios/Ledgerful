@@ -75,7 +75,7 @@ These keywords represent bundle/system-level evidence rather than per-entry pred
 * `temporal_couplings` — Framework-level evidence category (not included in this bundle — produced by `ledgerful hotspots trend` and `ledgerful hotspots explain`).
 * `drift_detection` — Framework-level evidence category (not included in this bundle — produced by `ledgerful ledger status` and `ledgerful scan --impact`).
 * `no_unsigned_entries_gate` — Ledgerful capability (not a bundle artifact); enforced across the whole ledger / export bundle.
-* `verify_command` — Ledgerful capability (not a bundle artifact); evidence produced by running `ledgerful verify --signatures --against-export <path>`.
+* `verify_command` — Ledgerful capability (not a bundle artifact); evidence produced by running `ledgerful verify --signatures --against-export <path>` (checkpoint: live extends or equals the retained head; `--exact` for snapshot equality).
 * `drift_reconciliation` — Framework-level evidence category (not included in this bundle — produced by `ledgerful ledger reconcile` and `ledgerful ledger adopt`).
 
 ## Control provenance and honest limits

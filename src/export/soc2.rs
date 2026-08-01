@@ -482,31 +482,19 @@ fn build_mode_disclosure(
 /// `chain_head.json` for rollback detection, even for legacy ledgers or
 /// rows inserted outside the normal append path.
 ///
-/// Uses the shared LOCAL chain iterator (RT-C4/C5): federated rows are
-/// excluded; walk order follows `prev_hash` linkage (not committed_at/tx_id
-/// alone). Signature fields are `None` because no signed singleton exists.
+/// Ordering is shared with against-export via
+/// [`crate::ledger::chain_checkpoint::ordered_local_for_head`]: post-chain uses
+/// the LOCAL `prev_hash` walk; pre-chain uses full LOCAL `(committed_at, tx_id)`
+/// sort so multi-entry pre-chain length/hash stay consistent. Signature fields
+/// are `None` because no signed singleton exists.
 pub fn synthesize_chain_head(entries: &[crate::ledger::types::LedgerEntry]) -> Option<ChainHead> {
     if entries.is_empty() {
         return None;
     }
-    let walk = crate::ledger::chain_iter::iter_local_chain(entries);
-    // Prefer the LOCAL prev_hash walk. Pre-chain ledgers (no links yet) fall
-    // back to a deterministic LOCAL sort so synthesis still produces a head.
-    let ordered: Vec<&crate::ledger::types::LedgerEntry> = if !walk.ordered.is_empty() {
-        walk.ordered.iter().collect()
-    } else {
-        let mut local: Vec<&crate::ledger::types::LedgerEntry> =
-            entries.iter().filter(|e| e.origin == "LOCAL").collect();
-        if local.is_empty() {
-            return None;
-        }
-        local.sort_by(|a, b| {
-            a.committed_at
-                .cmp(&b.committed_at)
-                .then_with(|| a.tx_id.cmp(&b.tx_id))
-        });
-        local
-    };
+    let ordered = crate::ledger::chain_checkpoint::ordered_local_for_head(entries);
+    if ordered.is_empty() {
+        return None;
+    }
     let first = ordered.first()?;
     let last = ordered.last()?;
     // genesis is the ISO-8601 timestamp of the first in-chain entry, matching

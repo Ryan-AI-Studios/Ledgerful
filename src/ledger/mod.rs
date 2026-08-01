@@ -1,4 +1,5 @@
 pub mod adr;
+pub mod chain_checkpoint;
 pub mod chain_iter;
 pub mod crypto;
 pub mod db;
@@ -15,6 +16,7 @@ pub mod types;
 pub mod ui;
 pub mod validators;
 
+pub use chain_checkpoint::*;
 pub use chain_iter::*;
 pub use crypto::*;
 pub use db::*;

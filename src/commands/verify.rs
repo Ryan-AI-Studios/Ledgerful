@@ -307,7 +307,7 @@ pub mod sig_exit {
 }
 
 pub fn verify_ledger_signatures(layout: &Layout) -> Result<()> {
-    verify_ledger_signatures_with_options(layout, true, false, false, None)
+    verify_ledger_signatures_with_options(layout, true, false, false, None, false)
 }
 
 pub fn verify_ledger_signatures_with_options(
@@ -316,6 +316,7 @@ pub fn verify_ledger_signatures_with_options(
     verify_chain: bool,
     strict_signatures: bool,
     against_export: Option<&Path>,
+    exact: bool,
 ) -> Result<()> {
     let mut storage = StorageManager::init_with_layout(layout)?;
     let db = crate::ledger::db::LedgerDb::new(storage.get_connection_mut());
@@ -347,6 +348,7 @@ pub fn verify_ledger_signatures_with_options(
             &entries,
             head.as_ref(),
             against_export,
+            exact,
             verify_signatures,
             signing_required,
             trusted_keys,
@@ -579,10 +581,12 @@ fn compute_entry_hash_for_verify(entry: &crate::ledger::types::LedgerEntry) -> R
         .map_err(|e| miette::miette!("Failed to compute entry hash for TX {}: {e}", entry.tx_id))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn verify_chain_integrity(
     entries: &[crate::ledger::types::LedgerEntry],
     head: Option<&crate::ledger::types::ChainHead>,
     against_export: Option<&Path>,
+    exact: bool,
     verify_signatures: bool,
     signing_required: bool,
     trusted_keys: &[String],
@@ -723,120 +727,28 @@ fn verify_chain_integrity(
     // synthesizes a chain_head.json for legacy/pre-chain ledgers, so
     // --against-export can still detect truncation/rollback.
     if let Some(export_path) = against_export {
-        let export_head = load_export_chain_head(export_path)?;
-
-        // An empty local ledger compared to a non-empty export is itself a
-        // rollback/wipe signal: every local entry was deleted. This takes
-        // precedence over the "No local chain head" error, because with no
-        // local entries there is simply nothing to compare except the wipe.
-        if entries.is_empty() {
-            return Err(miette::miette!(
-                "Local ledger is empty but export shows {} linked entries (rollback/wipe detected).",
-                export_head.length
-            ));
-        }
-
-        // Synthesize a local head for pre-chain/legacy ledgers so they can be
-        // checked against an exported checkpoint. Use the same helper the export
-        // path uses so the synthesized head matches exactly.
-        let local_head = if let Some(h) = local_head {
-            h
-        } else {
-            // Fail-closed downgrade mitigation: if entries already have
-            // prev_hash links but the chain_head row is missing, the signed
-            // head has been stripped (Option-A downgrade). Do not let
-            // --against-export synthesize a head that would pass.
-            let any_prev = entries.iter().any(|e| e.prev_hash.is_some());
-            if any_prev {
-                return Err(miette::miette!(
-                    "Chain head is missing but entries have chain links (downgrade detected)"
-                ));
-            }
-            crate::export::soc2::synthesize_chain_head(entries).ok_or_else(|| {
-                miette::miette!("No local chain head and no entries to compare against export")
-            })?
-        };
-
-        // Bind the live chain to the stored local head before comparing against
-        // the export. This catches local truncation or insertion attacks that leave
-        // chain_head untouched. Skip this when the local head was synthesized
-        // from the same entries we just walked, because in that case it is
-        // guaranteed to match and the export comparison is the real validation.
-        if head_is_real {
-            let computed_latest_hash = prev_hash.as_deref().unwrap_or("");
-            if computed_latest_hash != local_head.latest_entry_hash {
-                return Err(miette::miette!(
-                    "Chain head mismatch: computed latest entry hash {} does not match stored head {} (local chain altered).",
-                    computed_latest_hash,
-                    local_head.latest_entry_hash
-                ));
-            }
-            if chain_length != local_head.length {
-                return Err(miette::miette!(
-                    "Chain length mismatch: computed {} linked entries but head claims {} (local truncation/insertion detected).",
-                    chain_length,
-                    local_head.length
-                ));
-            }
-            let head_sig = local_head.head_signature.as_deref().unwrap_or("");
-            let head_pub = local_head.head_public_key.as_deref().unwrap_or("");
-            if !crate::ledger::crypto::verify_chain_head(
-                &local_head.latest_entry_hash,
-                &local_head.genesis,
-                local_head.length,
-                head_sig,
-                head_pub,
-            ) {
-                return Err(miette::miette!(
-                    "Chain head signature verification failed for head {}.",
-                    local_head.latest_entry_hash
-                ));
-            }
-        }
-
-        if local_head.latest_entry_hash != export_head.latest_entry_hash {
-            return Err(miette::miette!(
-                "Live chain head {} does not match exported head {} (rollback/tail-truncation detected).",
-                local_head.latest_entry_hash,
-                export_head.latest_entry_hash
-            ));
-        }
-        if local_head.genesis != export_head.genesis {
-            return Err(miette::miette!(
-                "Live chain genesis {} does not match exported genesis {}.",
-                local_head.genesis,
-                export_head.genesis
-            ));
-        }
-        if local_head.length != export_head.length {
-            return Err(miette::miette!(
-                "Live chain length {} does not match exported length {} (tail truncation or rollback detected).",
-                local_head.length,
-                export_head.length
-            ));
-        }
-
-        let export_sig = export_head.head_signature.as_deref().unwrap_or("");
-        let export_pub = export_head.head_public_key.as_deref().unwrap_or("");
-        if export_sig.is_empty() || export_pub.is_empty() {
-            tracing::info!(
-                target: "cli_summary",
-                "Exported chain head is unsigned (synthesized), cannot verify signature; length/hash/genesis comparison completed."
+        #[cfg(feature = "export")]
+        {
+            return compare_against_export_path(
+                entries,
+                local_head.as_ref(),
+                head_is_real,
+                prev_hash.as_deref(),
+                chain_length,
+                export_path,
+                exact,
             );
-        } else if !crate::ledger::crypto::verify_chain_head(
-            &export_head.latest_entry_hash,
-            &export_head.genesis,
-            export_head.length,
-            export_sig,
-            export_pub,
-        ) {
+        }
+        #[cfg(not(feature = "export"))]
+        {
+            let _ = (export_path, exact, chain_length, head_is_real);
             return Err(miette::miette!(
-                "Exported chain head signature verification failed."
+                "verify --against-export requires the export feature; rebuild with --features export"
             ));
         }
-
-        return Ok(());
     }
+    // `--exact` is only meaningful with `--against-export` (CLI rejects otherwise).
+    let _ = exact;
 
     // Fail-closed: if the chain head has been stripped from a DB that contains
     // in-chain entries (entries with prev_hash set), treat it as a downgrade. If
@@ -905,20 +817,100 @@ fn verify_chain_integrity(
     Ok(())
 }
 
-fn load_export_chain_head(path: &Path) -> Result<crate::ledger::types::ChainHead> {
-    let file = std::fs::File::open(path)
-        .map_err(|e| miette::miette!("Failed to open export zip {}: {}", path.display(), e))?;
-    let mut archive = zip::ZipArchive::new(file)
-        .map_err(|e| miette::miette!("Failed to read export zip {}: {}", path.display(), e))?;
-    let mut entry = archive
-        .by_name("chain_head.json")
-        .map_err(|e| miette::miette!("Export missing chain_head.json: {}", e))?;
-    let mut buf = Vec::new();
-    std::io::Read::read_to_end(&mut entry, &mut buf)
-        .map_err(|e| miette::miette!("Failed to read chain_head.json from export: {}", e))?;
-    let head: crate::ledger::types::ChainHead = serde_json::from_slice(&buf)
-        .map_err(|e| miette::miette!("Failed to parse chain_head.json: {}", e))?;
-    Ok(head)
+/// Against-export comparison (checkpoint default or exact). Gated on `export`
+/// so `--no-default-features` builds do not pull zip/export solely via verify.
+#[cfg(feature = "export")]
+fn compare_against_export_path(
+    entries: &[crate::ledger::types::LedgerEntry],
+    local_head: Option<&crate::ledger::types::ChainHead>,
+    head_is_real: bool,
+    computed_latest_hash: Option<&str>,
+    chain_length: i64,
+    export_path: &Path,
+    exact: bool,
+) -> Result<()> {
+    use crate::ledger::chain_checkpoint::{
+        CheckpointMode, compare_against_export, load_checkpoint_head, ordered_local_for_head,
+    };
+
+    let export_head = load_checkpoint_head(export_path)?;
+
+    // An empty local ledger compared to a non-empty export is itself a
+    // rollback/wipe signal: every local entry was deleted. This takes
+    // precedence over the "No local chain head" error, because with no
+    // local entries there is simply nothing to compare except the wipe.
+    if entries.is_empty() {
+        return Err(miette::miette!(
+            "Local ledger is empty but export shows {} linked entries (rollback/wipe detected).",
+            export_head.length
+        ));
+    }
+
+    // Synthesize a local head for pre-chain/legacy ledgers so they can be
+    // checked against an exported checkpoint. Use the same helper the export
+    // path uses so the synthesized head matches exactly.
+    let local_head = if let Some(h) = local_head {
+        h.clone()
+    } else {
+        // Fail-closed downgrade mitigation: if entries already have
+        // prev_hash links but the chain_head row is missing, the signed
+        // head has been stripped (Option-A downgrade). Do not let
+        // --against-export synthesize a head that would pass.
+        let any_prev = entries.iter().any(|e| e.prev_hash.is_some());
+        if any_prev {
+            return Err(miette::miette!(
+                "Chain head is missing but entries have chain links (downgrade detected)"
+            ));
+        }
+        crate::export::soc2::synthesize_chain_head(entries).ok_or_else(|| {
+            miette::miette!("No local chain head and no entries to compare against export")
+        })?
+    };
+
+    // Bind the live chain to the stored local head before comparing against
+    // the export. This catches local truncation or insertion attacks that leave
+    // chain_head untouched. Skip this when the local head was synthesized
+    // from the same entries we just walked, because in that case it is
+    // guaranteed to match and the export comparison is the real validation.
+    if head_is_real {
+        let computed = computed_latest_hash.unwrap_or("");
+        if computed != local_head.latest_entry_hash {
+            return Err(miette::miette!(
+                "Chain head mismatch: computed latest entry hash {} does not match stored head {} (local chain altered).",
+                computed,
+                local_head.latest_entry_hash
+            ));
+        }
+        if chain_length != local_head.length {
+            return Err(miette::miette!(
+                "Chain length mismatch: computed {} linked entries but head claims {} (local truncation/insertion detected).",
+                chain_length,
+                local_head.length
+            ));
+        }
+        let head_sig = local_head.head_signature.as_deref().unwrap_or("");
+        let head_pub = local_head.head_public_key.as_deref().unwrap_or("");
+        if !crate::ledger::crypto::verify_chain_head(
+            &local_head.latest_entry_hash,
+            &local_head.genesis,
+            local_head.length,
+            head_sig,
+            head_pub,
+        ) {
+            return Err(miette::miette!(
+                "Chain head signature verification failed for head {}.",
+                local_head.latest_entry_hash
+            ));
+        }
+    }
+
+    let ordered = ordered_local_for_head(entries);
+    let mode = if exact {
+        CheckpointMode::Exact
+    } else {
+        CheckpointMode::Checkpoint
+    };
+    compare_against_export(&ordered, &local_head, &export_head, mode)
 }
 
 #[allow(clippy::too_many_arguments)]

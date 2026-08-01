@@ -171,7 +171,7 @@ fn chain__two_sequential_commits__linear_no_fork() {
 
     // The public API must report the chain as valid.
     let layout = Layout::new(root.as_str());
-    verify_ledger_signatures_with_options(&layout, true, true, false, None).unwrap();
+    verify_ledger_signatures_with_options(&layout, true, true, false, None, false).unwrap();
 }
 
 #[test]
@@ -230,7 +230,8 @@ fn chain__downgrade_deletes_head__verify_chain_fails_closed() {
     drop(conn);
 
     let layout = Layout::new(root.as_str());
-    let err = verify_ledger_signatures_with_options(&layout, true, true, false, None).unwrap_err();
+    let err =
+        verify_ledger_signatures_with_options(&layout, true, true, false, None, false).unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("downgrade") || msg.contains("No chain head") || msg.contains("missing"),
@@ -294,7 +295,8 @@ fn chain__delete_all_entries_leave_head__verify_chain_fails_orphan_head() {
     drop(conn);
 
     let layout = Layout::new(root.as_str());
-    let err = verify_ledger_signatures_with_options(&layout, true, true, false, None).unwrap_err();
+    let err =
+        verify_ledger_signatures_with_options(&layout, true, true, false, None, false).unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("Chain head exists but no ledger entries found"),
@@ -327,11 +329,11 @@ fn chain__pre_chain_entries_without_prev_hash__verify_chain_is_benign() {
     drop(conn);
 
     let layout = Layout::new(root.as_str());
-    verify_ledger_signatures_with_options(&layout, false, true, false, None)
+    verify_ledger_signatures_with_options(&layout, false, true, false, None, false)
         .expect("pre-chain ledger (no prev_hash, no head) must not report downgrade");
 }
 
-#[cfg(feature = "web")]
+#[cfg(feature = "export")]
 #[test]
 #[serial(cwd, env)]
 fn chain__pre_chain_entries_without_prev_hash__against_export_of_same_ledger_passes() {
@@ -379,10 +381,49 @@ fn chain__pre_chain_entries_without_prev_hash__against_export_of_same_ledger_pas
     let zip_bytes = generate_soc2_export(&layout).unwrap();
     std::fs::write(&export_path, &zip_bytes).unwrap();
 
+    // Prove synthesis kept both pre-chain rows (shared ordering must not collapse to 1).
+    {
+        let file = std::io::Cursor::new(&zip_bytes);
+        let mut archive = zip::ZipArchive::new(file).unwrap();
+        let mut head_entry = archive.by_name("chain_head.json").unwrap();
+        let mut head_buf = Vec::new();
+        std::io::Read::read_to_end(&mut head_entry, &mut head_buf).unwrap();
+        let head: ledgerful::ledger::types::ChainHead = serde_json::from_slice(&head_buf).unwrap();
+        assert_eq!(
+            head.length, 2,
+            "synthesized pre-chain export head must report length 2, got {}",
+            head.length
+        );
+
+        // Optional: latest hash matches the second pre-chain entry (ordering by committed_at).
+        let mut storage = StorageManager::init(db_path.as_path()).unwrap();
+        let db = LedgerDb::new(storage.get_connection_mut());
+        let entries = db
+            .get_all_committed_ledger_entries()
+            .expect("read pre-chain entries");
+        let second = entries
+            .iter()
+            .find(|e| e.tx_id == "tx-prechain-002")
+            .expect("second pre-chain entry present");
+        let expected_hash =
+            ledgerful::ledger::crypto::compute_entry_hash_for_entry(second).unwrap();
+        assert_eq!(
+            head.latest_entry_hash, expected_hash,
+            "synthesized latest_entry_hash must match second pre-chain entry"
+        );
+    }
+
     // The local ledger exactly matches the export, so --against-export should
     // pass even though there is no stored chain head.
-    verify_ledger_signatures_with_options(&layout, false, true, false, Some(export_path.as_path()))
-        .expect("verify --against-export must pass for pre-chain ledger matching its own export");
+    verify_ledger_signatures_with_options(
+        &layout,
+        false,
+        true,
+        false,
+        Some(export_path.as_path()),
+        false,
+    )
+    .expect("verify --against-export must pass for pre-chain ledger matching its own export");
 }
 
 #[test]
@@ -441,7 +482,8 @@ fn chain__delete_middle_entry__verify_chain_fails_localized() {
     drop(conn);
 
     let layout = Layout::new(root.as_str());
-    let err = verify_ledger_signatures_with_options(&layout, true, true, false, None).unwrap_err();
+    let err =
+        verify_ledger_signatures_with_options(&layout, true, true, false, None, false).unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("Chain break")
@@ -514,7 +556,8 @@ fn chain__reorder_entries__verify_chain_fails() {
     let layout = Layout::new(root.as_str());
     // Reordering invalidates the per-entry signatures (basis includes
     // committed_at), so verify the chain linkage only, not the signatures.
-    let err = verify_ledger_signatures_with_options(&layout, false, true, false, None).unwrap_err();
+    let err = verify_ledger_signatures_with_options(&layout, false, true, false, None, false)
+        .unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("Chain break")
@@ -587,7 +630,8 @@ fn chain__insert_unlinked_entry__verify_chain_fails() {
     drop(conn);
 
     let layout = Layout::new(root.as_str());
-    let err = verify_ledger_signatures_with_options(&layout, true, true, false, None).unwrap_err();
+    let err =
+        verify_ledger_signatures_with_options(&layout, true, true, false, None, false).unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("Chain break")
@@ -597,7 +641,7 @@ fn chain__insert_unlinked_entry__verify_chain_fails() {
     );
 }
 
-#[cfg(feature = "web")]
+#[cfg(feature = "export")]
 #[test]
 #[serial(cwd, env)]
 fn chain__export_contains_chain_head_json__valid_head_data() {
@@ -675,7 +719,7 @@ fn chain__export_contains_chain_head_json__valid_head_data() {
     ));
 }
 
-#[cfg(feature = "web")]
+#[cfg(feature = "export")]
 #[test]
 #[serial(cwd, env)]
 fn chain__against_export_after_rollback__detects_rollback() {
@@ -773,18 +817,20 @@ fn chain__against_export_after_rollback__detects_rollback() {
         true,
         false,
         Some(export_path.as_path()),
+        false,
     )
     .unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("rollback")
             || msg.contains("tail truncation")
-            || msg.contains("does not match exported"),
+            || msg.contains("does not match exported")
+            || msg.contains("fork"),
         "verify --against-export must detect rollback, got: {msg}"
     );
 }
 
-#[cfg(feature = "web")]
+#[cfg(feature = "export")]
 #[test]
 #[serial(cwd, env)]
 fn chain__against_export_missing_head_with_links__fails_closed_downgrade() {
@@ -849,6 +895,7 @@ fn chain__against_export_missing_head_with_links__fails_closed_downgrade() {
         true,
         false,
         Some(export_path.as_path()),
+        false,
     )
     .unwrap_err();
     let msg = format!("{err}");
@@ -858,7 +905,7 @@ fn chain__against_export_missing_head_with_links__fails_closed_downgrade() {
     );
 }
 
-#[cfg(feature = "web")]
+#[cfg(feature = "export")]
 #[test]
 #[serial(cwd, env)]
 fn chain__against_export_tail_deleted_with_head_unchanged__fails_local_truncation() {
@@ -930,11 +977,370 @@ fn chain__against_export_tail_deleted_with_head_unchanged__fails_local_truncatio
         true,
         false,
         Some(export_path.as_path()),
+        false,
     )
     .unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("Chain length mismatch") || msg.contains("Chain head mismatch"),
         "verify --against-export must detect local truncation when tail is deleted but head is unchanged, got: {msg}"
+    );
+}
+
+// ─── 0119: checkpoint semantics, bare JSON, export head ───────────────────────
+
+#[cfg(feature = "export")]
+fn commit_n_entries(setup: &RepoSetup, n: usize, prefix: &str) -> Vec<String> {
+    let root = setup.root.clone();
+    let db_path = setup.db_path.clone();
+    let entity_path = root.join("src/main.rs");
+    std::fs::create_dir_all(entity_path.parent().unwrap()).unwrap();
+    std::fs::write(&entity_path, "").unwrap();
+
+    let mut tx_ids = Vec::new();
+    let mut storage = StorageManager::init(db_path.as_path()).unwrap();
+    let mut tx_mgr = TransactionManager::new(&mut storage, root.clone().into(), Config::default());
+    for i in 0..n {
+        let tx_id = tx_mgr
+            .start_change(TransactionRequest {
+                category: Category::Feature,
+                entity: "src/main.rs".to_string(),
+                planned_action: Some(format!("{prefix} entry {i}")),
+                ..Default::default()
+            })
+            .unwrap();
+        tx_mgr
+            .commit_change(
+                tx_id.clone(),
+                CommitRequest {
+                    change_type: ChangeType::Modify,
+                    summary: format!("{prefix} entry {i}"),
+                    reason: "test".to_string(),
+                    committed_at: Some(format!("2026-07-11T10:00:0{i}Z")),
+                    signature: None,
+                    public_key: None,
+                    ..Default::default()
+                },
+                false,
+            )
+            .unwrap();
+        tx_ids.push(tx_id);
+    }
+    tx_ids
+}
+
+#[cfg(feature = "export")]
+#[test]
+#[serial(cwd, env)]
+fn chain__against_export_advance_past_checkpoint__passes() {
+    use ledgerful::export::soc2::generate_soc2_export;
+
+    let _env_non_interactive = non_interactive();
+    let setup = setup_initialized_repo();
+    let root = setup.root.clone();
+
+    commit_n_entries(&setup, 2, "checkpoint base");
+    let layout = Layout::new(root.as_str());
+    let export_zip = tempdir().unwrap();
+    let export_path = export_zip.path().join("export.zip");
+    let zip_bytes = generate_soc2_export(&layout).unwrap();
+    std::fs::write(&export_path, &zip_bytes).unwrap();
+
+    // Advance past the export (length 2 → 3).
+    commit_n_entries(&setup, 1, "after export");
+
+    verify_ledger_signatures_with_options(
+        &layout,
+        true,
+        true,
+        false,
+        Some(export_path.as_path()),
+        false,
+    )
+    .expect("checkpoint mode must pass when live chain advances past export");
+}
+
+#[cfg(feature = "export")]
+#[test]
+#[serial(cwd, env)]
+fn chain__against_export_exact_after_advance__fails() {
+    use ledgerful::export::soc2::generate_soc2_export;
+
+    let _env_non_interactive = non_interactive();
+    let setup = setup_initialized_repo();
+    let root = setup.root.clone();
+
+    commit_n_entries(&setup, 2, "exact base");
+    let layout = Layout::new(root.as_str());
+    let export_zip = tempdir().unwrap();
+    let export_path = export_zip.path().join("export.zip");
+    let zip_bytes = generate_soc2_export(&layout).unwrap();
+    std::fs::write(&export_path, &zip_bytes).unwrap();
+
+    commit_n_entries(&setup, 1, "exact advance");
+
+    let err = verify_ledger_signatures_with_options(
+        &layout,
+        true,
+        true,
+        false,
+        Some(export_path.as_path()),
+        true, // --exact
+    )
+    .unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("exact mode") || msg.contains("does not match"),
+        "exact mode must fail when chain advanced past export, got: {msg}"
+    );
+}
+
+#[cfg(feature = "export")]
+#[test]
+#[serial(cwd, env)]
+fn chain__against_export_bare_json_path__works() {
+    let _env_non_interactive = non_interactive();
+    let setup = setup_initialized_repo();
+    let root = setup.root.clone();
+
+    commit_n_entries(&setup, 2, "bare json");
+    let layout = Layout::new(root.as_str());
+
+    let mut storage = StorageManager::init(setup.db_path.as_path()).unwrap();
+    let db = LedgerDb::new(storage.get_connection_mut());
+    let head = db.get_chain_head().unwrap().expect("head");
+    let json_path = setup.dir.path().join("head-checkpoint.json");
+    std::fs::write(&json_path, serde_json::to_vec_pretty(&head).unwrap()).unwrap();
+
+    verify_ledger_signatures_with_options(
+        &layout,
+        true,
+        true,
+        false,
+        Some(json_path.as_path()),
+        false,
+    )
+    .expect("bare JSON chain_head must work with --against-export");
+}
+
+#[cfg(feature = "export")]
+#[test]
+#[serial(cwd, env)]
+fn chain__against_export_zip_path__still_works() {
+    use ledgerful::export::soc2::generate_soc2_export;
+
+    let _env_non_interactive = non_interactive();
+    let setup = setup_initialized_repo();
+    let root = setup.root.clone();
+
+    commit_n_entries(&setup, 1, "zip still");
+    let layout = Layout::new(root.as_str());
+    let export_zip = tempdir().unwrap();
+    let export_path = export_zip.path().join("export.zip");
+    std::fs::write(&export_path, generate_soc2_export(&layout).unwrap()).unwrap();
+
+    verify_ledger_signatures_with_options(
+        &layout,
+        true,
+        true,
+        false,
+        Some(export_path.as_path()),
+        false,
+    )
+    .expect("zip against-export must still work");
+}
+
+#[cfg(feature = "export")]
+#[test]
+#[serial(cwd, env)]
+fn chain__against_export_fork_same_length__fails() {
+    use ledgerful::export::soc2::generate_soc2_export;
+
+    let _env_non_interactive = non_interactive();
+    let setup = setup_initialized_repo();
+    let root = setup.root.clone();
+    let db_path = setup.db_path.clone();
+
+    let tx_ids = commit_n_entries(&setup, 2, "fork");
+    let layout = Layout::new(root.as_str());
+    let export_zip = tempdir().unwrap();
+    let export_path = export_zip.path().join("export.zip");
+    std::fs::write(&export_path, generate_soc2_export(&layout).unwrap()).unwrap();
+
+    // Rewrite the second entry's summary so its hash changes while length stays 2.
+    // Re-sign the chain head so local bind still passes; against-export must see a fork.
+    let conn = rusqlite::Connection::open(db_path.as_path()).unwrap();
+    conn.execute(
+        "UPDATE ledger_entries SET summary = 'rewritten fork payload' WHERE tx_id = ?1",
+        rusqlite::params![tx_ids[1]],
+    )
+    .unwrap();
+    // Read rewritten entry to recompute hash + re-sign head.
+    drop(conn);
+
+    let mut storage = StorageManager::init(db_path.as_path()).unwrap();
+    let db = LedgerDb::new(storage.get_connection_mut());
+    let entries = db.get_all_committed_ledger_entries().unwrap();
+    let ordered = ledgerful::ledger::chain_checkpoint::ordered_local_for_head(&entries);
+    assert_eq!(ordered.len(), 2);
+    let new_latest = ledgerful::ledger::crypto::compute_entry_hash_for_entry(ordered[1]).unwrap();
+    let genesis = ordered[0].committed_at.clone();
+    let keys = root.join(".ledgerful").join("keys");
+    let (head_sig, head_pub) =
+        ledgerful::ledger::crypto::sign_chain_head(keys.as_std_path(), &new_latest, &genesis, 2)
+            .unwrap();
+    drop(storage);
+
+    let conn = rusqlite::Connection::open(db_path.as_path()).unwrap();
+    conn.execute(
+        "UPDATE chain_head SET latest_entry_hash = ?1, genesis = ?2, length = 2, head_signature = ?3, head_public_key = ?4",
+        rusqlite::params![
+            new_latest,
+            genesis,
+            head_sig.unwrap_or_default(),
+            head_pub.unwrap_or_default()
+        ],
+    )
+    .unwrap();
+    drop(conn);
+
+    // Signatures on the rewritten entry are intentionally invalid; this case
+    // isolates checkpoint fork detection (hash@K), not entry crypto.
+    let err = verify_ledger_signatures_with_options(
+        &layout,
+        false,
+        true,
+        false,
+        Some(export_path.as_path()),
+        false,
+    )
+    .unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("fork") || msg.contains("rewrite") || msg.contains("does not match"),
+        "fork at same length must fail against-export, got: {msg}"
+    );
+}
+
+#[cfg(feature = "export")]
+#[test]
+#[serial(cwd, env)]
+fn chain__export_head_round_trip__checkpoint_ok_exact_fails_after_advance() {
+    use ledgerful::export::head::{prepare_chain_head_export, serialize_chain_head};
+
+    let _env_non_interactive = non_interactive();
+    let setup = setup_initialized_repo();
+    let root = setup.root.clone();
+
+    commit_n_entries(&setup, 2, "export head");
+    let layout = Layout::new(root.as_str());
+
+    let head = prepare_chain_head_export(&layout).expect("signed head export");
+    let path = setup.dir.path().join("exported-head.json");
+    std::fs::write(&path, serialize_chain_head(&head).unwrap()).unwrap();
+
+    verify_ledger_signatures_with_options(&layout, true, true, false, Some(path.as_path()), false)
+        .expect("same DB against export head must pass");
+
+    commit_n_entries(&setup, 1, "after head export");
+
+    verify_ledger_signatures_with_options(&layout, true, true, false, Some(path.as_path()), false)
+        .expect("checkpoint mode must pass after advance");
+
+    let err = verify_ledger_signatures_with_options(
+        &layout,
+        true,
+        true,
+        false,
+        Some(path.as_path()),
+        true,
+    )
+    .unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("exact mode") || msg.contains("does not match"),
+        "exact after advance must fail, got: {msg}"
+    );
+}
+
+#[cfg(feature = "export")]
+#[test]
+#[serial(cwd, env)]
+fn chain__export_head_unsigned_with_require_signing__refuses() {
+    use ledgerful::export::head::prepare_chain_head_export;
+
+    let _env_non_interactive = non_interactive();
+    let setup = setup_initialized_repo();
+    let root = setup.root.clone();
+    let db_path = setup.db_path.clone();
+
+    commit_n_entries(&setup, 1, "unsigned refuse");
+
+    // Strip signatures from chain head while keeping length/hash.
+    let conn = rusqlite::Connection::open(db_path.as_path()).unwrap();
+    conn.execute(
+        "UPDATE chain_head SET head_signature = NULL, head_public_key = NULL",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    // ensure require_signing=true (init default already true; re-assert).
+    let cfg_path = root.join(".ledgerful").join("config.toml");
+    let mut cfg = std::fs::read_to_string(cfg_path.as_std_path()).unwrap();
+    if !cfg.contains("require_signing") {
+        cfg.push_str("\n[intent]\nrequire_signing = true\n");
+    } else {
+        cfg = cfg.replace("require_signing = false", "require_signing = true");
+    }
+    std::fs::write(cfg_path.as_std_path(), cfg).unwrap();
+
+    let layout = Layout::new(root.as_str());
+    let err = prepare_chain_head_export(&layout).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("Refusing to export an unsigned chain head")
+            || msg.contains("require_signing"),
+        "unsigned + require_signing must refuse export head, got: {msg}"
+    );
+}
+
+#[cfg(feature = "export")]
+#[test]
+#[serial(cwd, env)]
+fn chain__export_head_unsigned_with_broken_config__refuses() {
+    use ledgerful::export::head::prepare_chain_head_export;
+
+    let _env_non_interactive = non_interactive();
+    let setup = setup_initialized_repo();
+    let root = setup.root.clone();
+    let db_path = setup.db_path.clone();
+
+    commit_n_entries(&setup, 1, "unsigned broken config");
+
+    // Strip signatures from chain head while keeping length/hash.
+    let conn = rusqlite::Connection::open(db_path.as_path()).unwrap();
+    conn.execute(
+        "UPDATE chain_head SET head_signature = NULL, head_public_key = NULL",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    // Malformed config must fail closed (not unwrap_or_default → require_signing=false).
+    let cfg_path = root.join(".ledgerful").join("config.toml");
+    std::fs::write(
+        cfg_path.as_std_path(),
+        "this is not = valid toml {{\nrequire_signing is broken\n",
+    )
+    .unwrap();
+
+    let layout = Layout::new(root.as_str());
+    let err = prepare_chain_head_export(&layout).unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("cannot load config")
+            || msg.contains("Refusing to export an unsigned chain head"),
+        "unsigned + broken config must refuse export head fail-closed, got: {msg}"
     );
 }

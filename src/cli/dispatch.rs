@@ -197,6 +197,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
             signatures,
             chain,
             against_export,
+            exact,
             strict_signatures,
             dry_run,
             scope,
@@ -216,6 +217,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
                 signatures,
                 chain,
                 against_export,
+                exact,
                 strict_signatures,
                 dry_run,
                 scope,
@@ -724,6 +726,24 @@ fn dispatch_export(command: ExportCommands) -> Result<()> {
             );
             Ok(())
         }
+        ExportCommands::Head { out, force } => {
+            use crate::export::head::{prepare_chain_head_export, serialize_chain_head};
+
+            let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git()?;
+            let path =
+                out.unwrap_or_else(|| std::path::PathBuf::from("./ledgerful-chain-head.json"));
+            let validated = validate_export_evidence_path(&path, force)?;
+            let head = prepare_chain_head_export(&layout)?;
+            let json = serialize_chain_head(&head)?;
+            std::fs::write(&validated, &json).into_diagnostic()?;
+
+            println!(
+                "{} Chain head exported to {}",
+                "SUCCESS:".green().bold(),
+                validated.display()
+            );
+            Ok(())
+        }
     }
 }
 
@@ -745,7 +765,9 @@ fn dispatch_export(_command: ExportCommands) -> Result<()> {
 ///   we re-check the canonicalized path after symlink resolution so a repo-local
 ///   symlink cannot escape into a protected location.
 /// - Refuses to overwrite an existing file without `--force`.
-fn validate_export_evidence_path(
+///
+/// Shared by `export evidence` and `export head`.
+pub(crate) fn validate_export_evidence_path(
     path: &std::path::Path,
     force: bool,
 ) -> miette::Result<std::path::PathBuf> {
@@ -1360,6 +1382,23 @@ mod export_path_tests {
         assert!(err.contains("Cargo.toml"));
     }
 
+    /// 0119 DoD: `export head` shares `validate_export_evidence_path` path-safety.
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn validate_export_evidence_path_refuses_cargo_toml() {
+        let (_tmp, root) = temp_repo();
+        let _guard = CwdGuard::enter(root.as_std_path());
+
+        let err = validate_export_evidence_path(std::path::Path::new("Cargo.toml"), false)
+            .unwrap_err()
+            .to_string();
+
+        assert!(
+            err.contains("Cargo.toml"),
+            "export evidence/head path safety must refuse Cargo.toml; got: {err}"
+        );
+    }
+
     #[serial_test::serial(cwd)]
     #[test]
     fn validate_export_path_refuses_state_directory() {
@@ -1591,12 +1630,18 @@ fn dispatch_verify(
     signatures: bool,
     chain: bool,
     against_export: Option<std::path::PathBuf>,
+    exact: bool,
     strict_signatures: bool,
     dry_run: bool,
     scope: crate::verify::plan::VerifyScope,
     auto_index: bool,
     json: bool,
 ) -> Result<()> {
+    if exact && against_export.is_none() {
+        return Err(miette::miette!(
+            "--exact requires --against-export <path> (snapshot equality against a retained head)"
+        ));
+    }
     if signatures || chain || against_export.is_some() {
         // No versioned JSON payload for the signature/chain path — reject the
         // combo the same way --health / --dry-run do (0093 F3), rather than
@@ -1612,6 +1657,7 @@ fn dispatch_verify(
             chain,
             strict_signatures,
             against_export.as_deref(),
+            exact,
         )
     } else {
         crate::commands::verify::execute_verify(

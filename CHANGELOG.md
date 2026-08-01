@@ -6,8 +6,24 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **`verify --against-export` checkpoint default (0119 — behavior change):**
+  Comparison is now **ancestor/prefix** (live chain must extend or equal the
+  retained export head at `export.length`). Legitimate advance past a prior
+  export **passes**. Use **`--exact`** to restore previous full head equality
+  (latest/genesis/length) for freeze/forensic checks. Shared LOCAL ordering
+  with `synthesize_chain_head` fixes multi-entry pre-chain export length.
+
 ### Added
 
+- **Chain-head operator retention (0119):** Thin `ledgerful export head`
+  (`./ledgerful-chain-head.json` by default) for periodic off-machine
+  checkpoints; multi-format `verify --against-export` (SOC2 zip **or** bare
+  `chain_head.json`); doctor info finding `chain-checkpoint-practice` when a
+  signed head exists; `docs/chain-checkpoint.md` + dual-skill hygiene. Unsigned
+  `export head` **refuses** when `intent.require_signing` is true. No migration;
+  no version bump.
 - **Change-set affected HTTP flows (0118 engine):** Shared `affected_flows`
   library (probe-first statuses `available` \| `empty_map` \| `missing_table` \|
   `no_change_seeds` \| `unavailable`; match kinds handler_symbol / handler_impl_file /

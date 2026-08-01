@@ -297,9 +297,15 @@ pub enum Commands {
         /// validates the chain linkage separately)
         #[arg(long)]
         chain: bool,
-        /// Compare the live chain head against a previously exported SOC2 zip
+        /// Compare the live chain against a retained checkpoint (SOC2 zip or bare
+        /// chain_head.json). Default: live must extend or equal the export head
+        /// (ancestor/prefix). Use `--exact` for snapshot equality (freeze check).
         #[arg(long, value_name = "PATH")]
         against_export: Option<std::path::PathBuf>,
+        /// With `--against-export`, require full head equality (latest/genesis/length)
+        /// instead of checkpoint (extends-or-equals) semantics.
+        #[arg(long)]
+        exact: bool,
         /// Treat unsigned LOCAL rows as failures even when require_signing is false
         #[arg(long = "strict-signatures")]
         strict_signatures: bool,
@@ -832,6 +838,7 @@ impl Commands {
             Commands::Endpoints(_) => "endpoints",
             Commands::Export { command } => match command {
                 ExportCommands::Evidence { .. } => "export_evidence",
+                ExportCommands::Head { .. } => "export_head",
             },
             Commands::Federate { command } => match command {
                 FederateCommands::Export { .. } => "federate_export",
@@ -1277,6 +1284,7 @@ impl Commands {
                 signatures,
                 chain,
                 against_export,
+                exact,
                 strict_signatures,
                 dry_run,
                 auto_index,
@@ -1316,6 +1324,9 @@ impl Commands {
                 }
                 if against_export.is_some() {
                     f.push("against_export");
+                }
+                if *exact {
+                    f.push("exact");
                 }
                 if *strict_signatures {
                     f.push("strict_signatures");
@@ -2126,6 +2137,14 @@ impl Commands {
                         f.push("control");
                     }
                 }
+                ExportCommands::Head { out, force } => {
+                    if out.is_some() {
+                        f.push("out");
+                    }
+                    if *force {
+                        f.push("force");
+                    }
+                }
             },
             Commands::Federate { command } => match command {
                 FederateCommands::Export { dry_run, out } => {
@@ -2688,6 +2707,15 @@ pub enum ExportCommands {
         /// Control ID(s) to scope the export (e.g. CC8.1, CC7.*). Repeatable.
         #[arg(long = "control")]
         control: Vec<String>,
+    },
+    /// Export the live chain head as a thin JSON checkpoint
+    Head {
+        /// Output file path (default: ./ledgerful-chain-head.json)
+        #[arg(short, long)]
+        out: Option<std::path::PathBuf>,
+        /// Overwrite an existing file
+        #[arg(short, long)]
+        force: bool,
     },
 }
 
