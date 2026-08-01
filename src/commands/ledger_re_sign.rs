@@ -41,10 +41,7 @@ pub fn execute_ledger_re_sign_with_keys_dir(
     }
 
     let layout = get_layout()?;
-    let keys_dir = keys_dir_override
-        .clone()
-        .map(Ok)
-        .unwrap_or_else(crate::ledger::crypto::get_keys_dir)?;
+    let keys_dir = resolve_re_sign_keys_dir(keys_dir_override.clone(), dry_run)?;
     let db_path = layout
         .state_subdir()
         .join("ledger.db")
@@ -524,6 +521,23 @@ pub fn execute_ledger_re_sign_with_keys_dir(
     );
 
     Ok(())
+}
+
+/// Resolve the key store directory for re-sign.
+///
+/// Dry-run uses [`keys_dir_path`] (no create). Mutation uses [`get_keys_dir`]
+/// (may create). Override always wins. Satisfies DoD-3: dry-run mutates nothing.
+fn resolve_re_sign_keys_dir(
+    keys_dir_override: Option<std::path::PathBuf>,
+    dry_run: bool,
+) -> Result<std::path::PathBuf> {
+    match keys_dir_override {
+        Some(path) => Ok(path),
+        None if dry_run => crate::ledger::crypto::keys_dir_path()
+            .map_err(|e| miette!("Failed to resolve keys directory: {e}")),
+        None => crate::ledger::crypto::get_keys_dir()
+            .map_err(|e| miette!("Failed to resolve keys directory: {e}")),
+    }
 }
 
 /// LOCAL entries that need a signature rewrite under `--all`:
@@ -1036,6 +1050,19 @@ mod tests {
                 .as_deref()
                 .unwrap_or("")
                 .contains("mode=upgrade")
+        );
+    }
+
+    #[test]
+    fn resolve_keys_dir_override_wins_on_dry_run_and_does_not_create() {
+        let tmp = tempfile::tempdir().unwrap();
+        let override_path = tmp.path().join("missing-keys-dir");
+        assert!(!override_path.exists());
+        let resolved = resolve_re_sign_keys_dir(Some(override_path.clone()), true).unwrap();
+        assert_eq!(resolved, override_path);
+        assert!(
+            !override_path.exists(),
+            "dry-run resolve must not create the keys directory"
         );
     }
 
