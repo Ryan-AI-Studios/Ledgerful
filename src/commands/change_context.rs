@@ -91,6 +91,10 @@ pub struct ChangeContextPacket {
     pub blast: Option<BlastSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub test_coverage: Option<TestCoverageSummary>,
+    /// Nested affected HTTP flows summary (0118). Present for both minimal and
+    /// standard detail; sample size is detail-aware (5 / 10).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub affected_flows: Option<AffectedFlowsSummary>,
     pub doctor: DoctorSection,
     pub ledger: LedgerSection,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -123,6 +127,15 @@ pub struct BlastSummary {
 /// Deepened test-coverage / gap summary (0115). Re-exports the shared library
 /// report so change-context, impact, and scan --pr share one schema.
 pub type TestCoverageSummary = crate::impact::enrichment::test_gaps::TestGapsReport;
+
+/// Nested affected-flows summary (0118). Same schema as ImpactPacket /
+/// PR `affectedFlows`, with a detail-aware sample of `flows` (not full cap-20).
+pub type AffectedFlowsSummary = crate::impact::enrichment::affected_flows::AffectedFlowsReport;
+
+/// Sample cap for `affectedFlows.flows` at minimal detail.
+const AFFECTED_FLOWS_SAMPLE_MINIMAL: usize = 5;
+/// Sample cap for `affectedFlows.flows` at standard detail.
+const AFFECTED_FLOWS_SAMPLE_STANDARD: usize = 10;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -239,6 +252,7 @@ pub fn build_change_context(
     });
 
     let test_coverage = Some(summarize_test_coverage(storage, &impact));
+    let affected_flows = Some(summarize_affected_flows(storage, &impact, opts.detail));
 
     Ok(ChangeContextPacket {
         schema_version: CHANGE_CONTEXT_SCHEMA_VERSION,
@@ -254,6 +268,7 @@ pub fn build_change_context(
         read_set_total_candidates,
         blast,
         test_coverage,
+        affected_flows,
         doctor,
         ledger,
         analysis_warnings: warnings,
@@ -368,6 +383,13 @@ fn print_human(packet: &ChangeContextPacket) {
             );
         }
     }
+    if let Some(ref flows) = packet.affected_flows {
+        println!(
+            "  affectedFlows:    status={} flowCount={}",
+            flows.status.as_str(),
+            flows.flow_count
+        );
+    }
     println!(
         "  doctor:           {} readyForPublish={} (block={} warn={} info={})",
         packet.doctor.status,
@@ -450,6 +472,7 @@ fn not_ready_packet(
         read_set_total_candidates: 0,
         blast: None,
         test_coverage: None,
+        affected_flows: None,
         doctor,
         ledger,
         analysis_warnings: Vec::new(),
@@ -583,6 +606,40 @@ fn summarize_test_coverage(storage: &StorageManager, impact: &ImpactPacket) -> T
         Ok(seeds) => compute_change_set_test_gaps_from_seeds(conn, &seeds, &opts),
         Err(_) => crate::impact::enrichment::test_gaps::TestGapsReport::unavailable(),
     }
+}
+
+/// Prefer impact-attached affected flows (single compute on impact path); else recompute.
+/// Detail-aware sample: Minimal → 5 flows, Standard → 10. Counts pass through full report.
+fn summarize_affected_flows(
+    storage: &StorageManager,
+    impact: &ImpactPacket,
+    detail: ChangeContextDetail,
+) -> AffectedFlowsSummary {
+    use crate::impact::enrichment::affected_flows::{
+        AffectedFlowsOpts, AffectedFlowsReport, compute_affected_flows,
+    };
+
+    let sample_cap = match detail {
+        ChangeContextDetail::Minimal => AFFECTED_FLOWS_SAMPLE_MINIMAL,
+        ChangeContextDetail::Standard => AFFECTED_FLOWS_SAMPLE_STANDARD,
+    };
+
+    let mut report = if let Some(ref flows) = impact.affected_flows {
+        flows.clone()
+    } else {
+        let conn = storage.get_connection();
+        let opts = AffectedFlowsOpts {
+            head_hash: impact.head_hash.clone(),
+        };
+        compute_affected_flows(conn, &impact.changes, impact.blast_radius.as_ref(), &opts)
+            .unwrap_or_else(|_| AffectedFlowsReport::unavailable())
+    };
+
+    // Token budget: sample only; flowCount/flowTotal stay full-report counts.
+    if report.flows.len() > sample_cap {
+        report.flows.truncate(sample_cap);
+    }
+    report
 }
 
 fn compose_summary(
@@ -1506,5 +1563,191 @@ mod tests {
                 "detail levels are minimal|standard only"
             );
         }
+    }
+
+    fn make_flow_entry(i: usize) -> crate::impact::enrichment::affected_flows::AffectedFlowEntry {
+        use crate::impact::enrichment::affected_flows::{AffectedFlowEntry, MatchKind};
+        AffectedFlowEntry {
+            method: "GET".into(),
+            path_pattern: format!("/p{i:02}"),
+            handler_symbol_name: Some(format!("h{i:02}")),
+            handler_file: Some(format!("src/h{i:02}.rs")),
+            framework: "Axum".into(),
+            match_kind: MatchKind::RouteFile,
+            route_confidence: Some(1.0),
+            confidence_class: None,
+            evidence: None,
+        }
+    }
+
+    fn make_available_flows(
+        n: usize,
+    ) -> crate::impact::enrichment::affected_flows::AffectedFlowsReport {
+        use crate::impact::enrichment::affected_flows::{
+            AffectedFlowsReport, AffectedFlowsStatus, HONESTY_NOTE,
+        };
+        let flows: Vec<_> = (0..n).map(make_flow_entry).collect();
+        AffectedFlowsReport {
+            status: AffectedFlowsStatus::Available,
+            flow_count: n,
+            flow_capped: false,
+            flow_total: n,
+            flows,
+            notes: vec![HONESTY_NOTE.into()],
+        }
+    }
+
+    #[test]
+    fn summarize_affected_flows_uses_impact_attached_report() {
+        let tmp = tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        let storage =
+            StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+
+        let impact = ImpactPacket {
+            affected_flows: Some(make_available_flows(3)),
+            ..ImpactPacket::default()
+        };
+        let summary = summarize_affected_flows(&storage, &impact, ChangeContextDetail::Minimal);
+        assert_eq!(
+            summary.status,
+            crate::impact::enrichment::affected_flows::AffectedFlowsStatus::Available
+        );
+        assert_eq!(summary.flow_count, 3);
+        assert_eq!(summary.flows.len(), 3);
+        let _ = storage.shutdown();
+    }
+
+    #[test]
+    fn summarize_affected_flows_sample_caps_by_detail() {
+        let tmp = tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        let storage =
+            StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+
+        let impact = ImpactPacket {
+            affected_flows: Some(make_available_flows(15)),
+            ..ImpactPacket::default()
+        };
+
+        let minimal = summarize_affected_flows(&storage, &impact, ChangeContextDetail::Minimal);
+        assert_eq!(minimal.flows.len(), AFFECTED_FLOWS_SAMPLE_MINIMAL);
+        // Counts pass through full report — not the sample size.
+        assert_eq!(minimal.flow_count, 15);
+        assert_eq!(minimal.flow_total, 15);
+
+        let standard = summarize_affected_flows(&storage, &impact, ChangeContextDetail::Standard);
+        assert_eq!(standard.flows.len(), AFFECTED_FLOWS_SAMPLE_STANDARD);
+        assert_eq!(standard.flow_count, 15);
+
+        // No huge arrays on either detail.
+        assert!(minimal.flows.len() <= 5);
+        assert!(standard.flows.len() <= 10);
+        let _ = storage.shutdown();
+    }
+
+    #[test]
+    fn summarize_affected_flows_status_passthrough_and_available_zero() {
+        use crate::impact::enrichment::affected_flows::{
+            AffectedFlowsReport, AffectedFlowsStatus, HONESTY_NOTE,
+        };
+
+        let tmp = tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        let storage =
+            StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+
+        // Status passthrough (empty_map).
+        let impact_empty = ImpactPacket {
+            affected_flows: Some(AffectedFlowsReport {
+                status: AffectedFlowsStatus::EmptyMap,
+                flow_count: 0,
+                flow_capped: false,
+                flow_total: 0,
+                flows: vec![],
+                notes: vec![HONESTY_NOTE.into()],
+            }),
+            ..ImpactPacket::default()
+        };
+        let empty =
+            summarize_affected_flows(&storage, &impact_empty, ChangeContextDetail::Standard);
+        assert_eq!(empty.status, AffectedFlowsStatus::EmptyMap);
+        assert_eq!(empty.flow_count, 0);
+        assert!(empty.flows.is_empty());
+
+        // available + 0 = all-clear (no registered routes touched).
+        let impact_clear = ImpactPacket {
+            affected_flows: Some(AffectedFlowsReport {
+                status: AffectedFlowsStatus::Available,
+                flow_count: 0,
+                flow_capped: false,
+                flow_total: 0,
+                flows: vec![],
+                notes: vec![HONESTY_NOTE.into()],
+            }),
+            ..ImpactPacket::default()
+        };
+        let clear = summarize_affected_flows(&storage, &impact_clear, ChangeContextDetail::Minimal);
+        assert_eq!(clear.status, AffectedFlowsStatus::Available);
+        assert_eq!(clear.flow_count, 0);
+        assert!(clear.flows.is_empty());
+
+        let json = serde_json::to_value(&clear).unwrap();
+        assert_eq!(json["status"], "available");
+        assert_eq!(json["flowCount"], 0);
+        assert!(json["flows"].as_array().unwrap().is_empty());
+        let _ = storage.shutdown();
+    }
+
+    #[test]
+    fn change_context_schema_version_stays_one_with_affected_flows_key() {
+        use crate::impact::enrichment::affected_flows::HONESTY_NOTE;
+
+        let packet = ChangeContextPacket {
+            schema_version: CHANGE_CONTEXT_SCHEMA_VERSION,
+            status: "ready".into(),
+            summary: "test".into(),
+            reason: None,
+            head_hash: Some("abc".into()),
+            base_ref: None,
+            risk_level: Some("low".into()),
+            risk_reasons: vec![],
+            read_set: vec![],
+            read_set_capped: false,
+            read_set_total_candidates: 0,
+            blast: None,
+            test_coverage: None,
+            affected_flows: Some(make_available_flows(1)),
+            doctor: DoctorSection {
+                status: "ok".into(),
+                ready_for_publish: true,
+                block: 0,
+                warn: 0,
+                info: 0,
+                top_findings: vec![],
+            },
+            ledger: LedgerSection {
+                pending_count: 0,
+                active_tx: vec![],
+            },
+            analysis_warnings: vec![],
+            next_actions: vec![],
+            impact_schema_version: Some("v1".into()),
+        };
+        let v = serde_json::to_value(&packet).unwrap();
+        assert_eq!(v["schemaVersion"], 1);
+        assert!(v.get("affectedFlows").is_some());
+        assert_eq!(v["affectedFlows"]["status"], "available");
+        assert_eq!(v["affectedFlows"]["flowCount"], 1);
+        assert_eq!(v["affectedFlows"]["flows"][0]["method"], "GET");
+        assert_eq!(v["affectedFlows"]["flows"][0]["pathPattern"], "/p00");
+        let notes = v["affectedFlows"]["notes"].as_array().unwrap();
+        assert!(notes.iter().any(|n| n.as_str() == Some(HONESTY_NOTE)));
     }
 }

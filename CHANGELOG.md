@@ -8,6 +8,29 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Change-set affected HTTP flows (0118 engine):** Shared `affected_flows`
+  library (probe-first statuses `available` \| `empty_map` \| `missing_table` \|
+  `no_change_seeds` \| `unavailable`; match kinds handler_symbol / handler_impl_file /
+  route_file / blast_symbol / blast_file over **`blast.edges` only**; flows cap 20;
+  registered-routes honesty note). Wired into:
+  - **Impact** via CouplingProvider after blast (`Option` `affectedFlows` on
+    ImpactPacket; Phase-3 truncate clears; finalize sorts).
+  - **`change-context`** nested summary (schemaVersion stays **1**); detail-aware
+    sample **take(5)** minimal / **take(10)** standard; prefer impact-attached report.
+  - **`scan --pr`** always emits non-optional `affectedFlows` on schema **v2**
+    (no v3); soft-open read-only only (`unavailable` without creating `.ledgerful`
+    / `ledger.db`); file-path seeds only (no blast on PR path).
+  - **Human CLI:** impact summary section + all-clear when available+0; brief
+    `flows=N` when available and N>0.
+  - **`endpoints --changed`:** filter widens via shared library (impl file +
+    symbol + registration file + blast); **JSON keys unchanged**
+    (`method`, `path`, `handler`, …). Filter uses **uncapped** match keys
+    (`match_affected_route_keys`); report payloads still cap sample `flows` at 20.
+  - Blast compute failure no longer skips `affectedFlows` attach (warn + continue).
+  Docs: `docs/agent-output-contract.md`, `docs/pr-scan-schema.md`,
+  `docs/Call-Resolution.md` (framework fence, Go honesty, CRG vs Ledgerful
+  agent metadata), `docs/Features.md`, skill. No migration; no Cargo version bump.
+  Action sticky consumer ships separately.
 - **Impact edge confidence classes + summaries (0117):** Shared classifier over
   existing `resolution_status` + `evidence` yields product `confidenceClass`
   (`SCIP_BOUND` \| `RESOLVED` \| `AMBIGUOUS` \| `UNRESOLVED` \| `CAPPED` \|

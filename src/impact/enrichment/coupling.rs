@@ -1,4 +1,7 @@
 use crate::git::repo::open_repo;
+use crate::impact::enrichment::affected_flows::{
+    AffectedFlowsOpts, AffectedFlowsReport, compute_affected_flows,
+};
 use crate::impact::enrichment::blast::{
     BlastCaps, compute_blast, derive_structural_couplings, resolve_seeds,
 };
@@ -80,6 +83,8 @@ impl CouplingProvider {
                     packet.blast_radius = Some(blast);
                 }
             }
+            // 0118: kinds 1–3 still run without blast edges.
+            self.attach_affected_flows(conn, packet);
             return Ok(());
         }
 
@@ -92,18 +97,46 @@ impl CouplingProvider {
 
         // Always run compute_blast so empty-seed honesty reaches the packet
         // (DoD-7: unbound seeds must not be silent when structural_edges exists).
-        let mut blast = compute_blast(conn, &seeds, depth_requested, depth_max, caps)?;
-        blast.test_hints = test_hints;
+        // On Err: warn and continue — do not early-return before attach_affected_flows
+        // (kinds 1–3 still run without blast edges).
+        match compute_blast(conn, &seeds, depth_requested, depth_max, caps) {
+            Ok(mut blast) => {
+                blast.test_hints = test_hints;
 
-        // Derive structural_couplings from hop-1 (single writer — DoD-10)
-        packet.structural_couplings = derive_structural_couplings(&blast);
+                // Derive structural_couplings from hop-1 (single writer — DoD-10)
+                packet.structural_couplings = derive_structural_couplings(&blast);
 
-        // Emit blast whenever there is content or honesty (never hide unbound/thin).
-        if !blast.is_empty_for_serde() {
-            packet.blast_radius = Some(blast);
+                // Emit blast whenever there is content or honesty (never hide unbound/thin).
+                if !blast.is_empty_for_serde() {
+                    packet.blast_radius = Some(blast);
+                }
+            }
+            Err(e) => {
+                warn!("compute_blast failed: {e}");
+                context.add_warning(format!("compute_blast failed: {e}"));
+            }
         }
 
+        // 0118: always attach after blast success or blast error (never skip on Err).
+        self.attach_affected_flows(conn, packet);
+
         Ok(())
+    }
+
+    /// Compute and attach `affected_flows` from changes + optional blast edges.
+    fn attach_affected_flows(&self, conn: &rusqlite::Connection, packet: &mut ImpactPacket) {
+        let opts = AffectedFlowsOpts {
+            head_hash: packet.head_hash.clone(),
+        };
+        match compute_affected_flows(conn, &packet.changes, packet.blast_radius.as_ref(), &opts) {
+            Ok(report) => {
+                packet.affected_flows = Some(report);
+            }
+            Err(e) => {
+                warn!("affected_flows compute failed: {e}");
+                packet.affected_flows = Some(AffectedFlowsReport::unavailable());
+            }
+        }
     }
 
     fn enrich_temporal(
@@ -420,5 +453,233 @@ mod tests {
 
         // Temporal engine needs a real git repo; filter/cap logic is covered
         // when git history is available. Structural path is the DoD surface.
+    }
+
+    /// Production wiring (0118): after blast success, CouplingProvider sets
+    /// `packet.affected_flows` when routes match the change set.
+    #[test]
+    fn enrich_attaches_affected_flows_after_blast_success() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES ('src/caller.rs', 'Rust', 'hash1', 1, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let caller_file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES ('src/handlers/items.rs', 'Rust', 'hash2', 1, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let handler_file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES ('src/router.rs', 'Rust', 'hash3', 1, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let router_file_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at)
+             VALUES (?1, 'crate::caller_fn', 'caller_fn', 'Function', '2026-01-01T00:00:00Z')",
+            [caller_file_id],
+        )
+        .unwrap();
+        let caller_symbol_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at)
+             VALUES (?1, 'crate::list_items', 'list_items', 'Function', '2026-01-01T00:00:00Z')",
+            [handler_file_id],
+        )
+        .unwrap();
+        let handler_symbol_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO structural_edges (caller_symbol_id, caller_file_id, callee_symbol_id, callee_file_id, call_kind, resolution_status, confidence)
+             VALUES (?1, ?2, ?3, ?4, 'DIRECT', 'RESOLVED', 1.0)",
+            [
+                caller_symbol_id,
+                caller_file_id,
+                handler_symbol_id,
+                handler_file_id,
+            ],
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO api_routes
+             (method, path_pattern, handler_symbol_id, handler_symbol_name, handler_file_id,
+              framework, route_source, is_dynamic, route_confidence, evidence, last_indexed_at)
+             VALUES ('GET', '/api/items', ?1, 'list_items', ?2, 'Axum', 'DECORATOR', 0, 1.0, 'test', '2026-01-01T00:00:00Z')",
+            [handler_symbol_id, router_file_id],
+        )
+        .unwrap();
+
+        let storage = StorageManager::init_from_conn(conn);
+        let mut file_id_map = HashMap::new();
+        file_id_map.insert(PathBuf::from("src/handlers/items.rs"), handler_file_id);
+        let config = crate::config::model::Config::default();
+        let context = EnrichmentContext {
+            storage: &storage,
+            config: &config,
+            file_id_map,
+            project_root: std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from(r"C:\dev\ledgerful")),
+            warnings: Arc::new(Mutex::new(Vec::new())),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+        };
+        let mut packet = ImpactPacket {
+            changes: vec![ChangedFile {
+                path: PathBuf::from("src/handlers/items.rs"),
+                status: "Modified".to_string(),
+                symbols: Some(vec![Symbol {
+                    name: "list_items".into(),
+                    kind: SymbolKind::Function,
+                    is_public: true,
+                    cognitive_complexity: None,
+                    cyclomatic_complexity: None,
+                    line_start: None,
+                    line_end: None,
+                    qualified_name: Some("crate::list_items".into()),
+                    byte_start: None,
+                    byte_end: None,
+                    entrypoint_kind: None,
+                    metadata: std::collections::BTreeMap::new(),
+                }]),
+                ..ChangedFile::default()
+            }],
+            ..Default::default()
+        };
+
+        CouplingProvider.enrich(&context, &mut packet).unwrap();
+
+        let blast = packet
+            .blast_radius
+            .as_ref()
+            .expect("blast_radius after success");
+        assert!(
+            !blast.edges.is_empty(),
+            "expected blast edges after structural success"
+        );
+
+        let flows = packet
+            .affected_flows
+            .as_ref()
+            .expect("affected_flows attached after blast success");
+        assert_eq!(
+            flows.status,
+            crate::impact::enrichment::affected_flows::AffectedFlowsStatus::Available
+        );
+        assert_eq!(flows.flow_count, 1);
+        assert_eq!(flows.flows[0].path_pattern, "/api/items");
+        assert_eq!(
+            flows.flows[0].match_kind,
+            crate::impact::enrichment::affected_flows::MatchKind::HandlerSymbol
+        );
+    }
+
+    /// Production wiring (0118): kinds 1–3 still attach when structural_edges
+    /// are absent (no blast edges / blast path skipped).
+    #[test]
+    fn enrich_attaches_affected_flows_without_blast_edges() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES ('src/handlers/orders.rs', 'Rust', 'h1', 1, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let handler_file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES ('src/router.rs', 'Rust', 'h2', 1, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let router_file_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at)
+             VALUES (?1, 'crate::create_order', 'create_order', 'Function', '2026-01-01T00:00:00Z')",
+            [handler_file_id],
+        )
+        .unwrap();
+        let handler_symbol_id = conn.last_insert_rowid();
+
+        // No structural_edges rows → blast path short-circuits; kinds 1–3 still run.
+        conn.execute(
+            "INSERT INTO api_routes
+             (method, path_pattern, handler_symbol_id, handler_symbol_name, handler_file_id,
+              framework, route_source, is_dynamic, route_confidence, evidence, last_indexed_at)
+             VALUES ('POST', '/api/orders', ?1, 'create_order', ?2, 'Axum', 'DECORATOR', 0, 1.0, 'test', '2026-01-01T00:00:00Z')",
+            [handler_symbol_id, router_file_id],
+        )
+        .unwrap();
+
+        let storage = StorageManager::init_from_conn(conn);
+        let config = crate::config::model::Config::default();
+        let context = EnrichmentContext {
+            storage: &storage,
+            config: &config,
+            file_id_map: HashMap::new(),
+            project_root: std::env::current_dir()
+                .unwrap_or_else(|_| PathBuf::from(r"C:\dev\ledgerful")),
+            warnings: Arc::new(Mutex::new(Vec::new())),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+        };
+        let mut packet = ImpactPacket {
+            changes: vec![ChangedFile {
+                path: PathBuf::from("src/handlers/orders.rs"),
+                status: "Modified".to_string(),
+                symbols: Some(vec![Symbol {
+                    name: "create_order".into(),
+                    kind: SymbolKind::Function,
+                    is_public: true,
+                    cognitive_complexity: None,
+                    cyclomatic_complexity: None,
+                    line_start: None,
+                    line_end: None,
+                    qualified_name: Some("crate::create_order".into()),
+                    byte_start: None,
+                    byte_end: None,
+                    entrypoint_kind: None,
+                    metadata: std::collections::BTreeMap::new(),
+                }]),
+                ..ChangedFile::default()
+            }],
+            ..Default::default()
+        };
+
+        CouplingProvider.enrich(&context, &mut packet).unwrap();
+
+        // No structural edges → no blast edges (honesty-only blast may still appear).
+        if let Some(blast) = packet.blast_radius.as_ref() {
+            assert!(
+                blast.edges.is_empty(),
+                "expected no blast edges without structural_edges data"
+            );
+        }
+
+        let flows = packet
+            .affected_flows
+            .as_ref()
+            .expect("affected_flows attached without blast edges (kinds 1–3)");
+        assert_eq!(
+            flows.status,
+            crate::impact::enrichment::affected_flows::AffectedFlowsStatus::Available
+        );
+        assert_eq!(flows.flow_count, 1);
+        assert_eq!(flows.flows[0].path_pattern, "/api/orders");
+        assert_eq!(
+            flows.flows[0].match_kind,
+            crate::impact::enrichment::affected_flows::MatchKind::HandlerSymbol
+        );
     }
 }

@@ -68,6 +68,16 @@ ledgerful scan --pr main...HEAD --format text
       "Structural test_mapping only (IMPORT/NAMING_CONVENTION); not line coverage",
       "LCOV COVERAGE mapping kind does not currently persist (DDL NOT NULL on test_symbol_id)"
     ]
+  },
+  "affectedFlows": {
+    "status": "unavailable",
+    "flowCount": 0,
+    "flowCapped": false,
+    "flowTotal": 0,
+    "flows": [],
+    "notes": [
+      "Registered HTTP routes only (api_routes); not distributed traces or CRG-style call-chain flows."
+    ]
   }
 }
 ```
@@ -97,6 +107,7 @@ ledgerful scan --pr main...HEAD --format text
 | `historyWindowCommits` | integer (u32) | How many commits were walked for history enrichment (≤ bound, default 1000). |
 | `historyTruncated` | boolean | `true` if the walk stopped because it hit the max-commit bound. Without this, `churn` would look absolute when it is bounded. |
 | `testGaps` | object | **Always present** (0115, additive on schema **v2** — no v3 bump). Structural test-mapping gaps for changed source paths. Soft-opens `ledger.db` read-only only; never runs index or `init_with_layout`. CI without an index → `status: "unavailable"` (honest default, not a product failure). File-level only on this path (no symbol resolution). |
+| `affectedFlows` | object | **Always present** (0118, additive on schema **v2** — no v3 bump). Registered HTTP routes touched by the change set. Soft-opens `ledger.db` read-only only; never runs index or `init_with_layout`. CI without an index → `status: "unavailable"`. File-path seeds only on this path (no blast). **Route map ≠ CRG call-chain traces.** |
 
 ### `testGaps` field reference
 
@@ -113,6 +124,18 @@ ledgerful scan --pr main...HEAD --format text
 | `notes` | array of strings | Always includes structural-only + LCOV COVERAGE ceiling honesty. |
 
 **Honesty:** this is **not** line coverage. LCOV `COVERAGE` mapping kind does not currently persist (DDL `test_symbol_id NOT NULL`). Do not invent coverage percentages or treat `unavailable` as a merge block. Empty mapped lists / `unavailable` / `empty_mapping` are **not** “fully covered.”
+
+### `affectedFlows` field reference
+
+| Field | Type | Description |
+|---|---|---|
+| `status` | string | `available` \| `empty_map` \| `missing_table` \| `no_change_seeds` \| `unavailable`. Never bare `"empty"`. |
+| `flowCount` / `flowTotal` | integer | Matched routes after / before the library cap (**20**). |
+| `flowCapped` | boolean | `true` when `flows` list was truncated. |
+| `flows` | array | Capped entries: `method`, `pathPattern`, optional `handlerSymbolName` / `handlerFile`, `framework`, `matchKind`, optional `routeConfidence` / `confidenceClass` / `evidence`. |
+| `notes` | array of strings | Always includes registered-routes-only honesty (not distributed traces / not CRG path-trace). |
+
+**Honesty:** Ledgerful affected flows = **HTTP route registrations** touched by the change set (handler symbol / impl file / registration file / optional blast edges). This is **not** CRG `get_affected_flows` execution-path traces, not OpenTelemetry, and not a complete middleware chain. `available` + `flowCount` 0 is an all-clear (no registered routes touched), not a failure. Soft-open never creates `.ledgerful` in CI.
 
 ### What is deliberately not included
 

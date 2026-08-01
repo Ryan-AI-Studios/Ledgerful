@@ -1,6 +1,7 @@
 use crate::config::model::Config;
 use crate::impact::packet::ImpactPacket;
 pub mod adr_provider;
+pub mod affected_flows;
 pub mod api;
 pub mod blast;
 pub mod ci_gates;

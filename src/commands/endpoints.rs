@@ -16,7 +16,8 @@ pub struct EndpointsArgs {
     /// Show auth details
     #[arg(long)]
     auth: bool,
-    /// Only show endpoints whose handler file was changed in the current diff
+    /// Only show endpoints matched by the change set (handler symbol, impl file,
+    /// registration file, or optional blast edges) — not registration-file only
     #[arg(long)]
     changed: bool,
     /// Output as JSON
@@ -57,14 +58,24 @@ pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
     let storage = StorageManager::open_read_only(&layout)?;
     let conn = storage.get_connection();
 
-    // Build set of changed file paths when --changed is requested.
-    let changed_files: Option<std::collections::HashSet<String>> = if args.changed {
+    // --changed: uncapped match keys from shared affected-flows library
+    // (handler symbol / impl file / registration file / blast edges). Report
+    // payloads still apply FLOWS_CAP; the filter must not inherit that truncate.
+    // JSON keys stay non-breaking; only which rows appear widens vs the old
+    // registration-file-only filter.
+    let matched_route_keys: Option<std::collections::HashSet<(String, String)>> = if args.changed {
         let packet = crate::commands::impact::execute_impact_silent()?;
-        let set = packet
-            .changes
-            .iter()
-            .map(|c| c.path.to_string_lossy().replace('\\', "/"))
-            .collect();
+        use crate::impact::enrichment::affected_flows::{
+            AffectedFlowsOpts, match_affected_route_keys,
+        };
+        let opts = AffectedFlowsOpts {
+            head_hash: packet.head_hash.clone(),
+        };
+        // Non-available statuses (empty_map / missing_table / no_change_seeds)
+        // → empty set (honest empty --changed). Matcher Err (true failures)
+        // propagates so we never claim "no endpoints changed" after a fault.
+        let set =
+            match_affected_route_keys(conn, &packet.changes, packet.blast_radius.as_ref(), &opts)?;
         Some(set)
     } else {
         None
@@ -122,15 +133,12 @@ pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
 
     let all_rows_empty = all_rows.is_empty();
 
-    // Apply --changed filter: keep only routes whose handler file was changed.
-    let rows: Vec<_> = if let Some(ref cf) = changed_files {
+    // Apply --changed filter: keep routes matched by shared affected-flows lib.
+    let rows: Vec<_> = if let Some(ref keys) = matched_route_keys {
         all_rows
             .into_iter()
-            .filter(|(_, _, _, _, _, _, _, file_path)| {
-                file_path
-                    .as_deref()
-                    .map(|fp| cf.contains(&fp.replace('\\', "/")))
-                    .unwrap_or(false)
+            .filter(|(method, path, _, _, _, _, _, _)| {
+                keys.contains(&(method.to_uppercase(), path.clone()))
             })
             .collect()
     } else {

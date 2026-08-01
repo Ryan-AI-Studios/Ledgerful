@@ -146,6 +146,48 @@ Blast edges carry always-present **`confidenceClass`** plus a blast-level
 counts** under `blast.confidenceSummary` (no edge dump — deliberate token
 budget). Schema versions stay ImpactPacket `"v1"` / change-context `1`.
 
+## Affected HTTP flows (0118)
+
+`impact` / `change-context` / `scan --pr` expose **`affectedFlows`**: registered
+HTTP routes (`api_routes`) touched by the change set (handler symbol, handler
+impl file, registration file, and optionally blast **`edges`** — never bare
+`must_touch_*` name sets). `endpoints --changed` uses the **same match library**
+with an **uncapped** key set (report payloads still cap sample `flows` at 20).
+
+| In scope | Out of scope |
+|----------|--------------|
+| Indexed route method + path + handler + framework | CRG-style multi-hop **execution-path** / call-chain flows |
+| Optional `confidenceClass` only on blast-mediated hits (0117) | Distributed traces / OpenTelemetry |
+| Honest statuses when map missing/empty/CI index-free | “All languages” / guaranteed path claims |
+
+**Route map ≠ CRG path-trace.** Ledgerful productizes route registrations already
+indexed; CRG `get_affected_flows` builds call-chain flows from entry points.
+Do not treat `affectedFlows` as a complete user journey or stack-graph proof.
+`available` + `flowCount` 0 = no registered routes touched (all-clear).
+
+### Supported frameworks (route extractors)
+
+Indexed HTTP registrations (tree-sitter extractors) — not “all frameworks”:
+
+| Language | Frameworks |
+|----------|------------|
+| **Rust** | Axum, Actix, Rocket |
+| **Go** | Gin, `net/http` |
+| **TypeScript / JS** | Express, Fastify |
+| **Python** | FastAPI, Flask |
+
+Other stacks are out of the map until extractors exist. Empty `api_routes` →
+`empty_map` / “no endpoints indexed”, not a silent all-clear on unknown frameworks.
+
+### Go positioning (honest)
+
+Ledgerful **does** ship Gin / `net/http` route extractors and Go call extractors.
+That is **not** a claim of CRG-parity path tracing. Peer CRG FAQ material documents
+weaker Go flow detection (order-of-magnitude **~33% recall** on some Go fixtures)
+versus stronger TypeScript/Python paths. Ledgerful `affectedFlows` is still a
+**registration map** over indexed routes, not an execution-path tracer — treat Go
+coverage as best-effort route detection, not marketing completeness.
+
 ### Product classes
 
 Class is a pure function of `resolution_status` + `evidence` (scip prefix first):
@@ -190,13 +232,21 @@ Peers often tag edges EXTRACTED / INFERRED / AMBIGUOUS. That is an emerging
 | AMBIGUOUS | AMBIGUOUS | Same discount posture; not on production blast punchlist |
 | (no peer) | SCIP_BOUND | Ledgerful SCIP augment path |
 
-### Agent metadata: `context_savings` vs `confidenceSummary`
+### Agent metadata: CRG `context_savings` vs Ledgerful change-set signals
 
-CRG MCP tools may ship `context_savings` (token estimates). Ledgerful ships
-`confidenceSummary` class counts on change-context / blast — **analogous
-agent-facing metadata, different signal**. CRG `get_impact_radius` returns full
-edges; Ledgerful **change-context is counts-only by design** (token budget).
-Full edges: `ledgerful impact --json` / `scan --impact --json`.
+CRG MCP tools may ship **`context_savings`** (token estimates for retrieved
+context). Ledgerful ships **different** agent-facing signals — do not equate them:
+
+| Signal | Tool / field | What it means |
+|--------|--------------|---------------|
+| CRG `context_savings` | CRG MCP | Token-budget / savings estimate for assembled context |
+| Ledgerful `affectedFlows` | impact / change-context / PR | Registered HTTP routes touched by the change set |
+| Ledgerful `testCoverage` / `testGaps` | impact / change-context / PR | Structural `test_mapping` coverage gaps (not line coverage) |
+| Ledgerful blast counts / `confidenceSummary` | impact blast + change-context `blast` | Bound reverse-caller class counts (not full edge dump on change-context) |
+
+CRG `get_impact_radius` may return full edges; Ledgerful **change-context is
+counts-only by design** (token budget). Full edges:
+`ledgerful impact --json` / `scan --impact --json`.
 
 ### Ban list (claim hygiene)
 

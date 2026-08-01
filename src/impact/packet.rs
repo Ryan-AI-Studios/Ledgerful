@@ -217,6 +217,8 @@ mod schema_golden_tests {
             }],
             // Optional; omitted from exact-key set when None (skip_serializing_if).
             test_gaps: None,
+            // Optional; omitted from exact-key set when None (skip_serializing_if).
+            affected_flows: None,
             runtime_usage_delta: vec![RuntimeUsageDelta {
                 file_path: "f.rs".to_string(),
                 env_vars_previous_count: 0,
@@ -1060,6 +1062,14 @@ mod schema_golden_tests {
         assert!(
             !json.contains("blastRadius"),
             "blastRadius should be omitted when empty/None"
+        );
+        assert!(
+            !json.contains("testGaps"),
+            "testGaps should be omitted when None"
+        );
+        assert!(
+            !json.contains("affectedFlows"),
+            "affectedFlows should be omitted when None"
         );
         assert!(
             !json.contains("sdkDependenciesDelta"),
@@ -2003,6 +2013,9 @@ mod tests {
                 staleness_days: None,
                 staleness_tier: None,
             }],
+            affected_flows: Some(
+                crate::impact::enrichment::affected_flows::AffectedFlowsReport::unavailable(),
+            ),
             ..ImpactPacket::default()
         };
 
@@ -2010,6 +2023,129 @@ mod tests {
         let truncated = packet.truncate_for_context(100);
         assert!(truncated);
         assert!(packet.relevant_decisions.is_empty());
+        assert!(
+            packet.affected_flows.is_none(),
+            "Phase 3 must clear affected_flows next to test_gaps"
+        );
+    }
+
+    #[test]
+    fn test_finalize_sorts_affected_flows() {
+        use crate::impact::enrichment::affected_flows::{
+            AffectedFlowEntry, AffectedFlowsReport, AffectedFlowsStatus, MatchKind,
+        };
+
+        let mut packet = ImpactPacket {
+            affected_flows: Some(AffectedFlowsReport {
+                status: AffectedFlowsStatus::Available,
+                flow_count: 2,
+                flow_capped: false,
+                flow_total: 2,
+                flows: vec![
+                    AffectedFlowEntry {
+                        method: "POST".to_string(),
+                        path_pattern: "/b".to_string(),
+                        handler_symbol_name: Some("b".to_string()),
+                        handler_file: None,
+                        framework: "Axum".to_string(),
+                        match_kind: MatchKind::RouteFile,
+                        route_confidence: None,
+                        confidence_class: None,
+                        evidence: None,
+                    },
+                    AffectedFlowEntry {
+                        method: "GET".to_string(),
+                        path_pattern: "/a".to_string(),
+                        handler_symbol_name: Some("a".to_string()),
+                        handler_file: None,
+                        framework: "Axum".to_string(),
+                        match_kind: MatchKind::HandlerSymbol,
+                        route_confidence: None,
+                        confidence_class: None,
+                        evidence: None,
+                    },
+                ],
+                notes: vec![],
+            }),
+            ..ImpactPacket::default()
+        };
+        packet.finalize();
+        let flows = &packet.affected_flows.as_ref().unwrap().flows;
+        assert_eq!(flows[0].match_kind, MatchKind::HandlerSymbol);
+        assert_eq!(flows[0].path_pattern, "/a");
+        assert_eq!(flows[1].match_kind, MatchKind::RouteFile);
+        assert_eq!(flows[1].path_pattern, "/b");
+    }
+
+    #[test]
+    fn test_affected_flows_present_exact_keys_when_some() {
+        use crate::impact::enrichment::affected_flows::{
+            AffectedFlowEntry, AffectedFlowsReport, AffectedFlowsStatus, MatchKind,
+        };
+
+        let packet = ImpactPacket {
+            affected_flows: Some(AffectedFlowsReport {
+                status: AffectedFlowsStatus::Available,
+                flow_count: 1,
+                flow_capped: false,
+                flow_total: 1,
+                flows: vec![AffectedFlowEntry {
+                    method: "GET".to_string(),
+                    path_pattern: "/x".to_string(),
+                    handler_symbol_name: Some("x".to_string()),
+                    handler_file: Some("src/x.rs".to_string()),
+                    framework: "Axum".to_string(),
+                    match_kind: MatchKind::HandlerImplFile,
+                    route_confidence: Some(1.0),
+                    confidence_class: None,
+                    evidence: None,
+                }],
+                notes: vec![
+                    "Registered HTTP routes only (api_routes); not distributed traces or CRG-style call-chain flows."
+                        .to_string(),
+                ],
+            }),
+            ..ImpactPacket::default()
+        };
+        let value = serde_json::to_value(&packet).unwrap();
+        assert!(value.get("affectedFlows").is_some());
+        let af = &value["affectedFlows"];
+        let obj = af.as_object().unwrap();
+        let mut keys: Vec<&str> = obj.keys().map(|s| s.as_str()).collect();
+        keys.sort_unstable();
+        assert_eq!(
+            keys,
+            vec![
+                "flowCapped",
+                "flowCount",
+                "flowTotal",
+                "flows",
+                "notes",
+                "status",
+            ]
+        );
+        assert_eq!(af["status"], "available");
+        assert_eq!(af["flows"][0]["matchKind"], "handler_impl_file");
+        assert!(af["flows"][0].get("confidenceClass").is_none());
+
+        // Pre-0118 snapshot without affectedFlows still deserializes.
+        let legacy = r#"{
+            "schemaVersion": "v1",
+            "timestampUtc": "2023-01-01T00:00:00Z",
+            "headHash": null,
+            "branchName": null,
+            "treeClean": true,
+            "riskLevel": "low",
+            "riskReasons": [],
+            "changes": [],
+            "temporalCouplings": [],
+            "structuralCouplings": [],
+            "centralityRisks": [],
+            "hotspots": [],
+            "verificationResults": []
+        }"#;
+        let parsed: ImpactPacket = serde_json::from_str(legacy).unwrap();
+        assert!(parsed.affected_flows.is_none());
     }
 
     #[test]

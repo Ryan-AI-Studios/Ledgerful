@@ -40,6 +40,10 @@ pub struct ImpactPacket {
     /// Empty `test_coverage` vec is **not** full cover — use this status field.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub test_gaps: Option<crate::impact::enrichment::test_gaps::TestGapsReport>,
+    /// Change-set affected HTTP flows (0118). Omitted when not computed.
+    /// `available` + flowCount 0 means no registered routes touched (success).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub affected_flows: Option<crate::impact::enrichment::affected_flows::AffectedFlowsReport>,
     #[serde(default)]
     pub runtime_usage_delta: Vec<super::RuntimeUsageDelta>,
     /// Function-signature deltas (not Ed25519). Empty omitted from JSON.
@@ -95,6 +99,7 @@ impl ImpactPacket {
             && self.env_var_deps.is_empty()
             && self.test_coverage.is_empty()
             && self.test_gaps.is_none()
+            && self.affected_flows.is_none()
             && self.runtime_usage_delta.is_empty()
             && self.signature_deltas.is_empty()
             && self.hotspots.is_empty()
@@ -140,6 +145,7 @@ impl Default for ImpactPacket {
             env_var_deps: Vec::new(),
             test_coverage: Vec::new(),
             test_gaps: None,
+            affected_flows: None,
             runtime_usage_delta: Vec::new(),
             signature_deltas: Vec::new(),
             hotspots: Vec::new(),
@@ -213,6 +219,9 @@ impl ImpactPacket {
         self.env_var_deps.sort_unstable();
         self.env_var_deps.dedup();
         self.test_coverage.sort_unstable();
+        if let Some(ref mut flows_report) = self.affected_flows {
+            crate::impact::enrichment::affected_flows::sort_affected_flows(&mut flows_report.flows);
+        }
         self.runtime_usage_delta.sort_unstable();
         self.signature_deltas.sort_unstable();
         self.hotspots.sort_unstable_by(|a, b| {
@@ -367,6 +376,7 @@ impl ImpactPacket {
         self.env_var_deps.clear();
         self.test_coverage.clear();
         self.test_gaps = None;
+        self.affected_flows = None;
         self.runtime_usage_delta.clear();
         self.signature_deltas.clear();
         self.relevant_decisions.clear();
