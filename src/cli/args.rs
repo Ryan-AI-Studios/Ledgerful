@@ -547,11 +547,11 @@ pub enum Commands {
         #[arg(long = "no-graph-sync")]
         no_graph_sync: bool,
     },
-    /// Team ledger synchronization [Experimental]
+    /// Team ledger synchronization [Available — opt-in shared-folder v1]
     ///
-    /// Opt-in forever (`[sync].enabled = false` by default). Pairing invite
-    /// accept and peer trust land in 0111; multi-device apply polish and
-    /// Available marketing land in 0112–0113. See docs/team-sync.md.
+    /// Opt-in forever (`[sync].enabled = false` by default). Pairing, secure
+    /// transport/apply, setup checklist, and status next-action are real.
+    /// Not default-on, not cloud SaaS, not CRDT. See docs/team-sync.md.
     #[cfg(feature = "sync")]
     Sync {
         #[command(subcommand)]
@@ -771,7 +771,11 @@ impl Commands {
             Commands::Update { .. } => false,
             Commands::Watch { json, .. } => *json,
             #[cfg(feature = "sync")]
-            Commands::Sync { .. } => false,
+            Commands::Sync { subcommand } => match subcommand {
+                SyncSubcommands::Setup { json, .. } => *json,
+                SyncSubcommands::Status { json } => *json,
+                _ => false,
+            },
             Commands::SearchTrigrams { .. } => false,
             Commands::Audit { json, .. } => *json,
             Commands::Schedule { .. } => false,
@@ -923,7 +927,8 @@ impl Commands {
                 SyncSubcommands::Init { .. } => "sync_init",
                 SyncSubcommands::Pair { .. } => "sync_pair",
                 SyncSubcommands::Run { .. } => "sync_run",
-                SyncSubcommands::Status => "sync_status",
+                SyncSubcommands::Setup { .. } => "sync_setup",
+                SyncSubcommands::Status { .. } => "sync_status",
                 SyncSubcommands::Verify { .. } => "sync_verify",
                 SyncSubcommands::Cursor { .. } => "sync_cursor",
                 SyncSubcommands::Log { .. } => "sync_log",
@@ -994,6 +999,16 @@ mod machine_output_tests {
         assert!(parse(&["index", "--check", "--json"]).is_machine_output());
         assert!(parse(&["timings", "--json"]).is_machine_output());
         assert!(parse(&["hotspots", "--json"]).is_machine_output());
+        #[cfg(feature = "sync")]
+        {
+            assert!(!parse(&["sync", "setup"]).is_machine_output());
+            assert!(parse(&["sync", "setup", "--json"]).is_machine_output());
+            assert!(!parse(&["sync", "status"]).is_machine_output());
+            assert!(parse(&["sync", "status", "--json"]).is_machine_output());
+            assert!(!parse(&["sync", "run", "--once"]).is_machine_output());
+            assert_eq!(parse(&["sync", "setup"]).command_name(), "sync_setup");
+            assert_eq!(parse(&["sync", "status"]).command_name(), "sync_status");
+        }
     }
 
     #[test]
@@ -2396,7 +2411,19 @@ impl Commands {
                         f.push("once");
                     }
                 }
-                SyncSubcommands::Status => {}
+                SyncSubcommands::Setup { enable, json } => {
+                    if *enable {
+                        f.push("enable");
+                    }
+                    if *json {
+                        f.push("json");
+                    }
+                }
+                SyncSubcommands::Status { json } => {
+                    if *json {
+                        f.push("json");
+                    }
+                }
                 SyncSubcommands::Verify { .. } => {
                     // path is positional value — never hashed.
                 }
@@ -2571,7 +2598,7 @@ pub enum McpLauncher {
 #[cfg(feature = "sync")]
 #[derive(Subcommand, Debug)]
 pub enum SyncSubcommands {
-    /// Initialize team sync for this device [Experimental]
+    /// Initialize team sync for this device [Available — opt-in shared-folder v1]
     Init {
         /// Force re-initialization (overwrites key material + device_id SoT)
         #[arg(short, long)]
@@ -2580,14 +2607,14 @@ pub enum SyncSubcommands {
         #[arg(long, hide = true)]
         with_secret: Option<String>,
     },
-    /// Generate or accept a pairing invite, list/revoke peers [Experimental]
+    /// Generate or accept a pairing invite, list/revoke peers [Available]
     ///
     /// Without an invite: print a self-contained `LF-PAIR-1…` invite (requires
     /// `LEDGERFUL_SYNC_SECRET` and prior `sync init`). Accept with
     /// `sync pair <invite>` under the same team secret. Mutual accept for
-    /// two-way trust. Never sets `[sync].enabled = true`.
+    /// two-way trust (two invite/accept cycles). Never sets `[sync].enabled = true`.
     Pair {
-        /// Pairing invite from peer (`LF-PAIR-1...`) [Experimental]
+        /// Pairing invite from peer (`LF-PAIR-1...`)
         #[arg(conflicts_with_all = ["list", "revoke"])]
         code: Option<String>,
         /// List trusted peers
@@ -2600,26 +2627,44 @@ pub enum SyncSubcommands {
         #[arg(long)]
         force: bool,
     },
-    /// Run the sync loop [Experimental]
+    /// Run the sync loop [Available — opt-in; never default-on]
     Run {
         /// Run only once and exit
         #[arg(long)]
         once: bool,
     },
-    /// Show team sync status [Experimental]
-    Status,
-    /// Verify the integrity of sync bundles [Experimental]
+    /// Readiness checklist and gated enable [Available]
+    ///
+    /// Default: print checklist + next command (never enables, never prompts
+    /// for secret). `--enable` sets `[sync].enabled=true` only when init +
+    /// ≥1 peer + parseable reachable target are all green (sibling
+    /// `config.toml.bak` first). See docs/team-sync.md.
+    Setup {
+        /// Enable sync after readiness gates pass (strict refuse matrix)
+        #[arg(long)]
+        enable: bool,
+        /// Emit pure camelCase readiness JSON on stdout (`schemaVersion: 1`)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Show team sync status + readiness next-action [Available]
+    Status {
+        /// Emit pure camelCase status/readiness JSON on stdout (`schemaVersion: 1`)
+        #[arg(long)]
+        json: bool,
+    },
+    /// Verify the integrity of sync bundles [Available]
     Verify {
         /// Path to the bundle file
         path: String,
     },
-    /// Manage sync cursors [Experimental]
+    /// Manage sync cursors [Available]
     Cursor {
         /// Set a specific cursor HLC
         #[arg(long)]
         set: Option<String>,
     },
-    /// Show sync logs [Experimental]
+    /// Show sync logs [Available]
     Log {
         /// Number of lines to tail
         #[arg(long, short)]

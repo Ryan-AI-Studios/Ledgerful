@@ -8,6 +8,21 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Team Sync low-friction ops (0113) — Available (opt-in shared-folder v1):**
+  - `ledgerful sync setup` readiness checklist + Next command (never enables, never
+    prompts for secret); `setup --enable` strict refuse matrix (init + ≥1 peer +
+    `SyncTarget::parse` OK + bounded target reachable) with sibling `config.toml.bak`
+    before mutate; pure camelCase `--json` (`schemaVersion: 1`).
+  - `sync status` readiness + next-action + target reachable + **Quarantined (this
+    device)**; all `dir://` paths via `SyncTarget::parse` (fixes Windows
+    `dir:///C:/…` inbox/outbox lie).
+  - Docs: ≤15 min two-person setup card (explicit two-way pairing), password-manager
+    secret distribution + rotation, dual-purpose secret (MAC+AEAD), local FDE note,
+    NAS hang honesty, schedule display-only + secret-manager recipe.
+  - Doctor enabled-incomplete findings point at `sync setup`. Init secret uses
+    `Zeroizing<String>`; run/init share `prompt_password` UX.
+  - **Available decision:** opt-in shared-folder v1 only (not default-on, not cloud,
+    not CRDT). Label flipped in docs/Features/dual skill/clap help.
 - **MCP agent platform install (0116):** `ledgerful mcp install|uninstall|status`
   for Top-N hosts only (`claude-code`, `cursor`, `codex`, `copilot`). Merge-only
   host config wiring (JSONC + Codex TOML), launcher `auto|path|npx` (PATH binary
