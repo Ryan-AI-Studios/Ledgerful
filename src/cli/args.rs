@@ -1084,6 +1084,57 @@ mod machine_output_tests {
         assert!(cli_json.quiet);
         assert!(cli_json.command.is_machine_output());
     }
+
+    #[test]
+    fn re_sign_all_flag_parses() {
+        let cli = Cli::try_parse_from(["ledgerful", "ledger", "re-sign", "--all", "--dry-run"])
+            .expect("--all must parse");
+        match cli.command {
+            Commands::Ledger {
+                command:
+                    LedgerCommands::ReSign {
+                        all,
+                        all_invalid,
+                        tx,
+                        dry_run,
+                        yes,
+                    },
+            } => {
+                assert!(all);
+                assert!(!all_invalid);
+                assert!(tx.is_none());
+                assert!(dry_run);
+                assert!(!yes);
+            }
+            other => panic!("expected ReSign, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn re_sign_all_conflicts_with_all_invalid_and_tx() {
+        assert!(
+            Cli::try_parse_from(["ledgerful", "ledger", "re-sign", "--all", "--all-invalid",])
+                .is_err(),
+            "--all must conflict with --all-invalid"
+        );
+        assert!(
+            Cli::try_parse_from(["ledgerful", "ledger", "re-sign", "--all", "--tx", "abc"])
+                .is_err(),
+            "--all must conflict with --tx"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "ledgerful",
+                "ledger",
+                "re-sign",
+                "--all-invalid",
+                "--tx",
+                "abc",
+            ])
+            .is_err(),
+            "--all-invalid must conflict with --tx"
+        );
+    }
 }
 
 impl Commands {
@@ -1905,6 +1956,7 @@ impl Commands {
                 LedgerCommands::ReSign {
                     tx,
                     all_invalid,
+                    all,
                     dry_run,
                     yes,
                 } => {
@@ -1913,6 +1965,9 @@ impl Commands {
                     }
                     if *all_invalid {
                         f.push("all_invalid");
+                    }
+                    if *all {
+                        f.push("all");
                     }
                     if *dry_run {
                         f.push("dry_run");
@@ -3238,14 +3293,17 @@ pub enum LedgerCommands {
         #[arg(short, long)]
         message: Option<String>,
     },
-    /// Re-sign ledger entries with invalid signatures (key-repair)
+    /// Re-sign ledger entries (upgrade legacy signatures and/or repair invalid ones)
     ReSign {
         /// Re-sign a single transaction by id or prefix
-        #[arg(short, long, conflicts_with = "all_invalid")]
+        #[arg(short, long, conflicts_with_all = ["all_invalid", "all"])]
         tx: Option<String>,
-        /// Re-sign all entries whose stored signatures fail verification
-        #[arg(long, conflicts_with = "tx")]
+        /// Re-sign all entries whose stored signatures fail verification (key-repair)
+        #[arg(long, conflicts_with_all = ["tx", "all"])]
         all_invalid: bool,
+        /// Upgrade LOCAL entries with sig_version below current, and repair invalid signatures
+        #[arg(long, conflicts_with_all = ["tx", "all_invalid"])]
+        all: bool,
         /// Preview candidates and keys that would be used; do not mutate
         #[arg(long = "dry-run")]
         dry_run: bool,

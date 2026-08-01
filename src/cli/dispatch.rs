@@ -1039,9 +1039,16 @@ fn dispatch_ledger(command: LedgerCommands) -> Result<()> {
         LedgerCommands::ReSign {
             tx,
             all_invalid,
+            all,
             dry_run,
             yes,
-        } => crate::commands::ledger_re_sign::execute_ledger_re_sign(tx, all_invalid, dry_run, yes),
+        } => crate::commands::ledger_re_sign::execute_ledger_re_sign(
+            tx,
+            all_invalid,
+            all,
+            dry_run,
+            yes,
+        ),
         LedgerCommands::Gc {
             stale,
             orphans,
