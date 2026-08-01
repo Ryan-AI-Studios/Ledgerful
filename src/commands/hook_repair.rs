@@ -91,7 +91,9 @@ pub fn detect_third_party_hook_manager(root: &Utf8Path) -> Option<ThirdPartyHook
 /// Re-run third-party detection against a resolved hooks directory: if any
 /// ancestor component is `.husky`, treat as husky (covers CrawlX
 /// `apps/api/.husky/_` where the repo-root guard is blind).
-fn detect_third_party_at_hooks_dir(hooks_dir: &Utf8Path) -> Option<ThirdPartyHookManager> {
+///
+/// Public so product template refresh (0121) shares the same guard as legacy repair.
+pub fn detect_third_party_at_hooks_dir(hooks_dir: &Utf8Path) -> Option<ThirdPartyHookManager> {
     for component in hooks_dir.components() {
         if component.as_str() == ".husky" {
             return Some(ThirdPartyHookManager::Husky);

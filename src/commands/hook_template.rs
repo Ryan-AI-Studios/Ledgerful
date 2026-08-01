@@ -13,7 +13,8 @@ use miette::{IntoDiagnostic, Result};
 use std::fs;
 
 use crate::commands::hook_repair::{
-    HooksDirResolution, detect_third_party_hook_manager, resolve_hooks_dir,
+    HooksDirResolution, detect_third_party_at_hooks_dir, detect_third_party_hook_manager,
+    resolve_hooks_dir,
 };
 
 /// Product template version stamped into marker comments (`:vN`).
@@ -495,6 +496,19 @@ pub fn refresh_product_templates_at(
             return Ok(report);
         }
     };
+
+    // Nested husky (e.g. apps/api/.husky/_ via core.hooksPath) — same guard as legacy repair.
+    if let Some(manager) = detect_third_party_at_hooks_dir(&hooks_dir) {
+        report.refused = Some(format!(
+            "third-party hook manager '{}' detected at resolved hooks path; paste the product snippet from docs or configure {} to call ledgerful (refusing rewrite)",
+            manager.name(),
+            manager.name()
+        ));
+        report.discovery_notes.push(format!(
+            "refused rewrite under resolved hooks path '{hooks_dir}'"
+        ));
+        return Ok(report);
+    }
 
     if !hooks_dir.is_dir() {
         report.discovery_notes.push(format!(
@@ -998,6 +1012,34 @@ if command -v ledgerful &>/dev/null; then
         fs::create_dir_all(root.join(".git").join("hooks")).unwrap();
         let r = refresh_product_templates_at(&root, false).unwrap();
         assert!(r.refused.as_ref().unwrap().contains("husky"));
+    }
+
+    /// Nested husky via core.hooksPath (CrawlX shape) must refuse rewrite (P2-003).
+    #[test]
+    fn refresh_refuses_nested_husky_via_hooks_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let husky_hooks = root.join("apps").join("api").join(".husky").join("_");
+        fs::create_dir_all(&husky_hooks).unwrap();
+        let hist = historical_verify_gate_bodies("git push --no-verify")[0].clone();
+        let before = format!("#!/usr/bin/env bash\n{hist}\n");
+        fs::write(husky_hooks.join("pre-push"), &before).unwrap();
+        fs::create_dir_all(root.join(".git")).unwrap();
+        fs::write(
+            root.join(".git").join("config"),
+            "[core]\n\thooksPath = apps/api/.husky/_\n",
+        )
+        .unwrap();
+
+        let r = refresh_product_templates_at(&root, false).unwrap();
+        assert!(
+            r.refused.as_ref().is_some_and(|s| s.contains("husky")),
+            "nested husky must be refused: {:?}",
+            r
+        );
+        assert!(r.refreshed.is_empty());
+        let after = fs::read_to_string(husky_hooks.join("pre-push")).unwrap();
+        assert_eq!(after, before, "nested husky hook must be byte-identical");
     }
 
     #[test]
