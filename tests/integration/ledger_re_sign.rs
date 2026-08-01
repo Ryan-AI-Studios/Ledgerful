@@ -151,7 +151,8 @@ fn corrupted_ledger_re_sign_all_invalid_repairs_to_valid() {
     assert!(format!("{err}").contains("Ledger signature verification failed"));
 
     // Re-sign all invalid entries.
-    execute_ledger_re_sign_with_keys_dir(None, true, false, true, Some(keys.clone())).unwrap();
+    execute_ledger_re_sign_with_keys_dir(None, true, false, false, true, Some(keys.clone()))
+        .unwrap();
 
     // All repaired rows now verify as valid.
     let verify_storage = StorageManager::open_read_only_sqlite_only(&Layout::new(&root)).unwrap();
@@ -243,6 +244,7 @@ fn dry_run_does_not_mutate_db() {
     execute_ledger_re_sign_with_keys_dir(
         Some(tx_id.clone()),
         false,
+        false,
         true,
         false,
         Some(keys.clone()),
@@ -316,7 +318,8 @@ fn batch_re_sign_emits_one_maintenance_entry() {
         );
     }
 
-    execute_ledger_re_sign_with_keys_dir(None, true, false, true, Some(keys.clone())).unwrap();
+    execute_ledger_re_sign_with_keys_dir(None, true, false, false, true, Some(keys.clone()))
+        .unwrap();
 
     let verify_storage = StorageManager::open_read_only_sqlite_only(&Layout::new(&root)).unwrap();
     let db = ledgerful::ledger::db::LedgerDb::new(verify_storage.get_connection());
@@ -405,6 +408,7 @@ fn re_sign_creates_backup_and_aborts_if_backup_fails() {
         Some(tx_id.clone()),
         false,
         false,
+        false,
         true,
         Some(keys.clone()),
     )
@@ -431,6 +435,172 @@ fn re_sign_creates_backup_and_aborts_if_backup_fails() {
         .query_row("PRAGMA integrity_check", [], |row| row.get(0))
         .unwrap();
     assert_eq!(integrity.to_lowercase(), "ok");
+}
+
+#[test]
+#[serial(cwd)]
+fn valid_v1_entry_re_sign_all_upgrades_to_v2() {
+    let _env_non_interactive = non_interactive();
+    let (_dir, root, db_path) = setup_initialized_repo();
+    let _guard = DirGuard::from_utf8(&root);
+
+    let entity_path = root.join("src/main.rs");
+    std::fs::create_dir_all(entity_path.parent().unwrap()).unwrap();
+    std::fs::write(&entity_path, "").unwrap();
+
+    let mut storage = StorageManager::init(db_path.as_std_path()).unwrap();
+    let mut tx_mgr = TransactionManager::new(&mut storage, root.clone().into(), Config::default());
+
+    let keys = keys_dir(root.as_std_path());
+    let tx_id = tx_mgr
+        .start_change(TransactionRequest {
+            category: Category::Feature,
+            entity: "src/main.rs".to_string(),
+            planned_action: Some("v1 upgrade path".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+    let committed_at = "2026-06-03T00:00:00Z";
+    let summary = "v1 upgrade path";
+    let reason = "reason";
+    // Commit with a normal v2 signature first (commit_change verifies v2 basis).
+    let (sig_v2, pub_v2) = sign_v2_for_commit(
+        &keys,
+        &tx_id,
+        Category::Feature,
+        summary,
+        reason,
+        committed_at,
+        "src/main.rs",
+    );
+    tx_mgr
+        .commit_change(
+            tx_id.clone(),
+            CommitRequest {
+                change_type: ChangeType::Modify,
+                summary: summary.to_string(),
+                reason: reason.to_string(),
+                committed_at: Some(committed_at.to_string()),
+                signature: sig_v2,
+                public_key: pub_v2,
+                ..Default::default()
+            },
+            false,
+        )
+        .unwrap();
+    drop(tx_mgr);
+    drop(storage);
+
+    // Rewrite to a historical valid v1 signature + sig_version=1.
+    // Use the row's stored committed_at/category so dual-verify succeeds.
+    {
+        let conn = rusqlite::Connection::open(db_path.as_std_path()).unwrap();
+        let (stored_cat, stored_at): (String, String) = conn
+            .query_row(
+                "SELECT category, committed_at FROM ledger_entries WHERE tx_id = ?1",
+                rusqlite::params![tx_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        let (sig_v1, pub_v1) = ledgerful::ledger::crypto::sign_ledger_entry_in(
+            &keys,
+            &tx_id,
+            &stored_cat,
+            summary,
+            reason,
+            &stored_at,
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE ledger_entries SET signature = ?1, public_key = ?2, sig_version = 1 WHERE tx_id = ?3",
+            rusqlite::params![
+                sig_v1.as_deref().unwrap_or(""),
+                pub_v1.as_deref().unwrap_or(""),
+                tx_id
+            ],
+        )
+        .unwrap();
+    }
+
+    // Confirm preconditions: valid under dual-verify, still sig_version=1.
+    {
+        let verify_storage =
+            StorageManager::open_read_only_sqlite_only(&Layout::new(&root)).unwrap();
+        let db = ledgerful::ledger::db::LedgerDb::new(verify_storage.get_connection());
+        let entries = db.get_ledger_entries_for_tx(&tx_id).unwrap();
+        assert_eq!(entries[0].sig_version, 1);
+        assert!(
+            ledgerful::ledger::crypto::verify_ledger_entry_signature(&entries[0]),
+            "precondition: v1 signature must verify"
+        );
+        // all-invalid must NOT pick this up (valid v1).
+        let all = db.get_all_committed_ledger_entries().unwrap();
+        let invalid = ledgerful::commands::verify::enumerate_invalid_ledger_entries(&all, false);
+        assert!(
+            !invalid.iter().any(|(id, _, _)| id == &tx_id),
+            "valid v1 must not appear in invalid enumeration"
+        );
+    }
+
+    // dry-run must not mutate
+    let before = hash_file(db_path.as_std_path());
+    execute_ledger_re_sign_with_keys_dir(None, false, true, true, false, Some(keys.clone()))
+        .unwrap();
+    let after = hash_file(db_path.as_std_path());
+    assert_eq!(before, after, "re-sign --all --dry-run must not mutate");
+
+    // Mutate with --all --yes
+    execute_ledger_re_sign_with_keys_dir(None, false, true, false, true, Some(keys.clone()))
+        .unwrap();
+
+    let verify_storage = StorageManager::open_read_only_sqlite_only(&Layout::new(&root)).unwrap();
+    let db = ledgerful::ledger::db::LedgerDb::new(verify_storage.get_connection());
+    let entries = db.get_ledger_entries_for_tx(&tx_id).unwrap();
+    assert_eq!(
+        entries[0].sig_version, 2,
+        "re-sign --all must upgrade valid v1 to sig_version=2"
+    );
+    assert!(
+        ledgerful::ledger::crypto::verify_ledger_entry_signature(&entries[0]),
+        "upgraded entry must verify"
+    );
+
+    // Maintenance wording should be upgrade, not key-repair.
+    let all_entries = db.get_all_committed_ledger_entries().unwrap();
+    let maint: Vec<_> = all_entries
+        .iter()
+        .filter(|e| e.entry_type == ledgerful::ledger::types::EntryType::Maintenance)
+        .filter(|e| e.summary.contains("sig-upgrade") || e.reason.contains("Signature upgrade"))
+        .collect();
+    assert_eq!(
+        maint.len(),
+        1,
+        "upgrade path must emit upgrade-worded MAINTENANCE"
+    );
+}
+
+#[test]
+#[serial(cwd)]
+fn re_sign_all_empty_candidates_dry_run_clean() {
+    let _env_non_interactive = non_interactive();
+    let (_dir, root, db_path) = setup_initialized_repo();
+    let _guard = DirGuard::from_utf8(&root);
+
+    // Fresh init has no committed LOCAL entries needing upgrade.
+    let keys = keys_dir(root.as_std_path());
+    execute_ledger_re_sign_with_keys_dir(None, false, true, true, false, Some(keys.clone()))
+        .unwrap();
+
+    // Mutation path errors clearly.
+    let err = execute_ledger_re_sign_with_keys_dir(None, false, true, false, true, Some(keys))
+        .unwrap_err();
+    let msg = format!("{err}");
+    assert!(
+        msg.contains("No LOCAL") || msg.contains("upgrade") || msg.contains("repair"),
+        "empty --all mutation must error clearly: {msg}"
+    );
+    // Silence unused
+    let _ = db_path;
 }
 
 #[test]
@@ -496,6 +666,7 @@ fn dry_run_does_not_create_key_store() {
 
     execute_ledger_re_sign_with_keys_dir(
         Some(tx_id.clone()),
+        false,
         false,
         true,
         false,
@@ -582,6 +753,7 @@ fn maintenance_entry_is_signed_when_signing_required() {
 
     execute_ledger_re_sign_with_keys_dir(
         Some(tx_id.clone()),
+        false,
         false,
         false,
         true,
@@ -685,7 +857,8 @@ fn re_sign_then_verify_chain_passes() {
         );
     }
 
-    execute_ledger_re_sign_with_keys_dir(None, true, false, true, Some(keys.clone())).unwrap();
+    execute_ledger_re_sign_with_keys_dir(None, true, false, false, true, Some(keys.clone()))
+        .unwrap();
 
     // After re-signing, verify --chain must PASS, proving the maintenance entry
     // links to the correct new tail hash and the genesis prev_hash is None.

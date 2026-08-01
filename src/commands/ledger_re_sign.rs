@@ -14,10 +14,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub fn execute_ledger_re_sign(
     tx: Option<String>,
     all_invalid: bool,
+    all: bool,
     dry_run: bool,
     yes: bool,
 ) -> Result<()> {
-    execute_ledger_re_sign_with_keys_dir(tx, all_invalid, dry_run, yes, None)
+    execute_ledger_re_sign_with_keys_dir(tx, all_invalid, all, dry_run, yes, None)
 }
 
 /// Internal entry point with an optional keys directory override.
@@ -28,21 +29,19 @@ pub fn execute_ledger_re_sign(
 pub fn execute_ledger_re_sign_with_keys_dir(
     tx: Option<String>,
     all_invalid: bool,
+    all: bool,
     dry_run: bool,
     yes: bool,
     keys_dir_override: Option<std::path::PathBuf>,
 ) -> Result<()> {
-    if tx.is_none() && !all_invalid {
+    if tx.is_none() && !all_invalid && !all {
         return Err(miette!(
-            "Specify either --tx <id> to re-sign one transaction, or --all-invalid to re-sign every invalid signature. Use --dry-run to preview."
+            "Specify --tx <id> to re-sign one transaction, --all-invalid for key-repair of invalid signatures, or --all to upgrade legacy sig_version rows (and repair invalids). Use --dry-run to preview."
         ));
     }
 
     let layout = get_layout()?;
-    let keys_dir = keys_dir_override
-        .clone()
-        .map(Ok)
-        .unwrap_or_else(crate::ledger::crypto::get_keys_dir)?;
+    let keys_dir = resolve_re_sign_keys_dir(keys_dir_override.clone(), dry_run)?;
     let db_path = layout
         .state_subdir()
         .join("ledger.db")
@@ -59,8 +58,13 @@ pub fn execute_ledger_re_sign_with_keys_dir(
 
     let signing_required = config.intent.require_signing;
     let invalid = enumerate_invalid_ledger_entries(&entries, signing_required);
+    let is_upgrade_mode = all;
 
-    let candidates: Vec<(String, String, String)> = if all_invalid {
+    // Upgrade mode (--all) uses a distinct candidate filter: valid v1 rows never
+    // appear in enumerate_invalid_* (min_sig hardcodes 1).
+    let candidates: Vec<(String, String, String)> = if all {
+        enumerate_upgrade_candidates(&entries, signing_required)
+    } else if all_invalid {
         invalid.clone()
     } else if let Some(ref tx_id_or_prefix) = tx {
         // Resolve the supplied prefix to a full tx_id, then keep it only if it is invalid.
@@ -73,20 +77,51 @@ pub fn execute_ledger_re_sign_with_keys_dir(
             .resolve_tx_id(tx_id_or_prefix)
             .map_err(|e| miette!("Could not resolve transaction '{}': {}", tx_id_or_prefix, e))?;
         invalid
-            .into_iter()
+            .iter()
             .filter(|(id, _, _)| id == &resolved)
+            .cloned()
             .collect()
     } else {
         Vec::new()
     };
 
+    // Preview counts for --all: how many are version upgrades vs already-invalid.
+    let (upgrade_count, invalid_count) = if is_upgrade_mode {
+        let invalid_ids: std::collections::HashSet<&str> =
+            invalid.iter().map(|(id, _, _)| id.as_str()).collect();
+        let mut upg = 0usize;
+        let mut inv = 0usize;
+        for (id, _, _) in &candidates {
+            if invalid_ids.contains(id.as_str()) {
+                inv += 1;
+            } else {
+                upg += 1;
+            }
+        }
+        (upg, inv)
+    } else {
+        (0, candidates.len())
+    };
+
     if candidates.is_empty() {
         if dry_run {
-            println!(
-                "{} No invalid-signature ledger entries to re-sign.",
-                "DRY RUN:".cyan().bold()
-            );
+            if is_upgrade_mode {
+                println!(
+                    "{} No LOCAL ledger entries need upgrade or repair (sig_version already current and signatures valid).",
+                    "DRY RUN:".cyan().bold()
+                );
+            } else {
+                println!(
+                    "{} No invalid-signature ledger entries to re-sign.",
+                    "DRY RUN:".cyan().bold()
+                );
+            }
             return Ok(());
+        }
+        if is_upgrade_mode {
+            return Err(miette!(
+                "No LOCAL ledger entries need upgrade or repair. Use 'ledgerful verify --signatures' to check."
+            ));
         }
         return Err(miette!(
             "No invalid-signature ledger entries matched the request. Use 'ledgerful verify --signatures' to check."
@@ -120,6 +155,14 @@ pub fn execute_ledger_re_sign_with_keys_dir(
             },
             new_pub_fp.cyan()
         );
+        if is_upgrade_mode {
+            println!(
+                "{} Counts: {} version-upgrade candidate(s), {} invalid/unsigned candidate(s).",
+                "DRY RUN:".cyan().bold(),
+                upgrade_count,
+                invalid_count
+            );
+        }
         for (tx_id, old_sig, old_pub) in &candidates {
             let old_sig_fp = if old_sig.is_empty() {
                 "(none)".to_string()
@@ -374,6 +417,7 @@ pub fn execute_ledger_re_sign_with_keys_dir(
         &now,
         &author,
         old_head_hash,
+        is_upgrade_mode,
     );
 
     let maintenance_tx_id = {
@@ -383,6 +427,7 @@ pub fn execute_ledger_re_sign_with_keys_dir(
             &maintenance_entry.tx_id,
             &maintenance_entry.committed_at,
             &maintenance_entry.author,
+            is_upgrade_mode,
         )?;
 
         // Sign the maintenance entry so it has a stable hash for the chain head
@@ -478,6 +523,58 @@ pub fn execute_ledger_re_sign_with_keys_dir(
     Ok(())
 }
 
+/// Resolve the key store directory for re-sign.
+///
+/// Dry-run uses [`keys_dir_path`] (no create). Mutation uses [`get_keys_dir`]
+/// (may create). Override always wins. Satisfies DoD-3: dry-run mutates nothing.
+fn resolve_re_sign_keys_dir(
+    keys_dir_override: Option<std::path::PathBuf>,
+    dry_run: bool,
+) -> Result<std::path::PathBuf> {
+    match keys_dir_override {
+        Some(path) => Ok(path),
+        None if dry_run => crate::ledger::crypto::keys_dir_path()
+            .map_err(|e| miette!("Failed to resolve keys directory: {e}")),
+        None => crate::ledger::crypto::get_keys_dir()
+            .map_err(|e| miette!("Failed to resolve keys directory: {e}")),
+    }
+}
+
+/// LOCAL entries that need a signature rewrite under `--all`:
+/// `sig_version < CURRENT` **or** invalid under the existing classify policy.
+///
+/// Distinct from [`enumerate_invalid_ledger_entries`]: that helper hardcodes
+/// `min_sig_version=1`, so valid v1 rows never appear. Upgrade candidates must
+/// include them.
+pub fn enumerate_upgrade_candidates(
+    entries: &[LedgerEntry],
+    signing_required: bool,
+) -> Vec<(String, String, String)> {
+    let current = crate::ledger::crypto::CURRENT_LEDGER_SIG_VERSION;
+    let invalid = enumerate_invalid_ledger_entries(entries, signing_required);
+    let invalid_ids: std::collections::HashSet<&str> =
+        invalid.iter().map(|(id, _, _)| id.as_str()).collect();
+
+    let mut candidates: Vec<(String, String, String)> = Vec::new();
+    for entry in entries {
+        if entry.origin != "LOCAL" {
+            continue;
+        }
+        let needs_version_upgrade = entry.sig_version < current;
+        let is_invalid = invalid_ids.contains(entry.tx_id.as_str());
+        if needs_version_upgrade || is_invalid {
+            candidates.push((
+                entry.tx_id.clone(),
+                entry.signature.clone().unwrap_or_default(),
+                entry.public_key.clone().unwrap_or_default(),
+            ));
+        }
+    }
+    // Deterministic order for preview and mutation.
+    candidates.sort_by(|a, b| a.0.cmp(&b.0));
+    candidates
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_maintenance_entry(
     candidates: &[(String, String, String)],
@@ -488,6 +585,7 @@ fn build_maintenance_entry(
     committed_at: &str,
     author: &str,
     old_head_hash: Option<&str>,
+    is_upgrade_mode: bool,
 ) -> LedgerEntry {
     let is_batch = candidates.len() > 1;
     let affected = if is_batch {
@@ -521,17 +619,27 @@ fn build_maintenance_entry(
         .map(key_fingerprint)
         .unwrap_or_else(|| "(none)".to_string());
 
+    let op_label = if is_upgrade_mode {
+        "sig-upgrade"
+    } else {
+        "re-sign"
+    };
     let summary = if is_batch {
         format!(
-            "Chain segment break: re-sign — re-signed {} ledger entries",
+            "Chain segment break: {op_label} — re-signed {} ledger entries",
             candidates.len()
         )
     } else {
-        "Chain segment break: re-sign — re-signed one ledger entry".to_string()
+        format!("Chain segment break: {op_label} — re-signed one ledger entry")
     };
 
+    let reason_prefix = if is_upgrade_mode {
+        "Signature upgrade / re-sign operation (v1→current and/or invalid repair)."
+    } else {
+        "Key-repair / re-sign operation."
+    };
     let reason = format!(
-        "Key-repair / re-sign operation. Old key fingerprints: [{}]. New public key fingerprint: {}. Old chain head: {}. Affected: {}.",
+        "{reason_prefix} Old key fingerprints: [{}]. New public key fingerprint: {}. Old chain head: {}. Affected: {}.",
         old_keys.join(", "),
         key_fingerprint(new_pub_key),
         old_head_fp,
@@ -558,8 +666,13 @@ fn build_maintenance_entry(
         verification_status: None,
         verification_basis: None,
         outcome_notes: Some(format!(
-            "re_sign_count={}; new_pub_fp={}; affected_tx_ids=[{}]",
+            "re_sign_count={}; mode={}; new_pub_fp={}; affected_tx_ids=[{}]",
             candidates.len(),
+            if is_upgrade_mode {
+                "upgrade"
+            } else {
+                "key-repair"
+            },
             key_fingerprint(new_pub_key),
             if is_batch {
                 repaired_tx_ids.join(", ")
@@ -585,7 +698,13 @@ fn insert_maintenance_transaction(
     tx_id: &str,
     committed_at: &str,
     _author: &str,
+    is_upgrade_mode: bool,
 ) -> Result<(), miette::Error> {
+    let planned = if is_upgrade_mode {
+        "Ledger signature upgrade / re-sign".to_string()
+    } else {
+        "Ledger signature re-sign / key-repair".to_string()
+    };
     let tx = crate::ledger::types::Transaction {
         tx_id: tx_id.to_string(),
         operation_id: None,
@@ -593,7 +712,7 @@ fn insert_maintenance_transaction(
         category: Category::Chore,
         entity: "ledger/signatures".to_string(),
         entity_normalized: "ledger/signatures".to_string(),
-        planned_action: Some("Ledger signature re-sign / key-repair".to_string()),
+        planned_action: Some(planned),
         session_id: crate::ledger::session::get_session_id().to_string(),
         source: "CLI".to_string(),
         started_at: committed_at.to_string(),
@@ -730,10 +849,11 @@ mod tests {
     fn execute_ledger_re_sign(
         tx: Option<String>,
         all_invalid: bool,
+        all: bool,
         dry_run: bool,
         yes: bool,
     ) -> Result<()> {
-        execute_ledger_re_sign_with_keys_dir(tx, all_invalid, dry_run, yes, None)
+        execute_ledger_re_sign_with_keys_dir(tx, all_invalid, all, dry_run, yes, None)
     }
 
     fn setup_in_memory_db() -> Connection {
@@ -891,12 +1011,121 @@ mod tests {
             "2024-06-01T10:00:00Z",
             "tester",
             Some("oldheadhash"),
+            false,
         );
         assert_eq!(entry.entry_type, EntryType::Maintenance);
         assert_eq!(entry.category, Category::Chore);
         assert!(entry.reason.contains("tx-1, tx-2"));
         assert!(entry.reason.contains("pub1fp"));
         assert!(entry.reason.contains("newpub"));
+        assert!(entry.reason.contains("Key-repair"));
+        assert!(
+            entry
+                .outcome_notes
+                .as_deref()
+                .unwrap_or("")
+                .contains("mode=key-repair")
+        );
+    }
+
+    #[test]
+    fn maintenance_entry_upgrade_mode_wording() {
+        let candidates = vec![("tx-1".to_string(), "sig1".to_string(), "pub1".to_string())];
+        let entry = build_maintenance_entry(
+            &candidates,
+            &["tx-1".to_string()],
+            &["pub1fp".to_string()],
+            &["newsig1".to_string()],
+            "newpub",
+            "2024-06-01T10:00:00Z",
+            "tester",
+            None,
+            true,
+        );
+        assert!(entry.summary.contains("sig-upgrade"));
+        assert!(entry.reason.contains("Signature upgrade"));
+        assert!(
+            entry
+                .outcome_notes
+                .as_deref()
+                .unwrap_or("")
+                .contains("mode=upgrade")
+        );
+    }
+
+    #[test]
+    fn resolve_keys_dir_override_wins_on_dry_run_and_does_not_create() {
+        let tmp = tempfile::tempdir().unwrap();
+        let override_path = tmp.path().join("missing-keys-dir");
+        assert!(!override_path.exists());
+        let resolved = resolve_re_sign_keys_dir(Some(override_path.clone()), true).unwrap();
+        assert_eq!(resolved, override_path);
+        assert!(
+            !override_path.exists(),
+            "dry-run resolve must not create the keys directory"
+        );
+    }
+
+    #[test]
+    fn upgrade_candidates_include_valid_v1() {
+        let tmp = tempfile::tempdir().unwrap();
+        let keys_dir = tmp.path().join("keys");
+        std::fs::create_dir_all(&keys_dir).unwrap();
+
+        let tx_id = "tx-valid-v1";
+        let (sig, pub_key) = sign_ledger_entry_in(
+            &keys_dir,
+            tx_id,
+            &Category::Feature.to_string(),
+            "test entry",
+            "test reason",
+            "2024-06-01T10:00:00Z",
+        )
+        .unwrap();
+
+        let mut entry = sample_ledger_entry(tx_id, sig, pub_key);
+        entry.sig_version = 1;
+        // Valid v1 is NOT invalid under enumerate_invalid
+        let invalid = enumerate_invalid_ledger_entries(std::slice::from_ref(&entry), false);
+        assert!(invalid.is_empty(), "valid v1 must not be invalid");
+
+        let upgrade = enumerate_upgrade_candidates(std::slice::from_ref(&entry), false);
+        assert_eq!(upgrade.len(), 1);
+        assert_eq!(upgrade[0].0, tx_id);
+    }
+
+    #[test]
+    fn upgrade_candidates_exclude_current_valid_v2() {
+        let tmp = tempfile::tempdir().unwrap();
+        let keys_dir = tmp.path().join("keys");
+        std::fs::create_dir_all(&keys_dir).unwrap();
+
+        let tx_id = "tx-valid-v2";
+        let input = crate::ledger::crypto::LedgerSignInput::for_new_commit(
+            tx_id,
+            Category::Feature,
+            "test entry",
+            "test reason",
+            "2024-06-01T10:00:00Z",
+            "src/main.rs",
+            "src/main.rs",
+            ChangeType::Modify,
+            EntryType::Implementation,
+            "test",
+            None,
+            false,
+            None,
+            "LOCAL",
+        );
+        let (sig, pub_key) =
+            crate::ledger::crypto::sign_ledger_entry_in_v2(&keys_dir, &input).unwrap();
+        let mut entry = sample_ledger_entry(tx_id, sig, pub_key);
+        entry.sig_version = crate::ledger::crypto::CURRENT_LEDGER_SIG_VERSION;
+        let upgrade = enumerate_upgrade_candidates(std::slice::from_ref(&entry), false);
+        assert!(
+            upgrade.is_empty(),
+            "valid current-version entry must not be an upgrade candidate"
+        );
     }
 
     #[test]
@@ -911,6 +1140,7 @@ mod tests {
             "2024-06-01T10:00:00Z",
             "tester",
             None,
+            false,
         );
         assert!(entry.reason.contains("tx_id=tx-1"));
         assert!(entry.reason.contains("old_sig="));

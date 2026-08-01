@@ -129,6 +129,7 @@ pub fn print_doctor_report(
                 crate::commands::doctor::DoctorSeverity::Info => "[info]".cyan().to_string(),
             };
             println!("  • {} [{}] {}", prefix, f.code, f.message);
+            print_doctor_remediation(f.remediation.as_deref(), f.message.as_str(), "    ");
         }
     }
 
@@ -146,6 +147,21 @@ pub fn print_doctor_report(
             crate::commands::doctor::DoctorSeverity::Info => "[info]".cyan().to_string(),
         };
         println!("{} [{}] {}", prefix, f.code, f.message);
+        print_doctor_remediation(f.remediation.as_deref(), f.message.as_str(), "  ");
+    }
+}
+
+/// Print structured remediation under a finding once (skip if identical to message).
+fn print_doctor_remediation(remediation: Option<&str>, message: &str, indent: &str) {
+    let Some(rem) = remediation else {
+        return;
+    };
+    let rem = rem.trim();
+    if rem.is_empty() || rem == message.trim() {
+        return;
+    }
+    for line in rem.lines() {
+        println!("{indent}{line}");
     }
 }
 

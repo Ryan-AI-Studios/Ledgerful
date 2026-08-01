@@ -51,6 +51,11 @@ ledgerful doctor --json
 tests are green, or CI is green. Optional backends (embedding/completion/SCIP/
 sccache/gemini) never set `readyForPublish=false`. See `docs/doctor-severity.md`.
 
+**Signing hygiene:** when doctor reports `sig-pin` / `sig-version`, follow the
+structured `remediation` commands. Pinning is an identity allowlist — not free-text
+proof of intent. Use `ledger re-sign --all` to upgrade legacy v1 rows before raising
+`min_sig_version=2`; `--all-invalid` is key-repair only.
+
 If the command is unavailable, do not invent Ledgerful output. Tell the user it is not installed or not on `PATH`, then continue with normal repository inspection.
 
 ### MCP host wiring (optional)

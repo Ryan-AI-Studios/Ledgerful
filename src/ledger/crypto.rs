@@ -126,12 +126,21 @@ impl LedgerSignInput {
     }
 }
 
-pub fn get_keys_dir() -> Result<PathBuf> {
+/// Resolve `~/.ledgerful/keys` **without** creating the directory.
+///
+/// Prefer this for read-only probes (doctor pin remediation). Callers that
+/// need a writable key store should use [`get_keys_dir`].
+pub fn keys_dir_path() -> Result<PathBuf> {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .map(PathBuf::from)
         .map_err(|_| miette::miette!("Failed to locate home directory"))?;
-    let keys_dir = home.join(".ledgerful").join("keys");
+    Ok(home.join(".ledgerful").join("keys"))
+}
+
+/// Resolve and ensure `~/.ledgerful/keys` exists (creates when missing).
+pub fn get_keys_dir() -> Result<PathBuf> {
+    let keys_dir = keys_dir_path()?;
     if !keys_dir.exists() {
         fs::create_dir_all(&keys_dir).into_diagnostic()?;
     }

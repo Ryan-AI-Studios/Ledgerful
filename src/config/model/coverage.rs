@@ -164,7 +164,8 @@ pub struct IntentConfig {
     #[serde(default)]
     pub trusted_public_keys: Vec<String>,
     /// Reject rows with `sig_version < min_sig_version` during verify.
-    /// Default 1 accepts historical v1 rows; set 2 after re-sign --all.
+    /// Default 1 accepts historical v1 rows; set 2 after `ledger re-sign --all`
+    /// upgrades remaining LOCAL rows to the current signature version.
     #[serde(default = "default_min_sig_version")]
     pub min_sig_version: u32,
 }

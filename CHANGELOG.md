@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Doctor actionable remediations + `re-sign --all` (0125):** `DoctorFinding`
+  gains optional structured `remediation` (schemaVersion stays 1). `sig-pin` and
+  `sig-version` findings emit PowerShell-safe next commands (outer single quotes
+  on pin `config set`; re-sign before min_sig when v1 rows remain). `ledger
+  re-sign --all` upgrades LOCAL rows with `sig_version < current` (not only
+  invalids; distinct from `--all-invalid` key-repair). Human doctor printer
+  surfaces remediation; docs in `doctor-severity.md` / Features.
+
 - **Hook / ledger provenance SoT (0122):** Agent `ledger commit` / open PENDING
   is intentional provenance SoT; commit-msg classifies after reading the raw
   message and **before** adaptive trivial bypass, conventional well-formed
