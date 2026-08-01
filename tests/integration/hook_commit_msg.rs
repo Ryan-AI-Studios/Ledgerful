@@ -1,5 +1,6 @@
 use ledgerful::commands::hook_commit_msg::{
-    canonical_entity, extract_trailers, is_trivial_commit, parse_category_from_message,
+    LedgerRefStatus, ProvenanceSotClass, canonical_entity, classify_provenance_sot,
+    extract_ledger_tx_ref, extract_trailers, is_trivial_commit, parse_category_from_message,
 };
 use ledgerful::ledger::Category;
 
@@ -445,5 +446,383 @@ fn test_real_shell_git_commit_amend_success() {
     assert_eq!(
         total_count, 1,
         "Exactly one transaction should have been created across the initial commit + amend lifecycle (got {total_count})"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// 0122 — Provenance SoT
+// ---------------------------------------------------------------------------
+
+/// Pure extract re-export surface (integration crate can call lib helpers).
+#[test]
+fn extract_ledger_tx_ref_reporting_fixture_none() {
+    assert_eq!(
+        extract_ledger_tx_ref("Ledger: 2 pending, 0 unaudited drift."),
+        None
+    );
+    assert_eq!(extract_ledger_tx_ref("Ledger: 3 unaudited…"), None);
+}
+
+#[test]
+fn classify_provenance_sot_pure_surface() {
+    let id = "d7f2e5e8-59b5-42fd-bcf3-d4ee99c507bf";
+    assert!(matches!(
+        classify_provenance_sot(Some(id), &[], Some(LedgerRefStatus::Committed)),
+        ProvenanceSotClass::AlreadyCommitted { .. }
+    ));
+    assert!(matches!(
+        classify_provenance_sot(None, &[id.to_string()], None),
+        ProvenanceSotClass::LinkPending { .. }
+    ));
+    assert_eq!(
+        classify_provenance_sot(None, &["a".into(), "b".into()], None),
+        ProvenanceSotClass::AmbiguousMulti
+    );
+    assert_eq!(
+        classify_provenance_sot(None, &[], None),
+        ProvenanceSotClass::Fallback
+    );
+}
+
+/// AlreadyCommitted: agent ledger start+commit; conventional msg + `Ledger: {tx}`;
+/// hook must not open a second pending / new sidecar TX id.
+#[test]
+fn provenance_sot_already_committed_skips_intent_draft() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    crate::common::setup_git_repo(root);
+
+    let ledgerful_bin = std::env!("CARGO_BIN_EXE_ledgerful");
+
+    let init = std::process::Command::new(ledgerful_bin)
+        .arg("init")
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let start = std::process::Command::new(ledgerful_bin)
+        .args([
+            "ledger",
+            "start",
+            "agent-entity-0122",
+            "--category",
+            "FEATURE",
+            "--message",
+            "agent intentional summary",
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "ledger start failed: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+
+    let status_out = std::process::Command::new(ledgerful_bin)
+        .args(["ledger", "status", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    let status_json: serde_json::Value = serde_json::from_slice(&status_out.stdout).unwrap();
+    let tx_id = status_json["pendingTxIds"][0]
+        .as_str()
+        .expect("pending tx id")
+        .to_string();
+
+    let commit = std::process::Command::new(ledgerful_bin)
+        .args([
+            "ledger",
+            "commit",
+            &tx_id,
+            "--summary",
+            "agent committed summary",
+            "--reason",
+            "agent intentional reason",
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        commit.status.success(),
+        "ledger commit failed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+
+    // Stage a file for the git commit-msg hook path.
+    std::fs::write(root.join("feature.txt"), "content").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "feature.txt"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    // Well-formed conventional subject+body AND Ledger line (AI3 regression class).
+    let msg_file = root.join(".git").join("COMMIT_EDITMSG");
+    let msg = format!(
+        "feat: ship agent change\n\nBody with enough intent for conventional bypass.\n\nLedger: {tx_id}"
+    );
+    std::fs::write(&msg_file, &msg).unwrap();
+
+    let hook_output = std::process::Command::new(ledgerful_bin)
+        .args(["internal", "hook-commit-msg", msg_file.to_str().unwrap()])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .env("RUST_LOG", "info")
+        .output()
+        .unwrap();
+
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&hook_output.stdout),
+        String::from_utf8_lossy(&hook_output.stderr)
+    );
+    assert!(
+        hook_output.status.success(),
+        "hook-commit-msg failed: {combined}"
+    );
+    assert!(
+        combined.contains("Provenance SoT") && combined.contains("already committed"),
+        "expected Provenance SoT already-committed line, got:\n{combined}"
+    );
+    assert!(
+        !combined.contains("Drafting change intent via local LLM"),
+        "must not draft LLM intent on AlreadyCommitted:\n{combined}"
+    );
+
+    let sidecar_path = root
+        .join(".ledgerful")
+        .join("state")
+        .join("pending_hook_tx");
+    assert!(
+        !sidecar_path.exists(),
+        "AlreadyCommitted must not write a new pending_hook_tx sidecar"
+    );
+
+    let db_path = root.join(".ledgerful").join("state").join("ledger.db");
+    let db = rusqlite::Connection::open(&db_path).unwrap();
+    let pending_count: i32 = db
+        .query_row(
+            "SELECT COUNT(*) FROM transactions WHERE status = 'PENDING' AND entity != 'ledgerful/gate-mode'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        pending_count, 0,
+        "AlreadyCommitted must not open a second pending TX"
+    );
+
+    let committed_agent: i32 = db
+        .query_row(
+            "SELECT COUNT(*) FROM transactions WHERE tx_id = ?1 AND status = 'COMMITTED'",
+            rusqlite::params![tx_id],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(committed_agent, 1, "agent TX must remain committed");
+}
+
+/// LinkPending: one open PENDING globally; hook without Ledger line links that id.
+#[test]
+fn provenance_sot_link_pending_single_open() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    crate::common::setup_git_repo(root);
+
+    let ledgerful_bin = std::env!("CARGO_BIN_EXE_ledgerful");
+
+    let init = std::process::Command::new(ledgerful_bin)
+        .arg("init")
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let start = std::process::Command::new(ledgerful_bin)
+        .args([
+            "ledger",
+            "start",
+            "agent-slug-entity",
+            "--category",
+            "FEATURE",
+            "--message",
+            "open agent pending",
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "ledger start failed: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+
+    let status_out = std::process::Command::new(ledgerful_bin)
+        .args(["ledger", "status", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    let status_json: serde_json::Value = serde_json::from_slice(&status_out.stdout).unwrap();
+    let pending_tx = status_json["pendingTxIds"][0]
+        .as_str()
+        .expect("pending tx")
+        .to_string();
+
+    std::fs::write(root.join("work.txt"), "w").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "work.txt"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    // No Ledger: line — single global PENDING should LinkPending.
+    let msg_file = root.join(".git").join("COMMIT_EDITMSG");
+    std::fs::write(
+        &msg_file,
+        "feat: continue agent work\n\nBody for conventional well-formed path.",
+    )
+    .unwrap();
+
+    let hook_output = std::process::Command::new(ledgerful_bin)
+        .args(["internal", "hook-commit-msg", msg_file.to_str().unwrap()])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .env("RUST_LOG", "info")
+        .output()
+        .unwrap();
+
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&hook_output.stdout),
+        String::from_utf8_lossy(&hook_output.stderr)
+    );
+    assert!(
+        hook_output.status.success(),
+        "hook-commit-msg failed: {combined}"
+    );
+    assert!(
+        combined.contains("Provenance SoT") && combined.contains("linking open ledger TX"),
+        "expected LinkPending SoT line, got:\n{combined}"
+    );
+    assert!(
+        !combined.contains("Drafting change intent via local LLM"),
+        "must not draft LLM on LinkPending:\n{combined}"
+    );
+
+    let sidecar_path = root
+        .join(".ledgerful")
+        .join("state")
+        .join("pending_hook_tx");
+    assert!(sidecar_path.exists(), "LinkPending must write sidecar");
+    let sidecar: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&sidecar_path).unwrap()).unwrap();
+    assert_eq!(
+        sidecar["tx_id"].as_str().unwrap(),
+        pending_tx,
+        "sidecar must link the single open pending TX"
+    );
+
+    let db_path = root.join(".ledgerful").join("state").join("ledger.db");
+    let db = rusqlite::Connection::open(&db_path).unwrap();
+    let pending_count: i32 = db
+        .query_row(
+            "SELECT COUNT(*) FROM transactions WHERE status = 'PENDING' AND entity != 'ledgerful/gate-mode'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        pending_count, 1,
+        "LinkPending must not start_change a second pending"
+    );
+}
+
+/// HookFallback regression: zero pending, no Ledger line, conventional still creates pending_hook_tx.
+#[test]
+fn provenance_sot_hook_fallback_creates_pending_when_no_sot() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    crate::common::setup_git_repo(root);
+
+    let ledgerful_bin = std::env!("CARGO_BIN_EXE_ledgerful");
+
+    let init = std::process::Command::new(ledgerful_bin)
+        .arg("init")
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    std::fs::write(root.join("fallback.txt"), "f").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "fallback.txt"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    let msg_file = root.join(".git").join("COMMIT_EDITMSG");
+    std::fs::write(
+        &msg_file,
+        "feat: human only commit\n\nBody ensures well-formed conventional bypass.",
+    )
+    .unwrap();
+
+    let hook_output = std::process::Command::new(ledgerful_bin)
+        .args(["internal", "hook-commit-msg", msg_file.to_str().unwrap()])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .env("RUST_LOG", "info")
+        .output()
+        .unwrap();
+
+    let combined = format!(
+        "{}\n{}",
+        String::from_utf8_lossy(&hook_output.stdout),
+        String::from_utf8_lossy(&hook_output.stderr)
+    );
+    assert!(
+        hook_output.status.success(),
+        "hook-commit-msg failed: {combined}"
+    );
+    assert!(
+        !combined.contains("Provenance SoT"),
+        "HookFallback must not emit Provenance SoT line:\n{combined}"
+    );
+
+    let sidecar_path = root
+        .join(".ledgerful")
+        .join("state")
+        .join("pending_hook_tx");
+    assert!(
+        sidecar_path.exists(),
+        "HookFallback conventional path must still write pending_hook_tx"
+    );
+
+    let db_path = root.join(".ledgerful").join("state").join("ledger.db");
+    let db = rusqlite::Connection::open(&db_path).unwrap();
+    let pending_count: i32 = db
+        .query_row(
+            "SELECT COUNT(*) FROM transactions WHERE status = 'PENDING' AND entity != 'ledgerful/gate-mode'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        pending_count, 1,
+        "HookFallback must create exactly one pending TX"
     );
 }

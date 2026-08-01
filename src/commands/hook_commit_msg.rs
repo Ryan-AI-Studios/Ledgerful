@@ -63,6 +63,165 @@ pub fn extract_trailers(msg: &str) -> String {
     trailer_lines.join("\n")
 }
 
+// ---------------------------------------------------------------------------
+// Provenance SoT (0122): pure extract + classify — no DB inside pure helpers.
+// ---------------------------------------------------------------------------
+
+/// Ledger status of a message-extracted TX ref after DB verification.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LedgerRefStatus {
+    Pending,
+    Committed,
+    /// Present as a non-pending/non-committed status, or absent entirely.
+    Missing,
+}
+
+/// Pure classification of commit-msg provenance ownership.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ProvenanceSotClass {
+    /// Verified msg ref is already COMMITTED — skip all hook intent capture.
+    AlreadyCommitted { tx_id: String },
+    /// Link sidecar to an existing PENDING TX without `start_change`.
+    LinkPending { tx_id: String },
+    /// N>1 open PENDING and no verified msg ref — warn then HookFallback.
+    AmbiguousMulti,
+    /// Existing conventional / LLM / TUI / silent path.
+    Fallback,
+}
+
+/// Pure extraction of a ledger TX ref from a raw commit message (before clean).
+///
+/// Rules (B2):
+/// 1. Prefer line-anchored `(?i)^\s*Ledger:\s*(<uuid>)\s*$` (end of line required)
+/// 2. Accept optional trailer-style `Ledger-Tx: <uuid>` on its own line
+/// 3. Validate with `uuid::Uuid::parse_str` only
+/// 4. Bare UUIDs in free prose → None
+/// 5. Reporting/verify strings like `Ledger: 2 pending, 0 unaudited drift.` → None
+pub fn extract_ledger_tx_ref(msg: &str) -> Option<String> {
+    // Prefer `Ledger:` over `Ledger-Tx:` when both appear.
+    if let Some(id) = scan_ledger_uuid_lines(msg, "Ledger:") {
+        return Some(id);
+    }
+    scan_ledger_uuid_lines(msg, "Ledger-Tx:")
+}
+
+fn scan_ledger_uuid_lines(msg: &str, key: &str) -> Option<String> {
+    for line in msg.lines() {
+        let trimmed = line.trim();
+        // Case-insensitive key prefix; remainder must be only UUID (+ surrounding space already trimmed).
+        if trimmed.len() < key.len() {
+            continue;
+        }
+        if !trimmed[..key.len()].eq_ignore_ascii_case(key) {
+            continue;
+        }
+        let rest = trimmed[key.len()..].trim();
+        if rest.is_empty() {
+            continue;
+        }
+        // End-of-line after UUID only — refuse "Ledger: 2 pending, …" and similar.
+        if uuid::Uuid::parse_str(rest).is_ok() {
+            return Some(rest.to_string());
+        }
+    }
+    None
+}
+
+/// Pure provenance classifier (no DB).
+///
+/// Priority (B1 / B3):
+/// 1. AlreadyCommitted — verified msg ref is COMMITTED
+/// 2. LinkPending — verified msg ref is PENDING, OR exactly one open PENDING
+///    globally and no conflicting/missing msg ref
+/// 3. AmbiguousMulti — N>1 pending, no verified msg ref
+/// 4. Fallback — everything else (incl. extracted but Missing)
+///
+/// `ref_status` is `Some` only when `extracted` is `Some` and the caller looked
+/// the id up; when `extracted` is `None`, pass `None`.
+pub fn classify_provenance_sot(
+    extracted: Option<&str>,
+    pending_ids: &[String],
+    ref_status: Option<LedgerRefStatus>,
+) -> ProvenanceSotClass {
+    if let Some(tx_id) = extracted {
+        match ref_status {
+            Some(LedgerRefStatus::Committed) => {
+                return ProvenanceSotClass::AlreadyCommitted {
+                    tx_id: tx_id.to_string(),
+                };
+            }
+            Some(LedgerRefStatus::Pending) => {
+                return ProvenanceSotClass::LinkPending {
+                    tx_id: tx_id.to_string(),
+                };
+            }
+            // Missing or not supplied: do not invent skip/link from the ref.
+            Some(LedgerRefStatus::Missing) | None => {
+                return ProvenanceSotClass::Fallback;
+            }
+        }
+    }
+
+    // No verified msg ref — global single-pending rule (entity match not required).
+    match pending_ids.len() {
+        0 => ProvenanceSotClass::Fallback,
+        1 => ProvenanceSotClass::LinkPending {
+            tx_id: pending_ids[0].clone(),
+        },
+        _ => ProvenanceSotClass::AmbiguousMulti,
+    }
+}
+
+/// DB-backed resolve of provenance SoT for the commit-msg hook.
+fn resolve_provenance_sot(
+    raw_commit_msg: &str,
+    layout: &crate::state::layout::Layout,
+    config: &Config,
+) -> Result<ProvenanceSotClass> {
+    let extracted = extract_ledger_tx_ref(raw_commit_msg);
+    let mut storage = StorageManager::init_with_layout(layout)?;
+    let tx_mgr = TransactionManager::new(&mut storage, layout.root.clone().into(), config.clone());
+
+    let mut pending = tx_mgr
+        .get_all_pending()
+        .map_err(|e| miette::miette!("Failed to list pending transactions: {}", e))?;
+    // Deterministic order for single-pending pick when multiple rows ever race.
+    pending.sort_by(|a, b| a.tx_id.cmp(&b.tx_id));
+    let pending_ids: Vec<String> = pending.iter().map(|t| t.tx_id.clone()).collect();
+
+    let ref_status = if let Some(ref tx_id) = extracted {
+        match tx_mgr
+            .get_transaction(tx_id)
+            .map_err(|e| miette::miette!("Failed to look up ledger TX {}: {}", tx_id, e))?
+        {
+            Some(tx) if tx.status.eq_ignore_ascii_case("COMMITTED") => {
+                Some(LedgerRefStatus::Committed)
+            }
+            Some(tx) if tx.status.eq_ignore_ascii_case("PENDING") => Some(LedgerRefStatus::Pending),
+            Some(_) => Some(LedgerRefStatus::Missing),
+            None => {
+                // Secondary: ledger_entries row without live transactions row.
+                let entries = tx_mgr
+                    .get_ledger_entries_for_tx(tx_id)
+                    .map_err(|e| miette::miette!("Failed to look up ledger entries: {}", e))?;
+                if entries.is_empty() {
+                    Some(LedgerRefStatus::Missing)
+                } else {
+                    Some(LedgerRefStatus::Committed)
+                }
+            }
+        }
+    } else {
+        None
+    };
+
+    Ok(classify_provenance_sot(
+        extracted.as_deref(),
+        &pending_ids,
+        ref_status,
+    ))
+}
+
 pub fn canonical_entity(files: &[String]) -> String {
     if files.is_empty() {
         return "unknown".to_string();
@@ -226,18 +385,13 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
         }
     }
 
-    // 2. Read git staged files and capture a snapshot so the post-commit hook
-    // can attach per-file diff stats later.
+    // 2. Read git staged files (snapshot deferred until after provenance classify — B7).
     let staged_files = get_staged_files(repo_root);
     if staged_files.is_empty() {
         return Ok(()); // Nothing staged, nothing to record
     }
     let entity = canonical_entity(&staged_files);
     let related_files = staged_files.join(", ");
-
-    // Capture snapshot for diff stats. This is best-effort; failure is logged
-    // but the commit-msg hook continues.
-    let snapshot_capture = capture_staged_snapshot(&layout, repo_root);
 
     // 3. Read current commit message
     if !msg_file.exists() {
@@ -250,6 +404,49 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
         .into_diagnostic()?
         .trim()
         .to_string();
+
+    // 3b. Provenance SoT classifier — after raw msg, BEFORE adaptive / conventional / LLM (B1).
+    match resolve_provenance_sot(&raw_commit_msg, &layout, &config)? {
+        ProvenanceSotClass::AlreadyCommitted { tx_id } => {
+            tracing::info!(
+                target: "cli_summary",
+                "[Ledgerful] Provenance SoT: ledger TX {} already committed; skipping intent draft.",
+                tx_id
+            );
+            return Ok(());
+        }
+        ProvenanceSotClass::LinkPending { tx_id } => {
+            // Current commit snapshot (not the agent's start-time snapshot).
+            let snapshot_capture = capture_staged_snapshot(&layout, repo_root);
+            link_pending_provenance(LinkPendingArgs {
+                config: &config,
+                tx_id: &tx_id,
+                related_files: &related_files,
+                raw_commit_msg: &raw_commit_msg,
+                snapshot_id: snapshot_capture.as_ref().map(|s| s.snapshot_id),
+            })?;
+            tracing::info!(
+                target: "cli_summary",
+                "[Ledgerful] Provenance SoT: linking open ledger TX {}; skipping intent draft.",
+                tx_id
+            );
+            return Ok(());
+        }
+        ProvenanceSotClass::AmbiguousMulti => {
+            tracing::warn!(
+                target: "cli_summary",
+                "[Ledgerful] Multiple open pending transactions found; falling back to hook intent capture."
+            );
+            // Fall through to HookFallback (adaptive / conventional / LLM).
+        }
+        ProvenanceSotClass::Fallback => {
+            // HookFallback — existing path below.
+        }
+    }
+
+    // Capture snapshot for diff stats (best-effort). After classify so
+    // AlreadyCommitted skips wasted snapshot work (B7).
+    let snapshot_capture = capture_staged_snapshot(&layout, repo_root);
 
     // 4. Check adaptive bypass
     let skip_history_path = layout.state_subdir().join("skip_history.json");
@@ -559,31 +756,120 @@ pub(crate) fn record_enforce_skipped(args: RecordEnforceSkippedArgs<'_>) -> Resu
     })
 }
 
-fn silently_record_ledger(args: SilentRecordArgs) -> Result<()> {
+struct LinkPendingArgs<'a> {
+    config: &'a Config,
+    tx_id: &'a str,
+    related_files: &'a str,
+    raw_commit_msg: &'a str,
+    snapshot_id: Option<i64>,
+}
+
+/// Link an existing PENDING TX to this commit via sidecar (no `start_change`, no LLM).
+fn link_pending_provenance(args: LinkPendingArgs<'_>) -> Result<()> {
     let layout = get_layout()?;
-    let category = if args.skipped {
-        Category::Chore
-    } else {
-        parse_category_from_message(args.what)
-    };
     let mut storage = StorageManager::init_with_layout(&layout)?;
-    let mut tx_mgr = TransactionManager::new(
+    let tx_mgr = TransactionManager::new(
         &mut storage,
         layout.root.clone().into(),
         args.config.clone(),
     );
 
-    let tx_id = tx_mgr
-        .start_change(TransactionRequest {
-            category,
-            entity: args.entity.to_string(),
-            planned_action: Some(args.what.to_string()),
-            ..Default::default()
-        })
-        .map_err(|e| miette::miette!("{}", e))?;
+    let tx = tx_mgr
+        .get_transaction(args.tx_id)
+        .map_err(|e| miette::miette!("Failed to load pending TX {}: {}", args.tx_id, e))?
+        .ok_or_else(|| miette::miette!("Pending TX {} not found for LinkPending", args.tx_id))?;
 
-    let observe_warned = tx_mgr.observe_warned();
+    if !tx.status.eq_ignore_ascii_case("PENDING") {
+        return Err(miette::miette!(
+            "TX {} is not PENDING (status={}); cannot LinkPending",
+            args.tx_id,
+            tx.status
+        ));
+    }
 
+    let subject = args
+        .raw_commit_msg
+        .lines()
+        .next()
+        .unwrap_or("")
+        .trim()
+        .to_string();
+    let body = args
+        .raw_commit_msg
+        .lines()
+        .skip(1)
+        .collect::<Vec<_>>()
+        .join("\n")
+        .trim()
+        .to_string();
+
+    // Summary/reason from pending planned_action / commit subject (B1).
+    let summary = tx
+        .planned_action
+        .clone()
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| {
+            if subject.is_empty() {
+                format!("Link pending TX {}", args.tx_id)
+            } else {
+                subject.clone()
+            }
+        });
+    let reason = if !body.is_empty() {
+        body
+    } else if !subject.is_empty() {
+        subject
+    } else {
+        summary.clone()
+    };
+    let category = parse_category_from_message(&summary);
+    let risk = risk_from_category(category).to_string();
+
+    let entity_normalized = tx_mgr
+        .entity_normalized(&tx.entity)
+        .unwrap_or_else(|_| tx.entity_normalized.clone());
+
+    write_signed_sidecar_for_tx(WriteSidecarArgs {
+        config: args.config,
+        layout: &layout,
+        tx_id: args.tx_id.to_string(),
+        entity: &tx.entity,
+        entity_normalized: &entity_normalized,
+        category,
+        what: &summary,
+        why: &reason,
+        risk: &risk,
+        related: Vec::new(),
+        related_files: args.related_files,
+        raw_commit_msg: args.raw_commit_msg,
+        snapshot_id: args.snapshot_id,
+        skipped: false,
+        observe_warned: false,
+    })
+}
+
+struct WriteSidecarArgs<'a> {
+    config: &'a Config,
+    layout: &'a crate::state::layout::Layout,
+    tx_id: String,
+    entity: &'a str,
+    entity_normalized: &'a str,
+    category: Category,
+    what: &'a str,
+    why: &'a str,
+    risk: &'a str,
+    related: Vec<String>,
+    related_files: &'a str,
+    raw_commit_msg: &'a str,
+    snapshot_id: Option<i64>,
+    skipped: bool,
+    observe_warned: bool,
+}
+
+/// Shared post-`start_change` body: sign + write `pending_hook_tx` sidecar.
+///
+/// Used by silent hook path (after `start_change`) and LinkPending (existing TX).
+fn write_signed_sidecar_for_tx(args: WriteSidecarArgs<'_>) -> Result<()> {
     let committed_at = chrono::Utc::now().to_rfc3339();
 
     let tickets = args.related.join(", ");
@@ -598,7 +884,7 @@ fn silently_record_ledger(args: SilentRecordArgs) -> Result<()> {
         let read = |key: &str| -> Option<String> {
             std::process::Command::new("git")
                 .args(["config", key])
-                .current_dir(layout.root.as_std_path())
+                .current_dir(args.layout.root.as_std_path())
                 .output()
                 .ok()
                 .and_then(|o| {
@@ -614,22 +900,19 @@ fn silently_record_ledger(args: SilentRecordArgs) -> Result<()> {
             .or_else(|| read("user.email"))
             .unwrap_or_else(|| "unknown".to_string())
     };
-    let entity_normalized = tx_mgr
-        .entity_normalized(args.entity)
-        .unwrap_or_else(|_| args.entity.to_string());
-    let entry_type = if category == Category::Architecture {
+    let entry_type = if args.category == Category::Architecture {
         EntryType::Architecture
     } else {
         EntryType::Implementation
     };
     let sign_input = LedgerSignInput::for_new_commit(
-        &tx_id,
-        category,
+        &args.tx_id,
+        args.category,
         args.what,
         args.why,
         &committed_at,
         args.entity,
-        &entity_normalized,
+        args.entity_normalized,
         ChangeType::Modify,
         entry_type,
         &author,
@@ -664,14 +947,14 @@ fn silently_record_ledger(args: SilentRecordArgs) -> Result<()> {
         } else {
             None
         }
-    } else if observe_warned {
+    } else if args.observe_warned {
         Some(true)
     } else {
         None
     };
 
     let pending = PendingHookTx {
-        tx_id,
+        tx_id: args.tx_id,
         commit_msg_hash: hash_message(&crate::util::text::clean_commit_msg(args.raw_commit_msg)),
         summary: args.what.to_string(),
         reason: args.why.to_string(),
@@ -686,10 +969,59 @@ fn silently_record_ledger(args: SilentRecordArgs) -> Result<()> {
         promote_error: None,
     };
 
-    let sidecar_path = layout.state_subdir().join("pending_hook_tx");
+    let sidecar_path = args.layout.state_subdir().join("pending_hook_tx");
     write_pending_sidecar(sidecar_path.as_std_path(), &pending)?;
 
     Ok(())
+}
+
+fn silently_record_ledger(args: SilentRecordArgs) -> Result<()> {
+    let layout = get_layout()?;
+    let category = if args.skipped {
+        Category::Chore
+    } else {
+        parse_category_from_message(args.what)
+    };
+    let mut storage = StorageManager::init_with_layout(&layout)?;
+    let mut tx_mgr = TransactionManager::new(
+        &mut storage,
+        layout.root.clone().into(),
+        args.config.clone(),
+    );
+
+    // B6: silent hook path tags source HOOK (agent CLI stays default "CLI").
+    let tx_id = tx_mgr
+        .start_change(TransactionRequest {
+            category,
+            entity: args.entity.to_string(),
+            planned_action: Some(args.what.to_string()),
+            source: Some("HOOK".into()),
+            ..Default::default()
+        })
+        .map_err(|e| miette::miette!("{}", e))?;
+
+    let observe_warned = tx_mgr.observe_warned();
+    let entity_normalized = tx_mgr
+        .entity_normalized(args.entity)
+        .unwrap_or_else(|_| args.entity.to_string());
+
+    write_signed_sidecar_for_tx(WriteSidecarArgs {
+        config: args.config,
+        layout: &layout,
+        tx_id,
+        entity: args.entity,
+        entity_normalized: &entity_normalized,
+        category,
+        what: args.what,
+        why: args.why,
+        risk: args.risk,
+        related: args.related,
+        related_files: args.related_files,
+        raw_commit_msg: args.raw_commit_msg,
+        snapshot_id: args.snapshot_id,
+        skipped: args.skipped,
+        observe_warned,
+    })
 }
 
 /// Staged-snapshot capture result carried from commit-msg to post-commit via
@@ -894,5 +1226,146 @@ mod tests {
         assert!(is_tui_skip_disposition("TRIVIAL", "Skipped intent entry"));
         assert!(!is_tui_skip_disposition("MEDIUM", "Skipped intent entry"));
         assert!(!is_tui_skip_disposition("TRIVIAL", "something else"));
+    }
+
+    // --- extract_ledger_tx_ref (0122) ---
+
+    const SAMPLE_UUID: &str = "d7f2e5e8-59b5-42fd-bcf3-d4ee99c507bf";
+
+    #[test]
+    fn extract_ledger_tx_ref_happy_ledger_line() {
+        let msg = format!("[FEATURE] summary\n\nLedger: {SAMPLE_UUID}");
+        assert_eq!(extract_ledger_tx_ref(&msg).as_deref(), Some(SAMPLE_UUID));
+    }
+
+    #[test]
+    fn extract_ledger_tx_ref_case_insensitive() {
+        let msg = format!("feat: x\n\nledger: {SAMPLE_UUID}");
+        assert_eq!(extract_ledger_tx_ref(&msg).as_deref(), Some(SAMPLE_UUID));
+        let msg2 = format!("feat: x\n\nLEDGER: {SAMPLE_UUID}");
+        assert_eq!(extract_ledger_tx_ref(&msg2).as_deref(), Some(SAMPLE_UUID));
+    }
+
+    #[test]
+    fn extract_ledger_tx_ref_ledger_tx_trailer() {
+        let msg = format!("feat: x\n\nLedger-Tx: {SAMPLE_UUID}");
+        assert_eq!(extract_ledger_tx_ref(&msg).as_deref(), Some(SAMPLE_UUID));
+    }
+
+    #[test]
+    fn extract_ledger_tx_ref_prefers_ledger_over_ledger_tx() {
+        let other = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+        let msg = format!("feat: x\n\nLedger: {SAMPLE_UUID}\nLedger-Tx: {other}");
+        assert_eq!(extract_ledger_tx_ref(&msg).as_deref(), Some(SAMPLE_UUID));
+    }
+
+    #[test]
+    fn extract_ledger_tx_ref_bare_uuid_alone_is_none() {
+        assert_eq!(extract_ledger_tx_ref(SAMPLE_UUID), None);
+        let prose = format!("Fixed bug {SAMPLE_UUID} in handler");
+        assert_eq!(extract_ledger_tx_ref(&prose), None);
+    }
+
+    #[test]
+    fn extract_ledger_tx_ref_garbage_is_none() {
+        assert_eq!(extract_ledger_tx_ref(""), None);
+        assert_eq!(extract_ledger_tx_ref("feat: no ledger line"), None);
+        assert_eq!(extract_ledger_tx_ref("Ledger: not-a-uuid"), None);
+        assert_eq!(extract_ledger_tx_ref("Ledger: "), None);
+    }
+
+    #[test]
+    fn extract_ledger_tx_ref_rejects_reporting_status_string() {
+        // Fixture: reporting.rs style compact status line must NOT match.
+        let msg = "Ledger: 2 pending, 0 unaudited drift.";
+        assert_eq!(extract_ledger_tx_ref(msg), None);
+    }
+
+    #[test]
+    fn extract_ledger_tx_ref_rejects_verify_style_unaudited() {
+        let msg = "Ledger: 3 unaudited…";
+        assert_eq!(extract_ledger_tx_ref(msg), None);
+        let msg2 = "Ledger: 1 unaudited drift item";
+        assert_eq!(extract_ledger_tx_ref(msg2), None);
+    }
+
+    #[test]
+    fn extract_ledger_tx_ref_uuid_parse_str_rejects_non_uuid() {
+        // Uuid::parse_str rejects non-UUID after Ledger: (end-of-line only path).
+        assert!(uuid::Uuid::parse_str("2 pending, 0 unaudited drift.").is_err());
+        assert_eq!(
+            extract_ledger_tx_ref("Ledger: 2 pending, 0 unaudited drift."),
+            None
+        );
+    }
+
+    #[test]
+    fn extract_ledger_tx_ref_allows_surrounding_whitespace_on_line() {
+        let msg = format!("  Ledger:   {SAMPLE_UUID}  ");
+        assert_eq!(extract_ledger_tx_ref(&msg).as_deref(), Some(SAMPLE_UUID));
+    }
+
+    // --- classify_provenance_sot (0122) ---
+
+    #[test]
+    fn classify_provenance_sot_already_committed() {
+        let class =
+            classify_provenance_sot(Some(SAMPLE_UUID), &[], Some(LedgerRefStatus::Committed));
+        assert_eq!(
+            class,
+            ProvenanceSotClass::AlreadyCommitted {
+                tx_id: SAMPLE_UUID.to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn classify_provenance_sot_link_pending_from_msg_ref() {
+        let class = classify_provenance_sot(
+            Some(SAMPLE_UUID),
+            &[SAMPLE_UUID.to_string(), "other".into()],
+            Some(LedgerRefStatus::Pending),
+        );
+        assert_eq!(
+            class,
+            ProvenanceSotClass::LinkPending {
+                tx_id: SAMPLE_UUID.to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn classify_provenance_sot_link_pending_single_global() {
+        let class = classify_provenance_sot(None, &[SAMPLE_UUID.to_string()], None);
+        assert_eq!(
+            class,
+            ProvenanceSotClass::LinkPending {
+                tx_id: SAMPLE_UUID.to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn classify_provenance_sot_ambiguous_multi_n2() {
+        let pending = vec!["aaa".into(), "bbb".into()];
+        let class = classify_provenance_sot(None, &pending, None);
+        assert_eq!(class, ProvenanceSotClass::AmbiguousMulti);
+    }
+
+    #[test]
+    fn classify_provenance_sot_fallback_zero_pending() {
+        let class = classify_provenance_sot(None, &[], None);
+        assert_eq!(class, ProvenanceSotClass::Fallback);
+    }
+
+    #[test]
+    fn classify_provenance_sot_fallback_missing_ref() {
+        let class = classify_provenance_sot(
+            Some(SAMPLE_UUID),
+            &[SAMPLE_UUID.to_string()],
+            Some(LedgerRefStatus::Missing),
+        );
+        // Missing ref does not invent link even when a single pending exists.
+        assert_eq!(class, ProvenanceSotClass::Fallback);
     }
 }
