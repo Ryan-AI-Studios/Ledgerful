@@ -24,7 +24,7 @@ use std::fs;
 use tempfile::tempdir;
 
 #[cfg(feature = "sync")]
-use crate::common::{DirGuard, TempEnv, setup_git_repo};
+use crate::common::{DirGuard, TempEnv, run_cli, setup_git_repo};
 
 #[cfg(feature = "sync")]
 const TEST_SECRET: &str = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
@@ -212,6 +212,99 @@ fn setup_json_is_parseable_schema_v1() {
     assert!(v.get("schema_version").is_none());
 
     handle_sync_setup(false, true).expect("setup --json");
+}
+
+/// F-003: `sync setup --json` stdout is a single pure JSON object (incomplete ok).
+#[test]
+#[cfg(feature = "sync")]
+#[serial_test::serial(env)]
+fn setup_json_stdout_is_pure_json_object() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+    let _guard = DirGuard::from_utf8(root);
+    let _secret = TempEnv::set("LEDGERFUL_SYNC_SECRET", TEST_SECRET);
+
+    ledgerful::commands::init::execute_init(false, false).unwrap();
+    // Incomplete readiness is fine — checklist --json must still exit 0.
+
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["sync", "setup", "--json"]);
+    assert_eq!(
+        code, 0,
+        "setup --json incomplete must exit 0; stderr={stderr}"
+    );
+    let trimmed = stdout.trim();
+    assert!(
+        !trimmed.contains("Set "),
+        "config set noise must not pollute JSON stdout:\n{trimmed}"
+    );
+    let v: serde_json::Value = serde_json::from_str(trimmed).unwrap_or_else(|e| {
+        panic!("stdout must be a single pure JSON object: {e}; got:\n{trimmed}")
+    });
+    assert_eq!(v["schemaVersion"], 1);
+    assert!(v.get("nextAction").is_some());
+    assert!(v.get("enabled").is_some());
+}
+
+/// F-003/F-004: `sync setup --enable --json` success → pure JSON, enabled true,
+/// and config.toml never holds the secret env name or value.
+#[test]
+#[cfg(feature = "sync")]
+#[serial_test::serial(env)]
+fn setup_enable_json_stdout_is_pure_json_enabled() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+    let _guard = DirGuard::from_utf8(root);
+    let _secret = TempEnv::set("LEDGERFUL_SYNC_SECRET", TEST_SECRET);
+
+    let _id = init_device(root);
+    add_dummy_peer(root, "device-peer-json-enable");
+    let share = tmp.path().join("share");
+    fs::create_dir_all(&share).unwrap();
+    let target = format!("dir://{}", share.display().to_string().replace('\\', "/"));
+    let layout = ledgerful::state::layout::Layout::new(root);
+    // Quiet set so test process stdout is clean; the CLI path under test uses quiet too.
+    ledgerful::commands::config::execute_config_set_in_quiet(
+        &layout,
+        &format!("sync.target=\"{target}\""),
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["sync", "setup", "--enable", "--json"]);
+    assert_eq!(
+        code, 0,
+        "setup --enable --json success must exit 0; stderr={stderr}"
+    );
+    let trimmed = stdout.trim();
+    assert!(
+        !trimmed.contains("Set "),
+        "human Set line must not prefix/pollute pure JSON:\n{trimmed}"
+    );
+    let v: serde_json::Value = serde_json::from_str(trimmed).unwrap_or_else(|e| {
+        panic!("stdout must be a single pure JSON object: {e}; got:\n{trimmed}")
+    });
+    assert_eq!(v["schemaVersion"], 1);
+    assert_eq!(
+        v["enabled"], true,
+        "enable success must report enabled=true; got {v}"
+    );
+
+    // F-004: secret material never lands in config.toml.
+    let cfg_text =
+        fs::read_to_string(layout.config_file().as_std_path()).expect("config.toml after enable");
+    assert!(
+        !cfg_text.contains("LEDGERFUL_SYNC"),
+        "config.toml must not contain LEDGERFUL_SYNC*: {cfg_text}"
+    );
+    assert!(
+        !cfg_text.contains(TEST_SECRET),
+        "config.toml must not contain the test secret"
+    );
+    assert!(
+        cfg_text.contains("enabled") && cfg_text.to_lowercase().contains("true"),
+        "config should show enabled=true: {cfg_text}"
+    );
 }
 
 #[test]

@@ -67,18 +67,16 @@ fn handle_enable(
         ));
     }
 
-    // Success path: sibling backup then mutate.
+    // Success path: sibling backup then quiet mutate (setup owns stdout messaging).
     backup_config_toml(layout)?;
-    crate::commands::config::execute_config_set_in(layout, "sync.enabled=true")?;
+    crate::commands::config::execute_config_set_in_quiet(layout, "sync.enabled=true")?;
 
     // Re-collect after enable for accurate next-action / JSON.
     let config = load_config(layout)?;
     let after = collect_readiness(layout, &config)?;
 
     if json {
-        // execute_config_set_in may have printed a human line — still emit pure report JSON
-        // as the structured machine result (agents should prefer setup --json without --enable
-        // then a separate enable, or parse the last JSON object). Prefer re-emitting only.
+        // Pure readiness JSON only — quiet set guarantees no "Set …" prefix.
         emit_json(&after)?;
     } else {
         println!();
