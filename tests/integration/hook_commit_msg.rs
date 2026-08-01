@@ -731,6 +731,12 @@ fn provenance_sot_link_pending_single_open() {
         pending_tx,
         "sidecar must link the single open pending TX"
     );
+    // Sidecar risk/category basis must match pending FEATURE TX (not re-parsed CHORE).
+    assert_ne!(
+        sidecar["risk"].as_str().unwrap_or(""),
+        "TRIVIAL",
+        "LinkPending must sign with pending TX category risk, not re-parsed message category"
+    );
 
     let db_path = root.join(".ledgerful").join("state").join("ledger.db");
     let db = rusqlite::Connection::open(&db_path).unwrap();
@@ -744,6 +750,55 @@ fn provenance_sot_link_pending_single_open() {
     assert_eq!(
         pending_count, 1,
         "LinkPending must not start_change a second pending"
+    );
+
+    // Finalize git commit (no hooks) then promote — signature must verify against TX category.
+    let empty_hooks = root.join("empty-hooks");
+    std::fs::create_dir_all(&empty_hooks).unwrap();
+    let commit = std::process::Command::new("git")
+        .args([
+            "-c",
+            &format!("core.hooksPath={}", empty_hooks.display()),
+            "commit",
+            "-F",
+            msg_file.to_str().unwrap(),
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        commit.status.success(),
+        "git commit (no hooks) failed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+
+    let promote = std::process::Command::new(ledgerful_bin)
+        .args(["internal", "hook-post-commit"])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        promote.status.success(),
+        "post-commit promote failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&promote.stdout),
+        String::from_utf8_lossy(&promote.stderr)
+    );
+
+    let status: String = db
+        .query_row(
+            "SELECT status FROM transactions WHERE tx_id = ?1",
+            rusqlite::params![&pending_tx],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(
+        status, "COMMITTED",
+        "LinkPending signature must verify so post-commit can promote agent TX"
+    );
+    assert!(
+        !sidecar_path.exists(),
+        "sidecar should be removed after successful promote"
     );
 }
 

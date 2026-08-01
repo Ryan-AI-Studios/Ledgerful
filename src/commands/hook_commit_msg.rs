@@ -823,7 +823,10 @@ fn link_pending_provenance(args: LinkPendingArgs<'_>) -> Result<()> {
     } else {
         summary.clone()
     };
-    let category = parse_category_from_message(&summary);
+    // MUST use pending TX category (and derived risk/entry_type). Promote
+    // verifies signatures against `tx.category`, not a re-parsed message
+    // category — agent planned_action rarely has a conventional prefix.
+    let category = tx.category;
     let risk = risk_from_category(category).to_string();
 
     let entity_normalized = tx_mgr
