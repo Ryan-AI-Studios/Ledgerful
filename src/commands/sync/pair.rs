@@ -92,7 +92,7 @@ Use one of: `ledgerful sync pair`, `ledgerful sync pair <invite>`, \
 
 fn handle_list(sync_dir: &std::path::Path) -> Result<()> {
     let peers = list_peers(sync_dir).map_err(|e| miette!("{e}"))?;
-    println!("[Experimental] Trusted peers ({})", peers.len());
+    println!("[Available] Trusted peers ({})", peers.len());
     if peers.is_empty() {
         println!("  (none) — generate an invite with `ledgerful sync pair` on the peer device,");
         println!("  then accept here with `ledgerful sync pair <invite>` (same team secret).");
@@ -107,7 +107,7 @@ fn handle_list(sync_dir: &std::path::Path) -> Result<()> {
 fn handle_revoke(sync_dir: &std::path::Path, device_id: &str) -> Result<()> {
     validate_device_id_for_path(device_id).map_err(|e| miette!("{e}"))?;
     revoke_peer(sync_dir, device_id).map_err(|e| miette!("{e}"))?;
-    println!("[Experimental] Revoked trust for peer '{device_id}'.");
+    println!("[Available] Revoked trust for peer '{device_id}'.");
     Ok(())
 }
 
@@ -127,7 +127,7 @@ fn handle_generate(local_device_id: &str, local_pub: &[u8; 32]) -> Result<()> {
     let secret = load_team_secret()?;
     let invite = format_invite_v1(local_device_id, local_pub, secret.as_bytes());
 
-    println!("[Experimental] Pairing invite (single line — copy to peer):");
+    println!("[Available] Pairing invite (single line — copy to peer):");
     println!("{invite}");
     println!();
     println!("  Device ID (SoT): {local_device_id}");
@@ -180,13 +180,13 @@ fn handle_accept(
 
     match outcome {
         TrustOutcome::NewlyTrusted => {
-            println!("[Experimental] Trusted peer '{peer_id}'.");
+            println!("[Available] Trusted peer '{peer_id}'.");
         }
         TrustOutcome::AlreadyTrusted => {
-            println!("[Experimental] Peer '{peer_id}' is already trusted (same public key).");
+            println!("[Available] Peer '{peer_id}' is already trusted (same public key).");
         }
         TrustOutcome::Replaced => {
-            println!("[Experimental] Replaced public key for peer '{peer_id}' (--force).");
+            println!("[Available] Replaced public key for peer '{peer_id}' (--force).");
         }
     }
     println!("  Peer key: {}", peer_path.display());
