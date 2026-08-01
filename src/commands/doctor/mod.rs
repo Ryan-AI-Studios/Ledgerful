@@ -1,9 +1,11 @@
 mod finding;
+mod remediation;
 
 pub use finding::{
     DoctorCategory, DoctorFinding, DoctorSeverity, DoctorSummary, dashboard_failures,
     ready_for_publish, summarize,
 };
+pub use remediation::{build_sig_pin_finding, build_sig_version_finding};
 
 use crate::output::human::print_doctor_report;
 use crate::platform::env::ExecutableStatus;
@@ -488,22 +490,24 @@ pub fn execute_doctor(json: bool, apply_hook_refresh: bool, dry_run: bool) -> Re
             "gate.mode=enforce but intent.require_signing=false. Unsigned rows will not fail verify --signatures.",
         ));
     }
-    // Soft pin warn when no trusted keys are configured.
+    // Soft pin warn when no trusted keys are configured (0125: structured remediation).
+    // Path-only keys read — never call get_keys_dir() (creates keys dir).
     if config.intent.trusted_public_keys.is_empty() {
-        findings.push(DoctorFinding::warn(
-            "sig-pin",
-            DoctorCategory::Signing,
-            SIG_PIN_WARNING,
-        ));
+        let pub_hex = crate::ledger::crypto::keys_dir_path()
+            .ok()
+            .and_then(|keys_dir| {
+                crate::ledger::crypto::read_public_key_hex(&keys_dir)
+                    .ok()
+                    .flatten()
+            });
+        findings.push(build_sig_pin_finding(pub_hex.as_deref()));
     }
     if config.intent.min_sig_version < 2 {
-        findings.push(DoctorFinding::warn(
-            "sig-version",
-            DoctorCategory::Signing,
-            format!(
-                "intent.min_sig_version={} still accepts legacy v1 signatures. After `ledger re-sign --all`, set min_sig_version=2 to close the downgrade path.",
-                config.intent.min_sig_version
-            ),
+        // Defensive count (like phantom): omit number on SQL error, still emit remediation.
+        let v1_count = count_entries_below_sig_version(storage.get_connection(), 2).ok();
+        findings.push(build_sig_version_finding(
+            config.intent.min_sig_version,
+            v1_count,
         ));
     }
     // Legacy phantom Verified without a bound verification run (forward-only flag).
@@ -704,6 +708,22 @@ fn count_phantom_verified(conn: &rusqlite::Connection) -> Result<i64> {
                    SELECT 1 FROM verification_results vr WHERE vr.tx_id = le.tx_id
                )",
             [],
+            |row| row.get(0),
+        )
+        .into_diagnostic()?;
+    Ok(count)
+}
+
+/// Count LOCAL committed ledger rows with `sig_version < below`.
+///
+/// Defensive: returns `Err` when the table/column is missing (fresh repos).
+/// Callers should use `if let Ok(count) = …` and omit the count on error.
+fn count_entries_below_sig_version(conn: &rusqlite::Connection, below: u32) -> Result<i64> {
+    let count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM ledger_entries
+             WHERE origin = 'LOCAL' AND sig_version < ?1",
+            [below as i64],
             |row| row.get(0),
         )
         .into_diagnostic()?;
@@ -1522,6 +1542,7 @@ mod tests {
     }
 
     /// 0100 DoD-3 / F-002: verify + doctor share unknown-key / pin / trusted terms.
+    /// 0125: builder remediation carries hex + PowerShell-safe outer single quotes.
     #[test]
     fn dod3_unknown_key_vocabulary_shared_across_verify_and_doctor() {
         use crate::ledger::crypto::SignatureTrustStatus;
@@ -1545,6 +1566,19 @@ mod tests {
         assert!(
             doctor_lc.contains("trusted") || doctor_lc.contains("trusted_public_keys"),
             "doctor sig-pin must mention trusted keys: {doctor}"
+        );
+
+        // Builder finding keeps vocabulary and adds structured remediation.
+        let hex = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let finding = build_sig_pin_finding(Some(hex));
+        let msg_lc = finding.message.to_ascii_lowercase();
+        assert!(msg_lc.contains("unknown key"));
+        assert!(msg_lc.contains("pin") || finding.message.contains("Pin"));
+        assert!(msg_lc.contains("trusted"));
+        let rem = finding.remediation.expect("remediation Some");
+        assert!(
+            rem.contains(&format!("'intent.trusted_public_keys=[\"{hex}\"]'")),
+            "outer single quotes + hex: {rem}"
         );
     }
 

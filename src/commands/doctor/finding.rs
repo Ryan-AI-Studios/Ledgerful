@@ -67,6 +67,10 @@ pub struct DoctorFinding {
     pub category: DoctorCategory,
     /// Human message without ANSI colour codes.
     pub message: String,
+    /// Optional multi-step copy-paste remediation (exact CLI lines).
+    /// Machine source of truth when present; omitted from JSON when `None`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub remediation: Option<String>,
 }
 
 impl DoctorFinding {
@@ -81,6 +85,7 @@ impl DoctorFinding {
             severity,
             category,
             message: message.into(),
+            remediation: None,
         }
     }
 
@@ -106,6 +111,12 @@ impl DoctorFinding {
         message: impl Into<String>,
     ) -> Self {
         Self::new(code, DoctorSeverity::Info, category, message)
+    }
+
+    /// Attach a multi-step remediation block (exact CLI lines).
+    pub fn with_remediation(mut self, remediation: impl Into<String>) -> Self {
+        self.remediation = Some(remediation.into());
+        self
     }
 }
 
@@ -324,5 +335,15 @@ mod tests {
         assert_eq!(v["category"], "signing");
         assert_eq!(v["code"], "sig-pin");
         assert!(v.get("message").is_some());
+        // remediation omitted when None (skip_serializing_if)
+        assert!(v.get("remediation").is_none());
+    }
+
+    #[test]
+    fn serde_remediation_present_when_some() {
+        let finding = DoctorFinding::warn("sig-pin", DoctorCategory::Signing, "msg")
+            .with_remediation("ledgerful doctor --json");
+        let v = serde_json::to_value(&finding).expect("serialize");
+        assert_eq!(v["remediation"], "ledgerful doctor --json");
     }
 }
