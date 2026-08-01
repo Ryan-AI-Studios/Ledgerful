@@ -416,7 +416,7 @@ Do **not** collapse these signals:
 | Signal | Means | Does **not** mean |
 |---|---|---|
 | `doctor` / `readyForPublish` | Zero **block** doctor findings; env fit to enter publish path | Verify/tests/CI green |
-| Pre-push hook | `verify --scope fast` + ledger cleanliness | Full fmt/clippy/nextest/CI |
+| Pre-push hook | `verify --scope fast` + ledger cleanliness (quiet success; structured fail block on stdout — binary-first after PATH upgrade) | Full fmt/clippy/nextest/CI |
 | `verify --scope full` / CI | Repo full gate | Doctor readiness |
 
 Doctor green ≠ pre-push green ≠ full CI. Full definition: `docs/doctor-severity.md`.

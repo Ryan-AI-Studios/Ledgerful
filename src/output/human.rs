@@ -757,13 +757,19 @@ pub fn print_verify_plan(plan: &VerificationPlan) {
     }
 }
 
-pub fn print_verify_result(name: &str, _timeout: u64, result: &ExecutionResult) {
+/// Print per-step verify outcome.
+///
+/// SUCCESS lines only when `verbose` (quiet success by default). FAILURE always
+/// when called (caller already gates machine mode via `suppress_human_output`).
+pub fn print_verify_result(name: &str, _timeout: u64, result: &ExecutionResult, verbose: bool) {
     if result.exit_code == 0 {
-        println!(
-            "\n{} Verification passed for: {}",
-            "SUCCESS".green().bold(),
-            name
-        );
+        if crate::output::verification::should_print_success_step(verbose) {
+            println!(
+                "\n{} Verification passed for: {}",
+                "SUCCESS".green().bold(),
+                name
+            );
+        }
     } else {
         println!(
             "\n{} Verification failed for: {}",
@@ -776,6 +782,54 @@ pub fn print_verify_result(name: &str, _timeout: u64, result: &ExecutionResult) 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::exec::ExecutionResult;
+
+    #[test]
+    fn print_verify_result_quiet_suppresses_success_keeps_failure() {
+        use crate::output::verification::verify_step_result_label;
+
+        // Pure gate: SUCCESS text not emitted when verbose=false; FAILURE always.
+        assert_eq!(
+            verify_step_result_label(0, false),
+            None,
+            "quiet SUCCESS must not emit SUCCESS text"
+        );
+        assert_eq!(
+            verify_step_result_label(0, true),
+            Some("SUCCESS"),
+            "verbose SUCCESS must emit SUCCESS"
+        );
+        assert_eq!(
+            verify_step_result_label(1, false),
+            Some("FAILURE"),
+            "quiet FAILURE must still emit FAILURE"
+        );
+        assert_eq!(
+            verify_step_result_label(1, true),
+            Some("FAILURE"),
+            "verbose FAILURE must emit FAILURE"
+        );
+
+        // Smoke: production print path must not panic either way.
+        let pass = ExecutionResult {
+            exit_code: 0,
+            stdout: String::new(),
+            stderr: String::new(),
+            duration: std::time::Duration::from_millis(1),
+            truncated: false,
+        };
+        let fail = ExecutionResult {
+            exit_code: 1,
+            stdout: String::new(),
+            stderr: "err".into(),
+            duration: std::time::Duration::from_millis(1),
+            truncated: false,
+        };
+        print_verify_result("step", 30, &pass, false);
+        print_verify_result("step", 30, &pass, true);
+        print_verify_result("step", 30, &fail, false);
+        print_verify_result("step", 30, &fail, true);
+    }
 
     #[test]
     fn doctor_summary_text_four_way() {

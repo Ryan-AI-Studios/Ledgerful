@@ -107,7 +107,7 @@ pub fn execute_setup(yes: bool, skip_scan: bool) -> Result<()> {
 
     // ── 3. Doctor step ──────────────────────────────────────────────────────
     println!("\n{} Running system health check...", "→".cyan());
-    execute_doctor(false)?;
+    execute_doctor(false, false, false)?;
     println!("{} Health check complete.", "✓".green());
 
     // ── 4. First scan step (skipped when no git repo) ───────────────────────

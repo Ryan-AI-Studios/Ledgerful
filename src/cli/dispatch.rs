@@ -223,6 +223,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
                 scope,
                 auto_index,
                 json,
+                cli.verbose,
             )
         }
         Commands::Ask {
@@ -265,7 +266,11 @@ pub fn run_with(cli: Cli) -> Result<()> {
             yes,
             dry_run,
         ),
-        Commands::Doctor { json } => crate::commands::doctor::execute_doctor(json),
+        Commands::Doctor {
+            json,
+            apply_hook_refresh,
+            dry_run,
+        } => crate::commands::doctor::execute_doctor(json, apply_hook_refresh, dry_run),
         Commands::Status => crate::commands::ledger::execute_ledger_status(
             None, false, false, false, false, false, false, None, false, false, false, false,
         ),
@@ -1636,6 +1641,7 @@ fn dispatch_verify(
     scope: crate::verify::plan::VerifyScope,
     auto_index: bool,
     json: bool,
+    verbose: bool,
 ) -> Result<()> {
     if exact && against_export.is_none() {
         return Err(miette::miette!(
@@ -1662,7 +1668,7 @@ fn dispatch_verify(
     } else {
         crate::commands::verify::execute_verify(
             command, tx_id, timeout, no_predict, explain, entity, health, dry_run, scope,
-            auto_index, json,
+            auto_index, json, verbose,
         )
     }
 }

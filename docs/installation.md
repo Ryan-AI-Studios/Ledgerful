@@ -72,6 +72,36 @@ xattr -d com.apple.quarantine "$(which ledgerful)"
 
 The durable fix is codesign + notarize in the release pipeline; the `xattr` path is an interim workaround only.
 
+## Fleet / hooks upgrade (existing Ledgerful installs)
+
+After upgrading the `ledgerful` binary on PATH, existing repos that already call
+`ledgerful verify --scope fast` from pre-push get **quiet success**, a
+**structured fail block**, and **formatter path lists** with no shell rewrite
+(binary-first). When product hook *templates* themselves need a stamp refresh:
+
+```powershell
+# 1. PATH upgrade alone → quieter hooks + better fail UX (no repo changes)
+# 2. Detect stamp drift (Info finding `hook-template-stale`; never blocks publish)
+ledgerful doctor
+
+# 3. Optional one-shot refresh of known Ledgerful marker-bounded blocks only
+ledgerful doctor --apply-hook-refresh --dry-run
+ledgerful doctor --apply-hook-refresh
+
+# Same product-refresh also runs after legacy repair:
+ledgerful update --repair-hooks --dry-run
+```
+
+Notes:
+
+- Default `doctor` never writes. Apply requires `--apply-hook-refresh`.
+- `doctor --json --apply-hook-refresh` is rejected (apply is human-only).
+- Husky / lefthook / pre-commit managed hooks are **refused** — paste the
+  product snippet from init templates / this section; do not rewrite manager files.
+- Customised marker blocks that no longer match a known product body are
+  **skipped** (unknown), never partial-rewritten.
+- Second apply is a no-op (“already current”).
+
 ## Migrating from ChangeGuard (legacy name)
 
 If a repository still has residue from the pre-rename product name, run this sequence:

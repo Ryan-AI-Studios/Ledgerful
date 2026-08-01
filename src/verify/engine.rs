@@ -24,6 +24,10 @@ pub struct VerificationContext {
     pub warnings: Vec<String>,
     /// When true, suppress human `println!` progress (e.g. `verify --json`).
     pub suppress_human_output: bool,
+    /// When true, emit per-step SUCCESS lines, plan banner chatter, and
+    /// progress `info!`. Quiet success (default) keeps FAILURE lines only.
+    /// Independent of `suppress_human_output` — never set suppress from `!verbose`.
+    pub verbose: bool,
 }
 
 impl VerificationContext {
@@ -46,6 +50,7 @@ impl VerificationContext {
             health,
             warnings: Vec::new(),
             suppress_human_output: false,
+            verbose: false,
         }
     }
 
@@ -103,10 +108,12 @@ impl VerifyEngine {
             } else {
                 prepare_rule_step(step, ctx.config.verify.allow_shell_steps, &policy)?
             };
-            // Progress INFO must not hit stderr under machine mode (`verify --json`).
-            // Structural subscriber filter also raises normal_layer to WARN; demote
-            // here so even a misconfigured RUST_LOG cannot reintroduce the line.
-            if ctx.suppress_human_output {
+            // Progress INFO must not hit stderr under machine mode (`verify --json`)
+            // or quiet (non-verbose) success path. Structural subscriber filter also
+            // raises normal_layer to WARN under --json; demote here so even a
+            // misconfigured RUST_LOG cannot reintroduce the line. Never reuse
+            // suppress_human_output for quiet-success (that would kill FAILURE).
+            if ctx.suppress_human_output || !ctx.verbose {
                 tracing::debug!(
                     "Running verification command via {:?}: {}",
                     prepared.execution_mode,
@@ -138,7 +145,12 @@ impl VerifyEngine {
 
             let result = execute_step_with_command(&prepared, &policy, Some(command))?;
             if !ctx.suppress_human_output {
-                print_verify_result(&prepared.display_command, step.timeout_secs, &result);
+                print_verify_result(
+                    &prepared.display_command,
+                    step.timeout_secs,
+                    &result,
+                    ctx.verbose,
+                );
             }
 
             let report_result = Self::to_report_result(&prepared.display_command, &result);

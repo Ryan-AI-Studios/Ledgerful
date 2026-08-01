@@ -43,23 +43,22 @@ fn test_verify_empty_repo_succeeds_without_cargo() {
         stdout,
         stderr
     );
+    // 0121 quiet success: no plan banner / SUCCESS step lines by default.
     assert!(
-        stdout.contains("Verification Plan"),
-        "STDOUT: {}\nSTDERR: {}",
-        stdout,
-        stderr
+        stdout.contains("Verification passed"),
+        "quiet green should print one-line ok; STDOUT: {stdout}\nSTDERR: {stderr}"
     );
     assert!(
-        output.status.success(),
-        "STDOUT: {}\nSTDERR: {}",
-        stdout,
-        stderr
+        !stdout.contains("Verification Plan"),
+        "plan banner is verbose-only; STDOUT: {stdout}"
     );
     assert!(
-        stdout.contains("Verification Plan"),
-        "STDOUT: {}\nSTDERR: {}",
-        stdout,
-        stderr
+        !stdout.contains("SUCCESS"),
+        "per-step SUCCESS suppressed on quiet green; STDOUT: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Suggested Actions"),
+        "Suggested Actions suppressed on quiet green; STDOUT: {stdout}"
     );
     assert!(
         !stdout.contains("Verification Steps:"),

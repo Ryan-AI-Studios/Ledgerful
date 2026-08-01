@@ -67,6 +67,48 @@ with surfaces that have no versioned JSON schema is a hard error:
 
 These reject rather than emit empty stdout under machine mode.
 
+### Rejected flag combinations (`doctor`)
+
+| Combo | Error |
+|---|---|
+| `doctor --json --apply-hook-refresh` | `doctor --json cannot be combined with --apply-hook-refresh` |
+
+Apply is always a human path (rewrites `.git/hooks` under opt-in). Detect-only
+`doctor --json` remains pure schema-v1 findings JSON.
+
+---
+
+## Default human `verify` contract (hooks / binary-first, 0121)
+
+Installed pre-push shells call `ledgerful verify --scope fast` **without**
+`--json`. After a PATH upgrade alone:
+
+| Outcome | Default (non-verbose) stdout |
+|---|---|
+| **Pass** | One trailing `Verification passed` line; **no** per-step `SUCCESS` lines, **no** plan banner, **no** Suggested Actions |
+| **Fail** | Per-step `FAILURE` lines → structured fail block → Suggested Actions (if any) → miette on stderr; exit non-zero |
+
+`--verbose` / `-v` restores plan banner, per-step SUCCESS, progress `info!`, and
+Suggested Actions on green.
+
+### Structured fail block (stdout, non-json fail)
+
+Printed **before** Suggested Actions and before the final miette error:
+
+```text
+[Ledgerful] verify failed
+step: cargo fmt --all
+command: cargo fmt --all -- --check
+exitCode: 1
+failureDetail: <tool summary>
+failedPaths: path1 path2   # only when formatter path extract yields ≥1 path
+```
+
+Field names use camelCase to correlate with the JSON wire. Paths are
+best-effort from known formatter output (`cargo fmt`/`rustfmt --check`:
+`Diff in <path>:` / `Diff in <path> at line N:`; `ruff format --check`:
+`Would reformat: <path>`). Never invented; `\` → `/`; cap 50.
+
 ---
 
 ## `verify --json` schema (v1)
@@ -92,6 +134,20 @@ These reject rather than emit empty stdout under machine mode.
 }
 ```
 
+Failed step example with path enrichment (additive; **schemaVersion stays 1**):
+
+```json
+{
+  "name": "cargo fmt --all",
+  "command": "cargo fmt --all -- --check",
+  "status": "fail",
+  "exitCode": 1,
+  "durationMs": 400,
+  "failureDetail": "Diff in src/lib.rs:",
+  "failedPaths": ["src/lib.rs"]
+}
+```
+
 | Field | Type | Notes |
 |---|---|---|
 | `schemaVersion` | integer | Always `1` for this contract |
@@ -102,6 +158,7 @@ These reject rather than emit empty stdout under machine mode.
 | `steps` | array | **Plan order** (not alphabetically sorted) |
 | `steps[].status` | string | `"pass"` if `exitCode == 0`, else `"fail"` |
 | `steps[].failureDetail` | string (omitted on pass) | stderr summary preferred |
+| `steps[].failedPaths` | string[] (omitted when empty/pass) | Best-effort formatter paths; same sources as human fail block |
 | `timestamp` | ISO 8601 | From the run report |
 | `txId` | string (omitted when null) | Bound pending transaction if any |
 
