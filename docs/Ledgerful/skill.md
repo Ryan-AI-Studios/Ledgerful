@@ -370,6 +370,7 @@ This performs an offline mathematical validation of every record against its sig
 
 **Independent head retention (operator hygiene):**
 ```bash
+mkdir -p ./checkpoints   # parent must exist (or use default ./ledgerful-chain-head.json)
 ledgerful export head --out ./checkpoints/head.json
 # copy off-machine, then later:
 ledgerful verify --signatures --against-export ./checkpoints/head.json
