@@ -24,6 +24,7 @@
 
 use crate::git::metadata::{PathHistoryEntry, PathHistoryResult, lookup_path_history};
 use crate::git::{ChangeType, FileChange};
+use crate::impact::enrichment::affected_flows::AffectedFlowsReport;
 use crate::impact::enrichment::test_gaps::TestGapsReport;
 use chrono::Utc;
 use serde::{Deserialize, Serialize};
@@ -171,6 +172,10 @@ pub struct PrScanReport {
     /// Change-set structural test gaps (0115). Always present on schema v2;
     /// `status: unavailable` when no index DB (honest CI default).
     pub test_gaps: TestGapsReport,
+    /// Change-set affected HTTP flows (0118). Always present on schema v2;
+    /// `status: unavailable` when no index DB (honest CI default). Soft-open
+    /// read-only only — never creates `.ledgerful` / `ledger.db`.
+    pub affected_flows: AffectedFlowsReport,
 }
 
 /// Identity + cleanliness inputs for [`PrScanReport::new`].
@@ -205,16 +210,20 @@ impl PrScanReport {
             warnings,
             history,
             TestGapsReport::unavailable(),
+            AffectedFlowsReport::unavailable(),
         )
     }
 
-    /// Build a report with an explicit test-gaps payload (production PR path).
+    /// Build a report with explicit test-gaps + affected-flows payloads
+    /// (production PR path). Defaults both enrichments to `unavailable` via
+    /// [`Self::new`] when callers do not soft-open an index.
     pub fn new_with_test_gaps(
         ctx: PrScanContext,
         changes: &[FileChange],
         warnings: &[String],
         history: &HistoryEnrichment,
         test_gaps: TestGapsReport,
+        affected_flows: AffectedFlowsReport,
     ) -> Self {
         let mut pr_changes: Vec<PrChange> = changes
             .iter()
@@ -253,6 +262,7 @@ impl PrScanReport {
             history_window_commits: history.history_window_commits,
             history_truncated: history.history_truncated,
             test_gaps,
+            affected_flows,
         }
     }
 }
@@ -674,6 +684,7 @@ mod tests {
             &[],
             &empty_history(),
             gaps,
+            AffectedFlowsReport::unavailable(),
         );
         let value = serde_json::to_value(&report).expect("serialize");
         assert_eq!(value["schemaVersion"], 2);
@@ -681,5 +692,86 @@ mod tests {
         assert_eq!(value["testGaps"]["unmappedCount"], 1);
         assert_eq!(value["testGaps"]["fileMappedCount"], 1);
         assert_eq!(value["testGaps"]["unmapped"][0]["file"], "src/bare.rs");
+    }
+
+    #[test]
+    fn affected_flows_always_present_default_unavailable() {
+        let changes = vec![make_change("src/lib.rs", ChangeType::Modified)];
+        let report = report_with(&changes, None, None, &[], &empty_history());
+        assert_eq!(report.schema_version, 2);
+        assert_eq!(
+            report.affected_flows.status,
+            crate::impact::enrichment::affected_flows::AffectedFlowsStatus::Unavailable
+        );
+        let value = serde_json::to_value(&report).expect("serialize");
+        assert!(
+            value.get("affectedFlows").is_some(),
+            "affectedFlows must always emit"
+        );
+        assert_eq!(value["affectedFlows"]["status"], "unavailable");
+        assert_eq!(value["affectedFlows"]["flowCount"], 0);
+        assert!(
+            value["affectedFlows"]["notes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|n| n
+                    .as_str()
+                    .is_some_and(|s| s.contains("Registered HTTP routes")))
+        );
+    }
+
+    #[test]
+    fn affected_flows_available_payload_serializes_camel_case() {
+        use crate::impact::enrichment::affected_flows::{
+            AffectedFlowEntry, AffectedFlowsReport, AffectedFlowsStatus, HONESTY_NOTE, MatchKind,
+        };
+        let flows = AffectedFlowsReport {
+            status: AffectedFlowsStatus::Available,
+            flow_count: 1,
+            flow_capped: false,
+            flow_total: 1,
+            flows: vec![AffectedFlowEntry {
+                method: "GET".into(),
+                path_pattern: "/health".into(),
+                handler_symbol_name: Some("health_handler".into()),
+                handler_file: Some("src/handlers/health.rs".into()),
+                framework: "Axum".into(),
+                match_kind: MatchKind::HandlerImplFile,
+                route_confidence: Some(0.9),
+                confidence_class: None,
+                evidence: None,
+            }],
+            notes: vec![HONESTY_NOTE.into()],
+        };
+        let changes = vec![make_change("src/handlers/health.rs", ChangeType::Modified)];
+        let report = PrScanReport::new_with_test_gaps(
+            PrScanContext {
+                base_ref: "main".into(),
+                head_ref: "HEAD".into(),
+                head_hash: None,
+                branch_name: None,
+                tree_clean: false,
+            },
+            &changes,
+            &[],
+            &empty_history(),
+            TestGapsReport::unavailable(),
+            flows,
+        );
+        let value = serde_json::to_value(&report).expect("serialize");
+        assert_eq!(value["schemaVersion"], 2);
+        assert_eq!(value["affectedFlows"]["status"], "available");
+        assert_eq!(value["affectedFlows"]["flowCount"], 1);
+        assert_eq!(value["affectedFlows"]["flows"][0]["method"], "GET");
+        assert_eq!(value["affectedFlows"]["flows"][0]["pathPattern"], "/health");
+        assert_eq!(
+            value["affectedFlows"]["flows"][0]["matchKind"],
+            "handler_impl_file"
+        );
+        assert_eq!(
+            value["affectedFlows"]["flows"][0]["handlerSymbolName"],
+            "health_handler"
+        );
     }
 }

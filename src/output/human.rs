@@ -299,6 +299,43 @@ pub fn print_impact_summary(packet: &ImpactPacket) {
             );
         }
     }
+
+    if let Some(ref flows) = packet.affected_flows {
+        use crate::impact::enrichment::affected_flows::AffectedFlowsStatus;
+        println!(
+            "\n{}",
+            "Affected HTTP flows (registered routes — not CRG call-chain traces)"
+                .bold()
+                .underline()
+        );
+        println!(
+            "  Status: {}  flowCount={}{}",
+            flows.status.as_str(),
+            flows.flow_count,
+            if flows.flow_capped {
+                format!(" (capped; total={})", flows.flow_total)
+            } else {
+                String::new()
+            }
+        );
+        if flows.status == AffectedFlowsStatus::Available && flows.flow_count == 0 {
+            println!("  No registered HTTP flows touched by this change set");
+        } else {
+            for flow in flows.flows.iter().take(8) {
+                let handler = flow.handler_symbol_name.as_deref().unwrap_or("-");
+                println!(
+                    "  - {} {}  [{}]  ({})",
+                    flow.method, flow.path_pattern, flow.framework, handler
+                );
+            }
+            if flows.flows.len() > 8 {
+                println!(
+                    "  … and {} more (full list: impact --json)",
+                    flows.flows.len() - 8
+                );
+            }
+        }
+    }
 }
 
 pub fn print_impact_brief(packet: &ImpactPacket) {
@@ -330,6 +367,12 @@ pub fn print_impact_brief(packet: &ImpactPacket) {
             "warning: {} changed source symbol(s) lack structural test mapping",
             gaps.unmapped_count
         );
+    }
+    if let Some(ref flows) = packet.affected_flows {
+        use crate::impact::enrichment::affected_flows::AffectedFlowsStatus;
+        if flows.status == AffectedFlowsStatus::Available && flows.flow_count > 0 {
+            println!("  flows={}", flows.flow_count);
+        }
     }
 }
 

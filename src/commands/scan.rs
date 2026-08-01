@@ -535,8 +535,10 @@ pub fn execute_scan_with_blast_depth(
                 HistoryEnrichment::empty()
             }
         };
-        // Soft-open test_gaps: existence-check only; never init_with_layout.
+        // Soft-open test_gaps + affected_flows: existence-check only; never
+        // init_with_layout (0115 / 0118).
         let test_gaps = compute_pr_scan_test_gaps(&layout, &snapshot);
+        let affected_flows = compute_pr_scan_affected_flows(&layout, &snapshot);
         let report = PrScanReport::new_with_test_gaps(
             PrScanContext {
                 base_ref: base,
@@ -549,6 +551,7 @@ pub fn execute_scan_with_blast_depth(
             &[], // analysisWarnings reserved — always empty (0086)
             &history,
             test_gaps,
+            affected_flows,
         );
 
         if format.as_deref() == Some("json") {
@@ -668,6 +671,66 @@ fn compute_pr_scan_test_gaps(
     compute_change_set_test_gaps_from_files(conn, &path_refs, &opts)
 }
 
+/// Soft-open affected HTTP flows for PR scan (0118).
+///
+/// - Missing `ledger.db` → `unavailable` without creating any state.
+/// - Open via `open_read_only_sqlite_only` only (never `init_with_layout`).
+/// - File-path seeds only (no symbol resolution / no blast on this path).
+fn compute_pr_scan_affected_flows(
+    layout: &Layout,
+    snapshot: &RepoSnapshot,
+) -> crate::impact::enrichment::affected_flows::AffectedFlowsReport {
+    use crate::git::ChangeType;
+    use crate::impact::enrichment::affected_flows::{
+        AffectedFlowsOpts, AffectedFlowsReport, compute_pr_affected_flows_soft,
+    };
+    use crate::impact::packet::{ChangedFile, FileAnalysisStatus};
+
+    let db_path = layout.state_subdir().join("ledger.db");
+    if !db_path.exists() {
+        return AffectedFlowsReport::unavailable();
+    }
+
+    let storage = match StorageManager::open_read_only_sqlite_only(layout) {
+        Ok(s) => s,
+        Err(_) => return AffectedFlowsReport::unavailable(),
+    };
+    let conn = storage.get_connection();
+
+    let changes: Vec<ChangedFile> = snapshot
+        .changes
+        .iter()
+        .map(|c| {
+            let (status, old_path) = match &c.change_type {
+                ChangeType::Added => ("Added".to_string(), None),
+                ChangeType::Modified => ("Modified".to_string(), None),
+                ChangeType::Deleted => ("Deleted".to_string(), None),
+                ChangeType::Renamed { old_path } => ("Renamed".to_string(), Some(old_path.clone())),
+            };
+            ChangedFile {
+                path: c.path.clone(),
+                status,
+                old_path,
+                is_staged: c.is_staged,
+                symbols: None,
+                imports: None,
+                runtime_usage: None,
+                analysis_status: FileAnalysisStatus::default(),
+                analysis_warnings: Vec::new(),
+                api_routes: Vec::new(),
+                data_models: Vec::new(),
+                ci_gates: Vec::new(),
+            }
+        })
+        .collect();
+
+    let opts = AffectedFlowsOpts {
+        head_hash: snapshot.head_hash.clone(),
+    };
+    // No blast on PR soft path (index-free CI default; kinds 1–3 only).
+    compute_pr_affected_flows_soft(Some(conn), &changes, None, &opts)
+}
+
 /// Human-readable summary for `scan --pr --format text`.
 fn print_pr_scan_summary(report: &PrScanReport) {
     use owo_colors::OwoColorize;
@@ -729,6 +792,12 @@ fn print_pr_scan_summary(report: &PrScanReport) {
         "Test gaps:".bold(),
         report.test_gaps.status.as_str(),
         report.test_gaps.unmapped_count
+    );
+    println!(
+        "{:<15} {} (flowCount={})",
+        "Affected flows:".bold(),
+        report.affected_flows.status.as_str(),
+        report.affected_flows.flow_count
     );
 
     if !report.changes.is_empty() {
@@ -853,6 +922,33 @@ mod tests {
         let gaps = compute_pr_scan_test_gaps(&layout, &snapshot);
         assert_eq!(gaps.status, TestGapsStatus::Unavailable);
         // Soft-open must not create .ledgerful
+        assert!(
+            !layout.state_dir.exists(),
+            ".ledgerful must not be created by PR soft-open"
+        );
+        assert!(!layout.state_subdir().join("ledger.db").exists());
+    }
+
+    #[test]
+    fn pr_affected_flows_unavailable_without_db_does_not_create_state() {
+        use crate::impact::enrichment::affected_flows::AffectedFlowsStatus;
+        use tempfile::tempdir;
+
+        let tmp = tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        let snapshot = RepoSnapshot {
+            head_hash: Some("abc".into()),
+            branch_name: Some("feature".into()),
+            is_clean: false,
+            changes: vec![FileChange {
+                path: PathBuf::from("src/lib.rs"),
+                change_type: ChangeType::Modified,
+                is_staged: true,
+            }],
+        };
+        let flows = compute_pr_scan_affected_flows(&layout, &snapshot);
+        assert_eq!(flows.status, AffectedFlowsStatus::Unavailable);
         assert!(
             !layout.state_dir.exists(),
             ".ledgerful must not be created by PR soft-open"

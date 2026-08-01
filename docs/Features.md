@@ -34,6 +34,12 @@ Understand the "blast radius" of any change before it is committed.
     *   **Contracts**: OpenAPI/Swagger contract risk matching.
     *   **Infrastructure**: Docker, Kubernetes, Terraform, and Helm manifest awareness.
     *   **Observability**: Trace config drift and SDK dependency detection.
+    *   **Affected HTTP flows (0118)**: Change-set `affectedFlows` over indexed route
+        registrations (handler symbol / impl file / registration file / optional blast
+        edges). Surfaces: impact, change-context, `scan --pr`, and
+        `endpoints --changed` (shared match library; report samples cap at 20,
+        filter keys uncapped). Frameworks: Axum/Actix/Rocket, Gin/`net/http`,
+        Express/Fastify, FastAPI/Flask — **route map, not** CRG call-chain traces.
 *   **Knowledge Graph (KG)**: CozoDB-backed graph of structural and semantic links with Datalog reachability queries.
 *   **Dependency Visualization**: `viz` command exports interactive HTML dependency maps with risk heatmaps.
 

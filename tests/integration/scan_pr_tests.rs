@@ -72,9 +72,11 @@ fn pr_scan_json_emits_schema_version_and_sorted_changes() {
         assert!(c["churn"].as_u64().unwrap() >= 1);
         assert!(c.get("isSensitive").and_then(|v| v.as_bool()).is_some());
     }
-    // 0115: testGaps always present; no ledger.db → unavailable.
+    // 0115 / 0118: testGaps + affectedFlows always present; no ledger.db → unavailable.
     // Soft-open must not create ledger.db (scan may write reports under .ledgerful/).
     assert_eq!(parsed["testGaps"]["status"], "unavailable");
+    assert_eq!(parsed["affectedFlows"]["status"], "unavailable");
+    assert_eq!(parsed["affectedFlows"]["flowCount"], 0);
     assert!(
         !root
             .join(".ledgerful")
@@ -433,6 +435,16 @@ fn pr_scan_golden_output_matches_fixture() {
             "notes": [
                 "LCOV COVERAGE mapping kind does not currently persist (DDL NOT NULL on test_symbol_id)",
                 "Structural test_mapping only (IMPORT/NAMING_CONVENTION); not line coverage"
+            ]
+        },
+        "affectedFlows": {
+            "status": "unavailable",
+            "flowCount": 0,
+            "flowCapped": false,
+            "flowTotal": 0,
+            "flows": [],
+            "notes": [
+                "Registered HTTP routes only (api_routes); not distributed traces or CRG-style call-chain flows."
             ]
         }
     });
