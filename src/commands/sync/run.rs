@@ -1,7 +1,6 @@
 use crate::commands::helpers::get_layout;
 use crate::config::load::load_config;
 use miette::{IntoDiagnostic, Result};
-use rpassword::read_password;
 use std::env;
 use zeroize::Zeroizing;
 
@@ -23,8 +22,8 @@ See docs/team-sync.md."
         println!();
         println!("When ready (after init + mutual pairing):");
         println!("  1. ledgerful sync init");
-        println!("  2. Set [sync].target (e.g. dir:///path/to/shared)");
-        println!("  3. Set [sync].enabled = true via config set");
+        println!("  2. ledgerful sync setup          # readiness checklist");
+        println!("  3. Set [sync].target, then ledgerful sync setup --enable");
         println!("  4. ledgerful sync run --once");
         return Ok(());
     }
@@ -34,7 +33,7 @@ See docs/team-sync.md."
     if !key_path.exists() {
         return Err(miette::miette!(
             "Sync is enabled but not initialized (missing device.key at {}). \
-Run `ledgerful sync init` first.",
+Run `ledgerful sync init` first. Or `ledgerful sync setup` for a readiness checklist.",
             key_path
         ));
     }
@@ -42,15 +41,19 @@ Run `ledgerful sync init` first.",
     if config.sync.target.trim().is_empty() {
         return Err(miette::miette!(
             "Sync is enabled but [sync].target is empty. \
-Set a shared-folder target, e.g. `ledgerful config set sync.target=\"dir:///path/to/shared\"`."
+Set a shared-folder target, e.g. `ledgerful config set sync.target=\"dir:///path/to/shared\"`. \
+Or run `ledgerful sync setup` for a readiness checklist."
         ));
     }
 
+    // Same prompt pattern as init (`prompt_password`) for consistent UX.
     let team_secret: Zeroizing<String> = if let Ok(secret) = env::var("LEDGERFUL_SYNC_SECRET") {
         Zeroizing::new(secret)
     } else {
-        println!("Enter team sync secret (12-word phrase):");
-        Zeroizing::new(read_password().into_diagnostic()?)
+        Zeroizing::new(
+            rpassword::prompt_password("Enter team sync secret (12-word phrase): ")
+                .into_diagnostic()?,
+        )
     };
 
     if team_secret.trim().is_empty() {

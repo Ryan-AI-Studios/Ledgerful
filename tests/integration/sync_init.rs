@@ -74,7 +74,7 @@ fn sync_init_then_status_shows_sot_device_id_not_unknown() {
     handle_sync_init(false, Some(TEST_SECRET.to_string())).unwrap();
 
     // Status must work without run; SoT device_id must not be "unknown".
-    handle_sync_status().expect("status after init");
+    handle_sync_status(false).expect("status after init");
 
     let layout = ledgerful::state::layout::Layout::new(root);
     let storage = StorageManager::init_with_layout(&layout).unwrap();

@@ -730,14 +730,14 @@ fn sync_doctor_findings(
         findings.push(DoctorFinding::warn(
             "sync-enabled-not-initialized",
             DoctorCategory::Optional,
-            "[sync].enabled=true but team sync is not fully initialized (need device.key + device.pub + sync_state.device_id). Run `ledgerful sync init` (Experimental) or set enabled=false. See docs/team-sync.md.",
+            "[sync].enabled=true but team sync is not fully initialized (need device.key + device.pub + sync_state.device_id). Run `ledgerful sync init` or set enabled=false. Run `ledgerful sync setup` for a readiness checklist. See docs/team-sync.md.",
         ));
     }
     if config.sync.target.trim().is_empty() {
         findings.push(DoctorFinding::warn(
             "sync-enabled-empty-target",
             DoctorCategory::Optional,
-            "[sync].enabled=true but [sync].target is empty. Set a shared-folder target (e.g. dir:///path) or disable sync. See docs/team-sync.md.",
+            "[sync].enabled=true but [sync].target is empty. Set a shared-folder target (e.g. dir:///path) or disable sync. Run `ledgerful sync setup` for a readiness checklist. See docs/team-sync.md.",
         ));
     }
     // 0111: enabled with zero trusted peers — actionable next step; never sole-blocks publish.
@@ -750,7 +750,7 @@ fn sync_doctor_findings(
                 findings.push(DoctorFinding::warn(
                     "sync-enabled-no-peers",
                     DoctorCategory::Optional,
-                    "[sync].enabled=true but no trusted peers under sync/peers/. Exchange LF-PAIR-1 invites with `ledgerful sync pair` (mutual accept) or disable sync. See docs/team-sync.md.",
+                    "[sync].enabled=true but no trusted peers under sync/peers/. Exchange LF-PAIR-1 invites with `ledgerful sync pair` (mutual accept) or disable sync. Run `ledgerful sync setup` for a readiness checklist. See docs/team-sync.md.",
                 ));
             }
             Ok(_) => {}
@@ -759,7 +759,7 @@ fn sync_doctor_findings(
                     "sync-peers-list-error",
                     DoctorCategory::Optional,
                     format!(
-                        "[sync].enabled=true but trusted peer list could not be read: {e}. Check permissions on sync/peers/. See docs/team-sync.md."
+                        "[sync].enabled=true but trusted peer list could not be read: {e}. Check permissions on sync/peers/. Run `ledgerful sync setup` for a readiness checklist. See docs/team-sync.md."
                     ),
                 ));
             }

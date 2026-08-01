@@ -7,7 +7,7 @@ use ed25519_dalek::SigningKey;
 use rand::rngs::OsRng;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
-use zeroize::Zeroize;
+use zeroize::Zeroizing;
 
 /// Initialize team sync keys + SoT device_id for this device.
 ///
@@ -45,23 +45,25 @@ pub fn handle(force: bool, with_secret: Option<String>) -> Result<()> {
     }
 
     // 1. Secret first — never write keys when secret is missing/empty.
-    let mut secret = match with_secret {
-        Some(s) => s,
+    // Wrap in Zeroizing so the secret is wiped on drop (panic-safe; match run/pair).
+    let secret: Zeroizing<String> = match with_secret {
+        Some(s) => Zeroizing::new(s),
         None => {
             if let Ok(s) = std::env::var("LEDGERFUL_SYNC_SECRET") {
-                s
+                Zeroizing::new(s)
             } else {
-                rpassword::prompt_password("Enter 12-word team secret: ")
-                    .map_err(|e| miette!("Failed to read secret: {e}"))?
+                Zeroizing::new(
+                    rpassword::prompt_password("Enter 12-word team secret: ")
+                        .map_err(|e| miette!("Failed to read secret: {e}"))?,
+                )
             }
         }
     };
     if secret.trim().is_empty() {
-        secret.zeroize();
         return Err(miette!("Team secret cannot be empty."));
     }
     // Secret is only validated for presence (pair/run need it later); not stored.
-    secret.zeroize();
+    drop(secret);
 
     // 2. Generate material in memory.
     let signing_key = SigningKey::generate(&mut OsRng);
@@ -148,17 +150,17 @@ pub fn handle(force: bool, with_secret: Option<String>) -> Result<()> {
         ));
     }
 
-    println!("[Experimental] Team sync initialized for this device.");
+    println!("Team sync initialized for this device [Available — opt-in shared-folder v1].");
     println!("  Device ID (SoT): {device_id}");
     println!("  Keys:            {key_path}");
     println!("  Config mirror:   sync.device_id (enabled stays false)");
     println!();
-    println!("Next steps (Experimental ladder):");
-    println!("  1. ledgerful sync status");
+    println!("Next steps:");
+    println!("  1. ledgerful sync setup          # readiness checklist (never enables)");
     println!(
         "  2. ledgerful sync pair          # print LF-PAIR-1 invite; peer: sync pair <invite>"
     );
-    println!("  3. Set [sync].target and [sync].enabled = true only when ready to merge");
+    println!("  3. Mutual pair (peer generates; you accept) then set target + setup --enable");
     println!("See docs/team-sync.md");
     Ok(())
 }

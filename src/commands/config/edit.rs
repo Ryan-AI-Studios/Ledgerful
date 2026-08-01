@@ -24,7 +24,23 @@ pub fn execute_config_set(key_value: &str) -> Result<()> {
 
 /// Testable form of [`execute_config_set`] that operates against an explicit
 /// [`Layout`] rather than the process current directory.
+///
+/// Prints a human `Set …` confirmation to stdout (for `ledgerful config set`).
 pub fn execute_config_set_in(layout: &Layout, key_value: &str) -> Result<()> {
+    config_set_in(layout, key_value, false)
+}
+
+/// Same as [`execute_config_set_in`] but does **not** print the human `Set …`
+/// confirmation. Use when the caller owns stdout (e.g. `sync setup --enable
+/// --json` must emit pure JSON only).
+pub fn execute_config_set_in_quiet(layout: &Layout, key_value: &str) -> Result<()> {
+    config_set_in(layout, key_value, true)
+}
+
+/// Shared implementation for config set. When `quiet` is true, suppresses the
+/// human confirmation line. Provider-priority paths still print (callers that
+/// need pure stdout should not use those keys via quiet, or extend later).
+fn config_set_in(layout: &Layout, key_value: &str, quiet: bool) -> Result<()> {
     // Split on the FIRST `=`. Everything to the left is the dotted key path,
     // everything to the right is the TOML value literal.
     let eq_pos = key_value
@@ -96,7 +112,9 @@ pub fn execute_config_set_in(layout: &Layout, key_value: &str) -> Result<()> {
 
     write_config_doc(&config_path, &doc)?;
 
-    println!("Set {key_path_str} = {rhs} in {}", config_path);
+    if !quiet {
+        println!("Set {key_path_str} = {rhs} in {}", config_path);
+    }
     Ok(())
 }
 
