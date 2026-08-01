@@ -17,6 +17,16 @@ pub fn should_print_success_step(verbose: bool) -> bool {
     verbose
 }
 
+/// Whether the "Running N verification step(s)..." progress line may be emitted
+/// at INFO on `cli_summary` (default filter → stdout).
+///
+/// Quiet/default demotes to `debug!` so DoD-1 quiet success stays free of
+/// progress noise; `--verbose` restores INFO. JSON / machine mode never uses
+/// INFO progress (caller also skips emission entirely when `json`).
+pub fn should_emit_verify_progress_info(verbose: bool, json: bool) -> bool {
+    verbose && !json
+}
+
 /// Label for a per-step verify result line, or `None` when quiet SUCCESS.
 ///
 /// Pure companion to [`crate::output::human::print_verify_result`] so quiet
@@ -187,7 +197,8 @@ impl VerificationReporter {
 #[cfg(test)]
 mod tests {
     use super::{
-        should_print_success_step, should_print_suggested_actions, verify_step_result_label,
+        should_emit_verify_progress_info, should_print_success_step,
+        should_print_suggested_actions, verify_step_result_label,
     };
 
     #[test]
@@ -224,5 +235,14 @@ mod tests {
         assert_eq!(verify_step_result_label(0, true), Some("SUCCESS"));
         assert_eq!(verify_step_result_label(1, false), Some("FAILURE"));
         assert_eq!(verify_step_result_label(1, true), Some("FAILURE"));
+    }
+
+    #[test]
+    fn quiet_progress_not_emitted_at_info() {
+        // DoD-1: default/quiet path must not emit progress at INFO → stdout.
+        assert!(!should_emit_verify_progress_info(false, false));
+        assert!(!should_emit_verify_progress_info(false, true));
+        assert!(!should_emit_verify_progress_info(true, true));
+        assert!(should_emit_verify_progress_info(true, false));
     }
 }

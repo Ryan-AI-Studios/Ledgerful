@@ -244,15 +244,32 @@ pub fn classify_block(kind: GateKind, block: &str, bypass_command: &str) -> Temp
 // Marker-bounded extraction (marker → matching closing fi boundary)
 // ---------------------------------------------------------------------------
 
+/// Outcome of attempting to extract a marker-bounded product block.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MarkerExtract {
+    /// Marker string not present in content.
+    Absent,
+    /// Marker present but matching `fi` boundary could not be resolved.
+    Unparseable { reason: String },
+    /// Marker-bounded block from `start..end` (byte offsets into content).
+    Found {
+        start: usize,
+        end: usize,
+        block: String,
+    },
+}
+
 /// Extract the first marker-bounded block for `kind` from hook content.
 ///
 /// Boundary: from the marker line through the matching `fi` nest of the outer
 /// `if command -v ledgerful` block (product templates use two closing `fi`).
-/// Returns `(byte_start, byte_end, block_text)` exclusive end of the block
-/// (not including a single trailing newline after the last `fi`).
-pub fn extract_marker_block(content: &str, kind: GateKind) -> Option<(usize, usize, String)> {
+/// End is exclusive and may include a single trailing newline after the last
+/// `fi` for clean replace. Offsets are CRLF-safe.
+pub fn extract_marker_block(content: &str, kind: GateKind) -> MarkerExtract {
     let marker = kind.marker();
-    let start = content.find(marker)?;
+    let Some(start) = content.find(marker) else {
+        return MarkerExtract::Absent;
+    };
     // Walk back to start of line if marker is mid-line (should not happen).
     let line_start = content[..start].rfind('\n').map(|i| i + 1).unwrap_or(0);
 
@@ -265,12 +282,15 @@ pub fn extract_marker_block(content: &str, kind: GateKind) -> Option<(usize, usi
 
     for line in rest.lines() {
         let line_len = line.len();
-        let next = offset + line_len;
-        // Account for newline when not last line
-        let line_with_nl = if next < rest.len() { next + 1 } else { next };
+        let after_content = offset + line_len;
+        // CRLF-safe: str::lines() strips endings; advance by the real ending length.
+        let ending_len = line_ending_len(rest, after_content);
+        let line_with_nl = after_content + ending_len;
 
         let t = line.trim();
         // Shell keywords: crude but matches product templates and known history.
+        // Also accept `fi\r` residue if any caller passes un-normalized content
+        // (lines() already strips `\r`).
         if t.starts_with("if ") || t == "if" {
             depth += 1;
             saw_if = true;
@@ -284,21 +304,36 @@ pub fn extract_marker_block(content: &str, kind: GateKind) -> Option<(usize, usi
         offset = line_with_nl;
     }
 
-    let end_rel = end_rel?;
-    let end = line_start + end_rel;
-    // Swallow trailing newline after block for clean replace.
-    let end = if end < content.len() && content.as_bytes()[end] == b'\n' {
-        end + 1
-    } else {
-        end
+    let Some(end_rel) = end_rel else {
+        // Marker present but no matching closing `fi` — refuse rewrite.
+        return MarkerExtract::Unparseable {
+            reason: "unrecognised block boundary".to_string(),
+        };
     };
+    let end = line_start + end_rel;
+    // Swallow one trailing newline after the block for clean replace (LF or CRLF).
+    let end = end + line_ending_len(content, end);
     let block = content[line_start..end].to_string();
-    // Require the marker to actually open a ledgerful product-shaped block.
-    if !block.contains("command -v ledgerful") && !block.contains("ledgerful ") {
-        // Still return if it's marker-only historical? Prefer unknown path.
-        return Some((line_start, end, block));
+    MarkerExtract::Found {
+        start: line_start,
+        end,
+        block,
     }
-    Some((line_start, end, block))
+}
+
+/// Byte length of the line ending at `pos` in `s` (`\r\n` → 2, `\n`/`\r` → 1, else 0).
+fn line_ending_len(s: &str, pos: usize) -> usize {
+    if pos >= s.len() {
+        return 0;
+    }
+    let bytes = s.as_bytes();
+    if bytes[pos] == b'\r' && bytes.get(pos + 1) == Some(&b'\n') {
+        2
+    } else if bytes[pos] == b'\n' || bytes[pos] == b'\r' {
+        1
+    } else {
+        0
+    }
 }
 
 /// Result of ensuring one gate kind in one hook file's content.
@@ -306,7 +341,14 @@ pub fn extract_marker_block(content: &str, kind: GateKind) -> Option<(usize, usi
 pub enum EnsureAction {
     AlreadyCurrent,
     Refreshed,
-    SkippedUnknown { snippet: String },
+    SkippedUnknown {
+        snippet: String,
+    },
+    /// Marker present but boundary unparseable — never rewrite; surface reason.
+    SkippedUnparseable {
+        reason: String,
+        snippet: String,
+    },
     MarkerAbsent,
 }
 
@@ -316,39 +358,56 @@ pub fn ensure_block_in_content(
     kind: GateKind,
     bypass_command: &str,
 ) -> (String, EnsureAction) {
-    let Some((start, end, block)) = extract_marker_block(content, kind) else {
-        return (content.to_string(), EnsureAction::MarkerAbsent);
-    };
-    match classify_block(kind, &block, bypass_command) {
-        TemplateClass::Current => (content.to_string(), EnsureAction::AlreadyCurrent),
-        TemplateClass::Stale => {
-            let replacement = {
-                let mut b = current_body(kind, bypass_command);
-                if !b.ends_with('\n') {
-                    b.push('\n');
-                }
-                b
-            };
-            let mut out = String::with_capacity(content.len() + replacement.len());
-            out.push_str(&content[..start]);
-            // Preserve a leading newline if we are mid-file and replacement
-            // does not already start after one.
-            if start > 0 && !content[..start].ends_with('\n') {
-                out.push('\n');
+    match extract_marker_block(content, kind) {
+        MarkerExtract::Absent => (content.to_string(), EnsureAction::MarkerAbsent),
+        MarkerExtract::Unparseable { reason } => {
+            // Spec §2.5 option A #4: skip with clear message + recommended snippet.
+            let mut snippet = current_body(kind, bypass_command);
+            if !snippet.ends_with('\n') {
+                snippet.push('\n');
             }
-            out.push_str(&replacement);
-            if end < content.len() && !out.ends_with('\n') && !content[end..].starts_with('\n') {
-                out.push('\n');
-            }
-            out.push_str(&content[end..]);
-            (out, EnsureAction::Refreshed)
-        }
-        TemplateClass::Unknown => {
-            let snippet: String = block.lines().take(6).collect::<Vec<_>>().join("\n");
             (
                 content.to_string(),
-                EnsureAction::SkippedUnknown { snippet },
+                EnsureAction::SkippedUnparseable { reason, snippet },
             )
+        }
+        MarkerExtract::Found { start, end, block } => {
+            match classify_block(kind, &block, bypass_command) {
+                TemplateClass::Current => (content.to_string(), EnsureAction::AlreadyCurrent),
+                TemplateClass::Stale => {
+                    let replacement = {
+                        let mut b = current_body(kind, bypass_command);
+                        if !b.ends_with('\n') {
+                            b.push('\n');
+                        }
+                        b
+                    };
+                    let mut out = String::with_capacity(content.len() + replacement.len());
+                    out.push_str(&content[..start]);
+                    // Preserve a leading newline if we are mid-file and replacement
+                    // does not already start after one.
+                    if start > 0 && !content[..start].ends_with('\n') {
+                        out.push('\n');
+                    }
+                    out.push_str(&replacement);
+                    if end < content.len()
+                        && !out.ends_with('\n')
+                        && !content[end..].starts_with('\n')
+                        && !content[end..].starts_with('\r')
+                    {
+                        out.push('\n');
+                    }
+                    out.push_str(&content[end..]);
+                    (out, EnsureAction::Refreshed)
+                }
+                TemplateClass::Unknown => {
+                    let snippet: String = block.lines().take(6).collect::<Vec<_>>().join("\n");
+                    (
+                        content.to_string(),
+                        EnsureAction::SkippedUnknown { snippet },
+                    )
+                }
+            }
         }
     }
 }
@@ -508,6 +567,12 @@ fn refresh_hooks_in_dir(
                         ),
                     ));
                 }
+                EnsureAction::SkippedUnparseable { reason, snippet } => {
+                    report.skipped_unknown.push((
+                        label,
+                        format!("{reason}; not rewritten. Recommended snippet:\n{snippet}"),
+                    ));
+                }
                 EnsureAction::MarkerAbsent => {
                     // Product refresh does not install missing gates.
                 }
@@ -573,7 +638,7 @@ pub fn hook_template_stale_findings(
         };
         let bypass = bypass_for_hook(&name);
         for kind in kinds {
-            if let Some((_, _, block)) = extract_marker_block(&content, kind)
+            if let MarkerExtract::Found { block, .. } = extract_marker_block(&content, kind)
                 && classify_block(kind, &block, bypass) == TemplateClass::Stale
             {
                 stale_labels.push(format!("{name}:{}", kind.as_str()));
@@ -675,6 +740,16 @@ pub fn ensure_gate_on_hook_file(
                     "INFO: hook {} has customised {} block; not rewritten. Snippet:\n{}",
                     hook_path.file_name().unwrap_or("hook"),
                     kind.as_str(),
+                    snippet
+                );
+                return Ok(false);
+            }
+            EnsureAction::SkippedUnparseable { reason, snippet } => {
+                eprintln!(
+                    "INFO: hook {} {} {}; not rewritten. Recommended snippet:\n{}",
+                    hook_path.file_name().unwrap_or("hook"),
+                    kind.as_str(),
+                    reason,
                     snippet
                 );
                 return Ok(false);
@@ -781,7 +856,11 @@ fi
     fn extract_marker_block_finds_nested_fi() {
         let body = verify_gate_block("git push --no-verify");
         let content = format!("#!/bin/bash\n{body}\necho x\n");
-        let (start, end, block) = extract_marker_block(&content, GateKind::Verify).expect("block");
+        let MarkerExtract::Found { start, end, block } =
+            extract_marker_block(&content, GateKind::Verify)
+        else {
+            panic!("expected Found block");
+        };
         assert!(block.contains("ledgerful verify --scope fast"));
         assert!(
             content[start..end].contains("fi\nfi") || content[start..end].contains("fi\r\nfi") || {
@@ -790,6 +869,100 @@ fi
             }
         );
         assert!(!block.contains("echo x"));
+    }
+
+    #[test]
+    fn extract_and_ensure_crlf_body_classifies_current() {
+        // Windows hook files often use CRLF; offsets must advance by 2.
+        let body = verify_gate_block("git push --no-verify");
+        let lf = format!("#!/usr/bin/env bash\n{body}");
+        let crlf = lf.replace('\n', "\r\n");
+        let MarkerExtract::Found { block, .. } = extract_marker_block(&crlf, GateKind::Verify)
+        else {
+            panic!("CRLF extract must find block");
+        };
+        assert_eq!(
+            classify_block(GateKind::Verify, &block, "git push --no-verify"),
+            TemplateClass::Current
+        );
+        let (out, action) =
+            ensure_block_in_content(&crlf, GateKind::Verify, "git push --no-verify");
+        assert_eq!(action, EnsureAction::AlreadyCurrent);
+        assert_eq!(out, crlf);
+    }
+
+    #[test]
+    fn extract_and_ensure_crlf_stale_refreshes() {
+        let hist = historical_verify_gate_bodies("git push --no-verify")[0].clone();
+        let lf = format!("#!/usr/bin/env bash\n{hist}\necho after\n");
+        let crlf = lf.replace('\n', "\r\n");
+        let (out, action) =
+            ensure_block_in_content(&crlf, GateKind::Verify, "git push --no-verify");
+        assert_eq!(action, EnsureAction::Refreshed);
+        assert!(out.contains("# ledgerful-verify-gate:v2"));
+        assert!(out.contains("echo after"));
+        assert!(!out.contains("# ledgerful-verify-gate: fast scoped"));
+    }
+
+    #[test]
+    fn unparseable_boundary_surfaces_skip_not_marker_absent() {
+        // Marker present, no matching `fi` — must not look like MarkerAbsent.
+        let broken = "\
+#!/usr/bin/env bash
+# ledgerful-verify-gate:v2 broken open block
+if command -v ledgerful &>/dev/null; then
+    if ! ledgerful verify --scope fast; then
+        exit 1
+";
+        let (out, action) =
+            ensure_block_in_content(broken, GateKind::Verify, "git push --no-verify");
+        assert_eq!(out, broken);
+        match action {
+            EnsureAction::SkippedUnparseable { reason, snippet } => {
+                assert!(
+                    reason.contains("unrecognised block boundary"),
+                    "reason={reason}"
+                );
+                assert!(
+                    snippet.contains("# ledgerful-verify-gate:v2"),
+                    "recommended snippet must include current stamp"
+                );
+                assert!(snippet.contains("ledgerful verify --scope fast"));
+            }
+            other => panic!("expected SkippedUnparseable, got {other:?}"),
+        }
+        // extract API also surfaces Unparseable (not Absent).
+        assert!(matches!(
+            extract_marker_block(broken, GateKind::Verify),
+            MarkerExtract::Unparseable { .. }
+        ));
+    }
+
+    #[test]
+    fn refresh_reports_unparseable_boundary() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        fs::create_dir_all(root.join(".git").join("hooks")).unwrap();
+        let hook = root.join(".git").join("hooks").join("pre-push");
+        let broken = "\
+#!/usr/bin/env bash
+# ledgerful-verify-gate:v2 broken
+if command -v ledgerful &>/dev/null; then
+    ledgerful verify --scope fast
+";
+        fs::write(&hook, broken).unwrap();
+        let report = refresh_product_templates_at(&root, false).unwrap();
+        assert!(
+            report.skipped_unknown.iter().any(|(label, reason)| {
+                label.contains("verify-gate")
+                    && reason.contains("unrecognised block boundary")
+                    && reason.contains("Recommended snippet")
+            }),
+            "skipped_unknown={:?}",
+            report.skipped_unknown
+        );
+        // File must remain unchanged (no partial rewrite).
+        assert_eq!(fs::read_to_string(&hook).unwrap(), broken);
     }
 
     #[test]

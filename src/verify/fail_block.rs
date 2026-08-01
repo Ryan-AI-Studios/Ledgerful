@@ -138,20 +138,31 @@ fn extract_rustfmt_paths(output: &str) -> Vec<String> {
     for line in output.lines() {
         let t = line.trim();
         // `Diff in <path>:` and `Diff in <path> at line N:`
+        // Path may contain a Windows drive colon (`C:\…`); never split on first `:`.
         if let Some(rest) = t.strip_prefix("Diff in ") {
-            let path = if let Some((p, _)) = rest.split_once(" at line ") {
-                p.trim()
-            } else if let Some((p, _)) = rest.split_once(':') {
-                p.trim()
-            } else {
-                rest.trim_end_matches(':').trim()
-            };
+            let path = parse_rustfmt_diff_in_path(rest);
             if !path.is_empty() {
                 paths.push(normalize_path(path));
             }
         }
     }
     paths
+}
+
+/// Parse the path portion of a rustfmt `Diff in …` line (after the prefix).
+///
+/// Handles:
+/// - `src/lib.rs:`
+/// - `src/lib.rs at line 10:`
+/// - `C:\repo\src\lib.rs:` (Windows absolute — drive colon must not truncate)
+/// - `C:\repo\src\lib.rs at line 10:`
+fn parse_rustfmt_diff_in_path(rest: &str) -> &str {
+    // Prefer the explicit ` at line N` form first (path may contain `:`).
+    if let Some((p, _)) = rest.split_once(" at line ") {
+        return p.trim();
+    }
+    // Otherwise strip a single trailing colon that ends the rustfmt header.
+    rest.trim().strip_suffix(':').unwrap_or(rest).trim()
 }
 
 fn extract_ruff_format_paths(output: &str) -> Vec<String> {
@@ -236,6 +247,21 @@ mod tests {
             "Diff in crates/foo/src/a.rs at line 12:\nDiff in crates/foo/src/b.rs at line 1:\n";
         let paths = extract_formatter_paths("rustfmt --check", out, "");
         assert_eq!(paths, vec!["crates/foo/src/a.rs", "crates/foo/src/b.rs"]);
+    }
+
+    #[test]
+    fn extract_rustfmt_windows_absolute_diff_in_colon() {
+        // Drive-letter colon must not truncate the path (P2-001).
+        let out = "Diff in C:\\repo\\src\\lib.rs:\n";
+        let paths = extract_formatter_paths("cargo fmt --all -- --check", out, "");
+        assert_eq!(paths, vec!["C:/repo/src/lib.rs"]);
+    }
+
+    #[test]
+    fn extract_rustfmt_windows_absolute_diff_in_at_line() {
+        let out = "Diff in C:\\repo\\src\\lib.rs at line 10:\n";
+        let paths = extract_formatter_paths("cargo fmt -- --check", out, "");
+        assert_eq!(paths, vec!["C:/repo/src/lib.rs"]);
     }
 
     #[test]

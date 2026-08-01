@@ -1285,12 +1285,25 @@ pub fn execute_verify(
     }
 
     // Show progress indicator before verification execution.
-    // Machine mode (WARN filter) drops this info! so it cannot corrupt JSON;
-    // also skip when --json is set for clarity.
+    // DoD-1 quiet success: demote to debug! when !verbose so the default INFO
+    // filter does not print progress noise. --verbose restores info!. Skip
+    // entirely for --json (machine mode).
     if !json && !ctx.no_predict {
         let num_steps = steps.len();
         if num_steps > 0 {
-            tracing::info!(target: "cli_summary", "Running {} verification step(s)...", num_steps);
+            if crate::output::verification::should_emit_verify_progress_info(verbose, json) {
+                tracing::info!(
+                    target: "cli_summary",
+                    "Running {} verification step(s)...",
+                    num_steps
+                );
+            } else {
+                tracing::debug!(
+                    target: "cli_summary",
+                    "Running {} verification step(s)...",
+                    num_steps
+                );
+            }
         }
     }
 
