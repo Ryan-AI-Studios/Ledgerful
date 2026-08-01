@@ -32,9 +32,9 @@ cd ./ledgerful-demo
 ledgerful verify --signatures --chain
 # expect: exit 0; summary includes VALID entries and/or "Chain verified"
 
-# 4. Retained-head proof (live head matches export)
+# 4. Retained-head proof (live chain extends or equals export checkpoint)
 ledgerful verify --signatures --against-export ./ledgerful-DEMO-evidence.zip
-# expect: exit 0 (live chain head matches retained export)
+# expect: exit 0 (live chain extends or equals retained export head)
 
 # Honesty: synthetic invoice-service · disposable keys (not production keyring) ·
 # observe mode (warns, does not enforce) · same crypto as production · not real
