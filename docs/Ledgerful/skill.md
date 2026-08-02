@@ -296,11 +296,15 @@ ledgerful change-context --json
 Use `readSet` paths first. The packet includes `riskLevel`, `riskReasons`, doctor
 `readyForPublish`, open ledger transactions, blast **counts** including nested
 `confidenceSummary` (class counts such as `scipBound`/`resolved` — not full edges),
-and deepened `testCoverage` (structural test-gap status/counts/capped unmapped —
-**not** line coverage; LCOV COVERAGE rows do not currently persist). Empty or
-missing mapping is **not** "fully covered"; use the status enum (`available` \|
-`empty_mapping` \| `missing_table` \| `no_source_seeds` \| `unavailable`) — never
-treat bare empty lists as complete coverage.
+deepened `testCoverage` (structural test-gap status/counts/capped unmapped —
+**not** line coverage; LCOV COVERAGE rows do not currently persist), and
+`changeHints` (greenfield / new-surface classification + budgeted
+`suggestedTests` when the change set is mostly pure-adds or a new package
+prefix; omit on empty/not_ready; convention suggestions are path heuristics,
+not proven coverage). Empty or missing mapping is **not** "fully covered"; use
+the status enum (`available` \| `empty_mapping` \| `missing_table` \|
+`no_source_seeds` \| `unavailable`) — never treat bare empty lists as complete
+coverage.
 
 4. **Escalate** to full impact only when a B2 trigger fires:
 
