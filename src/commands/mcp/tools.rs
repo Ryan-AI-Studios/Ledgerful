@@ -581,6 +581,21 @@ mod tests {
         assert_eq!(args[args.len() - 1], query);
     }
 
+    /// 0126: MCP search must not grow `--auto-index` (empty path rebuilds via
+    /// document_count==0 inside CLI, not via MCP flag promotion).
+    #[test]
+    fn build_search_args_has_no_auto_index() {
+        let args = build_search_args("symbol", "10");
+        assert!(
+            !args.iter().any(|a| *a == "--auto-index" || *a == "--index"),
+            "MCP build_search_args must not add --auto-index/--index: {args:?}"
+        );
+        assert_eq!(
+            args,
+            vec!["search", "--json", "--limit", "10", "--", "symbol"]
+        );
+    }
+
     #[test]
     #[serial_test::serial(env)]
     fn mcp_tool_spawn_env_sets_forbidden_by_default() {

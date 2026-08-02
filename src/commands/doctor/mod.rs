@@ -5,7 +5,11 @@ pub use finding::{
     DoctorCategory, DoctorFinding, DoctorSeverity, DoctorSummary, dashboard_failures,
     ready_for_publish, summarize,
 };
-pub use remediation::{build_sig_pin_finding, build_sig_version_finding};
+pub use remediation::{
+    SearchDocsClassification, build_search_empty_finding, build_sig_pin_finding,
+    build_sig_version_finding, classify_search_document_count, search_empty_index_health_line,
+    search_ok_index_health_line,
+};
 
 use crate::output::human::print_doctor_report;
 use crate::platform::env::ExecutableStatus;
@@ -307,9 +311,18 @@ pub fn execute_doctor(json: bool, apply_hook_refresh: bool, dry_run: bool) -> Re
                     ));
                 } else {
                     let docs = e.document_count();
-                    report
-                        .index_health
-                        .push(format!("Search index: OK ({} documents)", docs));
+                    // 0126: pure classify — empty is a state, not OK.
+                    match classify_search_document_count(docs) {
+                        SearchDocsClassification::Empty => {
+                            findings.push(build_search_empty_finding());
+                            report
+                                .index_health
+                                .push(search_empty_index_health_line().to_string());
+                        }
+                        SearchDocsClassification::Populated { docs } => {
+                            report.index_health.push(search_ok_index_health_line(docs));
+                        }
+                    }
                 }
             }
             Err(e) => {
@@ -1416,7 +1429,8 @@ mod tests {
             completion_model_status: "OK".to_string(),
             native_graph_status: "Ready (CozoDB active)".to_string(),
             active_ask_backend: "Gemini (Cloud)".to_string(),
-            index_health: vec!["Search index: OK (0 documents)".to_string()],
+            // 0126: never embed healthy OK-with-zero; fixture uses positive N.
+            index_health: vec!["Search index: OK (12 documents)".to_string()],
             target_triple: "test",
         }
     }

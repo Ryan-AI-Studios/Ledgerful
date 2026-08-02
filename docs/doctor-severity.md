@@ -68,6 +68,44 @@ Exit code `1` iff any `block`; else `0`. Human banners (sccache/SCIP/VRAM) are s
 - Default `doctor` never writes config or re-signs; follow remediation commands explicitly.
 - `ledger re-sign --all` upgrades LOCAL rows with `sig_version < current` (and repairs invalids); `--all-invalid` remains key-repair only.
 
+## Search index probe exclusivity (0126)
+
+Tantivy search-index arms are **mutually exclusive** for one index path:
+
+```text
+!exists            → search-missing      (warn / index)
+open Err           → search-load-failed  (warn / index)
+integrity Err      → search-corrupt      (warn / index)
+document_count==0  → search-empty        (warn / index) + non-OK human Index Health line
+document_count>0   → human only: Search index: OK (N documents)  — no finding
+```
+
+### `search-empty`
+
+| Field | Value |
+|---|---|
+| `code` | `search-empty` |
+| `severity` | `warn` |
+| `category` | `index` |
+| `message` | present but empty; full-text search unusable until populated |
+| `remediation` | exact `ledgerful index` (primary); optional note that first `search` also rebuilds when empty; `ledgerful doctor --json` |
+
+**Human Index Health** when empty (must **not** contain `OK`):
+
+`Search index: Empty (0 documents — run 'ledgerful index')`
+
+Never emit healthy `OK (0 documents)`. Empty ≠ missing ≠ corrupt.
+
+**Greenfield health:** non-optional warn increments `dashboard_failures` → **−20**
+health score until the first real index (`failures * 20` in `compute_health_score`).
+This is intentional honesty, not a publish block: `readyForPublish` remains
+**block-only** (warn does not flip it).
+
+**Search CLI:** when the index was empty before a query, `search --json` emits a
+`record_kind: search_index_status` Insight (status first, then matches if any).
+States: `was_empty` (rebuilt to N>0) | `empty_after_rebuild` (still 0 — may mean
+no indexable content / ignore patterns, not only “run index again”).
+
 ## Dashboard `doctor-results.json`
 
 ```
@@ -76,8 +114,9 @@ failures = count(block) + count(warn WHERE category != optional)
 
 Additive fields: `readyForPublish`, `block`, `warn`, `info`.
 
-**Orthogonal to readiness:** models down → ready + high health; search index corrupt →
-ready (can still verify/push) **but** health penalized via non-optional warn.
+**Orthogonal to readiness:** models down → ready + high health; search index corrupt
+or **empty** → ready (can still verify/push) **but** health penalized via non-optional
+warn (−20 per failure).
 
 Optional backends no longer contribute the historical ~−60 health points on a models-down
 machine (`failures * 20` in `compute_health_score`).

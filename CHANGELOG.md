@@ -6,6 +6,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Search index empty honesty (0126):** Doctor no longer reports an empty
+  Tantivy search index as `OK (0 documents)`. When the index exists, integrity
+  passes, and `document_count==0`, doctor emits structured finding
+  `search-empty` (warn/index) with remediation `ledgerful index` and a non-OK
+  Index Health line. `search` captures pre/post counts across auto-rebuild and
+  surfaces empty-index status (`search_index_status` Insight under `--json`;
+  human WARN) so empty index is not collapsed into silent no-matches.
+
 ### Added
 
 - **Doctor actionable remediations + `re-sign --all` (0125):** `DoctorFinding`
