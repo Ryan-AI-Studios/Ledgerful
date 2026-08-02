@@ -44,9 +44,17 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                     StorageManager::init_with_layout(&layout)?
                 }
             };
-            let (_storage, action) =
-                crate::index::staleness::try_auto_index(storage, threshold, &layout)?;
-            auto_index_action = action;
+            match crate::index::staleness::try_auto_index(storage, threshold, &layout) {
+                Ok((_storage, action)) => {
+                    auto_index_action = action;
+                }
+                Err(e) => {
+                    // B4: greppable remediation when SQLite auto-index work fails
+                    // (not only FTS rebuild). Still surface the error.
+                    emit_auto_index_failed(&args, &e);
+                    return Err(e);
+                }
+            }
         } else if let Some(storage) = storage_opt {
             let is_stale = warn_if_stale(&storage, threshold);
             if is_stale && !args.json && crate::util::term::is_interactive() {
@@ -57,9 +65,15 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                         .prompt()
                 {
                     println!("Running auto-indexing...");
-                    let (_storage, action) =
-                        crate::index::staleness::try_auto_index(storage, threshold, &layout)?;
-                    auto_index_action = action;
+                    match crate::index::staleness::try_auto_index(storage, threshold, &layout) {
+                        Ok((_storage, action)) => {
+                            auto_index_action = action;
+                        }
+                        Err(e) => {
+                            emit_auto_index_failed(&args, &e);
+                            return Err(e);
+                        }
+                    }
                 }
             }
         }
@@ -332,6 +346,40 @@ fn emit_fts_rebuild_failed(args: &SearchArgs, document_count: Option<usize>, err
     } else {
         eprintln!(
             "{} Search full-text rebuild failed after auto-index: {err}. Run {} to refresh BM25.",
+            "WARN".yellow().bold(),
+            "ledgerful index --incremental".cyan().bold()
+        );
+    }
+}
+
+/// B4 honesty when SQLite auto-index (`try_auto_index`) fails before FTS.
+fn emit_auto_index_failed(args: &SearchArgs, err: &miette::Report) {
+    if args.json {
+        let content = serde_json::json!({
+            "state": "auto_index_failed",
+            "remediation": "ledgerful index --incremental",
+            "error": format!("{err}"),
+        });
+        let record = BridgeRecord {
+            bridge_version: BridgeRecord::VERSION.to_string(),
+            direction: BridgeDirection::Outbound,
+            timestamp: chrono::Utc::now(),
+            parent_hash: None,
+            project_id: args.project_id.clone(),
+            session_id: None,
+            tx_id: None,
+            record_kind: "search_index_status".to_string(),
+            payload: BridgePayload::Insight {
+                memory_id: "search_index_status".to_string(),
+                relevance: 0.0,
+                content: serde_json::to_string(&content).unwrap_or_default(),
+            },
+            privacy: Privacy::ProjectLocal,
+        };
+        println!("{}", serde_json::to_string(&record).unwrap_or_default());
+    } else {
+        eprintln!(
+            "{} Search auto-index failed: {err}. Run {} to refresh the index.",
             "WARN".yellow().bold(),
             "ledgerful index --incremental".cyan().bold()
         );
