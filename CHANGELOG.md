@@ -54,6 +54,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Agent skill preflight alignment (0123):** Default agent preflight is `doctor` → `audit`/`ledger status` → `change-context --json`. Full `scan --impact` is escalate-only (readSetCapped, high risk, multi-module, explicit DoD, or change-context error). Dual skill frontmatter descriptions de-equate peer impact; AGENTS.md/CLAUDE.md harness aligned; commands.md promotes change-context. **Agents may need a new session to reload skill description.**
+
 - **`verify --against-export` checkpoint default (0119 — behavior change):**
   Comparison is now **ancestor/prefix** (live chain must extend or equal the
   retained export head at `export.length`). Legitimate advance past a prior

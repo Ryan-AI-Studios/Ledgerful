@@ -1,6 +1,6 @@
 ---
 name: ledgerful
-description: Use Ledgerful for local-first change intelligence before, during, and after code edits. Trigger this skill whenever a repository contains Ledgerful, the user asks about impact analysis, blast radius, risk, verification planning, hotspots, temporal coupling, Gemini-assisted review, or wants an AI agent to make safer changes with evidence from `ledgerful change-context`, `scan`, `impact`, `verify`, or `ask`.
+description: Use Ledgerful for local-first change intelligence before, during, and after code edits. Trigger this skill whenever a repository contains Ledgerful, the user asks about impact analysis, blast radius, risk, verification planning, hotspots, temporal coupling, Gemini-assisted review, or wants an AI agent to make safer changes. Default pre-edit evidence is `doctor --json` then `change-context --json`; escalate to `scan --impact` only for high-risk / readSetCapped / multi-module cases. Also use for `verify`, `ask`, ledger provenance, and drift handling. Prefer `--json` for machine-readable agent output.
 ---
 
 # Ledgerful
@@ -192,39 +192,94 @@ ledgerful dead-code --include-traits  # include standard traits (Eq, Clone, Debu
 
 > **Heuristic note**: Dead code analysis blends graph reachability, git inactivity, and test coverage. Results are probabilistic, not definitive. Common false-positive patterns: traits derived via `#[derive(...)]` (suppressed by default), types ending in `Provider`/`Chunk`/`Record`/`Result` (receive a confidence penalty).
 
+## Index freshness
+
+**Index freshness (short card):** full policy in `docs/index-freshness-policy.md`.
+
+- Prefer `--auto-index` on **search / ask / hotspots / dead-code** when stale.
+- **`verify --auto-index` only fixes `test_mapping` for `--scope fast`** — not general bootstrap.
+- **`scan` / `scan --impact` have no `--auto-index`** — refresh first if freshness matters.
+- Doctor green ≠ index fresh.
+- Light continuous: `ledgerful watch`. Heavy: `schedule setup-nightly` / `index --full` / explicit `--auto-scip`.
+- Never idle SCIP. `init` installs no watcher/schedule.
+
 ## Core Workflow (Default)
 
-After `doctor --json`, prefer the budgeted agent change packet before bulk file reads:
+**Default preflight ladder** = doctor → audit → ledger status → **change-context --json**.
+Full `scan --impact` is **escalate-only** (B2), never a peer default of change-context.
+
+1. Session start / first tool use:
 
 ```bash
 ledgerful doctor --json
+```
+
+2. Provenance / drift (keep audit — distinct from doctor):
+
+```bash
+ledgerful audit
+ledgerful ledger status --compact
+# or: ledgerful ledger status --json
+```
+
+Skip status only for pure docs/conductor prose with no ledger work.
+
+3. **DEFAULT pre-edit** for meaningful code/config/policy — budgeted agent change
+   packet before bulk file reads (schema: `docs/agent-output-contract.md`):
+
+```bash
 ledgerful change-context --json
 # CI / fixed base for structure only: --base-ref origin/main
 # (doctor + ledger always report present workspace state)
+# Cap: --max-files 20 (default)
 ```
 
-Use `readSet` paths first. If `readSetCapped` is true, deep-dive with:
+Use `readSet` paths first. The packet includes `riskLevel`, `riskReasons`, doctor
+`readyForPublish`, open ledger transactions, blast **counts** including nested
+`confidenceSummary` (class counts such as `scipBound`/`resolved` — not full edges),
+and deepened `testCoverage` (structural test-gap status/counts/capped unmapped —
+**not** line coverage; LCOV COVERAGE rows do not currently persist). Empty or
+missing mapping is **not** "fully covered"; use the status enum (`available` \|
+`empty_mapping` \| `missing_table` \| `no_source_seeds` \| `unavailable`) — never
+treat bare empty lists as complete coverage.
+
+4. **Escalate** to full impact only when a B2 trigger fires:
 
 ```bash
 ledgerful scan --impact --json
 ```
+
+| Trigger | Why |
+|---|---|
+| `readSetCapped == true` | Budget hid files |
+| `riskLevel` high (or medium **and** multi-module / shared infra in readSet) | Accountability |
+| Diff spans many packages/languages or public API unclear | depth-1 default |
+| User/DoD requires full impact | Process |
+| change-context `status` error/not-ready (**not** merely `empty`) | Fallback |
+
+**De-escalate:** After an escalated `scan --impact`, return to **change-context**
+for subsequent edits unless a B2 trigger re-fires. Do not pin full impact as the
+session default after one escalation.
+
+`.ledgerful/reports/latest-impact.json` is an **escalate-tier cache only** — never
+a default before step. Prefer live `change-context` (computes impact in-memory;
+does not rewrite that file).
+
+5. **Skip / lighten** preflight when:
+
+| Case | Guidance |
+|---|---|
+| Trivial format/lockfile/binary/scratch/explicit bypass | Skip Ledgerful |
+| Pure conductor/docs prose, no product code | doctor optional; no change-context required |
+| `status: "empty"` | Expected when no file changes + no pending ledger — **not** failure; do **not** escalate solely for empty |
+| status empty + `riskLevel` ≠ low | Do **not** escalate solely because riskLevel ≠ low when status==empty |
+| `search-empty` | Documented in commands reference; not a reason for full impact |
 
 For human triage:
 
 ```bash
 ledgerful impact --summary
 ```
-
-The packet includes `riskLevel`, `riskReasons`, doctor `readyForPublish`, open
-ledger transactions, blast **counts** including nested `confidenceSummary`
-(class counts such as `scipBound`/`resolved` — not full edges), and deepened
-`testCoverage` (structural test-gap status/counts/capped unmapped — **not** line
-coverage; LCOV COVERAGE rows do not currently persist). Empty or missing mapping
-is **not** “fully covered”; use the status enum (`available` \| `empty_mapping` \|
-`missing_table` \| `no_source_seeds` \| `unavailable`) — never treat bare empty
-lists as complete coverage. Prefer `change-context` over reading
-`.ledgerful/reports/latest-impact.json` alone — change-context computes impact
-in-memory and does not rewrite that report.
 
 For entity-scoped deep-dives use `ledgerful tests <entity>`. On CI,
 `scan --pr --format json` always includes `testGaps`; without a local index the
