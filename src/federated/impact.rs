@@ -22,6 +22,51 @@ fn resolve_sibling_schema(path: &str) -> Option<std::path::PathBuf> {
     None
 }
 
+/// Where a federation signal should land on the impact packet (0129).
+///
+/// Schema availability is ambient federation health → `analysis_warnings`.
+/// Real cross-repo change consequences → `risk_reasons`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FederationSignalKind {
+    /// Sibling schema path missing, unreadable, unparseable, or invalid.
+    SchemaUnavailable,
+    /// Sibling modified a linked entity, or a linked interface was removed.
+    RealImpact,
+}
+
+/// Pure classification for unit tests without full storage.
+pub(crate) fn classify_federation_outcome(kind: FederationSignalKind) -> FederationChannel {
+    match kind {
+        FederationSignalKind::SchemaUnavailable => FederationChannel::AnalysisWarning,
+        FederationSignalKind::RealImpact => FederationChannel::RiskReason,
+    }
+}
+
+/// Target channel for a classified federation signal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum FederationChannel {
+    AnalysisWarning,
+    RiskReason,
+}
+
+/// Greppable schema-miss message (same text on analysis_warnings as historical risk).
+pub(crate) fn schema_unavailable_message(sibling: &str) -> String {
+    format!("Cross-repo impact: Sibling '{sibling}' schema is unavailable or invalid.")
+}
+
+/// Route a federation signal to risk_reasons or analysis_warnings per classification.
+fn push_federation_signal(
+    kind: FederationSignalKind,
+    message: String,
+    risk_reasons: &mut Vec<String>,
+    analysis_warnings: &mut Vec<String>,
+) {
+    match classify_federation_outcome(kind) {
+        FederationChannel::AnalysisWarning => analysis_warnings.push(message),
+        FederationChannel::RiskReason => risk_reasons.push(message),
+    }
+}
+
 pub fn check_cross_repo_impact(packet: &mut ImpactPacket, storage: &StorageManager) -> Result<()> {
     let links = get_federated_links(storage.get_connection())?;
     if links.is_empty() {
@@ -29,6 +74,7 @@ pub fn check_cross_repo_impact(packet: &mut ImpactPacket, storage: &StorageManag
     }
 
     let mut impact_reasons = Vec::new();
+    let mut analysis_warnings = Vec::new();
     let db = LedgerDb::new(storage.get_connection());
 
     for (name, path, _) in links {
@@ -45,20 +91,24 @@ pub fn check_cross_repo_impact(packet: &mut ImpactPacket, storage: &StorageManag
         }
 
         let Some(schema_path) = resolve_sibling_schema(&path) else {
-            impact_reasons.push(format!(
-                "Cross-repo impact: Sibling '{}' schema is unavailable or invalid.",
-                name
-            ));
+            push_federation_signal(
+                FederationSignalKind::SchemaUnavailable,
+                schema_unavailable_message(&name),
+                &mut impact_reasons,
+                &mut analysis_warnings,
+            );
             continue;
         };
 
         let content = match fs::read_to_string(&schema_path) {
             Ok(c) => c,
             Err(_) => {
-                impact_reasons.push(format!(
-                    "Cross-repo impact: Sibling '{}' schema is unavailable or invalid.",
-                    name
-                ));
+                push_federation_signal(
+                    FederationSignalKind::SchemaUnavailable,
+                    schema_unavailable_message(&name),
+                    &mut impact_reasons,
+                    &mut analysis_warnings,
+                );
                 continue;
             }
         };
@@ -70,19 +120,23 @@ pub fn check_cross_repo_impact(packet: &mut ImpactPacket, storage: &StorageManag
         let schema = match schema_result {
             Ok(Ok(s)) => s,
             _ => {
-                impact_reasons.push(format!(
-                    "Cross-repo impact: Sibling '{}' schema is unavailable or invalid.",
-                    name
-                ));
+                push_federation_signal(
+                    FederationSignalKind::SchemaUnavailable,
+                    schema_unavailable_message(&name),
+                    &mut impact_reasons,
+                    &mut analysis_warnings,
+                );
                 continue;
             }
         };
 
         if schema.validate().is_err() {
-            impact_reasons.push(format!(
-                "Cross-repo impact: Sibling '{}' schema is unavailable or invalid.",
-                name
-            ));
+            push_federation_signal(
+                FederationSignalKind::SchemaUnavailable,
+                schema_unavailable_message(&name),
+                &mut impact_reasons,
+                &mut analysis_warnings,
+            );
             continue;
         }
 
@@ -102,16 +156,26 @@ pub fn check_cross_repo_impact(packet: &mut ImpactPacket, storage: &StorageManag
                     .map_err(|e| miette::miette!("{}", e))?;
 
                 for entry in federated_entries {
-                    impact_reasons.push(format!(
-                        "Cross-repo impact: Sibling '{}' modified '{}' ([FEDERATED] {})",
-                        name, entry.entity, entry.summary
-                    ));
+                    push_federation_signal(
+                        FederationSignalKind::RealImpact,
+                        format!(
+                            "Cross-repo impact: Sibling '{}' modified '{}' ([FEDERATED] {})",
+                            name, entry.entity, entry.summary
+                        ),
+                        &mut impact_reasons,
+                        &mut analysis_warnings,
+                    );
                 }
             } else {
-                impact_reasons.push(format!(
-                    "Cross-repo impact: Local symbol '{}' depends on sibling '{}' interface '{}' which was removed.",
-                    local_symbol, name, sibling_symbol
-                ));
+                push_federation_signal(
+                    FederationSignalKind::RealImpact,
+                    format!(
+                        "Cross-repo impact: Local symbol '{}' depends on sibling '{}' interface '{}' which was removed.",
+                        local_symbol, name, sibling_symbol
+                    ),
+                    &mut impact_reasons,
+                    &mut analysis_warnings,
+                );
             }
         }
     }
@@ -119,7 +183,10 @@ pub fn check_cross_repo_impact(packet: &mut ImpactPacket, storage: &StorageManag
     // Engineering standard: deterministic sorting
     impact_reasons.sort();
     impact_reasons.dedup();
+    analysis_warnings.sort();
+    analysis_warnings.dedup();
     packet.risk_reasons.extend(impact_reasons);
+    packet.analysis_warnings.extend(analysis_warnings);
 
     Ok(())
 }
@@ -127,6 +194,7 @@ pub fn check_cross_repo_impact(packet: &mut ImpactPacket, storage: &StorageManag
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::impact::packet::RiskLevel;
     use tempfile::tempdir;
 
     #[test]
@@ -164,5 +232,123 @@ mod tests {
         // No .ledgerful directory at all
         let result = resolve_sibling_schema(dir.path().to_str().unwrap());
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn classify_schema_unavailable_is_analysis_warning() {
+        assert_eq!(
+            classify_federation_outcome(FederationSignalKind::SchemaUnavailable),
+            FederationChannel::AnalysisWarning
+        );
+    }
+
+    #[test]
+    fn classify_real_impact_is_risk_reason() {
+        assert_eq!(
+            classify_federation_outcome(FederationSignalKind::RealImpact),
+            FederationChannel::RiskReason
+        );
+    }
+
+    #[test]
+    fn schema_unavailable_message_is_greppable() {
+        let msg = schema_unavailable_message("changeguard");
+        assert_eq!(
+            msg,
+            "Cross-repo impact: Sibling 'changeguard' schema is unavailable or invalid."
+        );
+        // Must never land on risk_reasons after 0129 — simulate packet routing.
+        let mut packet = ImpactPacket::default();
+        match classify_federation_outcome(FederationSignalKind::SchemaUnavailable) {
+            FederationChannel::AnalysisWarning => {
+                packet.analysis_warnings.push(msg.clone());
+            }
+            FederationChannel::RiskReason => {
+                packet.risk_reasons.push(msg.clone());
+            }
+        }
+        assert!(
+            packet.risk_reasons.is_empty(),
+            "schema-miss must not pollute risk_reasons: {:?}",
+            packet.risk_reasons
+        );
+        assert_eq!(packet.analysis_warnings, vec![msg]);
+    }
+
+    #[test]
+    fn real_federated_modify_message_routes_to_risk_reasons() {
+        let mut packet = ImpactPacket::default();
+        let msg =
+            "Cross-repo impact: Sibling 'other' modified 'iface' ([FEDERATED] bumped version)"
+                .to_string();
+        match classify_federation_outcome(FederationSignalKind::RealImpact) {
+            FederationChannel::AnalysisWarning => packet.analysis_warnings.push(msg.clone()),
+            FederationChannel::RiskReason => packet.risk_reasons.push(msg.clone()),
+        }
+        assert!(packet.analysis_warnings.is_empty());
+        assert_eq!(packet.risk_reasons, vec![msg]);
+    }
+
+    #[test]
+    fn real_interface_removed_message_routes_to_risk_reasons() {
+        let mut packet = ImpactPacket::default();
+        let msg = "Cross-repo impact: Local symbol 'foo' depends on sibling 'other' interface 'bar' which was removed."
+            .to_string();
+        match classify_federation_outcome(FederationSignalKind::RealImpact) {
+            FederationChannel::AnalysisWarning => packet.analysis_warnings.push(msg.clone()),
+            FederationChannel::RiskReason => packet.risk_reasons.push(msg.clone()),
+        }
+        assert!(packet.analysis_warnings.is_empty());
+        assert_eq!(packet.risk_reasons, vec![msg]);
+    }
+
+    #[test]
+    fn empty_tree_with_schema_warnings_only_finalizes_low() {
+        let mut packet = ImpactPacket::default();
+        // Simulate federated enrichment: schema-miss on analysis_warnings only.
+        packet
+            .analysis_warnings
+            .push(schema_unavailable_message("changeguard"));
+        packet
+            .analysis_warnings
+            .push(schema_unavailable_message("changeguard")); // dup
+        packet.finalize();
+        // Empty changes + empty risk_reasons → Low + "No changes detected"
+        packet.finalize_risk_level(0, false);
+        assert_eq!(packet.risk_level, RiskLevel::Low);
+        assert!(
+            packet
+                .risk_reasons
+                .iter()
+                .any(|r| r == "No changes detected"),
+            "expected No changes detected, got {:?}",
+            packet.risk_reasons
+        );
+        assert!(
+            !packet
+                .risk_reasons
+                .iter()
+                .any(|r| r.contains("schema is unavailable")),
+            "schema miss must not appear in risk_reasons: {:?}",
+            packet.risk_reasons
+        );
+        // finalize sorts + dedups analysis_warnings
+        assert_eq!(
+            packet.analysis_warnings,
+            vec![schema_unavailable_message("changeguard")]
+        );
+    }
+
+    #[test]
+    fn finalize_sorts_and_dedups_analysis_warnings() {
+        let mut packet = ImpactPacket::default();
+        packet.analysis_warnings.push("z-warn".into());
+        packet.analysis_warnings.push("a-warn".into());
+        packet.analysis_warnings.push("a-warn".into());
+        packet.finalize();
+        assert_eq!(
+            packet.analysis_warnings,
+            vec!["a-warn".to_string(), "z-warn".to_string()]
+        );
     }
 }

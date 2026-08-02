@@ -75,11 +75,12 @@ pub(crate) fn compute_health_score(layout: &Layout) -> (u8, Option<String>) {
 
 /// Read `doctor_failures` from the most recent `doctor-results.json`.
 ///
-/// File schema (0109 additive): `{ failures, timestamp, readyForPublish,
-/// block, warn, info }`. **`failures`** uses the dashboard formula
-/// (block + non-optional warn). The legacy `results: [{ passed: bool }]`
-/// array shape is still accepted on read. File lives in `state_subdir()`;
-/// `NotFound` → 0; parse failure logs a warning.
+/// File schema (0109 + 0129 additive): `{ failures, timestamp, readyForPublish,
+/// block, warn, info, findings? }`. **`failures`** uses the dashboard formula
+/// (block + non-optional warn). Additive `findings` (agent top-N) is ignored
+/// here — health still scores only `failures`. The legacy
+/// `results: [{ passed: bool }]` array shape is still accepted on read. File
+/// lives in `state_subdir()`; `NotFound` → 0; parse failure logs a warning.
 fn read_doctor_failures(layout: &Layout) -> u64 {
     let path = layout.state_subdir().join("doctor-results.json");
     match std::fs::read_to_string(&path) {

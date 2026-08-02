@@ -1069,9 +1069,10 @@ fn format_embedding_backend_availability(
     }
 }
 
-/// Persist `doctor-results.json` for the web dashboard health score.
+/// Persist `doctor-results.json` for the web dashboard health score and
+/// change-context `doctor.topFindings` (0129).
 ///
-/// Schema (0109 additive):
+/// Schema (0109 + 0129 additive):
 /// ```json
 /// {
 ///   "failures": N,
@@ -1079,20 +1080,43 @@ fn format_embedding_backend_availability(
 ///   "readyForPublish": bool,
 ///   "block": u64,
 ///   "warn": u64,
-///   "info": u64
+///   "info": u64,
+///   "findings": [
+///     { "code", "severity", "message", "remediation"? }
+///   ]
 /// }
 /// ```
 ///
 /// **`failures`** = [`dashboard_failures`] — `count(block) + count(warn where
-/// category != optional)`. Same findings list as human/JSON output. Optional
-/// backends never contribute. Legacy readers that only look at `failures`
-/// still work; legacy `results: [{passed}]` array shape is accepted on read
-/// only (writers no longer emit it).
+/// category != optional)`. Optional backends never contribute. Dashboard/health
+/// readers still use only `failures` / counts; unknown `findings` is ignored.
+///
+/// **`findings`** (0129): top-N block/warn for agent packets — **no category
+/// filter** (optional-category warns appear). Independent severity-first re-sort
+/// (block before warn, then code, then message) before cap 5. Info excluded.
+/// Optional `remediation` when present (never null).
+///
+/// Legacy `results: [{passed}]` array shape is accepted on read only (writers
+/// no longer emit it).
 ///
 /// Returns `Err` on I/O failure; the caller logs a warning and continues.
 fn write_doctor_results(layout: &Layout, findings: &[DoctorFinding]) -> Result<()> {
     let counts = summarize(findings);
     let failures = dashboard_failures(findings);
+    let top = select_sidecar_top_findings(findings);
+    let findings_json: Vec<serde_json::Value> = top
+        .into_iter()
+        .map(|f| {
+            let mut obj = serde_json::Map::new();
+            obj.insert("code".into(), json!(f.code));
+            obj.insert("severity".into(), json!(f.severity.as_str()));
+            obj.insert("message".into(), json!(f.message));
+            if let Some(ref rem) = f.remediation {
+                obj.insert("remediation".into(), json!(rem));
+            }
+            serde_json::Value::Object(obj)
+        })
+        .collect();
     let body = json!({
         "failures": failures,
         "timestamp": Utc::now().to_rfc3339(),
@@ -1100,6 +1124,7 @@ fn write_doctor_results(layout: &Layout, findings: &[DoctorFinding]) -> Result<(
         "block": counts.block,
         "warn": counts.warn,
         "info": counts.info,
+        "findings": findings_json,
     });
     let path = layout.state_subdir().join("doctor-results.json");
     std::fs::write(
@@ -1108,6 +1133,33 @@ fn write_doctor_results(layout: &Layout, findings: &[DoctorFinding]) -> Result<(
     )
     .into_diagnostic()?;
     Ok(())
+}
+
+/// Select top-N block/warn findings for the doctor sidecar (0129).
+///
+/// Filter: severity `block` or `warn` only — **no category filter**.
+/// Sort: block before warn, then code, then message — **before** take(5).
+/// Distinct from [`dashboard_failures`] (which excludes optional-category warns).
+fn select_sidecar_top_findings(findings: &[DoctorFinding]) -> Vec<&DoctorFinding> {
+    let mut selected: Vec<&DoctorFinding> = findings
+        .iter()
+        .filter(|f| matches!(f.severity, DoctorSeverity::Block | DoctorSeverity::Warn))
+        .collect();
+    selected.sort_by(|a, b| {
+        sidecar_severity_rank(a.severity)
+            .cmp(&sidecar_severity_rank(b.severity))
+            .then_with(|| a.code.cmp(&b.code))
+            .then_with(|| a.message.cmp(&b.message))
+    });
+    selected.into_iter().take(5).collect()
+}
+
+fn sidecar_severity_rank(severity: DoctorSeverity) -> u8 {
+    match severity {
+        DoctorSeverity::Block => 0,
+        DoctorSeverity::Warn => 1,
+        DoctorSeverity::Info => 2,
+    }
 }
 
 #[derive(Debug)]
@@ -1860,6 +1912,19 @@ mod tests {
         assert_eq!(json["info"].as_u64(), Some(1));
         assert!(json["timestamp"].as_str().is_some());
         assert!(json.get("readyForPublishDefinition").is_none());
+        // 0129: findings top-N — block+warn only, block first, info excluded
+        let findings_arr = json["findings"].as_array().expect("findings array present");
+        assert_eq!(findings_arr.len(), 2);
+        assert_eq!(findings_arr[0]["code"], "tool-git");
+        assert_eq!(findings_arr[0]["severity"], "block");
+        assert_eq!(findings_arr[1]["code"], "sig-pin");
+        assert_eq!(findings_arr[1]["severity"], "warn");
+        assert!(
+            findings_arr
+                .iter()
+                .all(|f| f.get("severity").and_then(|s| s.as_str()) != Some("info")),
+            "info must be excluded from findings"
+        );
     }
 
     #[test]
@@ -1884,6 +1949,137 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(path.as_std_path()).unwrap()).unwrap();
         assert_eq!(json["failures"].as_u64(), Some(0));
         assert_eq!(json["readyForPublish"], true);
+        // 0129: optional-category warn appears in findings even when failures==0
+        let findings_arr = json["findings"].as_array().expect("findings array present");
+        assert!(
+            !findings_arr.is_empty(),
+            "optional warn must appear in findings: {findings_arr:?}"
+        );
+        assert_eq!(findings_arr[0]["code"], "completion-unreachable");
+        assert_eq!(findings_arr[0]["severity"], "warn");
+        // info excluded
+        assert!(
+            findings_arr
+                .iter()
+                .all(|f| f.get("severity").and_then(|s| s.as_str()) != Some("info")),
+            "info must be excluded from findings"
+        );
+    }
+
+    #[test]
+    fn write_doctor_results_block_before_warn_under_reverse_alpha_codes() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = Utf8Path::from_path(tmp.path()).expect("utf8 path");
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().expect("ensure_state_dir");
+
+        // Input order / alpha would put warn "aaa-warn" before block "zzz-block".
+        // Severity-first re-sort must place block first before take(5).
+        let findings = vec![
+            DoctorFinding::warn("aaa-warn", DoctorCategory::Index, "early alpha warn"),
+            DoctorFinding::warn("bbb-warn", DoctorCategory::Signing, "mid warn"),
+            DoctorFinding::block("zzz-block", DoctorCategory::Tools, "late alpha block"),
+            DoctorFinding::info("ccc-info", DoctorCategory::Optional, "info excluded"),
+        ];
+        write_doctor_results(&layout, &findings).expect("write");
+        let path = layout.state_subdir().join("doctor-results.json");
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path.as_std_path()).unwrap()).unwrap();
+        let findings_arr = json["findings"].as_array().expect("findings");
+        assert_eq!(findings_arr.len(), 3, "info excluded → 3 entries");
+        assert_eq!(findings_arr[0]["code"], "zzz-block");
+        assert_eq!(findings_arr[0]["severity"], "block");
+        assert_eq!(findings_arr[1]["code"], "aaa-warn");
+        assert_eq!(findings_arr[1]["severity"], "warn");
+        assert_eq!(findings_arr[2]["code"], "bbb-warn");
+    }
+
+    #[test]
+    fn write_doctor_results_remediation_round_trip() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = Utf8Path::from_path(tmp.path()).expect("utf8 path");
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().expect("ensure_state_dir");
+
+        let findings = vec![
+            DoctorFinding::warn("sig-pin", DoctorCategory::Signing, "pin missing")
+                .with_remediation("ledgerful config set intent.trusted_public_keys '[\"abc\"]'"),
+            DoctorFinding::warn("graph-stale", DoctorCategory::Index, "graph stale"),
+        ];
+        write_doctor_results(&layout, &findings).expect("write");
+        let path = layout.state_subdir().join("doctor-results.json");
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path.as_std_path()).unwrap()).unwrap();
+        let findings_arr = json["findings"].as_array().expect("findings");
+        assert_eq!(findings_arr.len(), 2);
+        let pin = findings_arr
+            .iter()
+            .find(|f| f["code"] == "sig-pin")
+            .expect("sig-pin present");
+        assert_eq!(
+            pin["remediation"].as_str(),
+            Some("ledgerful config set intent.trusted_public_keys '[\"abc\"]'")
+        );
+        let stale = findings_arr
+            .iter()
+            .find(|f| f["code"] == "graph-stale")
+            .expect("graph-stale present");
+        assert!(
+            stale.get("remediation").is_none(),
+            "must omit remediation key when None, not emit null: {stale}"
+        );
+    }
+
+    #[test]
+    fn write_doctor_results_findings_cap_five() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = Utf8Path::from_path(tmp.path()).expect("utf8 path");
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().expect("ensure_state_dir");
+
+        let mut findings = Vec::new();
+        for i in 0..4 {
+            findings.push(DoctorFinding::block(
+                format!("block-{i}"),
+                DoctorCategory::Tools,
+                format!("block msg {i}"),
+            ));
+        }
+        for i in 0..4 {
+            findings.push(DoctorFinding::warn(
+                format!("warn-{i}"),
+                DoctorCategory::Index,
+                format!("warn msg {i}"),
+            ));
+        }
+        write_doctor_results(&layout, &findings).expect("write");
+        let path = layout.state_subdir().join("doctor-results.json");
+        let json: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(path.as_std_path()).unwrap()).unwrap();
+        let findings_arr = json["findings"].as_array().expect("findings");
+        assert_eq!(findings_arr.len(), 5);
+        // All 4 blocks come first, then first warn alphabetically
+        assert!(
+            findings_arr
+                .iter()
+                .take(4)
+                .all(|f| f["severity"] == "block"),
+            "first 4 must be blocks: {findings_arr:?}"
+        );
+        assert_eq!(findings_arr[4]["severity"], "warn");
+    }
+
+    #[test]
+    fn select_sidecar_top_findings_excludes_info() {
+        let findings = vec![
+            DoctorFinding::info("i1", DoctorCategory::Optional, "info"),
+            DoctorFinding::warn("w1", DoctorCategory::Signing, "warn"),
+            DoctorFinding::block("b1", DoctorCategory::Tools, "block"),
+        ];
+        let top = select_sidecar_top_findings(&findings);
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].code, "b1");
+        assert_eq!(top[1].code, "w1");
     }
 
     #[test]

@@ -177,6 +177,10 @@ pub struct DoctorTopFinding {
     pub code: String,
     pub severity: String,
     pub message: String,
+    /// Optional copy-paste remediation from doctor (0125/0129). Never invent;
+    /// omit from JSON when `None`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub remediation: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1078,10 +1082,16 @@ fn parse_doctor_sidecar(contents: &str, path: &Path) -> DoctorSection {
                 .and_then(|v| v.as_str())
                 .unwrap_or("")
                 .to_string();
+            // Forward remediation only when present; never invent a value.
+            let remediation = f
+                .get("remediation")
+                .and_then(|v| v.as_str())
+                .map(|s| s.to_string());
             top_findings.push(DoctorTopFinding {
                 code,
                 severity,
                 message,
+                remediation,
             });
         }
     }
@@ -1377,6 +1387,71 @@ mod tests {
         assert!(section.ready_for_publish);
         assert_eq!(section.warn, 1);
         assert_eq!(section.info, 2);
+        // Pre-0129 sidecars without findings → empty topFindings (tolerant).
+        assert!(section.top_findings.is_empty());
+    }
+
+    #[test]
+    fn parse_doctor_sidecar_findings_and_remediation() {
+        let contents = r#"{
+            "failures": 1,
+            "timestamp": "2099-01-01T00:00:00+00:00",
+            "readyForPublish": true,
+            "block": 0,
+            "warn": 2,
+            "info": 0,
+            "findings": [
+                {
+                    "code": "sig-pin",
+                    "severity": "warn",
+                    "message": "pin missing",
+                    "remediation": "ledgerful config set intent.trusted_public_keys '[\"abc\"]'"
+                },
+                {
+                    "code": "completion-unreachable",
+                    "severity": "warn",
+                    "message": "optional down"
+                }
+            ]
+        }"#;
+        let section = parse_doctor_sidecar(contents, std::path::Path::new("doctor-results.json"));
+        assert_eq!(section.status, "ok");
+        assert_eq!(section.top_findings.len(), 2);
+        assert_eq!(section.top_findings[0].code, "sig-pin");
+        assert_eq!(
+            section.top_findings[0].remediation.as_deref(),
+            Some("ledgerful config set intent.trusted_public_keys '[\"abc\"]'")
+        );
+        assert_eq!(section.top_findings[1].code, "completion-unreachable");
+        assert!(
+            section.top_findings[1].remediation.is_none(),
+            "must not invent remediation when key absent"
+        );
+        // serde: remediation None skips null
+        let ser = serde_json::to_value(&section.top_findings[1]).unwrap();
+        assert!(
+            ser.get("remediation").is_none(),
+            "skip_serializing_if must omit remediation: {ser}"
+        );
+    }
+
+    #[test]
+    fn parse_doctor_sidecar_no_findings_key_tolerant_empty() {
+        let contents = r#"{
+            "failures": 0,
+            "timestamp": "2099-01-01T00:00:00+00:00",
+            "readyForPublish": true,
+            "block": 0,
+            "warn": 3,
+            "info": 1
+        }"#;
+        let section = parse_doctor_sidecar(contents, std::path::Path::new("doctor-results.json"));
+        assert_eq!(section.status, "ok");
+        assert_eq!(section.warn, 3);
+        assert!(
+            section.top_findings.is_empty(),
+            "missing findings key → empty topFindings"
+        );
     }
 
     #[test]

@@ -336,6 +336,7 @@ does not rewrite that file).
 | Pure conductor/docs prose, no product code | doctor optional; no change-context required |
 | `status: "empty"` | Expected when no file changes + no pending ledger — **not** failure; do **not** escalate solely for empty |
 | status empty + `riskLevel` ≠ low | Do **not** escalate solely because riskLevel ≠ low when status==empty |
+| status empty + only federation schema warnings | Schema-unavailable siblings land under `analysisWarnings` with `riskLevel=low` (0129) — ambient federation health, not diff risk; do **not** treat as medium escalation |
 | `search-empty` | Documented in commands reference; not a reason for full impact |
 
 For human triage:
