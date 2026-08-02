@@ -27,7 +27,25 @@ pub fn execute_hotspots(args: HotspotArgs) -> Result<()> {
     let config = load_config(&layout).unwrap_or_default();
     let threshold_days = config.index.stale_threshold_days;
     let need_cozo = args.semantic || args.centrality;
-    let storage = if args.auto_index {
+    // Trend --bootstrap inserts snapshots; must open write storage (true RO
+    // open fails with "attempt to write a readonly database").
+    let need_write = matches!(
+        &args.command,
+        Some(HotspotSubcommands::Trend {
+            bootstrap: true,
+            ..
+        })
+    );
+    let storage = if need_write {
+        layout.ensure_state_dir()?;
+        let storage = StorageManager::init_with_layout(&layout)?;
+        if args.auto_index {
+            crate::index::staleness::try_auto_index(storage, threshold_days, &layout)?
+        } else {
+            let _ = warn_if_stale(&storage, threshold_days);
+            storage
+        }
+    } else if args.auto_index {
         // Missing DB must still bootstrap under --auto-index (DoD-3).
         let opened = if need_cozo {
             StorageManager::open_read_only(&layout)
