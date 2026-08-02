@@ -543,3 +543,56 @@ fn search_json_was_empty_after_successful_rebuild() {
     // Prefer that a matching token produces at least one hit after rebuild.
     let _ = has_match;
 }
+
+/// 0128: after content change, `search --auto-index` must rebuild Tantivy so a
+/// brand-new token is discoverable without an explicit `index --incremental`.
+#[test]
+fn search_auto_index_after_content_change_finds_token() {
+    use crate::common::git_add_and_commit;
+
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _guard = DirGuard::new(root);
+
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src").join("lib.rs"), "pub fn before_edit() {}\n").unwrap();
+    git_add_and_commit(root, "src/lib.rs");
+
+    let (out, err, code) = run_cli(root, &["init"]);
+    assert_eq!(code, 0, "init; stderr={err}; stdout={out}");
+
+    // Full index builds SQLite + Tantivy floor.
+    let (out, err, code) = run_cli(root, &["index"]);
+    assert_eq!(code, 0, "index; stderr={err}; stdout={out}");
+
+    // Same-day content edit: SQLite + Tantivy would both be content-stale without
+    // --auto-index + FTS rebuild.
+    let token = "unique_auto_index_token_0128";
+    fs::write(
+        root.join("src").join("lib.rs"),
+        format!("pub fn before_edit() {{}}\npub fn {token}() {{}}\n"),
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = run_cli(root, &["search", token, "--auto-index", "--json"]);
+    assert_eq!(
+        code, 0,
+        "search --auto-index; stderr={stderr}; stdout={stdout}"
+    );
+
+    let has_hit = stdout.lines().filter(|l| !l.trim().is_empty()).any(|line| {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
+            return false;
+        };
+        let kind = v["record_kind"].as_str().unwrap_or("");
+        let content = v["payload"]["content"].as_str().unwrap_or("");
+        let memory = v["payload"]["memory_id"].as_str().unwrap_or("");
+        (kind.contains("match") || kind == "insight")
+            && (content.contains(token) || memory.contains(token) || content.contains("lib.rs"))
+    });
+    assert!(
+        has_hit,
+        "0128: auto-index + FTS rebuild must surface new token; stdout={stdout}; stderr={stderr}"
+    );
+}

@@ -53,6 +53,38 @@ Never SCIP. Never `--analyze-graph` on this path.
 
 Both signals matter. Shared-path `--auto-index` runs when either fires.
 
+## Readiness honesty (`index --check`)
+
+Age-only `assess_index_freshness` stays cheap for non-readiness callers
+(`stale_files = 0` — content drift is not computed). **`index --check`** runs
+**one** `count_content_hash_drift` walk and overrides the assessment before
+serialize:
+
+| Field | Meaning on `--check` |
+|---|---|
+| `assessment.state` | Age + content: `FreshPopulated` only when age-fresh **and** content-clean |
+| `ContentStalePopulated` | Age-fresh metadata + content-hash drift (never “fresh” with dirty tree) |
+| `assessment.stale_files` | Same content-drift count as top-level `stale_files` |
+| `assessment.indexed_files` | Active non-deleted row count (not drift) |
+| Top-level `stale_files` | `changed_or_unindexed` from content-hash drift |
+
+**Ban:** `FreshPopulated` with top-level `stale_files > 0`. Human and JSON agree.
+
+## Search `--auto-index` and Tantivy (full-text)
+
+There is **no** incremental Tantivy API. After shared-path `--auto-index`:
+
+| Auto-index action | SQLite / graph | Tantivy (BM25) |
+|---|---|---|
+| `None` (age-fresh + content-clean) | no-op | **no** full FTS rebuild (unless `document_count == 0`) |
+| `FullBootstrap` / `Incremental` | full or incremental index | **full** clear + `StreamIndexer` rebuild |
+| Explicit `search --index` | — | full FTS rebuild |
+
+So: no full FTS reindex on **every** search when auto-index no-ops; full FTS
+**after** legitimate SQLite work is required for BM25 truth. If the FTS rebuild
+fails after auto-index, search emits a greppable WARN / `search_index_status`
+with remediation `ledgerful index --incremental`.
+
 ### `verify --auto-index` (not `try_auto_index`)
 
 `verify --auto-index` only helps **`--scope fast`** when `test_mapping` is empty or

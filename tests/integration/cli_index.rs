@@ -124,6 +124,120 @@ fn test_index_check_strict_stale_exits_with_reason() {
     );
 }
 
+/// 0128: content-dirty age-fresh index must never report FreshPopulated with
+/// positive stale_files; assessment.stale_files == top-level stale_files.
+#[test]
+fn test_index_check_json_content_stale_not_fresh_populated() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("src").join("lib.rs"),
+        "pub fn content_stale_target() {}",
+    )
+    .unwrap();
+
+    let _guard = DirGuard::from_utf8(root);
+    ledgerful::state::layout::Layout::new(root)
+        .ensure_state_dir()
+        .unwrap();
+
+    let index_result = execute_index(IndexArgs {
+        ..Default::default()
+    });
+    assert!(index_result.is_ok(), "index must succeed: {index_result:?}");
+
+    // Edit after index → content-hash drift while last_indexed_at is today.
+    fs::write(
+        root.join("src").join("lib.rs"),
+        "pub fn content_stale_target() {}\npub fn after_edit() {}",
+    )
+    .unwrap();
+
+    let (stdout, _stderr, code) = run_cli(tmp.path(), &["index", "--check", "--json"]);
+    assert_eq!(
+        code, 0,
+        "check --json (non-strict) must exit 0; stdout={stdout}"
+    );
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("entire stdout must parse as JSON: {e}; stdout={stdout}");
+    });
+
+    let top_stale = parsed["stale_files"]
+        .as_u64()
+        .expect("top-level stale_files");
+    assert!(
+        top_stale > 0,
+        "edited file must produce content drift: {parsed}"
+    );
+
+    let assessment = parsed["assessment"]
+        .as_object()
+        .expect("assessment object present");
+    let state = assessment["state"].as_str().unwrap_or("");
+    assert_ne!(
+        state, "FreshPopulated",
+        "DoD-1: never FreshPopulated with stale_files > 0: {parsed}"
+    );
+    assert!(
+        state == "ContentStalePopulated" || state.contains("Stale") || state.contains("Content"),
+        "expected ContentStalePopulated (or stale variant), got {state}: {parsed}"
+    );
+    let assess_stale = assessment["stale_files"]
+        .as_u64()
+        .expect("assessment.stale_files");
+    assert_eq!(
+        assess_stale, top_stale,
+        "DoD-2: assessment.stale_files must equal top-level stale_files"
+    );
+}
+
+/// 0128: clean age-fresh index reports up to date with stale_files 0.
+#[test]
+fn test_index_check_json_clean_is_fresh_populated_zero_stale() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src").join("lib.rs"), "pub fn clean_target() {}").unwrap();
+
+    let _guard = DirGuard::from_utf8(root);
+    ledgerful::state::layout::Layout::new(root)
+        .ensure_state_dir()
+        .unwrap();
+
+    let index_result = execute_index(IndexArgs {
+        ..Default::default()
+    });
+    assert!(index_result.is_ok(), "index must succeed: {index_result:?}");
+
+    let (stdout, _stderr, code) = run_cli(tmp.path(), &["index", "--check", "--json"]);
+    assert_eq!(code, 0, "check --json must exit 0; stdout={stdout}");
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("entire stdout must parse as JSON: {e}; stdout={stdout}");
+    });
+
+    assert_eq!(
+        parsed["stale_files"].as_u64().unwrap_or(999),
+        0,
+        "clean tree must have top-level stale_files 0: {parsed}"
+    );
+    let assessment = &parsed["assessment"];
+    assert_eq!(
+        assessment["state"].as_str().unwrap_or(""),
+        "FreshPopulated",
+        "clean age-fresh must be FreshPopulated: {parsed}"
+    );
+    assert_eq!(
+        assessment["stale_files"].as_u64().unwrap_or(999),
+        0,
+        "assessment.stale_files must be 0 when clean: {parsed}"
+    );
+}
+
 /// Semantic dry-run on a fresh repo should succeed and print a report.
 #[test]
 fn test_index_semantic_dry_run_smoke() {

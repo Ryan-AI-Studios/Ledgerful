@@ -10,6 +10,9 @@ pub enum IndexFreshnessState {
     NeverIndexed,
     FreshEmpty,
     FreshPopulated,
+    /// Age-fresh metadata but worktree content-hash drift (check-path only).
+    /// Set by [`apply_content_drift_override`]; age-only assess never emits this.
+    ContentStalePopulated,
     StaleEmpty,
     StalePopulated,
     Indeterminate,
@@ -170,7 +173,10 @@ pub fn assess_index_freshness_at(
         )
         .unwrap_or(0) as usize;
 
-    let stale_files = active_rows;
+    // Age-only assess does not walk the worktree for content drift (cheap path).
+    // Real stale_files come from `count_content_hash_drift` via check_status
+    // (`apply_content_drift_override`) or try_auto_index.
+    let stale_files = 0;
 
     let dt = match final_ts {
         Some(ref ts) => match chrono::DateTime::parse_from_rfc3339(ts) {
@@ -226,6 +232,7 @@ pub fn assess_index_freshness_at(
     let mut sample_paths = Vec::new();
     if state == IndexFreshnessState::StalePopulated
         || state == IndexFreshnessState::FreshPopulated
+        || state == IndexFreshnessState::ContentStalePopulated
         || state == IndexFreshnessState::Indeterminate
     {
         let mut stmt = conn
@@ -386,6 +393,39 @@ pub fn count_content_hash_drift(
     })
 }
 
+/// Apply content-hash drift onto an age-only assessment (check-path honesty).
+///
+/// Used by `lifecycle::check_status` after one `count_content_hash_drift` walk.
+/// Does **not** reclassify `NeverIndexed` / `Indeterminate` merely because rows
+/// or drift exist. Never leaves `FreshPopulated` when `stale_files > 0`.
+pub fn apply_content_drift_override(
+    mut assessment: IndexFreshnessAssessment,
+    drift: &ContentHashDrift,
+) -> IndexFreshnessAssessment {
+    assessment.stale_files = drift.changed_or_unindexed;
+    assessment.unindexed_files = drift.unindexed;
+    if !drift.sample_paths.is_empty() {
+        // Drift samples are already sorted + capped by count_content_hash_drift.
+        assessment.sample_paths = drift.sample_paths.clone();
+    }
+
+    if drift.is_dirty() {
+        // FreshEmpty + dirty: keep empty semantics honest (no invented state).
+        // NeverIndexed / Indeterminate: do not reclassify merely because
+        // drift or rows exist (preserve legacy branch).
+        if assessment.state == IndexFreshnessState::FreshPopulated {
+            assessment.state = IndexFreshnessState::ContentStalePopulated;
+        }
+    }
+
+    // Hard ban: never report FreshPopulated with positive content-stale count.
+    if assessment.stale_files > 0 && assessment.state == IndexFreshnessState::FreshPopulated {
+        assessment.state = IndexFreshnessState::ContentStalePopulated;
+    }
+
+    assessment
+}
+
 /// Pure decision for light on-demand auto-index (testable without running indexers).
 ///
 /// Callers must still respect empty-reason early exits (`NoSupportedFiles`, etc.)
@@ -400,12 +440,17 @@ pub fn plan_auto_index_action(
         IndexFreshnessState::FreshEmpty
         | IndexFreshnessState::StaleEmpty
         | IndexFreshnessState::FreshPopulated
+        | IndexFreshnessState::ContentStalePopulated
         | IndexFreshnessState::StalePopulated => {
+            // ContentStalePopulated is always content-stale (not age-stale).
             let time_stale = matches!(
                 assessment.state,
                 IndexFreshnessState::StaleEmpty | IndexFreshnessState::StalePopulated
             );
-            let drift_stale = drift.is_dirty();
+            // When state is already ContentStalePopulated, treat as drift_stale
+            // even if the pure drift param is empty (override path may plan later).
+            let drift_stale =
+                drift.is_dirty() || assessment.state == IndexFreshnessState::ContentStalePopulated;
             if time_stale || drift_stale {
                 AutoIndexAction::Incremental {
                     time_stale,
@@ -575,7 +620,9 @@ pub fn warn_if_stale(storage: &StorageManager, threshold_days: u64) -> bool {
 /// - **Populated time/drift stale** → `incremental_index()` only.
 /// - Never SCIP, never `--analyze-graph`.
 ///
-/// Returns the (possibly re-opened) StorageManager.
+/// Returns the (possibly re-opened) [`StorageManager`] and the [`AutoIndexAction`]
+/// that ran (or `None` on no-op early exits). Callers that open Tantivy (search)
+/// must full-rebuild FTS when the action is `FullBootstrap` or `Incremental`.
 ///
 /// `layout` must be the resolved work_root + state_dir (from
 /// [`crate::commands::helpers::get_layout`]). Do **not** rebuild layout from
@@ -585,7 +632,7 @@ pub fn try_auto_index(
     storage: StorageManager,
     threshold_days: u64,
     layout: &Layout,
-) -> Result<StorageManager> {
+) -> Result<(StorageManager, AutoIndexAction)> {
     let assessment = assess_index_freshness(&storage, threshold_days);
     match assessment.state {
         IndexFreshnessState::Indeterminate => {
@@ -600,7 +647,7 @@ pub fn try_auto_index(
                     | Some(EmptyIndexReason::AllIndexableCandidatesIgnored)
             ) {
                 eprintln!("Index is up to date (0 indexable files).");
-                return Ok(storage);
+                return Ok((storage, AutoIndexAction::None));
             }
             if matches!(
                 assessment.empty_reason,
@@ -625,7 +672,7 @@ pub fn try_auto_index(
 
     let action = plan_auto_index_action(&assessment, &drift);
     if matches!(action, AutoIndexAction::None) {
-        return Ok(storage);
+        return Ok((storage, AutoIndexAction::None));
     }
 
     use crate::config::model::Config;
@@ -686,7 +733,7 @@ pub fn try_auto_index(
 
     // Index analysis root is the current worktree workdir, not state parent.
     let mut indexer = ProjectIndexer::new(write_storage, layout.root.clone(), index_config);
-    match action {
+    match &action {
         AutoIndexAction::FullBootstrap => {
             indexer.full_index()?;
         }
@@ -699,7 +746,7 @@ pub fn try_auto_index(
     }
 
     // Re-open in read-only mode for the caller using the same layout.
-    StorageManager::open_read_only(layout)
+    Ok((StorageManager::open_read_only(layout)?, action))
 }
 
 #[cfg(test)]
@@ -1106,6 +1153,214 @@ mod tests {
         assert_eq!(
             assessment.last_indexed_at.as_deref(),
             Some(STALE_EPOCH_RFC3339)
+        );
+    }
+
+    // ── 0128: check honesty + ContentStalePopulated ───────────────────────
+
+    #[test]
+    fn age_only_assess_stale_files_is_zero_not_row_count() {
+        let storage = in_memory_storage();
+        let now = Utc::now().to_rfc3339();
+        insert_file_with_hash(&storage, "src/a.rs", "fn a() {}\n", &now);
+        insert_file_with_hash(&storage, "src/b.rs", "fn b() {}\n", &now);
+        set_last_indexed_at(&storage, &now);
+
+        let assessment = assess_index_freshness(&storage, 3);
+        assert_eq!(assessment.state, IndexFreshnessState::FreshPopulated);
+        assert_eq!(assessment.indexed_files, 2);
+        assert_eq!(
+            assessment.stale_files, 0,
+            "age-only assess must not copy active_rows into stale_files"
+        );
+        assert_eq!(assessment.unindexed_files, 0);
+    }
+
+    #[test]
+    fn apply_drift_override_age_fresh_dirty_is_content_stale() {
+        let assessment = IndexFreshnessAssessment {
+            state: IndexFreshnessState::FreshPopulated,
+            empty_reason: None,
+            empty_diagnostics: None,
+            last_indexed_at: Some(Utc::now().to_rfc3339()),
+            days_since_indexed: Some(0),
+            indexed_files: 10,
+            stale_files: 0,
+            unindexed_files: 0,
+            sample_paths: Vec::new(),
+            source: FreshnessSource::RepositoryMetadata,
+            warnings: Vec::new(),
+        };
+        let drift = ContentHashDrift {
+            changed_or_unindexed: 7,
+            unindexed: 2,
+            sample_paths: vec!["src/a.rs".into(), "src/b.rs".into()],
+        };
+        let out = apply_content_drift_override(assessment, &drift);
+        assert_eq!(out.state, IndexFreshnessState::ContentStalePopulated);
+        assert_eq!(out.stale_files, 7);
+        assert_eq!(out.unindexed_files, 2);
+        assert_eq!(out.indexed_files, 10);
+        assert_eq!(out.sample_paths, drift.sample_paths);
+        assert_ne!(
+            out.state,
+            IndexFreshnessState::FreshPopulated,
+            "never FreshPopulated with stale_files > 0"
+        );
+    }
+
+    #[test]
+    fn apply_drift_override_never_reclassifies_never_indexed() {
+        let assessment = IndexFreshnessAssessment {
+            state: IndexFreshnessState::NeverIndexed,
+            empty_reason: None,
+            empty_diagnostics: None,
+            last_indexed_at: None,
+            days_since_indexed: None,
+            indexed_files: 3,
+            stale_files: 0,
+            unindexed_files: 0,
+            sample_paths: Vec::new(),
+            source: FreshnessSource::None,
+            warnings: Vec::new(),
+        };
+        let drift = ContentHashDrift {
+            changed_or_unindexed: 3,
+            unindexed: 3,
+            sample_paths: vec!["src/a.rs".into()],
+        };
+        let out = apply_content_drift_override(assessment, &drift);
+        assert_eq!(
+            out.state,
+            IndexFreshnessState::NeverIndexed,
+            "NeverIndexed + rows/drift must not become Fresh*"
+        );
+        assert_eq!(out.stale_files, 3);
+    }
+
+    #[test]
+    fn apply_drift_override_fresh_empty_keeps_empty_semantics() {
+        let assessment = IndexFreshnessAssessment {
+            state: IndexFreshnessState::FreshEmpty,
+            empty_reason: Some(EmptyIndexReason::NoSupportedFiles),
+            empty_diagnostics: None,
+            last_indexed_at: Some(Utc::now().to_rfc3339()),
+            days_since_indexed: Some(0),
+            indexed_files: 0,
+            stale_files: 0,
+            unindexed_files: 0,
+            sample_paths: Vec::new(),
+            source: FreshnessSource::RepositoryMetadata,
+            warnings: Vec::new(),
+        };
+        let drift = ContentHashDrift {
+            changed_or_unindexed: 1,
+            unindexed: 1,
+            sample_paths: vec!["src/a.rs".into()],
+        };
+        let out = apply_content_drift_override(assessment, &drift);
+        assert_eq!(
+            out.state,
+            IndexFreshnessState::FreshEmpty,
+            "FreshEmpty + dirty must not invent ContentStale without populated floor"
+        );
+        assert_eq!(out.stale_files, 1);
+    }
+
+    #[test]
+    fn plan_content_stale_populated_is_incremental_drift() {
+        let assessment = IndexFreshnessAssessment {
+            state: IndexFreshnessState::ContentStalePopulated,
+            empty_reason: None,
+            empty_diagnostics: None,
+            last_indexed_at: Some(Utc::now().to_rfc3339()),
+            days_since_indexed: Some(0),
+            indexed_files: 5,
+            stale_files: 2,
+            unindexed_files: 0,
+            sample_paths: Vec::new(),
+            source: FreshnessSource::RepositoryMetadata,
+            warnings: Vec::new(),
+        };
+        // Even with empty drift param, ContentStale implies drift_stale.
+        assert_eq!(
+            plan_auto_index_action(&assessment, &ContentHashDrift::default()),
+            AutoIndexAction::Incremental {
+                time_stale: false,
+                drift_stale: true,
+            }
+        );
+        let drift = ContentHashDrift {
+            changed_or_unindexed: 2,
+            unindexed: 0,
+            sample_paths: vec!["src/x.rs".into()],
+        };
+        assert_eq!(
+            plan_auto_index_action(&assessment, &drift),
+            AutoIndexAction::Incremental {
+                time_stale: false,
+                drift_stale: true,
+            }
+        );
+    }
+
+    #[test]
+    fn never_fresh_populated_when_override_stale_positive() {
+        // Defensive: force the hard ban even if state was still FreshPopulated
+        // with positive drift counts somehow.
+        let assessment = IndexFreshnessAssessment {
+            state: IndexFreshnessState::FreshPopulated,
+            empty_reason: None,
+            empty_diagnostics: None,
+            last_indexed_at: Some(Utc::now().to_rfc3339()),
+            days_since_indexed: Some(0),
+            indexed_files: 1,
+            stale_files: 0,
+            unindexed_files: 0,
+            sample_paths: Vec::new(),
+            source: FreshnessSource::RepositoryMetadata,
+            warnings: Vec::new(),
+        };
+        let drift = ContentHashDrift {
+            changed_or_unindexed: 1,
+            unindexed: 0,
+            sample_paths: vec!["src/a.rs".into()],
+        };
+        let out = apply_content_drift_override(assessment, &drift);
+        assert!(out.stale_files > 0);
+        assert_ne!(out.state, IndexFreshnessState::FreshPopulated);
+        assert_eq!(out.state, IndexFreshnessState::ContentStalePopulated);
+    }
+
+    /// 0128 B7: search must not full-rebuild FTS when AutoIndexAction is None
+    /// (except document_count==0 / explicit --index). Source-level gate.
+    #[test]
+    fn search_fts_rebuild_gated_on_auto_index_action() {
+        let search_src = include_str!("../commands/search.rs");
+        assert!(
+            search_src.contains("auto_index_ran_work")
+                || search_src.contains("AutoIndexAction::FullBootstrap"),
+            "search must key FTS rebuild on auto-index action"
+        );
+        assert!(
+            search_src.contains("needs_fts_rebuild"),
+            "search must use a single needs_fts_rebuild gate"
+        );
+        // Ensure Action::None does not alone force rebuild: condition includes
+        // FullBootstrap | Incremental, not a blanket rebuild after try_auto_index.
+        let try_region = search_src
+            .find("try_auto_index")
+            .expect("search calls try_auto_index");
+        let rebuild_region = search_src
+            .find("needs_fts_rebuild")
+            .expect("needs_fts_rebuild present");
+        assert!(
+            rebuild_region > try_region,
+            "rebuild decision should follow try_auto_index capture"
+        );
+        assert!(
+            search_src.contains("rebuild_tantivy_index"),
+            "search must use shared rebuild_tantivy_index helper"
         );
     }
 
