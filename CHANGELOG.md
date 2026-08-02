@@ -25,6 +25,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `ChangedFile.status`. Weights unchanged; still every public symbol in a touched
   file (0088 precision deferred).
 
+- **endpoints list emit dedupe (0130):** `endpoints` (human + JSON, including
+  `--changed`) collapses stacked identical routes to one row per
+  `(method, path_pattern, framework)` with keep-best (confidence → non-empty
+  handler → lex lower handler → lower id). Empty-state still uses raw SQL
+  emptiness before dedupe.
+
+- **route extract non-stacking on re-index (0130):** `RouteExtractor::extract`
+  rebuilds `api_routes` (DELETE + insert in one outer transaction) so full
+  re-extract and `index --incremental` route passes no longer multiply rows.
+
 ## [0.2.5] - 2026-08-02
 
 ### Fixed
