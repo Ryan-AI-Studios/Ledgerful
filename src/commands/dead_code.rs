@@ -100,7 +100,9 @@ pub fn execute_dead_code_with_prompt(
                 crate::state::storage::StorageManager::init_with_layout(&layout)?
             }
         };
-        crate::index::staleness::try_auto_index(storage, threshold_days, &layout)?
+        let (storage, _) =
+            crate::index::staleness::try_auto_index(storage, threshold_days, &layout)?;
+        storage
     } else {
         let storage = crate::state::storage::StorageManager::open_read_only(&layout)?;
         if explain.is_none() {

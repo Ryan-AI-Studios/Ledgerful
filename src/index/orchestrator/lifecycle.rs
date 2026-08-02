@@ -29,44 +29,21 @@ pub fn check_status(indexer: &ProjectIndexer) -> Result<super::IndexStatus> {
         })
         .into_diagnostic()? as usize;
 
-    let assessment = crate::index::staleness::assess_index_freshness(
+    // Age-only assess (cheap) then one content-hash drift walk; override fields
+    // so assessment.state / assessment.stale_files match top-level drift counts.
+    let age_assessment = crate::index::staleness::assess_index_freshness(
         &indexer.storage,
         indexer.config.index.stale_threshold_days,
     );
+    let drift =
+        crate::index::staleness::count_content_hash_drift(&indexer.storage, &indexer.repo_path)?;
+    let assessment = crate::index::staleness::apply_content_drift_override(age_assessment, &drift);
     let last_indexed_at = assessment.last_indexed_at.clone();
-
-    let current_files = super::discovery::discover_files(indexer)?;
-    let mut stale_count = 0usize;
-
-    for file_path in &current_files {
-        let relative = file_path
-            .strip_prefix(&indexer.repo_path)
-            .unwrap_or(file_path)
-            .to_string();
-
-        let current_hash =
-            match crate::util::fs::read_to_string_with_encoding(file_path.as_std_path()) {
-                Ok(c) => blake3::hash(c.as_bytes()).to_hex().to_string(),
-                Err(_) => continue,
-            };
-        let stored_hash: Option<String> = conn
-            .query_row(
-                "SELECT content_hash FROM project_files WHERE file_path = ?1",
-                [&relative],
-                |row| row.get::<_, Option<String>>(0),
-            )
-            .ok()
-            .flatten();
-
-        if stored_hash.as_deref() != Some(&current_hash) {
-            stale_count += 1;
-        }
-    }
 
     Ok(super::IndexStatus {
         total_files,
         total_symbols,
-        stale_files: stale_count,
+        stale_files: drift.changed_or_unindexed,
         last_indexed_at,
         assessment: Some(assessment),
     })

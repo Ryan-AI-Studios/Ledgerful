@@ -40,7 +40,9 @@ pub fn execute_hotspots(args: HotspotArgs) -> Result<()> {
         layout.ensure_state_dir()?;
         let storage = StorageManager::init_with_layout(&layout)?;
         if args.auto_index {
-            crate::index::staleness::try_auto_index(storage, threshold_days, &layout)?
+            let (storage, _) =
+                crate::index::staleness::try_auto_index(storage, threshold_days, &layout)?;
+            storage
         } else {
             let _ = warn_if_stale(&storage, threshold_days);
             storage
@@ -59,7 +61,9 @@ pub fn execute_hotspots(args: HotspotArgs) -> Result<()> {
                 StorageManager::init_with_layout(&layout)?
             }
         };
-        crate::index::staleness::try_auto_index(storage, threshold_days, &layout)?
+        let (storage, _) =
+            crate::index::staleness::try_auto_index(storage, threshold_days, &layout)?;
+        storage
     } else {
         let storage = if need_cozo {
             StorageManager::open_read_only(&layout)?

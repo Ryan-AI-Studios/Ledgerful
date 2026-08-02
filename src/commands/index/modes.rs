@@ -238,14 +238,9 @@ fn execute_main_mode(
             None
         };
 
-    // Update Tantivy search index (full-text search)
+    // Update Tantivy search index (full-text search; no incremental FTS API)
     let index_path = layout.search_index_dir();
-    {
-        let engine = crate::search::TantivySearchEngine::open_or_create(index_path.as_std_path())?;
-        engine.clear()?;
-        let stream_indexer = crate::search::StreamIndexer::new(engine);
-        stream_indexer.index_repository(&layout.root)?;
-    }
+    crate::search::rebuild_tantivy_index(layout)?;
 
     // Verify search index integrity on disk
     let engine = crate::search::TantivySearchEngine::open_or_create(index_path.as_std_path())?;
@@ -374,6 +369,43 @@ fn decide_check_verdict(
                         .to_string(),
                 ));
                 exit_indeterminate = true;
+            }
+            IndexFreshnessState::ContentStalePopulated => {
+                // Age-fresh metadata + content-hash drift (0128).
+                if is_missing {
+                    messages.push((
+                        CheckMsgKind::Error,
+                        "Error: Index is missing or empty. Run 'ledgerful index' to build it."
+                            .to_string(),
+                    ));
+                    exit_missing = true;
+                } else if status.stale_files > 0 {
+                    if strict {
+                        messages.push((
+                            CheckMsgKind::Error,
+                            format!(
+                                "Error: Index has content drift ({} files) and --strict is enabled.",
+                                status.stale_files
+                            ),
+                        ));
+                        exit_strict_stale = true;
+                    } else {
+                        messages.push((
+                            CheckMsgKind::Info,
+                            format!(
+                                "Warning: Index has content drift ({} files; age-fresh metadata). Run 'ledgerful index --incremental' to update.",
+                                status.stale_files
+                            ),
+                        ));
+                    }
+                } else {
+                    // Defensive: ContentStale without positive top-level drift.
+                    messages.push((
+                        CheckMsgKind::Info,
+                        "Warning: Index content may be stale. Run 'ledgerful index --incremental' to update."
+                            .to_string(),
+                    ));
+                }
             }
             _ => {
                 if is_missing {

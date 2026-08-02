@@ -10,6 +10,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Search index freshness honesty (0128):** `index --check` never reports
+  `FreshPopulated` while content-hash drift is positive. Age-only assess no
+  longer copies row count into `assessment.stale_files`; check runs one
+  `count_content_hash_drift` and sets `ContentStalePopulated` when age-fresh
+  + dirty. Top-level and assessment `stale_files` agree. `search --auto-index`
+  full-rebuilds Tantivy after SQLite FullBootstrap/Incremental (not on every
+  search when auto-index no-ops). See `docs/index-freshness-policy.md`.
+
 - **change-context RO nextActions honesty (0124):** `not_ready` recovery actions
   are error-class-aware. Permission/RO failures no longer suggest
   `doctor --json` / `init` / `index`; they guide populated `LEDGERFUL_STATE_DIR`,
