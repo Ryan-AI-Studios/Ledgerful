@@ -21,6 +21,15 @@ impl EnrichmentProvider for KGProvider {
             return Ok(());
         };
 
+        // Soft-open / reviewer RO storage: never issue Cozo :put mutations.
+        // Pure read queries below remain allowed for reachability enrichment.
+        let allow_kg_writes = !context.storage.is_read_only;
+        if !allow_kg_writes {
+            debug!(
+                "Storage is read-only; skipping KG hotspot/propagation writes (read queries only)"
+            );
+        }
+
         debug!("Enriching impact packet with Knowledge Graph data...");
         let spinner = Spinner::new("Enriching Knowledge Graph...");
         let start_time = Instant::now();
@@ -34,8 +43,8 @@ impl EnrichmentProvider for KGProvider {
             false
         };
 
-        // 1. Sync Hotspots to KG risk scores
-        if !packet.hotspots.is_empty() {
+        // 1. Sync Hotspots to KG risk scores (write path — skipped on RO)
+        if allow_kg_writes && !packet.hotspots.is_empty() {
             if check_timeout(context) {
                 spinner.finish();
                 return Ok(());
@@ -189,13 +198,92 @@ impl EnrichmentProvider for KGProvider {
 mod tests {
     use super::*;
     use crate::impact::enrichment::EnrichmentContext;
-    use crate::impact::packet::{ChangedFile, ImpactPacket};
+    use crate::impact::packet::{ChangedFile, Hotspot, ImpactPacket};
     use crate::state::graph_kinds::{EdgeKind, NodeKind};
     use crate::state::storage::StorageManager;
     use crate::state::storage_cozo::{CozoStorage, GraphEdge, GraphNode};
     use std::collections::HashMap;
     use std::path::PathBuf;
     use std::sync::{Arc, Mutex};
+
+    /// Soft-open / reviewer RO: hotspot :put paths must be skipped; pure
+    /// reachability reads still run without panic or write requirement.
+    #[test]
+    fn test_kg_enrichment_skips_writes_when_storage_read_only() {
+        let cozo = CozoStorage::new(&PathBuf::from("")).unwrap();
+
+        let nodes = vec![
+            GraphNode {
+                id: build_urn(NodeKind::File, "file_1.rs"),
+                label: "file_1.rs".to_string(),
+                category: NodeKind::File,
+                risk_score: 0.0,
+                metadata: None,
+            },
+            GraphNode {
+                id: build_urn(NodeKind::File, "file_2.rs"),
+                label: "file_2.rs".to_string(),
+                category: NodeKind::File,
+                risk_score: 0.0,
+                metadata: None,
+            },
+        ];
+        cozo.insert_nodes(&nodes).unwrap();
+        cozo.insert_edges(&[GraphEdge {
+            source: build_urn(NodeKind::File, "file_1.rs"),
+            target: build_urn(NodeKind::File, "file_2.rs"),
+            relation: EdgeKind::DependsOn,
+            confidence: 1.0,
+            provenance_id: "tx1".to_string(),
+        }])
+        .unwrap();
+
+        let mut storage =
+            StorageManager::init_from_conn(rusqlite::Connection::open_in_memory().unwrap());
+        storage.cozo = Some(cozo);
+        storage.is_read_only = true;
+
+        let context = EnrichmentContext {
+            storage: &storage,
+            config: &crate::config::model::Config::default(),
+            file_id_map: HashMap::new(),
+            project_root: PathBuf::from("."),
+            warnings: Arc::new(Mutex::new(Vec::new())),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+        };
+
+        let mut packet = ImpactPacket {
+            changes: vec![ChangedFile {
+                path: PathBuf::from("file_1.rs"),
+                status: "Modified".to_string(),
+                is_staged: true,
+                ..Default::default()
+            }],
+            // Non-empty hotspots would previously issue :put node scripts.
+            hotspots: vec![Hotspot {
+                path: PathBuf::from("file_1.rs"),
+                score: 0.9,
+                display_score: 0.9,
+                complexity: 5,
+                frequency: 1.0,
+                centrality: None,
+            }],
+            ..Default::default()
+        };
+
+        let provider = KGProvider;
+        provider.enrich(&context, &mut packet).unwrap();
+
+        let nodes: Vec<String> = packet
+            .knowledge_graph
+            .iter()
+            .map(|k| k.impacted_node.clone())
+            .collect();
+        assert!(
+            nodes.contains(&build_urn(NodeKind::File, "file_2.rs")),
+            "RO enrich should still run pure reachability reads"
+        );
+    }
 
     #[test]
     fn test_kg_enrichment() {

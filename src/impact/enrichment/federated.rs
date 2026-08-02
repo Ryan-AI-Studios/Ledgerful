@@ -11,23 +11,29 @@ impl EnrichmentProvider for FederatedProvider {
     }
 
     fn enrich(&self, context: &EnrichmentContext, packet: &mut ImpactPacket) -> Result<()> {
-        match crate::federated::refresh::refresh_federated_dependencies(
-            &context.project_root,
-            packet,
-            context.storage,
-            context.config,
-            Some(context.deadline),
-        ) {
-            Ok(degradation_warnings) => {
-                // 0034: surface scan degradation warnings (budget hit,
-                // deadline breached) to the packet's analysis_warnings so
-                // the impact output records which provider truncated, not
-                // just the log sink (DoD-5).
-                packet.analysis_warnings.extend(degradation_warnings);
+        // Soft-open / RO change-context: skip discovery refresh writes.
+        // Cross-repo read-only impact may still run below.
+        if !context.storage.is_read_only {
+            match crate::federated::refresh::refresh_federated_dependencies(
+                &context.project_root,
+                packet,
+                context.storage,
+                context.config,
+                Some(context.deadline),
+            ) {
+                Ok(degradation_warnings) => {
+                    // 0034: surface scan degradation warnings (budget hit,
+                    // deadline breached) to the packet's analysis_warnings so
+                    // the impact output records which provider truncated, not
+                    // just the log sink (DoD-5).
+                    packet.analysis_warnings.extend(degradation_warnings);
+                }
+                Err(e) => {
+                    warn!("Federated discovery refresh failed: {e}");
+                }
             }
-            Err(e) => {
-                warn!("Federated discovery refresh failed: {e}");
-            }
+        } else {
+            tracing::debug!("Storage is read-only; skipping federated discovery refresh writes");
         }
 
         // Cross-repo impact analysis

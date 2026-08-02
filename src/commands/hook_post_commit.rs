@@ -362,11 +362,15 @@ fn record_hotspot_trends(repo_root: &camino::Utf8Path, db_path: &std::path::Path
     }
     drop(indexer);
 
-    // Re-open read-only for hotspot calculation
-    let storage = match StorageManager::open_read_only(&layout) {
+    // Re-open write for hotspot calculation + trend insert.
+    // True SQLITE_OPEN_READ_ONLY forbids inserts; trend recording must use write open.
+    let storage = match StorageManager::init_with_layout(&layout) {
         Ok(s) => s,
         Err(e) => {
-            tracing::debug!("Post-commit hook: cannot re-open read-only storage: {}", e);
+            tracing::debug!(
+                "Post-commit hook: cannot re-open write storage for trends: {}",
+                e
+            );
             return Ok(());
         }
     };

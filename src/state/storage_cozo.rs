@@ -28,6 +28,9 @@ pub struct GraphEdge {
 
 pub struct CozoStorage {
     db: DbInstance,
+    /// When true, [`Self::run_script`] uses `ScriptMutability::Immutable` so
+    /// reviewer / soft-open paths never request mutable Cozo execution.
+    is_read_only: bool,
 }
 
 impl CozoStorage {
@@ -47,12 +50,23 @@ impl CozoStorage {
     /// The caller is responsible for calling `setup_schema_with_options`.
     pub fn new_in_memory_bare() -> Result<Self> {
         let db = init::initialize_instance(Path::new(""), false)?;
-        Ok(Self { db })
+        Ok(Self {
+            db,
+            is_read_only: false,
+        })
+    }
+
+    /// Whether this instance was opened read-only (Immutable script default).
+    pub fn is_read_only(&self) -> bool {
+        self.is_read_only
     }
 
     fn new_with_options(db_path: &Path, read_only: bool) -> Result<Self> {
         let db = init::initialize_instance(db_path, read_only)?;
-        let storage = Self { db };
+        let storage = Self {
+            db,
+            is_read_only: read_only,
+        };
         if !read_only {
             let include_bridge_tables = crate::bridge::client::is_bridge_enabled_or_default();
             storage.setup_schema_with_options(init::setup_schema::Options {
@@ -63,8 +77,13 @@ impl CozoStorage {
     }
 
     pub fn run_script(&self, script: &str) -> Result<NamedRows> {
+        let mutability = if self.is_read_only {
+            ScriptMutability::Immutable
+        } else {
+            ScriptMutability::Mutable
+        };
         self.db
-            .run_script(script, Default::default(), ScriptMutability::Mutable)
+            .run_script(script, Default::default(), mutability)
             .map_err(|e| miette::miette!("CozoDB script error: {:?}. Script was: '{}'", e, script))
     }
 
@@ -74,6 +93,12 @@ impl CozoStorage {
         params: std::collections::BTreeMap<String, DataValue>,
         mutability: ScriptMutability,
     ) -> Result<NamedRows> {
+        // Defense-in-depth: never honor Mutable when this instance is RO.
+        let mutability = if self.is_read_only {
+            ScriptMutability::Immutable
+        } else {
+            mutability
+        };
         self.db
             .run_script(script, params, mutability)
             .map_err(|e| miette::miette!("CozoDB script error: {:?}", e))
@@ -193,6 +218,15 @@ impl CozoStorage {
         Ok(0)
     }
 
+    fn require_writable(&self) -> Result<()> {
+        if self.is_read_only {
+            return Err(miette::miette!(
+                "CozoStorage is read-only; mutation refused"
+            ));
+        }
+        Ok(())
+    }
+
     pub fn put_node_batch(&self, nodes: &[GraphNode]) -> Result<()> {
         self.insert_nodes(nodes)
     }
@@ -202,6 +236,7 @@ impl CozoStorage {
     }
 
     pub fn remove_nodes_by_id(&self, ids: &[String]) -> Result<()> {
+        self.require_writable()?;
         if ids.is_empty() {
             return Ok(());
         }
@@ -228,6 +263,7 @@ impl CozoStorage {
     }
 
     pub fn remove_edges_for_source(&self, source_ids: &[String]) -> Result<()> {
+        self.require_writable()?;
         if source_ids.is_empty() {
             return Ok(());
         }
@@ -259,6 +295,7 @@ impl CozoStorage {
     /// inserting updated ones, ensuring consistency between the KG and the
     /// vector store.
     pub fn remove_snippets_for_files(&self, file_paths: &[String]) -> Result<()> {
+        self.require_writable()?;
         if file_paths.is_empty() {
             return Ok(());
         }
@@ -282,6 +319,7 @@ impl CozoStorage {
     }
 
     pub fn insert_nodes(&self, nodes: &[GraphNode]) -> Result<()> {
+        self.require_writable()?;
         if nodes.is_empty() {
             return Ok(());
         }
@@ -309,6 +347,7 @@ impl CozoStorage {
     }
 
     pub fn insert_edges(&self, edges: &[GraphEdge]) -> Result<()> {
+        self.require_writable()?;
         if edges.is_empty() {
             return Ok(());
         }

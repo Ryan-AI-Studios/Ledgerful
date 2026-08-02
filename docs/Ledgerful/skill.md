@@ -23,6 +23,65 @@ Use it as a safety and planning layer. It is not the source of truth for code co
 
 Linked worktrees share ledger state with the primary worktree's `.ledgerful` (same pending TX and `ledger.db`). Run `ledgerful` commands from the worktree cwd; do not copy state into the linked tree. Submodules keep their own `.ledgerful`. Set absolute `LEDGERFUL_STATE_DIR` to override.
 
+## Independent / Cross-Model Review (read-only)
+
+For high-risk diffs, a read-only independent review (Codex `codex exec -s
+read-only`, restricted subagent, second model) can ground DoD audit without a
+writable implementer tree. Full durable matrix: [docs/reviewer-readonly.md](../reviewer-readonly.md).
+
+### Honesty ceiling
+
+Full `verify` / cargo / nextest / `index` rebuild / `ledger start|commit`
+**require a writable environment**. Never claim full gates in pure zero-write RO.
+On storage failure: report unavailable — do not invent impact.
+
+### Command matrix (agent-critical)
+
+| Class | Examples | Pure RO |
+|---|---|---|
+| A Git | `git status` / `diff` / `log` | Always |
+| B Read-heavy | `ledger status`, `audit` | Prefer existing `ledger.db` |
+| C Write-open | `doctor` (always); `change-context` soft-opens when DB exists | Doctor: **skip** on pure RO |
+| D Write/exec | `index`, `scan`, `verify`, ledger start/commit | **Not** reviewer job |
+| E Network | ask/embed probes, caches | Separate from FS RO |
+
+**Hosts:** Codex `-s read-only` (native Windows OK) = pure RO. Codex
+`--sandbox workspace-write` (not deprecated `--full-auto`) for Class C/D when
+orchestrator authorizes. Claude Bash sandbox = **cwd + `$TMPDIR` writable by
+default** — **≠** Codex pure RO.
+
+### Reviewer ladder
+
+1. `git status` + `git diff` (always).
+2. If `ledgerful` on PATH and populated `.ledgerful` (or absolute
+   `LEDGERFUL_STATE_DIR` → populated state):
+   - `ledgerful ledger status --json` (or `--compact`)
+   - `ledgerful audit` when provenance matters
+   - `ledgerful change-context --json` (optional `--base-ref`)
+   - **Skip** `doctor --json` on pure RO unless workspace-write / pre-written
+     `doctor-results.json`
+3. If change-context fails RO/permission: git-only + note grounding unavailable
+   under pure RO (do not use that phrase for Claude cwd-writable without evidence).
+4. **Never** run `verify` / `index` / `scan --impact` as the reviewer unless
+   workspace-write (or stronger) **and** the orchestrator authorized write-class
+   gates (`codex-review` skill: orchestrator owns gates).
+
+### Env footgun
+
+`LEDGERFUL_STATE_DIR` must be absolute and point at an **existing populated**
+`.ledgerful`. Empty temp → empty index false confidence. Worktrees share main
+state by default; do not copy state into the linked tree.
+
+### Codex invocation hygiene
+
+```powershell
+# -s read-only only. Do NOT invent -a never or --full-auto.
+cmd /c "codex exec -C ""C:\dev\Ledgerful"" -s read-only -m gpt-5.4 -o output\review.md ""Review the current diff for regressions. Do not modify files."" < NUL"
+```
+
+If the command appears stuck, inspect the output file before waiting longer; the
+review may already have written useful findings.
+
 ## When To Use
 
 Use Ledgerful when:
