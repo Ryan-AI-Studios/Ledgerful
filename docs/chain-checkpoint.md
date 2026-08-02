@@ -52,14 +52,32 @@ Legitimate advance past a weekly export **passes** checkpoint and **fails**
 - A **SOC2 evidence zip** containing `chain_head.json`
 - A **bare JSON** file (`export head` output / extracted `chain_head.json`)
 
-## Remote URL (compose with curl)
+## Public head for Ledgerful itself (Tier C)
 
-There is no `verify --against-url` (egress/SSRF surface). Compose:
+For **Ledgerful’s own** development ledger, a CI-anchored thin head is published at:
+
+`https://www.ledgerful.dev/ledger/chain_head.json`
+
+There is **no** `verify --against-url` (egress/SSRF surface). Compose download then
+local path verify:
 
 ```powershell
-curl -fsSL -o head.json https://example.invalid/ledgerful-chain-head.json
+curl -fsSL -o head.json https://www.ledgerful.dev/ledger/chain_head.json
 ledgerful verify --signatures --against-export .\head.json
 ```
+
+**What this means:** the **local workspace ledger** must **extend or equal** the
+downloaded public checkpoint (same genesis; hash at public `length` matches
+`latest_entry_hash`). It detects **local rollback/rewrite relative to the
+published head** — not “the public site proves your private product history.”
+
+Customer / other repos still need **Tier B** off-machine retention of **their**
+heads (`export head` + USB/object store/peer host — track 0119). Public always-on
+publish for Ledgerful-itself is this URL (track **0120**); it does **not** replace
+operator retention for arbitrary customer workspaces.
+
+Full redacted public bundle (entries + manifest + verifier): see
+`docs/public-ledger.md` and `https://www.ledgerful.dev/ledger/`.
 
 ## Honesty
 
@@ -67,7 +85,10 @@ ledgerful verify --signatures --against-export .\head.json
 - Signing-key compromise + re-sign remains a separate ceiling.
 - Team-sync peers share trust assumptions and are **not** a substitute for
   offline retention.
-- See GitHub issue #6 for the original limitation; public always-on publish for
-  Ledgerful itself is a separate track (Tier C).
+- Public publish for Ledgerful-itself is a static CI-anchored artifact, not
+  Rekor/CT multi-party logging and not universal retention for every repo that
+  uses Ledgerful.
+- See GitHub issue #6 for the original limitation (Tier B = 0119; Tier C = 0120).
 
-Further reading: `docs/Features.md` (Chain Integrity), `docs/golden-path.md`.
+Further reading: `docs/Features.md` (Chain Integrity), `docs/golden-path.md`,
+`docs/public-ledger.md`.

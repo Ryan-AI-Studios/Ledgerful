@@ -507,6 +507,8 @@ ledgerful verify --signatures --against-export ./checkpoints/head.json
 ```
 Local `--chain` alone cannot detect full rollback when the adversary controls DB + head. See `docs/chain-checkpoint.md`.
 
+**Ledgerful-itself public head (0120):** thin checkpoint at `https://www.ledgerful.dev/ledger/chain_head.json` — download then `verify --signatures --against-export` (no `--against-url`). Customer repos use `export head` + off-machine retention (0119).
+
 ## Repository Configuration
 
 Ledgerful's `.ledgerful/rules.toml` and `.ledgerful/config.toml` are repo-local policy, not portable defaults. When installing or copying this skill into another repository, review and update:
