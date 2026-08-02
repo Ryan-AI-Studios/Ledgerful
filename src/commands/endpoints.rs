@@ -75,7 +75,8 @@ type EndpointDedupeKey = (String, String, String);
 /// Collapse stacked identical route identities to one row.
 ///
 /// Keep-best: higher `route_confidence`; then non-empty handler; then lex lower
-/// handler; then lower `id`. After dedupe, sort `path_pattern ASC`, `method ASC`.
+/// handler; then lower `id`. After dedupe, sort `path_pattern ASC`, `method ASC`,
+/// `framework ASC`, then `id ASC` for multi-framework same path+method determinism.
 fn dedupe_endpoint_rows(rows: Vec<EndpointRow>) -> Vec<EndpointRow> {
     let mut best: HashMap<EndpointDedupeKey, EndpointRow> = HashMap::new();
 
@@ -102,6 +103,8 @@ fn dedupe_endpoint_rows(rows: Vec<EndpointRow>) -> Vec<EndpointRow> {
         a.path_pattern
             .cmp(&b.path_pattern)
             .then_with(|| a.method.cmp(&b.method))
+            .then_with(|| a.framework.cmp(&b.framework))
+            .then_with(|| a.id.cmp(&b.id))
     });
     out
 }
@@ -141,34 +144,17 @@ fn endpoint_row_better_than(cand: &EndpointRow, prev: &EndpointRow) -> bool {
     cand.id < prev.id
 }
 
-pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
-    let layout = get_layout()?;
-    let storage = StorageManager::open_read_only(&layout)?;
-    let conn = storage.get_connection();
-
-    // --changed: uncapped match keys from shared affected-flows library
-    // (handler symbol / impl file / registration file / blast edges). Report
-    // payloads still apply FLOWS_CAP; the filter must not inherit that truncate.
-    // JSON keys stay non-breaking; only which rows appear widens vs the old
-    // registration-file-only filter.
-    let matched_route_keys: Option<std::collections::HashSet<(String, String)>> = if args.changed {
-        let packet = crate::commands::impact::execute_impact_silent()?;
-        use crate::impact::enrichment::affected_flows::{
-            AffectedFlowsOpts, match_affected_route_keys,
-        };
-        let opts = AffectedFlowsOpts {
-            head_hash: packet.head_hash.clone(),
-        };
-        // Non-available statuses (empty_map / missing_table / no_change_seeds)
-        // → empty set (honest empty --changed). Matcher Err (true failures)
-        // propagates so we never claim "no endpoints changed" after a fault.
-        let set =
-            match_affected_route_keys(conn, &packet.changes, packet.blast_radius.as_ref(), &opts)?;
-        Some(set)
-    } else {
-        None
-    };
-
+/// SELECT `api_routes` with optional method/path filters, apply optional
+/// `--changed` key filter, then emit-time dedupe.
+///
+/// Returns `(deduped_rows, raw_sql_was_empty)` so empty-state fencing stays on
+/// raw SQL emptiness (before filter/dedupe), matching `execute_endpoints`.
+fn query_filter_and_dedupe_endpoints(
+    conn: &rusqlite::Connection,
+    method: Option<&str>,
+    path: Option<&str>,
+    matched_route_keys: Option<&std::collections::HashSet<(String, String)>>,
+) -> Result<(Vec<EndpointRow>, bool)> {
     let mut query = String::from(
         "SELECT ar.id, ar.method, ar.path_pattern, ar.handler_symbol_name, ar.framework, \
          ar.auth_requirements, ar.owning_service, ar.consumers, pf.file_path, \
@@ -179,11 +165,11 @@ pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
     );
     let mut params: Vec<String> = Vec::new();
 
-    if let Some(m) = &args.method {
+    if let Some(m) = method {
         query.push_str(" AND ar.method = ?");
         params.push(m.to_uppercase());
     }
-    if let Some(p) = &args.path {
+    if let Some(p) = path {
         query.push_str(" AND ar.path_pattern LIKE ?");
         params.push(format!("%{}%", p));
     }
@@ -216,7 +202,7 @@ pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
     let all_rows_empty = all_rows.is_empty();
 
     // Apply --changed filter: keep routes matched by shared affected-flows lib.
-    let filtered: Vec<EndpointRow> = if let Some(ref keys) = matched_route_keys {
+    let filtered: Vec<EndpointRow> = if let Some(keys) = matched_route_keys {
         all_rows
             .into_iter()
             .filter(|r| keys.contains(&(r.method.to_uppercase(), r.path_pattern.clone())))
@@ -226,7 +212,43 @@ pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
     };
 
     // Emit-time dedupe after SELECT and after --changed filter (human + JSON).
-    let rows = dedupe_endpoint_rows(filtered);
+    Ok((dedupe_endpoint_rows(filtered), all_rows_empty))
+}
+
+pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
+    let layout = get_layout()?;
+    let storage = StorageManager::open_read_only(&layout)?;
+    let conn = storage.get_connection();
+
+    // --changed: uncapped match keys from shared affected-flows library
+    // (handler symbol / impl file / registration file / blast edges). Report
+    // payloads still apply FLOWS_CAP; the filter must not inherit that truncate.
+    // JSON keys stay non-breaking; only which rows appear widens vs the old
+    // registration-file-only filter.
+    let matched_route_keys: Option<std::collections::HashSet<(String, String)>> = if args.changed {
+        let packet = crate::commands::impact::execute_impact_silent()?;
+        use crate::impact::enrichment::affected_flows::{
+            AffectedFlowsOpts, match_affected_route_keys,
+        };
+        let opts = AffectedFlowsOpts {
+            head_hash: packet.head_hash.clone(),
+        };
+        // Non-available statuses (empty_map / missing_table / no_change_seeds)
+        // → empty set (honest empty --changed). Matcher Err (true failures)
+        // propagates so we never claim "no endpoints changed" after a fault.
+        let set =
+            match_affected_route_keys(conn, &packet.changes, packet.blast_radius.as_ref(), &opts)?;
+        Some(set)
+    } else {
+        None
+    };
+
+    let (rows, all_rows_empty) = query_filter_and_dedupe_endpoints(
+        conn,
+        args.method.as_deref(),
+        args.path.as_deref(),
+        matched_route_keys.as_ref(),
+    )?;
 
     if args.json {
         let mut results = Vec::new();
@@ -324,7 +346,11 @@ fn format_auth_requirements(aj: &str) -> String {
 mod tests {
     use super::{
         EndpointRow, dedupe_endpoint_rows, endpoint_row_better_than, format_auth_requirements,
+        query_filter_and_dedupe_endpoints,
     };
+    use crate::state::migrations::get_migrations;
+    use crate::state::storage::StorageManager;
+    use rusqlite::Connection;
 
     fn row(
         id: i64,
@@ -346,6 +372,42 @@ mod tests {
             file_path: None,
             route_confidence: confidence,
         }
+    }
+
+    fn in_memory_storage() -> StorageManager {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = conn;
+        get_migrations().to_latest(&mut conn).unwrap();
+        StorageManager::init_from_conn(conn)
+    }
+
+    fn seed_route(
+        conn: &Connection,
+        file_id: i64,
+        method: &str,
+        path: &str,
+        handler: &str,
+        framework: &str,
+        confidence: f64,
+    ) {
+        conn.execute(
+            "INSERT INTO api_routes
+                (method, path_pattern, handler_symbol_name, handler_file_id,
+                 framework, route_source, is_dynamic, route_confidence, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                method,
+                path,
+                handler,
+                file_id,
+                framework,
+                "DECORATOR",
+                0,
+                confidence,
+                "2026-05-01T00:00:00Z",
+            ],
+        )
+        .unwrap();
     }
 
     /// Four shapes `routes.rs` can write — all must land in the Ok arm.
@@ -396,36 +458,155 @@ mod tests {
 
     #[test]
     fn dedupe_keeps_axum_and_express_same_path() {
+        // Express first by insertion / lower id so HashMap order cannot fake ASC.
         let rows = vec![
-            row(1, "GET", "/health", Some("axum_health"), "Axum", 1.0),
             row(2, "GET", "/health", Some("express_health"), "Express", 1.0),
+            row(1, "GET", "/health", Some("axum_health"), "Axum", 1.0),
         ];
         let out = dedupe_endpoint_rows(rows);
         assert_eq!(out.len(), 2);
-        let frameworks: Vec<&str> = out.iter().map(|r| r.framework.as_str()).collect();
-        assert!(frameworks.contains(&"Axum"));
-        assert!(frameworks.contains(&"Express"));
+        // path+method equal → framework ASC (Axum before Express)
+        assert_eq!(out[0].framework, "Axum");
+        assert_eq!(out[0].path_pattern, "/health");
+        assert_eq!(out[0].method, "GET");
+        assert_eq!(out[1].framework, "Express");
+        assert_eq!(out[1].path_pattern, "/health");
+        assert_eq!(out[1].method, "GET");
     }
 
     #[test]
-    fn dedupe_sort_stable_path_then_method() {
+    fn dedupe_sort_stable_path_then_method_then_framework() {
         let rows = vec![
             row(1, "POST", "/z", Some("z_post"), "Axum", 1.0),
-            row(2, "GET", "/a", Some("a_get"), "Axum", 1.0),
+            row(2, "GET", "/a", Some("a_get"), "Express", 1.0),
             row(3, "GET", "/z", Some("z_get"), "Axum", 1.0),
             row(4, "DELETE", "/a", Some("a_del"), "Axum", 1.0),
+            row(5, "GET", "/a", Some("a_get_axum"), "Axum", 1.0),
         ];
         let out = dedupe_endpoint_rows(rows);
-        assert_eq!(out.len(), 4);
-        // path ASC then method ASC
+        assert_eq!(out.len(), 5);
+        // path ASC, method ASC, framework ASC
         assert_eq!(out[0].path_pattern, "/a");
         assert_eq!(out[0].method, "DELETE");
         assert_eq!(out[1].path_pattern, "/a");
         assert_eq!(out[1].method, "GET");
-        assert_eq!(out[2].path_pattern, "/z");
+        assert_eq!(out[1].framework, "Axum");
+        assert_eq!(out[2].path_pattern, "/a");
         assert_eq!(out[2].method, "GET");
+        assert_eq!(out[2].framework, "Express");
         assert_eq!(out[3].path_pattern, "/z");
-        assert_eq!(out[3].method, "POST");
+        assert_eq!(out[3].method, "GET");
+        assert_eq!(out[4].path_pattern, "/z");
+        assert_eq!(out[4].method, "POST");
+    }
+
+    /// SELECT + filter + dedupe against a real migrated SQLite conn: three stacked
+    /// identical routes collapse to one emit row alongside a distinct second route.
+    #[test]
+    fn query_filter_and_dedupe_collapses_stacked_identical_routes() {
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                "src/routes.rs",
+                "Rust",
+                "hash_stack",
+                100,
+                "2026-05-01T00:00:00Z",
+            ),
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+
+        // Three stacked identical identities (legacy multi-pass index residue).
+        seed_route(
+            conn,
+            file_id,
+            "GET",
+            "/changes",
+            "changes_handler",
+            "Axum",
+            1.0,
+        );
+        seed_route(
+            conn,
+            file_id,
+            "GET",
+            "/changes",
+            "changes_handler",
+            "Axum",
+            1.0,
+        );
+        seed_route(
+            conn,
+            file_id,
+            "GET",
+            "/changes",
+            "changes_handler",
+            "Axum",
+            1.0,
+        );
+        // Distinct route must survive.
+        seed_route(
+            conn,
+            file_id,
+            "POST",
+            "/changes",
+            "create_change",
+            "Axum",
+            1.0,
+        );
+
+        let raw_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM api_routes", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(raw_count, 4, "fixture must leave stacked rows in the table");
+
+        let (rows, raw_empty) =
+            query_filter_and_dedupe_endpoints(conn, None, None, None).expect("query+dedupe");
+        assert!(!raw_empty);
+        assert_eq!(
+            rows.len(),
+            2,
+            "three stacked GET /changes Axum collapse to one; POST remains"
+        );
+        assert_eq!(rows[0].method, "GET");
+        assert_eq!(rows[0].path_pattern, "/changes");
+        assert_eq!(rows[0].framework, "Axum");
+        assert_eq!(rows[1].method, "POST");
+        assert_eq!(rows[1].path_pattern, "/changes");
+
+        // Uniqueness of emit keys (method upper, path, framework).
+        let mut keys: Vec<(String, String, String)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r.method.to_uppercase(),
+                    r.path_pattern.clone(),
+                    r.framework.clone(),
+                )
+            })
+            .collect();
+        keys.sort();
+        let mut uniq = keys.clone();
+        uniq.dedup();
+        assert_eq!(
+            keys, uniq,
+            "emit rows must be unique on (method, path, framework)"
+        );
+    }
+
+    #[test]
+    fn query_filter_and_dedupe_raw_empty_fence() {
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+        let (rows, raw_empty) =
+            query_filter_and_dedupe_endpoints(conn, None, None, None).expect("query+dedupe");
+        assert!(raw_empty);
+        assert!(rows.is_empty());
     }
 
     #[test]
