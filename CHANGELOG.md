@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-08-02
+
 ### Fixed
 
 - **change-context RO nextActions honesty (0124):** `not_ready` recovery actions
