@@ -4,6 +4,7 @@ pub mod adr_provider;
 pub mod affected_flows;
 pub mod api;
 pub mod blast;
+pub mod change_hints;
 pub mod ci_gates;
 pub mod ci_predictor;
 pub mod ci_self_awareness;

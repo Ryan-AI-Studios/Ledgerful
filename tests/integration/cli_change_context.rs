@@ -287,3 +287,126 @@ fn change_context_human_mode_nonempty() {
         "human output: {stdout}"
     );
 }
+
+/// 0127: pure-add package → changeHints greenfield + suggested tests / notes.
+#[test]
+fn change_context_greenfield_pure_add_package() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "hi").unwrap();
+    git_add_and_commit(root, "init");
+
+    // Dirty pure-add package (untracked → git status Added)
+    fs::create_dir_all(root.join("src/newpkg")).unwrap();
+    fs::write(root.join("src/newpkg/mod.rs"), "pub fn brand_new() {}\n").unwrap();
+    fs::write(
+        root.join("src/newpkg/cli.rs"),
+        "pub fn run() { brand_new(); }\n",
+    )
+    .unwrap();
+    fs::write(root.join("src/main.rs"), "fn main() {}\n").unwrap();
+
+    let layout = Layout::new(root.to_string_lossy().as_ref());
+    layout.ensure_state_dir().unwrap();
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    storage.shutdown().unwrap();
+
+    let _guard = DirGuard::new(root);
+    let (stdout, stderr, code) = run_cli(root, &["change-context", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["status"], "ready");
+
+    let hints = json
+        .get("changeHints")
+        .expect("changeHints must be present for pure-add package");
+    assert_eq!(
+        hints["kind"].as_str(),
+        Some("greenfield"),
+        "expected greenfield: {hints}"
+    );
+    let suggested = hints["suggestedTests"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let notes = hints["notes"].as_array().cloned().unwrap_or_default();
+    assert!(
+        !suggested.is_empty() || !notes.is_empty(),
+        "suggestedTests >= 1 or honesty notes: {hints}"
+    );
+    let summary = json["summary"].as_str().unwrap_or("");
+    assert!(
+        summary.contains("greenfield-ish"),
+        "summary must mention greenfield-ish: {summary}"
+    );
+    // No conductor / meshops product coupling in packet
+    let raw = stdout.to_ascii_lowercase();
+    assert!(!raw.contains("meshops"), "no meshops hardcode: {stdout}");
+    assert!(!stdout.contains("0127-"), "no track-id coupling: {stdout}");
+}
+
+/// 0127: modify-only control must not false-greenfield.
+#[test]
+fn change_context_modify_only_not_false_greenfield() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/lib.rs"), "pub fn a() {}\n").unwrap();
+    git_add_and_commit(root, "init");
+    fs::write(root.join("src/lib.rs"), "pub fn a() {}\npub fn b() {}\n").unwrap();
+
+    let layout = Layout::new(root.to_string_lossy().as_ref());
+    layout.ensure_state_dir().unwrap();
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    storage.shutdown().unwrap();
+
+    let _guard = DirGuard::new(root);
+    let (stdout, stderr, code) = run_cli(root, &["change-context", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json["status"], "ready");
+    // changeHints may be present (kind none) when files changed
+    if let Some(hints) = json.get("changeHints") {
+        assert_ne!(
+            hints["kind"].as_str(),
+            Some("greenfield"),
+            "modify-only must not be greenfield: {hints}"
+        );
+        let summary = json["summary"].as_str().unwrap_or("");
+        assert!(
+            !summary.contains("greenfield-ish"),
+            "summary must not claim greenfield for modify-only: {summary}"
+        );
+    }
+}
+
+/// 0127: empty tree omits changeHints key.
+#[test]
+fn change_context_empty_omits_change_hints() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "hi").unwrap();
+    git_add_and_commit(root, "init");
+
+    let layout = Layout::new(root.to_string_lossy().as_ref());
+    layout.ensure_state_dir().unwrap();
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    storage.shutdown().unwrap();
+
+    let _guard = DirGuard::new(root);
+    let (stdout, stderr, code) = run_cli(root, &["change-context", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let json: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(json["status"], "empty");
+    assert!(
+        json.get("changeHints").is_none(),
+        "empty tree must omit changeHints: {json}"
+    );
+}

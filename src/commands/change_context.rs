@@ -113,6 +113,10 @@ pub struct ChangeContextPacket {
     /// standard detail; sample size is detail-aware (5 / 10).
     #[serde(skip_serializing_if = "Option::is_none")]
     pub affected_flows: Option<AffectedFlowsSummary>,
+    /// Greenfield / new-surface hints + budgeted suggested tests (0127).
+    /// Present only when `impact.changes` is non-empty; omitted on empty/not_ready.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub change_hints: Option<crate::impact::enrichment::change_hints::ChangeHintsReport>,
     pub doctor: DoctorSection,
     pub ledger: LedgerSection,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -254,14 +258,33 @@ pub fn build_change_context(
         "ready"
     };
 
-    let summary = compose_summary(status, has_file_changes, &impact, &ledger, &doctor);
+    let change_hints = if has_file_changes {
+        Some(compute_change_hints_for_impact(&impact, project_root))
+    } else {
+        None
+    };
+
+    let summary = compose_summary(
+        status,
+        has_file_changes,
+        &impact,
+        &ledger,
+        &doctor,
+        change_hints.as_ref(),
+    );
     let risk_reasons = trim_reasons(&impact.risk_reasons, opts.detail);
     let mut warnings = trim_reasons(&analysis_warnings, opts.detail);
     warnings.sort();
     warnings.dedup();
 
-    let next_actions =
-        compose_next_actions(status, &doctor, &ledger, read_set_capped, has_file_changes);
+    let next_actions = compose_next_actions(
+        status,
+        &doctor,
+        &ledger,
+        read_set_capped,
+        has_file_changes,
+        change_hints.as_ref(),
+    );
 
     let blast = impact.blast_radius.as_ref().map(|b| BlastSummary {
         depth: b.depth_applied,
@@ -288,6 +311,7 @@ pub fn build_change_context(
         blast,
         test_coverage,
         affected_flows,
+        change_hints,
         doctor,
         ledger,
         analysis_warnings: warnings,
@@ -411,6 +435,15 @@ fn print_human(packet: &ChangeContextPacket) {
             flows.flow_count
         );
     }
+    if let Some(ref hints) = packet.change_hints {
+        println!(
+            "  changeHints:      kind={} suggestedTests={} mostlyAdded={} newPrefixes={}",
+            hints.kind.as_str(),
+            hints.suggested_tests.len(),
+            hints.mostly_added,
+            hints.new_package_prefixes.len()
+        );
+    }
     println!(
         "  doctor:           {} readyForPublish={} (block={} warn={} info={})",
         packet.doctor.status,
@@ -495,6 +528,7 @@ fn not_ready_packet(
         blast: None,
         test_coverage: None,
         affected_flows: None,
+        change_hints: None,
         doctor,
         ledger,
         analysis_warnings: Vec::new(),
@@ -816,12 +850,17 @@ fn summarize_affected_flows(
     report
 }
 
+/// Greppable next-action when greenfield suggestions are present (0127 B4).
+pub const GREENFIELD_SUGGESTED_TESTS_ACTION: &str =
+    "review changeHints.suggestedTests and add covering tests for new surfaces";
+
 fn compose_summary(
     status: &str,
     has_file_changes: bool,
     impact: &ImpactPacket,
     ledger: &LedgerSection,
     doctor: &DoctorSection,
+    change_hints: Option<&crate::impact::enrichment::change_hints::ChangeHintsReport>,
 ) -> String {
     match status {
         "empty" => "No file changes and no pending ledger transactions.".to_string(),
@@ -833,13 +872,33 @@ fn compose_summary(
         }
         "ready" => {
             let risk = risk_level_str(impact.risk_level);
-            format!(
+            let mut s = format!(
                 "{} changed file(s), risk={}, doctor.readyForPublish={}, ledger.pending={}.",
                 impact.changes.len(),
                 risk,
                 doctor.ready_for_publish,
                 ledger.pending_count
-            )
+            );
+            if let Some(hints) = change_hints
+                && hints.kind
+                    == crate::impact::enrichment::change_hints::ChangeHintsKind::Greenfield
+            {
+                use crate::impact::enrichment::change_hints::format_summary_prefixes;
+                let prefixes = format_summary_prefixes(&hints.new_package_prefixes, 3);
+                let clause = if prefixes.is_empty() {
+                    format!(
+                        " greenfield-ish ({} added / {} total).",
+                        hints.added_count, hints.total_changed
+                    )
+                } else {
+                    format!(
+                        " greenfield-ish ({} added / {} total; prefixes: {prefixes}).",
+                        hints.added_count, hints.total_changed
+                    )
+                };
+                s.push_str(&clause);
+            }
+            s
         }
         other => other.to_string(),
     }
@@ -851,6 +910,7 @@ fn compose_next_actions(
     ledger: &LedgerSection,
     read_set_capped: bool,
     has_file_changes: bool,
+    change_hints: Option<&crate::impact::enrichment::change_hints::ChangeHintsReport>,
 ) -> Vec<String> {
     let mut actions = Vec::new();
     if doctor.status == "missing" || doctor.status == "stale" || doctor.status == "error" {
@@ -870,12 +930,55 @@ fn compose_next_actions(
     if has_file_changes {
         actions.push("ledgerful verify --scope fast".to_string());
     }
+    if let Some(hints) = change_hints
+        && hints.kind == crate::impact::enrichment::change_hints::ChangeHintsKind::Greenfield
+        && !hints.suggested_tests.is_empty()
+    {
+        actions.push(GREENFIELD_SUGGESTED_TESTS_ACTION.to_string());
+    }
     if status == "empty" {
         actions.push("no structural work required".to_string());
     }
     actions.sort();
     actions.dedup();
     actions
+}
+
+/// Collect mapped hint paths from impact blast `test_hints` (+ optional mappedSample).
+fn mapped_paths_from_impact(impact: &ImpactPacket) -> Vec<String> {
+    let mut paths: Vec<String> = Vec::new();
+    if let Some(ref blast) = impact.blast_radius {
+        for hint in &blast.test_hints {
+            let path = hint.split("::").next().unwrap_or(hint).trim();
+            if !path.is_empty() {
+                paths.push(path.replace('\\', "/"));
+            }
+        }
+    }
+    if let Some(ref gaps) = impact.test_gaps {
+        for sample in &gaps.mapped_sample {
+            // mappedSample is source-side; covering paths aren't listed per entry.
+            // Keep source file only when it looks like a test path (rare).
+            if crate::index::test_mapping::is_test_path(&sample.file) {
+                paths.push(sample.file.replace('\\', "/"));
+            }
+        }
+    }
+    paths.sort();
+    paths.dedup();
+    paths
+}
+
+fn compute_change_hints_for_impact(
+    impact: &ImpactPacket,
+    project_root: &Path,
+) -> crate::impact::enrichment::change_hints::ChangeHintsReport {
+    use crate::impact::enrichment::change_hints::{ChangeHintsOpts, compute_change_hints};
+    let opts = ChangeHintsOpts {
+        project_root: Some(project_root.to_path_buf()),
+        mapped_hint_paths: mapped_paths_from_impact(impact),
+    };
+    compute_change_hints(&impact.changes, &opts)
 }
 
 /// Read doctor-results.json sidecar (present-tense workspace).
@@ -1203,7 +1306,7 @@ mod tests {
             pending_count: 0,
             active_tx: Vec::new(),
         };
-        let actions = compose_next_actions("empty", &doctor, &ledger, false, false);
+        let actions = compose_next_actions("empty", &doctor, &ledger, false, false, None);
         assert!(
             actions.iter().any(|a| a.contains("ledgerful doctor")),
             "missing doctor should suggest refresh: {actions:?}"
@@ -1230,7 +1333,7 @@ mod tests {
             pending_count: 0,
             active_tx: Vec::new(),
         };
-        let actions = compose_next_actions("ready", &doctor, &ledger, false, true);
+        let actions = compose_next_actions("ready", &doctor, &ledger, false, true, None);
         assert!(
             actions
                 .iter()
@@ -2123,6 +2226,7 @@ mod tests {
             blast: None,
             test_coverage: None,
             affected_flows: Some(make_available_flows(1)),
+            change_hints: None,
             doctor: DoctorSection {
                 status: "ok".into(),
                 ready_for_publish: true,
@@ -2148,5 +2252,134 @@ mod tests {
         assert_eq!(v["affectedFlows"]["flows"][0]["pathPattern"], "/p00");
         let notes = v["affectedFlows"]["notes"].as_array().unwrap();
         assert!(notes.iter().any(|n| n.as_str() == Some(HONESTY_NOTE)));
+    }
+
+    fn make_added(path: &str) -> ChangedFile {
+        ChangedFile {
+            path: PathBuf::from(path),
+            status: "Added".to_string(),
+            old_path: None,
+            is_staged: false,
+            symbols: None,
+            imports: None,
+            runtime_usage: None,
+            analysis_status: FileAnalysisStatus::default(),
+            analysis_warnings: Vec::new(),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn change_hints_greenfield_on_pure_add_fixture() {
+        use crate::impact::enrichment::change_hints::{
+            ChangeHintsKind, ChangeHintsOpts, compute_change_hints,
+        };
+
+        let files = vec![
+            make_added("src/newpkg/mod.rs"),
+            make_added("src/newpkg/cli.rs"),
+            make_added("src/main.rs"),
+        ];
+        let impact = base_packet(files);
+        let hints = compute_change_hints(
+            &impact.changes,
+            &ChangeHintsOpts {
+                project_root: None,
+                mapped_hint_paths: mapped_paths_from_impact(&impact),
+            },
+        );
+        assert_eq!(hints.kind, ChangeHintsKind::Greenfield);
+        assert!(
+            !hints.suggested_tests.is_empty() || !hints.notes.is_empty(),
+            "suggestions or notes required: {hints:?}"
+        );
+
+        let doctor = DoctorSection {
+            status: "ok".into(),
+            ready_for_publish: true,
+            block: 0,
+            warn: 0,
+            info: 0,
+            top_findings: vec![],
+        };
+        let ledger = LedgerSection {
+            pending_count: 0,
+            active_tx: vec![],
+        };
+        let summary = compose_summary("ready", true, &impact, &ledger, &doctor, Some(&hints));
+        assert!(
+            summary.contains("greenfield-ish"),
+            "summary must mention greenfield: {summary}"
+        );
+
+        let actions = compose_next_actions("ready", &doctor, &ledger, false, true, Some(&hints));
+        if !hints.suggested_tests.is_empty() {
+            assert!(
+                actions
+                    .iter()
+                    .any(|a| a == GREENFIELD_SUGGESTED_TESTS_ACTION),
+                "must include greppable suggestedTests action: {actions:?}"
+            );
+        }
+        assert!(
+            actions.iter().any(|a| a.contains("verify --scope fast")),
+            "must keep verify: {actions:?}"
+        );
+    }
+
+    #[test]
+    fn change_hints_omitted_on_not_ready_and_empty_changes() {
+        let p = not_ready_packet(
+            "x".into(),
+            None,
+            DoctorSection {
+                status: "missing".into(),
+                ready_for_publish: false,
+                block: 0,
+                warn: 0,
+                info: 0,
+                top_findings: Vec::new(),
+            },
+            LedgerSection {
+                pending_count: 0,
+                active_tx: Vec::new(),
+            },
+            NotReadyErrorClass::Other,
+        );
+        assert!(p.change_hints.is_none());
+        let v = serde_json::to_value(&p).unwrap();
+        assert!(
+            v.get("changeHints").is_none(),
+            "not_ready must omit changeHints key: {v}"
+        );
+
+        // Empty changes → no changeHints when building summary path signals
+        let impact = base_packet(vec![]);
+        assert!(impact.changes.is_empty());
+        // mapped helper still safe
+        assert!(mapped_paths_from_impact(&impact).is_empty());
+    }
+
+    #[test]
+    fn change_hints_rename_control_not_greenfield() {
+        use crate::impact::enrichment::change_hints::{
+            ChangeHintsKind, ChangeHintsOpts, compute_change_hints,
+        };
+
+        let files = vec![ChangedFile {
+            path: PathBuf::from("src/newpkg/mod.rs"),
+            status: "Renamed".to_string(),
+            old_path: Some(PathBuf::from("src/oldpkg/mod.rs")),
+            is_staged: false,
+            symbols: None,
+            imports: None,
+            runtime_usage: None,
+            analysis_status: FileAnalysisStatus::default(),
+            analysis_warnings: Vec::new(),
+            ..Default::default()
+        }];
+        let hints = compute_change_hints(&files, &ChangeHintsOpts::default());
+        assert_eq!(hints.kind, ChangeHintsKind::None);
+        assert!(!hints.mostly_added);
     }
 }

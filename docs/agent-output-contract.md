@@ -284,6 +284,29 @@ structure, doctor readiness, open ledger work, and a budgeted `readSet`.
       "Registered HTTP routes only (api_routes); not distributed traces or CRG-style call-chain flows."
     ]
   },
+  "changeHints": {
+    "kind": "greenfield",
+    "mostlyAdded": true,
+    "addedCount": 3,
+    "totalChanged": 3,
+    "newPackagePrefixes": ["src/newpkg"],
+    "surfaceTags": ["cli_surface", "new_entrypoint", "new_module"],
+    "suggestedTests": [
+      {
+        "path": "src/newpkg/cli_test.rs",
+        "kind": "convention",
+        "reason": "conventional test path (to be created)"
+      },
+      {
+        "path": "tests/newpkg/mod.rs",
+        "kind": "convention",
+        "reason": "conventional test path (to be created)"
+      }
+    ],
+    "notes": [
+      "No structural test_mapping for new paths; suggestions are path conventions, not proven coverage."
+    ]
+  },
   "doctor": {
     "status": "ok",
     "readyForPublish": true,
@@ -297,7 +320,10 @@ structure, doctor readiness, open ledger work, and a budgeted `readSet`.
     "activeTx": []
   },
   "analysisWarnings": [],
-  "nextActions": ["ledgerful verify --scope fast"],
+  "nextActions": [
+    "ledgerful verify --scope fast",
+    "review changeHints.suggestedTests and add covering tests for new surfaces"
+  ],
   "impactSchemaVersion": "v1"
 }
 ```
@@ -311,6 +337,7 @@ structure, doctor readiness, open ledger work, and a budgeted `readSet`.
 | `blast` | object | **Counts only** — not full edges. Always includes nested `confidenceSummary` (class counts: `scipBound`, `resolved`, `ambiguous`, `unresolved`, `capped`, `unknown`, `expandable`, `total`) at both `minimal` and `standard` detail. Same shape as ImpactPacket `blastRadius.confidenceSummary`. Full edges remain on `impact --json` only (0114 token-budget fence). |
 | `testCoverage` | object | **0115 deepened** structural test-gap report (same schema as PR `testGaps`). Status: `available` \| `empty_mapping` \| `missing_table` \| `no_source_seeds` \| `unavailable`. **Never** bare `"empty"`. Empty `ImpactPacket.test_coverage` vec is **not** full cover — use these counts/status. Caps: unmapped ≤20, mappedSample ≤5. Notes always include structural + LCOV ceiling. |
 | `affectedFlows` | object | **0118** nested affected HTTP-route summary (same schema as ImpactPacket / PR `affectedFlows`). Status: `available` \| `empty_map` \| `missing_table` \| `no_change_seeds` \| `unavailable`. **Never** bare `"empty"`. **Route map only** (registered `api_routes` + handler binds + optional blast edges) — **not** CRG-style call-chain / execution-path traces. Present at both `minimal` and `standard` detail. Sample caps: **`flows` take(5)** when `detail=minimal`, **take(10)** when `standard` (counts `flowCount`/`flowTotal` pass through full report; impact library cap is 20). `endpoints --changed` uses the **same match library with uncapped keys** (filter is not truncated at 20). `available` + `flowCount` 0 = all-clear (no registered routes touched). **Framework fence:** Rust Axum/Actix/Rocket; Go Gin/`net/http`; TS Express/Fastify; Python FastAPI/Flask — not all languages. **Agent metadata:** CRG may ship `context_savings` (token estimates); Ledgerful ships `affectedFlows` + `testCoverage`/`testGaps` + blast/`confidenceSummary` counts — **different signals**, not substitutes. Go route extractors exist; CRG-style path recall on Go is weaker (~33% on some peer fixtures) — registration map only here. See `docs/Call-Resolution.md` §Affected HTTP flows. |
+| `changeHints` | object | **0127** greenfield / new-surface hints. Present only when file changes exist; **omitted** on `status=empty` / `not_ready` (no clean-tree noise). `kind`: `greenfield` \| `mixed` \| `none`. Pure-add = `status==Added` **and** no `old_path` (renames excluded). `mostlyAdded` when pure-added/source-like ≥ 0.6 (or all-added ≥2). `newPackagePrefixes` ≤5 (isolated pure-add dirs). `surfaceTags`: `new_module` / `new_entrypoint` / `cli_surface` / `new_test` (path/basename primary). `suggestedTests` ≤10 path-unique, ladder **mapped → convention → adjacent** (`kind` + honesty `reason`). Convention reasons encode exists-on-disk vs to-be-created — **not** proven coverage. Notes cap ≤5. Summary may append `greenfield-ish (N added / M total; prefixes: …)` (≤3 prefixes, last-2 segments if deep). |
 | `doctor` / `ledger` | object | **Always present** on successful builds (including `status=empty`) |
 | `doctor.topFindings` | array | Best-effort from sidecar `findings` when present; production `doctor-results.json` may omit findings, yielding `[]` even when `block > 0` — use `ledgerful doctor --json` for full detail |
 

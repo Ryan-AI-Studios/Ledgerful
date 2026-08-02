@@ -7,7 +7,7 @@ pub struct ToolDescriptor {
 pub const INVENTORY: &[ToolDescriptor] = &[
     ToolDescriptor {
         name: "change_context",
-        description: "Budgeted agent change packet: impact risk, capped readSet, doctor readiness, and pending ledger (schemaVersion 1). Prefer after doctor --json.",
+        description: "Budgeted agent change packet: impact risk, capped readSet, doctor readiness, pending ledger, and greenfield changeHints/suggestedTests (schemaVersion 1). Prefer after doctor --json.",
         schema_json: r#"{
             "type": "object",
             "properties": {

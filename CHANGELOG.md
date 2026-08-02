@@ -24,6 +24,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Greenfield changeHints on change-context (0127):** Additive optional
+  `changeHints` nested object on the agent change-context packet
+  (`schemaVersion` stays **1**). Classifies pure-add / mostly-added change sets
+  (`kind`: `greenfield` \| `mixed` \| `none`), surfaces `newPackagePrefixes` /
+  `surfaceTags`, and budgeted `suggestedTests` via mapped → convention → adjacent
+  ladder (cap 10; convention reasons encode exists-on-disk vs to-be-created —
+  not proven coverage). Omitted on empty/not_ready. Summary appends
+  `greenfield-ish …`; nextActions greppable review of `suggestedTests` when
+  present. Docs: `docs/agent-output-contract.md`, dual skill field lists, MCP
+  `change_context` description.
+
 - **Public chain head docs (0120):** Document Ledgerful-itself thin head at
   `https://www.ledgerful.dev/ledger/chain_head.json` and the checkpoint compose
   recipe (`curl` + `verify --signatures --against-export`). Clarifies
