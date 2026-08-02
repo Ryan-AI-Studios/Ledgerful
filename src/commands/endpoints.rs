@@ -4,6 +4,7 @@ use crate::state::storage::StorageManager;
 use clap::Args;
 use miette::{IntoDiagnostic, Result};
 use owo_colors::OwoColorize;
+use std::collections::HashMap;
 
 #[derive(Args, Debug)]
 pub struct EndpointsArgs {
@@ -53,6 +54,93 @@ impl EndpointsArgs {
     }
 }
 
+/// One `api_routes` row as selected for the endpoints list surface.
+#[derive(Debug, Clone, PartialEq)]
+struct EndpointRow {
+    id: i64,
+    method: String,
+    path_pattern: String,
+    handler_symbol_name: Option<String>,
+    framework: String,
+    auth_requirements: Option<String>,
+    owning_service: Option<String>,
+    consumers: Option<String>,
+    file_path: Option<String>,
+    route_confidence: f64,
+}
+
+/// Dedupe key: (method uppercase, path_pattern, framework) — exact 0118 3-tuple.
+type EndpointDedupeKey = (String, String, String);
+
+/// Collapse stacked identical route identities to one row.
+///
+/// Keep-best: higher `route_confidence`; then non-empty handler; then lex lower
+/// handler; then lower `id`. After dedupe, sort `path_pattern ASC`, `method ASC`.
+fn dedupe_endpoint_rows(rows: Vec<EndpointRow>) -> Vec<EndpointRow> {
+    let mut best: HashMap<EndpointDedupeKey, EndpointRow> = HashMap::new();
+
+    for row in rows {
+        let key = (
+            row.method.to_uppercase(),
+            row.path_pattern.clone(),
+            row.framework.clone(),
+        );
+        match best.get(&key) {
+            None => {
+                best.insert(key, row);
+            }
+            Some(prev) => {
+                if endpoint_row_better_than(&row, prev) {
+                    best.insert(key, row);
+                }
+            }
+        }
+    }
+
+    let mut out: Vec<EndpointRow> = best.into_values().collect();
+    out.sort_by(|a, b| {
+        a.path_pattern
+            .cmp(&b.path_pattern)
+            .then_with(|| a.method.cmp(&b.method))
+    });
+    out
+}
+
+/// Whether `cand` should replace `prev` under keep-best rules.
+fn endpoint_row_better_than(cand: &EndpointRow, prev: &EndpointRow) -> bool {
+    // 1. Higher route_confidence
+    if cand.route_confidence > prev.route_confidence {
+        return true;
+    }
+    if cand.route_confidence < prev.route_confidence {
+        return false;
+    }
+
+    let cand_handler = cand.handler_symbol_name.as_deref().unwrap_or("");
+    let prev_handler = prev.handler_symbol_name.as_deref().unwrap_or("");
+    let cand_nonempty = !cand_handler.is_empty();
+    let prev_nonempty = !prev_handler.is_empty();
+
+    // 2. Non-empty handler preferred
+    if cand_nonempty && !prev_nonempty {
+        return true;
+    }
+    if !cand_nonempty && prev_nonempty {
+        return false;
+    }
+
+    // 3. Lex lower handler
+    if cand_handler < prev_handler {
+        return true;
+    }
+    if cand_handler > prev_handler {
+        return false;
+    }
+
+    // 4. Lower id
+    cand.id < prev.id
+}
+
 pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
     let layout = get_layout()?;
     let storage = StorageManager::open_read_only(&layout)?;
@@ -82,8 +170,9 @@ pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
     };
 
     let mut query = String::from(
-        "SELECT ar.method, ar.path_pattern, ar.handler_symbol_name, ar.framework, \
-         ar.auth_requirements, ar.owning_service, ar.consumers, pf.file_path \
+        "SELECT ar.id, ar.method, ar.path_pattern, ar.handler_symbol_name, ar.framework, \
+         ar.auth_requirements, ar.owning_service, ar.consumers, pf.file_path, \
+         ar.route_confidence \
          FROM api_routes ar \
          LEFT JOIN project_files pf ON ar.handler_file_id = pf.id \
          WHERE 1=1",
@@ -104,58 +193,52 @@ pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
     let mut stmt = conn.prepare(&query).into_diagnostic()?;
     let params_refs: Vec<&dyn rusqlite::ToSql> =
         params.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
-    #[allow(clippy::type_complexity)]
-    let all_rows: Vec<(
-        String,
-        String,
-        Option<String>,
-        String,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-        Option<String>,
-    )> = stmt
+    let all_rows: Vec<EndpointRow> = stmt
         .query_map(&params_refs[..], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, Option<String>>(2)?,
-                row.get::<_, String>(3)?,
-                row.get::<_, Option<String>>(4)?,
-                row.get::<_, Option<String>>(5)?,
-                row.get::<_, Option<String>>(6)?,
-                row.get::<_, Option<String>>(7)?,
-            ))
+            Ok(EndpointRow {
+                id: row.get::<_, i64>(0)?,
+                method: row.get::<_, String>(1)?,
+                path_pattern: row.get::<_, String>(2)?,
+                handler_symbol_name: row.get::<_, Option<String>>(3)?,
+                framework: row.get::<_, String>(4)?,
+                auth_requirements: row.get::<_, Option<String>>(5)?,
+                owning_service: row.get::<_, Option<String>>(6)?,
+                consumers: row.get::<_, Option<String>>(7)?,
+                file_path: row.get::<_, Option<String>>(8)?,
+                route_confidence: row.get::<_, f64>(9)?,
+            })
         })
         .into_diagnostic()?
         .collect::<std::result::Result<Vec<_>, _>>()
         .into_diagnostic()?;
 
+    // Load-bearing empty-state fence: raw SQL emptiness before dedupe/--changed.
     let all_rows_empty = all_rows.is_empty();
 
     // Apply --changed filter: keep routes matched by shared affected-flows lib.
-    let rows: Vec<_> = if let Some(ref keys) = matched_route_keys {
+    let filtered: Vec<EndpointRow> = if let Some(ref keys) = matched_route_keys {
         all_rows
             .into_iter()
-            .filter(|(method, path, _, _, _, _, _, _)| {
-                keys.contains(&(method.to_uppercase(), path.clone()))
-            })
+            .filter(|r| keys.contains(&(r.method.to_uppercase(), r.path_pattern.clone())))
             .collect()
     } else {
         all_rows
     };
 
+    // Emit-time dedupe after SELECT and after --changed filter (human + JSON).
+    let rows = dedupe_endpoint_rows(filtered);
+
     if args.json {
         let mut results = Vec::new();
-        for (method, path, handler, framework, auth, service, consumers, _) in &rows {
+        for row in &rows {
             results.push(serde_json::json!({
-                "method": method,
-                "path": path,
-                "handler": handler,
-                "framework": framework,
-                "auth": auth.as_deref().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()),
-                "service": service,
-                "consumers": consumers.as_deref().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()),
+                "method": row.method,
+                "path": row.path_pattern,
+                "handler": row.handler_symbol_name,
+                "framework": row.framework,
+                "auth": row.auth_requirements.as_deref().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()),
+                "service": row.owning_service,
+                "consumers": row.consumers.as_deref().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()),
             }));
         }
         let output = crate::output::empty::format_json_empty_state(results, "results", || {
@@ -182,22 +265,24 @@ pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
         let mut table = Table::new();
         table.set_header(vec!["Method", "Path", "Framework", "Service", "Auth"]);
 
-        for (method, path, _handler, framework, auth_json, service, _consumers, _) in &rows {
+        for row in &rows {
             // Parse as Option<Vec<String>> — the writer's exact type
             // (routes.rs serializes Option<Vec<String>>). Every real state is a
             // success arm: "null" → Ok(None), "[]" → Ok(Some([])), '["a"]' → Ok(Some).
             // Neighbours parse Vec<String> and recover null via parse failure;
             // we deliberately do not copy that pattern here.
-            let auth_str = match auth_json {
+            let auth_str = match &row.auth_requirements {
                 Some(aj) => format_auth_requirements(aj),
                 None => "Unknown".to_string(),
             };
 
             table.add_row(vec![
-                method.clone(),
-                path.clone(),
-                framework.clone(),
-                service.clone().unwrap_or_else(|| "-".to_string()),
+                row.method.clone(),
+                row.path_pattern.clone(),
+                row.framework.clone(),
+                row.owning_service
+                    .clone()
+                    .unwrap_or_else(|| "-".to_string()),
                 auth_str,
             ]);
         }
@@ -237,7 +322,31 @@ fn format_auth_requirements(aj: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::format_auth_requirements;
+    use super::{
+        EndpointRow, dedupe_endpoint_rows, endpoint_row_better_than, format_auth_requirements,
+    };
+
+    fn row(
+        id: i64,
+        method: &str,
+        path: &str,
+        handler: Option<&str>,
+        framework: &str,
+        confidence: f64,
+    ) -> EndpointRow {
+        EndpointRow {
+            id,
+            method: method.to_string(),
+            path_pattern: path.to_string(),
+            handler_symbol_name: handler.map(str::to_string),
+            framework: framework.to_string(),
+            auth_requirements: None,
+            owning_service: None,
+            consumers: None,
+            file_path: None,
+            route_confidence: confidence,
+        }
+    }
 
     /// Four shapes `routes.rs` can write — all must land in the Ok arm.
     #[test]
@@ -254,5 +363,140 @@ mod tests {
         let parsed: Result<Option<Vec<String>>, _> = serde_json::from_str("null");
         assert!(parsed.is_ok());
         assert_eq!(parsed.unwrap(), None);
+    }
+
+    #[test]
+    fn dedupe_collapses_identical_method_path_framework() {
+        let rows = vec![
+            row(1, "GET", "/changes", Some("changes_handler"), "Axum", 1.0),
+            row(2, "GET", "/changes", Some("changes_handler"), "Axum", 1.0),
+            row(3, "GET", "/changes", Some("changes_handler"), "Axum", 1.0),
+        ];
+        let out = dedupe_endpoint_rows(rows);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].path_pattern, "/changes");
+        assert_eq!(out[0].method, "GET");
+        assert_eq!(out[0].framework, "Axum");
+        // Tie → lower id
+        assert_eq!(out[0].id, 1);
+    }
+
+    #[test]
+    fn dedupe_keeps_get_and_post_same_path() {
+        let rows = vec![
+            row(1, "GET", "/users", Some("get_users"), "Axum", 1.0),
+            row(2, "POST", "/users", Some("create_user"), "Axum", 1.0),
+        ];
+        let out = dedupe_endpoint_rows(rows);
+        assert_eq!(out.len(), 2);
+        let methods: Vec<&str> = out.iter().map(|r| r.method.as_str()).collect();
+        assert!(methods.contains(&"GET"));
+        assert!(methods.contains(&"POST"));
+    }
+
+    #[test]
+    fn dedupe_keeps_axum_and_express_same_path() {
+        let rows = vec![
+            row(1, "GET", "/health", Some("axum_health"), "Axum", 1.0),
+            row(2, "GET", "/health", Some("express_health"), "Express", 1.0),
+        ];
+        let out = dedupe_endpoint_rows(rows);
+        assert_eq!(out.len(), 2);
+        let frameworks: Vec<&str> = out.iter().map(|r| r.framework.as_str()).collect();
+        assert!(frameworks.contains(&"Axum"));
+        assert!(frameworks.contains(&"Express"));
+    }
+
+    #[test]
+    fn dedupe_sort_stable_path_then_method() {
+        let rows = vec![
+            row(1, "POST", "/z", Some("z_post"), "Axum", 1.0),
+            row(2, "GET", "/a", Some("a_get"), "Axum", 1.0),
+            row(3, "GET", "/z", Some("z_get"), "Axum", 1.0),
+            row(4, "DELETE", "/a", Some("a_del"), "Axum", 1.0),
+        ];
+        let out = dedupe_endpoint_rows(rows);
+        assert_eq!(out.len(), 4);
+        // path ASC then method ASC
+        assert_eq!(out[0].path_pattern, "/a");
+        assert_eq!(out[0].method, "DELETE");
+        assert_eq!(out[1].path_pattern, "/a");
+        assert_eq!(out[1].method, "GET");
+        assert_eq!(out[2].path_pattern, "/z");
+        assert_eq!(out[2].method, "GET");
+        assert_eq!(out[3].path_pattern, "/z");
+        assert_eq!(out[3].method, "POST");
+    }
+
+    #[test]
+    fn dedupe_keep_best_higher_confidence() {
+        let rows = vec![
+            row(1, "GET", "/probe", Some("low"), "Axum", 0.5),
+            row(2, "GET", "/probe", Some("high"), "Axum", 0.9),
+            row(3, "GET", "/probe", Some("mid"), "Axum", 0.7),
+        ];
+        let out = dedupe_endpoint_rows(rows);
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].id, 2);
+        assert_eq!(out[0].handler_symbol_name.as_deref(), Some("high"));
+        assert!((out[0].route_confidence - 0.9).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn dedupe_keep_best_nonempty_handler_then_lex_lower_then_lower_id() {
+        // Same confidence: non-empty beats empty
+        assert!(endpoint_row_better_than(
+            &row(2, "GET", "/x", Some("h"), "Axum", 1.0),
+            &row(1, "GET", "/x", None, "Axum", 1.0),
+        ));
+        // Same confidence + both non-empty: lex lower handler
+        assert!(endpoint_row_better_than(
+            &row(2, "GET", "/x", Some("aaa"), "Axum", 1.0),
+            &row(1, "GET", "/x", Some("zzz"), "Axum", 1.0),
+        ));
+        // Full tie except id: lower id wins
+        assert!(endpoint_row_better_than(
+            &row(1, "GET", "/x", Some("h"), "Axum", 1.0),
+            &row(9, "GET", "/x", Some("h"), "Axum", 1.0),
+        ));
+        assert!(!endpoint_row_better_than(
+            &row(9, "GET", "/x", Some("h"), "Axum", 1.0),
+            &row(1, "GET", "/x", Some("h"), "Axum", 1.0),
+        ));
+    }
+
+    #[test]
+    fn dedupe_method_case_normalized_in_key() {
+        let rows = vec![
+            row(1, "get", "/items", Some("h"), "Axum", 1.0),
+            row(2, "GET", "/items", Some("h"), "Axum", 1.0),
+        ];
+        let out = dedupe_endpoint_rows(rows);
+        assert_eq!(out.len(), 1);
+        // lower id wins on full tie
+        assert_eq!(out[0].id, 1);
+    }
+
+    /// Empty-state fence: raw-empty must drive NoIndexedData path, independent of
+    /// post-dedupe emptiness. Documents ordering contract (all_rows_empty before
+    /// dedupe); helper on empty input stays empty.
+    #[test]
+    fn empty_state_fence_raw_empty_before_dedupe() {
+        let all_rows: Vec<EndpointRow> = Vec::new();
+        let all_rows_empty = all_rows.is_empty();
+        let deduped = dedupe_endpoint_rows(all_rows);
+        assert!(all_rows_empty);
+        assert!(deduped.is_empty());
+        // Filter-empty (non-raw) is a different reason: raw non-empty → not NoIndexedData.
+        let stacked = [
+            row(1, "GET", "/a", Some("h"), "Axum", 1.0),
+            row(2, "GET", "/a", Some("h"), "Axum", 1.0),
+        ];
+        let raw_empty = stacked.is_empty();
+        let after_filter: Vec<EndpointRow> = Vec::new(); // --changed matched nothing
+        let after_dedupe = dedupe_endpoint_rows(after_filter);
+        assert!(!raw_empty);
+        assert!(after_dedupe.is_empty());
+        // all_rows_empty stays false so empty-state reason is CleanDiff, not NoIndexedData
     }
 }

@@ -92,8 +92,12 @@ impl<'a> RouteExtractor<'a> {
 
         drop(sym_stmt);
 
+        // Full extract always rebuilds `api_routes` (clear-before-insert). Empty
+        // symbols still DELETE so re-extract does not leave stale stacked rows.
         if symbol_rows.is_empty() {
-            info!("No project symbols indexed; skipping route extraction.");
+            conn.execute("DELETE FROM api_routes", [])
+                .into_diagnostic()?;
+            info!("No project symbols indexed; cleared api_routes and skipping route extraction.");
             return Ok(RouteStats {
                 total_routes: 0,
                 frameworks_detected: Vec::new(),
@@ -130,11 +134,10 @@ impl<'a> RouteExtractor<'a> {
                 .push((*sym_id, *file_id));
         }
 
-        // 4. Iterate over source files (Rust, TypeScript, Python, Go)
-        let mut total_routes = 0usize;
+        // 4. Walk source files and accumulate routes (no DB writes yet).
         let mut files_processed = 0usize;
         let mut frameworks: HashSet<String> = HashSet::new();
-        let mut route_batch: Vec<RouteRow> = Vec::new();
+        let mut all_routes: Vec<RouteRow> = Vec::new();
 
         for (file_id, file_path, language) in &file_rows {
             // Skip non-source language files
@@ -184,7 +187,7 @@ impl<'a> RouteExtractor<'a> {
                         (None, Some(route.handler_name.clone()))
                     };
 
-                route_batch.push(RouteRow {
+                all_routes.push(RouteRow {
                     method: route.method.clone(),
                     path_pattern: route.path_pattern.clone(),
                     handler_symbol_id,
@@ -202,19 +205,19 @@ impl<'a> RouteExtractor<'a> {
                     consumers: route.consumers.clone(),
                 });
             }
-
-            // 5. Batched inserts
-            if route_batch.len() >= ROUTE_BATCH_SIZE {
-                total_routes += route_batch.len();
-                self.insert_route_batch(&route_batch)?;
-                route_batch.clear();
-            }
         }
 
-        // Flush remaining routes
-        if !route_batch.is_empty() {
-            total_routes += route_batch.len();
-            self.insert_route_batch(&route_batch)?;
+        // 5. Atomic rebuild: one outer transaction DELETE + batched inserts.
+        //    Crash during the file walk leaves the previous table intact; crash
+        //    mid-tx rolls back to the pre-extract state.
+        let total_routes = all_routes.len();
+        {
+            let tx = conn.unchecked_transaction().into_diagnostic()?;
+            tx.execute("DELETE FROM api_routes", []).into_diagnostic()?;
+            for chunk in all_routes.chunks(ROUTE_BATCH_SIZE) {
+                Self::insert_route_batch(&tx, chunk)?;
+            }
+            tx.commit().into_diagnostic()?;
         }
 
         let mut frameworks_detected: Vec<String> = frameworks.into_iter().collect();
@@ -232,9 +235,8 @@ impl<'a> RouteExtractor<'a> {
         })
     }
 
-    fn insert_route_batch(&self, routes: &[RouteRow]) -> Result<()> {
-        let conn = self.storage.get_connection();
-        let tx = conn.unchecked_transaction().into_diagnostic()?;
+    /// Insert a batch of routes on an open transaction (no commit).
+    fn insert_route_batch(tx: &rusqlite::Transaction<'_>, routes: &[RouteRow]) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
 
         for route in routes {
@@ -273,7 +275,6 @@ impl<'a> RouteExtractor<'a> {
             .into_diagnostic()?;
         }
 
-        tx.commit().into_diagnostic()?;
         Ok(())
     }
 
@@ -387,6 +388,55 @@ mod tests {
         assert_eq!(stats.total_routes, 0);
         assert_eq!(stats.files_processed, 0);
         assert!(stats.frameworks_detected.is_empty());
+    }
+
+    /// Empty-symbol extract must DELETE prior rows (no stale stacks left behind).
+    #[test]
+    fn test_extract_empty_symbols_clears_stale_routes() {
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            ("src/routes.rs", "Rust", "hash1", 100, "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO api_routes
+                (method, path_pattern, handler_symbol_name, handler_file_id,
+                 framework, route_source, is_dynamic, route_confidence, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                "GET",
+                "/stale",
+                "stale_handler",
+                file_id,
+                "Axum",
+                "DECORATOR",
+                0,
+                1.0,
+                "2026-05-01T00:00:00Z",
+            ],
+        )
+        .unwrap();
+
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM api_routes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(before, 1);
+
+        // No project_symbols → early path still clears api_routes.
+        let extractor = RouteExtractor::new(&storage, PathBuf::from("/tmp/test_repo"));
+        let stats = extractor.extract().unwrap();
+        assert_eq!(stats.total_routes, 0);
+
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM api_routes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(after, 0);
     }
 
     #[test]
@@ -535,6 +585,89 @@ fn app() -> Router {
             count >= 1,
             "expected at least 1 route in api_routes table, got {}",
             count
+        );
+    }
+
+    /// Re-extract must rebuild, not stack: two consecutive extract() → stable COUNT.
+    #[test]
+    fn test_extract_twice_does_not_stack_routes() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir).expect("failed to create src dir");
+
+        let routes_content = r#"use axum::Router;
+use axum::routing::get;
+
+async fn get_users() {}
+async fn create_user() {}
+
+fn app() -> Router {
+    Router::new()
+        .route("/users", get(get_users))
+        .route("/users", axum::routing::post(create_user))
+}
+"#;
+        let routes_path = src_dir.join("routes.rs");
+        fs::write(&routes_path, routes_content).expect("failed to write routes.rs");
+
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            ("src/routes.rs", "Rust", "hash_dedupe", 200, "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+
+        for (qualified, name) in [
+            ("crate::get_users", "get_users"),
+            ("crate::create_user", "create_user"),
+        ] {
+            conn.execute(
+                "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, is_public, confidence, last_indexed_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                (file_id, qualified, name, "Function", 1, 1.0, "2026-05-01T00:00:00Z"),
+            )
+            .unwrap();
+        }
+
+        let extractor = RouteExtractor::new(&storage, dir.path().to_path_buf());
+        let stats1 = extractor.extract().expect("first extract failed");
+        assert!(
+            stats1.total_routes >= 1,
+            "expected at least 1 route on first extract"
+        );
+
+        let count_after_first: i64 = conn
+            .query_row("SELECT COUNT(*) FROM api_routes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            count_after_first as usize, stats1.total_routes,
+            "first extract COUNT should match stats"
+        );
+
+        let stats2 = extractor.extract().expect("second extract failed");
+        let count_after_second: i64 = conn
+            .query_row("SELECT COUNT(*) FROM api_routes", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(
+            stats2.total_routes, stats1.total_routes,
+            "second extract must not stack routes (stats)"
+        );
+        assert_eq!(
+            count_after_second, count_after_first,
+            "second extract must not stack routes (COUNT); got {} then {}",
+            count_after_first, count_after_second
+        );
+        // Explicit non-2× guard (regression for append-only bug)
+        assert_ne!(
+            count_after_second,
+            count_after_first * 2,
+            "COUNT must not double on re-extract"
         );
     }
 }
