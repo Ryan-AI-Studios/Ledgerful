@@ -609,6 +609,140 @@ mod tests {
         assert!(rows.is_empty());
     }
 
+    /// `--changed` path: matched_route_keys = Some(...) filters before emit-time
+    /// dedupe. Stacked GET /changes collapse to one; unrelated only if key present.
+    #[test]
+    fn query_filter_and_dedupe_with_matched_route_keys() {
+        use std::collections::HashSet;
+
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                "src/routes.rs",
+                "Rust",
+                "hash_changed",
+                100,
+                "2026-05-01T00:00:00Z",
+            ),
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+
+        // Three stacked identical GET /changes Axum identities.
+        for _ in 0..3 {
+            seed_route(
+                conn,
+                file_id,
+                "GET",
+                "/changes",
+                "changes_handler",
+                "Axum",
+                1.0,
+            );
+        }
+        // Unrelated route — only appears when its key is in the set.
+        seed_route(
+            conn,
+            file_id,
+            "POST",
+            "/other",
+            "other_handler",
+            "Axum",
+            1.0,
+        );
+
+        let mut keys = HashSet::new();
+        keys.insert(("GET".to_string(), "/changes".to_string()));
+
+        let (rows, raw_empty) =
+            query_filter_and_dedupe_endpoints(conn, None, None, Some(&keys)).expect("query+dedupe");
+        assert!(!raw_empty, "table has rows so raw SQL is non-empty");
+        assert_eq!(
+            rows.len(),
+            1,
+            "three stacked GET /changes collapse to one emit"
+        );
+        assert_eq!(rows[0].method, "GET");
+        assert_eq!(rows[0].path_pattern, "/changes");
+        assert_eq!(rows[0].framework, "Axum");
+
+        let mut emit_keys: Vec<(String, String, String)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r.method.to_uppercase(),
+                    r.path_pattern.clone(),
+                    r.framework.clone(),
+                )
+            })
+            .collect();
+        emit_keys.sort();
+        let mut uniq = emit_keys.clone();
+        uniq.dedup();
+        assert_eq!(
+            emit_keys, uniq,
+            "emit rows must be unique on (method, path, framework)"
+        );
+
+        // With both keys present, unrelated POST /other is included (deduped).
+        keys.insert(("POST".to_string(), "/other".to_string()));
+        let (rows2, _) =
+            query_filter_and_dedupe_endpoints(conn, None, None, Some(&keys)).expect("query+dedupe");
+        assert_eq!(rows2.len(), 2);
+        assert!(
+            rows2
+                .iter()
+                .any(|r| r.method == "POST" && r.path_pattern == "/other")
+        );
+    }
+
+    /// CleanDiff fence: empty matched key set with a non-empty table → empty
+    /// emit but `all_rows_empty == false` (not NoIndexedData).
+    #[test]
+    fn query_filter_and_dedupe_empty_keys_clean_diff_fence() {
+        use std::collections::HashSet;
+
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                "src/routes.rs",
+                "Rust",
+                "hash_clean_diff",
+                100,
+                "2026-05-01T00:00:00Z",
+            ),
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+        seed_route(
+            conn,
+            file_id,
+            "GET",
+            "/changes",
+            "changes_handler",
+            "Axum",
+            1.0,
+        );
+
+        let empty_keys = HashSet::new();
+        let (rows, raw_empty) =
+            query_filter_and_dedupe_endpoints(conn, None, None, Some(&empty_keys))
+                .expect("query+dedupe");
+        assert!(rows.is_empty(), "no matched keys → empty emit");
+        assert!(
+            !raw_empty,
+            "table has rows: all_rows_empty must stay false (CleanDiff fence)"
+        );
+    }
+
     #[test]
     fn dedupe_keep_best_higher_confidence() {
         let rows = vec![

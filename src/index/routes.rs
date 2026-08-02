@@ -5,7 +5,7 @@ use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExtractedRoute {
@@ -33,6 +33,13 @@ pub struct RouteStats {
     pub total_routes: usize,
     pub frameworks_detected: Vec<String>,
     pub files_processed: usize,
+    /// Source-language files skipped due to read or parse failure.
+    /// Default-safe for older serialized consumers.
+    #[serde(default)]
+    pub files_skipped: usize,
+    /// True when `files_skipped > 0` (inventory rebuild was suppressed).
+    #[serde(default)]
+    pub partial: bool,
 }
 
 pub struct RouteExtractor<'a> {
@@ -102,6 +109,8 @@ impl<'a> RouteExtractor<'a> {
                 total_routes: 0,
                 frameworks_detected: Vec::new(),
                 files_processed: 0,
+                files_skipped: 0,
+                partial: false,
             });
         }
 
@@ -136,6 +145,7 @@ impl<'a> RouteExtractor<'a> {
 
         // 4. Walk source files and accumulate routes (no DB writes yet).
         let mut files_processed = 0usize;
+        let mut files_skipped = 0usize;
         let mut frameworks: HashSet<String> = HashSet::new();
         let mut all_routes: Vec<RouteRow> = Vec::new();
 
@@ -155,7 +165,15 @@ impl<'a> RouteExtractor<'a> {
             let full_path = self.repo_path.join(file_path);
             let content = match std::fs::read_to_string(&full_path) {
                 Ok(c) => c,
-                Err(_) => continue,
+                Err(e) => {
+                    files_skipped += 1;
+                    warn!(
+                        path = %file_path,
+                        error = %e,
+                        "skipping route extract: file unreadable"
+                    );
+                    continue;
+                }
             };
 
             let path = PathBuf::from(file_path);
@@ -163,7 +181,15 @@ impl<'a> RouteExtractor<'a> {
 
             let extracted_routes = match languages::extract_routes(&path, &content, &file_symbols) {
                 Ok(r) => r,
-                Err(_) => continue,
+                Err(e) => {
+                    files_skipped += 1;
+                    warn!(
+                        path = %file_path,
+                        error = %e,
+                        "skipping route extract: parse failed"
+                    );
+                    continue;
+                }
             };
 
             files_processed += 1;
@@ -207,9 +233,34 @@ impl<'a> RouteExtractor<'a> {
             }
         }
 
+        let mut frameworks_detected: Vec<String> = frameworks.into_iter().collect();
+        frameworks_detected.sort();
+
+        // Fail-safe inventory: a partial walk must not DELETE good rows.
+        // Leave `api_routes` untouched and report existing count + skip honesty.
+        if files_skipped > 0 {
+            let existing_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM api_routes", [], |row| row.get(0))
+                .into_diagnostic()?;
+            warn!(
+                files_skipped,
+                files_processed,
+                existing_routes = existing_count,
+                "route extract partial: leaving api_routes untouched (no atomic rebuild)"
+            );
+            return Ok(RouteStats {
+                total_routes: existing_count as usize,
+                frameworks_detected,
+                files_processed,
+                files_skipped,
+                partial: true,
+            });
+        }
+
         // 5. Atomic rebuild: one outer transaction DELETE + batched inserts.
         //    Crash during the file walk leaves the previous table intact; crash
-        //    mid-tx rolls back to the pre-extract state.
+        //    mid-tx rolls back to the pre-extract state. Only when every source
+        //    file was readable and parseable.
         let total_routes = all_routes.len();
         {
             let tx = conn.unchecked_transaction().into_diagnostic()?;
@@ -220,9 +271,6 @@ impl<'a> RouteExtractor<'a> {
             tx.commit().into_diagnostic()?;
         }
 
-        let mut frameworks_detected: Vec<String> = frameworks.into_iter().collect();
-        frameworks_detected.sort();
-
         info!(
             "Route extraction complete: {} routes from {} files, frameworks: {:?}",
             total_routes, files_processed, frameworks_detected
@@ -232,6 +280,8 @@ impl<'a> RouteExtractor<'a> {
             total_routes,
             frameworks_detected,
             files_processed,
+            files_skipped: 0,
+            partial: false,
         })
     }
 
@@ -351,11 +401,21 @@ mod tests {
             total_routes: 5,
             frameworks_detected: vec!["Axum".to_string(), "Express".to_string()],
             files_processed: 3,
+            files_skipped: 0,
+            partial: false,
         };
         let json = serde_json::to_string(&stats).unwrap();
         assert!(json.contains("total_routes"));
         assert!(json.contains("frameworks_detected"));
         assert!(json.contains("files_processed"));
+        assert!(json.contains("files_skipped"));
+        assert!(json.contains("partial"));
+
+        // Older payloads without the new fields still deserialize (serde default).
+        let legacy = r#"{"total_routes":1,"frameworks_detected":[],"files_processed":0}"#;
+        let decoded: RouteStats = serde_json::from_str(legacy).unwrap();
+        assert_eq!(decoded.files_skipped, 0);
+        assert!(!decoded.partial);
     }
 
     #[test]
@@ -387,7 +447,99 @@ mod tests {
         let stats = extractor.extract().unwrap();
         assert_eq!(stats.total_routes, 0);
         assert_eq!(stats.files_processed, 0);
+        assert_eq!(stats.files_skipped, 0);
+        assert!(!stats.partial);
         assert!(stats.frameworks_detected.is_empty());
+    }
+
+    /// Partial walk (unreadable source file) must not wipe existing `api_routes`.
+    #[test]
+    fn test_extract_skips_do_not_wipe_existing_routes() {
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+
+        // project_file points at a path that does not exist on disk.
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                "src/missing_routes.rs",
+                "Rust",
+                "hash_missing",
+                100,
+                "2026-05-01T00:00:00Z",
+            ),
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+
+        // Symbols present so we do not take the empty-symbols early DELETE path.
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                file_id,
+                "crate::keep_handler",
+                "keep_handler",
+                "Function",
+                "2026-05-01T00:00:00Z",
+            ),
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO api_routes
+                (method, path_pattern, handler_symbol_name, handler_file_id,
+                 framework, route_source, is_dynamic, route_confidence, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+            rusqlite::params![
+                "GET",
+                "/keep",
+                "keep_handler",
+                file_id,
+                "Axum",
+                "DECORATOR",
+                0,
+                1.0,
+                "2026-05-01T00:00:00Z",
+            ],
+        )
+        .unwrap();
+
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM api_routes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(before, 1);
+
+        // Repo root has no source files → read fails → files_skipped > 0.
+        let extractor = RouteExtractor::new(&storage, PathBuf::from("/tmp/ledgerful_no_such_repo"));
+        let stats = extractor.extract().unwrap();
+        assert!(
+            stats.files_skipped > 0,
+            "missing on-disk file must count as skip"
+        );
+        assert!(stats.partial);
+        assert_eq!(
+            stats.total_routes, before as usize,
+            "total_routes should report existing table count"
+        );
+
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM api_routes", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            after, before,
+            "partial extract must leave api_routes untouched"
+        );
+
+        let kept_path: String = conn
+            .query_row(
+                "SELECT path_pattern FROM api_routes WHERE path_pattern = '/keep'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept_path, "/keep");
     }
 
     /// Empty-symbol extract must DELETE prior rows (no stale stacks left behind).
