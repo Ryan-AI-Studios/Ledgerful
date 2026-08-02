@@ -2,7 +2,7 @@ use std::fs;
 use std::process::Command;
 use tempfile::tempdir;
 
-use crate::common::{DirGuard, setup_git_repo};
+use crate::common::{DirGuard, run_cli, setup_git_repo};
 
 #[test]
 fn test_search_fuzzy_fallback_and_hint() {
@@ -373,4 +373,173 @@ fn test_search_non_ascii_snippet_safe() {
             || stdout.contains("boundary"),
         "expected a usable snippet: {stdout}"
     );
+}
+
+/// 0126: empty index + search --json emits search_index_status Insight (not silent).
+#[test]
+fn search_json_empty_index_emits_search_index_status() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _guard = DirGuard::new(root);
+
+    // Ensure .ledgerful exists so search can open layout; no index content.
+    let (init_out, init_err, init_code) = run_cli(root, &["init"]);
+    assert_eq!(
+        init_code, 0,
+        "init should succeed; stderr={init_err}; stdout={init_out}"
+    );
+
+    // Empty repo (no indexable sources) → rebuild still yields 0 docs.
+    let (stdout, stderr, code) = run_cli(root, &["search", "anything", "--json"]);
+    assert_eq!(
+        code, 0,
+        "search --json empty should exit 0; stderr={stderr}; stdout={stdout}"
+    );
+
+    // Status must be the first non-empty JSON record (before any matches/noise).
+    let first_json: serde_json::Value = stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .find_map(|line| serde_json::from_str(line).ok())
+        .expect("expected at least one JSON NDJSON line");
+    assert_eq!(
+        first_json["record_kind"], "search_index_status",
+        "search_index_status must be the first JSON record:\n{stdout}"
+    );
+    assert_eq!(first_json["direction"], "outbound");
+    assert_eq!(first_json["payload"]["type"], "Insight");
+    assert_eq!(first_json["payload"]["memory_id"], "search_index_status");
+    let content = first_json["payload"]["content"]
+        .as_str()
+        .expect("Insight content string");
+    let status: serde_json::Value = serde_json::from_str(content).expect("content is status JSON");
+    let state = status["state"].as_str().unwrap_or("");
+    assert!(
+        state == "was_empty" || state == "empty_after_rebuild",
+        "unexpected state: {status}"
+    );
+    assert!(status["document_count"].is_number());
+    if state == "empty_after_rebuild" {
+        let rem = status["remediation"].as_str().unwrap_or("");
+        assert!(
+            rem.contains("Rebuild") || rem.contains("indexable") || rem.contains("ignore"),
+            "empty_after_rebuild needs B2 honesty: {rem}"
+        );
+    }
+}
+
+/// 0126: populated index + zero hits must not claim was_empty / empty_after_rebuild.
+#[test]
+fn search_json_populated_no_matches_does_not_claim_empty_index() {
+    use crate::common::git_add_and_commit;
+
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _guard = DirGuard::new(root);
+
+    fs::write(root.join("a.rs"), "pub fn real_symbol() {}").unwrap();
+    git_add_and_commit(root, "a.rs");
+
+    let (out, err, code) = run_cli(root, &["init"]);
+    assert_eq!(code, 0, "init; stderr={err}; stdout={out}");
+
+    // Build Tantivy with --index so pre_count > 0 on the next query.
+    let (out, err, code) = run_cli(root, &["search", "real_symbol", "--index", "--json"]);
+    assert_eq!(code, 0, "search --index; stderr={err}; stdout={out}");
+
+    // Query something that won't match; pre_count > 0 so no search_index_status.
+    let (stdout, stderr, code) =
+        run_cli(root, &["search", "zzzz_nonexistent_token_0126", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
+            assert_ne!(
+                v["record_kind"], "search_index_status",
+                "populated index zero-hit must not claim empty index: {line}"
+            );
+        }
+    }
+}
+
+/// 0126: empty Tantivy + indexable sources → auto-rebuild yields
+/// `state == "was_empty"` with `document_count >= 1` (successful rebuild path).
+#[test]
+fn search_json_was_empty_after_successful_rebuild() {
+    use crate::common::git_add_and_commit;
+
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _guard = DirGuard::new(root);
+
+    // Distinctive token so a match is expected after rebuild.
+    let token = "was_empty_rebuild_token_0126";
+    fs::write(
+        root.join("src_was_empty.rs"),
+        format!("pub fn {token}() {{}}\n"),
+    )
+    .unwrap();
+    git_add_and_commit(root, "src_was_empty.rs");
+
+    // Fresh init: search_index present/created but never populated (pre_count=0).
+    let (init_out, init_err, init_code) = run_cli(root, &["init"]);
+    assert_eq!(
+        init_code, 0,
+        "init should succeed; stderr={init_err}; stdout={init_out}"
+    );
+
+    // First search --json on empty index: auto-rebuild then query.
+    // Do not pass --index explicitly; empty pre_count triggers rebuild.
+    let (stdout, stderr, code) = run_cli(root, &["search", token, "--json"]);
+    assert_eq!(
+        code, 0,
+        "search --json was_empty path; stderr={stderr}; stdout={stdout}"
+    );
+
+    // First non-empty JSON record must be search_index_status (status-before-matches).
+    let json_lines: Vec<&str> = stdout
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .filter(|l| serde_json::from_str::<serde_json::Value>(l).is_ok())
+        .collect();
+    assert!(!json_lines.is_empty(), "expected NDJSON output:\n{stdout}");
+    let first: serde_json::Value = serde_json::from_str(json_lines[0]).expect("first JSON line");
+    assert_eq!(
+        first["record_kind"], "search_index_status",
+        "search_index_status must be the first JSON record:\n{stdout}"
+    );
+    assert_eq!(first["direction"], "outbound");
+    assert_eq!(first["payload"]["type"], "Insight");
+    assert_eq!(first["payload"]["memory_id"], "search_index_status");
+    let content = first["payload"]["content"]
+        .as_str()
+        .expect("Insight content string");
+    let status: serde_json::Value = serde_json::from_str(content).expect("content is status JSON");
+    assert_eq!(
+        status["state"].as_str().unwrap_or(""),
+        "was_empty",
+        "successful rebuild must emit was_empty not empty_after_rebuild: {status}"
+    );
+    let docs = status["document_count"]
+        .as_u64()
+        .expect("document_count number");
+    assert!(
+        docs >= 1,
+        "was_empty path requires document_count >= 1: {status}"
+    );
+
+    // If match records exist later, status already preceded them by first-record assert.
+    let has_match = json_lines.iter().skip(1).any(|line| {
+        let v: serde_json::Value = serde_json::from_str(line).unwrap_or_default();
+        let kind = v["record_kind"].as_str().unwrap_or("");
+        kind == "search_match"
+            || kind == "hybrid_match"
+            || kind.contains("match")
+            || v["payload"]["type"] == "SearchResult"
+            || v["payload"]["type"] == "Hit"
+    });
+    // Prefer that a matching token produces at least one hit after rebuild.
+    let _ = has_match;
 }

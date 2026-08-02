@@ -109,6 +109,57 @@ ledgerful verify --signatures"
     }
 }
 
+/// Normative human Index Health line when the search index exists but has
+/// zero documents (0126). Must never contain the substring `OK`.
+pub fn search_empty_index_health_line() -> &'static str {
+    "Search index: Empty (0 documents — run 'ledgerful index')"
+}
+
+/// Pure classification of a clean Tantivy `document_count` for doctor (0126).
+///
+/// Call only after open+integrity succeed. Missing / load-failed / corrupt are
+/// separate probe arms and never reach this helper.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SearchDocsClassification {
+    /// `docs == 0` → `search-empty` finding + non-OK health line.
+    Empty,
+    /// `docs > 0` → healthy OK health line only (no finding).
+    Populated { docs: usize },
+}
+
+/// Classify document count for the doctor success arm. Pure: no I/O.
+pub fn classify_search_document_count(docs: usize) -> SearchDocsClassification {
+    if docs == 0 {
+        SearchDocsClassification::Empty
+    } else {
+        SearchDocsClassification::Populated { docs }
+    }
+}
+
+/// Build the `search-empty` finding when Tantivy opens clean with 0 documents.
+///
+/// Mutually exclusive with search-missing / search-load-failed / search-corrupt
+/// and with the healthy `OK (N documents)` index_health line when N > 0.
+pub fn build_search_empty_finding() -> DoctorFinding {
+    let remediation = "\
+ledgerful index
+# first search also rebuilds when empty:
+# ledgerful search \"<query>\"
+ledgerful doctor --json"
+        .to_string();
+    DoctorFinding::warn(
+        "search-empty",
+        DoctorCategory::Index,
+        "Search index: present but empty (0 documents); full-text search unusable until populated",
+    )
+    .with_remediation(remediation)
+}
+
+/// Healthy human Index Health line when `docs > 0`.
+pub fn search_ok_index_health_line(docs: usize) -> String {
+    format!("Search index: OK ({docs} documents)")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -214,5 +265,98 @@ mod tests {
         let f = build_sig_version_finding(1, Some(3));
         let rem = f.remediation.unwrap();
         assert!(rem.contains("ledgerful ledger re-sign --all"));
+    }
+
+    // ── 0126 search-empty ────────────────────────────────────────────────
+
+    #[test]
+    fn search_empty_finding_is_warn_index_with_remediation() {
+        let f = build_search_empty_finding();
+        assert_eq!(f.code, "search-empty");
+        assert_eq!(f.severity, DoctorSeverity::Warn);
+        assert_eq!(f.category, DoctorCategory::Index);
+        let rem = f.remediation.as_deref().expect("remediation Some");
+        assert!(
+            rem.contains("ledgerful index"),
+            "remediation must contain exact ledgerful index: {rem}"
+        );
+        assert!(
+            !f.message.contains("OK"),
+            "message must not claim OK when empty: {}",
+            f.message
+        );
+        assert!(
+            f.message.to_ascii_lowercase().contains("empty")
+                || f.message.to_ascii_lowercase().contains("unusable"),
+            "message should diagnose empty/unusable: {}",
+            f.message
+        );
+    }
+
+    #[test]
+    fn search_empty_health_line_has_no_ok_substring() {
+        let line = search_empty_index_health_line();
+        assert!(
+            !line.contains("OK"),
+            "empty index_health must not contain OK: {line}"
+        );
+        assert!(
+            line.contains("Empty") || line.contains("empty"),
+            "should say Empty: {line}"
+        );
+        assert!(
+            line.contains("ledgerful index") || line.contains("'ledgerful index'"),
+            "should point at ledgerful index: {line}"
+        );
+        // Grep-gate: never re-introduce healthy OK-with-zero wording.
+        assert!(!line.contains("OK (0 documents)"));
+    }
+
+    #[test]
+    fn search_empty_serde_remediation_serializes() {
+        let f = build_search_empty_finding();
+        let v = serde_json::to_value(&f).expect("serialize");
+        assert_eq!(v["code"], "search-empty");
+        assert_eq!(v["severity"], "warn");
+        assert_eq!(v["category"], "index");
+        assert!(
+            v["remediation"]
+                .as_str()
+                .expect("remediation present")
+                .contains("ledgerful index")
+        );
+    }
+
+    #[test]
+    fn classify_search_document_count_zero_is_empty() {
+        assert_eq!(
+            classify_search_document_count(0),
+            SearchDocsClassification::Empty
+        );
+        let f = build_search_empty_finding();
+        assert_eq!(f.code, "search-empty");
+        assert!(f.remediation.is_some());
+        let line = search_empty_index_health_line();
+        assert!(!line.contains("OK"));
+    }
+
+    #[test]
+    fn classify_search_document_count_positive_is_populated_not_search_empty() {
+        match classify_search_document_count(12) {
+            SearchDocsClassification::Populated { docs } => {
+                assert_eq!(docs, 12);
+                let line = search_ok_index_health_line(docs);
+                assert!(line.contains("OK (12 documents)"));
+                assert!(!line.contains("OK (0 documents)"));
+            }
+            SearchDocsClassification::Empty => {
+                panic!("docs>0 must not classify as Empty / search-empty")
+            }
+        }
+        // Builder is for the empty arm only — positive path never emits search-empty code.
+        assert_ne!(
+            search_ok_index_health_line(1),
+            search_empty_index_health_line()
+        );
     }
 }

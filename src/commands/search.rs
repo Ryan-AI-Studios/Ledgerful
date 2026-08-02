@@ -212,7 +212,10 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
     let index_path = layout.search_index_dir();
     let engine = TantivySearchEngine::open_or_create(index_path.as_std_path())?;
 
-    if args.index || engine.document_count() == 0 {
+    // 0126: capture pre_count BEFORE rebuild — StreamIndexer consumes engine.
+    let pre_count = engine.document_count();
+
+    let engine = if args.index || pre_count == 0 {
         if !args.json {
             println!("{} Indexing repository for search...", "INIT".cyan().bold());
         }
@@ -230,13 +233,80 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         let engine = TantivySearchEngine::open_or_create(index_path.as_std_path())?;
         engine.verify_index_integrity(index_path.as_std_path())?;
         debug!("Tantivy index integrity verified.");
-
-        perform_search(engine, &layout.root, &args, use_regex, use_hybrid)?;
+        engine
     } else {
-        perform_search(engine, &layout.root, &args, use_regex, use_hybrid)?;
+        engine
+    };
+
+    let post_count = engine.document_count();
+
+    // Empty-index honesty: do not collapse into silent no-matches for agents.
+    if pre_count == 0 {
+        emit_search_index_status(&args, post_count);
+        // Still empty after rebuild: status alone is enough (skip zero-hit noise).
+        if post_count == 0 {
+            return Ok(());
+        }
     }
 
+    perform_search(engine, &layout.root, &args, use_regex, use_hybrid)?;
+
     Ok(())
+}
+
+/// Emit human WARN / JSON `search_index_status` when the index was empty before
+/// query (0126). Mirror `semantic_readiness` Insight construction.
+fn emit_search_index_status(args: &SearchArgs, post_count: usize) {
+    let state = if post_count == 0 {
+        "empty_after_rebuild"
+    } else {
+        "was_empty"
+    };
+
+    if args.json {
+        let mut content = serde_json::json!({
+            "state": state,
+            "document_count": post_count,
+        });
+        if post_count == 0 {
+            // B2 honesty: rebuild already ran; do not only say "run index".
+            content["remediation"] = serde_json::Value::String(
+                "Rebuild already ran; no indexable content found (empty repo, \
+                 ignore patterns, or filters). Check ignore patterns. \
+                 `ledgerful index` may re-try but will not invent files."
+                    .to_string(),
+            );
+        }
+        let record = BridgeRecord {
+            bridge_version: BridgeRecord::VERSION.to_string(),
+            direction: BridgeDirection::Outbound,
+            timestamp: chrono::Utc::now(),
+            parent_hash: None,
+            project_id: args.project_id.clone(),
+            session_id: None,
+            tx_id: None,
+            record_kind: "search_index_status".to_string(),
+            payload: BridgePayload::Insight {
+                memory_id: "search_index_status".to_string(),
+                relevance: 0.0,
+                content: serde_json::to_string(&content).unwrap_or_default(),
+            },
+            privacy: Privacy::ProjectLocal,
+        };
+        println!("{}", serde_json::to_string(&record).unwrap_or_default());
+    } else if post_count == 0 {
+        println!(
+            "{} Search index empty after rebuild (0 documents). No indexable \
+             content found — check ignore patterns; empty repo or filters may \
+             leave the index empty.",
+            "WARN".yellow().bold()
+        );
+    } else {
+        println!(
+            "{} Search index was empty; rebuilt to {post_count} document(s).",
+            "WARN".yellow().bold()
+        );
+    }
 }
 
 pub fn is_regex_likely(query: &str) -> bool {

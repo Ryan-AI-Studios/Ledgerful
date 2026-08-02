@@ -152,3 +152,109 @@ require_signing = true
         "expected block count >= 1: {v}"
     );
 }
+
+/// 0126: production empty path — init/ensure_state_dir yields 0 docs → search-empty.
+#[test]
+fn doctor_json_emits_search_empty_on_unindexed_repo() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+
+    // doctor ensures state dir + opens/creates Tantivy → 0 documents without index.
+    let (stdout, stderr, code) = run_cli(root, &["doctor", "--json"]);
+    assert_eq!(
+        code, 0,
+        "search-empty is warn not block; exit 0; stderr={stderr}"
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be pure JSON");
+    assert_eq!(
+        v["readyForPublish"], true,
+        "warn must not block publish: {v}"
+    );
+    let findings = v["findings"].as_array().expect("findings array");
+    let empty = findings
+        .iter()
+        .find(|f| f["code"] == "search-empty")
+        .unwrap_or_else(|| panic!("expected search-empty finding: {v}"));
+    assert_eq!(empty["severity"], "warn");
+    assert_eq!(empty["category"], "index");
+    let rem = empty["remediation"]
+        .as_str()
+        .expect("search-empty remediation Some");
+    assert!(
+        rem.contains("ledgerful index"),
+        "remediation must contain ledgerful index: {rem}"
+    );
+    assert!(
+        !empty["message"].as_str().unwrap_or("").contains("OK"),
+        "message must not claim OK: {empty}"
+    );
+}
+
+/// 0126: human Index Health must not say OK when empty.
+/// Asserts exact B1.2 line + search-empty finding print (not bare "empty",
+/// which graph-empty also satisfies on greenfield doctor).
+#[test]
+fn doctor_human_empty_search_index_not_ok() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+
+    let (stdout, stderr, code) = run_cli(root, &["doctor"]);
+    assert_eq!(code, 0, "doctor human exit; stderr={stderr}");
+    // Non-OK empty line (substring OK must not appear with zero docs).
+    assert!(
+        !stdout.contains("OK (0 documents)"),
+        "must not report healthy OK with zero docs:\n{stdout}"
+    );
+    // B1.2 normative Index Health line (exact) — not bare "empty"/graph-empty.
+    assert!(
+        stdout.contains("Search index: Empty (0 documents — run 'ledgerful index')"),
+        "expected B1.2 Search index Empty line:\n{stdout}"
+    );
+    // Structured finding print: [warn] [search-empty] …
+    assert!(
+        stdout.contains("search-empty"),
+        "expected search-empty finding code in human output:\n{stdout}"
+    );
+}
+
+/// 0126: after real index with files, search-empty is gone; OK (N) with N>0.
+#[test]
+fn doctor_after_index_no_search_empty() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("lib.rs"), "pub fn hello() {}").unwrap();
+    crate::common::git_add_and_commit(root, "lib.rs");
+
+    let (out, err, code) = run_cli(root, &["init"]);
+    assert_eq!(code, 0, "init should succeed; stderr={err}; stdout={out}");
+
+    // Populate Tantivy via search rebuild (same path as document_count==0 auto-index).
+    let (out, err, code) = run_cli(root, &["search", "hello", "--index", "--json"]);
+    assert_eq!(
+        code, 0,
+        "search --index should succeed; stderr={err}; stdout={out}"
+    );
+
+    let (stdout, stderr, code) = run_cli(root, &["doctor", "--json"]);
+    assert_eq!(code, 0, "doctor --json; stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("pure JSON");
+    let findings = v["findings"].as_array().expect("findings");
+    assert!(
+        !findings.iter().any(|f| f["code"] == "search-empty"),
+        "populated index must not emit search-empty: {v}"
+    );
+
+    // Human path: OK (N) with N>0
+    let (human, _, code) = run_cli(root, &["doctor"]);
+    assert_eq!(code, 0);
+    assert!(
+        human.contains("Search index: OK (") && !human.contains("OK (0 documents)"),
+        "expected OK (N) with N>0:\n{human}"
+    );
+}
