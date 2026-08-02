@@ -65,6 +65,32 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         }
     }
 
+    // 0128 R1: rebuild FTS *before* any semantic early-return. Semantic hits
+    // must not leave BM25 content-stale after SQLite Full/Incremental work.
+    let auto_index_ran_work = matches!(
+        auto_index_action,
+        AutoIndexAction::FullBootstrap | AutoIndexAction::Incremental { .. }
+    );
+    let mut fts_rebuilt_for_auto_index = false;
+    if auto_index_ran_work {
+        if !args.json {
+            println!("{} Indexing repository for search...", "INIT".cyan().bold());
+        }
+        debug!("Post-auto-index full FTS rebuild (before semantic/BM25 query path)");
+        match rebuild_tantivy_index(&layout) {
+            Ok(()) => {
+                fts_rebuilt_for_auto_index = true;
+                if !args.json {
+                    println!("{} Index built successfully.\n", "DONE".green().bold());
+                }
+            }
+            Err(e) => {
+                // B4: greppable residual; continue so semantic/BM25 can still run.
+                emit_fts_rebuild_failed(&args, /*document_count=*/ None, &e);
+            }
+        }
+    }
+
     if args.semantic {
         let config = load_config(&layout)?;
         let storage = StorageManager::open_read_only(&layout)?;
@@ -223,17 +249,14 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
     // 0126: capture pre_count BEFORE rebuild — StreamIndexer consumes engine.
     let pre_count = engine.document_count();
 
-    // 0128: full FTS rebuild when auto-index ran SQLite Full/Incremental work,
-    // or existing paths (explicit --index / empty document_count). Never rebuild
-    // on every search when AutoIndexAction::None and docs already present.
-    let auto_index_ran_work = matches!(
-        auto_index_action,
-        AutoIndexAction::FullBootstrap | AutoIndexAction::Incremental { .. }
-    );
-    let needs_fts_rebuild = args.index || pre_count == 0 || auto_index_ran_work;
+    // 0128: full FTS rebuild when auto-index ran SQLite Full/Incremental work
+    // (already done above if successful), or explicit --index / empty docs.
+    // Never rebuild on every search when AutoIndexAction::None and docs present.
+    let needs_fts_rebuild =
+        args.index || pre_count == 0 || (auto_index_ran_work && !fts_rebuilt_for_auto_index);
 
     let engine = if needs_fts_rebuild {
-        if !args.json {
+        if !args.json && !fts_rebuilt_for_auto_index {
             println!("{} Indexing repository for search...", "INIT".cyan().bold());
         }
         debug!("Indexing repository for search...");
@@ -248,41 +271,17 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                 engine
             }
             Err(e) if auto_index_ran_work && !args.index => {
-                // B4: greppable residual after failed post-auto-index FTS rebuild.
-                if args.json {
-                    let content = serde_json::json!({
-                        "state": "fts_rebuild_failed",
-                        "document_count": pre_count,
-                        "remediation": "ledgerful index --incremental",
-                    });
-                    let record = BridgeRecord {
-                        bridge_version: BridgeRecord::VERSION.to_string(),
-                        direction: BridgeDirection::Outbound,
-                        timestamp: chrono::Utc::now(),
-                        parent_hash: None,
-                        project_id: args.project_id.clone(),
-                        session_id: None,
-                        tx_id: None,
-                        record_kind: "search_index_status".to_string(),
-                        payload: BridgePayload::Insight {
-                            memory_id: "search_index_status".to_string(),
-                            relevance: 0.0,
-                            content: serde_json::to_string(&content).unwrap_or_default(),
-                        },
-                        privacy: Privacy::ProjectLocal,
-                    };
-                    println!("{}", serde_json::to_string(&record).unwrap_or_default());
-                } else {
-                    eprintln!(
-                        "{} Search full-text rebuild failed after auto-index: {e}. Run {} to refresh BM25.",
-                        "WARN".yellow().bold(),
-                        "ledgerful index --incremental".cyan().bold()
-                    );
-                }
+                // B4 residual (retry after early rebuild failed, or empty-doc path).
+                emit_fts_rebuild_failed(&args, Some(pre_count), &e);
                 engine
             }
             Err(e) => return Err(e),
         }
+    } else if fts_rebuilt_for_auto_index {
+        // Early rebuild already ran — re-open so BM25 sees fresh docs.
+        let engine = TantivySearchEngine::open_or_create(index_path.as_std_path())?;
+        engine.verify_index_integrity(index_path.as_std_path())?;
+        engine
     } else {
         engine
     };
@@ -301,6 +300,42 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
     perform_search(engine, &layout.root, &args, use_regex, use_hybrid)?;
 
     Ok(())
+}
+
+/// B4 honesty when post-auto-index full FTS rebuild fails.
+fn emit_fts_rebuild_failed(args: &SearchArgs, document_count: Option<usize>, err: &miette::Report) {
+    if args.json {
+        let mut content = serde_json::json!({
+            "state": "fts_rebuild_failed",
+            "remediation": "ledgerful index --incremental",
+        });
+        if let Some(n) = document_count {
+            content["document_count"] = serde_json::json!(n);
+        }
+        let record = BridgeRecord {
+            bridge_version: BridgeRecord::VERSION.to_string(),
+            direction: BridgeDirection::Outbound,
+            timestamp: chrono::Utc::now(),
+            parent_hash: None,
+            project_id: args.project_id.clone(),
+            session_id: None,
+            tx_id: None,
+            record_kind: "search_index_status".to_string(),
+            payload: BridgePayload::Insight {
+                memory_id: "search_index_status".to_string(),
+                relevance: 0.0,
+                content: serde_json::to_string(&content).unwrap_or_default(),
+            },
+            privacy: Privacy::ProjectLocal,
+        };
+        println!("{}", serde_json::to_string(&record).unwrap_or_default());
+    } else {
+        eprintln!(
+            "{} Search full-text rebuild failed after auto-index: {err}. Run {} to refresh BM25.",
+            "WARN".yellow().bold(),
+            "ledgerful index --incremental".cyan().bold()
+        );
+    }
 }
 
 /// Emit human WARN / JSON `search_index_status` when the index was empty before

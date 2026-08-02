@@ -581,6 +581,7 @@ fn search_auto_index_after_content_change_finds_token() {
         "search --auto-index; stderr={stderr}; stdout={stdout}"
     );
 
+    // Require the unique token on a BM25/hybrid match record — not a bare path hit.
     let has_hit = stdout.lines().filter(|l| !l.trim().is_empty()).any(|line| {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
             return false;
@@ -588,11 +589,13 @@ fn search_auto_index_after_content_change_finds_token() {
         let kind = v["record_kind"].as_str().unwrap_or("");
         let content = v["payload"]["content"].as_str().unwrap_or("");
         let memory = v["payload"]["memory_id"].as_str().unwrap_or("");
-        (kind.contains("match") || kind == "insight")
-            && (content.contains(token) || memory.contains(token) || content.contains("lib.rs"))
+        matches!(
+            kind,
+            "bm25_match" | "fuzzy_match" | "regex_match" | "insight"
+        ) && (content.contains(token) || memory.contains(token))
     });
     assert!(
         has_hit,
-        "0128: auto-index + FTS rebuild must surface new token; stdout={stdout}; stderr={stderr}"
+        "0128: auto-index + FTS rebuild must surface new token in match content; stdout={stdout}; stderr={stderr}"
     );
 }

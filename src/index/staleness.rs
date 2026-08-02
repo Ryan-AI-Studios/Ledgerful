@@ -1334,6 +1334,7 @@ mod tests {
 
     /// 0128 B7: search must not full-rebuild FTS when AutoIndexAction is None
     /// (except document_count==0 / explicit --index). Source-level gate.
+    /// R1: post-auto-index rebuild must run before semantic early-return.
     #[test]
     fn search_fts_rebuild_gated_on_auto_index_action() {
         let search_src = include_str!("../commands/search.rs");
@@ -1346,17 +1347,31 @@ mod tests {
             search_src.contains("needs_fts_rebuild"),
             "search must use a single needs_fts_rebuild gate"
         );
+        assert!(
+            search_src.contains("fts_rebuilt_for_auto_index"),
+            "search must track early post-auto-index FTS rebuild (semantic early-return safe)"
+        );
         // Ensure Action::None does not alone force rebuild: condition includes
         // FullBootstrap | Incremental, not a blanket rebuild after try_auto_index.
         let try_region = search_src
             .find("try_auto_index")
             .expect("search calls try_auto_index");
+        let early_rebuild = search_src
+            .find("Post-auto-index full FTS rebuild")
+            .expect("early post-auto-index rebuild present");
+        let semantic_block = search_src
+            .find("if args.semantic")
+            .expect("semantic block present");
         let rebuild_region = search_src
             .find("needs_fts_rebuild")
             .expect("needs_fts_rebuild present");
         assert!(
+            early_rebuild > try_region && early_rebuild < semantic_block,
+            "post-auto-index FTS rebuild must run after try_auto_index and before semantic"
+        );
+        assert!(
             rebuild_region > try_region,
-            "rebuild decision should follow try_auto_index capture"
+            "BM25 needs_fts_rebuild gate should follow try_auto_index capture"
         );
         assert!(
             search_src.contains("rebuild_tantivy_index"),
