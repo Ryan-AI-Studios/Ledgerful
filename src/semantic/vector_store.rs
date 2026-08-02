@@ -94,6 +94,12 @@ impl<'a> VectorStore<'a> {
     fn setup_schema(&self) -> Result<()> {
         let relations = self.storage.get_relations()?;
         if !relations.contains(&"snippet_embedding".to_string()) {
+            // RO Cozo (soft-open / search read path): do not :create schema.
+            // Treat missing relation as empty store; callers surface honesty.
+            if self.storage.is_read_only() {
+                tracing::debug!("snippet_embedding missing and Cozo is read-only; skip :create");
+                return Ok(());
+            }
             let script = format!(
                 ":create snippet_embedding {{file_path,name,line_offset=>embedding:<F32; {}>}}",
                 self.dim
@@ -117,6 +123,10 @@ impl<'a> VectorStore<'a> {
                 .storage
                 .verify_embedding_dimension("snippet_embedding", self.dim)
             {
+                if self.storage.is_read_only() {
+                    warn!("Dimension mismatch under read-only Cozo (cannot recreate schema): {e}");
+                    return Ok(());
+                }
                 warn!(
                     "Dimension mismatch or verification failed: {}. Clearing stale snippet embeddings.",
                     e

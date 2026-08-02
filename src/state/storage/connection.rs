@@ -154,12 +154,16 @@ impl StorageManager {
             db_path,
             include_cozo
         );
-        let conn = Connection::open(db_path.as_std_path()).into_diagnostic()?;
+        // True OS-level RO flags (same pattern as open_read_only_from_path).
+        // Plain Connection::open + PRAGMA journal_mode=WAL fails pure RO mounts.
+        let flags = OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        let conn = Connection::open_with_flags(db_path.as_std_path(), flags).into_diagnostic()?;
 
-        conn.execute_batch(
-            "PRAGMA journal_mode = WAL; PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;",
-        )
-        .into_diagnostic()?;
+        // No journal_mode=WAL on RO path (would require write access).
+        conn.execute_batch("PRAGMA busy_timeout = 5000; PRAGMA foreign_keys = ON;")
+            .into_diagnostic()?;
 
         #[cfg(not(test))]
         {
@@ -339,6 +343,90 @@ mod tests {
             result.is_err(),
             "open_read_only should fail without a db file"
         );
+    }
+
+    #[test]
+    fn open_read_only_uses_sqlite_open_read_only_flags() {
+        // True SQLITE_OPEN_READ_ONLY path: create via write init, reopen RO,
+        // and still query. Optional: mark file RO on Windows and reopen.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+
+        let write = StorageManager::init_with_layout(&layout).unwrap();
+        write
+            .get_connection()
+            .execute(
+                "CREATE TABLE IF NOT EXISTS _ro_flag_probe (k TEXT PRIMARY KEY)",
+                [],
+            )
+            .unwrap();
+        write
+            .get_connection()
+            .execute("INSERT INTO _ro_flag_probe (k) VALUES ('ok')", [])
+            .unwrap();
+        let _ = write.shutdown();
+
+        let db_path = layout.state_subdir().join("ledger.db");
+        assert!(db_path.exists());
+
+        let read = StorageManager::open_read_only(&layout).unwrap();
+        assert!(read.is_read_only);
+        let got: String = read
+            .get_connection()
+            .query_row("SELECT k FROM _ro_flag_probe WHERE k = 'ok'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(got, "ok");
+
+        // SQLITE_OPEN_READ_ONLY must reject mutations (proves true RO flags).
+        let insert_err = read
+            .get_connection()
+            .execute("INSERT INTO _ro_flag_probe (k) VALUES ('should_fail')", []);
+        assert!(
+            insert_err.is_err(),
+            "INSERT under open_read_only must fail (SQLITE_OPEN_READ_ONLY)"
+        );
+        let create_err = read.get_connection().execute(
+            "CREATE TABLE IF NOT EXISTS _ro_write_probe (k TEXT PRIMARY KEY)",
+            [],
+        );
+        assert!(
+            create_err.is_err(),
+            "CREATE TABLE under open_read_only must fail (SQLITE_OPEN_READ_ONLY)"
+        );
+        let _ = read.shutdown();
+
+        // Windows: mark the DB file read-only at OS level and ensure RO open still works.
+        #[cfg(windows)]
+        {
+            let meta = std::fs::metadata(db_path.as_std_path()).unwrap();
+            let mut perms = meta.permissions();
+            perms.set_readonly(true);
+            std::fs::set_permissions(db_path.as_std_path(), perms).unwrap();
+
+            let read2 = StorageManager::open_read_only(&layout).unwrap();
+            assert!(read2.is_read_only);
+            let got2: String = read2
+                .get_connection()
+                .query_row("SELECT k FROM _ro_flag_probe WHERE k = 'ok'", [], |row| {
+                    row.get(0)
+                })
+                .unwrap();
+            assert_eq!(got2, "ok");
+            let _ = read2.shutdown();
+
+            // Clear readonly so tempdir cleanup succeeds (Windows-only test path).
+            let meta = std::fs::metadata(db_path.as_std_path()).unwrap();
+            let mut perms = meta.permissions();
+            #[allow(clippy::permissions_set_readonly_false)]
+            {
+                perms.set_readonly(false);
+            }
+            std::fs::set_permissions(db_path.as_std_path(), perms).unwrap();
+        }
     }
 
     #[test]

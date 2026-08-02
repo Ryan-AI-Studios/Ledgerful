@@ -573,3 +573,9 @@ Resolution uses `gix` `git_dir()` vs `common_dir()` (not "`.git` is a file" —
 that would mis-handle submodules). Submodules keep private `{module}/.ledgerful`.
 Override with absolute `LEDGERFUL_STATE_DIR` pointing at the state directory itself.
 After large branch switches across worktrees, reindex if the shared index is stale.
+
+**Independent / read-only review:** Codex pure RO sandboxes and restricted
+reviewers cannot run full `verify` / `index` / doctor write-open. Prefer git +
+soft-open `change-context` / `ledger status` / `audit` when state is readable;
+point `LEDGERFUL_STATE_DIR` only at a **populated** `.ledgerful`. See
+[reviewer-readonly.md](reviewer-readonly.md).

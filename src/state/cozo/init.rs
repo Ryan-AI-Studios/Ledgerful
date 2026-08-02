@@ -328,7 +328,9 @@ pub fn initialize_instance(db_path: &Path, read_only: bool) -> Result<DbInstance
                     || err_debug.contains("unable to open database file")
                 {
                     retries += 1;
-                    if retries == 3 {
+                    // Never delete lock files on the read-only open path —
+                    // reviewers / soft-open must not mutate the Cozo directory.
+                    if retries == 3 && !read_only {
                         // Attempt to clean locks / remove lock files in Cozo directory
                         warn!(
                             "CozoDB locked or blocked. Attempting to clear lock files in directory {:?}",

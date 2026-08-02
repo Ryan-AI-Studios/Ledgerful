@@ -42,8 +42,10 @@ fn test_data_models_impact_binary_output() {
         .output()
         .unwrap();
 
-    // Manually insert model because detector is picky in this env
-    let storage = StorageManager::open_read_only(&Layout::new(root_utf8)).unwrap();
+    // Manually insert model because detector is picky in this env.
+    // Must use write open — true SQLITE_OPEN_READ_ONLY rejects INSERT.
+    let layout = Layout::new(root_utf8);
+    let storage = StorageManager::init_with_layout(&layout).unwrap();
     let conn = storage.get_connection();
     let file_id: i64 = conn
         .query_row(
@@ -57,6 +59,7 @@ fn test_data_models_impact_binary_output() {
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         rusqlite::params!["User", file_id, "Rust", "STRUCT", 1.0_f64, "manual", "2026-05-01T00:00:00Z"],
     ).unwrap();
+    let _ = storage.shutdown();
 
     let output = Command::new(ledgerful_bin)
         .args(["data-models", "impact", "--changed"])
@@ -163,10 +166,9 @@ fn test_data_models_impact_json_output() {
     // Modify the file so it's "changed"
     fs::write(root.join("models.rs"), "struct User { id: i32 }").unwrap();
 
-    // Insert dummy data directly
-    let storage =
-        StorageManager::open_read_only(&Layout::new(camino::Utf8Path::from_path(root).unwrap()))
-            .unwrap();
+    // Insert dummy data directly (write open — SQLITE_OPEN_READ_ONLY rejects INSERT).
+    let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
+    let storage = StorageManager::init_with_layout(&layout).unwrap();
     let conn = storage.get_connection();
     let file_id: i64 = conn
         .query_row(
@@ -180,7 +182,7 @@ fn test_data_models_impact_json_output() {
          VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
         rusqlite::params!["User", file_id, "Rust", "STRUCT", 1.0_f64, "manual", "2026-05-01T00:00:00Z"],
     ).unwrap();
-    drop(storage);
+    let _ = storage.shutdown();
 
     // Call impact --changed --json
     let output = Command::new(ledgerful_bin)

@@ -25,6 +25,24 @@ pub const DEFAULT_MAX_FILES: usize = 20;
 /// Doctor sidecar older than this is marked `stale` (counts still exposed).
 const DOCTOR_STALE_AFTER_HOURS: i64 = 24;
 
+/// Error class for `not_ready` nextActions (track 0124 B5).
+///
+/// Pure-RO / permission failures must not suggest Class C recovery
+/// (`doctor` / `init` / `index`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum NotReadyErrorClass {
+    /// State/DB exists but open/mkdir/write failed under pure RO or OS deny.
+    PermissionDenied,
+    /// `ledger.db` does not exist / storage not initialized.
+    MissingDb,
+    /// RO open failed schema currency check.
+    SchemaStale,
+    /// Layout / git discover failed.
+    LayoutUnavailable,
+    /// Generic failure — writable-env triad still appropriate.
+    Other,
+}
+
 /// Detail level for risk reasons / warnings / coupling names in the packet.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -206,6 +224,7 @@ pub fn build_change_context(
                 opts.base_ref.clone(),
                 read_doctor_section(layout),
                 ledger,
+                NotReadyErrorClass::Other,
             );
             packet.analysis_warnings.extend(ledger_warnings);
             return Ok(packet);
@@ -315,23 +334,25 @@ pub fn execute_change_context(
                     pending_count: 0,
                     active_tx: Vec::new(),
                 },
+                NotReadyErrorClass::LayoutUnavailable,
             );
             return emit_packet(&packet, json);
         }
     };
 
     let config = crate::config::load::load_config(&layout).unwrap_or_default();
-    let storage = match StorageManager::init_with_layout(&layout) {
+    let storage = match open_storage_for_change_context(&layout) {
         Ok(s) => s,
-        Err(e) => {
+        Err((e, class)) => {
             let packet = not_ready_packet(
-                format!("storage unavailable: {e}"),
+                storage_unavailable_reason(&e, class),
                 opts.base_ref.clone(),
                 read_doctor_section(&layout),
                 LedgerSection {
                     pending_count: 0,
                     active_tx: Vec::new(),
                 },
+                class,
             );
             return emit_packet(&packet, json);
         }
@@ -457,6 +478,7 @@ fn not_ready_packet(
     base_ref: Option<String>,
     doctor: DoctorSection,
     ledger: LedgerSection,
+    class: NotReadyErrorClass,
 ) -> ChangeContextPacket {
     ChangeContextPacket {
         schema_version: CHANGE_CONTEXT_SCHEMA_VERSION,
@@ -476,12 +498,164 @@ fn not_ready_packet(
         doctor,
         ledger,
         analysis_warnings: Vec::new(),
-        next_actions: vec![
+        next_actions: next_actions_for_class(class),
+        impact_schema_version: None,
+    }
+}
+
+/// Class-aware recovery actions (B5). RO/permission must not lead with Class C.
+fn next_actions_for_class(class: NotReadyErrorClass) -> Vec<String> {
+    match class {
+        NotReadyErrorClass::PermissionDenied => vec![
+            "Set LEDGERFUL_STATE_DIR to a populated .ledgerful directory if the override is wrong"
+                .to_string(),
+            "Re-run outside pure RO sandbox (`--sandbox workspace-write` or unrestricted)"
+                .to_string(),
+            "Continue git-only review (ledgerful grounding unavailable under pure RO)".to_string(),
+        ],
+        NotReadyErrorClass::MissingDb => vec![
+            "In a writable environment: ledgerful init (if needed)".to_string(),
+            "In a writable environment: ledgerful scan or ledgerful index --incremental"
+                .to_string(),
+            "Then re-run ledgerful change-context --json".to_string(),
+        ],
+        NotReadyErrorClass::SchemaStale => vec![
+            "In a writable environment: upgrade/migrate state (e.g. ledgerful update --migrate)"
+                .to_string(),
+            "Then re-run ledgerful change-context --json".to_string(),
+        ],
+        NotReadyErrorClass::LayoutUnavailable => vec![
+            "Fix cwd / ensure a git repository is discoverable".to_string(),
+            "Continue git-only review if layout cannot be resolved".to_string(),
+        ],
+        NotReadyErrorClass::Other => vec![
             "ledgerful doctor --json".to_string(),
             "ledgerful init".to_string(),
             "ledgerful index --incremental".to_string(),
         ],
-        impact_schema_version: None,
+    }
+}
+
+/// Greppable storage-unavailable reason; RO class adds "state directory not writable".
+pub(crate) fn storage_unavailable_reason(
+    err: &miette::Report,
+    class: NotReadyErrorClass,
+) -> String {
+    match class {
+        NotReadyErrorClass::PermissionDenied => {
+            format!("storage unavailable: state directory not writable: {err}")
+        }
+        _ => format!("storage unavailable: {err}"),
+    }
+}
+
+/// Map open/init failures to B5 classes for nextActions.
+///
+/// Order matters: open/permission strings often appear inside messages that also
+/// mention `PRAGMA user_version` (schema probe). Prefer PermissionDenied over
+/// SchemaStale when both could match — never advise migration for pure RO open fail.
+fn classify_storage_error(err: &miette::Report, db_exists: bool) -> NotReadyErrorClass {
+    let s = format!("{err}").to_ascii_lowercase();
+
+    // Permission / pure-RO open failures first (before schema keyword scan).
+    if s.contains("permission denied")
+        || s.contains("access is denied")
+        || s.contains("read-only file system")
+        || s.contains("readonly database")
+        || s.contains("attempt to write a readonly")
+        || s.contains("state directory not writable")
+        || s.contains("os error 5")
+        || s.contains("(os error 5)")
+        || s.contains("os error 30")
+        || s.contains("unable to open database")
+        || s.contains("disk i/o error")
+    {
+        return if db_exists || s.contains("unable to open database") || s.contains("readonly") {
+            NotReadyErrorClass::PermissionDenied
+        } else {
+            NotReadyErrorClass::MissingDb
+        };
+    }
+
+    // True schema mismatch (StateError::SchemaMismatch / migration probe).
+    // Do NOT match bare "user_version" alone — open failures often embed
+    // `PRAGMA user_version ... unable to open database file`.
+    if s.contains("schema mismatch")
+        || s.contains("migration required")
+        || s.contains("schema is not current")
+        || s.contains("schema not current")
+        || (s.contains("schema") && s.contains("not current"))
+        || s.contains("schema_version")
+    {
+        return NotReadyErrorClass::SchemaStale;
+    }
+
+    if s.contains("not initialized")
+        || s.contains("no such file")
+        || s.contains("does not exist")
+        || s.contains("the system cannot find the file")
+    {
+        return if db_exists {
+            // Exists but still reported missing path fragments → prefer permission.
+            NotReadyErrorClass::PermissionDenied
+        } else {
+            NotReadyErrorClass::MissingDb
+        };
+    }
+
+    if !db_exists {
+        return NotReadyErrorClass::MissingDb;
+    }
+
+    NotReadyErrorClass::Other
+}
+
+/// Soft-open change-context storage (B6): prefer true RO when `ledger.db` exists.
+///
+/// On RO permission/schema failure, do **not** fall through to write-open.
+/// When the DB is missing, attempt write init (writable env creates state).
+/// Shared by CLI, `build_change_context_from_cwd`, and MCP `change_context`.
+pub(crate) fn open_storage_for_change_context(
+    layout: &Layout,
+) -> std::result::Result<StorageManager, (miette::Report, NotReadyErrorClass)> {
+    let db_path = layout.state_subdir().join("ledger.db");
+    let db_exists = db_path.exists();
+
+    if db_exists {
+        match StorageManager::open_read_only(layout) {
+            Ok(s) => return Ok(s),
+            Err(e) => {
+                let class = classify_storage_error(&e, true);
+                // Permission / schema: honest not_ready — do not try write open.
+                if matches!(
+                    class,
+                    NotReadyErrorClass::PermissionDenied | NotReadyErrorClass::SchemaStale
+                ) {
+                    return Err((e, class));
+                }
+                // Other full-RO failures (often Cozo): try SQLite-only RO so
+                // reviewer packets still work without mutating state.
+                tracing::debug!(
+                    "change-context RO open failed ({class:?}); trying sqlite-only RO: {e}"
+                );
+                match StorageManager::open_read_only_sqlite_only(layout) {
+                    Ok(s) => return Ok(s),
+                    Err(e2) => {
+                        tracing::debug!(
+                            "change-context sqlite-only RO also failed; trying write open: {e2}"
+                        );
+                    }
+                }
+            }
+        }
+    }
+
+    match StorageManager::init_with_layout(layout) {
+        Ok(s) => Ok(s),
+        Err(e) => {
+            let class = classify_storage_error(&e, db_path.exists());
+            Err((e, class))
+        }
     }
 }
 
@@ -888,10 +1062,48 @@ fn read_ledger_section_with_warnings(
 }
 
 /// Helper for tests/MCP: open layout from cwd and build packet.
+///
+/// Soft-opens existing `ledger.db` read-only (B6) before write init.
+/// Layout/storage failures return `Ok(not_ready)` with B5 class (mirrors CLI).
 pub fn build_change_context_from_cwd(opts: &ChangeContextOpts) -> Result<ChangeContextPacket> {
-    let layout = crate::commands::helpers::get_layout()?;
+    let layout = match crate::commands::helpers::get_layout() {
+        Ok(l) => l,
+        Err(e) => {
+            return Ok(not_ready_packet(
+                format!("layout unavailable: {e}"),
+                opts.base_ref.clone(),
+                DoctorSection {
+                    status: "missing".into(),
+                    ready_for_publish: false,
+                    block: 0,
+                    warn: 0,
+                    info: 0,
+                    top_findings: vec![],
+                },
+                LedgerSection {
+                    pending_count: 0,
+                    active_tx: vec![],
+                },
+                NotReadyErrorClass::LayoutUnavailable,
+            ));
+        }
+    };
     let config = crate::config::load::load_config(&layout).unwrap_or_default();
-    let storage = StorageManager::init_with_layout(&layout)?;
+    let storage = match open_storage_for_change_context(&layout) {
+        Ok(s) => s,
+        Err((e, class)) => {
+            return Ok(not_ready_packet(
+                storage_unavailable_reason(&e, class),
+                opts.base_ref.clone(),
+                read_doctor_section(&layout),
+                LedgerSection {
+                    pending_count: 0,
+                    active_tx: vec![],
+                },
+                class,
+            ));
+        }
+    };
     let packet = build_change_context(opts, &layout, &storage, &config)?;
     let _ = storage.shutdown();
     Ok(packet)
@@ -1123,11 +1335,197 @@ mod tests {
                 pending_count: 0,
                 active_tx: Vec::new(),
             },
+            NotReadyErrorClass::Other,
         );
         assert_eq!(p.schema_version, 1);
         assert_eq!(p.status, "not_ready");
         assert!(p.reason.is_some());
         assert!(!p.next_actions.is_empty());
+    }
+
+    fn empty_doctor_ledger() -> (DoctorSection, LedgerSection) {
+        (
+            DoctorSection {
+                status: "missing".into(),
+                ready_for_publish: false,
+                block: 0,
+                warn: 0,
+                info: 0,
+                top_findings: Vec::new(),
+            },
+            LedgerSection {
+                pending_count: 0,
+                active_tx: Vec::new(),
+            },
+        )
+    }
+
+    fn next_actions_joined(class: NotReadyErrorClass) -> String {
+        next_actions_for_class(class)
+            .join("\n")
+            .to_ascii_lowercase()
+    }
+
+    #[test]
+    fn ro_permission_next_actions_exclude_class_c_triad() {
+        let (doctor, ledger) = empty_doctor_ledger();
+        let p = not_ready_packet(
+            "storage unavailable: state directory not writable: permission denied".into(),
+            None,
+            doctor,
+            ledger,
+            NotReadyErrorClass::PermissionDenied,
+        );
+        assert_eq!(p.schema_version, 1);
+        assert_eq!(p.status, "not_ready");
+        let joined = p.next_actions.join("\n").to_ascii_lowercase();
+        assert!(
+            !joined.contains("doctor --json"),
+            "RO class must not suggest doctor: {:?}",
+            p.next_actions
+        );
+        assert!(
+            !joined.contains("ledgerful init"),
+            "RO class must not suggest init: {:?}",
+            p.next_actions
+        );
+        // Ban bare index recovery (Class C). "index" alone may appear in prose — check command shape.
+        assert!(
+            !joined.contains("ledgerful index"),
+            "RO class must not suggest index: {:?}",
+            p.next_actions
+        );
+        assert!(
+            joined.contains("ledgerful_state_dir") || joined.contains("populated"),
+            "expected STATE_DIR / populated guidance: {:?}",
+            p.next_actions
+        );
+        assert!(
+            joined.contains("workspace-write") || joined.contains("git-only"),
+            "expected workspace-write or git-only: {:?}",
+            p.next_actions
+        );
+        assert!(
+            p.reason
+                .as_ref()
+                .is_some_and(|r| r.contains("storage unavailable:")
+                    || r.contains("state directory not writable")),
+            "greppable reason fragment missing: {:?}",
+            p.reason
+        );
+    }
+
+    #[test]
+    fn missing_db_next_actions_distinct_from_ro_class() {
+        let (doctor, ledger) = empty_doctor_ledger();
+        let p = not_ready_packet(
+            "storage unavailable: Storage not initialized".into(),
+            None,
+            doctor,
+            ledger,
+            NotReadyErrorClass::MissingDb,
+        );
+        let joined = p.next_actions.join("\n").to_ascii_lowercase();
+        assert!(
+            joined.contains("init") || joined.contains("index") || joined.contains("scan"),
+            "MissingDb may name writable-env init/scan/index: {:?}",
+            p.next_actions
+        );
+        let ro = next_actions_joined(NotReadyErrorClass::PermissionDenied);
+        assert_ne!(
+            p.next_actions,
+            next_actions_for_class(NotReadyErrorClass::PermissionDenied),
+            "MissingDb nextActions must differ from RO class"
+        );
+        assert!(!ro.contains("ledgerful index") || joined.contains("writable"));
+    }
+
+    #[test]
+    fn classify_storage_error_permission_and_missing() {
+        let perm = miette::miette!("unable to open database file: Access is denied. (os error 5)");
+        assert_eq!(
+            classify_storage_error(&perm, true),
+            NotReadyErrorClass::PermissionDenied
+        );
+        let missing = miette::miette!(
+            "Storage not initialized at /tmp/x/state/ledger.db. Run a write command first."
+        );
+        assert_eq!(
+            classify_storage_error(&missing, false),
+            NotReadyErrorClass::MissingDb
+        );
+        let schema = miette::miette!("schema is not current; migration required");
+        assert_eq!(
+            classify_storage_error(&schema, true),
+            NotReadyErrorClass::SchemaStale
+        );
+        // Codex R2: pure-RO open can fail during schema probe PRAGMA with
+        // "unable to open database file" while still embedding user_version —
+        // must NOT classify as SchemaStale (migration advice).
+        let pragma_open = miette::miette!(
+            "PRAGMA user_version: unable to open database file: Access is denied. (os error 5)"
+        );
+        assert_eq!(
+            classify_storage_error(&pragma_open, true),
+            NotReadyErrorClass::PermissionDenied
+        );
+    }
+
+    #[test]
+    fn soft_open_existing_db_builds_valid_packet() {
+        let tmp = tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let dir = tmp.path();
+
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "T"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        fs::write(dir.join("README.md"), "hi").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        // Write-mode create + migrate once, then soft-open RO path.
+        let write =
+            StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+        let _ = write.shutdown();
+
+        let storage = open_storage_for_change_context(&layout).expect("soft-open RO");
+        assert!(
+            storage.is_read_only,
+            "existing ledger.db should soft-open read-only"
+        );
+        let config = Config::default();
+        let opts = ChangeContextOpts::default();
+        let packet = build_change_context(&opts, &layout, &storage, &config).unwrap();
+        assert_eq!(packet.schema_version, 1);
+        assert!(
+            packet.status == "empty" || packet.status == "ready",
+            "unexpected status: {}",
+            packet.status
+        );
+        let _ = storage.shutdown();
     }
 
     #[test]
@@ -1381,6 +1779,7 @@ mod tests {
                 pending_count: 0,
                 active_tx: Vec::new(),
             },
+            NotReadyErrorClass::Other,
         );
         let s = serde_json::to_string(&p).unwrap();
         assert!(s.contains("\"schemaVersion\":1"));

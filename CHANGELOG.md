@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **change-context RO nextActions honesty (0124):** `not_ready` recovery actions
+  are error-class-aware. Permission/RO failures no longer suggest
+  `doctor --json` / `init` / `index`; they guide populated `LEDGERFUL_STATE_DIR`,
+  workspace-write, or git-only review. Greppable reasons keep
+  `storage unavailable:` and add `state directory not writable` for RO class.
+
 - **Search index empty honesty (0126):** Doctor no longer reports an empty
   Tantivy search index as `OK (0 documents)`. When the index exists, integrity
   passes, and `document_count==0`, doctor emits structured finding
@@ -17,6 +23,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   human WARN) so empty index is not collapsed into silent no-matches.
 
 ### Added
+
+- **Reviewer read-only sandbox path (0124):** Durable matrix in
+  `docs/reviewer-readonly.md` (honesty ceiling, command classes A–E, host table
+  Codex pure RO vs workspace-write vs Claude cwd-writable, reviewer ladder,
+  empty `LEDGERFUL_STATE_DIR` footgun). Dual skill + `commands.md` Reviewer (RO)
+  block + `codex-review` ledgerful grounding subsection. `change-context`
+  soft-opens existing `ledger.db` via true `SQLITE_OPEN_READ_ONLY` (no WAL
+  PRAGMA on RO path); layout `open_read_only*` matches rollup flags.
+
+
 
 - **Doctor actionable remediations + `re-sign --all` (0125):** `DoctorFinding`
   gains optional structured `remediation` (schemaVersion stays 1). `sig-pin` and

@@ -112,6 +112,7 @@ pub fn dispatch_tool(name: &str, params: Value) -> Value {
 fn handle_change_context(params: Value) -> Value {
     use crate::commands::change_context::{
         ChangeContextDetail, ChangeContextOpts, DEFAULT_MAX_FILES, build_change_context,
+        open_storage_for_change_context, storage_unavailable_reason,
     };
 
     let detail = match params["detail"].as_str() {
@@ -141,9 +142,15 @@ fn handle_change_context(params: Value) -> Value {
         Err(e) => return error_response(&format!("Failed to get layout: {}", e)),
     };
     let config = crate::config::load_config(&layout).unwrap_or_default();
-    let storage = match crate::state::storage::StorageManager::init_with_layout(&layout) {
+    // Soft-open (B6): prefer true RO when ledger.db exists so pure-RO MCP works.
+    let storage = match open_storage_for_change_context(&layout) {
         Ok(s) => s,
-        Err(e) => return error_response(&format!("Failed to open storage: {}", e)),
+        Err((e, class)) => {
+            return error_response(&format!(
+                "Failed to open storage ({class:?}): {}",
+                storage_unavailable_reason(&e, class)
+            ));
+        }
     };
 
     let packet = match build_change_context(&opts, &layout, &storage, &config) {
