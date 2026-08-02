@@ -39,7 +39,16 @@ impl ImpactProvider for SemanticImpactProvider {
                 let weight_mult = _config.impact.get_path_weight(&change.path);
                 for sym in symbols {
                     if sym.is_public {
-                        reasons.push(format!("Public symbol modified: {}", sym.name));
+                        // Status-aware verb (0129): match ChangedFile.status string
+                        // literals. Weights unchanged; still every public symbol
+                        // in a touched file (0088 precision deferred).
+                        let verb = match change.status.as_str() {
+                            "Added" => "added",
+                            "Deleted" => "deleted",
+                            "Renamed" => "renamed",
+                            _ => "modified",
+                        };
+                        reasons.push(format!("Public symbol {verb}: {}", sym.name));
                         total_weight += (30.0 * weight_mult) as u32;
                     }
                     if let Some(ref kind) = sym.entrypoint_kind {
@@ -73,6 +82,111 @@ impl ImpactProvider for SemanticImpactProvider {
             weight: total_weight,
             reasons,
         })
+    }
+}
+
+#[cfg(test)]
+mod public_symbol_verb_tests {
+    use super::*;
+    use crate::impact::packet::ChangedFile;
+    use crate::index::symbols::{Symbol, SymbolKind};
+    use std::path::PathBuf;
+
+    fn public_sym(name: &str) -> Symbol {
+        Symbol {
+            name: name.to_string(),
+            kind: SymbolKind::Function,
+            is_public: true,
+            cognitive_complexity: None,
+            cyclomatic_complexity: None,
+            line_start: None,
+            line_end: None,
+            qualified_name: None,
+            byte_start: None,
+            byte_end: None,
+            entrypoint_kind: None,
+            metadata: Default::default(),
+        }
+    }
+
+    fn packet_with_status(status: &str, sym_name: &str) -> ImpactPacket {
+        let mut packet = ImpactPacket::default();
+        packet.changes.push(ChangedFile {
+            path: PathBuf::from("src/lib.rs"),
+            status: status.to_string(),
+            old_path: None,
+            is_staged: false,
+            symbols: Some(vec![public_sym(sym_name)]),
+            imports: None,
+            runtime_usage: None,
+            analysis_status: Default::default(),
+            analysis_warnings: Vec::new(),
+            api_routes: Vec::new(),
+            data_models: Vec::new(),
+            ci_gates: Vec::new(),
+        });
+        packet
+    }
+
+    #[test]
+    fn added_status_uses_public_symbol_added_verb() {
+        let packet = packet_with_status("Added", "brand_new");
+        let impact = SemanticImpactProvider
+            .analyze(&packet, &Rules::default(), &Config::default())
+            .unwrap();
+        assert!(
+            impact
+                .reasons
+                .iter()
+                .any(|r| r == "Public symbol added: brand_new"),
+            "expected Public symbol added, got {:?}",
+            impact.reasons
+        );
+        assert!(
+            impact
+                .reasons
+                .iter()
+                .all(|r| !r.starts_with("Public symbol modified:")),
+            "Added must not say modified: {:?}",
+            impact.reasons
+        );
+        assert!(impact.weight >= 30);
+    }
+
+    #[test]
+    fn modified_status_uses_public_symbol_modified_verb() {
+        let packet = packet_with_status("Modified", "existing");
+        let impact = SemanticImpactProvider
+            .analyze(&packet, &Rules::default(), &Config::default())
+            .unwrap();
+        assert!(
+            impact
+                .reasons
+                .iter()
+                .any(|r| r == "Public symbol modified: existing"),
+            "expected Public symbol modified, got {:?}",
+            impact.reasons
+        );
+        assert!(impact.weight >= 30);
+    }
+
+    #[test]
+    fn deleted_and_renamed_status_use_status_aware_verbs() {
+        for (status, prefix) in [
+            ("Deleted", "Public symbol deleted:"),
+            ("Renamed", "Public symbol renamed:"),
+        ] {
+            let packet = packet_with_status(status, "sym");
+            let impact = SemanticImpactProvider
+                .analyze(&packet, &Rules::default(), &Config::default())
+                .unwrap();
+            assert!(
+                impact.reasons.iter().any(|r| r.starts_with(prefix)),
+                "status {status}: expected prefix {prefix}, got {:?}",
+                impact.reasons
+            );
+            assert!(impact.weight >= 30);
+        }
     }
 }
 

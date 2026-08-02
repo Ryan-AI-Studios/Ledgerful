@@ -6,6 +6,25 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Empty-tree federation risk honesty (0129):** Sibling schema unavailable/invalid
+  is ambient federation health and lands on `analysisWarnings`, not `riskReasons`.
+  Clean trees no longer report `riskLevel=medium` solely from missing sibling
+  schemas. Real `[FEDERATED]` modify and interface-removed signals stay on
+  `riskReasons`. `ImpactPacket::finalize` sorts/dedups `analysis_warnings`.
+
+- **change-context `doctor.topFindings` population (0129):** `doctor-results.json`
+  emits additive `findings` top-N (block+warn, no category filter, severity-first
+  re-sort before cap 5, optional `remediation`). After `doctor`, change-context
+  exposes usable codes/messages (and remediations when present) instead of always
+  empty `topFindings` while warn/block counts are non-zero.
+
+- **Pure-add public-symbol risk wording (0129):** Risk reasons use status-aware
+  verbs — `Public symbol added:` / `deleted:` / `renamed:` / `modified:` from
+  `ChangedFile.status`. Weights unchanged; still every public symbol in a touched
+  file (0088 precision deferred).
+
 ## [0.2.5] - 2026-08-02
 
 ### Fixed

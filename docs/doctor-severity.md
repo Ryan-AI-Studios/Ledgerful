@@ -112,7 +112,13 @@ no indexable content / ignore patterns, not only “run index again”).
 failures = count(block) + count(warn WHERE category != optional)
 ```
 
-Additive fields: `readyForPublish`, `block`, `warn`, `info`.
+Additive fields: `readyForPublish`, `block`, `warn`, `info`, and (0129) **`findings`**.
+
+**`findings` (agent top-N, 0129):** block \|\| warn only — **no category filter**
+(optional-category warns appear even when they do not increment `failures`).
+Severity-first re-sort (block before warn, then code, then message) before cap **5**.
+Info excluded. Optional `remediation` when present. Health/dashboard still scores
+only **`failures`** / counts — unknown `findings` is ignored by older readers.
 
 **Orthogonal to readiness:** models down → ready + high health; search index corrupt
 or **empty** → ready (can still verify/push) **but** health penalized via non-optional

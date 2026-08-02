@@ -76,12 +76,22 @@ positive “signature changed”.
 Matching is by `(kind, qualified_name || name)`. Unmatched symbols are
 adds/deletes, not signature changes.
 
-## Coexistence with “Public symbol modified”
+## Coexistence with public-symbol risk wording
 
-The existing `Public symbol modified: {name}` reason still fires for every
-public symbol in a changed file. Signature shape risk sits **beside** it with
-distinct wording. Making the public-symbol signal accurate is a separate
-behaviour change (out of scope for 0088/0091).
+Public-symbol risk reasons use a **status-aware verb** (0129) from
+`ChangedFile.status`:
+
+| File status | Reason prefix |
+|---|---|
+| `Added` | `Public symbol added: {name}` |
+| `Deleted` | `Public symbol deleted: {name}` |
+| `Renamed` | `Public symbol renamed: {name}` |
+| `Modified` / other | `Public symbol modified: {name}` |
+
+The reason still fires for **every public symbol in a touched file** (not only
+symbols whose body actually changed). Signature shape risk sits **beside** it
+with distinct wording (`Signature changed: …`). Filtering to symbols that
+actually changed remains deferred (0088 residual — risk weight distribution).
 
 ## See also
 

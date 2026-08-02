@@ -181,6 +181,8 @@ impl ImpactPacket {
     /// Finalizes the packet by sorting all internal collections deterministically.
     pub fn finalize(&mut self) {
         self.risk_reasons.sort_unstable();
+        self.analysis_warnings.sort_unstable();
+        self.analysis_warnings.dedup();
 
         for file in &mut self.changes {
             if let Some(ref mut symbols) = file.symbols {
