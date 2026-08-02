@@ -8,6 +8,15 @@ This document explains the Ledgerful public ledger bundle: what it is, how it is
 
 The public ledger bundle is the engine's own signed change ledger, published as a static, redaction-controlled, cryptographically verifiable bundle. It is the development ledger of the Ledgerful project itself — a broadcast artifact, not a service. The bundle lets anyone inspect the project's history of intentional changes without exposing internal context, and lets them verify that every published entry was signed by the same Ed25519 keypair that the original author used when committing the change.
 
+Stable public surfaces (Ledgerful-itself, track **0120**):
+
+| Artifact | Stable URL |
+|---|---|
+| Full redacted bundle (browse + verifier) | `https://www.ledgerful.dev/ledger/` |
+| **Thin signed chain head** | `https://www.ledgerful.dev/ledger/chain_head.json` |
+
+The thin head uses the same JSON shape as `ledgerful export head` / manifest `chainHead`. It is an independent retention point for **this** project’s ledger — not a multi-tenant public log for customer repos.
+
 ---
 
 ## 2. How to generate it
@@ -21,6 +30,12 @@ ledgerful ledger export-public --output <dir> [--sign [--key <path>]]
 * `--output <dir>` — destination directory for the bundle files.
 * `--sign` — sign the manifest with the `ledgerful-ledger-bot` key.
 * `--key <path>` — directory containing the bot keypair and the author-pseudonym secret. Defaults to `~/.ledgerful/keys/` when omitted.
+
+Thin head only (operator / checkpoint shape):
+
+```bash
+ledgerful export head --out ./chain_head.json
+```
 
 ---
 
@@ -38,6 +53,8 @@ When signed with `--sign`, the bundle also contains:
 
 * `manifest.sig` — raw 64-byte Ed25519 signature over the canonical `manifest.json` bytes.
 * `manifest.pub` — raw 32-byte Ed25519 verifying key for the bot signature.
+
+Public hosting additionally publishes a standalone **`chain_head.json`** (same fields as `export head` / `manifest.chainHead`) at `/ledger/chain_head.json` so operators can download a thin checkpoint without the full NDJSON bundle.
 
 ---
 
@@ -87,6 +104,12 @@ This bundle proves the manifest signature and the integrity of `entries.ndjson`.
 * Chain head (when present) is a rollback checkpoint. Full `prev_hash` walks are not re-verified offline (prev_hash is redacted).
 * Key identity still requires out-of-band fingerprint comparison.
 
+**Not claimed:**
+
+* “Immutable forever” or multi-party transparency (Rekor/CT).
+* That every customer repo has public retention — customer operators use **0119** (`export head` + off-machine retention + `verify --against-export`).
+* That a compromised publish pipeline or bot key is safe against split-view.
+
 ---
 
 ## 7. Separate bot key
@@ -97,7 +120,18 @@ The bundle manifest is signed by the `ledgerful-ledger-bot` key, separate from t
 
 ## 8. Chain head
 
-If the ledger has a chain head (track 0046), the manifest carries it as a rollback checkpoint. The chain head fields are serialized in `manifest.json` under `chainHead`. Verifiers can compare the bundle's claimed latest entry hash and chain length against an independently obtained chain head.
+If the ledger has a chain head (track 0046), the manifest carries it as a rollback checkpoint. The chain head fields are serialized in `manifest.json` under `chainHead`. The public site also exposes a standalone thin file:
+
+`https://www.ledgerful.dev/ledger/chain_head.json`
+
+Verifiers can compare a local ledger against that checkpoint with **checkpoint** semantics (local must extend or equal the public head). There is **no** `verify --against-url` (SSRF fence); compose:
+
+```powershell
+curl -fsSL -o head.json https://www.ledgerful.dev/ledger/chain_head.json
+ledgerful verify --signatures --against-export .\head.json
+```
+
+This detects **local rollback/rewrite relative to the published head** for a Ledgerful engine workspace that shares that genesis — not “the public site proves an arbitrary private product history.” See `docs/chain-checkpoint.md`.
 
 ---
 
@@ -123,10 +157,36 @@ You can verify a bundle in two ways:
 
    This checks the source ledger's chain and entry signatures (including redacted provenance fields), which the public export is derived from.
 
+3. Checkpoint against the published thin head (Ledgerful-itself):
+
+   ```powershell
+   curl -fsSL -o head.json https://www.ledgerful.dev/ledger/chain_head.json
+   ledgerful verify --signatures --against-export .\head.json
+   ```
+
 ---
 
-## 11. Publishing
+## 11. Publishing (export-then-commit)
 
-The engine is responsible for exporting a signed, redacted bundle (`ledgerful ledger export-public`). The actual publishing step — copying that bundle into the web repository or uploading it to a static host — is intentionally owned by the web slice, not the engine.
+The engine is responsible for exporting a signed, redacted bundle (`ledgerful ledger export-public`) and a thin head (`ledgerful export head`). The actual publishing step — committing those artifacts into the web repository and deploying them — is owned by the **web** slice, not the engine.
 
-The web slice previously referenced a hypothetical `ledgerful ledger publish-public --enable` command. That command does not exist and is not an engine command. The web-side publishing cron will invoke `ledgerful ledger export-public --output <web-repo-dir> --sign` (or equivalent CI orchestration) and then commit the resulting files from the web repository.
+### Model
+
+1. **Export** on a machine that holds engine `.ledgerful` state (and the bot key when signing with `--sign`). GitHub-hosted CI cannot invent a live export from a clean checkout: `.ledgerful/` is gitignored.
+2. **Commit** artifacts into `ledgerful-web` `public/ledger/` (PR preferred), including `chain_head.json` consistent with `manifest.chainHead`, plus `manifest.sig` / `manifest.pub` when claiming signed.
+3. **CI validation** on the web repo checks committed files (presence, head/manifest coherence, signatures). CI **validates** artifacts; it does **not** produce them from live dogfood history on pure ubuntu-latest runners.
+4. After deploy, public git + CDN retain the head **outside** a single local database.
+
+### Web enable flag (not an engine command)
+
+The web publish helper is gated by environment variable:
+
+```text
+LEDGERFUL_PUBLISH_LEDGER_ENABLED=1
+```
+
+That flag enables the **web-repo** publish helper script. There is **no** engine command `ledgerful ledger publish-public` (and none is planned). Historical web docs that referenced `publish-public --enable` were incorrect; the engine surface remains `ledger export-public` + `export head` only.
+
+### Cadence honesty
+
+Refresh is **export-then-commit** (manual PR or a runner that actually has ledger access). Do not market a silent “published daily” cron unless a runner with live ledger state is proven.

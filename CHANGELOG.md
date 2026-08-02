@@ -24,6 +24,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Public chain head docs (0120):** Document Ledgerful-itself thin head at
+  `https://www.ledgerful.dev/ledger/chain_head.json` and the checkpoint compose
+  recipe (`curl` + `verify --signatures --against-export`). Clarifies
+  export-then-commit publish model, no `verify --against-url`, and that customer
+  repos still need 0119 off-machine head retention. See `docs/chain-checkpoint.md`
+  and `docs/public-ledger.md`.
+
 - **Reviewer read-only sandbox path (0124):** Durable matrix in
   `docs/reviewer-readonly.md` (honesty ceiling, command classes A–E, host table
   Codex pure RO vs workspace-write vs Claude cwd-writable, reviewer ladder,
