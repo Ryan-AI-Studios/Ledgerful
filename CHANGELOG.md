@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.5] - 2026-08-02
+
 ### Fixed
 
 - **Search index freshness honesty (0128):** `index --check` never reports
