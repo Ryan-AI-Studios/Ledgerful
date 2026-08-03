@@ -57,6 +57,103 @@ fn test_config_schema_output() {
     assert!(result.is_ok());
 }
 
+/// 0131 DoD-2 end-to-end: `config schema` human + JSON empty wiring (not only
+/// pure helpers). Fresh index with no `.env.example` → NoMatches honesty.
+#[test]
+fn test_config_schema_empty_cli_human_and_json_envelope() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+
+    setup_git_repo(root);
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+    // No `.env.example` → empty env_declarations after index.
+    git_add_and_commit(root, "initial");
+
+    let exe = env!("CARGO_BIN_EXE_ledgerful");
+    let init_out = Command::new(exe)
+        .arg("init")
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        init_out.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init_out.stderr)
+    );
+
+    let index_out = Command::new(exe)
+        .args(["index", "--incremental"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        index_out.status.success(),
+        "index failed: {}",
+        String::from_utf8_lossy(&index_out.stderr)
+    );
+
+    let human_out = Command::new(exe)
+        .args(["config", "schema"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        human_out.status.success(),
+        "config schema failed: {}",
+        String::from_utf8_lossy(&human_out.stderr)
+    );
+    let human = String::from_utf8_lossy(&human_out.stdout);
+    assert!(
+        human.contains("No env schema declarations")
+            || human.contains(".env.example")
+            || human.contains("index --incremental"),
+        "human empty output should teach why/next-step, got: {human}"
+    );
+    assert!(
+        human.contains("Variable") || human.contains("──"),
+        "human path still prints the table header after the message, got: {human}"
+    );
+
+    let json_out = Command::new(exe)
+        .args(["config", "schema", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        json_out.status.success(),
+        "config schema --json failed: {}",
+        String::from_utf8_lossy(&json_out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&json_out.stdout).unwrap_or_else(|e| {
+        panic!(
+            "expected JSON object envelope for empty schema, parse error {e}: {}",
+            String::from_utf8_lossy(&json_out.stdout)
+        )
+    });
+    assert!(
+        v.is_object(),
+        "empty config schema --json must be honesty envelope object, got: {v}"
+    );
+    assert!(
+        v.get("results")
+            .and_then(|r| r.as_array())
+            .is_some_and(|a| a.is_empty()),
+        "expected results: [] in empty envelope: {v}"
+    );
+    let reason = v["emptyReason"].as_str().unwrap_or("");
+    assert!(
+        reason == "noMatches" || reason == "noIndexedData" || reason == "staleIndex",
+        "expected emptyReason honesty token, got: {v}"
+    );
+    let message = v["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains(".env.example")
+            || message.contains("index --incremental")
+            || message.contains("No env schema"),
+        "JSON message should teach next step, got: {v}"
+    );
+}
+
 /// CG-F35 (requirement #4, #7): `config diff` must separate "referenced in
 /// production code but undeclared" from "referenced only from test/example
 /// files but undeclared" rather than mixing both into one undifferentiated
