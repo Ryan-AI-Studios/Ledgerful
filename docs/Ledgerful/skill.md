@@ -168,7 +168,7 @@ ledgerful doctor --json
 - **Intent Capture TUI**: Interactive terminal UI for auditing and refining LLM-drafted intent payloads during the git commit process.
 - **Real-time Sync (watch)**: Incremental Knowledge Graph updates, AST re-parsing, and code-aware symbol indexing via the `watch` command — **not** team ledger sync.
 - **Predictable Verification**: Bayesian test reordering and CI failure prediction.
-- **Scoped Verification**: `ledgerful verify --scope fast` uses the `test_mapping` index to run only the tests covering changed files (nextest filtersets), falling back to the full suite when shared infrastructure is touched. The pre-push hook uses `--scope fast`; CI uses `--scope full`.
+- **Scoped Verification**: `ledgerful verify --scope fast` uses the `test_mapping` index to run only the tests covering changed files (nextest filtersets). Shared infrastructure still runs full; mapping-cannot-scope **refuses** (not surprise full) unless `--allow-full-fallback`. Empty changes → cheap fmt+clippy. The pre-push hook uses `--scope fast`; CI uses `--scope full`.
 - **Documentation Generation**: Export Knowledge Graph data to Markdown/Mermaid passive documentation (`index --export-docs`).
 - **Dead Code Detection**: Confidence-based dead code detection blending graph reachability, git activity, and test history (`dead-code` command). Use `dead-code --prune` for interactive opt-in removal.
 - **Live Visualization**: WebSocket-based Arc Diagram for real-time Knowledge Graph updates (`viz-server`, `viz-server --stop`).
@@ -276,7 +276,22 @@ Agent command sheet (local pack path): `.agents/skills/ledgerful/references/comm
 | 2 | `ledgerful change-context --json` | Default pre-edit packet |
 | 3 | `ledgerful ledger status --compact` or `--json` | Provenance / pending / drift |
 | 4 | `ledgerful search …` (prefer `--auto-index` when stale) | Discovery (not full impact) |
-| 5 | `ledgerful verify --scope fast` | Local gate (pre-push style); **≠** full CI |
+| 5 | `ledgerful verify --scope fast` | Local gate (pre-push style); **≠** full CI; may **refuse** when mapping cannot scope |
+
+**Step 5 may refuse** (exit ≠ 0, greppable `refusing full suite`) when
+`test_mapping` is empty/stale/unusable — it will **not** surprise-run a multi-minute
+full suite. Remediation:
+
+```bash
+ledgerful index --incremental
+ledgerful verify --scope fast --auto-index
+# or deliberate full / old fallback:
+ledgerful verify --scope full
+ledgerful verify --scope fast --allow-full-fallback
+```
+
+Empty tree (no file changes) uses a cheap fmt+clippy plan (no nextest). Shared
+infra still runs full with an announcement.
 
 **Escalate (not Daily 5):**
 

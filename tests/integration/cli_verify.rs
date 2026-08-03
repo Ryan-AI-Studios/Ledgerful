@@ -73,6 +73,7 @@ fn test_verify_command_pass() {
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     );
@@ -96,6 +97,7 @@ fn test_verify_command_fail() {
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     );
@@ -123,6 +125,7 @@ fn test_verify_command_timeout() {
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     );
@@ -150,6 +153,7 @@ fn test_verify_command_not_found() {
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     );
@@ -175,6 +179,7 @@ fn test_verify_dry_run_does_not_execute() {
         true, // dry_run = true
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     );
@@ -202,6 +207,7 @@ fn test_verify_health_check_known_executable() {
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     );
@@ -231,6 +237,7 @@ fn test_verify_health_check_missing_executable() {
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     );
@@ -261,6 +268,7 @@ fn test_verify_health_check_env_prefix_command() {
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     );
@@ -1118,6 +1126,7 @@ timeout_secs = 5
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     )
@@ -1172,6 +1181,7 @@ timeout_secs = 5
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     )
@@ -1226,6 +1236,7 @@ timeout_secs = 5
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     )
@@ -1280,6 +1291,7 @@ timeout_secs = 30
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     );

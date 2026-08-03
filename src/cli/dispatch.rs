@@ -202,6 +202,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
             dry_run,
             scope,
             auto_index,
+            allow_full_fallback,
             json,
         } => {
             let layout = crate::commands::helpers::get_layout()?;
@@ -222,6 +223,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
                 dry_run,
                 scope,
                 auto_index,
+                allow_full_fallback,
                 json,
                 cli.verbose,
             )
@@ -1649,6 +1651,7 @@ fn dispatch_verify(
     dry_run: bool,
     scope: crate::verify::plan::VerifyScope,
     auto_index: bool,
+    allow_full_fallback: bool,
     json: bool,
     verbose: bool,
 ) -> Result<()> {
@@ -1676,8 +1679,19 @@ fn dispatch_verify(
         )
     } else {
         crate::commands::verify::execute_verify(
-            command, tx_id, timeout, no_predict, explain, entity, health, dry_run, scope,
-            auto_index, json, verbose,
+            command,
+            tx_id,
+            timeout,
+            no_predict,
+            explain,
+            entity,
+            health,
+            dry_run,
+            scope,
+            auto_index,
+            allow_full_fallback,
+            json,
+            verbose,
         )
     }
 }

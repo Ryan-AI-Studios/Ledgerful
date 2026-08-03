@@ -20,6 +20,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Verify fast-scope honesty (0135):** `verify --scope fast` is **fast-or-refuse**
+  — never surprise multi-minute full hang. Closes dogfood A-paste verify-fast
+  hang; **0061 residual** full-still-runs on mapping-cannot-scope (now
+  MappingRefuse with `plan.refused`, exit ≠ 0, greppable reason + Next
+  remediations, `scopeExecuted: "refused"`); **`index_metadata.head_hash` never
+  written by `store_index_metadata`** (false-stale with populated mapping —
+  now INSERT on resolvable HEAD / DELETE when unresolvable; stale matrix:
+  missing index head + rows is not force-stale). Empty changes → cheap
+  fmt+clippy only. Escape: `--allow-full-fallback` restores 0061 full path;
+  SharedInfra full unchanged; `--auto-index` then still cannot → refuse.
+
 - **MCP search auto-index (0134):** MCP `search` passes `--auto-index` (before
   `--`; never `--index`) so stale-index refresh matches CLI `search --auto-index`.
   Empty `document_count==0` rebuild remains complementary inside CLI. Closes

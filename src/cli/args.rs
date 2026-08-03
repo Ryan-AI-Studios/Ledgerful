@@ -315,16 +315,22 @@ pub enum Commands {
         dry_run: bool,
         /// Verification scope: `fast` or `full` (default: `full`).
         /// `fast` always runs fmt + clippy; only test selection is scoped via
-        /// `test_mapping`. Falls back to full with an announcement when the
-        /// mapping is unavailable. Pre-push uses `fast`. See
-        /// `docs/verify-performance.md`.
+        /// `test_mapping`. When mapping cannot scope, refuses (exit ≠ 0) rather
+        /// than surprise-running full — use `--allow-full-fallback` for the
+        /// old full path, or `--scope full` / SharedInfra. Pre-push uses
+        /// `fast`. See `docs/verify-performance.md`.
         #[arg(long, default_value = "full")]
         scope: crate::verify::plan::VerifyScope,
         /// Automatically refresh a stale or empty `test_mapping` index before
-        /// scoped selection on `--scope fast`. Falls back to full suite with
-        /// an announcement if indexing fails. Opt-in to avoid surprise latency.
+        /// scoped selection on `--scope fast`. On success scopes; if still
+        /// cannot scope, refuses (unless `--allow-full-fallback`). Opt-in.
         #[arg(long)]
         auto_index: bool,
+        /// When `--scope fast` cannot map tests, run the full suite with an
+        /// announcement (0061 behavior) instead of refusing. Default off so
+        /// agents never surprise multi-minute hangs. Pre-push does not set this.
+        #[arg(long)]
+        allow_full_fallback: bool,
         /// Emit a versioned machine-readable result object on stdout (schema
         /// version 1). Selects machine mode so human `cli_summary` lines cannot
         /// precede or follow the JSON. See `docs/agent-output-contract.md`.
@@ -1346,6 +1352,7 @@ impl Commands {
                 strict_signatures,
                 dry_run,
                 auto_index,
+                allow_full_fallback,
                 json,
                 // `scope` always present (default full) — include name only when not default
                 // would leak value; we record the flag name always when user would care.
@@ -1396,6 +1403,9 @@ impl Commands {
                 f.push("scope");
                 if *auto_index {
                     f.push("auto_index");
+                }
+                if *allow_full_fallback {
+                    f.push("allow_full_fallback");
                 }
                 if *json {
                     f.push("json");

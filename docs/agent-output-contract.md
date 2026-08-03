@@ -156,11 +156,11 @@ Failed step example with path enrichment (additive; **schemaVersion stays 1**):
 | Field | Type | Notes |
 |---|---|---|
 | `schemaVersion` | integer | Always `1` for this contract |
-| `ok` | boolean | `true` iff every step has `exitCode == 0` |
+| `ok` | boolean | `true` iff every step has `exitCode == 0`; **always `false` when refused** |
 | `scopeRequested` | string | `fast` or `full` as passed on the CLI |
-| `scopeExecuted` | string | `full` when `fallbackReason` is set; else equals requested |
-| `fallbackReason` | string (omitted when null) | Passthrough from the plan; present only on fast→full fallback |
-| `steps` | array | **Plan order** (not alphabetically sorted) |
+| `scopeExecuted` | string | ∈ {`fast`, `full`, `refused`}: `refused` when plan refused mapping-cannot-scope; `full` when SharedInfra / `--allow-full-fallback` fallback; else equals requested |
+| `fallbackReason` | string (omitted when null) | Passthrough from the plan; present on fast→full fallback **and** on MappingRefuse (refusing string) |
+| `steps` | array | **Plan order** (not alphabetically sorted); **`[]` when `scopeExecuted` is `refused`** |
 | `steps[].status` | string | `"pass"` if `exitCode == 0`, else `"fail"` |
 | `steps[].failureDetail` | string (omitted on pass) | stderr summary preferred |
 | `steps[].failedPaths` | string[] (omitted when empty/pass) | Best-effort formatter paths; same sources as human fail block |

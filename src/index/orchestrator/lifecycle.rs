@@ -434,6 +434,25 @@ pub fn store_index_metadata(indexer: &mut ProjectIndexer) -> Result<()> {
         .into_diagnostic()?;
     }
 
+    // Honest HEAD metadata for verify fast-scope staleness (0135).
+    // When git HEAD is resolvable, persist it; when unresolvable (non-git,
+    // unborn HEAD, discovery failure), DELETE any prior head_hash so a
+    // previous git context cannot leave a stale value.
+    let head_hash = crate::git::repo::open_repo(indexer.repo_path.as_std_path())
+        .ok()
+        .and_then(|repo| crate::git::repo::get_head_info(&repo).ok())
+        .and_then(|(hash, _branch)| hash);
+    if let Some(ref hash) = head_hash {
+        tx.execute(
+            "INSERT OR REPLACE INTO index_metadata (key, value) VALUES ('head_hash', ?1)",
+            [hash.as_str()],
+        )
+        .into_diagnostic()?;
+    } else {
+        tx.execute("DELETE FROM index_metadata WHERE key = 'head_hash'", [])
+            .into_diagnostic()?;
+    }
+
     let count: i64 = tx
         .query_row(
             "SELECT COUNT(*) FROM project_files WHERE parse_status = 'OK'",
