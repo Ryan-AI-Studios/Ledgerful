@@ -6,9 +6,13 @@ pub use finding::{
     ready_for_publish, summarize,
 };
 pub use remediation::{
-    SearchDocsClassification, build_search_empty_finding, build_sig_pin_finding,
-    build_sig_version_finding, classify_search_document_count, search_empty_index_health_line,
-    search_ok_index_health_line,
+    ContentHashDriftInputs, GraphAgeInputs, GraphIndexHealth, SearchDocsClassification,
+    build_graph_content_stale_finding, build_graph_drift_check_failed_finding,
+    build_search_empty_finding, build_sig_pin_finding, build_sig_version_finding,
+    classify_graph_index_health, classify_search_document_count,
+    graph_content_stale_index_health_line, graph_current_empty_cozo_index_health_line,
+    graph_current_populated_index_health_line, graph_drift_check_failed_index_health_line,
+    search_empty_index_health_line, search_ok_index_health_line,
 };
 
 use crate::output::human::print_doctor_report;
@@ -340,32 +344,75 @@ pub fn execute_doctor(json: bool, apply_hook_refresh: bool, dry_run: bool) -> Re
         }
     }
 
-    // 2. Knowledge Graph Staleness
-    if let Some(stale_res) =
-        crate::index::staleness::check_index_staleness(&storage, config.index.stale_threshold_days)
+    // 2. Knowledge Graph Staleness (0133: age first STOP, else content-hash drift)
+    // Age path: graph-empty | graph-stale only — do not run content drift (double findings + I/O).
+    // Else: one count_content_hash_drift on layout.root (never bare cwd); dirty → content-stale;
+    // clean → Current / empty-Cozo hint; Err → graph-drift-check-failed (never Current).
+    let age_warning =
+        crate::index::staleness::check_index_staleness(&storage, config.index.stale_threshold_days);
+    let age_inputs = age_warning.as_ref().map(|w| GraphAgeInputs {
+        is_missing: w.is_missing,
+        stale_files: w.stale_files,
+    });
+    let drift_for_classify: Option<Result<ContentHashDriftInputs, String>> = if age_inputs.is_none()
     {
-        if stale_res.is_missing {
+        match crate::index::staleness::count_content_hash_drift(&storage, layout.root.as_path()) {
+            Ok(d) => Some(Ok(ContentHashDriftInputs {
+                changed_or_unindexed: d.changed_or_unindexed,
+            })),
+            Err(e) => {
+                tracing::debug!("Full graph content-hash drift check error: {e}");
+                Some(Err(e.to_string()))
+            }
+        }
+    } else {
+        None
+    };
+    let graph_health = classify_graph_index_health(
+        age_inputs.as_ref(),
+        drift_for_classify,
+        total_nodes,
+        total_edges,
+    );
+    match graph_health {
+        GraphIndexHealth::AgeEmpty => {
             findings.push(DoctorFinding::warn(
                 "graph-empty",
                 DoctorCategory::Index,
                 "Graph state: Empty (never indexed)",
             ));
-        } else {
+        }
+        GraphIndexHealth::AgeStale { stale_files } => {
             findings.push(DoctorFinding::warn(
                 "graph-stale",
                 DoctorCategory::Index,
                 format!(
-                    "Graph state: STALE ({} files affected) - run 'ledgerful index'",
-                    stale_res.stale_files
+                    "Graph state: STALE ({stale_files} files affected) - run 'ledgerful index'"
                 ),
             ));
         }
-    } else if total_nodes == 0 && total_edges == 0 {
-        report.index_health.push(
-            "Graph state: Current (run 'ledgerful index --analyze-graph' to populate the knowledge graph)".to_string(),
-        );
-    } else {
-        report.index_health.push("Graph state: Current".to_string());
+        GraphIndexHealth::ContentStale { n } => {
+            findings.push(build_graph_content_stale_finding(n));
+            report
+                .index_health
+                .push(graph_content_stale_index_health_line(n));
+        }
+        GraphIndexHealth::DriftCheckFailed { truncated_err } => {
+            findings.push(build_graph_drift_check_failed_finding(&truncated_err));
+            report
+                .index_health
+                .push(graph_drift_check_failed_index_health_line().to_string());
+        }
+        GraphIndexHealth::CurrentPopulated => {
+            report
+                .index_health
+                .push(graph_current_populated_index_health_line().to_string());
+        }
+        GraphIndexHealth::CurrentEmptyCozo => {
+            report
+                .index_health
+                .push(graph_current_empty_cozo_index_health_line().to_string());
+        }
     }
 
     // 3. Impact Report Freshness
