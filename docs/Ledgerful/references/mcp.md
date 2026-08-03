@@ -1,6 +1,6 @@
 # Ledgerful MCP Server
 
-Ledgerful provides a Model Context Protocol (MCP) server that exposes its intelligence as read-only tools for AI coding agents.
+Ledgerful provides a Model Context Protocol (MCP) server that exposes its intelligence as tools for AI coding agents. Tools do not mutate product code; `search` may create or write local `.ledgerful` index state (cache).
 
 ## Registration (preferred)
 
@@ -76,7 +76,10 @@ still writes concrete command/args and never writes secrets or embedding URLs.
 ## Known Limitations
 
 - No streaming.
-- No mutations (read-only v1).
+- No **product-code** mutations. `search` may **create or write** local
+  `.ledgerful` index state (cache) via `--auto-index` (0134); multi-second
+  possible. Large/cold repos may prefer explicit `ledgerful index` before MCP
+  search (120s spawn ceiling).
 
 The MCP tool set is a **subset** of the full CLI (no `doctor`, `gate mode`, `config view`, etc. as
 MCP tools). Prefer the CLI for those; use MCP when the host only exposes MCP.

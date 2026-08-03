@@ -20,6 +20,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **MCP search auto-index (0134):** MCP `search` passes `--auto-index` (before
+  `--`; never `--index`) so stale-index refresh matches CLI `search --auto-index`.
+  Empty `document_count==0` rebuild remains complementary inside CLI. Closes
+  **0128** MCP auto-index residual (**D6**); flips **0126** MCP no-auto-index
+  unit (policy change). Manifest honesty: may take multi-seconds; 120s MCP
+  spawn ceiling — large/cold repos prefer explicit index first.
+
 - **Doctor Graph content honesty (0133):** Graph Index Health no longer reports
   success **Current** when the index is age-fresh but content-hash dirty.
   Age path (`graph-empty` / `graph-stale`) is unchanged and still STOP (no drift
