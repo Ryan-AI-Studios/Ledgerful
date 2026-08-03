@@ -190,13 +190,17 @@ fn build_scoped_nextest_command(test_stems: &[String]) -> String {
 ///
 /// Classifier order under `--scope fast` (load-bearing, 0135):
 /// 1. **SharedInfra** → full suite + announce
-/// 2. **EmptyChanges** → cheap fmt+clippy only (no nextest)
-/// 3. try stems / auto-index retry
-/// 4. **ScopedOk** → existing 3-step scoped plan
-/// 5. **MappingRefuse** → refuse (unless `allow_full_fallback` → full + announce)
+/// 2. **EmptyChanges** → cheap fmt+clippy when Rust detected (no nextest);
+///    non-Rust → zero steps, still pass
+/// 3. **Stale gate** (before trusting stems) + optional auto-index once
+/// 4. **ScopedOk** → stems from a non-stale mapping → 3-step scoped plan
+/// 5. **MappingRefuse** → no stems / no conn (unless `allow_full_fallback` → full + announce)
 ///
-/// `conn` is the SQLite connection from the storage manager. When `None`,
-/// scoped selection is impossible → MappingRefuse (or full if allow).
+/// Spec B7: non-empty mapping + head mismatch must refuse (or auto-index path),
+/// never silent ScopedOk on stems alone.
+///
+/// `conn` is the SQLite connection from the storage manager. When `None` and
+/// changes exist, scoped selection is impossible → MappingRefuse (or full if allow).
 ///
 /// `layout` provides the analysis root (`layout.root`) and shared state home
 /// (`layout.state_dir`) so auto-index opens the same DB as verify (0108).
@@ -220,8 +224,8 @@ pub fn build_plan_scoped(
 ///
 /// When `auto_index` is true and `test_mapping` is empty/stale relative to the
 /// impact packet's `head_hash`, this triggers an incremental index for the
-/// changed files and then retries scoped selection once. On still-cannot-scope,
-/// **refuses** unless `allow_full_fallback` is also set.
+/// changed files once, then re-checks staleness before trusting stems. On
+/// still-stale or cannot-scope, **refuses** unless `allow_full_fallback`.
 #[allow(clippy::too_many_arguments)]
 pub fn build_plan_scoped_with_options(
     packet: &ImpactPacket,
@@ -255,58 +259,87 @@ pub fn build_plan_scoped_with_options(
 
     // 2. EmptyChanges — before stem query (query_scoped returns None for both
     // empty changes and no-mappings; cannot distinguish after the fact).
+    // Profile-aware: only schedule cargo fmt/clippy when Rust is detected so
+    // non-Rust / empty repos still exit 0 under --scope fast (Daily 5 honesty
+    // without inventing a toolchain).
     if packet.changes.is_empty() {
-        return build_empty_changes_plan();
+        return build_empty_changes_plan(profile);
     }
 
-    // 3. Try scoped selection.
-    let scoped_stems = conn.and_then(|c| query_scoped_test_files(c, packet));
+    // 3. Stale gate — must run before trusting stems (B7: non-empty mapping +
+    // head mismatch refuses; never silent ScopedOk on stems alone).
+    // Missing *index* head + count>0 is NOT stale (B2) — stems still OK.
+    let stale_remediation =
+        "test_mapping is stale or empty; run `ledgerful index --incremental` or use `--auto-index`";
+    if let Some(c) = conn {
+        if is_test_mapping_stale(c, packet) {
+            if auto_index {
+                if let Err(e) = run_incremental_index_for_changed_files(packet, layout, config) {
+                    let trigger = format!("auto-index failed ({e}); test_mapping empty/stale");
+                    return mapping_cannot_scope_outcome(
+                        &trigger,
+                        allow_full_fallback,
+                        packet,
+                        rules,
+                        predicted,
+                        config,
+                        profile,
+                        scope,
+                        repo_root,
+                    );
+                }
+                if is_test_mapping_stale(c, packet) {
+                    return mapping_cannot_scope_outcome(
+                        stale_remediation,
+                        allow_full_fallback,
+                        packet,
+                        rules,
+                        predicted,
+                        config,
+                        profile,
+                        scope,
+                        repo_root,
+                    );
+                }
+                // Fresh after auto-index — fall through to stem query.
+            } else {
+                return mapping_cannot_scope_outcome(
+                    stale_remediation,
+                    allow_full_fallback,
+                    packet,
+                    rules,
+                    predicted,
+                    config,
+                    profile,
+                    scope,
+                    repo_root,
+                );
+            }
+        }
+    } else {
+        // No conn + has changes → MappingRefuse (or allow full).
+        return mapping_cannot_scope_outcome(
+            "test_mapping unavailable (no database connection)",
+            allow_full_fallback,
+            packet,
+            rules,
+            predicted,
+            config,
+            profile,
+            scope,
+            repo_root,
+        );
+    }
 
-    // 4. ScopedOk
+    // 4. ScopedOk — stems only after non-stale gate passed.
+    let scoped_stems = conn.and_then(|c| query_scoped_test_files(c, packet));
     if let Some(test_stems) = scoped_stems {
         return build_fast_scoped_plan(packet, &test_stems);
     }
 
-    // Mapping cannot scope. If auto_index is enabled and the mapping is
-    // empty/stale, refresh once and retry.
-    if auto_index
-        && let Some(c) = conn
-        && is_test_mapping_stale(c, packet)
-    {
-        if let Err(e) = run_incremental_index_for_changed_files(packet, layout, config) {
-            let trigger = format!("auto-index failed ({e}); test_mapping empty/stale");
-            return mapping_cannot_scope_outcome(
-                &trigger,
-                allow_full_fallback,
-                packet,
-                rules,
-                predicted,
-                config,
-                profile,
-                scope,
-                repo_root,
-            );
-        }
-
-        let retry_stems = conn.and_then(|c| query_scoped_test_files(c, packet));
-        if let Some(test_stems) = retry_stems {
-            return build_fast_scoped_plan(packet, &test_stems);
-        }
-    }
-
-    // 5. MappingRefuse (or allow_full_fallback → full + announce).
-    let trigger = if let Some(c) = conn {
-        if is_test_mapping_stale(c, packet) {
-            "test_mapping is stale or empty; run `ledgerful index --incremental` or use `--auto-index`"
-                .to_string()
-        } else {
-            "test_mapping has no mappings for the changed files".to_string()
-        }
-    } else {
-        "test_mapping unavailable (no database connection)".to_string()
-    };
+    // 5. MappingRefuse — fresh mapping but no coverage for changed files.
     mapping_cannot_scope_outcome(
-        &trigger,
+        "test_mapping has no mappings for the changed files",
         allow_full_fallback,
         packet,
         rules,
@@ -335,24 +368,30 @@ fn refuse_plan(trigger: &str) -> VerificationPlan {
     }
 }
 
-/// EmptyChanges cheap plan: fmt + clippy only (no nextest). Not a refuse.
-fn build_empty_changes_plan() -> VerificationPlan {
+/// EmptyChanges cheap plan: for Rust repos, fmt + clippy only (no nextest).
+/// Non-Rust (or undetected) profiles get zero steps and still pass — not a
+/// refuse. Daily 5 honesty without inventing a cargo toolchain.
+fn build_empty_changes_plan(
+    profile: &crate::platform::repository::RepositoryProfile,
+) -> VerificationPlan {
+    let mut steps: Vec<VerificationStep> = Vec::new();
+    if profile.rust.is_some() {
+        steps.push(VerificationStep {
+            command: "cargo fmt --all -- --check".to_string(),
+            timeout_secs: 60,
+            description: "No changes: format check (scoped tests N/A)".to_string(),
+            shell: false,
+        });
+        steps.push(VerificationStep {
+            command: "cargo clippy --all-targets --all-features -- -D warnings".to_string(),
+            timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
+            description: "No changes: lints (scoped tests N/A)".to_string(),
+            shell: false,
+        });
+    }
     VerificationPlan {
         source: Some(PlanSource::AutoPolicy),
-        steps: vec![
-            VerificationStep {
-                command: "cargo fmt --all -- --check".to_string(),
-                timeout_secs: 60,
-                description: "No changes: format check (scoped tests N/A)".to_string(),
-                shell: false,
-            },
-            VerificationStep {
-                command: "cargo clippy --all-targets --all-features -- -D warnings".to_string(),
-                timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
-                description: "No changes: lints (scoped tests N/A)".to_string(),
-                shell: false,
-            },
-        ],
+        steps,
         fallback_reason: None,
         refused: false,
     }
@@ -1681,12 +1720,18 @@ default-filter = 'test(/__slow$/)'
         let packet = ImpactPacket::default(); // changes empty
         let rules = Rules::default();
         let layout = crate::state::layout::Layout::new(".");
+        let rust_profile = crate::platform::repository::RepositoryProfile {
+            rust: Some(crate::platform::repository::RustProfile {
+                is_virtual_workspace: false,
+            }),
+            ..Default::default()
+        };
         let plan = build_plan_scoped(
             &packet,
             &rules,
             &[],
             &crate::config::model::VerifyConfig::default(),
-            &crate::platform::repository::RepositoryProfile::default(),
+            &rust_profile,
             VerifyScope::Fast,
             None,
             &layout,
@@ -1703,6 +1748,31 @@ default-filter = 'test(/__slow$/)'
             "EmptyChanges must not schedule full/scoped tests, got {:?}",
             plan.steps
         );
+    }
+
+    #[test]
+    fn test_build_plan_scoped_fast_empty_changes_non_rust_no_steps() {
+        // Missing packet / empty changes on a non-Rust repo must not invent cargo.
+        let packet = ImpactPacket::default();
+        let rules = Rules::default();
+        let layout = crate::state::layout::Layout::new(".");
+        let plan = build_plan_scoped(
+            &packet,
+            &rules,
+            &[],
+            &crate::config::model::VerifyConfig::default(),
+            &crate::platform::repository::RepositoryProfile::default(),
+            VerifyScope::Fast,
+            None,
+            &layout,
+        );
+        assert!(!plan.refused);
+        assert!(
+            plan.steps.is_empty(),
+            "non-Rust EmptyChanges must not schedule cargo, got {:?}",
+            plan.steps
+        );
+        assert!(plan.fallback_reason.is_none());
     }
 
     #[test]
@@ -1740,7 +1810,9 @@ default-filter = 'test(/__slow$/)'
 
     #[test]
     fn test_build_plan_scoped_fast_with_mappings_emits_scoped_command() {
+        // Head match + non-empty mapping + stems → ScopedOk (3 steps).
         let packet = ImpactPacket {
+            head_hash: Some("matched-head".to_string()),
             changes: vec![ChangedFile {
                 path: PathBuf::from("src/commands/hotspots.rs"),
                 ..Default::default()
@@ -1762,6 +1834,16 @@ default-filter = 'test(/__slow$/)'
         .unwrap();
         conn.execute(
             "CREATE TABLE project_symbols (id INTEGER PRIMARY KEY, symbol_name TEXT, file_id INTEGER)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE TABLE index_metadata (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO index_metadata (key, value) VALUES ('head_hash', 'matched-head')",
             [],
         )
         .unwrap();
@@ -1797,6 +1879,7 @@ default-filter = 'test(/__slow$/)'
             &layout,
         );
         // Should produce 3 steps: fmt, clippy, scoped test command.
+        assert!(!plan.refused);
         assert_eq!(plan.steps.len(), 3);
         assert!(plan.steps.iter().any(|s| s.command.contains("fmt")));
         assert!(plan.steps.iter().any(|s| s.command.contains("clippy")));
@@ -1817,6 +1900,93 @@ default-filter = 'test(/__slow$/)'
             scoped_step.command.contains("--all-features"),
             "scoped nextest must carry --all-features, got: {}",
             scoped_step.command
+        );
+    }
+
+    #[test]
+    fn test_build_plan_scoped_head_mismatch_with_stems_refuses() {
+        // B7: head mismatch + non-empty mapping + stems present + !auto_index
+        // → MappingRefuse (not silent ScopedOk on stems alone).
+        let packet = ImpactPacket {
+            head_hash: Some("new-hash".to_string()),
+            changes: vec![ChangedFile {
+                path: PathBuf::from("src/commands/hotspots.rs"),
+                ..Default::default()
+            }],
+            ..ImpactPacket::default()
+        };
+        let rules = Rules::default();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
+             tested_symbol_id INTEGER, tested_file_id INTEGER)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE TABLE index_metadata (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO index_metadata (key, value) VALUES ('head_hash', 'old-hash')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_files (id, file_path) VALUES (1, 'src/commands/hotspots.rs')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_files (id, file_path) VALUES (2, 'tests/integration/cli_hotspots.rs')",
+            [],
+        )
+        .unwrap();
+        // Stems would exist if trusted — mapping non-empty for the changed file.
+        conn.execute(
+            "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
+             VALUES (10, 2, 20, 1)",
+            [],
+        )
+        .unwrap();
+
+        let layout = crate::state::layout::Layout::new(".");
+        let plan = build_plan_scoped_with_options(
+            &packet,
+            &rules,
+            &[],
+            &crate::config::model::VerifyConfig::default(),
+            &crate::platform::repository::RepositoryProfile::default(),
+            VerifyScope::Fast,
+            Some(&conn),
+            &layout,
+            false, // !auto_index
+            false, // !allow_full_fallback
+        );
+        assert!(
+            plan.refused,
+            "head mismatch must refuse, not ScopedOk; steps={:?}",
+            plan.steps
+        );
+        assert!(
+            plan.steps.is_empty(),
+            "refused plan must have empty steps, got {:?}",
+            plan.steps
+        );
+        let reason = plan.fallback_reason.as_deref().unwrap_or("");
+        assert!(
+            reason.contains("stale or empty"),
+            "expected stale/empty remediation, got: {reason}"
+        );
+        assert!(
+            reason.contains("refusing full suite"),
+            "must refuse full, got: {reason}"
         );
     }
 

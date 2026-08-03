@@ -1108,18 +1108,37 @@ pub fn execute_verify(
                         )
                     }
                     None => {
+                        // Missing impact packet must not silent-full on --scope
+                        // fast (0135 P1): empty packet → EmptyChanges cheap plan
+                        // via the classifier. Full scope keeps build_plan.
                         let profile = crate::platform::repository::detect_repository(
                             layout.root.as_std_path(),
                         );
                         let empty_packet = crate::impact::packet::ImpactPacket::default();
-                        crate::verify::plan::build_plan(
-                            &empty_packet,
-                            &rules,
-                            &[],
-                            &config.verify,
-                            &profile,
-                            layout.root.as_std_path(),
-                        )
+                        if scope.is_fast() {
+                            let conn = ctx.storage.as_ref().map(|s| s.get_connection());
+                            crate::verify::plan::build_plan_scoped_with_options(
+                                &empty_packet,
+                                &rules,
+                                &prediction.files,
+                                &config.verify,
+                                &profile,
+                                scope,
+                                conn,
+                                &layout,
+                                auto_index,
+                                allow_full_fallback,
+                            )
+                        } else {
+                            crate::verify::plan::build_plan(
+                                &empty_packet,
+                                &rules,
+                                &[],
+                                &config.verify,
+                                &profile,
+                                layout.root.as_std_path(),
+                            )
+                        }
                     }
                 };
 
