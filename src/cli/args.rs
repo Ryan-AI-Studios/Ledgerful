@@ -11,7 +11,8 @@ use std::path::PathBuf;
 #[derive(Parser, Debug)]
 #[command(
     about = "Ledgerful change intelligence and transactional provenance for software engineering",
-    long_about = None
+    long_about = None,
+    before_help = "Agent default path (Daily 5): doctor --json · change-context --json · ledger status · search · verify --scope fast — see skill Daily 5."
 )]
 #[command(version)]
 #[command(disable_help_subcommand = true)]
