@@ -568,13 +568,12 @@ mod tests {
     fn classify_graph_clean_populated_is_current_no_content_stale() {
         let h = classify_graph_index_health(None, Some(Ok(clean_drift())), 10, 20);
         assert_eq!(h, GraphIndexHealth::CurrentPopulated);
+        assert!(
+            !matches!(h, GraphIndexHealth::ContentStale { .. }),
+            "clean path must not classify as content-stale"
+        );
         let line = graph_current_populated_index_health_line();
         assert_eq!(line, "Graph state: Current");
-        // Positive clean path never emits content-stale code.
-        assert_ne!(
-            build_graph_content_stale_finding(1).code.as_str(),
-            "graph-current"
-        );
     }
 
     #[test]
@@ -696,6 +695,7 @@ mod tests {
     fn graph_drift_check_failed_serde_and_ready_for_publish() {
         let f = build_graph_drift_check_failed_finding("io error: permission denied on path");
         assert!(ready_for_publish(std::slice::from_ref(&f)));
+        assert_eq!(dashboard_failures(std::slice::from_ref(&f)), 1);
         let v = serde_json::to_value(&f).expect("serialize");
         assert_eq!(v["code"], "graph-drift-check-failed");
         assert_eq!(v["severity"], "warn");
