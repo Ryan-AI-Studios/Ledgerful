@@ -63,25 +63,40 @@ pub fn step_status_from_exit_code(exit_code: i32) -> &'static str {
 impl VerifyCliJson {
     /// Build the CLI wire payload from a completed `VerificationReport`.
     ///
-    /// `scope_executed` is `"full"` whenever the plan fell back
-    /// (`fallback_reason.is_some()`), otherwise the requested scope string.
+    /// Three-way `scope_executed` (0135):
+    /// - `plan.refused` → `"refused"`
+    /// - else `fallback_reason.is_some()` → `"full"`
+    /// - else requested scope string
+    ///
+    /// `ok` is false when refused (vacuous-pass guard: empty results would
+    /// otherwise make `overall_pass` true).
     pub fn from_report(report: &VerificationReport, scope_requested: VerifyScope) -> Self {
-        let fallback_reason = report.plan.as_ref().and_then(|p| p.fallback_reason.clone());
-        let scope_executed = if fallback_reason.is_some() {
+        let plan = report.plan.as_ref();
+        let refused = plan.is_some_and(|p| p.refused);
+        let fallback_reason = plan.and_then(|p| p.fallback_reason.clone());
+        let scope_executed = if refused {
+            "refused".to_string()
+        } else if fallback_reason.is_some() {
             "full".to_string()
         } else {
             scope_requested.to_string()
         };
 
-        let steps: Vec<VerifyCliStepJson> = report
-            .results
-            .iter()
-            .map(VerifyCliStepJson::from_result)
-            .collect();
+        let steps: Vec<VerifyCliStepJson> = if refused {
+            Vec::new()
+        } else {
+            report
+                .results
+                .iter()
+                .map(VerifyCliStepJson::from_result)
+                .collect()
+        };
 
         Self {
             schema_version: VERIFY_JSON_SCHEMA_VERSION,
-            ok: report.overall_pass,
+            // Belt-and-suspenders: refuse must never report ok:true even if
+            // results is empty (vacuous `.all()` is true).
+            ok: report.overall_pass && !refused,
             scope_requested: scope_requested.to_string(),
             scope_executed,
             fallback_reason,
@@ -950,6 +965,7 @@ pub fn execute_verify(
     dry_run: bool,
     scope: crate::verify::plan::VerifyScope,
     auto_index: bool,
+    allow_full_fallback: bool,
     json: bool,
     verbose: bool,
 ) -> Result<()> {
@@ -1088,21 +1104,41 @@ pub fn execute_verify(
                             conn,
                             &layout,
                             auto_index,
+                            allow_full_fallback,
                         )
                     }
                     None => {
+                        // Missing impact packet must not silent-full on --scope
+                        // fast (0135 P1): empty packet → EmptyChanges cheap plan
+                        // via the classifier. Full scope keeps build_plan.
                         let profile = crate::platform::repository::detect_repository(
                             layout.root.as_std_path(),
                         );
                         let empty_packet = crate::impact::packet::ImpactPacket::default();
-                        crate::verify::plan::build_plan(
-                            &empty_packet,
-                            &rules,
-                            &[],
-                            &config.verify,
-                            &profile,
-                            layout.root.as_std_path(),
-                        )
+                        if scope.is_fast() {
+                            let conn = ctx.storage.as_ref().map(|s| s.get_connection());
+                            crate::verify::plan::build_plan_scoped_with_options(
+                                &empty_packet,
+                                &rules,
+                                &prediction.files,
+                                &config.verify,
+                                &profile,
+                                scope,
+                                conn,
+                                &layout,
+                                auto_index,
+                                allow_full_fallback,
+                            )
+                        } else {
+                            crate::verify::plan::build_plan(
+                                &empty_packet,
+                                &rules,
+                                &[],
+                                &config.verify,
+                                &profile,
+                                layout.root.as_std_path(),
+                            )
+                        }
                     }
                 };
 
@@ -1119,15 +1155,22 @@ pub fn execute_verify(
                     );
                 }
 
-                // Announce fast→full fallback before the user waits through a
-                // full run they did not expect. On --json the reason is in
-                // fallbackReason — do not print around the payload.
+                // Announce fast→full fallback or MappingRefuse before the user
+                // waits. On --json the reason is in fallbackReason — do not
+                // print around the payload.
                 if !json && let Some(reason) = &plan.fallback_reason {
                     println!(
                         "{} {}",
                         "ℹ".if_supports_color(Stream::Stdout, |s| s.cyan()),
                         reason.if_supports_color(Stream::Stdout, |s| s.yellow())
                     );
+                    if plan.refused {
+                        println!(
+                            "{}",
+                            "Next: ledgerful index --incremental\n      ledgerful verify --scope fast --auto-index\n      ledgerful verify --scope full\n      ledgerful verify --scope fast --allow-full-fallback"
+                                .if_supports_color(Stream::Stdout, |s| s.yellow())
+                        );
+                    }
                 }
 
                 // Plan banner only under --verbose (0121 quiet success).
@@ -1212,6 +1255,44 @@ pub fn execute_verify(
             println!("    • {} (timeout: {}s)", s.command, s.timeout_secs);
         }
         println!();
+    }
+
+    // MappingRefuse early path: never execute cargo; force fail (vacuous-pass guard).
+    // Dry-run and live share this: refuse → exit 1 / Err.
+    let plan_refused = plan.as_ref().is_some_and(|p| p.refused);
+    if plan_refused {
+        if dry_run {
+            if json {
+                return Err(miette::miette!(
+                    "verify --json cannot be combined with --dry-run"
+                ));
+            }
+            // Reason + Next already printed above when !json.
+            println!(
+                "\n{}",
+                "Dry run mode: plan refused — no commands would be executed."
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
+            );
+            let reason = plan
+                .as_ref()
+                .and_then(|p| p.fallback_reason.clone())
+                .unwrap_or_else(|| "fast scope unavailable; refusing full suite".to_string());
+            return Err(miette::miette!("{reason}"));
+        }
+
+        // Live refuse: emit report/JSON with ok:false, empty steps; no cargo.
+        let mut report = VerificationReport::new(plan, Vec::new());
+        report.overall_pass = false;
+        if json {
+            let payload = VerifyCliJson::from_report(&report, scope);
+            println!("{}", payload.to_json_string()?);
+        }
+        let reason = report
+            .plan
+            .as_ref()
+            .and_then(|p| p.fallback_reason.clone())
+            .unwrap_or_else(|| "fast scope unavailable; refusing full suite".to_string());
+        return Err(miette::miette!("{reason}"));
     }
 
     // Dry Run early exit with compressed output
@@ -2282,6 +2363,14 @@ mod verify_cli_json_tests {
         results: Vec<VerificationResult>,
         fallback: Option<&str>,
     ) -> VerificationReport {
+        sample_report_with_refused(results, fallback, false)
+    }
+
+    fn sample_report_with_refused(
+        results: Vec<VerificationResult>,
+        fallback: Option<&str>,
+        refused: bool,
+    ) -> VerificationReport {
         let plan = VerificationPlan {
             source: Some(PlanSource::AutoPolicy),
             steps: results
@@ -2294,11 +2383,15 @@ mod verify_cli_json_tests {
                 })
                 .collect(),
             fallback_reason: fallback.map(|s| s.to_string()),
+            refused,
         };
         let mut report = VerificationReport::new(Some(plan), results);
         // Stabilize timestamp for byte-identity.
         report.timestamp = "2026-01-01T00:00:00Z".into();
         report.tx_id = Some("tx-abc".into());
+        if refused {
+            report.overall_pass = false;
+        }
         report
     }
 
@@ -2327,6 +2420,52 @@ mod verify_cli_json_tests {
         assert_eq!(payload.scope_requested, "fast");
         assert_eq!(payload.scope_executed, "full");
         assert!(payload.fallback_reason.as_ref().unwrap().contains("empty"));
+    }
+
+    #[test]
+    fn refused_sets_scope_executed_refused_ok_false_empty_steps() {
+        let report = sample_report_with_refused(
+            vec![],
+            Some(
+                "fast scope unavailable — test_mapping is stale or empty; refusing full suite (~5-8 min)",
+            ),
+            true,
+        );
+        // Vacuous overall_pass on empty results would be true without the force.
+        assert!(!report.overall_pass || report.results.is_empty());
+        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast);
+        assert!(!payload.ok, "refused must never report ok:true");
+        assert_eq!(payload.scope_requested, "fast");
+        assert_eq!(payload.scope_executed, "refused");
+        assert!(payload.steps.is_empty());
+        assert!(
+            payload
+                .fallback_reason
+                .as_ref()
+                .unwrap()
+                .contains("refusing full suite")
+        );
+    }
+
+    #[test]
+    fn refused_guards_vacuous_overall_pass_in_from_report() {
+        // Even if overall_pass is left true on empty results, from_report forces ok:false.
+        let plan = VerificationPlan {
+            source: Some(PlanSource::AutoPolicy),
+            steps: vec![],
+            fallback_reason: Some(
+                "fast scope unavailable — no mappings; refusing full suite (~5-8 min)".into(),
+            ),
+            refused: true,
+        };
+        let mut report = VerificationReport::new(Some(plan), vec![]);
+        report.timestamp = "2026-01-01T00:00:00Z".into();
+        // Vacuous .all() on empty results is true — the bug 0135 guards against.
+        assert!(report.overall_pass);
+        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast);
+        assert!(!payload.ok);
+        assert_eq!(payload.scope_executed, "refused");
+        assert!(payload.steps.is_empty());
     }
 
     #[test]

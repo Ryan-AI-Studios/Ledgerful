@@ -434,6 +434,25 @@ pub fn store_index_metadata(indexer: &mut ProjectIndexer) -> Result<()> {
         .into_diagnostic()?;
     }
 
+    // Honest HEAD metadata for verify fast-scope staleness (0135).
+    // When git HEAD is resolvable, persist it; when unresolvable (non-git,
+    // unborn HEAD, discovery failure), DELETE any prior head_hash so a
+    // previous git context cannot leave a stale value.
+    let head_hash = crate::git::repo::open_repo(indexer.repo_path.as_std_path())
+        .ok()
+        .and_then(|repo| crate::git::repo::get_head_info(&repo).ok())
+        .and_then(|(hash, _branch)| hash);
+    if let Some(ref hash) = head_hash {
+        tx.execute(
+            "INSERT OR REPLACE INTO index_metadata (key, value) VALUES ('head_hash', ?1)",
+            [hash.as_str()],
+        )
+        .into_diagnostic()?;
+    } else {
+        tx.execute("DELETE FROM index_metadata WHERE key = 'head_hash'", [])
+            .into_diagnostic()?;
+    }
+
     let count: i64 = tx
         .query_row(
             "SELECT COUNT(*) FROM project_files WHERE parse_status = 'OK'",
@@ -519,8 +538,12 @@ fn create_progress_bar(total: usize) -> ProgressBar {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::model::Config;
     use crate::state::migrations::get_migrations;
+    use camino::Utf8PathBuf;
     use rusqlite::Connection;
+    use std::fs;
+    use std::process::Command;
 
     #[test]
     fn clear_project_data_clears_scip_indices() {
@@ -547,6 +570,135 @@ mod tests {
         assert_eq!(
             after, 0,
             "DoD-10: scip_indices must clear with project data"
+        );
+    }
+
+    fn git(dir: &std::path::Path, args: &[&str]) -> std::process::Output {
+        Command::new("git")
+            .args(args)
+            .current_dir(dir)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git command")
+    }
+
+    fn init_repo_with_commit(dir: &std::path::Path) {
+        assert!(git(dir, &["init", "-b", "main"]).status.success());
+        assert!(
+            git(dir, &["config", "user.email", "test@example.com"])
+                .status
+                .success()
+        );
+        assert!(git(dir, &["config", "user.name", "test"]).status.success());
+        fs::write(dir.join("README.md"), "head\n").unwrap();
+        assert!(git(dir, &["add", "."]).status.success());
+        assert!(git(dir, &["commit", "-m", "init"]).status.success());
+    }
+
+    /// B7 / F-0135-02: resolvable git HEAD → `index_metadata.head_hash` INSERT.
+    #[test]
+    fn store_index_metadata_writes_head_hash_when_head_resolvable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        init_repo_with_commit(dir.path());
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        let repo_path =
+            Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("utf8 temp path");
+        let mut indexer = ProjectIndexer::new(storage, repo_path, Config::default());
+
+        store_index_metadata(&mut indexer).expect("store_index_metadata");
+
+        let written: String = indexer
+            .storage()
+            .get_connection()
+            .query_row(
+                "SELECT value FROM index_metadata WHERE key = 'head_hash'",
+                [],
+                |r| r.get(0),
+            )
+            .expect("head_hash row must exist when HEAD is resolvable");
+
+        let repo = crate::git::repo::open_repo(dir.path()).expect("open_repo");
+        let (expected, _) = crate::git::repo::get_head_info(&repo).expect("get_head_info");
+        let expected = expected.expect("committed repo must have HEAD hash");
+        assert_eq!(
+            written, expected,
+            "head_hash must match resolvable git HEAD"
+        );
+    }
+
+    /// B7 / F-0135-02: unresolvable HEAD (non-git root) → DELETE prior head_hash.
+    #[test]
+    fn store_index_metadata_deletes_head_hash_when_head_unresolvable() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        // Intentionally *not* a git repo — open_repo fails → DELETE path.
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO index_metadata (key, value) VALUES ('head_hash', 'stale_deadbeef')",
+            [],
+        )
+        .unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        let repo_path =
+            Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("utf8 temp path");
+        let mut indexer = ProjectIndexer::new(storage, repo_path, Config::default());
+
+        store_index_metadata(&mut indexer).expect("store_index_metadata");
+
+        let count: i64 = indexer
+            .storage()
+            .get_connection()
+            .query_row(
+                "SELECT COUNT(*) FROM index_metadata WHERE key = 'head_hash'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "unresolvable HEAD must DELETE prior head_hash, not leave stale value"
+        );
+    }
+
+    /// B7 / F-0135-02: unborn HEAD (init without commit) also DELETEs head_hash.
+    #[test]
+    fn store_index_metadata_deletes_head_hash_when_head_unborn() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        gix::init(dir.path()).expect("gix::init");
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO index_metadata (key, value) VALUES ('head_hash', 'stale_unborn')",
+            [],
+        )
+        .unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        let repo_path =
+            Utf8PathBuf::from_path_buf(dir.path().to_path_buf()).expect("utf8 temp path");
+        let mut indexer = ProjectIndexer::new(storage, repo_path, Config::default());
+
+        store_index_metadata(&mut indexer).expect("store_index_metadata");
+
+        let count: i64 = indexer
+            .storage()
+            .get_connection()
+            .query_row(
+                "SELECT COUNT(*) FROM index_metadata WHERE key = 'head_hash'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            count, 0,
+            "unborn HEAD (hash=None) must DELETE prior head_hash"
         );
     }
 }

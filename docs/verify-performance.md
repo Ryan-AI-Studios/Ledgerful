@@ -11,9 +11,9 @@ scope.
 - `ledgerful verify --scope fast` is the **local convenience gate**. The pre-push
 hook uses this scope.
 
-### What `--scope fast` actually runs
+### What `--scope fast` actually runs (when ScopedOk)
 
-Fast scope is **not** "tests only". The plan always includes three steps
+When scoped selection succeeds, the plan includes three steps
 (`src/verify/plan.rs` → `build_fast_scoped_plan`):
 
 1. `cargo fmt --all -- --check` — always
@@ -21,16 +21,38 @@ Fast scope is **not** "tests only". The plan always includes three steps
 3. Scoped `cargo nextest` (or equivalent) selected via `test_mapping` for
    changed files — **this** is the only part that is scoped
 
-So a successful fast run still shows fmt → clippy → tests. That is intentional:
-fmt and clippy are cheap and catch issues the test suite does not.
+So a successful scoped fast run still shows fmt → clippy → tests. That is
+intentional: fmt and clippy are cheap and catch issues the test suite does not.
 
-### Fallback is never silent
+### Fast-or-refuse class table (never surprise full hang)
 
-When shared infrastructure is touched, `test_mapping` is empty/stale/absent, or
-auto-index fails, fast falls back to the **full** suite. The plan sets
-`fallbackReason` and the CLI announces it before execution (human path) or
-exposes it as `fallbackReason` / `scopeExecuted: "full"` under `verify --json`.
-A silent scope substitution is not possible.
+Classifier order is load-bearing (`build_plan_scoped_with_options`):
+
+| Class | Detection | Default under `--scope fast` |
+|---|---|---|
+| **SharedInfra** | changed paths match shared-infra globs (Cargo.toml, cli/args, config/**, migrations/**, …) | **Full suite** + announce (`scopeExecuted: "full"`) — justified |
+| **EmptyChanges** | `packet.changes` empty (checked **before** stem query) | **Cheap plan:** Rust repos → fmt + clippy only (no nextest); non-Rust / undetected profile → zero steps (still exit 0 — do not invent cargo). Exit 0 if steps pass |
+| **ScopedOk** | `test_mapping` yields stems for changed files | Existing 3-step scoped plan |
+| **MappingRefuse** | empty/stale mapping, no stems, no DB, auto-index still cannot scope | **Refuse** — do **not** execute full. Exit ≠ 0. `scopeExecuted: "refused"`, `plan.refused=true`, empty steps |
+
+**Escape hatches:**
+
+| Hatch | Behavior |
+|---|---|
+| `--scope full` | Authoritative full suite (unchanged) |
+| `--allow-full-fallback` | Restore 0061 mapping-path full execute + announce |
+| `--auto-index` | Try refresh once; on still-cannot → **refuse** unless allow also set |
+| Pre-push | `verify --scope fast` **without** allow — refuse blocks push until index fixed |
+
+Human refuse first line is greppable:
+
+```text
+fast scope unavailable — <trigger>; refusing full suite (~5-8 min)
+Next: ledgerful index --incremental
+      ledgerful verify --scope fast --auto-index
+      ledgerful verify --scope full
+      ledgerful verify --scope fast --allow-full-fallback
+```
 
 All speed measures in this guide apply to `--scope fast` only. `--scope full`
 remains unchanged.
@@ -53,8 +75,8 @@ For cold builds, CI, or machines with multiple checkouts, sccache is the better
 lever. It caches dependency crates across clean builds.
 
 ```bash
-# Install sccache v0.16.0+ (Windows path fixes ship in v0.16.0)
-cargo install sccache --version ^0.16
+# Install sccache v0.17.0+ (prefer current crates.io; Windows path fixes since 0.16)
+cargo install sccache --version ^0.17
 
 # Use RUSTC_WRAPPER, not RUSTC_WORKSPACE_WRAPPER. The workspace wrapper only
 # wraps workspace members and skips dependency caching, which is the whole win.
@@ -92,10 +114,11 @@ so fmt stays first and sequential.
 ## `--auto-index`
 
 When `test_mapping` is empty or stale relative to the current `HEAD`,
-`--scope fast` normally falls back to the full suite with an announcement. With
-`--auto-index`, verify refreshes the index for changed files first and retries
-scoped selection once. This is opt-in because indexing can add noticeable
-latency and should not surprise the user by default.
+`--scope fast` **refuses** by default (does not start a multi-minute full suite).
+With `--auto-index`, verify refreshes the index for changed files first and
+retries scoped selection once. On success → ScopedOk; if still cannot scope →
+**refuse** unless `--allow-full-fallback` is also set. Opt-in because indexing
+can add noticeable latency.
 
 ## Troubleshooting timeouts
 

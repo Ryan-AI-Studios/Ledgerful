@@ -52,6 +52,7 @@ fn test_impact_packet_is_loadable_by_verify_after_scan() {
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     );

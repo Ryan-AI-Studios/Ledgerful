@@ -73,6 +73,7 @@ fn test_verify_command_pass() {
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     );
@@ -96,6 +97,7 @@ fn test_verify_command_fail() {
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     );
@@ -123,6 +125,7 @@ fn test_verify_command_timeout() {
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     );
@@ -150,6 +153,7 @@ fn test_verify_command_not_found() {
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     );
@@ -158,7 +162,8 @@ fn test_verify_command_not_found() {
     assert!(err_msg.contains("Command not found"));
 }
 
-// CR5: --dry-run flag should always succeed without executing any command.
+// CR5: --dry-run with a manual command succeeds without executing (still Ok).
+// MappingRefuse under dry-run is the opposite — see test_verify_dry_run_mapping_refuse_is_err.
 #[test]
 fn test_verify_dry_run_does_not_execute() {
     let tmp = tempdir().unwrap();
@@ -175,6 +180,7 @@ fn test_verify_dry_run_does_not_execute() {
         true, // dry_run = true
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     );
@@ -182,6 +188,69 @@ fn test_verify_dry_run_does_not_execute() {
         result.is_ok(),
         "dry-run should succeed even with a bad command: {:?}",
         result.err()
+    );
+}
+
+/// B7 / F-0135-01: MappingRefuse under `--dry-run` must return Err (exit 1),
+/// not the historical always-Ok dry-run assumption that still holds for
+/// manual commands / full scope.
+#[test]
+fn test_verify_dry_run_mapping_refuse_is_err() {
+    use ledgerful::commands::impact::execute_impact;
+    use ledgerful::state::layout::Layout;
+    use std::fs;
+
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path();
+
+    setup_git_repo(dir);
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(
+        dir.join("src/lib.rs"),
+        "pub fn add(a: i32, b: i32) -> i32 { a + b }",
+    )
+    .unwrap();
+    crate::common::git_add_and_commit(dir, "initial");
+
+    // Non-shared-infra change so classifier hits MappingRefuse (not SharedInfra
+    // full, not EmptyChanges cheap plan).
+    fs::write(
+        dir.join("src/lib.rs"),
+        "pub fn add(a: i32, b: i32) -> i32 { a + b + 1 }",
+    )
+    .unwrap();
+
+    let _guard = DirGuard::new(dir);
+    let layout = Layout::new(dir.to_string_lossy().as_ref());
+    layout.ensure_state_dir().unwrap();
+
+    execute_impact(false, false, false, false, false, None)
+        .expect("execute_impact should produce a loadable packet");
+
+    // No index → empty test_mapping → MappingRefuse under --scope fast.
+    let result = execute_verify(
+        None,
+        None,
+        5,
+        false,
+        false,
+        None,
+        false,
+        true, // dry_run
+        VerifyScope::Fast,
+        false, // auto_index
+        false, // allow_full_fallback
+        false,
+        false,
+    );
+    assert!(
+        result.is_err(),
+        "dry-run MappingRefuse must be Err / exit 1, got Ok"
+    );
+    let err = format!("{:?}", result.err().unwrap());
+    assert!(
+        err.contains("refusing full suite"),
+        "expected greppable refuse reason, got: {err}"
     );
 }
 
@@ -202,6 +271,7 @@ fn test_verify_health_check_known_executable() {
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     );
@@ -231,6 +301,7 @@ fn test_verify_health_check_missing_executable() {
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     );
@@ -261,6 +332,7 @@ fn test_verify_health_check_env_prefix_command() {
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     );
@@ -1118,6 +1190,7 @@ timeout_secs = 5
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     )
@@ -1172,6 +1245,7 @@ timeout_secs = 5
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     )
@@ -1226,6 +1300,7 @@ timeout_secs = 5
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     )
@@ -1280,6 +1355,7 @@ timeout_secs = 30
         false,
         VerifyScope::Full,
         false,
+        false, // allow_full_fallback
         false,
         false,
     );
