@@ -8,6 +8,18 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **CLI colour gate (0131):** Human product colour goes through `if_supports_color`
+  (or the thin `paint` helper) with stream pairing (stdout vs stderr). Piped /
+  non-TTY capture and `NO_COLOR` emit no ANSI; `FORCE_COLOR=1` (or
+  `CLICOLOR_FORCE`) re-enables. Startup `init_color_support` applies override
+  policy; the one-off `verification.rs` `no_color` bool is removed. Deferred
+  0099 colour row closed for OwoColorize paths (miette pipeline residual).
+
+- **config schema empty honesty (0131):** Zero env declarations print why + next
+  step (`NoIndexedData` vs `NoMatches` via index staleness); empty `--json` uses
+  the `format_json_empty_state` envelope (`results` + `emptyReason` + `message`);
+  non-empty remains a bare declaration array.
+
 - **Empty-tree federation risk honesty (0129):** Sibling schema unavailable/invalid
   is ambient federation health and lands on `analysisWarnings`, not `riskReasons`.
   Clean trees no longer report `riskLevel=medium` solely from missing sibling

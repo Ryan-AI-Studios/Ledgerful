@@ -7,7 +7,7 @@ use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use clap::{Args, Subcommand};
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 
 #[derive(Args, Debug)]
 pub struct DeployArgs {
@@ -112,7 +112,10 @@ pub fn execute_deploy(args: DeployArgs) -> Result<()> {
 
                 if !json && manifests.is_empty() {
                     let (_, msg) = deploy_empty_state_message(&config);
-                    println!("  {}", msg.yellow());
+                    println!(
+                        "  {}",
+                        msg.if_supports_color(Stream::Stdout, |s| s.yellow())
+                    );
                     return Ok(());
                 }
 
@@ -137,15 +140,31 @@ pub fn execute_deploy(args: DeployArgs) -> Result<()> {
                         serde_json::to_string_pretty(&output).into_diagnostic()?
                     );
                 } else {
-                    println!("{}", "Deployment Manifest Impact".bold().cyan());
+                    println!(
+                        "{}",
+                        "Deployment Manifest Impact".if_supports_color(Stream::Stdout, |s| s
+                            .style(Style::new().bold().cyan()))
+                    );
                     let mut table = Table::new();
                     table.set_header(vec!["Manifest", "Type", "Risk", "Service", "Owner"]);
 
                     for m in &manifests {
                         let risk_str = match m.risk_tier {
-                            3 => m.risk_tier.to_string().red().to_string(),
-                            2 => m.risk_tier.to_string().yellow().to_string(),
-                            _ => m.risk_tier.to_string().green().to_string(),
+                            3 => m
+                                .risk_tier
+                                .to_string()
+                                .if_supports_color(Stream::Stdout, |s| s.red())
+                                .to_string(),
+                            2 => m
+                                .risk_tier
+                                .to_string()
+                                .if_supports_color(Stream::Stdout, |s| s.yellow())
+                                .to_string(),
+                            _ => m
+                                .risk_tier
+                                .to_string()
+                                .if_supports_color(Stream::Stdout, |s| s.green())
+                                .to_string(),
                         };
 
                         table.add_row(vec![
@@ -275,7 +294,11 @@ pub fn execute_ci(args: CiArgs) -> Result<()> {
                     serde_json::to_string_pretty(&results).into_diagnostic()?
                 );
             } else {
-                println!("{}", "CI Gate Summary".bold().cyan());
+                println!(
+                    "{}",
+                    "CI Gate Summary"
+                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+                );
                 let mut table = Table::new();
                 table.set_header(vec!["Platform", "Job", "Workflow", "Environment"]);
 

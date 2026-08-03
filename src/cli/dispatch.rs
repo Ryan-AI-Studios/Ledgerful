@@ -675,7 +675,7 @@ fn is_demo_repo(layout: &crate::state::layout::Layout) -> bool {
 fn dispatch_export(command: ExportCommands) -> Result<()> {
     use crate::export::soc2::generate_soc2_export_with_options;
     use crate::export::soc2_control::generate_soc2_control_export;
-    use owo_colors::OwoColorize;
+    use owo_colors::{OwoColorize, Stream, Style};
 
     match command {
         ExportCommands::Evidence {
@@ -726,7 +726,8 @@ fn dispatch_export(command: ExportCommands) -> Result<()> {
 
             println!(
                 "{} SOC2 evidence exported to {}",
-                "SUCCESS:".green().bold(),
+                "SUCCESS:"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold())),
                 validated.display()
             );
             Ok(())
@@ -744,7 +745,8 @@ fn dispatch_export(command: ExportCommands) -> Result<()> {
 
             println!(
                 "{} Chain head exported to {}",
-                "SUCCESS:".green().bold(),
+                "SUCCESS:"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold())),
                 validated.display()
             );
             Ok(())

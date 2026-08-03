@@ -1,5 +1,5 @@
 use crate::ledger::types::{Category, ChangeType};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream};
 
 pub enum LedgerStatus {
     Pending,
@@ -10,36 +10,72 @@ pub enum LedgerStatus {
 
 pub fn get_status_icon(status: LedgerStatus) -> String {
     match status {
-        LedgerStatus::Pending => "󱐋".yellow().to_string(),
-        LedgerStatus::Committed => "󰄬".green().to_string(),
-        LedgerStatus::Stale => "󰀦".red().to_string(),
-        LedgerStatus::Federated => "󰛄".magenta().to_string(),
+        LedgerStatus::Pending => "󱐋"
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
+            .to_string(),
+        LedgerStatus::Committed => "󰄬"
+            .if_supports_color(Stream::Stdout, |s| s.green())
+            .to_string(),
+        LedgerStatus::Stale => "󰀦"
+            .if_supports_color(Stream::Stdout, |s| s.red())
+            .to_string(),
+        LedgerStatus::Federated => "󰛄"
+            .if_supports_color(Stream::Stdout, |s| s.magenta())
+            .to_string(),
     }
 }
 
 pub fn get_category_icon(category: &Category) -> String {
     match category {
-        Category::Architecture => "󰙅".blue().to_string(),
-        Category::Feature => "󰄬".green().to_string(),
-        Category::Bugfix => "󰀦".red().to_string(),
-        Category::Refactor => "󰛄".blue().to_string(),
-        Category::Infra => "󱇙".cyan().to_string(),
-        Category::Security => "󰒓".yellow().to_string(),
-        Category::Tooling => "󰒓".yellow().to_string(),
-        Category::Docs => "󰛄".magenta().to_string(),
-        Category::Chore => "󱐋".dimmed().to_string(),
+        Category::Architecture => "󰙅"
+            .if_supports_color(Stream::Stdout, |s| s.blue())
+            .to_string(),
+        Category::Feature => "󰄬"
+            .if_supports_color(Stream::Stdout, |s| s.green())
+            .to_string(),
+        Category::Bugfix => "󰀦"
+            .if_supports_color(Stream::Stdout, |s| s.red())
+            .to_string(),
+        Category::Refactor => "󰛄"
+            .if_supports_color(Stream::Stdout, |s| s.blue())
+            .to_string(),
+        Category::Infra => "󱇙"
+            .if_supports_color(Stream::Stdout, |s| s.cyan())
+            .to_string(),
+        Category::Security => "󰒓"
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
+            .to_string(),
+        Category::Tooling => "󰒓"
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
+            .to_string(),
+        Category::Docs => "󰛄"
+            .if_supports_color(Stream::Stdout, |s| s.magenta())
+            .to_string(),
+        Category::Chore => "󱐋"
+            .if_supports_color(Stream::Stdout, |s| s.dimmed())
+            .to_string(),
     }
 }
 
 pub fn get_change_type_icon(change_type: &ChangeType) -> String {
     match change_type {
-        ChangeType::Create => "󰐕".green().to_string(),
-        ChangeType::Modify => "󰷉".yellow().to_string(),
-        ChangeType::Delete => "󰆴".red().to_string(),
-        ChangeType::Deprecate => "󰀦".magenta().to_string(),
+        ChangeType::Create => "󰐕"
+            .if_supports_color(Stream::Stdout, |s| s.green())
+            .to_string(),
+        ChangeType::Modify => "󰷉"
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
+            .to_string(),
+        ChangeType::Delete => "󰆴"
+            .if_supports_color(Stream::Stdout, |s| s.red())
+            .to_string(),
+        ChangeType::Deprecate => "󰀦"
+            .if_supports_color(Stream::Stdout, |s| s.magenta())
+            .to_string(),
     }
 }
 
 pub fn breaking_icon() -> String {
-    "󰀦".red().to_string()
+    "󰀦"
+        .if_supports_color(Stream::Stdout, |s| s.red())
+        .to_string()
 }

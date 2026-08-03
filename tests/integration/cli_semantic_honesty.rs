@@ -255,12 +255,13 @@ timeout_secs = 2
         !text.contains("(0 dims) @"),
         "doctor must not print healthy-looking (0 dims) @ for partial config:\n{text}"
     );
-    // Strip ANSI; "Not configured" may be yellow-colored.
+    // Strip ANSI; "Not configured" may be yellow when colour is supported
+    // (if_supports_color), so assert on plain or raw substring.
     let plain: String = text
         .chars()
         .filter(|c| !c.is_control() || *c == '\n' || *c == '\r' || *c == '\t')
         .collect();
-    // owo_colors may still leave ESC sequences; also match raw substring.
+    // owo_colors may still leave ESC sequences when gated colour applies.
     assert!(
         text.contains("Not configured") || plain.contains("Not configured"),
         "doctor must report Not configured for model-without-URL, got:\n{text}"

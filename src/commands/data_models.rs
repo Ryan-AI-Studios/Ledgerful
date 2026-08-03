@@ -3,7 +3,7 @@ use crate::output::table::build_premium_table;
 use crate::state::storage::StorageManager;
 use clap::{Args, Subcommand};
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 
 #[derive(Args, Debug)]
 pub struct DataModelsArgs {
@@ -89,14 +89,19 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
                     serde_json::to_string_pretty(&results).into_diagnostic()?
                 );
             } else {
-                println!("{}", "Data Models".bold().cyan());
+                println!(
+                    "{}",
+                    "Data Models"
+                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+                );
                 if model_rows.is_empty() {
                     println!("  No data models indexed.");
                 } else {
                     let mut table = build_premium_table(["Name", "Language", "Kind", "Confidence"]);
                     for (name, lang, kind, conf) in model_rows {
                         table.add_row(vec![
-                            name.bold().to_string(),
+                            name.if_supports_color(Stream::Stdout, |s| s.bold())
+                                .to_string(),
                             lang,
                             kind,
                             format!("{:.2}", conf),
@@ -203,21 +208,29 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
                     serde_json::to_string_pretty(&output).into_diagnostic()?
                 );
             } else {
-                println!("{}", "Data Model Impact Analysis".bold().cyan());
+                println!(
+                    "{}",
+                    "Data Model Impact Analysis"
+                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+                );
                 if impacted.is_empty() {
                     let total_models: i64 = conn
                         .query_row("SELECT COUNT(*) FROM data_models", [], |row| row.get(0))
                         .into_diagnostic()?;
 
                     if total_models > 0 && changed {
-                        println!("{}", "  No changed data models found.".dimmed());
+                        println!(
+                            "{}",
+                            "  No changed data models found."
+                                .if_supports_color(Stream::Stdout, |s| s.dimmed())
+                        );
                     } else {
                         println!(
                             "{}",
                             "  No data models indexed. Data models are extracted from ORM structs, \
                              SQL table definitions, and migration files. Run `ledgerful index \
-                             --incremental` if models exist, or confirm your ORM/framework is supported."
-                                .dimmed()
+                             --incremental` if models exist, or confirm your ORM/framework is supported.".if_supports_color(Stream::Stdout, |s| s.dimmed())
+
                         );
                     }
                 } else {
@@ -225,14 +238,23 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
                         build_premium_table(["Name", "File", "Language", "Kind", "Changed?"]);
                     for item in &impacted {
                         table.add_row(vec![
-                            item["name"].as_str().unwrap_or("").bold().to_string(),
+                            item["name"]
+                                .as_str()
+                                .unwrap_or("")
+                                .if_supports_color(Stream::Stdout, |s| s.bold())
+                                .to_string(),
                             item["file_path"].as_str().unwrap_or("").to_string(),
                             item["language"].as_str().unwrap_or("").to_string(),
                             item["kind"].as_str().unwrap_or("").to_string(),
                             if item["is_changed"].as_bool().unwrap_or(false) {
-                                "YES".red().bold().to_string()
+                                "YES"
+                                    .if_supports_color(Stream::Stdout, |s| {
+                                        s.style(Style::new().red().bold())
+                                    })
+                                    .to_string()
                             } else {
-                                "NO".dimmed().to_string()
+                                "NO".if_supports_color(Stream::Stdout, |s| s.dimmed())
+                                    .to_string()
                             },
                         ]);
                     }

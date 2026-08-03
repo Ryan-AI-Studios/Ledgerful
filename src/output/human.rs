@@ -8,7 +8,7 @@ use crate::verify::plan::VerificationPlan;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, Color, Table};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 
 pub struct DoctorReport<'a> {
     pub platform: &'a str,
@@ -69,11 +69,22 @@ pub fn print_doctor_report(
     // Aggregate-first: first meaningful line is the status (no leading blank).
     let summary_text = format_doctor_summary_text(summary.block, summary.warn, summary.info);
     if summary.block > 0 {
-        println!("{}", summary_text.red().bold());
+        println!(
+            "{}",
+            summary_text.if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold()))
+        );
     } else if summary.warn > 0 {
-        println!("{}", summary_text.yellow().bold());
+        println!(
+            "{}",
+            summary_text
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
+        );
     } else {
-        println!("{}", summary_text.green().bold());
+        println!(
+            "{}",
+            summary_text
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
+        );
     }
 
     println!("\nLedgerful Doctor - Environment Health Check");
@@ -95,7 +106,9 @@ pub fn print_doctor_report(
     for (name, status) in report.tools {
         let status_str = match status {
             ExecutableStatus::Found(p) => format!("Found ({})", p.display()),
-            ExecutableStatus::NotFound => "NOT FOUND".red().to_string(),
+            ExecutableStatus::NotFound => "NOT FOUND"
+                .if_supports_color(Stream::Stdout, |s| s.red())
+                .to_string(),
         };
         println!("  {:<18} {}", name, status_str);
     }
@@ -124,9 +137,15 @@ pub fn print_doctor_report(
         }
         for f in &core_findings {
             let prefix = match f.severity {
-                crate::commands::doctor::DoctorSeverity::Block => "[block]".red().to_string(),
-                crate::commands::doctor::DoctorSeverity::Warn => "[warn]".yellow().to_string(),
-                crate::commands::doctor::DoctorSeverity::Info => "[info]".cyan().to_string(),
+                crate::commands::doctor::DoctorSeverity::Block => "[block]"
+                    .if_supports_color(Stream::Stdout, |s| s.red())
+                    .to_string(),
+                crate::commands::doctor::DoctorSeverity::Warn => "[warn]"
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
+                    .to_string(),
+                crate::commands::doctor::DoctorSeverity::Info => "[info]"
+                    .if_supports_color(Stream::Stdout, |s| s.cyan())
+                    .to_string(),
             };
             println!("  • {} [{}] {}", prefix, f.code, f.message);
             print_doctor_remediation(f.remediation.as_deref(), f.message.as_str(), "    ");
@@ -142,9 +161,15 @@ pub fn print_doctor_report(
         .filter(|f| f.category == crate::commands::doctor::DoctorCategory::Optional)
     {
         let prefix = match f.severity {
-            crate::commands::doctor::DoctorSeverity::Block => "[block]".red().to_string(),
-            crate::commands::doctor::DoctorSeverity::Warn => "[warn]".yellow().to_string(),
-            crate::commands::doctor::DoctorSeverity::Info => "[info]".cyan().to_string(),
+            crate::commands::doctor::DoctorSeverity::Block => "[block]"
+                .if_supports_color(Stream::Stdout, |s| s.red())
+                .to_string(),
+            crate::commands::doctor::DoctorSeverity::Warn => "[warn]"
+                .if_supports_color(Stream::Stdout, |s| s.yellow())
+                .to_string(),
+            crate::commands::doctor::DoctorSeverity::Info => "[info]"
+                .if_supports_color(Stream::Stdout, |s| s.cyan())
+                .to_string(),
         };
         println!("{} [{}] {}", prefix, f.code, f.message);
         print_doctor_remediation(f.remediation.as_deref(), f.message.as_str(), "  ");
@@ -172,24 +197,36 @@ pub const DEAD_CODE_HONESTY_FOOTER: &str = "Heuristic evidence — not proof of 
 pub const DEAD_CODE_EMPTY_STATE: &str = "No findings above threshold (heuristic analysis).";
 
 pub fn print_scan_summary(snapshot: &crate::git::RepoSnapshot) {
-    println!("\n{}", "Ledgerful Git Scan Summary".bold().underline());
+    println!(
+        "\n{}",
+        "Ledgerful Git Scan Summary"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
+    );
     println!(
         "{:<15} {}",
-        "Branch:".bold(),
+        "Branch:".if_supports_color(Stream::Stdout, |s| s.bold()),
         snapshot.branch_name.as_deref().unwrap_or("unknown")
     );
     println!(
         "{:<15} {}",
-        "HEAD:".bold(),
+        "HEAD:".if_supports_color(Stream::Stdout, |s| s.bold()),
         snapshot.head_hash.as_deref().unwrap_or("unknown")
     );
 
     let state_str = if snapshot.is_clean {
-        "CLEAN".green().to_string()
+        "CLEAN"
+            .if_supports_color(Stream::Stdout, |s| s.green())
+            .to_string()
     } else {
-        "DIRTY".yellow().to_string()
+        "DIRTY"
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
+            .to_string()
     };
-    println!("{:<15} {}", "State:".bold(), state_str);
+    println!(
+        "{:<15} {}",
+        "State:".if_supports_color(Stream::Stdout, |s| s.bold()),
+        state_str
+    );
 
     if !snapshot.changes.is_empty() {
         // Prefer shared state (linked worktrees). Non-git → Layout::new(cwd) for
@@ -223,17 +260,27 @@ pub fn print_scan_summary(snapshot: &crate::git::RepoSnapshot) {
 
         for change in &snapshot.changes {
             let state = if change.is_staged {
-                "Staged".green().to_string()
+                "Staged"
+                    .if_supports_color(Stream::Stdout, |s| s.green())
+                    .to_string()
             } else {
-                "Unstaged".dimmed().to_string()
+                "Unstaged"
+                    .if_supports_color(Stream::Stdout, |s| s.dimmed())
+                    .to_string()
             };
             let action = match &change.change_type {
-                crate::git::ChangeType::Added => "Added".green().to_string(),
-                crate::git::ChangeType::Modified => "Modified".yellow().to_string(),
-                crate::git::ChangeType::Deleted => "Deleted".red().to_string(),
+                crate::git::ChangeType::Added => "Added"
+                    .if_supports_color(Stream::Stdout, |s| s.green())
+                    .to_string(),
+                crate::git::ChangeType::Modified => "Modified"
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
+                    .to_string(),
+                crate::git::ChangeType::Deleted => "Deleted"
+                    .if_supports_color(Stream::Stdout, |s| s.red())
+                    .to_string(),
                 crate::git::ChangeType::Renamed { old_path } => {
                     format!("Renamed ({})", old_path.display())
-                        .blue()
+                        .if_supports_color(Stream::Stdout, |s| s.blue())
                         .to_string()
                 }
             };
@@ -247,7 +294,7 @@ pub fn print_scan_summary(snapshot: &crate::git::RepoSnapshot) {
 
             let path_display = if is_ignored {
                 format!("{} (ignored)", change.path.display())
-                    .dimmed()
+                    .if_supports_color(Stream::Stdout, |s| s.dimmed())
                     .to_string()
             } else {
                 change.path.display().to_string()
@@ -264,7 +311,11 @@ pub fn print_scan_summary(snapshot: &crate::git::RepoSnapshot) {
 }
 
 pub fn print_impact_summary(packet: &ImpactPacket) {
-    println!("\n{}", "Change Impact Analysis".bold().underline());
+    println!(
+        "\n{}",
+        "Change Impact Analysis"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
+    );
 
     let risk_color = match packet.risk_level {
         RiskLevel::High => Color::Red,
@@ -321,8 +372,7 @@ pub fn print_impact_summary(packet: &ImpactPacket) {
         println!(
             "\n{}",
             "Affected HTTP flows (registered routes — not CRG call-chain traces)"
-                .bold()
-                .underline()
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
         );
         println!(
             "  Status: {}  flowCount={}{}",
@@ -357,9 +407,18 @@ pub fn print_impact_summary(packet: &ImpactPacket) {
 pub fn print_impact_brief(packet: &ImpactPacket) {
     let risk = format!("{:?}", packet.risk_level).to_uppercase();
     match packet.risk_level {
-        RiskLevel::High => println!("Impact Analysis: Risk is {}", risk.red().bold()),
-        RiskLevel::Medium => println!("Impact Analysis: Risk is {}", risk.yellow().bold()),
-        RiskLevel::Low => println!("Impact Analysis: Risk is {}", risk.green().bold()),
+        RiskLevel::High => println!(
+            "Impact Analysis: Risk is {}",
+            risk.if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold()))
+        ),
+        RiskLevel::Medium => println!(
+            "Impact Analysis: Risk is {}",
+            risk.if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
+        ),
+        RiskLevel::Low => println!(
+            "Impact Analysis: Risk is {}",
+            risk.if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
+        ),
     }
     if let Some(ref blast) = packet.blast_radius
         && !blast.edges.is_empty()
@@ -397,8 +456,7 @@ fn print_structural_blast(blast: &BlastRadius) {
     println!(
         "\n{}",
         "Structural blast radius (call graph — not deploy high-blast resources)"
-            .bold()
-            .underline()
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
     );
     println!(
         "  Depth applied: {} (requested {})",
@@ -472,7 +530,10 @@ fn print_structural_blast(blast: &BlastRadius) {
 }
 
 pub fn print_hotspots(hotspots: &[Hotspot]) {
-    println!("\n{}", "Codebase Hotspots (Risk Density)".bold());
+    println!(
+        "\n{}",
+        "Codebase Hotspots (Risk Density)".if_supports_color(Stream::Stdout, |s| s.bold())
+    );
     let mut table = Table::new();
     table
         .load_preset(UTF8_FULL)
@@ -496,7 +557,10 @@ pub fn print_hotspots_table(hotspots: &[Hotspot]) {
 }
 
 pub fn print_hotspots_table_with_centrality(hotspots: &[Hotspot]) {
-    println!("\n{}", "Codebase Hotspots (with Centrality)".bold());
+    println!(
+        "\n{}",
+        "Codebase Hotspots (with Centrality)".if_supports_color(Stream::Stdout, |s| s.bold())
+    );
     let mut table = Table::new();
     table
         .load_preset(UTF8_FULL)
@@ -521,7 +585,10 @@ pub fn print_hotspots_table_with_centrality(hotspots: &[Hotspot]) {
 }
 
 pub fn print_semantic_hotspots(matches: &[crate::semantic::hotspots::SemanticMatch]) {
-    println!("\n{}", "Semantic Hotspots (Duplicate Density)".bold());
+    println!(
+        "\n{}",
+        "Semantic Hotspots (Duplicate Density)".if_supports_color(Stream::Stdout, |s| s.bold())
+    );
     let mut table = Table::new();
     table
         .load_preset(UTF8_FULL)
@@ -540,7 +607,10 @@ pub fn print_semantic_hotspots(matches: &[crate::semantic::hotspots::SemanticMat
 }
 
 fn print_temporal_couplings(couplings: &[TemporalCoupling]) {
-    println!("\n{}", "Temporal Couplings (>70% co-change)".bold());
+    println!(
+        "\n{}",
+        "Temporal Couplings (>70% co-change)".if_supports_color(Stream::Stdout, |s| s.bold())
+    );
     let mut table = Table::new();
     table
         .load_preset(UTF8_FULL)
@@ -558,7 +628,10 @@ fn print_temporal_couplings(couplings: &[TemporalCoupling]) {
 }
 
 fn print_observability_signals(signals: &[ObservabilitySignal]) {
-    println!("\n{}", "Observability Signals".bold());
+    println!(
+        "\n{}",
+        "Observability Signals".if_supports_color(Stream::Stdout, |s| s.bold())
+    );
     let mut table = Table::new();
     table
         .load_preset(UTF8_FULL)
@@ -567,9 +640,15 @@ fn print_observability_signals(signals: &[ObservabilitySignal]) {
 
     for signal in signals {
         let sev = match signal.severity {
-            SignalSeverity::Critical => "CRITICAL".red().to_string(),
-            SignalSeverity::Warning => "WARN".yellow().to_string(),
-            SignalSeverity::Normal => "NORMAL".blue().to_string(),
+            SignalSeverity::Critical => "CRITICAL"
+                .if_supports_color(Stream::Stdout, |s| s.red())
+                .to_string(),
+            SignalSeverity::Warning => "WARN"
+                .if_supports_color(Stream::Stdout, |s| s.yellow())
+                .to_string(),
+            SignalSeverity::Normal => "NORMAL"
+                .if_supports_color(Stream::Stdout, |s| s.blue())
+                .to_string(),
         };
         table.add_row(vec![
             Cell::new(signal.source.clone()),
@@ -585,7 +664,10 @@ pub fn print_dead_code_summary(
     _threshold: f64,
     include_traits: bool,
 ) {
-    println!("\n{}", "Dead Code Analysis".bold());
+    println!(
+        "\n{}",
+        "Dead Code Analysis".if_supports_color(Stream::Stdout, |s| s.bold())
+    );
     if findings.is_empty() {
         println!("  {DEAD_CODE_EMPTY_STATE}");
     } else {
@@ -626,7 +708,10 @@ pub fn print_dead_code_summary(
 pub fn print_dead_code_grouped(findings: &[DeadCodeFinding]) {
     use std::collections::BTreeMap;
 
-    println!("\n{}", "Dead Code Analysis (grouped by file)".bold());
+    println!(
+        "\n{}",
+        "Dead Code Analysis (grouped by file)".if_supports_color(Stream::Stdout, |s| s.bold())
+    );
 
     if findings.is_empty() {
         println!("  {DEAD_CODE_EMPTY_STATE}");
@@ -712,7 +797,8 @@ pub fn print_dead_code_explanation_struct(
 
     println!(
         "\n{}",
-        format!("Dead Code Analysis: {}", explanation.file).bold()
+        format!("Dead Code Analysis: {}", explanation.file)
+            .if_supports_color(Stream::Stdout, |s| s.bold())
     );
     println!("\nSymbols flagged: {}\n", explanation.symbols.len());
 
@@ -750,7 +836,11 @@ pub fn print_verify_plan(plan: &VerificationPlan) {
             }
         })
         .unwrap_or("cargo test");
-    println!("\n{}", "Verification Plan".bold().underline());
+    println!(
+        "\n{}",
+        "Verification Plan"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
+    );
     if let Some(source) = &plan.source {
         let source_str = match source {
             crate::verify::plan::PlanSource::AutoPolicy => "Auto-Policy",
@@ -760,16 +850,28 @@ pub fn print_verify_plan(plan: &VerificationPlan) {
             }
             crate::verify::plan::PlanSource::Manual => "Manual",
         };
-        println!("  {} {}", "Source:".dimmed(), source_str);
+        println!(
+            "  {} {}",
+            "Source:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+            source_str
+        );
     }
-    println!("  {} {}", "Runner:".dimmed(), runner);
+    println!(
+        "  {} {}",
+        "Runner:".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+        runner
+    );
     for step in &plan.steps {
         let desc = if step.description.is_empty() {
             &step.command
         } else {
             &step.description
         };
-        println!("  {} {}", "•".dimmed(), desc);
+        println!(
+            "  {} {}",
+            "•".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+            desc
+        );
     }
 }
 
@@ -782,14 +884,15 @@ pub fn print_verify_result(name: &str, _timeout: u64, result: &ExecutionResult, 
         if crate::output::verification::should_print_success_step(verbose) {
             println!(
                 "\n{} Verification passed for: {}",
-                "SUCCESS".green().bold(),
+                "SUCCESS"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold())),
                 name
             );
         }
     } else {
         println!(
             "\n{} Verification failed for: {}",
-            "FAILURE".red().bold(),
+            "FAILURE".if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold())),
             name
         );
     }

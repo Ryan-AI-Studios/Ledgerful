@@ -544,12 +544,12 @@ pub fn check_index_staleness(
 }
 
 pub fn print_staleness_warning(warning: &StalenessWarning) {
-    use owo_colors::OwoColorize;
+    use owo_colors::{OwoColorize, Stream, Style};
 
     if warning.is_content_drift && warning.days_since_indexed <= 3 {
         eprintln!(
             "\n{} [STALE] Index content drift: {} changed/unindexed file{} (index age {} day{}).",
-            "WARN".yellow().bold(),
+            "WARN".if_supports_color(Stream::Stderr, |s| s.style(Style::new().yellow().bold())),
             warning.stale_files,
             if warning.stale_files == 1 { "" } else { "s" },
             warning.days_since_indexed,
@@ -562,7 +562,7 @@ pub fn print_staleness_warning(warning: &StalenessWarning) {
     } else {
         eprintln!(
             "\n{} [STALE] Index is {} day{} old with {} indexed file{} and {} unindexed file{}.",
-            "WARN".yellow().bold(),
+            "WARN".if_supports_color(Stream::Stderr, |s| s.style(Style::new().yellow().bold())),
             warning.days_since_indexed,
             if warning.days_since_indexed == 1 {
                 ""
@@ -583,14 +583,18 @@ pub fn print_staleness_warning(warning: &StalenessWarning) {
     if !warning.sample_paths.is_empty() {
         eprintln!(
             "  Sample paths: {}",
-            warning.sample_paths.join(", ").dimmed()
+            warning
+                .sample_paths
+                .join(", ")
+                .if_supports_color(Stream::Stderr, |s| s.dimmed())
         );
     }
 
     eprintln!(
         "  {} Results may be degraded. Run {} to refresh (or pass --auto-index on supported commands).",
-        "➜".blue(),
-        "ledgerful index --incremental".cyan().bold()
+        "➜".if_supports_color(Stream::Stderr, |s| s.blue()),
+        "ledgerful index --incremental"
+            .if_supports_color(Stream::Stderr, |s| s.style(Style::new().cyan().bold()))
     );
 }
 
@@ -677,13 +681,13 @@ pub fn try_auto_index(
 
     use crate::config::model::Config;
     use crate::index::ProjectIndexer;
-    use owo_colors::OwoColorize;
+    use owo_colors::{OwoColorize, Stream, Style};
 
     match &action {
         AutoIndexAction::FullBootstrap => {
             eprintln!(
                 "{} Index missing or never built. Running full bootstrap index...",
-                "INFO".blue().bold()
+                "INFO".if_supports_color(Stream::Stderr, |s| s.style(Style::new().blue().bold()))
             );
         }
         AutoIndexAction::Incremental {
@@ -693,7 +697,8 @@ pub fn try_auto_index(
             if *time_stale && *drift_stale {
                 eprintln!(
                     "{} Index is time-stale ({} days) and has content drift ({} file{}). Running auto-index...",
-                    "INFO".blue().bold(),
+                    "INFO"
+                        .if_supports_color(Stream::Stderr, |s| s.style(Style::new().blue().bold())),
                     assessment.days_since_indexed.unwrap_or(999),
                     drift.changed_or_unindexed,
                     if drift.changed_or_unindexed == 1 {
@@ -705,13 +710,15 @@ pub fn try_auto_index(
             } else if *time_stale {
                 eprintln!(
                     "{} Index is stale ({} days old). Running auto-index...",
-                    "INFO".blue().bold(),
+                    "INFO"
+                        .if_supports_color(Stream::Stderr, |s| s.style(Style::new().blue().bold())),
                     assessment.days_since_indexed.unwrap_or(999)
                 );
             } else {
                 eprintln!(
                     "{} Index content drift detected ({} changed/unindexed file{}). Running auto-index...",
-                    "INFO".blue().bold(),
+                    "INFO"
+                        .if_supports_color(Stream::Stderr, |s| s.style(Style::new().blue().bold())),
                     drift.changed_or_unindexed,
                     if drift.changed_or_unindexed == 1 {
                         ""

@@ -23,7 +23,7 @@
 
 use camino::{Utf8Path, Utf8PathBuf};
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use path_clean::PathClean;
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -965,7 +965,10 @@ pub fn execute_hook_repair(dry_run: bool) -> Result<()> {
         || !product.discovery_notes.is_empty()
     {
         println!();
-        println!("{} Product hook template refresh:", "INFO:".cyan().bold());
+        println!(
+            "{} Product hook template refresh:",
+            "INFO:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold()))
+        );
         crate::commands::hook_template::print_refresh_report(&product);
     }
     Ok(())
@@ -975,7 +978,7 @@ fn print_report(report: &HookRepairReport) {
     if let Some(manager) = report.third_party_manager {
         println!(
             "{} Third-party hook manager '{}' detected. Hooks are managed by '{}', not rewritten by Ledgerful. Please update your {} config to call ledgerful.",
-            "WARN:".yellow().bold(),
+            "WARN:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
             manager.name(),
             manager.name(),
             manager.name(),
@@ -990,14 +993,23 @@ fn print_report(report: &HookRepairReport) {
     }
 
     let prefix = if report.dry_run {
-        "DRY-RUN".yellow().bold().to_string()
+        "DRY-RUN"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
+            .to_string()
     } else {
-        "DONE".green().bold().to_string()
+        "DONE"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
+            .to_string()
     };
 
     if !report.discovery_notes.is_empty() {
         for note in &report.discovery_notes {
-            println!("{} {}", "WARN:".yellow().bold(), note);
+            println!(
+                "{} {}",
+                "WARN:"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
+                note
+            );
         }
     }
 
@@ -1037,14 +1049,16 @@ fn print_report(report: &HookRepairReport) {
         if !report.residual_invocations.is_empty() {
             println!(
                 "{} Residual retired-binary invocation(s) remain in: {}. Not reported as fully repaired.",
-                "WARN:".yellow().bold(),
+                "WARN:"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
                 report.residual_invocations.join(", ")
             );
         }
         if !report.near_miss_blocks.is_empty() {
             println!(
                 "{} Near-miss duplicate gate block(s) (not auto-deleted; remove manually if safe):",
-                "WARN:".yellow().bold()
+                "WARN:"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
             );
             for (hook, block) in &report.near_miss_blocks {
                 println!("  --- {} ---", hook);
@@ -1057,7 +1071,7 @@ fn print_report(report: &HookRepairReport) {
 
     println!(
         "{} If hooks still look wrong, re-run `ledgerful update --repair-hooks`. Do not confuse with `ledgerful ledger hook-repair` (sidecar transaction repair).",
-        "HINT:".cyan().bold()
+        "HINT:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold()))
     );
 }
 

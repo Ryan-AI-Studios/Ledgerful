@@ -209,10 +209,9 @@ fn test_search_ranking_prose_query() {
 
 /// DoD-4: human search over a fixture with `&&` and quotes has no HTML entities.
 ///
-/// Do NOT assert the absence of escape sequences here. Colour is ungated by design
-/// (spec §2.4); a subprocess pipe is not a TTY, so a correct implementation emits
-/// `\u{1b}` on this path. Escapes are covered by the source grep and the --json
-/// payload assertion below.
+/// Colour is gated via `if_supports_color` (0131). Pipes/non-TTY and `NO_COLOR`
+/// suppress ANSI; this test still strips escapes if present so HTML-entity
+/// checks remain robust under force-on CI TTYs.
 #[test]
 fn test_search_human_no_html_entities() {
     use crate::common::{git_add_and_commit, run_cli};
@@ -249,9 +248,9 @@ pub fn entity_probe_func() {
             "DoD-4: human search must not contain HTML entity {entity}; stdout={stdout}"
         );
     }
-    // Positive: highlighting survived. Strip ANSI first — ungated owo_colors
-    // inserts escapes around match ranges, so a raw contains() on the plain
-    // identifier can fail against a correct emphasized rendering (spec §2.4).
+    // Positive: highlighting survived. Strip ANSI first — gated owo_colors may
+    // still insert escapes under force-on/TTY, so a raw contains() on the plain
+    // identifier can fail against a correct emphasized rendering.
     let stripped: String = {
         let mut out = String::new();
         let mut chars = stdout.chars().peekable();

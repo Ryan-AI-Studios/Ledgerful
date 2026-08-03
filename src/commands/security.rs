@@ -6,7 +6,7 @@ use crate::state::storage::StorageManager;
 use crate::util::term::prompt_yes_no;
 use clap::{Args, Subcommand};
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use std::collections::HashSet;
 
 #[derive(Args, Debug)]
@@ -179,13 +179,18 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
             serde_json::to_string_pretty(&output).into_diagnostic()?
         );
     } else {
-        println!("{}", "Security Policy Impact Analysis".bold().red());
+        println!(
+            "{}",
+            "Security Policy Impact Analysis"
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().red()))
+        );
         if total == 0 {
-            println!("{}", "  No security policy data found. Add Cedar policy files to 'policies/' and run `ledgerful index --analyze-graph`.".dimmed());
+            println!("{}", "  No security policy data found. Add Cedar policy files to 'policies/' and run `ledgerful index --analyze-graph`.".if_supports_color(Stream::Stdout, |s| s.dimmed()));
         } else if changed_count == 0 && changed {
             println!(
                 "{}",
-                "  No changed policies found in the current diff.".dimmed()
+                "  No changed policies found in the current diff."
+                    .if_supports_color(Stream::Stdout, |s| s.dimmed())
             );
         } else {
             let mut table = Table::new();
@@ -196,7 +201,11 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
                     item["id"].as_str().unwrap_or("").to_string(),
                     item["effect"].as_str().unwrap_or_default().to_string(),
                     if item["is_changed"].as_bool().unwrap_or(false) {
-                        "YES".yellow().bold().to_string()
+                        "YES"
+                            .if_supports_color(Stream::Stdout, |s| {
+                                s.style(Style::new().yellow().bold())
+                            })
+                            .to_string()
                     } else {
                         "NO".to_string()
                     },
@@ -208,14 +217,24 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
             if changed {
                 println!(
                     "  {} of {} policies match changed files",
-                    changed_count.to_string().yellow().bold(),
-                    total.to_string().bold(),
+                    changed_count
+                        .to_string()
+                        .if_supports_color(Stream::Stdout, |s| s
+                            .style(Style::new().yellow().bold())),
+                    total
+                        .to_string()
+                        .if_supports_color(Stream::Stdout, |s| s.bold()),
                 );
             } else {
                 println!(
                     "  {} policies evaluated, {} changed by this diff",
-                    total.to_string().bold(),
-                    changed_count.to_string().yellow().bold(),
+                    total
+                        .to_string()
+                        .if_supports_color(Stream::Stdout, |s| s.bold()),
+                    changed_count
+                        .to_string()
+                        .if_supports_color(Stream::Stdout, |s| s
+                            .style(Style::new().yellow().bold())),
                 );
             }
         }
@@ -371,23 +390,25 @@ fn execute_boundaries(json: bool, layout: &crate::state::layout::Layout) -> Resu
                     println!(
                         "{}",
                         "Knowledge graph is populated, but no Cedar policy data was found."
-                            .yellow()
+                            .if_supports_color(Stream::Stdout, |s| s.yellow())
                     );
                     println!(
                         "  This repo has no Cedar policy files configured. Add them under 'policies/' \
                          and run {} to populate this surface.",
-                        "ledgerful index --analyze-graph".cyan().bold()
+                        "ledgerful index --analyze-graph".if_supports_color(Stream::Stdout, |s| s
+                            .style(Style::new().cyan().bold()))
                     );
                 }
             } else {
                 println!(
                     "{}",
                     "No security boundary data found — the knowledge graph has not been built yet."
-                        .yellow()
+                        .if_supports_color(Stream::Stdout, |s| s.yellow())
                 );
                 println!(
                     "  Run {} first, then add Cedar policy files to 'policies/' if this repo uses Cedar.",
-                    "ledgerful index --analyze-graph".cyan().bold()
+                    "ledgerful index --analyze-graph"
+                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold()))
                 );
             }
         } else {
@@ -398,15 +419,19 @@ fn execute_boundaries(json: bool, layout: &crate::state::layout::Layout) -> Resu
                 .join(" | ");
             println!(
                 "{}",
-                format!("Security Boundaries  [{}]", summary).bold().green()
+                format!("Security Boundaries  [{}]", summary)
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().green()))
             );
 
             // --- Auth nodes table ---
             let auth_count = auth_res.rows.len();
             println!(
                 "\n{} ({} total)",
-                "Authorization Nodes (policy/principal/action/resource):".bold(),
-                auth_count.to_string().bold(),
+                "Authorization Nodes (policy/principal/action/resource):"
+                    .if_supports_color(Stream::Stdout, |s| s.bold()),
+                auth_count
+                    .to_string()
+                    .if_supports_color(Stream::Stdout, |s| s.bold()),
             );
             let mut auth_table = Table::new();
             auth_table.set_header(vec!["Category", "Label", "ID"]);
@@ -430,14 +455,17 @@ fn execute_boundaries(json: bool, layout: &crate::state::layout::Layout) -> Resu
             let boundary_count = boundary_res.rows.len();
             println!(
                 "\n{} ({} total)",
-                "Cross-Surface Boundary Links (policy → protected entity):".bold(),
-                boundary_count.to_string().bold(),
+                "Cross-Surface Boundary Links (policy → protected entity):"
+                    .if_supports_color(Stream::Stdout, |s| s.bold()),
+                boundary_count
+                    .to_string()
+                    .if_supports_color(Stream::Stdout, |s| s.bold()),
             );
             if boundary_res.rows.is_empty() {
                 println!(
                     "{}",
-                    "  No cross-surface links found. Run `ledgerful index --incremental` to refresh."
-                        .dimmed()
+                    "  No cross-surface links found. Run `ledgerful index --incremental` to refresh.".if_supports_color(Stream::Stdout, |s| s.dimmed())
+
                 );
             } else {
                 let mut boundary_table = Table::new();

@@ -5,7 +5,7 @@ use crate::state::layout::Layout;
 use crate::state::reports::LATEST_IMPACT_REPORT;
 use camino::{Utf8Path, Utf8PathBuf};
 use miette::{IntoDiagnostic, Result, miette};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream};
 use std::env;
 use std::io::Write;
 use std::path::PathBuf;
@@ -94,21 +94,40 @@ pub fn execute_setup(yes: bool, skip_scan: bool) -> Result<()> {
             if reconfigure {
                 crate::commands::init::execute_init(false, false)?;
             } else {
-                println!("{} Using existing setup.", "✓".green());
+                println!(
+                    "{} Using existing setup.",
+                    "✓".if_supports_color(Stream::Stdout, |s| s.green())
+                );
             }
         } else {
-            println!("{} Using existing setup.", "✓".green());
+            println!(
+                "{} Using existing setup.",
+                "✓".if_supports_color(Stream::Stdout, |s| s.green())
+            );
         }
     } else {
-        println!("{} Initializing Ledgerful in {}", "→".cyan(), layout.root);
+        println!(
+            "{} Initializing Ledgerful in {}",
+            "→".if_supports_color(Stream::Stdout, |s| s.cyan()),
+            layout.root
+        );
         crate::commands::init::execute_init(false, false)?;
-        println!("{} Initialization complete.", "✓".green());
+        println!(
+            "{} Initialization complete.",
+            "✓".if_supports_color(Stream::Stdout, |s| s.green())
+        );
     }
 
     // ── 3. Doctor step ──────────────────────────────────────────────────────
-    println!("\n{} Running system health check...", "→".cyan());
+    println!(
+        "\n{} Running system health check...",
+        "→".if_supports_color(Stream::Stdout, |s| s.cyan())
+    );
     execute_doctor(false, false, false)?;
-    println!("{} Health check complete.", "✓".green());
+    println!(
+        "{} Health check complete.",
+        "✓".if_supports_color(Stream::Stdout, |s| s.green())
+    );
 
     // ── 4. First scan step (skipped when no git repo) ───────────────────────
     if !skip_scan {
@@ -119,15 +138,18 @@ pub fn execute_setup(yes: bool, skip_scan: bool) -> Result<()> {
         if gix::discover(".").is_err() {
             println!(
                 "{} Skipping first scan: no git repository detected in this directory.",
-                "⚠".yellow()
+                "⚠".if_supports_color(Stream::Stdout, |s| s.yellow())
             );
             println!(
                 "  Run {} after {} to enable impact analysis.",
-                "git init".cyan(),
-                "ledgerful index".cyan()
+                "git init".if_supports_color(Stream::Stdout, |s| s.cyan()),
+                "ledgerful index".if_supports_color(Stream::Stdout, |s| s.cyan())
             );
         } else {
-            println!("\n{} Running first index and scan...", "→".cyan());
+            println!(
+                "\n{} Running first index and scan...",
+                "→".if_supports_color(Stream::Stdout, |s| s.cyan())
+            );
             // Run incremental index first
             execute_index(IndexArgs {
                 incremental: true,
@@ -136,7 +158,10 @@ pub fn execute_setup(yes: bool, skip_scan: bool) -> Result<()> {
 
             // Equivalent to: ledgerful scan --impact
             execute_scan(true, false, false, None, None, None, None)?;
-            println!("{} First scan complete.", "✓".green());
+            println!(
+                "{} First scan complete.",
+                "✓".if_supports_color(Stream::Stdout, |s| s.green())
+            );
         }
     }
 
@@ -163,7 +188,11 @@ pub fn execute_setup(yes: bool, skip_scan: bool) -> Result<()> {
             .prompt()
             .unwrap_or(false);
             if opt_in && let Err(e) = crate::commands::usage::execute_usage_enable() {
-                eprintln!("{} Failed to enable usage metrics: {}", "✗".red(), e);
+                eprintln!(
+                    "{} Failed to enable usage metrics: {}",
+                    "✗".if_supports_color(Stream::Stderr, |s| s.red()),
+                    e
+                );
             }
         }
     }
@@ -184,65 +213,80 @@ fn welcome_message<W: Write>(out: &mut W) -> std::io::Result<()> {
 {}
 {}
 {}",
-        "╭──────────────────────────────────────────────────────╮".cyan(),
-        "│                                                      │".cyan(),
-        "│            Welcome to Ledgerful!                     │".cyan(),
-        "│                                                      │".cyan(),
+        "╭──────────────────────────────────────────────────────╮"
+            .if_supports_color(Stream::Stdout, |s| s.cyan()),
+        "│                                                      │"
+            .if_supports_color(Stream::Stdout, |s| s.cyan()),
+        "│            Welcome to Ledgerful!                     │"
+            .if_supports_color(Stream::Stdout, |s| s.cyan()),
+        "│                                                      │"
+            .if_supports_color(Stream::Stdout, |s| s.cyan()),
     )?;
     writeln!(
         out,
         "{}",
-        "│  Ledgerful is a local-first change intelligence      │".cyan()
+        "│  Ledgerful is a local-first change intelligence      │"
+            .if_supports_color(Stream::Stdout, |s| s.cyan())
     )?;
     writeln!(
         out,
         "{}",
-        "│  engine for your code. It provides impact analysis,  │".cyan()
+        "│  engine for your code. It provides impact analysis,  │"
+            .if_supports_color(Stream::Stdout, |s| s.cyan())
     )?;
     writeln!(
         out,
         "{}",
-        "│  hotspot detection, verification planning, and a    │".cyan()
+        "│  hotspot detection, verification planning, and a    │"
+            .if_supports_color(Stream::Stdout, |s| s.cyan())
     )?;
     writeln!(
         out,
         "{}",
-        "│  cryptographic ledger for every change you make.     │".cyan()
+        "│  cryptographic ledger for every change you make.     │"
+            .if_supports_color(Stream::Stdout, |s| s.cyan())
     )?;
     writeln!(
         out,
         "{}",
-        "│                                                      │".cyan()
+        "│                                                      │"
+            .if_supports_color(Stream::Stdout, |s| s.cyan())
     )?;
     writeln!(
         out,
         "{}",
-        "│  This wizard will:                                   │".cyan()
+        "│  This wizard will:                                   │"
+            .if_supports_color(Stream::Stdout, |s| s.cyan())
     )?;
     writeln!(
         out,
         "{}",
-        "│  1. Initialize Ledgerful in this repository          │".cyan()
+        "│  1. Initialize Ledgerful in this repository          │"
+            .if_supports_color(Stream::Stdout, |s| s.cyan())
     )?;
     writeln!(
         out,
         "{}",
-        "│  2. Run a system health check                       │".cyan()
+        "│  2. Run a system health check                       │"
+            .if_supports_color(Stream::Stdout, |s| s.cyan())
     )?;
     writeln!(
         out,
         "{}",
-        "│  3. Perform your first impact scan                  │".cyan()
+        "│  3. Perform your first impact scan                  │"
+            .if_supports_color(Stream::Stdout, |s| s.cyan())
     )?;
     writeln!(
         out,
         "{}",
-        "│  4. Show you what to do next                        │".cyan()
+        "│  4. Show you what to do next                        │"
+            .if_supports_color(Stream::Stdout, |s| s.cyan())
     )?;
     writeln!(
         out,
         "{}",
-        "╰──────────────────────────────────────────────────────╯".cyan()
+        "╰──────────────────────────────────────────────────────╯"
+            .if_supports_color(Stream::Stdout, |s| s.cyan())
     )?;
     writeln!(out)?;
     Ok(())
@@ -252,17 +296,20 @@ fn success_screen<W: Write>(out: &mut W, layout: &Layout) -> std::io::Result<()>
     writeln!(
         out,
         "\n{}",
-        "╭──────────────────────────────────────────────────────╮".green()
+        "╭──────────────────────────────────────────────────────╮"
+            .if_supports_color(Stream::Stdout, |s| s.green())
     )?;
     writeln!(
         out,
         "{}",
-        "│            Setup Complete!                           │".green()
+        "│            Setup Complete!                           │"
+            .if_supports_color(Stream::Stdout, |s| s.green())
     )?;
     writeln!(
         out,
         "{}",
-        "╰──────────────────────────────────────────────────────╯".green()
+        "╰──────────────────────────────────────────────────────╯"
+            .if_supports_color(Stream::Stdout, |s| s.green())
     )?;
 
     // Use the resolved layout (shared state_dir for linked worktrees) so the
@@ -272,32 +319,38 @@ fn success_screen<W: Write>(out: &mut W, layout: &Layout) -> std::io::Result<()>
         writeln!(
             out,
             "{} Impact report: {}",
-            "→".cyan(),
-            report_path.as_str().dimmed()
+            "→".if_supports_color(Stream::Stdout, |s| s.cyan()),
+            report_path
+                .as_str()
+                .if_supports_color(Stream::Stdout, |s| s.dimmed())
         )?;
     }
 
     writeln!(out)?;
-    writeln!(out, "{} Suggested next steps:", "→".cyan())?;
+    writeln!(
+        out,
+        "{} Suggested next steps:",
+        "→".if_supports_color(Stream::Stdout, |s| s.cyan())
+    )?;
     writeln!(
         out,
         "  {} ledgerful ask \"<question>\"  — Ask questions about your codebase",
-        "•".yellow()
+        "•".if_supports_color(Stream::Stdout, |s| s.yellow())
     )?;
     writeln!(
         out,
         "  {} ledgerful hotspots          — View hotspot rankings",
-        "•".yellow()
+        "•".if_supports_color(Stream::Stdout, |s| s.yellow())
     )?;
     writeln!(
         out,
         "  {} ledgerful ledger start      — Start tracking a change",
-        "•".yellow()
+        "•".if_supports_color(Stream::Stdout, |s| s.yellow())
     )?;
     writeln!(
         out,
         "  {} ledgerful ledger status     — Check provenance state",
-        "•".yellow()
+        "•".if_supports_color(Stream::Stdout, |s| s.yellow())
     )?;
 
     #[cfg(feature = "web")]
@@ -305,7 +358,7 @@ fn success_screen<W: Write>(out: &mut W, layout: &Layout) -> std::io::Result<()>
         writeln!(
             out,
             "  {} ledgerful web start        — Launch the local dashboard",
-            "•".yellow()
+            "•".if_supports_color(Stream::Stdout, |s| s.yellow())
         )?;
     }
 
@@ -314,7 +367,7 @@ fn success_screen<W: Write>(out: &mut W, layout: &Layout) -> std::io::Result<()>
         writeln!(
             out,
             "  {} ledgerful mcp               — Run the MCP server (stdio)",
-            "•".yellow()
+            "•".if_supports_color(Stream::Stdout, |s| s.yellow())
         )?;
     }
 
@@ -323,7 +376,7 @@ fn success_screen<W: Write>(out: &mut W, layout: &Layout) -> std::io::Result<()>
         writeln!(
             out,
             "  {} ledgerful viz-server        — Launch the live architecture view",
-            "•".yellow()
+            "•".if_supports_color(Stream::Stdout, |s| s.yellow())
         )?;
     }
 
@@ -331,8 +384,8 @@ fn success_screen<W: Write>(out: &mut W, layout: &Layout) -> std::io::Result<()>
     writeln!(
         out,
         "{} Run {} anytime to re-run this wizard.",
-        "→".cyan(),
-        "ledgerful setup".cyan()
+        "→".if_supports_color(Stream::Stdout, |s| s.cyan()),
+        "ledgerful setup".if_supports_color(Stream::Stdout, |s| s.cyan())
     )?;
     Ok(())
 }

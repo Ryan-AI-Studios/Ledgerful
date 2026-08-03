@@ -2,7 +2,7 @@ use crate::commands::helpers::{get_layout, load_ledger_config};
 use crate::ledger::{LedgerDb, TransactionManager};
 use crate::state::storage::StorageManager;
 use miette::Result;
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 
 pub fn execute_ledger_register_rule(term: &str, category: &str, reason: &str) -> Result<()> {
     let layout = get_layout()?;
@@ -16,8 +16,8 @@ pub fn execute_ledger_register_rule(term: &str, category: &str, reason: &str) ->
 
     println!(
         "Rule registered: NO {} in {}",
-        term.red().bold(),
-        category.yellow()
+        term.if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold())),
+        category.if_supports_color(Stream::Stdout, |s| s.yellow())
     );
     Ok(())
 }
@@ -39,8 +39,8 @@ pub fn execute_ledger_register_validator(
 
     println!(
         "Validator registered: {} for {}",
-        name.cyan().bold(),
-        category.yellow()
+        name.if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
+        category.if_supports_color(Stream::Stdout, |s| s.yellow())
     );
     Ok(())
 }

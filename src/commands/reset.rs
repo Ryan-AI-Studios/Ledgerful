@@ -1,7 +1,7 @@
 use crate::state::layout::Layout;
 use camino::{Utf8Path, Utf8PathBuf};
 use miette::{Result, miette};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream};
 use std::fs;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,10 +52,18 @@ pub fn execute_reset(
     println!("Reset Operation Plan Preview:");
     for item in &plan_items {
         let label = match &item.outcome {
-            RemovalOutcome::Removed => "would remove".yellow().to_string(),
-            RemovalOutcome::Absent => "absent (no action)".dimmed().to_string(),
-            RemovalOutcome::Preserved => "preserved".green().to_string(),
-            RemovalOutcome::Failed(_) => "failed validation".red().to_string(),
+            RemovalOutcome::Removed => "would remove"
+                .if_supports_color(Stream::Stdout, |s| s.yellow())
+                .to_string(),
+            RemovalOutcome::Absent => "absent (no action)"
+                .if_supports_color(Stream::Stdout, |s| s.dimmed())
+                .to_string(),
+            RemovalOutcome::Preserved => "preserved"
+                .if_supports_color(Stream::Stdout, |s| s.green())
+                .to_string(),
+            RemovalOutcome::Failed(_) => "failed validation"
+                .if_supports_color(Stream::Stdout, |s| s.red())
+                .to_string(),
         };
         println!("  {:<25} : {}", label, item.path);
     }

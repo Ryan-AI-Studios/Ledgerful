@@ -17,7 +17,7 @@ use crate::platform::{check_tools, classify_path, current_platform, detect_shell
 use crate::state::layout::Layout;
 use chrono::Utc;
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use serde_json::json;
 use std::env;
 
@@ -165,7 +165,9 @@ pub fn execute_doctor(json: bool, apply_hook_refresh: bool, dry_run: bool) -> Re
 
     // Completion model (optional).
     if config.local_model.generation_model.is_empty() {
-        report.completion_model_status = "Not configured".yellow().to_string();
+        report.completion_model_status = "Not configured"
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
+            .to_string();
         findings.push(DoctorFinding::info(
             "completion-not-configured",
             DoctorCategory::Optional,
@@ -201,7 +203,7 @@ pub fn execute_doctor(json: bool, apply_hook_refresh: bool, dry_run: bool) -> Re
                         retries,
                         if retries == 1 { "retry" } else { "retries" }
                     )
-                    .green()
+                    .if_supports_color(Stream::Stdout, |s| s.green())
                 );
             }
             ProbeResult::Unreachable { err, retries } => {
@@ -218,7 +220,7 @@ pub fn execute_doctor(json: bool, apply_hook_refresh: bool, dry_run: bool) -> Re
                 };
                 report.completion_model_status = format!(
                     "unreachable ({}{}){}",
-                    truncated.yellow(),
+                    truncated.if_supports_color(Stream::Stdout, |s| s.yellow()),
                     retry_suffix,
                     detail_hint
                 );
@@ -271,7 +273,10 @@ pub fn execute_doctor(json: bool, apply_hook_refresh: bool, dry_run: bool) -> Re
                 );
             }
             Err(e) => {
-                report.native_graph_status = format!("Error ({})", e.red());
+                report.native_graph_status = format!(
+                    "Error ({})",
+                    e.if_supports_color(Stream::Stdout, |s| s.red())
+                );
                 findings.push(DoctorFinding::warn(
                     "graph-error",
                     DoctorCategory::Index,
@@ -617,7 +622,7 @@ pub fn execute_doctor(json: bool, apply_hook_refresh: bool, dry_run: bool) -> Re
         if !json {
             eprintln!(
                 "\n{} {} block finding(s). Exit 1.",
-                "Doctor:".red().bold(),
+                "Doctor:".if_supports_color(Stream::Stderr, |s| s.style(Style::new().red().bold())),
                 counts.block
             );
         } else {
@@ -970,11 +975,13 @@ fn format_embedding_backend_availability(
 ) -> BackendAvailabilityReport {
     use crate::embed::client::is_embedding_backend_configured;
     use crate::semantic::BackendStatus;
-    use owo_colors::OwoColorize;
+    use owo_colors::{OwoColorize, Stream};
 
     if !is_embedding_backend_configured(display_config) {
         return BackendAvailabilityReport {
-            display: "Not configured".yellow().to_string(),
+            display: "Not configured"
+                .if_supports_color(Stream::Stdout, |s| s.yellow())
+                .to_string(),
             is_failure: true,
             status: BackendStatus::NotConfigured,
             debug_detail: None,
@@ -1005,7 +1012,9 @@ fn format_embedding_backend_availability(
         ProbeResult::Healthy(_dims) => {
             // URL set but probe returned inactive (0 dims) — treat as not ready.
             BackendAvailabilityReport {
-                display: "Not configured".yellow().to_string(),
+                display: "Not configured"
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
+                    .to_string(),
                 is_failure: true,
                 status: BackendStatus::NotConfigured,
                 debug_detail: Some(
@@ -1029,7 +1038,7 @@ fn format_embedding_backend_availability(
                         retries,
                         if retries == 1 { "retry" } else { "retries" }
                     )
-                    .green()
+                    .if_supports_color(Stream::Stdout, |s| s.green())
                 ),
                 is_failure: false,
                 status: BackendStatus::Ready,
@@ -1037,7 +1046,9 @@ fn format_embedding_backend_availability(
             }
         }
         ProbeResult::ReachableAfterRetry { .. } => BackendAvailabilityReport {
-            display: "Not configured".yellow().to_string(),
+            display: "Not configured"
+                .if_supports_color(Stream::Stdout, |s| s.yellow())
+                .to_string(),
             is_failure: true,
             status: BackendStatus::NotConfigured,
             debug_detail: None,
@@ -1057,7 +1068,7 @@ fn format_embedding_backend_availability(
             BackendAvailabilityReport {
                 display: format!(
                     "unreachable ({}{}){}",
-                    truncated.yellow(),
+                    truncated.if_supports_color(Stream::Stdout, |s| s.yellow()),
                     retry_suffix,
                     detail_hint
                 ),
@@ -1355,7 +1366,10 @@ fn gate_mode_status(
                 "Gate mode: {effective_mode} (ledger history shows {ledger_mode}; run `ledgerful gate mode {ledger_mode}`)"
             );
             GateModeOutcome::Mismatch {
-                display: message.clone().yellow().to_string(),
+                display: message
+                    .clone()
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
+                    .to_string(),
                 finding: DoctorFinding::warn("gate-mode-mismatch", DoctorCategory::Gate, message),
             }
         }
@@ -1429,7 +1443,7 @@ fn print_vram_section() {
                 let is_arc = info.adapter_name.to_lowercase().contains("arc");
                 let note = if is_arc && info.current_usage == 0 {
                     " (Driver limitation: zero-usage reporting on Intel Arc)"
-                        .yellow()
+                        .if_supports_color(Stream::Stdout, |s| s.yellow())
                         .to_string()
                 } else {
                     "".to_string()
@@ -1437,19 +1451,31 @@ fn print_vram_section() {
 
                 let usage_str = format!("{:.1}", usage_gb);
                 let color_usage = match pressure {
-                    VramPressure::Ok => usage_str.white().to_string(),
-                    VramPressure::High => usage_str.yellow().bold().to_string(),
-                    VramPressure::Critical => usage_str.red().bold().to_string(),
+                    VramPressure::Ok => usage_str
+                        .if_supports_color(Stream::Stdout, |s| s.white())
+                        .to_string(),
+                    VramPressure::High => usage_str
+                        .if_supports_color(Stream::Stdout, |s| {
+                            s.style(Style::new().yellow().bold())
+                        })
+                        .to_string(),
+                    VramPressure::Critical => usage_str
+                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold()))
+                        .to_string(),
                 };
                 println!(
                     "{:<20} {} GB / {:.1} GB{}",
-                    "GPU VRAM:".bold(),
+                    "GPU VRAM:".if_supports_color(Stream::Stdout, |s| s.bold()),
                     color_usage,
                     budget_gb,
                     note
                 );
             }
-            Err(e) => println!("{:<20} unavailable ({})", "GPU VRAM:".bold(), e.yellow()),
+            Err(e) => println!(
+                "{:<20} unavailable ({})",
+                "GPU VRAM:".if_supports_color(Stream::Stdout, |s| s.bold()),
+                e.if_supports_color(Stream::Stdout, |s| s.yellow())
+            ),
         }
     }
     #[cfg(not(target_os = "windows"))]

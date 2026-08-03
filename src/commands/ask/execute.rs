@@ -9,7 +9,7 @@ use crate::index::warn_if_stale;
 use crate::local_model::pruner;
 use crate::state::storage::StorageManager;
 use miette::Result;
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use std::env;
 
 const MIN_CONTEXT_CHARS: usize = 32_768;
@@ -82,7 +82,8 @@ pub fn execute_ask(
             Ok(Some(resolved)) => {
                 println!(
                     "{}",
-                    "Exact structural query resolved via index routing.".cyan()
+                    "Exact structural query resolved via index routing."
+                        .if_supports_color(Stream::Stdout, |s| s.cyan())
                 );
                 println!("\n{resolved}");
                 return Ok(());
@@ -111,7 +112,7 @@ pub fn execute_ask(
                         "No structural results found ({}). Falling back to semantic search...",
                         explanation
                     )
-                    .yellow()
+                    .if_supports_color(Stream::Stderr, |s| s.yellow())
                 );
                 // No indexed results for this structural query; fall through to semantic/LLM
             }
@@ -144,7 +145,8 @@ pub fn execute_ask(
         ) {
             println!(
                 "{}",
-                "Command-discovery query resolved via live CLI metadata.".cyan()
+                "Command-discovery query resolved via live CLI metadata."
+                    .if_supports_color(Stream::Stdout, |s| s.cyan())
             );
             println!("\n{answer}");
             return Ok(());
@@ -155,7 +157,11 @@ pub fn execute_ask(
 
     let auto_scan_effective = auto_scan || config.ask.auto_scan_default;
     let (mut latest_packet, mut is_global, had_real_packet, fresh_packet) = if auto_scan_effective {
-        eprintln!("{}", "Auto-scanning for fresh impact context…".cyan());
+        eprintln!(
+            "{}",
+            "Auto-scanning for fresh impact context…"
+                .if_supports_color(Stream::Stderr, |s| s.cyan())
+        );
         match crate::commands::impact::compute_impact_in_memory(&storage, &config) {
             Ok(packet) => {
                 let has_changes = !packet.changes.is_empty();
@@ -253,8 +259,8 @@ pub fn execute_ask(
             "{}",
             format!(
                 "Warning: {reason} — using it as ask context anyway; results may not reflect the current working tree."
-            )
-            .yellow()
+            ).if_supports_color(Stream::Stderr, |s| s.yellow())
+
         );
     }
 
@@ -325,7 +331,8 @@ pub fn execute_ask(
             if let Some(Backend::Gemini) = backend {
                 eprintln!(
                     "{}",
-                    "Gemini API key missing — falling back to local model.".yellow()
+                    "Gemini API key missing — falling back to local model."
+                        .if_supports_color(Stream::Stderr, |s| s.yellow())
                 );
             }
         }
@@ -344,21 +351,25 @@ pub fn execute_ask(
         && let Ok(readiness) = semantic_engine.check_readiness()
     {
         for msg in crate::semantic::semantic_readiness_messages(&readiness) {
-            eprintln!("{} {}", "WARN".yellow().bold(), msg);
+            eprintln!(
+                "{} {}",
+                "WARN".if_supports_color(Stream::Stderr, |s| s.style(Style::new().yellow().bold())),
+                msg
+            );
         }
     }
 
     if pruned_for_intent {
         eprintln!(
             "{}",
-            "[Global Mode] Conceptual query — querying the full Knowledge Graph (active diff context pruned for intent)."
-                .cyan()
+            "[Global Mode] Conceptual query — querying the full Knowledge Graph (active diff context pruned for intent).".if_supports_color(Stream::Stderr, |s| s.cyan())
+
         );
     } else if is_global {
         eprintln!(
             "{}",
-            "[Global Mode] No pending changes found — querying the full Knowledge Graph for context."
-                .cyan()
+            "[Global Mode] No pending changes found — querying the full Knowledge Graph for context.".if_supports_color(Stream::Stderr, |s| s.cyan())
+
         );
     }
 
@@ -387,7 +398,7 @@ pub fn execute_ask(
             tracing::warn!("Semantic context failed: {reason}");
             eprintln!(
                 "{} Semantic search failed (continuing with non-semantic context): {}",
-                "WARN".yellow().bold(),
+                "WARN".if_supports_color(Stream::Stderr, |s| s.style(Style::new().yellow().bold())),
                 reason
             );
             (Vec::new(), SemanticGatherKind::Failed)
@@ -426,7 +437,7 @@ pub fn execute_ask(
                     "Note: semantic index empty — using KG text search for context"
                 }
             };
-            eprintln!("{}", note.yellow());
+            eprintln!("{}", note.if_supports_color(Stream::Stderr, |s| s.yellow()));
             relevant_chunks.push(pruner::RankedChunk {
                 source: "Knowledge Graph (BM25)".to_string(),
                 content: kg_bm25_context,
@@ -557,7 +568,11 @@ pub fn execute_ask(
                 Some(timeout_secs),
             ) {
                 Ok(response) => {
-                    println!("\n{}", "Local Model Response:".bold().green());
+                    println!(
+                        "\n{}",
+                        "Local Model Response:".if_supports_color(Stream::Stdout, |s| s
+                            .style(Style::new().bold().green()))
+                    );
                     println!("{response}");
                     Ok(())
                 }
@@ -580,16 +595,20 @@ pub fn execute_ask(
                             )
                         });
                     }
-                    eprintln!("{}", err_str.red());
+                    eprintln!("{}", err_str.if_supports_color(Stream::Stderr, |s| s.red()));
                     if e.to_string().contains("401") {
                         eprintln!(
                             "{}",
                             "Hint: Check your OLLAMA_CLOUD_API_KEY or ollama_key in config.toml"
-                                .yellow()
+                                .if_supports_color(Stream::Stderr, |s| s.yellow())
                         );
                     }
                     if e.to_string().contains("api.ollama.com") {
-                        eprintln!("{}", "Hint: Use ollama_cloud_url = \"https://ollama.com/api\" (native) or \"https://ollama.com\" (OpenAI-compatible)".yellow());
+                        eprintln!(
+                            "{}",
+                            "Hint: Use ollama_cloud_url = \"https://ollama.com/api\" (native) or \"https://ollama.com\" (OpenAI-compatible)"
+                                .if_supports_color(Stream::Stderr, |s| s.yellow())
+                        );
                     }
                     Err(miette::miette!("Local model failed: {e}"))
                 }

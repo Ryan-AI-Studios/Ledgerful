@@ -3,7 +3,7 @@ use crate::output::table::Table;
 use crate::state::storage::StorageManager;
 use clap::{Args, Subcommand};
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use serde::Serialize;
 
 #[derive(Args, Debug)]
@@ -173,7 +173,9 @@ pub fn execute_dependencies(args: DependenciesArgs) -> Result<()> {
             } else {
                 println!(
                     "{}",
-                    "Project Dependencies (from Knowledge Graph)".bold().green()
+                    "Project Dependencies (from Knowledge Graph)"
+                        .if_supports_color(Stream::Stdout, |s| s
+                            .style(Style::new().bold().green()))
                 );
 
                 let (local_deps, external_deps): (Vec<&ListedDep>, Vec<&ListedDep>) =
@@ -230,7 +232,11 @@ pub fn execute_dependencies(args: DependenciesArgs) -> Result<()> {
                     serde_json::to_string_pretty(&result).into_diagnostic()?
                 );
             } else {
-                println!("{}", "Security Advisory Audit (OSV)".bold().red());
+                println!(
+                    "{}",
+                    "Security Advisory Audit (OSV)"
+                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().red()))
+                );
                 let mut table = Table::new();
                 table.set_header(vec!["Package", "Version", "Vulnerability", "Summary"]);
 
@@ -241,7 +247,9 @@ pub fn execute_dependencies(args: DependenciesArgs) -> Result<()> {
                                 table.add_row(vec![
                                     pkg_res.package.name.clone(),
                                     pkg_res.package.version.clone(),
-                                    vuln.id.red().to_string(),
+                                    vuln.id
+                                        .if_supports_color(Stream::Stdout, |s| s.red())
+                                        .to_string(),
                                     vuln.summary.as_deref().unwrap_or("-").to_string(),
                                 ]);
                             }

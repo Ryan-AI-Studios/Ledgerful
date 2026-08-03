@@ -1,6 +1,6 @@
 use crate::git::ignore::add_to_gitignore;
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use std::env;
 use std::fs;
 use std::process::Command;
@@ -18,7 +18,7 @@ pub fn execute_update(
     if !migrate && !binary && !repair_hooks {
         println!(
             "{} Specify what to update (e.g. --migrate, --binary, or --repair-hooks)",
-            "HINT:".yellow().bold()
+            "HINT:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
         );
         return Ok(());
     }
@@ -42,12 +42,15 @@ fn execute_migration(_fast: bool, dry_run: bool) -> Result<()> {
     if dry_run {
         println!(
             "{} Would migrate repository state (perform full re-indexing and schema migration).",
-            "DRY-RUN".yellow().bold()
+            "DRY-RUN".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
         );
         return Ok(());
     }
 
-    println!("{} Migrating repository state...", "INIT".cyan().bold());
+    println!(
+        "{} Migrating repository state...",
+        "INIT".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold()))
+    );
 
     // 1. Re-index
     crate::commands::index::execute_index(crate::commands::index::IndexArgs {
@@ -72,7 +75,10 @@ fn execute_migration(_fast: bool, dry_run: bool) -> Result<()> {
         yes: false,
     })?;
 
-    println!("{} Migration complete.", "DONE".green().bold());
+    println!(
+        "{} Migration complete.",
+        "DONE".if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
+    );
     Ok(())
 }
 
@@ -95,8 +101,8 @@ fn execute_binary_update(force: bool, force_unlock: bool, dry_run: bool) -> Resu
     if dry_run {
         println!(
             "{} Would replace binary at {} with current source build (cargo install --path .).",
-            "DRY-RUN".yellow().bold(),
-            display_path.cyan()
+            "DRY-RUN".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
+            display_path.if_supports_color(Stream::Stdout, |s| s.cyan())
         );
         return Ok(());
     }
@@ -114,7 +120,7 @@ fn execute_binary_update(force: bool, force_unlock: bool, dry_run: bool) -> Resu
 
     println!(
         "Replacing {} with current source build...",
-        display_path.cyan()
+        display_path.if_supports_color(Stream::Stdout, |s| s.cyan())
     );
     info!("Running 'cargo install --path .'");
 
@@ -126,7 +132,8 @@ fn execute_binary_update(force: bool, force_unlock: bool, dry_run: bool) -> Resu
     {
         println!(
             "{}",
-            "Warning: Ledgerful binary is currently locked by another process.".yellow()
+            "Warning: Ledgerful binary is currently locked by another process."
+                .if_supports_color(Stream::Stdout, |s| s.yellow())
         );
         println!("Please close any other running instances or daemon processes before continuing.");
         println!("(Attempting shadow-copy anyway...)");
@@ -150,12 +157,15 @@ fn execute_binary_update(force: bool, force_unlock: bool, dry_run: bool) -> Resu
     let status = cmd.status().into_diagnostic()?;
 
     if status.success() {
-        println!("{} Ledgerful updated successfully.", "DONE".green().bold());
+        println!(
+            "{} Ledgerful updated successfully.",
+            "DONE".if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
+        );
         if let Some(old_path) = old_path_opt {
             info!("Stale binary moved to: {}", old_path.display());
             println!(
                 "{} Stale binary will be cleaned up on next startup.",
-                "INFO:".blue().bold()
+                "INFO:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().blue().bold()))
             );
         }
     } else {

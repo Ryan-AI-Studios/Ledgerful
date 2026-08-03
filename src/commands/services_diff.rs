@@ -4,7 +4,7 @@ use crate::output::table::Table;
 use crate::state::storage::StorageManager;
 use clap::Args;
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 
 #[derive(Args, Debug)]
 pub struct ServicesDiffArgs {
@@ -63,7 +63,11 @@ pub fn execute_services_diff(
             serde_json::to_string_pretty(&output).into_diagnostic()?
         );
     } else {
-        println!("{}", "Service Boundary Summary".bold().cyan());
+        println!(
+            "{}",
+            "Service Boundary Summary"
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+        );
         let mut table = Table::new();
         table.set_header(vec!["Service", "Files", "Endpoints", "Status"]);
         let mut row_count = 0usize;
@@ -75,13 +79,18 @@ pub fn execute_services_diff(
             // Check if declared in config
             let is_declared = config.services.definitions.iter().any(|d| d.name == name);
             let status = if is_declared {
-                "Declared".green().to_string()
+                "Declared"
+                    .if_supports_color(Stream::Stdout, |s| s.green())
+                    .to_string()
             } else {
-                "Inferred".yellow().to_string()
+                "Inferred"
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
+                    .to_string()
             };
 
             table.add_row(vec![
-                name.bold().to_string(),
+                name.if_supports_color(Stream::Stdout, |s| s.bold())
+                    .to_string(),
                 files.to_string(),
                 routes.to_string(),
                 status,
@@ -89,7 +98,7 @@ pub fn execute_services_diff(
         }
         if row_count == 0 {
             let (_, msg) = empty_state_message(&storage, config);
-            println!("{}", msg.dimmed());
+            println!("{}", msg.if_supports_color(Stream::Stdout, |s| s.dimmed()));
         }
         println!("{}", table);
     }

@@ -9,7 +9,7 @@ use crate::verify::results::{VerificationReport, VerificationResult};
 use crate::verify::suggestions::{generate_suggestions, query_ledger_status};
 use crate::verify::timeouts::manual_timeout;
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::Path;
@@ -190,6 +190,35 @@ impl SignatureAggregateCounts {
             self.valid, self.invalid, self.skipped, self.federated_skip
         )
     }
+
+    /// Human summary line with gated colour (`Stream::Stdout` — lands on
+    /// `cli_summary` info! → stdout). Used by production emit and colour-gate tests.
+    pub fn format_summary_line_colored(&self) -> String {
+        use owo_colors::{OwoColorize, Stream};
+        let invalid = if self.invalid > 0 {
+            self.invalid
+                .if_supports_color(Stream::Stdout, |s| s.red())
+                .to_string()
+        } else {
+            self.invalid.to_string()
+        };
+        format!(
+            "\nSignature verification summary: {} valid, {} invalid, {} skipped, {} federated-skip.",
+            self.valid.if_supports_color(Stream::Stdout, |s| s.green()),
+            invalid,
+            self.skipped
+                .if_supports_color(Stream::Stdout, |s| s.yellow()),
+            self.federated_skip
+        )
+    }
+}
+
+/// Success line for signature verify — gated on `Stream::Stdout` (cli_summary info!).
+pub fn format_signature_success_line_colored() -> String {
+    use owo_colors::{OwoColorize, Stream, Style};
+    "All signature validations passed successfully!"
+        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
+        .to_string()
 }
 
 /// Pure per-entry class used by the production emit loop and DoD-6 tally tests.
@@ -430,7 +459,7 @@ pub fn verify_ledger_signatures_with_options(
             ) => {
                 eprintln!(
                     "  [{}] TX {} signature verification FAILED!",
-                    "INVALID".red(),
+                    "INVALID".if_supports_color(Stream::Stderr, |s| s.red()),
                     short
                 );
             }
@@ -444,7 +473,7 @@ pub fn verify_ledger_signatures_with_options(
                 tracing::debug!(
                     target: "cli_summary",
                     "  [{}] TX {}",
-                    status.as_str().green(),
+                    status.as_str().if_supports_color(Stream::Stdout, |s| s.green()),
                     short
                 );
             }
@@ -458,21 +487,21 @@ pub fn verify_ledger_signatures_with_options(
                 tracing::debug!(
                     target: "cli_summary",
                     "  [{}] TX {}",
-                    status.as_str().yellow(),
+                    status.as_str().if_supports_color(Stream::Stdout, |s| s.yellow()),
                     short
                 );
             }
             (crate::ledger::crypto::SignatureTrustStatus::Invalid, _) => {
                 eprintln!(
                     "  [{}] TX {} signature verification FAILED!",
-                    "INVALID".red(),
+                    "INVALID".if_supports_color(Stream::Stderr, |s| s.red()),
                     short
                 );
             }
             (crate::ledger::crypto::SignatureTrustStatus::Unsigned, SigEntryStream::RawStderr) => {
                 eprintln!(
                     "  [{}] TX {} has no signature — treating as verification failure.",
-                    "UNSIGNED".yellow(),
+                    "UNSIGNED".if_supports_color(Stream::Stderr, |s| s.yellow()),
                     short
                 );
             }
@@ -483,7 +512,7 @@ pub fn verify_ledger_signatures_with_options(
                 tracing::debug!(
                     target: "cli_summary",
                     "  [{}] TX {} has no signature (signing not required, skipping).",
-                    "SKIP".yellow(),
+                    "SKIP".if_supports_color(Stream::Stdout, |s| s.yellow()),
                     short
                 );
             }
@@ -498,31 +527,22 @@ pub fn verify_ledger_signatures_with_options(
         tracing::debug!(
             target: "cli_summary",
             "  [{}]: {}",
-            "SKIP (federated)".yellow(),
+            "SKIP (federated)".if_supports_color(Stream::Stdout, |s| s.yellow()),
             aggregates.federated_skip
         );
     }
 
     tracing::info!(
         target: "cli_summary",
-        "\nSignature verification summary: {} valid, {} invalid, {} skipped, {} federated-skip.",
-        aggregates.valid.green(),
-        if aggregates.invalid > 0 {
-            aggregates.invalid.red().to_string()
-        } else {
-            aggregates.invalid.to_string()
-        },
-        aggregates.skipped.yellow(),
-        aggregates.federated_skip
+        "{}",
+        aggregates.format_summary_line_colored()
     );
 
     if all_valid {
         tracing::info!(
             target: "cli_summary",
             "{}",
-            "All signature validations passed successfully!"
-                .green()
-                .bold()
+            format_signature_success_line_colored()
         );
         Ok(())
     } else {
@@ -614,7 +634,7 @@ fn verify_chain_integrity(
         tracing::info!(
             target: "cli_summary",
             "  [{}]: {}",
-            "SKIP (federated)".yellow(),
+            "SKIP (federated)".if_supports_color(Stream::Stdout, |s| s.yellow()),
             walk.federated_skipped
         );
     }
@@ -1103,7 +1123,11 @@ pub fn execute_verify(
                 // full run they did not expect. On --json the reason is in
                 // fallbackReason — do not print around the payload.
                 if !json && let Some(reason) = &plan.fallback_reason {
-                    println!("{} {}", "ℹ".cyan(), reason.yellow());
+                    println!(
+                        "{} {}",
+                        "ℹ".if_supports_color(Stream::Stdout, |s| s.cyan()),
+                        reason.if_supports_color(Stream::Stdout, |s| s.yellow())
+                    );
                 }
 
                 // Plan banner only under --verbose (0121 quiet success).
@@ -1123,8 +1147,7 @@ pub fn execute_verify(
         println!(
             "\n{}",
             format!("Verification explanation for entity: {}", target)
-                .bold()
-                .cyan()
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
         );
 
         if let Some(storage) = &ctx.storage {
@@ -1200,7 +1223,11 @@ pub fn execute_verify(
         }
         // For manual commands, print the steps derived from the CLI arg
         if manual_requested {
-            println!("{}", "Verification Plan".bold().green());
+            println!(
+                "{}",
+                "Verification Plan"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().green()))
+            );
             println!(
                 "  • {} (timeout: {}s)",
                 command_str.as_deref().unwrap_or(""),
@@ -1222,7 +1249,11 @@ pub fn execute_verify(
 
         // Print non-predicted steps (rules, config)
         if !other.is_empty() {
-            println!("{}", "Verification Steps:".bold().cyan());
+            println!(
+                "{}",
+                "Verification Steps:"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+            );
             for step in &other {
                 println!("  • {} (timeout: {}s)", step.command, step.timeout_secs);
             }
@@ -1232,7 +1263,8 @@ pub fn execute_verify(
         if !predicted.is_empty() {
             println!(
                 "\n{}",
-                "Predicted Impacts (grouped by source):".bold().cyan()
+                "Predicted Impacts (grouped by source):"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
             );
             let mut groups: std::collections::BTreeMap<String, Vec<String>> =
                 std::collections::BTreeMap::new();
@@ -1251,7 +1283,8 @@ pub fn execute_verify(
             for (source, paths) in &groups {
                 println!(
                     "  {}",
-                    format!("Source: {} — {} items", source, paths.len()).bold()
+                    format!("Source: {} — {} items", source, paths.len())
+                        .if_supports_color(Stream::Stdout, |s| s.bold())
                 );
                 let show = if verbose {
                     paths.len()
@@ -1272,7 +1305,8 @@ pub fn execute_verify(
 
         println!(
             "\n{}",
-            "Dry run mode: verification plan displayed above. No commands were executed.".yellow()
+            "Dry run mode: verification plan displayed above. No commands were executed."
+                .if_supports_color(Stream::Stdout, |s| s.yellow())
         );
         return Ok(());
     }
@@ -1515,7 +1549,11 @@ pub fn execute_verify(
 /// state, skipping OutcomePredictor::predict and full plan building entirely.
 /// Returns within a bounded time (<5s on normal machines).
 fn execute_verify_health(layout: &Layout, config: &crate::config::model::Config) -> Result<()> {
-    println!("{}", "Verification Health Check".bold().green());
+    println!(
+        "{}",
+        "Verification Health Check"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().green()))
+    );
     // Product-output header (0093): keep with report body on stdout (policy §3).
     println!("Checking verification dependencies...");
     let mut all_ok = true;
@@ -1545,7 +1583,10 @@ fn execute_verify_health(layout: &Layout, config: &crate::config::model::Config)
     }
 
     if expected_tools.is_empty() {
-        println!("  [{}] No verification steps required.", "OK".green());
+        println!(
+            "  [{}] No verification steps required.",
+            "OK".if_supports_color(Stream::Stdout, |s| s.green())
+        );
     } else {
         let mut sorted_tools: Vec<_> = expected_tools.into_iter().collect();
         sorted_tools.sort();
@@ -1553,7 +1594,11 @@ fn execute_verify_health(layout: &Layout, config: &crate::config::model::Config)
             println!("  Checking {}...", tool);
             let exists = check_executable_exists(&tool);
             if exists {
-                println!("  [{}] {} is available.", "OK".green(), tool);
+                println!(
+                    "  [{}] {} is available.",
+                    "OK".if_supports_color(Stream::Stdout, |s| s.green()),
+                    tool
+                );
             } else {
                 let hint = match tool.as_str() {
                     "cargo-nextest" => " (install with `cargo install cargo-nextest`)",
@@ -1565,7 +1610,12 @@ fn execute_verify_health(layout: &Layout, config: &crate::config::model::Config)
                     "deno" => " (install Deno)",
                     _ => "",
                 };
-                println!("  [{}] {} not found on PATH.{}", "FAILED".red(), tool, hint);
+                println!(
+                    "  [{}] {} not found on PATH.{}",
+                    "FAILED".if_supports_color(Stream::Stdout, |s| s.red()),
+                    tool,
+                    hint
+                );
                 all_ok = false;
             }
         }
@@ -1577,17 +1627,20 @@ fn execute_verify_health(layout: &Layout, config: &crate::config::model::Config)
     if ledger_status.unaudited_count > 0 || ledger_status.has_stale_pending {
         println!(
             "  [{}] Ledger: {} unaudited, stale pending: {}",
-            "NOTE".yellow(),
+            "NOTE".if_supports_color(Stream::Stdout, |s| s.yellow()),
             ledger_status.unaudited_count,
             ledger_status.has_stale_pending
         );
     } else if ledger_status.no_impact_report {
         println!(
             "  [{}] No impact report found. Run 'ledgerful scan --impact' after making changes.",
-            "NOTE".yellow()
+            "NOTE".if_supports_color(Stream::Stdout, |s| s.yellow())
         );
     } else {
-        println!("  [{}] Ledger is clean.", "OK".green());
+        println!(
+            "  [{}] Ledger is clean.",
+            "OK".if_supports_color(Stream::Stdout, |s| s.green())
+        );
     }
 
     // Show runner selection info
@@ -1595,7 +1648,7 @@ fn execute_verify_health(layout: &Layout, config: &crate::config::model::Config)
     let prefer_nextest = has_nextest && config.verify.prefer_nextest.unwrap_or(false);
     println!(
         "  [{}] Runner: {} (nextest {})",
-        "OK".green(),
+        "OK".if_supports_color(Stream::Stdout, |s| s.green()),
         if prefer_nextest {
             "cargo nextest"
         } else {
@@ -1611,7 +1664,8 @@ fn execute_verify_health(layout: &Layout, config: &crate::config::model::Config)
     if all_ok {
         println!(
             "\n{}",
-            "All verification dependencies are available.".green()
+            "All verification dependencies are available."
+                .if_supports_color(Stream::Stdout, |s| s.green())
         );
         Ok(())
     } else {
@@ -1783,7 +1837,7 @@ pub fn explain_test_mappings(
 mod sig_entry_stream_tests {
     use super::{
         SigEntryClass, SigEntryStream, SignatureAggregateCounts, class_for_sig_entry,
-        sig_entry_stream, tally_signature_classes,
+        format_signature_success_line_colored, sig_entry_stream, tally_signature_classes,
     };
     use crate::ledger::crypto::SignatureTrustStatus;
     use std::io::{self, Write};
@@ -1794,6 +1848,65 @@ mod sig_entry_stream_tests {
     use tracing_subscriber::fmt::writer::MakeWriter;
     use tracing_subscriber::layer::SubscriberExt;
     use tracing_subscriber::util::SubscriberInitExt;
+
+    /// DoD-1: under force-off, signature aggregate + success contain no ESC.
+    /// Formats with `Stream::Stdout` (stream-aware; not merged 2>&1).
+    #[test]
+    fn signature_summary_force_off_has_no_esc() {
+        owo_colors::set_override(false);
+        let aggregates = SignatureAggregateCounts {
+            valid: 3,
+            invalid: 1,
+            skipped: 2,
+            federated_skip: 0,
+            unsigned_fail: 0,
+        };
+        let summary = aggregates.format_summary_line_colored();
+        let success = format_signature_success_line_colored();
+        assert!(
+            !summary.contains('\u{1b}'),
+            "summary must be ESC-free under set_override(false): {summary:?}"
+        );
+        assert!(
+            !success.contains('\u{1b}'),
+            "success must be ESC-free under set_override(false): {success:?}"
+        );
+        assert!(summary.contains("3 valid"));
+        assert!(summary.contains("1 invalid"));
+        assert!(success.contains("All signature validations passed"));
+        owo_colors::unset_override();
+    }
+
+    /// DoD-1: force-on may colour (Stdout stream path still applies styles).
+    #[test]
+    fn signature_summary_force_on_may_colour() {
+        owo_colors::set_override(true);
+        let aggregates = SignatureAggregateCounts {
+            valid: 1,
+            invalid: 1,
+            skipped: 0,
+            federated_skip: 0,
+            unsigned_fail: 0,
+        };
+        let summary = aggregates.format_summary_line_colored();
+        let success = format_signature_success_line_colored();
+        assert!(
+            summary.contains('\u{1b}'),
+            "summary should colour under set_override(true): {summary:?}"
+        );
+        assert!(
+            success.contains('\u{1b}'),
+            "success should colour under set_override(true): {success:?}"
+        );
+        // Stream-aware: format helpers hard-code Stream::Stdout (aggregate/success
+        // land on cli_summary info! → stdout). Mis-pairing would still "colour"
+        // under global override, so this pins the helper API + force-on path.
+        let _ = StreamStdoutMarker;
+        owo_colors::unset_override();
+    }
+
+    /// Compile-time / doc marker that signature colour uses Stdout (not Stderr).
+    struct StreamStdoutMarker;
 
     #[test]
     fn invalid_and_required_unsigned_are_raw_stderr() {

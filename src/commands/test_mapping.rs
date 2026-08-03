@@ -3,7 +3,7 @@ use crate::commands::verify::{TestMappingState, explain_test_mappings};
 use crate::state::storage::StorageManager;
 use clap::Args;
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream};
 
 #[derive(Args, Debug)]
 pub struct TestsForEntityArgs {
@@ -100,15 +100,15 @@ pub fn execute_tests_for_entity(args: TestsForEntityArgs) -> Result<()> {
             TestMappingState::TableMissing => {
                 println!(
                     "  {}",
-                    "Test-mapping table is not present in the index. Run `ledgerful index --incremental` to build it."
-                        .yellow()
+                    "Test-mapping table is not present in the index. Run `ledgerful index --incremental` to build it.".if_supports_color(Stream::Stdout, |s| s.yellow())
+
                 );
             }
             TestMappingState::TableEmpty => {
                 println!(
                     "  {}",
-                    "No test mappings have been indexed yet. Run `ledgerful index --incremental` to populate them."
-                        .yellow()
+                    "No test mappings have been indexed yet. Run `ledgerful index --incremental` to populate them.".if_supports_color(Stream::Stdout, |s| s.yellow())
+
                 );
             }
             TestMappingState::EntityNotIndexed => {
@@ -118,7 +118,7 @@ pub fn execute_tests_for_entity(args: TestsForEntityArgs) -> Result<()> {
                         "'{}' is not a recognized indexed file path or symbol name.",
                         entity_val
                     )
-                    .yellow()
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
                 );
                 println!(
                     "  Run `ledgerful index --incremental` if it was added or renamed recently, or confirm the path with `ledgerful search \"{}\"`.",
@@ -132,7 +132,7 @@ pub fn execute_tests_for_entity(args: TestsForEntityArgs) -> Result<()> {
                         "'{}' is indexed, but no tests currently map to it.",
                         normalized_entity
                     )
-                    .yellow()
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
                 );
                 println!(
                     "  This may be accurate (no covering tests yet) -- use `ledgerful search \"{}\"` to confirm test coverage manually.",
@@ -140,7 +140,11 @@ pub fn execute_tests_for_entity(args: TestsForEntityArgs) -> Result<()> {
                 );
             }
             TestMappingState::Mapped(tests) => {
-                println!("{} {}", "Tests validating".bold(), entity_val.cyan());
+                println!(
+                    "{} {}",
+                    "Tests validating".if_supports_color(Stream::Stdout, |s| s.bold()),
+                    entity_val.if_supports_color(Stream::Stdout, |s| s.cyan())
+                );
                 for t in tests {
                     println!("  • {}", t);
                 }

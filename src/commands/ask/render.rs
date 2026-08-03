@@ -3,7 +3,7 @@ use crate::gemini::modes::GeminiMode;
 use crate::gemini::wrapper::run_query;
 use crate::local_model::pruner;
 use miette::Result;
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 
 /// TA14: Execute ask with a provider priority fallback chain.
 /// Tries each provider in order with per-provider timeout. Degradable
@@ -81,7 +81,11 @@ pub(crate) fn execute_ask_with_providers(
                     Some(provider_timeout),
                 ) {
                     Ok(response) => {
-                        println!("\n{}", "Response:".bold().green());
+                        println!(
+                            "\n{}",
+                            "Response:".if_supports_color(Stream::Stdout, |s| s
+                                .style(Style::new().bold().green()))
+                        );
                         println!("{response}");
                         return Ok(());
                     }
@@ -94,12 +98,12 @@ pub(crate) fn execute_ask_with_providers(
                                 format!(
                                     "{provider_name} failed ({err_str}); trying next provider..."
                                 )
-                                .yellow()
+                                .if_supports_color(Stream::Stderr, |s| s.yellow())
                             );
                             tracing::warn!("{provider_name} failed: {err_str}");
                             continue;
                         }
-                        eprintln!("{}", err_str.red());
+                        eprintln!("{}", err_str.if_supports_color(Stream::Stderr, |s| s.red()));
                         continue;
                     }
                 }
@@ -128,12 +132,12 @@ pub(crate) fn execute_ask_with_providers(
                                 format!(
                                     "{provider_name} failed ({err_str}); trying next provider..."
                                 )
-                                .yellow()
+                                .if_supports_color(Stream::Stderr, |s| s.yellow())
                             );
                             tracing::warn!("{provider_name} failed: {err_str}");
                             continue;
                         }
-                        eprintln!("{}", err_str.red());
+                        eprintln!("{}", err_str.if_supports_color(Stream::Stderr, |s| s.red()));
                         continue;
                     }
                 }
@@ -144,7 +148,8 @@ pub(crate) fn execute_ask_with_providers(
     // All providers exhausted — degrade to context-only output (R4)
     eprintln!(
         "{}",
-        "All providers exhausted. Degrading to context-only output.".yellow()
+        "All providers exhausted. Degrading to context-only output."
+            .if_supports_color(Stream::Stderr, |s| s.yellow())
     );
     render_retrieved_context(relevant_chunks);
     Ok(())
@@ -280,7 +285,10 @@ pub(crate) fn degrade_to_context(
         .as_deref()
         .filter(|u| !u.is_empty())
         .unwrap_or(&config.local_model.base_url);
-    eprintln!("{}", degrade_warning(base_url).yellow());
+    eprintln!(
+        "{}",
+        degrade_warning(base_url).if_supports_color(Stream::Stderr, |s| s.yellow())
+    );
     tracing::warn!("Local completion degraded to context render: {err}");
 
     if should_prompt_for_cloud(config, crate::util::term::is_interactive()) {
@@ -322,7 +330,11 @@ pub(crate) fn should_prompt_for_cloud(config: &Config, interactive: bool) -> boo
 /// Emits a deterministic, ranked view of the chunks that would have been sent
 /// to the LLM (code snippets, KG neighborhood, documentation).
 pub(crate) fn render_retrieved_context(chunks: &[pruner::RankedChunk]) {
-    println!("\n{}", degrade_context_header().bold().cyan());
+    println!(
+        "\n{}",
+        degrade_context_header()
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+    );
     print!("{}", format_retrieved_context_body(chunks));
 }
 

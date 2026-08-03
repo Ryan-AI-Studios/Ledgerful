@@ -26,6 +26,11 @@ payloads.
 A command advertised as JSON must emit **only** JSON on stdout. Warnings must
 not precede or follow that JSON on stdout.
 
+**Human colour:** product colour uses `if_supports_color` (stream-aware). Honour
+`NO_COLOR` (force off), `FORCE_COLOR` / `CLICOLOR_FORCE` non-empty non-`0`
+(force on), else TTY/CI auto. Machine JSON paths stay colour-free. See track
+0131.
+
 ---
 
 ## Four verbosity states (`cli_summary` layer)

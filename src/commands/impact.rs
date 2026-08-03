@@ -6,7 +6,7 @@ use crate::git::status::get_repo_status;
 use crate::output::diagnostics::success_marker;
 use crate::state::reports::write_impact_report;
 use miette::Result;
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream};
 use std::env;
 
 /// Run impact analysis using a pre-built `RepoSnapshot`.
@@ -244,7 +244,7 @@ pub fn execute_impact_human(
     base_ref_mode: bool,
 ) -> Result<()> {
     use crate::output::diagnostics::success_marker;
-    use owo_colors::OwoColorize;
+    use owo_colors::{OwoColorize, Stream};
 
     if packet.tree_clean && packet.changes.is_empty() {
         if base_ref_mode {
@@ -268,7 +268,7 @@ pub fn execute_impact_human(
     println!(
         "\n{} Wrote impact report to {}",
         success_marker(),
-        ".ledgerful/reports/latest-impact.json".cyan()
+        ".ledgerful/reports/latest-impact.json".if_supports_color(Stream::Stdout, |s| s.cyan())
     );
 
     Ok(())
@@ -389,7 +389,9 @@ pub fn execute_impact_with_blast_depth(
             if !json {
                 println!(
                     "Wrote impact report to {}",
-                    path.display().to_string().cyan()
+                    path.display()
+                        .to_string()
+                        .if_supports_color(Stream::Stdout, |s| s.cyan())
                 );
             }
         } else {
@@ -415,7 +417,7 @@ pub fn execute_impact_with_blast_depth(
     println!(
         "\n{} Wrote impact report to {}",
         success_marker(),
-        ".ledgerful/reports/latest-impact.json".cyan()
+        ".ledgerful/reports/latest-impact.json".if_supports_color(Stream::Stdout, |s| s.cyan())
     );
 
     Ok(())

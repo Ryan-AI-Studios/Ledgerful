@@ -4,7 +4,7 @@ use crate::commands::config::env::{
 use crate::commands::helpers::get_layout;
 use crate::index::env_schema::EnvSchemaExtractor;
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashSet};
 
@@ -203,31 +203,49 @@ pub fn execute_config_diff(json: bool, show_internal: bool) -> Result<()> {
         println!(
             "{}",
             "Configuration Diff (Declarations vs References)"
-                .bold()
-                .cyan()
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
         );
 
         println!(
             "\n{}",
             "⚠️  Referenced in production code but missing from declarations:"
-                .yellow()
-                .bold()
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
         );
         if missing_declarations.is_empty() {
             println!("  None");
         } else {
             for entry in &missing_declarations {
-                println!("  - {}", entry.var_name.red());
+                println!(
+                    "  - {}",
+                    entry
+                        .var_name
+                        .if_supports_color(Stream::Stdout, |s| s.red())
+                );
             }
         }
 
         if !show_internal && !internal_env_vars.is_empty() {
-            println!("\n{}", "Internal env vars (not configurable):".dimmed());
+            println!(
+                "\n{}",
+                "Internal env vars (not configurable):"
+                    .if_supports_color(Stream::Stdout, |s| s.dimmed())
+            );
             for entry in &internal_env_vars {
                 if let Some(note) = &entry.note {
-                    println!("  - {} {}", entry.var_name.dimmed(), note.dimmed());
+                    println!(
+                        "  - {} {}",
+                        entry
+                            .var_name
+                            .if_supports_color(Stream::Stdout, |s| s.dimmed()),
+                        note.if_supports_color(Stream::Stdout, |s| s.dimmed())
+                    );
                 } else {
-                    println!("  - {}", entry.var_name.dimmed());
+                    println!(
+                        "  - {}",
+                        entry
+                            .var_name
+                            .if_supports_color(Stream::Stdout, |s| s.dimmed())
+                    );
                 }
             }
         }
@@ -237,25 +255,35 @@ pub fn execute_config_diff(json: bool, show_internal: bool) -> Result<()> {
         // section above isn't noisy but nothing is permanently hidden.
         println!(
             "\n{}",
-            "Test/example-only references (lower priority):".dimmed()
+            "Test/example-only references (lower priority):"
+                .if_supports_color(Stream::Stdout, |s| s.dimmed())
         );
         if test_only_declarations.is_empty() {
             println!("  None");
         } else {
             for entry in &test_only_declarations {
-                println!("  - {}", entry.var_name.dimmed());
+                println!(
+                    "  - {}",
+                    entry
+                        .var_name
+                        .if_supports_color(Stream::Stdout, |s| s.dimmed())
+                );
             }
         }
 
         println!(
             "\n{}",
-            "ℹ️  Declared but not referenced in code:".blue().bold()
+            "ℹ️  Declared but not referenced in code:"
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().blue().bold()))
         );
         if unused_to_show.is_empty() {
             println!("  None");
         } else {
             for var in unused_to_show {
-                println!("  - {}", var.dimmed());
+                println!(
+                    "  - {}",
+                    var.if_supports_color(Stream::Stdout, |s| s.dimmed())
+                );
             }
         }
     }

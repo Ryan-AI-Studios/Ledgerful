@@ -11,7 +11,7 @@ use crate::state::storage::timings::{
     set_self_timing_enabled, summarize_outer, table_exists,
 };
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
@@ -153,7 +153,8 @@ fn execute_summary(conn: &rusqlite::Connection, args: &TimingsArgs) -> Result<()
 
     println!(
         "\n{} (last {days} day(s), top {top})",
-        "Command timings".bold().underline()
+        "Command timings"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
     );
     let mut table =
         build_premium_table(["Command", "Runs", "p50 ms", "p95 ms", "p99 ms", "Total ms"]);
@@ -239,7 +240,8 @@ fn execute_inner(conn: &rusqlite::Connection, args: &TimingsArgs) -> Result<()> 
     let cmd_label = args.command.as_deref().unwrap_or("all commands");
     println!(
         "\n{} — {cmd_label} (last {days} day(s))",
-        "Inner spans".bold().underline()
+        "Inner spans"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
     );
     let mut table = build_premium_table(["Span", "Samples", "Total ms", "Max ms"]);
     for a in &aggs {

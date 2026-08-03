@@ -15,7 +15,7 @@ use crate::commands::web::spa_dir::validate_spa_dir;
 use crate::commands::web::state::{AppState, HANDOFF_TTL, HandoffCode};
 use camino::{Utf8Path, Utf8PathBuf};
 use miette::{IntoDiagnostic, Result, miette};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream};
 use std::collections::HashSet;
 use std::net::IpAddr;
 use std::sync::Arc;
@@ -617,24 +617,26 @@ fn print_public_warning(bind: &str) {
     );
     let line: String = msg.chars().map(|_| '=').collect();
 
-    eprintln!("{}", line.red());
-    eprintln!("{}", msg.red());
+    eprintln!("{}", line.if_supports_color(Stream::Stderr, |s| s.red()));
+    eprintln!("{}", msg.if_supports_color(Stream::Stderr, |s| s.red()));
     eprintln!(
         "{}",
-        "This exposes the dashboard to anyone who can reach the bind address.".red()
+        "This exposes the dashboard to anyone who can reach the bind address."
+            .if_supports_color(Stream::Stderr, |s| s.red())
     );
     eprintln!(
         "{}",
         format!(
             "Require {PEER_ALLOWLIST_ENV} (peer IPs). Host validation is a rebinding defense only, not a network ACL."
-        )
-        .red()
+        ).if_supports_color(Stream::Stderr, |s| s.red())
+
     );
     eprintln!(
         "{}",
-        "Prefer LEDGERFUL_WEB_TOKEN / the session token file over shell history.".red()
+        "Prefer LEDGERFUL_WEB_TOKEN / the session token file over shell history."
+            .if_supports_color(Stream::Stderr, |s| s.red())
     );
-    eprintln!("{}", line.red());
+    eprintln!("{}", line.if_supports_color(Stream::Stderr, |s| s.red()));
 }
 
 #[cfg(test)]

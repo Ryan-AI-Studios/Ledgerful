@@ -10,7 +10,7 @@ use crate::state::storage::StorageManager;
 use camino::Utf8PathBuf;
 use chrono::Utc;
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use std::env;
 use std::fs;
 
@@ -32,7 +32,10 @@ pub fn execute_federate_export(dry_run: bool, out: Option<String>) -> Result<()>
         .ok_or_else(|| miette::miette!("Could not determine repository name for export"))?;
 
     if !dry_run && out.is_none() {
-        println!("Exporting public interfaces for {}...", repo_name.cyan());
+        println!(
+            "Exporting public interfaces for {}...",
+            repo_name.if_supports_color(Stream::Stdout, |s| s.cyan())
+        );
     }
 
     let symbols = get_public_symbols(storage.get_connection())?;
@@ -71,21 +74,32 @@ pub fn execute_federate_export(dry_run: bool, out: Option<String>) -> Result<()>
         fs::write(out_path, schema_json).into_diagnostic()?;
         println!(
             "{} Schema exported to {}",
-            "SUCCESS".green().bold(),
-            out_path.display().to_string().cyan()
+            "SUCCESS".if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold())),
+            out_path
+                .display()
+                .to_string()
+                .if_supports_color(Stream::Stdout, |s| s.cyan())
         );
     } else if dry_run {
-        println!("\n{}", "--- FEDERATED SCHEMA PREVIEW ---".bold().yellow());
+        println!(
+            "\n{}",
+            "--- FEDERATED SCHEMA PREVIEW ---"
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().yellow()))
+        );
         println!("{}", schema_json);
-        println!("{}", "--- END PREVIEW ---".bold().yellow());
+        println!(
+            "{}",
+            "--- END PREVIEW ---"
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().yellow()))
+        );
     } else {
         let schema_path = layout.state_subdir().join("schema.json");
         fs::write(&schema_path, schema_json).into_diagnostic()?;
 
         println!(
             "{} Schema exported to {}",
-            "SUCCESS".green().bold(),
-            schema_path.cyan()
+            "SUCCESS".if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold())),
+            schema_path.if_supports_color(Stream::Stdout, |s| s.cyan())
         );
     }
     Ok(())
@@ -120,11 +134,11 @@ pub fn execute_federate_scan() -> Result<()> {
     if let Some(reason) = crate::state::reports::warn_if_impact_stale(&layout, &config) {
         println!(
             "{} {}",
-            "WARNING:".yellow().bold(),
+            "WARNING:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
             format!(
                 "local impact cache {reason} — dependency discovery below may not reflect the current working tree."
-            )
-            .yellow()
+            ).if_supports_color(Stream::Stdout, |s| s.yellow())
+
         );
     }
 
@@ -147,7 +161,11 @@ pub fn execute_federate_scan() -> Result<()> {
     let (siblings, warnings) = scanner.scan_siblings()?;
 
     for warning in &warnings {
-        println!("{} {}", "WARN".yellow().bold(), warning);
+        println!(
+            "{} {}",
+            "WARN".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
+            warning
+        );
     }
 
     if siblings.is_empty() {
@@ -165,8 +183,10 @@ pub fn execute_federate_scan() -> Result<()> {
     for (path, schema, sibling_warnings) in &siblings {
         println!(
             "  Processing {}: {}",
-            schema.repo_name.cyan(),
-            path.dimmed()
+            schema
+                .repo_name
+                .if_supports_color(Stream::Stdout, |s| s.cyan()),
+            path.if_supports_color(Stream::Stdout, |s| s.dimmed())
         );
         // TA31 R1: a sibling can now be discovered with data-quality
         // warnings (e.g. an empty ledger entity) instead of being
@@ -176,7 +196,7 @@ pub fn execute_federate_scan() -> Result<()> {
         for warning in sibling_warnings {
             println!(
                 "{} {}: {}",
-                "WARN".yellow().bold(),
+                "WARN".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
                 schema.repo_name,
                 warning
             );
@@ -221,12 +241,16 @@ pub fn execute_federate_scan() -> Result<()> {
     cross_sibling_warnings.sort();
     cross_sibling_warnings.dedup();
     for warning in cross_sibling_warnings {
-        println!("{} {}", "WARN".yellow().bold(), warning);
+        println!(
+            "{} {}",
+            "WARN".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
+            warning
+        );
     }
 
     println!(
         "{} Processed {} sibling(s).",
-        "SUCCESS".green().bold(),
+        "SUCCESS".if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold())),
         siblings.len()
     );
     Ok(())
@@ -246,10 +270,20 @@ pub fn execute_federate_status() -> Result<()> {
         return Ok(());
     }
 
-    println!("{} known federated repositories:", links.len().bold());
+    println!(
+        "{} known federated repositories:",
+        links.len().if_supports_color(Stream::Stdout, |s| s.bold())
+    );
     for (name, path, last_scan) in links {
-        println!("- {} (at {})", name.cyan(), path.dimmed());
-        println!("  Last scanned: {}", last_scan.dimmed());
+        println!(
+            "- {} (at {})",
+            name.if_supports_color(Stream::Stdout, |s| s.cyan()),
+            path.if_supports_color(Stream::Stdout, |s| s.dimmed())
+        );
+        println!(
+            "  Last scanned: {}",
+            last_scan.if_supports_color(Stream::Stdout, |s| s.dimmed())
+        );
     }
 
     Ok(())

@@ -3,7 +3,7 @@ use crate::output::table::Table;
 use crate::state::storage::StorageManager;
 use clap::Args;
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream};
 use std::collections::HashMap;
 
 #[derive(Args, Debug)]
@@ -314,11 +314,15 @@ pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
                     "{}",
                     "  No endpoints indexed. Endpoints are extracted from HTTP route registrations \
                      (Axum, Express, etc.). Run `ledgerful index --incremental` if routes exist, \
-                     or confirm your framework is supported."
-                        .dimmed()
+                     or confirm your framework is supported.".if_supports_color(Stream::Stdout, |s| s.dimmed())
+
                 );
             } else {
-                println!("{}", "  No endpoints changed in the current diff.".dimmed());
+                println!(
+                    "{}",
+                    "  No endpoints changed in the current diff."
+                        .if_supports_color(Stream::Stdout, |s| s.dimmed())
+                );
             }
         }
         println!("{}", table);

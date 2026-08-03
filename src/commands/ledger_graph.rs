@@ -6,7 +6,7 @@ use crate::state::storage_cozo::CozoStorage;
 use clap::Args;
 use cozo::{DataValue, ScriptMutability};
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use serde::Serialize;
 use std::collections::{BTreeMap, HashSet, VecDeque};
 
@@ -328,11 +328,15 @@ pub fn execute_ledger_graph(args: LedgerGraphArgs) -> Result<()> {
     } else {
         println!(
             "{} {}",
-            "Graph neighborhood for transaction:".bold(),
-            full_id.cyan()
+            "Graph neighborhood for transaction:".if_supports_color(Stream::Stdout, |s| s.bold()),
+            full_id.if_supports_color(Stream::Stdout, |s| s.cyan())
         );
 
-        println!("\n{}", "Exact Relations".green().bold());
+        println!(
+            "\n{}",
+            "Exact Relations"
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
+        );
         if exact_relations.is_empty() {
             println!("  None.");
         } else {
@@ -359,8 +363,7 @@ pub fn execute_ledger_graph(args: LedgerGraphArgs) -> Result<()> {
         println!(
             "\n{}",
             "Derived Relations (Transitive / Structural Neighborhood)"
-                .yellow()
-                .bold()
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
         );
         if derived_relations.is_empty() {
             println!("  None.");
@@ -385,7 +388,11 @@ pub fn execute_ledger_graph(args: LedgerGraphArgs) -> Result<()> {
             println!("{}", table);
         }
 
-        println!("\n{}", "Heuristic Fallbacks".red().bold());
+        println!(
+            "\n{}",
+            "Heuristic Fallbacks"
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold()))
+        );
         if heuristic_relations.is_empty() {
             println!("  None.");
         } else {

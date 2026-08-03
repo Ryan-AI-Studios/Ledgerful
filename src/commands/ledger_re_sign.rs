@@ -6,7 +6,7 @@ use crate::ledger::types::{Category, ChangeType, EntryType, LedgerEntry};
 use crate::state::storage::StorageManager;
 use chrono::Utc;
 use miette::{Result, miette};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use rusqlite::OptionalExtension;
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -108,12 +108,14 @@ pub fn execute_ledger_re_sign_with_keys_dir(
             if is_upgrade_mode {
                 println!(
                     "{} No LOCAL ledger entries need upgrade or repair (sig_version already current and signatures valid).",
-                    "DRY RUN:".cyan().bold()
+                    "DRY RUN:"
+                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold()))
                 );
             } else {
                 println!(
                     "{} No invalid-signature ledger entries to re-sign.",
-                    "DRY RUN:".cyan().bold()
+                    "DRY RUN:"
+                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold()))
                 );
             }
             return Ok(());
@@ -146,19 +148,20 @@ pub fn execute_ledger_re_sign_with_keys_dir(
     if dry_run {
         println!(
             "{} Would re-sign {} ledger {} with key {}:",
-            "DRY RUN:".cyan().bold(),
+            "DRY RUN:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
             candidates.len(),
             if candidates.len() == 1 {
                 "entry"
             } else {
                 "entries"
             },
-            new_pub_fp.cyan()
+            new_pub_fp.if_supports_color(Stream::Stdout, |s| s.cyan())
         );
         if is_upgrade_mode {
             println!(
                 "{} Counts: {} version-upgrade candidate(s), {} invalid/unsigned candidate(s).",
-                "DRY RUN:".cyan().bold(),
+                "DRY RUN:"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
                 upgrade_count,
                 invalid_count
             );
@@ -176,9 +179,13 @@ pub fn execute_ledger_re_sign_with_keys_dir(
             };
             println!(
                 "  TX {}  old_sig={}  old_pub={}",
-                tx_id.chars().take(8).collect::<String>().yellow(),
-                old_sig_fp.dimmed(),
-                old_pub_fp.dimmed()
+                tx_id
+                    .chars()
+                    .take(8)
+                    .collect::<String>()
+                    .if_supports_color(Stream::Stdout, |s| s.yellow()),
+                old_sig_fp.if_supports_color(Stream::Stdout, |s| s.dimmed()),
+                old_pub_fp.if_supports_color(Stream::Stdout, |s| s.dimmed())
             );
         }
         let old_head_fp = preview_storage
@@ -195,12 +202,12 @@ pub fn execute_ledger_re_sign_with_keys_dir(
             .unwrap_or_else(|| "(none)".to_string());
         println!(
             "\n{} Chain segment break preview: old head {} -> new head (computed on --yes).",
-            "DRY RUN:".cyan().bold(),
-            old_head_fp.cyan()
+            "DRY RUN:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
+            old_head_fp.if_supports_color(Stream::Stdout, |s| s.cyan())
         );
         println!(
             "{} Mutations skipped. Pass --yes to back up the ledger and re-sign.",
-            "DRY RUN:".cyan().bold()
+            "DRY RUN:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold()))
         );
         return Ok(());
     }
@@ -208,18 +215,19 @@ pub fn execute_ledger_re_sign_with_keys_dir(
     if !yes {
         println!(
             "{} {} ledger {} will be re-signed with key {}.",
-            "Ready to re-sign:".yellow().bold(),
+            "Ready to re-sign:"
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
             candidates.len(),
             if candidates.len() == 1 {
                 "entry"
             } else {
                 "entries"
             },
-            new_pub_fp.cyan()
+            new_pub_fp.if_supports_color(Stream::Stdout, |s| s.cyan())
         );
         println!(
             "Pass {} to take a verified backup and proceed.",
-            "--yes".cyan()
+            "--yes".if_supports_color(Stream::Stdout, |s| s.cyan())
         );
         return Err(miette!(
             "Re-sign requires explicit confirmation. Run with --dry-run to preview, then --yes to mutate."
@@ -505,7 +513,7 @@ pub fn execute_ledger_re_sign_with_keys_dir(
 
     println!(
         "{} Re-signed {} ledger {}. Backup: {}",
-        "SUCCESS:".green().bold(),
+        "SUCCESS:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold())),
         repaired_tx_ids.len(),
         if repaired_tx_ids.len() == 1 {
             "entry"
@@ -516,8 +524,8 @@ pub fn execute_ledger_re_sign_with_keys_dir(
     );
     println!(
         "{} Maintenance entry recorded for tx_id {}.",
-        "AUDIT:".blue().bold(),
-        maintenance_tx_id.cyan()
+        "AUDIT:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().blue().bold())),
+        maintenance_tx_id.if_supports_color(Stream::Stdout, |s| s.cyan())
     );
 
     Ok(())
