@@ -160,10 +160,159 @@ pub fn search_ok_index_health_line(docs: usize) -> String {
     format!("Search index: OK ({docs} documents)")
 }
 
+// ── 0133 Graph Index Health (age + content) ───────────────────────────────
+
+/// Pure age-path inputs for [`classify_graph_index_health`] (from
+/// `check_index_staleness` → `StalenessWarning` fields).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GraphAgeInputs {
+    /// Never indexed / missing floor → `graph-empty`.
+    pub is_missing: bool,
+    /// Age-stale file count shown in `graph-stale` message.
+    pub stale_files: usize,
+}
+
+/// Pure content-hash drift inputs (from `count_content_hash_drift`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContentHashDriftInputs {
+    /// `changed_or_unindexed` from drift walk; dirty when > 0.
+    pub changed_or_unindexed: usize,
+}
+
+impl ContentHashDriftInputs {
+    pub fn is_dirty(&self) -> bool {
+        self.changed_or_unindexed > 0
+    }
+}
+
+/// SQLite-floor Graph Index Health decision (0133). Mutually exclusive variants.
+///
+/// Orthogonal Cozo-native findings (`graph-error`, `graph-not-initialized`) are
+/// **not** classified here — they co-occur on a separate axis.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum GraphIndexHealth {
+    /// Age path: never indexed → `graph-empty`.
+    AgeEmpty,
+    /// Age path: time-stale → `graph-stale` only (content drift not evaluated).
+    AgeStale { stale_files: usize },
+    /// Age-fresh + content-hash dirty → `graph-content-stale` (N files).
+    ContentStale { n: usize },
+    /// Age-fresh + drift walk failed → `graph-drift-check-failed` (never Current).
+    DriftCheckFailed { truncated_err: String },
+    /// Age-fresh + content-clean + Cozo has nodes/edges → success Current.
+    CurrentPopulated,
+    /// Age-fresh + content-clean + Cozo empty/None counts → analyze-graph Current hint.
+    CurrentEmptyCozo,
+}
+
+/// Classify doctor Graph Index Health from pure inputs (0126-style).
+///
+/// **Age first (STOP):** when `age` is `Some`, return AgeEmpty / AgeStale and
+/// **never** inspect `drift` (avoids double findings + wasted decision branches).
+///
+/// **Else** evaluate `drift`:
+/// - `None` — drift not evaluated (caller wiring); fall through to Current* by Cozo counts
+/// - `Ok(dirty)` → ContentStale
+/// - `Ok(clean)` → CurrentPopulated / CurrentEmptyCozo by `total_nodes`/`total_edges`
+/// - `Err` → DriftCheckFailed with display truncated to 80 chars
+pub fn classify_graph_index_health(
+    age: Option<&GraphAgeInputs>,
+    drift: Option<Result<ContentHashDriftInputs, String>>,
+    total_nodes: i64,
+    total_edges: i64,
+) -> GraphIndexHealth {
+    if let Some(age) = age {
+        if age.is_missing {
+            return GraphIndexHealth::AgeEmpty;
+        }
+        return GraphIndexHealth::AgeStale {
+            stale_files: age.stale_files,
+        };
+    }
+
+    match drift {
+        Some(Ok(d)) if d.is_dirty() => GraphIndexHealth::ContentStale {
+            n: d.changed_or_unindexed,
+        },
+        Some(Err(e)) => GraphIndexHealth::DriftCheckFailed {
+            truncated_err: e.chars().take(80).collect(),
+        },
+        Some(Ok(_)) | None => {
+            if total_nodes == 0 && total_edges == 0 {
+                GraphIndexHealth::CurrentEmptyCozo
+            } else {
+                GraphIndexHealth::CurrentPopulated
+            }
+        }
+    }
+}
+
+/// Max display length for drift-check error messages (matches completion probe).
+const GRAPH_DRIFT_ERR_DISPLAY_CHARS: usize = 80;
+
+/// Build `graph-content-stale` when age-fresh index has content-hash drift.
+///
+/// Message includes N and greppable content/drift/stale vocabulary. Severity
+/// Warn / Index — does **not** flip `readyForPublish`.
+pub fn build_graph_content_stale_finding(n: usize) -> DoctorFinding {
+    let remediation = "\
+ledgerful index --incremental
+ledgerful index --check --json
+ledgerful doctor --json"
+        .to_string();
+    DoctorFinding::warn(
+        "graph-content-stale",
+        DoctorCategory::Index,
+        format!(
+            "Graph state: content-stale ({n} files with content drift) — run 'ledgerful index --incremental'"
+        ),
+    )
+    .with_remediation(remediation)
+}
+
+/// Human Index Health line for content-hash drift. Must **not** contain bare success `Current`.
+pub fn graph_content_stale_index_health_line(n: usize) -> String {
+    format!("Graph state: Content-stale ({n} files) - run 'ledgerful index --incremental'")
+}
+
+/// Build `graph-drift-check-failed` when the content-hash walk errors.
+///
+/// Display message truncates `err` with `chars().take(80)`; log the full error
+/// at the call site via `tracing::debug!`.
+pub fn build_graph_drift_check_failed_finding(err: &str) -> DoctorFinding {
+    let truncated: String = err.chars().take(GRAPH_DRIFT_ERR_DISPLAY_CHARS).collect();
+    let remediation = "\
+ledgerful index --check --json
+ledgerful index --incremental
+ledgerful doctor --json"
+        .to_string();
+    DoctorFinding::warn(
+        "graph-drift-check-failed",
+        DoctorCategory::Index,
+        format!("Graph state: drift check failed ({truncated})"),
+    )
+    .with_remediation(remediation)
+}
+
+/// Human Index Health line when drift check failed. Must **not** claim `Current`.
+pub fn graph_drift_check_failed_index_health_line() -> &'static str {
+    "Graph state: Drift check failed — run 'ledgerful index --check'"
+}
+
+/// Success Index Health when age-fresh, content-clean, and Cozo has nodes/edges.
+pub fn graph_current_populated_index_health_line() -> &'static str {
+    "Graph state: Current"
+}
+
+/// Success Index Health when age-fresh, content-clean, Cozo empty (analyze-graph hint).
+pub fn graph_current_empty_cozo_index_health_line() -> &'static str {
+    "Graph state: Current (run 'ledgerful index --analyze-graph' to populate the knowledge graph)"
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::doctor::finding::DoctorSeverity;
+    use crate::commands::doctor::finding::{DoctorSeverity, dashboard_failures, ready_for_publish};
 
     #[test]
     fn sig_pin_some_hex_has_outer_single_quotes_and_hex() {
@@ -358,5 +507,208 @@ mod tests {
             search_ok_index_health_line(1),
             search_empty_index_health_line()
         );
+    }
+
+    // ── 0133 graph index health ───────────────────────────────────────────
+
+    fn age_missing() -> GraphAgeInputs {
+        GraphAgeInputs {
+            is_missing: true,
+            stale_files: 0,
+        }
+    }
+
+    fn age_stale(n: usize) -> GraphAgeInputs {
+        GraphAgeInputs {
+            is_missing: false,
+            stale_files: n,
+        }
+    }
+
+    fn dirty_drift(n: usize) -> ContentHashDriftInputs {
+        ContentHashDriftInputs {
+            changed_or_unindexed: n,
+        }
+    }
+
+    fn clean_drift() -> ContentHashDriftInputs {
+        ContentHashDriftInputs {
+            changed_or_unindexed: 0,
+        }
+    }
+
+    #[test]
+    fn classify_graph_dirty_is_content_stale_health_no_current() {
+        let h = classify_graph_index_health(None, Some(Ok(dirty_drift(7))), 100, 200);
+        assert_eq!(h, GraphIndexHealth::ContentStale { n: 7 });
+        let f = build_graph_content_stale_finding(7);
+        assert_eq!(f.code, "graph-content-stale");
+        assert_eq!(f.severity, DoctorSeverity::Warn);
+        assert_eq!(f.category, DoctorCategory::Index);
+        assert!(
+            f.message.contains('7'),
+            "message must include N: {}",
+            f.message
+        );
+        let msg_lc = f.message.to_ascii_lowercase();
+        assert!(
+            msg_lc.contains("content") || msg_lc.contains("drift") || msg_lc.contains("stale"),
+            "greppable content/drift/stale: {}",
+            f.message
+        );
+        let line = graph_content_stale_index_health_line(7);
+        assert!(
+            !line.contains("Current"),
+            "content-stale health must not claim Current: {line}"
+        );
+        assert!(line.contains('7'));
+    }
+
+    #[test]
+    fn classify_graph_clean_populated_is_current_no_content_stale() {
+        let h = classify_graph_index_health(None, Some(Ok(clean_drift())), 10, 20);
+        assert_eq!(h, GraphIndexHealth::CurrentPopulated);
+        assert!(
+            !matches!(h, GraphIndexHealth::ContentStale { .. }),
+            "clean path must not classify as content-stale"
+        );
+        let line = graph_current_populated_index_health_line();
+        assert_eq!(line, "Graph state: Current");
+    }
+
+    #[test]
+    fn classify_graph_clean_zero_nodes_edges_is_analyze_graph_current() {
+        let h = classify_graph_index_health(None, Some(Ok(clean_drift())), 0, 0);
+        assert_eq!(h, GraphIndexHealth::CurrentEmptyCozo);
+        let line = graph_current_empty_cozo_index_health_line();
+        assert!(line.contains("Current"));
+        assert!(
+            line.contains("analyze-graph"),
+            "empty Cozo must hint analyze-graph: {line}"
+        );
+    }
+
+    #[test]
+    fn classify_graph_age_stale_ignores_would_be_dirty_drift() {
+        // Age Some → STOP; even if drift would be dirty, only AgeStale.
+        let age = age_stale(42);
+        let h = classify_graph_index_health(Some(&age), Some(Ok(dirty_drift(99))), 0, 0);
+        assert_eq!(h, GraphIndexHealth::AgeStale { stale_files: 42 });
+        assert!(
+            !matches!(h, GraphIndexHealth::ContentStale { .. }),
+            "age-stale must not emit content-stale"
+        );
+    }
+
+    #[test]
+    fn classify_graph_never_indexed_is_age_empty_only() {
+        let age = age_missing();
+        let h = classify_graph_index_health(Some(&age), Some(Ok(dirty_drift(5))), 0, 0);
+        assert_eq!(h, GraphIndexHealth::AgeEmpty);
+        assert!(
+            !matches!(h, GraphIndexHealth::ContentStale { .. }),
+            "never-indexed must not emit content-stale"
+        );
+    }
+
+    #[test]
+    fn classify_graph_drift_err_truncates_to_80_chars() {
+        let long = "x".repeat(200);
+        let h = classify_graph_index_health(None, Some(Err(long.clone())), 1, 1);
+        match h {
+            GraphIndexHealth::DriftCheckFailed { truncated_err } => {
+                assert!(
+                    truncated_err.chars().count() <= 80,
+                    "classifier trunc ≤80: {}",
+                    truncated_err.chars().count()
+                );
+            }
+            other => panic!("expected DriftCheckFailed, got {other:?}"),
+        }
+        let f = build_graph_drift_check_failed_finding(&long);
+        assert_eq!(f.code, "graph-drift-check-failed");
+        assert_eq!(f.severity, DoctorSeverity::Warn);
+        assert_eq!(f.category, DoctorCategory::Index);
+        // Message must not embed the full 200-char blob beyond 80.
+        let in_parens = f
+            .message
+            .find('(')
+            .and_then(|i| f.message.get(i + 1..))
+            .unwrap_or("");
+        let display = in_parens.trim_end_matches(')');
+        assert!(
+            display.chars().count() <= 80,
+            "finding display trunc ≤80: count={} msg={}",
+            display.chars().count(),
+            f.message
+        );
+        let line = graph_drift_check_failed_index_health_line();
+        assert!(
+            !line.contains("Current"),
+            "drift-failed health must not claim Current: {line}"
+        );
+    }
+
+    #[test]
+    fn graph_content_stale_remediation_non_empty() {
+        let f = build_graph_content_stale_finding(3);
+        let rem = f.remediation.as_deref().expect("remediation Some");
+        assert!(!rem.is_empty());
+        assert!(
+            rem.contains("ledgerful index --incremental"),
+            "primary remediation: {rem}"
+        );
+        assert!(
+            rem.contains("ledgerful index --check --json"),
+            "check verification: {rem}"
+        );
+    }
+
+    #[test]
+    fn graph_content_stale_warn_keeps_ready_for_publish() {
+        let f = build_graph_content_stale_finding(2);
+        assert!(
+            ready_for_publish(std::slice::from_ref(&f)),
+            "content-stale warn must not flip readyForPublish"
+        );
+        // Non-optional Index warn still counts for dashboard failures.
+        assert_eq!(dashboard_failures(std::slice::from_ref(&f)), 1);
+    }
+
+    #[test]
+    fn graph_content_stale_serde_remediation_serializes() {
+        let f = build_graph_content_stale_finding(4);
+        let v = serde_json::to_value(&f).expect("serialize");
+        assert_eq!(v["code"], "graph-content-stale");
+        assert_eq!(v["severity"], "warn");
+        assert_eq!(v["category"], "index");
+        assert!(
+            v["remediation"]
+                .as_str()
+                .expect("remediation present")
+                .contains("ledgerful index --incremental")
+        );
+        assert!(v["message"].as_str().expect("message").contains('4'));
+    }
+
+    #[test]
+    fn graph_drift_check_failed_serde_and_ready_for_publish() {
+        let f = build_graph_drift_check_failed_finding("io error: permission denied on path");
+        assert!(ready_for_publish(std::slice::from_ref(&f)));
+        assert_eq!(dashboard_failures(std::slice::from_ref(&f)), 1);
+        let v = serde_json::to_value(&f).expect("serialize");
+        assert_eq!(v["code"], "graph-drift-check-failed");
+        assert_eq!(v["severity"], "warn");
+        assert!(v["remediation"].as_str().is_some());
+    }
+
+    #[test]
+    fn content_stale_wins_over_empty_cozo_counts() {
+        // Dirty drift must not fall through to analyze-graph Current even when Cozo empty.
+        let h = classify_graph_index_health(None, Some(Ok(dirty_drift(1))), 0, 0);
+        assert_eq!(h, GraphIndexHealth::ContentStale { n: 1 });
+        let line = graph_content_stale_index_health_line(1);
+        assert!(!line.contains("Current"));
+        assert!(!line.contains("analyze-graph"));
     }
 }

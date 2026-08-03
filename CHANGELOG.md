@@ -20,6 +20,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Doctor Graph content honesty (0133):** Graph Index Health no longer reports
+  success **Current** when the index is age-fresh but content-hash dirty.
+  Age path (`graph-empty` / `graph-stale`) is unchanged and still STOP (no drift
+  walk). Else one `count_content_hash_drift` on `layout.root` →
+  `graph-content-stale` (N files) or `graph-drift-check-failed` on Err; clean
+  keeps Current / empty-Cozo analyze-graph hint. Warn-only (does not flip
+  `readyForPublish`). Closes **0128 doctor Graph residual (D5/B7)**; partial
+  **0107** (doctor N from drift). See `docs/index-freshness-policy.md` and
+  `docs/doctor-severity.md`.
+
 - **CLI colour gate (0131):** Human product colour goes through `if_supports_color`
   (or the thin `paint` helper) with stream pairing (stdout vs stderr). Piped /
   non-TTY capture and `NO_COLOR` emit no ANSI; `FORCE_COLOR=1` (or
