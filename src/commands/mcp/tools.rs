@@ -248,8 +248,18 @@ fn handle_scan(_params: Value) -> Value {
 }
 
 /// Build CLI args for MCP `search` (RT-A4: `--` before the untrusted query).
+/// 0134: pass `--auto-index` so MCP search refreshes when the index is stale
+/// (staleness path; empty `document_count==0` rebuild remains inside CLI).
 fn build_search_args<'a>(query: &'a str, limit: &'a str) -> Vec<&'a str> {
-    vec!["search", "--json", "--limit", limit, "--", query]
+    vec![
+        "search",
+        "--json",
+        "--auto-index",
+        "--limit",
+        limit,
+        "--",
+        query,
+    ]
 }
 
 fn handle_search(params: Value) -> Value {
@@ -578,6 +588,7 @@ mod tests {
             vec![
                 "search",
                 "--json",
+                "--auto-index",
                 "--limit",
                 "50",
                 "--",
@@ -588,18 +599,30 @@ mod tests {
         assert_eq!(args[args.len() - 1], query);
     }
 
-    /// 0126: MCP search must not grow `--auto-index` (empty path rebuilds via
-    /// document_count==0 inside CLI, not via MCP flag promotion).
+    /// 0126 empty path remains via document_count==0; 0134 adds staleness refresh via MCP flag.
     #[test]
-    fn build_search_args_has_no_auto_index() {
+    fn build_search_args_includes_auto_index() {
         let args = build_search_args("symbol", "10");
+        assert_eq!(
+            args.iter().filter(|a| **a == "--auto-index").count(),
+            1,
+            "MCP build_search_args must include --auto-index exactly once: {args:?}"
+        );
         assert!(
-            !args.iter().any(|a| *a == "--auto-index" || *a == "--index"),
-            "MCP build_search_args must not add --auto-index/--index: {args:?}"
+            !args.contains(&"--index"),
+            "MCP build_search_args must not add --index: {args:?}"
         );
         assert_eq!(
             args,
-            vec!["search", "--json", "--limit", "10", "--", "symbol"]
+            vec![
+                "search",
+                "--json",
+                "--auto-index",
+                "--limit",
+                "10",
+                "--",
+                "symbol"
+            ]
         );
     }
 

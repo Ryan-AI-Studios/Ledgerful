@@ -106,6 +106,18 @@ So: no full FTS reindex on **every** search when auto-index no-ops; full FTS
 fails after auto-index, search emits a greppable WARN / `search_index_status`
 with remediation `ledgerful index --incremental`.
 
+### MCP `search` and `--auto-index` (0134)
+
+MCP tool `search` **passes** `--auto-index` on the spawned CLI (before `--`;
+never `--index`). Behaviour is the same as CLI `search --auto-index` (shared
+`try_auto_index` path). Empty-index rebuild via `document_count==0` still runs
+inside CLI search and is complementary.
+
+**Timeout:** MCP tool spawns are capped by `MCP_TOOL_TIMEOUT_SECS` (**120s**).
+On large or cold repos, prefer an explicit `ledgerful index --incremental` /
+`--full` **before** MCP search so a multi-minute bootstrap does not hit the
+spawn ceiling.
+
 ### `verify --auto-index` (not `try_auto_index`)
 
 `verify --auto-index` only helps **`--scope fast`** when `test_mapping` is empty or
@@ -166,6 +178,8 @@ Need readiness?
 Need fresher symbols/search same session?
   → prefer --auto-index on: search | ask | hotspots | dead-code
     (time-stale + content-hash drift + full bootstrap)
+  → MCP search already includes --auto-index (≡ CLI search --auto-index; 0134)
+    (120s MCP spawn ceiling — large/cold repos: explicit index first)
   → verify --auto-index only repairs test_mapping for --scope fast (not general index)
   → else: ledgerful index --incremental   # or --full if never indexed / mega-batch
 

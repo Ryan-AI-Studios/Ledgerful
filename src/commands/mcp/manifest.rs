@@ -39,7 +39,7 @@ pub const INVENTORY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         name: "search",
-        description: "High-precision regex and text discovery for code symbols.",
+        description: "High-precision regex and text discovery for code symbols. Refreshes the local index when stale; may take multi-seconds on large repos.",
         schema_json: r#"{
             "type": "object",
             "properties": {
