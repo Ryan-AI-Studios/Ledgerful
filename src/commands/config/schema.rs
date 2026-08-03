@@ -115,6 +115,34 @@ pub fn empty_state_message(
 mod tests {
     use super::*;
     use crate::output::empty::EmptyReason;
+    use crate::state::layout::Layout;
+    use crate::state::migrations::get_migrations;
+    use chrono::Utc;
+    use rusqlite::Connection;
+
+    fn in_memory_storage() -> StorageManager {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = conn;
+        get_migrations().to_latest(&mut conn).unwrap();
+        StorageManager::init_from_conn(conn)
+    }
+
+    fn set_last_indexed_at(storage: &StorageManager, ts: &str) {
+        let conn = storage.get_connection();
+        conn.execute(
+            "INSERT OR REPLACE INTO index_metadata (key, value) VALUES ('last_indexed_at', ?1)",
+            [ts],
+        )
+        .unwrap();
+    }
+
+    /// Layout only used for `load_config` threshold (defaults to 7 when absent).
+    fn temp_layout() -> (tempfile::TempDir, Layout) {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).expect("utf8 temp path");
+        let layout = Layout::new(root);
+        (tmp, layout)
+    }
 
     #[test]
     fn empty_json_envelope_uses_results_key() {
@@ -144,5 +172,53 @@ mod tests {
         });
         assert!(output.is_array());
         assert_eq!(output.as_array().unwrap().len(), 1);
+    }
+
+    #[test]
+    fn empty_state_missing_index_is_no_indexed_data() {
+        let storage = in_memory_storage();
+        let (_tmp, layout) = temp_layout();
+
+        let (reason, msg) = empty_state_message(&storage, &layout);
+        assert_eq!(reason, EmptyReason::NoIndexedData);
+        assert!(
+            msg.contains("index --incremental"),
+            "missing-index message should mention index --incremental, got: {msg}"
+        );
+        assert!(
+            msg.contains("never been built") || msg.to_lowercase().contains("index"),
+            "missing-index message should reference index state, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn empty_state_fresh_index_is_no_matches() {
+        let storage = in_memory_storage();
+        let now = Utc::now().to_rfc3339();
+        set_last_indexed_at(&storage, &now);
+        let (_tmp, layout) = temp_layout();
+
+        let (reason, msg) = empty_state_message(&storage, &layout);
+        assert_eq!(reason, EmptyReason::NoMatches);
+        assert!(
+            msg.contains(".env.example"),
+            "fresh-empty message should mention .env.example, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn empty_state_stale_index_is_stale_index() {
+        let storage = in_memory_storage();
+        // Default threshold is 7 days when config is absent.
+        let old = (Utc::now() - chrono::Duration::days(30)).to_rfc3339();
+        set_last_indexed_at(&storage, &old);
+        let (_tmp, layout) = temp_layout();
+
+        let (reason, msg) = empty_state_message(&storage, &layout);
+        assert_eq!(reason, EmptyReason::StaleIndex);
+        assert!(
+            msg.contains("stale") || msg.contains("index --incremental"),
+            "stale-index message should mention stale/refresh, got: {msg}"
+        );
     }
 }

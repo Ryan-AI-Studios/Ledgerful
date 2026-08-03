@@ -312,8 +312,9 @@ fn test_ask_degrades_gracefully_when_local_model_unreachable() {
     let stdout = String::from_utf8_lossy(&output.stdout);
 
     // Spec-pinned warning on stderr (URL substituted from config). The warning
-    // is colored via `.yellow()`, so ANSI escapes wrap it — the plain text
-    // remains a substring, which is what we assert on.
+    // is colored via if_supports_color(...yellow()) when the terminal supports
+    // colour, so ANSI escapes may wrap it — the plain text remains a substring,
+    // which is what we assert on.
     assert!(
         stderr.contains("Warning: Local completion model at http://127.0.0.1:1 is unreachable. Falling back to graph/semantic search."),
         "expected spec warning on stderr, got: {stderr}"

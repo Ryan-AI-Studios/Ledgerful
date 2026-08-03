@@ -604,7 +604,11 @@ pub fn execute_ask(
                         );
                     }
                     if e.to_string().contains("api.ollama.com") {
-                        eprintln!("{}", "Hint: Use ollama_cloud_url = \"https://ollama.com/api\" (native) or \"https://ollama.com\" (OpenAI-compatible)".yellow());
+                        eprintln!(
+                            "{}",
+                            "Hint: Use ollama_cloud_url = \"https://ollama.com/api\" (native) or \"https://ollama.com\" (OpenAI-compatible)"
+                                .if_supports_color(Stream::Stderr, |s| s.yellow())
+                        );
                     }
                     Err(miette::miette!("Local model failed: {e}"))
                 }

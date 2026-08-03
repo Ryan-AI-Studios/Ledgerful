@@ -214,7 +214,7 @@ fn welcome_message<W: Write>(out: &mut W) -> std::io::Result<()> {
 {}
 {}",
         "╭──────────────────────────────────────────────────────╮"
-            .if_supports_color(Stream::Stderr, |s| s.cyan()),
+            .if_supports_color(Stream::Stdout, |s| s.cyan()),
         "│                                                      │"
             .if_supports_color(Stream::Stdout, |s| s.cyan()),
         "│            Welcome to Ledgerful!                     │"
