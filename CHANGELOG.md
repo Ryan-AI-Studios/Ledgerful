@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-08-03
+
 ### Docs
 
 - **Agent Daily 5 short card (0132):** Tracked docs skill + local agent packs
