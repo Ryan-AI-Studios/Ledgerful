@@ -106,6 +106,73 @@ This is intentional honesty, not a publish block: `readyForPublish` remains
 States: `was_empty` (rebuilt to N>0) | `empty_after_rebuild` (still 0 — may mean
 no indexable content / ignore patterns, not only “run index again”).
 
+## Graph probe exclusivity (0133)
+
+Doctor’s Graph surface has **two orthogonal families**. SQLite-floor findings are
+**mutually exclusive among themselves** (at most one from the Graph Index Health
+arm). Cozo-native findings live on a separate axis and **may co-occur** with a
+SQLite-floor finding (e.g. `graph-not-initialized` info + `graph-content-stale`
+warn when Cozo is unset and content drift is dirty).
+
+### Family A — SQLite floor (age / content) — mutual exclusion
+
+Control flow: **age first STOP**; content-hash drift only when age path is
+non-stale. Repo root for drift is **`layout.root` only** (never bare `cwd`).
+
+```text
+check_index_staleness → Some(missing)  → graph-empty            (warn / index)
+check_index_staleness → Some(age-stale) → graph-stale           (warn / index)
+  // STOP — do not run count_content_hash_drift
+
+check_index_staleness → None (age-fresh):
+  count_content_hash_drift dirty       → graph-content-stale    (warn / index)
+                                         + non-Current health line with N
+  count_content_hash_drift clean       → human only: Graph state: Current
+                                         (or empty-Cozo analyze-graph Current hint)
+  count_content_hash_drift Err         → graph-drift-check-failed (warn / index)
+                                         + non-Current health line
+```
+
+| Code | Severity | Category | When | Notes |
+|---|---|---|---|---|
+| `graph-empty` | warn | index | Never indexed / missing floor | Age path; no content walk |
+| `graph-stale` | warn | index | Time-stale vs `stale_threshold_days` | Age path; no content walk; message includes file count |
+| `graph-content-stale` | warn | index | Age-fresh + content-hash drift | Message includes **N** = `changed_or_unindexed`; greppable content/drift/stale; remediation: `index --incremental` then `index --check --json` |
+| `graph-drift-check-failed` | warn | index | Age-fresh + drift walk error | Display error truncated to 80 chars; full at `tracing::debug!`; never claim Current |
+
+**Human Index Health (content-stale example — must not contain bare success `Current`):**
+
+`Graph state: Content-stale (N files) - run 'ledgerful index --incremental'`
+
+**Human Index Health (drift-failed — must not claim `Current`):**
+
+`Graph state: Drift check failed — run 'ledgerful index --check'`
+
+**Publish / health:** all four are **warn**, not block — `readyForPublish` stays
+**block-only**. Non-optional Index warns increment `dashboard_failures` (−20 each
+in `compute_health_score`). Content-stale **wins** over empty-Cozo “Current
+(analyze-graph…)” health when dirty.
+
+**Naming debt (do not rename this track):** the label is “Graph state” but the
+SQLite floor probe is `project_files` age/content honesty, not Cozo structural
+completeness.
+
+### Family B — Cozo native (orthogonal)
+
+| Code | Severity | Category | When |
+|---|---|---|---|
+| `graph-error` | warn | index | Cozo script / open error while graph is present |
+| `graph-not-initialized` | info | index | `storage.cozo` is `None` |
+
+Info does not count in `dashboard_failures`. Cozo-None does **not** skip the
+SQLite content-drift walk; clean + Cozo-None still shows the analyze-graph
+Current **health** hint alongside `graph-not-initialized` info.
+
+**Readiness SoT:** `ledgerful index --check --json` remains authoritative for
+content-aware readiness JSON. Doctor Graph Index Health is honest about content
+when age-fresh; it is **not** a substitute for check. See
+`docs/index-freshness-policy.md`.
+
 ## Dashboard `doctor-results.json`
 
 ```

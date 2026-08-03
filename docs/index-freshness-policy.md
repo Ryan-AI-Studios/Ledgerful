@@ -31,6 +31,27 @@ when installed. That is not user-facing `--auto-index`.
 - SCIP on the light continuous or light on-demand path
 - Treating doctor green as “index is fresh”
 
+## Doctor Graph Index Health (age + content)
+
+Doctor’s **Graph state** Index Health line is **age first**, then **content** when
+the age path is non-stale (not never-indexed / not time-stale):
+
+| Age path (`check_index_staleness`) | Content path (`count_content_hash_drift` on repo root) | Graph Index Health |
+|---|---|---|
+| Some (never-indexed / age-stale) | **not run** (STOP) | `graph-empty` \| `graph-stale` findings only |
+| None (age-fresh) | dirty (`changed_or_unindexed > 0`) | `graph-content-stale` warn + content-stale health line (**never** success `Current`) |
+| None | clean | `Graph state: Current` (or empty-Cozo analyze-graph hint) |
+| None | Err | `graph-drift-check-failed` warn (**never** `Current`) |
+
+**Still not the readiness JSON SoT.** `ledgerful index --check --json` remains the
+authoritative content-aware readiness assessment (`ContentStalePopulated`,
+`stale_files`, etc.). Doctor Graph honesty closes the false-`Current` gap; it does
+**not** replace check JSON. Forbidden above still applies: doctor green ≠ index
+fresh.
+
+See also `docs/doctor-severity.md` (Graph probe exclusivity — SQLite family vs
+Cozo native).
+
 ## Bootstrap carve-out (light on-demand)
 
 | State | Behaviour under `--auto-index` |
