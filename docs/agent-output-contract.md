@@ -118,13 +118,33 @@ best-effort from known formatter output (`cargo fmt`/`rustfmt --check`:
 
 ## `verify --json` schema (v1)
 
+Primary example — **MappingRefuse** (default when fast cannot scope; empty
+`test_mapping`, no DB connection, auto-index fail without allow). Exit ≠ 0,
+`ok: false`, empty steps. Do **not** treat empty mapping as `running full`.
+
+```json
+{
+  "schemaVersion": 1,
+  "ok": false,
+  "scopeRequested": "fast",
+  "scopeExecuted": "refused",
+  "fallbackReason": "fast scope unavailable — test_mapping is stale or empty; run `ledgerful index --incremental` or use `--auto-index`; refusing full suite (~5-8 min)",
+  "steps": [],
+  "timestamp": "2026-07-28T12:00:00+00:00",
+  "txId": "optional-pending-tx-id"
+}
+```
+
+Optional — **full fallback** only for SharedInfra (always) or when the operator
+passed `--allow-full-fallback` (restores pre-0135 surprise-full for mapping miss):
+
 ```json
 {
   "schemaVersion": 1,
   "ok": true,
   "scopeRequested": "fast",
   "scopeExecuted": "full",
-  "fallbackReason": "fast scope unavailable — empty test_mapping; running full (~5-8 min)",
+  "fallbackReason": "fast scope unavailable — shared infrastructure touched; running full (~5-8 min)",
   "steps": [
     {
       "name": "cargo fmt --all",
