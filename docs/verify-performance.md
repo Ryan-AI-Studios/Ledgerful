@@ -31,7 +31,7 @@ Classifier order is load-bearing (`build_plan_scoped_with_options`):
 | Class | Detection | Default under `--scope fast` |
 |---|---|---|
 | **SharedInfra** | changed paths match shared-infra globs (Cargo.toml, cli/args, config/**, migrations/**, …) | **Full suite** + announce (`scopeExecuted: "full"`) — justified |
-| **EmptyChanges** | `packet.changes` empty (checked **before** stem query) | **Cheap plan:** fmt + clippy only (no nextest). Exit 0 if steps pass |
+| **EmptyChanges** | `packet.changes` empty (checked **before** stem query) | **Cheap plan:** Rust repos → fmt + clippy only (no nextest); non-Rust / undetected profile → zero steps (still exit 0 — do not invent cargo). Exit 0 if steps pass |
 | **ScopedOk** | `test_mapping` yields stems for changed files | Existing 3-step scoped plan |
 | **MappingRefuse** | empty/stale mapping, no stems, no DB, auto-index still cannot scope | **Refuse** — do **not** execute full. Exit ≠ 0. `scopeExecuted: "refused"`, `plan.refused=true`, empty steps |
 

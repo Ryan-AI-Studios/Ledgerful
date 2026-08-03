@@ -168,7 +168,7 @@ ledgerful doctor --json
 - **Intent Capture TUI**: Interactive terminal UI for auditing and refining LLM-drafted intent payloads during the git commit process.
 - **Real-time Sync (watch)**: Incremental Knowledge Graph updates, AST re-parsing, and code-aware symbol indexing via the `watch` command — **not** team ledger sync.
 - **Predictable Verification**: Bayesian test reordering and CI failure prediction.
-- **Scoped Verification**: `ledgerful verify --scope fast` uses the `test_mapping` index to run only the tests covering changed files (nextest filtersets). Shared infrastructure still runs full; mapping-cannot-scope **refuses** (not surprise full) unless `--allow-full-fallback`. Empty changes → cheap fmt+clippy. The pre-push hook uses `--scope fast`; CI uses `--scope full`.
+- **Scoped Verification**: `ledgerful verify --scope fast` uses the `test_mapping` index to run only the tests covering changed files (nextest filtersets). Shared infrastructure still runs full; mapping-cannot-scope **refuses** (not surprise full) unless `--allow-full-fallback`. Empty changes → cheap path (Rust: fmt+clippy; non-Rust: zero steps, exit 0). The pre-push hook uses `--scope fast`; CI uses `--scope full`.
 - **Documentation Generation**: Export Knowledge Graph data to Markdown/Mermaid passive documentation (`index --export-docs`).
 - **Dead Code Detection**: Confidence-based dead code detection blending graph reachability, git activity, and test history (`dead-code` command). Use `dead-code --prune` for interactive opt-in removal.
 - **Live Visualization**: WebSocket-based Arc Diagram for real-time Knowledge Graph updates (`viz-server`, `viz-server --stop`).
@@ -290,8 +290,8 @@ ledgerful verify --scope full
 ledgerful verify --scope fast --allow-full-fallback
 ```
 
-Empty tree (no file changes) uses a cheap fmt+clippy plan (no nextest). Shared
-infra still runs full with an announcement.
+Empty tree (no file changes) uses a cheap plan (Rust: fmt+clippy, no nextest;
+non-Rust: zero steps, exit 0). Shared infra still runs full with an announcement.
 
 **Escalate (not Daily 5):**
 

@@ -27,8 +27,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   remediations, `scopeExecuted: "refused"`); **`index_metadata.head_hash` never
   written by `store_index_metadata`** (false-stale with populated mapping —
   now INSERT on resolvable HEAD / DELETE when unresolvable; stale matrix:
-  missing index head + rows is not force-stale). Empty changes → cheap
-  fmt+clippy only. Escape: `--allow-full-fallback` restores 0061 full path;
+  missing index head + rows is not force-stale). Empty changes → cheap path
+  (Rust: fmt+clippy only; non-Rust: zero steps, exit 0). Escape:
+  `--allow-full-fallback` restores 0061 full path;
   SharedInfra full unchanged; `--auto-index` then still cannot → refuse.
 
 - **MCP search auto-index (0134):** MCP `search` passes `--auto-index` (before
