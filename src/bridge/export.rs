@@ -10,7 +10,7 @@ use crate::ledger::db::LedgerDb;
 use crate::state::storage::StorageManager;
 use clap::Args;
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream};
 use std::collections::HashMap;
 use std::fs;
 
@@ -142,7 +142,10 @@ pub fn execute_export(args: ExportArgs) -> Result<()> {
         }
         fs::write(&path, &output).into_diagnostic()?;
         // Product result path (0093): belongs on stdout with other product output.
-        println!("Exported bridge snapshot to {}", path.cyan());
+        println!(
+            "Exported bridge snapshot to {}",
+            path.if_supports_color(Stream::Stdout, |s| s.cyan())
+        );
     } else {
         println!("{}", output);
     }

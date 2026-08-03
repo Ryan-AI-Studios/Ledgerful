@@ -2,7 +2,7 @@ use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, Color, Table};
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 
 use crate::commands::helpers::{get_layout, load_ledger_config};
 use crate::ledger::transaction::TransactionManager;
@@ -51,14 +51,19 @@ pub fn execute_ledger_search(
     }
 
     if results.is_empty() {
-        println!("No ledger entries found matching '{}'.", query.yellow());
+        println!(
+            "No ledger entries found matching '{}'.",
+            query.if_supports_color(Stream::Stdout, |s| s.yellow())
+        );
         return Ok(());
     }
 
     println!(
         "\n{} matching entries for '{}':\n",
-        results.len().bright_green(),
-        query.cyan()
+        results
+            .len()
+            .if_supports_color(Stream::Stdout, |s| s.bright_green()),
+        query.if_supports_color(Stream::Stdout, |s| s.cyan())
     );
 
     let mut table = Table::new();
@@ -77,7 +82,11 @@ pub fn execute_ledger_search(
     for entry in results {
         let mut summary = entry.summary.clone();
         if entry.is_breaking {
-            summary = format!("{} {}", breaking_icon(), summary.bold().red());
+            summary = format!(
+                "{} {}",
+                breaking_icon(),
+                summary.if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().red()))
+            );
         }
 
         let id_prefix = if entry.tx_id.len() > 8 {

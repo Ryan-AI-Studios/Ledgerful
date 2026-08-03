@@ -14,7 +14,7 @@ use crate::state::storage::StorageManager;
 use crate::util::term::prompt_yes_no;
 use chrono::Utc;
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use std::env;
 
 pub fn execute_hotspots(args: HotspotArgs) -> Result<()> {
@@ -630,7 +630,8 @@ fn execute_hotspots_trend(
 
         println!(
             "\n{}",
-            format!("Hotspot Trends (Last {} days)", days).blue().bold()
+            format!("Hotspot Trends (Last {} days)", days)
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().blue().bold()))
         );
         if rows.is_empty() {
             if history_available {
@@ -925,19 +926,30 @@ fn execute_hotspots_budget(
             .map_err(|e| miette::miette!("Failed to serialize budget check: {}", e))?
         );
     } else {
-        println!("{}", "Hotspot Budget Check".bold().cyan());
+        println!(
+            "{}",
+            "Hotspot Budget Check"
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+        );
         if violations.is_empty() {
-            println!("  Status: {}", "OK".green());
+            println!(
+                "  Status: {}",
+                "OK".if_supports_color(Stream::Stdout, |s| s.green())
+            );
             println!("  All hotspots within risk budget.");
         } else {
-            println!("  Status: {}", "VIOLATION".red().bold());
+            println!(
+                "  Status: {}",
+                "VIOLATION"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold()))
+            );
             for v in &violations {
                 let path = v["path"].as_str().unwrap_or("(unknown)");
                 let score = v["score"].as_f64().unwrap_or(0.0);
                 let threshold = v["threshold"].as_f64().unwrap_or(5.0);
                 println!(
                     "  ! {} exceeds budget: {:.2} > {:.2}",
-                    path.yellow(),
+                    path.if_supports_color(Stream::Stdout, |s| s.yellow()),
                     score,
                     threshold,
                 );

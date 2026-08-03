@@ -1,6 +1,6 @@
 use camino::Utf8PathBuf;
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use std::fs;
 
 use crate::cli::AdrSubcommands;
@@ -90,8 +90,7 @@ fn execute_export(
         println!(
             "{}",
             "No architectural decisions found to export."
-                .yellow()
-                .bold()
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
         );
         return Ok(());
     }
@@ -143,18 +142,26 @@ fn execute_ledger_adr_list(storage: &StorageManager) -> Result<()> {
         .map_err(|e| miette::miette!("Failed to collect ADRs: {}", e))?;
 
     if rows.is_empty() {
-        println!("{}", "No ADRs found.".yellow());
+        println!(
+            "{}",
+            "No ADRs found.".if_supports_color(Stream::Stdout, |s| s.yellow())
+        );
         return Ok(());
     }
 
     let mut table = build_table(vec!["ID", "Entity", "Status", "Title", "Created"]);
     for (id, entity, status, title, created_at) in &rows {
         table.add_row(vec![
-            id.yellow().to_string(),
-            entity.cyan().to_string(),
+            id.if_supports_color(Stream::Stdout, |s| s.yellow())
+                .to_string(),
+            entity
+                .if_supports_color(Stream::Stdout, |s| s.cyan())
+                .to_string(),
             status.to_string(),
             title.to_string(),
-            created_at.dimmed().to_string(),
+            created_at
+                .if_supports_color(Stream::Stdout, |s| s.dimmed())
+                .to_string(),
         ]);
     }
     println!("{}", table);

@@ -3,7 +3,7 @@ use crate::gemini::modes::GeminiMode;
 use crate::impact::packet::{ImpactPacket, RiskLevel};
 use indicatif::{ProgressBar, ProgressStyle};
 use miette::Result;
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use std::path::Path;
 use std::thread;
 use std::time::Duration;
@@ -35,7 +35,11 @@ pub fn run_query(
         call_with_hard_deadline(system_prompt, user_prompt, Some(timeout), model, Some(&key))?;
 
     pb.finish_and_clear();
-    println!("\n{}", "Gemini Response:".bold().green());
+    println!(
+        "\n{}",
+        "Gemini Response:"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().green()))
+    );
     println!("{response}");
 
     Ok(())

@@ -8,7 +8,7 @@ use crate::ledger::types::{Category, TransactionRequest};
 use crate::output::diagnostics::success_marker;
 use camino::Utf8PathBuf;
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use std::path::Path;
 
 /// Trait abstracting an interactive confirmation prompt so tests can inject
@@ -137,8 +137,9 @@ pub fn execute_dead_code_with_prompt(
         {
             eprintln!(
                 "\n{} Index is stale — reachability results may be inaccurate. Run `{}` for up-to-date results.",
-                "WARN".yellow().bold(),
-                "ledgerful index --incremental".cyan().bold()
+                "WARN".if_supports_color(Stream::Stderr, |s| s.style(Style::new().yellow().bold())),
+                "ledgerful index --incremental"
+                    .if_supports_color(Stream::Stderr, |s| s.style(Style::new().cyan().bold()))
             );
         }
         let explanation = scorer.explain_file(target)?;

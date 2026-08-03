@@ -7,7 +7,7 @@ use crate::search::{RegexFilter, TantivySearchEngine, rebuild_tantivy_index};
 use crate::state::storage::StorageManager;
 use camino::Utf8Path;
 use miette::Result;
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use tracing::debug;
 
 #[derive(Debug, Clone)]
@@ -88,14 +88,21 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
     let mut fts_rebuilt_for_auto_index = false;
     if auto_index_ran_work {
         if !args.json {
-            println!("{} Indexing repository for search...", "INIT".cyan().bold());
+            println!(
+                "{} Indexing repository for search...",
+                "INIT".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold()))
+            );
         }
         debug!("Post-auto-index full FTS rebuild (before semantic/BM25 query path)");
         match rebuild_tantivy_index(&layout) {
             Ok(()) => {
                 fts_rebuilt_for_auto_index = true;
                 if !args.json {
-                    println!("{} Index built successfully.\n", "DONE".green().bold());
+                    println!(
+                        "{} Index built successfully.\n",
+                        "DONE".if_supports_color(Stream::Stdout, |s| s
+                            .style(Style::new().green().bold()))
+                    );
                 }
             }
             Err(e) => {
@@ -145,9 +152,19 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
             for msg in crate::semantic::semantic_readiness_messages(&readiness) {
                 let is_error = msg.contains("dimension mismatch") || msg.contains("Dimension");
                 if is_error {
-                    println!("{} {}", "ERROR".red().bold(), msg);
+                    println!(
+                        "{} {}",
+                        "ERROR".if_supports_color(Stream::Stdout, |s| s
+                            .style(Style::new().red().bold())),
+                        msg
+                    );
                 } else {
-                    println!("{} {}", "WARN".yellow().bold(), msg);
+                    println!(
+                        "{} {}",
+                        "WARN".if_supports_color(Stream::Stdout, |s| s
+                            .style(Style::new().yellow().bold())),
+                        msg
+                    );
                 }
             }
         }
@@ -188,7 +205,12 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                     };
                     println!("{}", serde_json::to_string(&record).unwrap_or_default());
                 } else {
-                    println!("{} {}", "WARN".yellow().bold(), failure_msg);
+                    println!(
+                        "{} {}",
+                        "WARN".if_supports_color(Stream::Stdout, |s| s
+                            .style(Style::new().yellow().bold())),
+                        failure_msg
+                    );
                 }
                 debug!("Semantic query failed: {e}");
                 (Vec::new(), false)
@@ -219,11 +241,15 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                     println!("{}", serde_json::to_string(&record).unwrap_or_default());
                 }
             } else {
-                println!("\n{}", "Semantic Search Results:".bold().cyan());
+                println!(
+                    "\n{}",
+                    "Semantic Search Results:"
+                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+                );
                 for (path, name, offset, dist) in results {
                     println!(
                         "- {} ({} at offset {}) [dist: {:.4}]",
-                        name.bold(),
+                        name.if_supports_color(Stream::Stdout, |s| s.bold()),
                         path,
                         offset,
                         dist
@@ -241,7 +267,7 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         if query_succeeded && !args.json {
             println!(
                 "{} ⚠️ {}",
-                "WARN".yellow().bold(),
+                "WARN".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
                 crate::semantic::semantic_empty_result_message(&readiness)
             );
         }
@@ -271,13 +297,20 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
 
     let engine = if needs_fts_rebuild {
         if !args.json && !fts_rebuilt_for_auto_index {
-            println!("{} Indexing repository for search...", "INIT".cyan().bold());
+            println!(
+                "{} Indexing repository for search...",
+                "INIT".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold()))
+            );
         }
         debug!("Indexing repository for search...");
         match rebuild_tantivy_index(&layout) {
             Ok(()) => {
                 if !args.json {
-                    println!("{} Index built successfully.\n", "DONE".green().bold());
+                    println!(
+                        "{} Index built successfully.\n",
+                        "DONE".if_supports_color(Stream::Stdout, |s| s
+                            .style(Style::new().green().bold()))
+                    );
                 }
                 let engine = TantivySearchEngine::open_or_create(index_path.as_std_path())?;
                 engine.verify_index_integrity(index_path.as_std_path())?;
@@ -346,8 +379,9 @@ fn emit_fts_rebuild_failed(args: &SearchArgs, document_count: Option<usize>, err
     } else {
         eprintln!(
             "{} Search full-text rebuild failed after auto-index: {err}. Run {} to refresh BM25.",
-            "WARN".yellow().bold(),
-            "ledgerful index --incremental".cyan().bold()
+            "WARN".if_supports_color(Stream::Stderr, |s| s.style(Style::new().yellow().bold())),
+            "ledgerful index --incremental"
+                .if_supports_color(Stream::Stderr, |s| s.style(Style::new().cyan().bold()))
         );
     }
 }
@@ -380,8 +414,9 @@ fn emit_auto_index_failed(args: &SearchArgs, err: &miette::Report) {
     } else {
         eprintln!(
             "{} Search auto-index failed: {err}. Run {} to refresh the index.",
-            "WARN".yellow().bold(),
-            "ledgerful index --incremental".cyan().bold()
+            "WARN".if_supports_color(Stream::Stderr, |s| s.style(Style::new().yellow().bold())),
+            "ledgerful index --incremental"
+                .if_supports_color(Stream::Stderr, |s| s.style(Style::new().cyan().bold()))
         );
     }
 }
@@ -431,12 +466,12 @@ fn emit_search_index_status(args: &SearchArgs, post_count: usize) {
             "{} Search index empty after rebuild (0 documents). No indexable \
              content found — check ignore patterns; empty repo or filters may \
              leave the index empty.",
-            "WARN".yellow().bold()
+            "WARN".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
         );
     } else {
         println!(
             "{} Search index was empty; rebuilt to {post_count} document(s).",
-            "WARN".yellow().bold()
+            "WARN".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
         );
     }
 }
@@ -485,7 +520,7 @@ fn perform_search(
             line_number: Option<usize>,
             /// Plain fragment for JSON and for emphasis application at print time.
             content: String,
-            /// Byte ranges into `content` for ungated owo_colors emphasis (human only).
+            /// Byte ranges into `content` for gated owo_colors emphasis (human only).
             highlight_ranges: Vec<(usize, usize)>,
             score: Option<f32>,
             is_regex: bool,
@@ -597,33 +632,46 @@ fn perform_search(
             } else {
                 println!(
                     "\n{}",
-                    "Hybrid Search Results (BM25 + Regex):".bold().cyan()
+                    "Hybrid Search Results (BM25 + Regex):"
+                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
                 );
                 for res in merged_results {
                     let line_info = if let Some(line) = res.line_number {
-                        format!(":{}", line.to_string().yellow())
+                        format!(
+                            ":{}",
+                            line.to_string()
+                                .if_supports_color(Stream::Stdout, |s| s.yellow())
+                        )
                     } else {
                         String::new()
                     };
                     let source_label = if res.is_regex {
-                        "[Regex]".magenta().to_string()
+                        "[Regex]"
+                            .if_supports_color(Stream::Stdout, |s| s.magenta())
+                            .to_string()
                     } else {
-                        "[BM25]".green().to_string()
+                        "[BM25]"
+                            .if_supports_color(Stream::Stdout, |s| s.green())
+                            .to_string()
                     };
                     let score_info = if let Some(score) = res.score {
                         format!(" [score: {:.2}]", score)
                     } else {
                         String::new()
                     };
-                    // Apply emphasis at print time (ungated owo_colors, like neighbours).
-                    // Do NOT assert absence of escapes in human stdout tests — a pipe is
-                    // not a TTY and nothing gates colour (spec §2.4).
+                    // Apply emphasis at print time via if_supports_color (0131 colour
+                    // gate). Under NO_COLOR / non-TTY, escapes are suppressed.
                     let display = emphasize_snippet(&res.content, &res.highlight_ranges);
                     println!(
                         "{} {}{} {}",
                         source_label,
-                        format!("{}{}", res.path.cyan(), line_info).bold(),
-                        score_info.yellow(),
+                        format!(
+                            "{}{}",
+                            res.path.if_supports_color(Stream::Stdout, |s| s.cyan()),
+                            line_info
+                        )
+                        .if_supports_color(Stream::Stdout, |s| s.bold()),
+                        score_info.if_supports_color(Stream::Stdout, |s| s.yellow()),
                         display.trim()
                     );
                 }
@@ -663,20 +711,28 @@ fn perform_search(
                 println!("{}", serde_json::to_string(&record).unwrap_or_default());
             }
         } else {
-            println!("\n{}", "Regex Search Results:".bold().cyan());
+            println!(
+                "\n{}",
+                "Regex Search Results:"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+            );
             if matches.is_empty() {
                 println!("No matches found.");
                 println!(
                     "{} Check your regex syntax or run {} if changes are missing.",
-                    "HINT".yellow().bold(),
-                    "ledgerful index".cyan().bold()
+                    "HINT".if_supports_color(Stream::Stdout, |s| s
+                        .style(Style::new().yellow().bold())),
+                    "ledgerful index"
+                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold()))
                 );
             } else {
                 for m in matches {
                     println!(
                         "{}:{}: {}",
-                        m.path.cyan(),
-                        m.line_number.to_string().yellow(),
+                        m.path.if_supports_color(Stream::Stdout, |s| s.cyan()),
+                        m.line_number
+                            .to_string()
+                            .if_supports_color(Stream::Stdout, |s| s.yellow()),
                         m.content.trim()
                     );
                 }
@@ -718,16 +774,29 @@ fn perform_search(
                     println!("{}", serde_json::to_string(&record).unwrap_or_default());
                 }
             } else {
-                println!("\n{}", "Ranked Search Results (BM25):".bold().cyan());
+                println!(
+                    "\n{}",
+                    "Ranked Search Results (BM25):"
+                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+                );
                 for r in results {
                     let line_info = if let Some(line) = r.line_number {
-                        format!(":{}", line.to_string().yellow())
+                        format!(
+                            ":{}",
+                            line.to_string()
+                                .if_supports_color(Stream::Stdout, |s| s.yellow())
+                        )
                     } else {
                         String::new()
                     };
                     println!(
                         "{} [score: {:.2}]",
-                        format!("{}{}", r.path.cyan(), line_info).bold(),
+                        format!(
+                            "{}{}",
+                            r.path.if_supports_color(Stream::Stdout, |s| s.cyan()),
+                            line_info
+                        )
+                        .if_supports_color(Stream::Stdout, |s| s.bold()),
                         owo_colors::OwoColorize::yellow(&r.score)
                     );
                     if let Some(snippet) = r.snippet {
@@ -779,7 +848,11 @@ fn emphasize_snippet(fragment: &str, ranges: &[(usize, usize)]) -> String {
         }
         out.push_str(&fragment[last..start]);
         let piece = &fragment[start..end];
-        out.push_str(&piece.bold().to_string());
+        out.push_str(
+            &piece
+                .if_supports_color(Stream::Stdout, |s| s.bold())
+                .to_string(),
+        );
         last = end;
     }
     if last <= fragment.len() && fragment.is_char_boundary(last) {
@@ -790,7 +863,10 @@ fn emphasize_snippet(fragment: &str, ranges: &[(usize, usize)]) -> String {
 
 fn handle_fuzzy_fallback(engine: &TantivySearchEngine, args: &SearchArgs) {
     if !args.json {
-        println!("{}", "Falling back to fuzzy search...".yellow());
+        println!(
+            "{}",
+            "Falling back to fuzzy search...".if_supports_color(Stream::Stdout, |s| s.yellow())
+        );
     }
     // Overfetch limit+1 for human truncation affordance (0100 DoD-8; codex R1).
     let fuzzy_fetch = args.limit.saturating_add(1);
@@ -807,13 +883,17 @@ fn handle_fuzzy_fallback(engine: &TantivySearchEngine, args: &SearchArgs) {
             println!("No matches found.");
             println!(
                 "{} No exact symbols found. Try {} or {}.",
-                "HINT:".yellow().bold(),
-                "--regex".cyan().bold(),
-                "ledgerful index".cyan().bold()
+                "HINT:"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
+                "--regex"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
+                "ledgerful index"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold()))
             );
             println!(
                 "      Alternatively, try semantic search instead: {}",
-                format!("ledgerful ask \"{}\"", args.query).cyan()
+                format!("ledgerful ask \"{}\"", args.query)
+                    .if_supports_color(Stream::Stdout, |s| s.cyan())
             );
         }
     } else {
@@ -845,16 +925,29 @@ fn handle_fuzzy_fallback(engine: &TantivySearchEngine, args: &SearchArgs) {
                 println!("{}", serde_json::to_string(&record).unwrap_or_default());
             }
         } else {
-            println!("\n{}", "Fuzzy Search Results:".bold().cyan());
+            println!(
+                "\n{}",
+                "Fuzzy Search Results:"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+            );
             for m in fuzzy_matches {
                 let line_info = if let Some(line) = m.line_number {
-                    format!(":{}", line.to_string().yellow())
+                    format!(
+                        ":{}",
+                        line.to_string()
+                            .if_supports_color(Stream::Stdout, |s| s.yellow())
+                    )
                 } else {
                     String::new()
                 };
                 println!(
                     "{} [score: {:.2}]",
-                    format!("{}{}", m.path.cyan(), line_info).bold(),
+                    format!(
+                        "{}{}",
+                        m.path.if_supports_color(Stream::Stdout, |s| s.cyan()),
+                        line_info
+                    )
+                    .if_supports_color(Stream::Stdout, |s| s.bold()),
                     owo_colors::OwoColorize::yellow(&m.score)
                 );
                 if let Some(snippet) = m.snippet {

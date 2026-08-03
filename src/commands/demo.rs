@@ -174,11 +174,11 @@ fn ledgerful_binary() -> String {
 /// invoice-service repo. Output is demoted: one banner + quiet result summary.
 /// The run is still recorded so `verification_history.csv` is non-empty.
 fn run_optional_project_checks(root: &Path) -> Result<()> {
-    use owo_colors::OwoColorize;
+    use owo_colors::{OwoColorize, Stream, Style};
     println!(
         "{} Optional project checks ({} — suite health, not cryptographic proof)",
-        "[DEMO]".cyan().bold(),
-        "verify --scope fast".yellow()
+        "[DEMO]".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
+        "verify --scope fast".if_supports_color(Stream::Stdout, |s| s.yellow())
     );
     let output = Command::new(ledgerful_binary())
         .args(["verify", "--scope", "fast"])
@@ -197,12 +197,12 @@ fn run_optional_project_checks(root: &Path) -> Result<()> {
     if code == 0 {
         println!(
             "{} Optional project checks finished (exit 0).",
-            "[DEMO]".cyan().bold()
+            "[DEMO]".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold()))
         );
     } else {
         println!(
             "{} Optional project checks finished with exit {} — ignored for the demo proof (synthetic suite may WARN/FAIL).",
-            "[DEMO]".cyan().bold(),
+            "[DEMO]".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
             code
         );
     }
@@ -217,7 +217,7 @@ fn run_crypto_proof_beat(root: &Path, export_path: &Path) -> Result<()> {
     use crate::commands::verify::verify_ledger_signatures_with_options;
     use crate::state::layout::Layout;
     use camino::Utf8PathBuf;
-    use owo_colors::OwoColorize;
+    use owo_colors::{OwoColorize, Stream, Style};
 
     let root_utf8 = Utf8PathBuf::from_path_buf(root.to_path_buf())
         .map_err(|_| miette::miette!("demo root path is not valid UTF-8"))?;
@@ -225,35 +225,33 @@ fn run_crypto_proof_beat(root: &Path, export_path: &Path) -> Result<()> {
 
     println!(
         "{} Cryptographic proof: {} (signatures + chain)",
-        "[DEMO]".cyan().bold(),
-        "verify --signatures --chain".yellow().bold()
+        "[DEMO]".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
+        "verify --signatures --chain"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
     );
     verify_ledger_signatures_with_options(&layout, true, true, false, None, false)?;
     println!(
         "{} {}",
-        "[DEMO]".cyan().bold(),
+        "[DEMO]".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
         "CRYPTO VALID — all signatures + chain verified"
-            .green()
-            .bold()
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
     );
 
     println!(
         "{} Cryptographic proof: {} (retained export)",
-        "[DEMO]".cyan().bold(),
+        "[DEMO]".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
         format!(
             "verify --signatures --against-export {}",
             DEMO_EVIDENCE_FILE
         )
-        .yellow()
-        .bold()
+        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
     );
     verify_ledger_signatures_with_options(&layout, true, true, false, Some(export_path), false)?;
     println!(
         "{} {}",
-        "[DEMO]".cyan().bold(),
+        "[DEMO]".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
         "CRYPTO VALID — live chain extends or equals retained DEMO export"
-            .green()
-            .bold()
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
     );
 
     Ok(())
@@ -387,14 +385,14 @@ impl Drop for DemoHomeGuard {
 }
 
 pub fn execute_demo(keep: bool, output: Option<PathBuf>, force: bool) -> Result<()> {
-    use owo_colors::OwoColorize;
+    use owo_colors::{OwoColorize, Stream, Style};
 
     let caller_cwd = std::env::current_dir().into_diagnostic()?;
     let demo_dir = resolve_demo_dir(output, force, &caller_cwd)?;
 
     println!(
         "{} Building demo repository at {}",
-        "[DEMO]".cyan().bold(),
+        "[DEMO]".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
         demo_dir.display()
     );
 
@@ -441,7 +439,7 @@ pub fn execute_demo(keep: bool, output: Option<PathBuf>, force: bool) -> Result<
     for (idx, cycle) in cycles.iter().enumerate() {
         println!(
             "{} Commit cycle {}/{}: {}",
-            "[DEMO]".cyan().bold(),
+            "[DEMO]".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
             idx + 1,
             cycles.len(),
             cycle.conventional_subject
@@ -464,7 +462,7 @@ pub fn execute_demo(keep: bool, output: Option<PathBuf>, force: bool) -> Result<
     let export_path = demo_dir.join(DEMO_EVIDENCE_FILE);
     println!(
         "{} Exporting DEMO evidence to {}",
-        "[DEMO]".cyan().bold(),
+        "[DEMO]".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
         export_path.display()
     );
     run_export(&demo_dir, &export_path)?;
@@ -482,69 +480,70 @@ pub fn execute_demo(keep: bool, output: Option<PathBuf>, force: bool) -> Result<
     if keep {
         println!(
             "\n{} Demo evidence export ready: {}",
-            "SUCCESS:".green().bold(),
+            "SUCCESS:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold())),
             export_path_str
         );
         println!(
             "{} Re-verify offline from the kept dir: {}",
-            "Verifier:".cyan().bold(),
+            "Verifier:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
             format!(
                 "cd {} && ledgerful verify --signatures --chain && ledgerful verify --signatures --against-export {}",
                 demo_dir.display(),
                 DEMO_EVIDENCE_FILE
-            )
-            .cyan()
+            ).if_supports_color(Stream::Stdout, |s| s.cyan())
+
         );
         println!(
             "{} Optional dashboard (not required for the proof): {}",
-            "Dashboard:".cyan().bold(),
-            format!("cd {} && ledgerful web start", demo_dir.display()).cyan()
+            "Dashboard:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
+            format!("cd {} && ledgerful web start", demo_dir.display())
+                .if_supports_color(Stream::Stdout, |s| s.cyan())
         );
         println!(
             "{} Demo repo kept at: {}",
-            "[DEMO]".cyan().bold(),
+            "[DEMO]".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
             demo_dir.display()
         );
         println!(
             "\n{} Canonical golden path (also in docs/golden-path.md):\n{}",
-            "[DEMO]".cyan().bold(),
+            "[DEMO]".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
             GOLDEN_PATH_CANONICAL_STEPS.trim()
         );
     } else {
         println!(
             "\n{} Demo completed. CRYPTO VALID was shown; export was then cleaned up.",
-            "SUCCESS:".green().bold()
+            "SUCCESS:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
         );
         println!(
             "{} Re-run with {} to keep the openable DEMO zip (golden-path walkthrough requires it).",
-            "[DEMO]".cyan().bold(),
-            "--keep".yellow().bold()
+            "[DEMO]".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
+            "--keep".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
         );
     }
     println!(
         "{} Gate mode for this demo: {} (observe mode warns only; enforce would block).",
-        "Notice:".yellow().bold(),
-        "observe".yellow().bold()
+        "Notice:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
+        "observe".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
     );
     println!(
         "{} Honesty: synthetic invoice-service · disposable keys (not your production keyring) · observe mode · same crypto as production · not real business-risk data · not a compliance verdict.",
-        "Notice:".yellow().bold()
+        "Notice:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
     );
     println!(
         "{} Honesty: promoted DEMO entries are Unverified until bound `verify --tx-id`; CRYPTO VALID proves signatures/chain, not ledger verification_status Verified.",
-        "Notice:".yellow().bold()
+        "Notice:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
     );
 
     if !keep {
         println!(
             "{} Cleaning up demo repo at {}",
-            "[DEMO]".cyan().bold(),
+            "[DEMO]".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
             demo_dir.display()
         );
         std::fs::remove_dir_all(&demo_dir).into_diagnostic()?;
         println!(
             "{} Demo repo removed. Re-run with --keep to inspect it.",
-            "[DEMO]".cyan().bold()
+            "[DEMO]".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold()))
         );
     }
 

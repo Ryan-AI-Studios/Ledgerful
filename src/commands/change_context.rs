@@ -403,9 +403,13 @@ fn emit_packet(packet: &ChangeContextPacket, json: bool) -> Result<()> {
 }
 
 fn print_human(packet: &ChangeContextPacket) {
-    use owo_colors::OwoColorize;
+    use owo_colors::{OwoColorize, Stream, Style};
 
-    println!("{}", "Ledgerful change-context".bold().underline());
+    println!(
+        "{}",
+        "Ledgerful change-context"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
+    );
     println!("  status:           {}", packet.status);
     println!("  summary:          {}", packet.summary);
     if let Some(ref risk) = packet.risk_level {

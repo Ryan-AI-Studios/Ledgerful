@@ -6,7 +6,7 @@ use crate::state::storage::StorageManager;
 use camino::{Utf8Path, Utf8PathBuf};
 use ignore::WalkBuilder;
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use rusqlite::OptionalExtension;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -168,20 +168,36 @@ pub fn build_global_posture(
 }
 
 fn print_global_posture_text(output: &GlobalPostureOutput) {
-    println!("{}", "Ledgerful Global Posture".bold().underline());
+    println!(
+        "{}",
+        "Ledgerful Global Posture"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
+    );
     println!(
         "{} repo(s) queried, {} skipped",
-        output.repos.len().to_string().cyan(),
-        output.skipped_repos.to_string().yellow()
+        output
+            .repos
+            .len()
+            .to_string()
+            .if_supports_color(Stream::Stdout, |s| s.cyan()),
+        output
+            .skipped_repos
+            .to_string()
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
     );
     if !output.warnings.is_empty() {
         println!(
             "\n{} {}",
-            "Warnings:".yellow().bold(),
-            "(per-repo failures are non-fatal)".dimmed()
+            "Warnings:"
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
+            "(per-repo failures are non-fatal)".if_supports_color(Stream::Stdout, |s| s.dimmed())
         );
         for w in &output.warnings {
-            println!("  {} {}", "⚠".yellow(), w.dimmed());
+            println!(
+                "  {} {}",
+                "⚠".if_supports_color(Stream::Stdout, |s| s.yellow()),
+                w.if_supports_color(Stream::Stdout, |s| s.dimmed())
+            );
         }
     }
 
@@ -197,16 +213,33 @@ fn print_global_posture_text(output: &GlobalPostureOutput) {
         ]);
         for p in &output.repos {
             let verify_cell = match (&p.last_verify_result, &p.last_verify_at) {
-                (Some(result), Some(at)) => format!("{} {}", result, at.dimmed()),
+                (Some(result), Some(at)) => format!(
+                    "{} {}",
+                    result,
+                    at.if_supports_color(Stream::Stdout, |s| s.dimmed())
+                ),
                 (Some(result), None) => result.clone(),
-                (None, Some(at)) => format!("— {}", at.dimmed()),
+                (None, Some(at)) => {
+                    format!("— {}", at.if_supports_color(Stream::Stdout, |s| s.dimmed()))
+                }
                 (None, None) => "—".to_string(),
             };
             table.add_row(vec![
-                p.repo_path.cyan().to_string(),
-                p.unsigned_entries.to_string().yellow().to_string(),
-                p.pending_tx.to_string().yellow().to_string(),
-                p.drift.to_string().red().to_string(),
+                p.repo_path
+                    .if_supports_color(Stream::Stdout, |s| s.cyan())
+                    .to_string(),
+                p.unsigned_entries
+                    .to_string()
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
+                    .to_string(),
+                p.pending_tx
+                    .to_string()
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
+                    .to_string(),
+                p.drift
+                    .to_string()
+                    .if_supports_color(Stream::Stdout, |s| s.red())
+                    .to_string(),
                 verify_cell,
             ]);
         }
@@ -417,27 +450,49 @@ fn print_global_timings_text(summary: &GlobalTimingsSummary, args: &GlobalTiming
         println!("{msg}");
         if !summary.warnings.is_empty() {
             for w in &summary.warnings {
-                println!("  {} {}", "⚠".yellow(), w.dimmed());
+                println!(
+                    "  {} {}",
+                    "⚠".if_supports_color(Stream::Stdout, |s| s.yellow()),
+                    w.if_supports_color(Stream::Stdout, |s| s.dimmed())
+                );
             }
         }
         return;
     }
 
-    println!("{}", "Ledgerful Global Timings".bold().underline());
+    println!(
+        "{}",
+        "Ledgerful Global Timings"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
+    );
     println!(
         "{} repo(s) with timings, {} absent table, {} skipped (last {days} day(s), top {top})",
-        summary.repos_with_timings.to_string().cyan(),
-        summary.timings_absent.to_string().yellow(),
-        summary.skipped_repos.to_string().yellow()
+        summary
+            .repos_with_timings
+            .to_string()
+            .if_supports_color(Stream::Stdout, |s| s.cyan()),
+        summary
+            .timings_absent
+            .to_string()
+            .if_supports_color(Stream::Stdout, |s| s.yellow()),
+        summary
+            .skipped_repos
+            .to_string()
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
     );
     if !summary.warnings.is_empty() {
         println!(
             "\n{} {}",
-            "Warnings:".yellow().bold(),
-            "(per-repo failures are non-fatal)".dimmed()
+            "Warnings:"
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
+            "(per-repo failures are non-fatal)".if_supports_color(Stream::Stdout, |s| s.dimmed())
         );
         for w in &summary.warnings {
-            println!("  {} {}", "⚠".yellow(), w.dimmed());
+            println!(
+                "  {} {}",
+                "⚠".if_supports_color(Stream::Stdout, |s| s.yellow()),
+                w.if_supports_color(Stream::Stdout, |s| s.dimmed())
+            );
         }
     }
 
@@ -621,12 +676,19 @@ fn print_timings_degradation(collected: &CollectedGlobalTimings) {
     if collected.skipped_repos > 0 {
         println!(
             "{} {} repo(s) skipped",
-            "⚠".yellow(),
-            collected.skipped_repos.to_string().yellow()
+            "⚠".if_supports_color(Stream::Stdout, |s| s.yellow()),
+            collected
+                .skipped_repos
+                .to_string()
+                .if_supports_color(Stream::Stdout, |s| s.yellow())
         );
     }
     for w in &collected.warnings {
-        println!("  {} {}", "⚠".yellow(), w.dimmed());
+        println!(
+            "  {} {}",
+            "⚠".if_supports_color(Stream::Stdout, |s| s.yellow()),
+            w.if_supports_color(Stream::Stdout, |s| s.dimmed())
+        );
     }
 }
 
@@ -706,7 +768,8 @@ fn execute_timings_global_inner(
     let cmd_label = args.command.as_deref().unwrap_or("all commands");
     println!(
         "\n{} — {cmd_label} (last {days} day(s), global)",
-        "Inner spans".bold().underline()
+        "Inner spans"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
     );
     let mut table =
         crate::output::table::build_table(vec!["Span", "Samples", "Total ms", "Max ms"]);

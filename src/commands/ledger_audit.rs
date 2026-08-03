@@ -2,7 +2,7 @@ use comfy_table::modifiers::UTF8_ROUND_CORNERS;
 use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, Color, Table};
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use serde::Serialize;
 
 use crate::commands::helpers::{get_layout, load_ledger_config};
@@ -91,7 +91,11 @@ pub fn execute_ledger_audit(
     let mut storage = StorageManager::open_read_only_sqlite_only(&layout)?;
 
     if !json {
-        println!("{}", "Ledgerful Project Audit".bold().underline());
+        println!(
+            "{}",
+            "Ledgerful Project Audit"
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
+        );
     }
 
     if let Some(path) = entity {
@@ -317,33 +321,56 @@ fn render_project_audit_human(
     limit: usize,
     _offset: usize,
 ) {
-    println!("\n{}", "PROJECT VELOCITY".blue().bold());
+    println!(
+        "\n{}",
+        "PROJECT VELOCITY"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().blue().bold()))
+    );
     println!(
         "  Last 7 Days:   {}",
-        report.velocity.last_7_days.to_string().yellow()
+        report
+            .velocity
+            .last_7_days
+            .to_string()
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
     );
     println!(
         "  Last 30 Days:  {}",
-        report.velocity.last_30_days.to_string().yellow()
+        report
+            .velocity
+            .last_30_days
+            .to_string()
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
     );
     println!(
         "  Total Commits: {}",
-        report.velocity.total.to_string().cyan()
+        report
+            .velocity
+            .total
+            .to_string()
+            .if_supports_color(Stream::Stdout, |s| s.cyan())
     );
     println!(
         "  Pending:       {}",
-        report.velocity.pending.to_string().magenta()
+        report
+            .velocity
+            .pending
+            .to_string()
+            .if_supports_color(Stream::Stdout, |s| s.magenta())
     );
     println!(
         "  Federated:     {}",
-        report.velocity.federated.to_string().magenta()
+        report
+            .velocity
+            .federated
+            .to_string()
+            .if_supports_color(Stream::Stdout, |s| s.magenta())
     );
 
     println!(
         "\n{}",
         format!("TOP CHURNED FILES (Limit: {})", limit)
-            .blue()
-            .bold()
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().blue().bold()))
     );
     if report.churn.is_empty() {
         println!("  None.");
@@ -351,26 +378,38 @@ fn render_project_audit_human(
         for c in &report.churn {
             println!(
                 "  {:<40} {} commits",
-                c.entity.cyan(),
-                c.count.to_string().yellow()
+                c.entity.if_supports_color(Stream::Stdout, |s| s.cyan()),
+                c.count
+                    .to_string()
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
             );
         }
     }
 
     if include_unaudited {
-        println!("\n{}", "UNAUDITED DRIFT".red().bold());
+        println!(
+            "\n{}",
+            "UNAUDITED DRIFT"
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold()))
+        );
         if report.unaudited_drift.is_empty() {
             println!("  None.");
         } else {
             for d in &report.unaudited_drift {
-                println!("  {:<40} {}", d.file_path.cyan(), d.change_type.yellow());
+                println!(
+                    "  {:<40} {}",
+                    d.file_path.if_supports_color(Stream::Stdout, |s| s.cyan()),
+                    d.change_type
+                        .if_supports_color(Stream::Stdout, |s| s.yellow())
+                );
             }
         }
     }
 
     println!(
         "\n{}",
-        format!("TOP HOTSPOTS (Limit: {})", limit).yellow().bold()
+        format!("TOP HOTSPOTS (Limit: {})", limit)
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
     );
     if report.hotspots.is_empty() {
         println!("  None.");
@@ -378,29 +417,49 @@ fn render_project_audit_human(
         for h in &report.hotspots {
             println!(
                 "  {:<40} score: {:.2}",
-                h.path.display().to_string().cyan(),
-                h.display_score.yellow()
+                h.path
+                    .display()
+                    .to_string()
+                    .if_supports_color(Stream::Stdout, |s| s.cyan()),
+                h.display_score
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
             );
         }
     }
 
-    println!("\n{}", format!("CI TREND (Last {})", limit).yellow().bold());
+    println!(
+        "\n{}",
+        format!("CI TREND (Last {})", limit)
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
+    );
     if report.ci_trend.is_empty() {
         println!("  No history yet.");
     } else {
         let mut trend_str = String::new();
         for passed in report.ci_trend.iter().rev() {
             if *passed {
-                trend_str.push_str(&"PASS".green().to_string());
+                trend_str.push_str(
+                    &"PASS"
+                        .if_supports_color(Stream::Stdout, |s| s.green())
+                        .to_string(),
+                );
             } else {
-                trend_str.push_str(&"FAIL".red().to_string());
+                trend_str.push_str(
+                    &"FAIL"
+                        .if_supports_color(Stream::Stdout, |s| s.red())
+                        .to_string(),
+                );
             }
             trend_str.push(' ');
         }
         println!("  {}", trend_str);
     }
 
-    println!("\n{}", "RECENT COMMITTED ENTRIES".green().bold());
+    println!(
+        "\n{}",
+        "RECENT COMMITTED ENTRIES"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
+    );
     if report.recent_entries.is_empty() {
         println!("  None.");
     } else {
@@ -516,7 +575,10 @@ fn audit_entity(
         return Ok(());
     }
 
-    println!("\nAudit History for {}:", entity.cyan());
+    println!(
+        "\nAudit History for {}:",
+        entity.if_supports_color(Stream::Stdout, |s| s.cyan())
+    );
 
     if exact_entries.is_empty() {
         println!("  No exact committed entries found.");
@@ -527,7 +589,8 @@ fn audit_entity(
     if !related_entries.is_empty() {
         println!(
             "\n{}",
-            "--- Related Entries (Adjacent Modules/Directory) ---".dimmed()
+            "--- Related Entries (Adjacent Modules/Directory) ---"
+                .if_supports_color(Stream::Stdout, |s| s.dimmed())
         );
         print_audit_entry_list(&db, entity, &related_entries)?;
     }
@@ -547,7 +610,7 @@ fn print_audit_entry_list(
                 get_status_icon(LedgerStatus::Committed),
                 entry.id
             )
-            .yellow()
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
             .to_string()
         } else {
             format!(
@@ -555,14 +618,29 @@ fn print_audit_entry_list(
                 get_status_icon(LedgerStatus::Federated),
                 entry.trace_id.as_deref().unwrap_or("UNKNOWN")
             )
-            .magenta()
-            .bold()
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().magenta().bold()))
             .to_string()
         };
 
-        println!("\n{} committed on {}", prefix, entry.committed_at.dimmed());
-        println!("  Entity:  {}", entry.entity_normalized.cyan());
-        println!("  Summary: {}", entry.summary.bold());
+        println!(
+            "\n{} committed on {}",
+            prefix,
+            entry
+                .committed_at
+                .if_supports_color(Stream::Stdout, |s| s.dimmed())
+        );
+        println!(
+            "  Entity:  {}",
+            entry
+                .entity_normalized
+                .if_supports_color(Stream::Stdout, |s| s.cyan())
+        );
+        println!(
+            "  Summary: {}",
+            entry
+                .summary
+                .if_supports_color(Stream::Stdout, |s| s.bold())
+        );
         println!(
             "  Change:  {} {:?}",
             get_change_type_icon(&entry.change_type),
@@ -570,11 +648,19 @@ fn print_audit_entry_list(
         );
         println!("  Reason:  {}", entry.reason);
         if let Some(risk) = &entry.risk {
-            println!("  Risk:    {}", risk.yellow());
+            println!(
+                "  Risk:    {}",
+                risk.if_supports_color(Stream::Stdout, |s| s.yellow())
+            );
         }
         if let Some(sig) = &entry.signature {
             let display_sig = if sig.len() > 16 { &sig[..16] } else { sig };
-            println!("  Sig:     {}...", display_sig.to_string().dimmed());
+            println!(
+                "  Sig:     {}...",
+                display_sig
+                    .to_string()
+                    .if_supports_color(Stream::Stdout, |s| s.dimmed())
+            );
         }
 
         let provenance = db
@@ -594,22 +680,23 @@ fn print_audit_entry_list(
             for p in entity_prov {
                 let action_str = p.action.to_string();
                 let formatted = match p.action {
-                    crate::ledger::provenance::ProvenanceAction::Added => {
-                        action_str.green().to_string()
-                    }
-                    crate::ledger::provenance::ProvenanceAction::Modified => {
-                        action_str.blue().to_string()
-                    }
-                    crate::ledger::provenance::ProvenanceAction::Deleted => {
-                        action_str.red().to_string()
-                    }
+                    crate::ledger::provenance::ProvenanceAction::Added => action_str
+                        .if_supports_color(Stream::Stdout, |s| s.green())
+                        .to_string(),
+                    crate::ledger::provenance::ProvenanceAction::Modified => action_str
+                        .if_supports_color(Stream::Stdout, |s| s.blue())
+                        .to_string(),
+                    crate::ledger::provenance::ProvenanceAction::Deleted => action_str
+                        .if_supports_color(Stream::Stdout, |s| s.red())
+                        .to_string(),
                 };
                 println!(
                     "    {} {:<10} {} ({})",
-                    "•".dimmed(),
+                    "•".if_supports_color(Stream::Stdout, |s| s.dimmed()),
                     formatted,
                     p.symbol_name,
-                    p.symbol_type.dimmed()
+                    p.symbol_type
+                        .if_supports_color(Stream::Stdout, |s| s.dimmed())
                 );
             }
         }

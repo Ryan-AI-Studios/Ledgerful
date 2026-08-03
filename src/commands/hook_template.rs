@@ -678,19 +678,29 @@ pub fn hook_template_stale_findings(
 
 /// Human summary for apply / dry-run.
 pub fn print_refresh_report(report: &HookTemplateRefreshReport) {
-    use owo_colors::OwoColorize;
+    use owo_colors::{OwoColorize, Stream, Style};
 
     if let Some(reason) = &report.refused {
-        println!("{} {reason}", "REFUSED:".yellow().bold());
+        println!(
+            "{} {reason}",
+            "REFUSED:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
+        );
         return;
     }
     for note in &report.discovery_notes {
-        println!("{} {note}", "WARN:".yellow().bold());
+        println!(
+            "{} {note}",
+            "WARN:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
+        );
     }
     let prefix = if report.dry_run {
-        "DRY-RUN".yellow().bold().to_string()
+        "DRY-RUN"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
+            .to_string()
     } else {
-        "DONE".green().bold().to_string()
+        "DONE"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
+            .to_string()
     };
     if report.refreshed.is_empty()
         && report.already_current.is_empty()
@@ -717,7 +727,10 @@ pub fn print_refresh_report(report: &HookTemplateRefreshReport) {
         println!("  Already current: {}", report.already_current.join(", "));
     }
     for (label, reason) in &report.skipped_unknown {
-        println!("{} skipped {label}: {reason}", "SKIP:".yellow().bold());
+        println!(
+            "{} skipped {label}: {reason}",
+            "SKIP:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
+        );
     }
     if report.refreshed.is_empty()
         && report.skipped_unknown.is_empty()
@@ -725,7 +738,7 @@ pub fn print_refresh_report(report: &HookTemplateRefreshReport) {
     {
         println!(
             "{} Hook product templates already current.",
-            "OK:".green().bold()
+            "OK:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
         );
     }
 }

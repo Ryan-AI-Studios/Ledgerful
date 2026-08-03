@@ -5,7 +5,7 @@ use crate::state::storage::StorageManager;
 use crate::util::term::prompt_yes_no;
 use clap::{Args, Subcommand};
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 
 #[derive(Args, Debug)]
 pub struct ObservabilityArgs {
@@ -98,7 +98,11 @@ pub fn execute_observability(args: ObservabilityArgs) -> Result<()> {
                     );
                     return Ok(());
                 }
-                println!("  {}", "No OpenSLO coverage data found.".yellow());
+                println!(
+                    "  {}",
+                    "No OpenSLO coverage data found."
+                        .if_supports_color(Stream::Stdout, |s| s.yellow())
+                );
                 println!(
                     "  Note: The patterns extracted from your source code are stored in SQLite and shown in 'observability diff'."
                 );
@@ -107,7 +111,8 @@ pub fn execute_observability(args: ObservabilityArgs) -> Result<()> {
                 );
                 println!(
                     "  Once added, run {} to populate.",
-                    "ledgerful index --analyze-graph".cyan().bold()
+                    "ledgerful index --analyze-graph"
+                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold()))
                 );
                 return Ok(());
             }
@@ -138,14 +143,22 @@ pub fn execute_observability(args: ObservabilityArgs) -> Result<()> {
                     serde_json::to_string_pretty(&output).into_diagnostic()?
                 );
             } else {
-                println!("{}", "Observability Coverage Summary".bold().cyan());
+                println!(
+                    "{}",
+                    "Observability Coverage Summary"
+                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+                );
                 let mut table = build_premium_table(["Service", "SLOs", "Metrics", "Health"]);
 
                 for (svc, sc, mc) in &final_rows {
                     let health = if *sc > 0 {
-                        "COVERED".green().to_string()
+                        "COVERED"
+                            .if_supports_color(Stream::Stdout, |s| s.green())
+                            .to_string()
                     } else {
-                        "MISSING".red().to_string()
+                        "MISSING"
+                            .if_supports_color(Stream::Stdout, |s| s.red())
+                            .to_string()
                     };
                     table.add_row(vec![
                         svc.to_string(),
@@ -279,7 +292,11 @@ pub fn execute_observability(args: ObservabilityArgs) -> Result<()> {
                     serde_json::to_string_pretty(&json_out).into_diagnostic()?
                 );
             } else {
-                println!("{}", "Observability Diff".bold().cyan());
+                println!(
+                    "{}",
+                    "Observability Diff"
+                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+                );
                 println!("Changed files in diff: {}", changed_files.len());
 
                 if changed.is_empty() {
@@ -287,20 +304,21 @@ pub fn execute_observability(args: ObservabilityArgs) -> Result<()> {
                     if total_obs > 0 {
                         println!(
                             "{}",
-                            "No observability signals impacted by current diff.".dimmed()
+                            "No observability signals impacted by current diff."
+                                .if_supports_color(Stream::Stdout, |s| s.dimmed())
                         );
                     } else {
                         println!(
                             "{}",
-                            "No observability data found. Run `ledgerful index --analyze-graph` to populate.".dimmed()
+                            "No observability data found. Run `ledgerful index --analyze-graph` to populate.".if_supports_color(Stream::Stdout, |s| s.dimmed())
                         );
                     }
                 } else {
                     println!(
                         "\n{}",
                         format!("{} observability signal(s) impacted:", changed.len())
-                            .yellow()
-                            .bold()
+                            .if_supports_color(Stream::Stdout, |s| s
+                                .style(Style::new().yellow().bold()))
                     );
                     // `changed` is already sorted deterministically above
                     // (shared by JSON and human paths), so iterate directly.

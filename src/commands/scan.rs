@@ -733,30 +733,50 @@ fn compute_pr_scan_affected_flows(
 
 /// Human-readable summary for `scan --pr --format text`.
 fn print_pr_scan_summary(report: &PrScanReport) {
-    use owo_colors::OwoColorize;
+    use owo_colors::{OwoColorize, Stream, Style};
 
-    println!("\n{}", "Ledgerful PR Scan Summary".bold().underline());
-    println!("{:<15} {}", "Base:".bold(), report.base_ref);
-    println!("{:<15} {}", "Head:".bold(), report.head_ref);
+    println!(
+        "\n{}",
+        "Ledgerful PR Scan Summary"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
+    );
     println!(
         "{:<15} {}",
-        "HEAD commit:".bold(),
+        "Base:".if_supports_color(Stream::Stdout, |s| s.bold()),
+        report.base_ref
+    );
+    println!(
+        "{:<15} {}",
+        "Head:".if_supports_color(Stream::Stdout, |s| s.bold()),
+        report.head_ref
+    );
+    println!(
+        "{:<15} {}",
+        "HEAD commit:".if_supports_color(Stream::Stdout, |s| s.bold()),
         report.head_hash.as_deref().unwrap_or("<none>")
     );
     println!(
         "{:<15} {}",
-        "Branch:".bold(),
+        "Branch:".if_supports_color(Stream::Stdout, |s| s.bold()),
         report.branch_name.as_deref().unwrap_or("<none>")
     );
     println!(
         "{:<15} {}",
-        "Working tree:".bold(),
+        "Working tree:".if_supports_color(Stream::Stdout, |s| s.bold()),
         match report.tree_clean {
-            true => "CLEAN".green().to_string(),
-            false => "DIRTY".yellow().to_string(),
+            true => "CLEAN"
+                .if_supports_color(Stream::Stdout, |s| s.green())
+                .to_string(),
+            false => "DIRTY"
+                .if_supports_color(Stream::Stdout, |s| s.yellow())
+                .to_string(),
         }
     );
-    println!("{:<15} {}", "Files changed:".bold(), report.change_count);
+    println!(
+        "{:<15} {}",
+        "Files changed:".if_supports_color(Stream::Stdout, |s| s.bold()),
+        report.change_count
+    );
 
     let risk_color = match report.risk_level {
         crate::commands::scan_pr::PrRiskLevel::Low => Color::Green,
@@ -774,14 +794,20 @@ fn print_pr_scan_summary(report: &PrScanReport) {
     println!("{risk_table}");
 
     if !report.risk_reasons.is_empty() {
-        println!("{}", "Risk reasons:".bold());
+        println!(
+            "{}",
+            "Risk reasons:".if_supports_color(Stream::Stdout, |s| s.bold())
+        );
         for reason in &report.risk_reasons {
             println!("  • {}", reason);
         }
     }
 
     if !report.analysis_warnings.is_empty() {
-        println!("{}", "Analysis warnings:".bold());
+        println!(
+            "{}",
+            "Analysis warnings:".if_supports_color(Stream::Stdout, |s| s.bold())
+        );
         for warning in &report.analysis_warnings {
             println!("  • {}", warning);
         }
@@ -789,13 +815,13 @@ fn print_pr_scan_summary(report: &PrScanReport) {
 
     println!(
         "{:<15} {} (unmapped={})",
-        "Test gaps:".bold(),
+        "Test gaps:".if_supports_color(Stream::Stdout, |s| s.bold()),
         report.test_gaps.status.as_str(),
         report.test_gaps.unmapped_count
     );
     println!(
         "{:<15} {} (flowCount={})",
-        "Affected flows:".bold(),
+        "Affected flows:".if_supports_color(Stream::Stdout, |s| s.bold()),
         report.affected_flows.status.as_str(),
         report.affected_flows.flow_count
     );
@@ -808,16 +834,24 @@ fn print_pr_scan_summary(report: &PrScanReport) {
             .set_header(vec!["Action", "File Path"]);
         for change in &report.changes {
             let action = match change.change_type.as_str() {
-                "added" => "Added".green().to_string(),
-                "modified" => "Modified".yellow().to_string(),
-                "deleted" => "Deleted".red().to_string(),
+                "added" => "Added"
+                    .if_supports_color(Stream::Stdout, |s| s.green())
+                    .to_string(),
+                "modified" => "Modified"
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
+                    .to_string(),
+                "deleted" => "Deleted"
+                    .if_supports_color(Stream::Stdout, |s| s.red())
+                    .to_string(),
                 "renamed" => {
                     if let Some(old) = &change.old_path {
                         format!("Renamed ({} → {})", old, change.path)
-                            .blue()
+                            .if_supports_color(Stream::Stdout, |s| s.blue())
                             .to_string()
                     } else {
-                        "Renamed".blue().to_string()
+                        "Renamed"
+                            .if_supports_color(Stream::Stdout, |s| s.blue())
+                            .to_string()
                     }
                 }
                 _ => change.change_type.clone(),

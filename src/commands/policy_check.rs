@@ -1054,49 +1054,87 @@ fn file_changes_to_paths(changes: &[crate::git::FileChange]) -> Vec<String> {
 // ---------------------------------------------------------------------------
 
 fn print_human_report(report: &PolicyCheckReport) {
-    use owo_colors::OwoColorize;
+    use owo_colors::{OwoColorize, Stream, Style};
 
-    println!("\n{}", "Ledgerful Policy Check".bold().underline());
-    println!("{:<16} {}", "Mode:".bold(), report.mode);
-    println!("{:<16} {}", "Policy source:".bold(), report.policy_source);
+    println!(
+        "\n{}",
+        "Ledgerful Policy Check"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
+    );
     println!(
         "{:<16} {}",
-        "Result:".bold(),
+        "Mode:".if_supports_color(Stream::Stdout, |s| s.bold()),
+        report.mode
+    );
+    println!(
+        "{:<16} {}",
+        "Policy source:".if_supports_color(Stream::Stdout, |s| s.bold()),
+        report.policy_source
+    );
+    println!(
+        "{:<16} {}",
+        "Result:".if_supports_color(Stream::Stdout, |s| s.bold()),
         if report.passed {
-            "PASSED".green().to_string()
+            "PASSED"
+                .if_supports_color(Stream::Stdout, |s| s.green())
+                .to_string()
         } else if report.mode == "observe" {
-            "WARNINGS (observe — not blocking)".yellow().to_string()
+            "WARNINGS (observe — not blocking)"
+                .if_supports_color(Stream::Stdout, |s| s.yellow())
+                .to_string()
         } else {
-            "FAILED".red().to_string()
+            "FAILED"
+                .if_supports_color(Stream::Stdout, |s| s.red())
+                .to_string()
         }
     );
 
     if !report.notes.is_empty() {
-        println!("\n{}:", "Notes".bold());
+        println!(
+            "\n{}:",
+            "Notes".if_supports_color(Stream::Stdout, |s| s.bold())
+        );
         for note in &report.notes {
-            println!("  • {}", note.dimmed());
+            println!(
+                "  • {}",
+                note.if_supports_color(Stream::Stdout, |s| s.dimmed())
+            );
         }
     }
 
     if report.violations.is_empty() {
-        println!("\n{}", "No policy violations.".green());
+        println!(
+            "\n{}",
+            "No policy violations.".if_supports_color(Stream::Stdout, |s| s.green())
+        );
         return;
     }
 
-    println!("\n{} ({}):", "Violations".bold(), report.violations.len());
+    println!(
+        "\n{} ({}):",
+        "Violations".if_supports_color(Stream::Stdout, |s| s.bold()),
+        report.violations.len()
+    );
     for v in &report.violations {
         let sev = if v.severity == "error" {
-            v.severity.red().to_string()
+            v.severity
+                .if_supports_color(Stream::Stdout, |s| s.red())
+                .to_string()
         } else {
-            v.severity.yellow().to_string()
+            v.severity
+                .if_supports_color(Stream::Stdout, |s| s.yellow())
+                .to_string()
         };
         println!(
             "  [{sev}] {rule} — {msg}",
-            rule = v.rule_id.cyan(),
+            rule = v.rule_id.if_supports_color(Stream::Stdout, |s| s.cyan()),
             msg = v.message
         );
         if !v.file.is_empty() {
-            println!("         file: {}", v.file.dimmed());
+            println!(
+                "         file: {}",
+                v.file.if_supports_color(Stream::Stdout, |s| s.dimmed())
+            );
         }
     }
 
@@ -1104,14 +1142,13 @@ fn print_human_report(report: &PolicyCheckReport) {
         println!(
             "\n{}",
             "Gate is observe: violations are warnings only (exit 0)."
-                .yellow()
-                .bold()
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
         );
     } else {
         println!(
             "\n{}",
             "Fix the violations above, or adjust policy via a reviewed PR to the base branch."
-                .dimmed()
+                .if_supports_color(Stream::Stdout, |s| s.dimmed())
         );
     }
 }

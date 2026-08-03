@@ -1,3 +1,4 @@
+pub mod color;
 pub mod diagnostics;
 pub mod empty;
 pub mod human;

@@ -94,6 +94,11 @@ fn run() -> Result<()> {
     // initializing the logger.  cli::run_with(cli) reuses the parsed struct,
     // avoiding a second parse.
     let cli_args = Cli::parse_from(args);
+
+    // 0131: honour NO_COLOR / FORCE_COLOR / CLICOLOR_FORCE before any product
+    // colour emit. Belt-and-suspenders for if_supports_color + test baseline.
+    ledgerful::output::color::init_color_support();
+
     // TA19: the global `-v` flag must not enable debug-level tracing for
     // `config diff` output. It still controls tracing for every other command.
     let effective_verbose = cli_args.verbose

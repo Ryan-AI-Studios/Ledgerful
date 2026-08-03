@@ -3,7 +3,7 @@ use crate::ledger::*;
 use crate::state::storage::StorageManager;
 use clap::ValueEnum;
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 
 pub fn execute_ledger_reconcile(
     tx_id: Option<String>,
@@ -20,7 +20,10 @@ pub fn execute_ledger_reconcile(
         .reconcile_drift(tx_id, pattern, all, reason.unwrap_or_default())
         .map_err(|e| miette::miette!("{}", e))?;
 
-    println!("{}", "Drift reconciled.".green());
+    println!(
+        "{}",
+        "Drift reconciled.".if_supports_color(Stream::Stdout, |s| s.green())
+    );
     Ok(())
 }
 
@@ -102,7 +105,10 @@ pub fn execute_ledger_adopt(
 
     drop(tx_mgr);
 
-    println!("{}", "Drift adopted and committed.".green());
+    println!(
+        "{}",
+        "Drift adopted and committed.".if_supports_color(Stream::Stdout, |s| s.green())
+    );
     Ok(())
 }
 
@@ -169,16 +175,17 @@ pub fn execute_ledger_gc(
     if !stale && !orphans {
         println!(
             "{}",
-            "Usage: ledgerful ledger gc --stale [--ttl-hours <N>] | --orphans [--force]".cyan()
+            "Usage: ledgerful ledger gc --stale [--ttl-hours <N>] | --orphans [--force]"
+                .if_supports_color(Stream::Stdout, |s| s.cyan())
         );
         println!();
         println!(
             "  {}  Remove PENDING transactions older than TTL (default: 72h)",
-            "--stale".bold()
+            "--stale".if_supports_color(Stream::Stdout, |s| s.bold())
         );
         println!(
             "  {}  Remove transactions with no corresponding git commit",
-            "--orphans".bold()
+            "--orphans".if_supports_color(Stream::Stdout, |s| s.bold())
         );
         return Ok(());
     }
@@ -212,7 +219,8 @@ pub fn execute_ledger_gc(
         if !force && !dry_run {
             println!(
                 "{} This will mark them as ROLLED_BACK in the ledger history.",
-                "WARNING".yellow().bold()
+                "WARNING"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
             );
             if !crate::util::term::is_interactive() {
                 return Err(miette::miette!(
@@ -259,13 +267,15 @@ pub fn execute_ledger_gc(
             if dry_run {
                 println!(
                     "{} Dry-run completed. No transactions were modified. ({} stale transaction(s) would have been cleaned up)",
-                    "DONE".green().bold(),
+                    "DONE".if_supports_color(Stream::Stdout, |s| s
+                        .style(Style::new().green().bold())),
                     count
                 );
             } else {
                 println!(
                     "{} Successfully cleaned up {} stale transaction(s).",
-                    "DONE".green().bold(),
+                    "DONE".if_supports_color(Stream::Stdout, |s| s
+                        .style(Style::new().green().bold())),
                     count
                 );
             }
@@ -287,7 +297,8 @@ pub fn execute_ledger_gc(
             } else {
                 println!(
                     "{} Failed to clean up {} transaction(s). Check logs for details.",
-                    "WARN:".yellow().bold(),
+                    "WARN:".if_supports_color(Stream::Stdout, |s| s
+                        .style(Style::new().yellow().bold())),
                     failures
                 );
             }
@@ -316,7 +327,8 @@ pub fn execute_ledger_gc(
         if !force && !dry_run {
             println!(
                 "{} This will mark them as ROLLED_BACK in the ledger history.",
-                "WARNING".yellow().bold()
+                "WARNING"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
             );
             if !crate::util::term::is_interactive() {
                 return Err(miette::miette!(
@@ -363,13 +375,15 @@ pub fn execute_ledger_gc(
             if dry_run {
                 println!(
                     "{} Dry-run completed. No transactions were modified. ({} orphaned transaction(s) would have been cleaned up)",
-                    "DONE".green().bold(),
+                    "DONE".if_supports_color(Stream::Stdout, |s| s
+                        .style(Style::new().green().bold())),
                     count
                 );
             } else {
                 println!(
                     "{} Successfully cleaned up {} orphaned transaction(s).",
-                    "DONE".green().bold(),
+                    "DONE".if_supports_color(Stream::Stdout, |s| s
+                        .style(Style::new().green().bold())),
                     count
                 );
             }
@@ -391,7 +405,8 @@ pub fn execute_ledger_gc(
             } else {
                 println!(
                     "{} Failed to clean up {} transaction(s). Check logs for details.",
-                    "WARN:".yellow().bold(),
+                    "WARN:".if_supports_color(Stream::Stdout, |s| s
+                        .style(Style::new().yellow().bold())),
                     failures
                 );
             }
@@ -405,7 +420,11 @@ pub fn execute_ledger_hook_repair(force: bool) -> Result<()> {
     let layout = get_layout()?;
     let sidecar_path = layout.state_subdir().join("pending_hook_tx");
 
-    println!("{}", "Ledgerful Hook Repair".bold().cyan());
+    println!(
+        "{}",
+        "Ledgerful Hook Repair"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+    );
 
     if !sidecar_path.exists() {
         println!("No pending hook sidecar found. Lifecycle is consistent.");
@@ -439,7 +458,7 @@ pub fn execute_ledger_hook_repair(force: bool) -> Result<()> {
 
     println!(
         "{} Hook sidecar mismatch detected!",
-        "WARNING:".yellow().bold()
+        "WARNING:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
     );
     println!("  Pending Tx ID: {}", pending.tx_id);
     println!(
@@ -481,7 +500,7 @@ pub fn execute_ledger_hook_repair(force: bool) -> Result<()> {
         let _ = std::fs::remove_file(&sidecar_path);
         println!(
             "{} Stale sidecar removed and transaction rolled back in DB.",
-            "SUCCESS:".green().bold()
+            "SUCCESS:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
         );
     } else {
         println!(

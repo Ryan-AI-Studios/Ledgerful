@@ -1,7 +1,7 @@
 use crate::commands::helpers::get_layout;
 use crate::config::model::VerifyMode;
 use miette::Result;
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream};
 
 pub fn execute_config_view(json: bool, section: Option<String>, key: Option<String>) -> Result<()> {
     let layout = get_layout()?;
@@ -43,7 +43,8 @@ pub fn execute_config_view(json: bool, section: Option<String>, key: Option<Stri
     if !json && rules.was_legacy_default {
         println!(
             "{}",
-            "ℹ️  Detected historical rules; using automatic fallback policy.".blue()
+            "ℹ️  Detected historical rules; using automatic fallback policy."
+                .if_supports_color(Stream::Stdout, |s| s.blue())
         );
     }
 

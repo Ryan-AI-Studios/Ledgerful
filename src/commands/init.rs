@@ -322,7 +322,7 @@ pub fn execute_init(no_gitignore: bool, enforce: bool) -> Result<()> {
     crate::state::storage::StorageManager::init_with_layout(&layout)?;
 
     // 7. Print the deterministic detected profile, evidence, and current commands.
-    use owo_colors::OwoColorize;
+    use owo_colors::{OwoColorize, Stream, Style};
     let profile = crate::platform::repository::detect_repository(root.as_std_path());
     let config = crate::config::load::load_config(&layout).unwrap_or_default();
     let auto_steps = crate::verify::auto_policy::build_auto_policy(
@@ -332,8 +332,15 @@ pub fn execute_init(no_gitignore: bool, enforce: bool) -> Result<()> {
         crate::verify::plan::VerifyScope::Full,
     );
 
-    println!("\n{}", "Verification Auto-Policy Details".bold().cyan());
-    println!("{}", "  Detected Stack:".bold());
+    println!(
+        "\n{}",
+        "Verification Auto-Policy Details"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+    );
+    println!(
+        "{}",
+        "  Detected Stack:".if_supports_color(Stream::Stdout, |s| s.bold())
+    );
     for ev in &profile.evidence {
         let text = match ev {
             crate::platform::repository::DetectionEvidence::FoundCargoToml => "Cargo (Cargo.toml)",
@@ -350,7 +357,11 @@ pub fn execute_init(no_gitignore: bool, enforce: bool) -> Result<()> {
         println!("    • None (Neutral)");
     }
     if !profile.warnings.is_empty() {
-        println!("{}", "  Warnings:".bold().yellow());
+        println!(
+            "{}",
+            "  Warnings:"
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().yellow()))
+        );
         for warn in &profile.warnings {
             let warn_text = match warn {
                 crate::platform::repository::DetectionWarning::AmbiguousDenoConfig => {
@@ -378,7 +389,10 @@ pub fn execute_init(no_gitignore: bool, enforce: bool) -> Result<()> {
             println!("    • {}", warn_text);
         }
     }
-    println!("{}", "  Initial Commands:".bold());
+    println!(
+        "{}",
+        "  Initial Commands:".if_supports_color(Stream::Stdout, |s| s.bold())
+    );
     for step in &auto_steps {
         println!("    • {}", step.command);
     }
@@ -443,10 +457,17 @@ pub(crate) fn write_initial_mode_ledger_entry(
 }
 
 fn print_init_status_block(gate_mode: &str) {
-    use owo_colors::OwoColorize;
+    use owo_colors::{OwoColorize, Stream, Style};
 
-    println!("\n{}", "Ledgerful Status".bold().underline());
-    println!("  Gate mode: {}", gate_mode.yellow().bold());
+    println!(
+        "\n{}",
+        "Ledgerful Status"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
+    );
+    println!(
+        "  Gate mode: {}",
+        gate_mode.if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
+    );
 
     let has_local_model = std::env::var("OLLAMA_API_KEY").is_ok()
         || std::env::var("OLLAMA_CLOUD_API_KEY").is_ok()
@@ -463,11 +484,21 @@ fn print_init_status_block(gate_mode: &str) {
         .unwrap_or_else(|_| "~/.ledgerful/keys".to_string());
     println!("  Keys:       {}", keys_dir);
     println!("  Hooks:      commit-msg, post-commit, pre-push (.git/hooks/)");
-    println!("  Pending tx: {}", "0".green());
-    println!("  Drift:      {}", "0".green());
+    println!(
+        "  Pending tx: {}",
+        "0".if_supports_color(Stream::Stdout, |s| s.green())
+    );
+    println!(
+        "  Drift:      {}",
+        "0".if_supports_color(Stream::Stdout, |s| s.green())
+    );
     println!("  Timings:    recorded locally (opt out: ledgerful timings --opt-out)");
 
-    println!("\n{}", "Next Steps".bold().underline());
+    println!(
+        "\n{}",
+        "Next Steps"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
+    );
     println!(
         "  1. ledgerful index --incremental    # Index changed files (~5-10s for a medium repo)"
     );
@@ -479,7 +510,7 @@ fn print_init_status_block(gate_mode: &str) {
     if gate_mode == "observe" {
         println!(
             "\n{} commits are recorded and warned, never blocked. Run 'ledgerful gate mode enforce' when ready.",
-            "Notice:".bold().yellow()
+            "Notice:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().yellow()))
         );
     }
 }

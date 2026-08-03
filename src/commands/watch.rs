@@ -1,6 +1,6 @@
 use camino::Utf8PathBuf;
 use miette::Result;
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::time::Duration;
@@ -55,9 +55,9 @@ pub fn execute_watch(interval_ms: u64, json_output: bool, no_graph_sync: bool) -
     if !json_output {
         println!(
             "{} {}  {}",
-            "Watching:".bold().green(),
+            "Watching:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().green())),
             path,
-            "(press Ctrl+C to stop)".dimmed()
+            "(press Ctrl+C to stop)".if_supports_color(Stream::Stdout, |s| s.dimmed())
         );
     }
 
@@ -79,16 +79,25 @@ pub fn execute_watch(interval_ms: u64, json_output: bool, no_graph_sync: bool) -
                     .timestamp
                     .format("%Y-%m-%d %H:%M:%S")
                     .to_string()
-                    .dimmed(),
-                batch.events.len().bold()
+                    .if_supports_color(Stream::Stdout, |s| s.dimmed()),
+                batch
+                    .events
+                    .len()
+                    .if_supports_color(Stream::Stdout, |s| s.bold())
             );
 
             for event in &batch.events {
                 let kind_str = format!("{:?}", event.kind);
                 let kind_colored = match event.kind {
-                    crate::watch::batch::WatchEventKind::Create => kind_str.green().to_string(),
-                    crate::watch::batch::WatchEventKind::Modify => kind_str.yellow().to_string(),
-                    crate::watch::batch::WatchEventKind::Delete => kind_str.red().to_string(),
+                    crate::watch::batch::WatchEventKind::Create => kind_str
+                        .if_supports_color(Stream::Stdout, |s| s.green())
+                        .to_string(),
+                    crate::watch::batch::WatchEventKind::Modify => kind_str
+                        .if_supports_color(Stream::Stdout, |s| s.yellow())
+                        .to_string(),
+                    crate::watch::batch::WatchEventKind::Delete => kind_str
+                        .if_supports_color(Stream::Stdout, |s| s.red())
+                        .to_string(),
                     _ => kind_str,
                 };
                 println!("  [{}] {}", kind_colored, event.path);
@@ -140,7 +149,12 @@ pub fn execute_watch(interval_ms: u64, json_output: bool, no_graph_sync: bool) -
                          Run `ledgerful index --full` to rebuild."
                     );
                     if !json_output {
-                        println!("{} {}", "WARN".bold().yellow(), msg);
+                        println!(
+                            "{} {}",
+                            "WARN".if_supports_color(Stream::Stdout, |s| s
+                                .style(Style::new().bold().yellow())),
+                            msg
+                        );
                     }
                     tracing::warn!("{msg}");
                 } else {
@@ -186,7 +200,10 @@ pub fn execute_watch(interval_ms: u64, json_output: bool, no_graph_sync: bool) -
     }
 
     if !json_output {
-        println!("{}", "Watch stopped.".yellow());
+        println!(
+            "{}",
+            "Watch stopped.".if_supports_color(Stream::Stdout, |s| s.yellow())
+        );
     }
     Ok(())
 }

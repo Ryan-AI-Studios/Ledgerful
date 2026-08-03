@@ -58,7 +58,7 @@
 
 use camino::Utf8PathBuf;
 use miette::Result;
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::env;
@@ -546,7 +546,10 @@ pub fn execute_usage_enable() -> Result<()> {
     // after enable.
     config.last_sent_at = Some(now_iso());
     save_config(&config)?;
-    println!("{} Usage metrics enabled.", "✓".green());
+    println!(
+        "{} Usage metrics enabled.",
+        "✓".if_supports_color(Stream::Stdout, |s| s.green())
+    );
     println!(
         "  Anonymous ID: {}",
         config.anonymous_id.as_deref().unwrap_or("(none)")
@@ -554,9 +557,12 @@ pub fn execute_usage_enable() -> Result<()> {
     println!("  Only command names and feature flags are collected.");
     println!(
         "  Run {} to see the exact payload that would be sent.",
-        "ledgerful usage show-payload".cyan()
+        "ledgerful usage show-payload".if_supports_color(Stream::Stdout, |s| s.cyan())
     );
-    println!("  Run {} to disable.", "ledgerful usage disable".cyan());
+    println!(
+        "  Run {} to disable.",
+        "ledgerful usage disable".if_supports_color(Stream::Stdout, |s| s.cyan())
+    );
     Ok(())
 }
 
@@ -565,7 +571,10 @@ pub fn execute_usage_disable() -> Result<()> {
     let mut config = load_config();
     config.enabled = false;
     save_config(&config)?;
-    println!("{} Usage metrics disabled.", "✓".green());
+    println!(
+        "{} Usage metrics disabled.",
+        "✓".if_supports_color(Stream::Stdout, |s| s.green())
+    );
     println!("  Anonymous ID preserved (re-enabling will not generate a new one).");
     Ok(())
 }
@@ -574,11 +583,20 @@ pub fn execute_usage_disable() -> Result<()> {
 pub fn execute_usage_status() -> Result<()> {
     let config = load_config();
 
-    println!("{} Usage Metrics Status", "═".cyan());
+    println!(
+        "{} Usage Metrics Status",
+        "═".if_supports_color(Stream::Stdout, |s| s.cyan())
+    );
     if config.enabled {
-        println!("  Enabled:         {}", "yes".green());
+        println!(
+            "  Enabled:         {}",
+            "yes".if_supports_color(Stream::Stdout, |s| s.green())
+        );
     } else {
-        println!("  Enabled:         {}", "no".red());
+        println!(
+            "  Enabled:         {}",
+            "no".if_supports_color(Stream::Stdout, |s| s.red())
+        );
     }
     println!(
         "  Anonymous ID:    {}",

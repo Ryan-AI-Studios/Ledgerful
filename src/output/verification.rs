@@ -2,7 +2,7 @@ use crate::output::diagnostics::print_header;
 use crate::verify::engine::VerificationContext;
 use crate::verify::results::VerificationReport;
 use crate::verify::suggestions::{Suggestion, SuggestionSeverity};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 
 /// Whether to print Suggested Actions / full human report chatter after verify.
 ///
@@ -60,55 +60,54 @@ impl VerificationReporter {
         // Suggested actions are already printed in execute_verify for now,
         // but let's move the printer here.
         if !report.suggested_actions.is_empty() {
-            Self::print_suggested_actions(
-                &report.suggested_actions,
-                std::env::var("NO_COLOR").is_ok(),
-            );
+            Self::print_suggested_actions(&report.suggested_actions);
         }
     }
 
     pub fn print_prediction_warnings(warnings: &[String]) {
         for warning in warnings {
-            eprintln!("{} {}", "WARN".yellow().bold(), warning);
+            eprintln!(
+                "{} {}",
+                "WARN".if_supports_color(Stream::Stderr, |s| {
+                    s.style(Style::new().yellow().bold())
+                }),
+                warning
+            );
         }
     }
 
-    pub fn print_suggested_actions(suggestions: &[Suggestion], no_color: bool) {
+    /// Print Suggested Actions to stdout. Colour is gated via
+    /// `if_supports_color(Stream::Stdout, …)` (shared 0131 policy — no
+    /// one-off `NO_COLOR` bool).
+    pub fn print_suggested_actions(suggestions: &[Suggestion]) {
         print_header("Suggested Actions");
 
         for s in suggestions {
             let severity_icon = match s.severity {
-                SuggestionSeverity::ActionRequired => {
-                    if no_color {
-                        "!!".to_string()
-                    } else {
-                        "!!".red().bold().to_string()
-                    }
-                }
-                SuggestionSeverity::Warning => {
-                    if no_color {
-                        "!".to_string()
-                    } else {
-                        "!".yellow().bold().to_string()
-                    }
-                }
-                SuggestionSeverity::Info => {
-                    if no_color {
-                        "i".to_string()
-                    } else {
-                        "i".cyan().to_string()
-                    }
-                }
+                SuggestionSeverity::ActionRequired => "!!"
+                    .if_supports_color(Stream::Stdout, |t| t.style(Style::new().red().bold()))
+                    .to_string(),
+                SuggestionSeverity::Warning => "!"
+                    .if_supports_color(Stream::Stdout, |t| t.style(Style::new().yellow().bold()))
+                    .to_string(),
+                SuggestionSeverity::Info => "i"
+                    .if_supports_color(Stream::Stdout, |t| t.cyan())
+                    .to_string(),
             };
 
-            let description = if no_color {
-                s.description.clone()
-            } else {
-                match s.severity {
-                    SuggestionSeverity::ActionRequired => s.description.red().to_string(),
-                    SuggestionSeverity::Warning => s.description.yellow().to_string(),
-                    SuggestionSeverity::Info => s.description.dimmed().to_string(),
-                }
+            let description = match s.severity {
+                SuggestionSeverity::ActionRequired => s
+                    .description
+                    .if_supports_color(Stream::Stdout, |t| t.red())
+                    .to_string(),
+                SuggestionSeverity::Warning => s
+                    .description
+                    .if_supports_color(Stream::Stdout, |t| t.yellow())
+                    .to_string(),
+                SuggestionSeverity::Info => s
+                    .description
+                    .if_supports_color(Stream::Stdout, |t| t.dimmed())
+                    .to_string(),
             };
 
             println!("{} {}", severity_icon, description);
@@ -127,7 +126,11 @@ impl VerificationReporter {
             return;
         }
 
-        println!("\n{}", "Predicted CI Failures:".bold().bright_red());
+        println!(
+            "\n{}",
+            "Predicted CI Failures:".if_supports_color(Stream::Stdout, |s| s
+                .style(Style::new().bold().bright_red()))
+        );
 
         let mut explain_config = embed_config.clone();
         explain_config.timeout_secs = 15;
@@ -152,11 +155,17 @@ impl VerificationReporter {
                 .unwrap_or_else(|| "unknown".to_string());
 
             let prob_color = if *score > 0.7 {
-                format!("{:.0}%", *score * 100.0).red().bold().to_string()
+                format!("{:.0}%", *score * 100.0)
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold()))
+                    .to_string()
             } else if *score > 0.4 {
-                format!("{:.0}%", *score * 100.0).yellow().to_string()
+                format!("{:.0}%", *score * 100.0)
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
+                    .to_string()
             } else {
-                format!("{:.0}%", *score * 100.0).green().to_string()
+                format!("{:.0}%", *score * 100.0)
+                    .if_supports_color(Stream::Stdout, |s| s.green())
+                    .to_string()
             };
 
             table.add_row(vec![job_name.clone(), platform.clone(), prob_color]);
@@ -181,8 +190,8 @@ impl VerificationReporter {
                         Ok(explanation) => {
                             println!(
                                 "  {} {}: {}",
-                                "Rationale for".dimmed(),
-                                job_name.yellow(),
+                                "Rationale for".if_supports_color(Stream::Stdout, |s| s.dimmed()),
+                                job_name.if_supports_color(Stream::Stdout, |s| s.yellow()),
                                 explanation
                             );
                         }

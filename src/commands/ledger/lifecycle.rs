@@ -4,7 +4,7 @@ use crate::ledger::*;
 use crate::state::storage::StorageManager;
 use clap::ValueEnum;
 use miette::Result;
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 
 fn resolve_start_category(input: &str) -> Result<Category> {
     if let Ok(category) = Category::from_str(input, true) {
@@ -25,7 +25,8 @@ fn resolve_start_category(input: &str) -> Result<Category> {
     if let Some(category) = suggestions.first().copied() {
         eprintln!(
             "{}",
-            format!("Unknown ledger category '{input}', using closest match: {category}").yellow()
+            format!("Unknown ledger category '{input}', using closest match: {category}")
+                .if_supports_color(Stream::Stderr, |s| s.yellow())
         );
         return Ok(category);
     }
@@ -59,7 +60,10 @@ pub fn execute_ledger_start(entity: String, category: &str, message: &str) -> Re
         })
         .map_err(|e| miette::miette!("{}", e))?;
 
-    println!("Transaction started: {}", tx_id.cyan());
+    println!(
+        "Transaction started: {}",
+        tx_id.if_supports_color(Stream::Stdout, |s| s.cyan())
+    );
     Ok(())
 }
 
@@ -130,7 +134,11 @@ pub fn execute_ledger_commit(
         let _ = std::fs::remove_file(&sidecar_path);
     }
 
-    println!("{}", "Transaction committed.".green().bold());
+    println!(
+        "{}",
+        "Transaction committed."
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
+    );
 
     if git_options.with_git {
         execute_git_commit(
@@ -172,7 +180,7 @@ fn execute_git_commit(
         Ok(false) => {
             eprintln!(
                 "{}",
-                "Warning: Git commit skipped because no files are staged. Ledger commit is complete. Stage files and retry git manually.".yellow()
+                "Warning: Git commit skipped because no files are staged. Ledger commit is complete. Stage files and retry git manually.".if_supports_color(Stream::Stderr, |s| s.yellow())
             );
             return;
         }
@@ -181,15 +189,19 @@ fn execute_git_commit(
                 "{}",
                 format!(
                     "Warning: Git commit skipped: {err}. Ledger commit is complete. Resolve git state and retry manually."
-                )
-                .yellow()
+                ).if_supports_color(Stream::Stderr, |s| s.yellow())
+
             );
             return;
         }
     }
 
     match git_commit(&message, options.signoff) {
-        Ok(()) => println!("{}", "Git commit created.".green().bold()),
+        Ok(()) => println!(
+            "{}",
+            "Git commit created."
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
+        ),
         Err(err) => {
             eprintln!(
                 "{}",
@@ -197,7 +209,7 @@ fn execute_git_commit(
                     "Warning: Git commit failed: {err}. Ledger commit is complete. Retry with: {}",
                     display_git_commit_command(&message, options.signoff)
                 )
-                .yellow()
+                .if_supports_color(Stream::Stderr, |s| s.yellow())
             );
         }
     }
@@ -251,7 +263,7 @@ pub fn execute_ledger_recover_orphan(
     reason: Option<String>,
 ) -> Result<()> {
     use crate::commands::hook_sidecar::{RECOVER_HINT, read_pending_sidecar};
-    use owo_colors::OwoColorize;
+    use owo_colors::{OwoColorize, Stream, Style};
 
     if promote == abandon {
         return Err(miette::miette!(
@@ -344,8 +356,10 @@ pub fn execute_ledger_recover_orphan(
         let _ = std::fs::remove_file(&sidecar_path);
         println!(
             "{} Promote orphan {} committed as Unverified (coverage restored).",
-            "SUCCESS:".green().bold(),
-            pending.tx_id.cyan()
+            "SUCCESS:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold())),
+            pending
+                .tx_id
+                .if_supports_color(Stream::Stdout, |s| s.cyan())
         );
         return Ok(());
     }
@@ -403,9 +417,11 @@ pub fn execute_ledger_recover_orphan(
     let _ = std::fs::remove_file(&sidecar_path);
     println!(
         "{} Promote orphan {} abandoned with MAINTENANCE entry {}.",
-        "SUCCESS:".green().bold(),
-        pending.tx_id.cyan(),
-        abandon_tx.cyan()
+        "SUCCESS:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold())),
+        pending
+            .tx_id
+            .if_supports_color(Stream::Stdout, |s| s.cyan()),
+        abandon_tx.if_supports_color(Stream::Stdout, |s| s.cyan())
     );
     Ok(())
 }
@@ -440,7 +456,11 @@ pub fn execute_ledger_atomic(
         )
         .map_err(|e| miette::miette!("{}", e))?;
 
-    println!("{}", "Atomic change committed.".green().bold());
+    println!(
+        "{}",
+        "Atomic change committed."
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
+    );
     Ok(())
 }
 
@@ -454,7 +474,10 @@ pub fn execute_ledger_resume(tx_id: Option<String>) -> Result<()> {
         let full_id = tx_mgr
             .resolve_tx_id(&id)
             .map_err(|e| miette::miette!("{}", e))?;
-        println!("Resumed transaction: {}", full_id.yellow());
+        println!(
+            "Resumed transaction: {}",
+            full_id.if_supports_color(Stream::Stdout, |s| s.yellow())
+        );
     } else {
         println!("Searching for most recent pending transaction in current context...");
         let pending = tx_mgr
@@ -463,8 +486,12 @@ pub fn execute_ledger_resume(tx_id: Option<String>) -> Result<()> {
         if let Some(latest) = pending.first() {
             println!(
                 "Resumed most recent: {} ({})",
-                latest.tx_id.yellow(),
-                latest.entity.cyan()
+                latest
+                    .tx_id
+                    .if_supports_color(Stream::Stdout, |s| s.yellow()),
+                latest
+                    .entity
+                    .if_supports_color(Stream::Stdout, |s| s.cyan())
             );
         } else {
             println!("No pending transactions found to resume.");
@@ -502,7 +529,11 @@ pub fn execute_ledger_note(
         )
         .map_err(|e| miette::miette!("{}", e))?;
 
-    println!("{}", "Note recorded.".green().bold());
+    println!(
+        "{}",
+        "Note recorded."
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
+    );
     Ok(())
 }
 

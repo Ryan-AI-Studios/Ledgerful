@@ -8,7 +8,7 @@ use crate::output::table::Table;
 use crate::state::storage::StorageManager;
 use chrono::Utc;
 use miette::{IntoDiagnostic, Result};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 
 pub fn execute_validator_lifecycle(subcommand: ValidatorSubcommands) -> Result<()> {
     let layout = get_layout()?;
@@ -26,18 +26,27 @@ pub fn execute_validator_lifecycle(subcommand: ValidatorSubcommands) -> Result<(
                     serde_json::to_string_pretty(&validators).into_diagnostic()?
                 );
             } else {
-                println!("{}", "Registered Commit Validators".bold().cyan());
+                println!(
+                    "{}",
+                    "Registered Commit Validators"
+                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+                );
                 let mut table = Table::new();
                 table.set_header(vec!["Name", "Category", "Executable", "Enabled", "Level"]);
                 for v in validators {
                     table.add_row(vec![
-                        v.name.bold().to_string(),
+                        v.name
+                            .if_supports_color(Stream::Stdout, |s| s.bold())
+                            .to_string(),
                         v.category,
                         v.executable,
                         if v.enabled {
-                            "YES".green().to_string()
+                            "YES"
+                                .if_supports_color(Stream::Stdout, |s| s.green())
+                                .to_string()
                         } else {
-                            "no".red().to_string()
+                            "no".if_supports_color(Stream::Stdout, |s| s.red())
+                                .to_string()
                         },
                         format!("{:?}", v.validation_level),
                     ]);
@@ -64,10 +73,17 @@ pub fn execute_validator_lifecycle(subcommand: ValidatorSubcommands) -> Result<(
             let validators = db
                 .get_commit_validators(None)
                 .map_err(|e| miette::miette!("{}", e))?;
-            println!("\n{}", "Commit Validator Doctor Report".bold().cyan());
+            println!(
+                "\n{}",
+                "Commit Validator Doctor Report"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+            );
             let mut all_ok = true;
             for v in validators {
-                print!("  Validator {}: ", v.name.bold());
+                print!(
+                    "  Validator {}: ",
+                    v.name.if_supports_color(Stream::Stdout, |s| s.bold())
+                );
                 let exe = v.executable.trim();
                 let exists = if exe.is_empty() {
                     false
@@ -81,20 +97,32 @@ pub fn execute_validator_lifecycle(subcommand: ValidatorSubcommands) -> Result<(
                 };
 
                 if !v.enabled {
-                    println!("{}", "DISABLED".yellow());
+                    println!(
+                        "{}",
+                        "DISABLED".if_supports_color(Stream::Stdout, |s| s.yellow())
+                    );
                 } else if exists {
-                    println!("{}", "OK".green());
+                    println!("{}", "OK".if_supports_color(Stream::Stdout, |s| s.green()));
                 } else {
-                    println!("{} (Executable '{}' not found)", "MISSING/ERROR".red(), exe);
+                    println!(
+                        "{} (Executable '{}' not found)",
+                        "MISSING/ERROR".if_supports_color(Stream::Stdout, |s| s.red()),
+                        exe
+                    );
                     all_ok = false;
                 }
             }
             if all_ok {
-                println!("\n{}", "All enabled validators are healthy!".green());
+                println!(
+                    "\n{}",
+                    "All enabled validators are healthy!"
+                        .if_supports_color(Stream::Stdout, |s| s.green())
+                );
             } else {
                 println!(
                     "\n{}",
-                    "Some enabled validators have issues. Please check the paths.".red()
+                    "Some enabled validators have issues. Please check the paths."
+                        .if_supports_color(Stream::Stdout, |s| s.red())
                 );
             }
         }
@@ -138,14 +166,16 @@ pub(crate) fn execute_ledger_register(
             if matches!(existing, Some(ref rule_info) if rule_info.locked && !force) {
                 return Err(miette::miette!(
                     "Rule for category {} is locked. Use --force to override.",
-                    rule.category.yellow()
+                    rule.category
+                        .if_supports_color(Stream::Stdout, |s| s.yellow())
                 ));
             }
             db.insert_tech_stack_rule(&rule)
                 .map_err(|e| miette::miette!("{}", e))?;
             println!(
                 "Registered tech stack rule for category: {}",
-                rule.category.cyan()
+                rule.category
+                    .if_supports_color(Stream::Stdout, |s| s.cyan())
             );
         }
         RuleType::Validator => {
@@ -168,7 +198,12 @@ pub(crate) fn execute_ledger_register(
 
             db.insert_commit_validator(&validator)
                 .map_err(|e| miette::miette!("{}", e))?;
-            println!("Registered commit validator: {}", validator.name.cyan());
+            println!(
+                "Registered commit validator: {}",
+                validator
+                    .name
+                    .if_supports_color(Stream::Stdout, |s| s.cyan())
+            );
         }
         RuleType::Mapping => {
             let mapping: CategoryStackMapping = serde_json::from_str(&payload)
@@ -186,8 +221,12 @@ pub(crate) fn execute_ledger_register(
                 .map_err(|e| miette::miette!("{}", e))?;
             println!(
                 "Registered category mapping: {} -> {}",
-                mapping.ledger_category.cyan(),
-                mapping.stack_category.cyan()
+                mapping
+                    .ledger_category
+                    .if_supports_color(Stream::Stdout, |s| s.cyan()),
+                mapping
+                    .stack_category
+                    .if_supports_color(Stream::Stdout, |s| s.cyan())
             );
         }
         RuleType::Watcher => {
@@ -204,7 +243,10 @@ pub(crate) fn execute_ledger_register(
 
             db.insert_watcher_pattern(&pattern)
                 .map_err(|e| miette::miette!("{}", e))?;
-            println!("Registered watcher pattern: {}", pattern.glob.cyan());
+            println!(
+                "Registered watcher pattern: {}",
+                pattern.glob.if_supports_color(Stream::Stdout, |s| s.cyan())
+            );
         }
     }
 

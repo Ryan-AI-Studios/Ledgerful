@@ -23,7 +23,7 @@ use crate::state::storage::StorageManager;
 use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use hmac::{Hmac, KeyInit, Mac};
 use miette::{IntoDiagnostic, Result, miette};
-use owo_colors::OwoColorize;
+use owo_colors::{OwoColorize, Stream, Style};
 use rand::rngs::OsRng;
 use serde::Serialize;
 use sha2::{Digest, Sha256};
@@ -223,7 +223,7 @@ pub fn export_public_bundle(options: ExportOptions<'_>) -> Result<()> {
 
     println!(
         "{} Public ledger bundle exported to {}",
-        "SUCCESS:".green().bold(),
+        "SUCCESS:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold())),
         output.display()
     );
     println!(
