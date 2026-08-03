@@ -6,6 +6,18 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Docs
+
+- **Agent Daily 5 short card (0132):** Tracked docs skill + local agent packs
+  (`.agents/.../SKILL.md`, `references/commands.md`) document the scannable agent
+  default path (`doctor --json`, `change-context --json`, `ledger status`, `search`,
+  `verify --scope fast`) with escalate footer and honesty one-liners. Closes
+  report-card surface-sprawl / short-card residual (partial 0093); docs skill
+  Strategic Reasoning no longer treats `latest-impact.json` as coupling SoT or bare
+  `scan`+`impact` as first `data_stale` step (0123 residual); local pack install
+  snippet polish (`-UseBasicParsing`); root `--help` `before_help` points at skill
+  Daily 5.
+
 ### Fixed
 
 - **CLI colour gate (0131):** Human product colour goes through `if_supports_color`

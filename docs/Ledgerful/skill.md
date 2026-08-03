@@ -262,6 +262,32 @@ ledgerful dead-code --include-traits  # include standard traits (Eq, Clone, Debu
 - Light continuous: `ledgerful watch`. Heavy: `schedule setup-nightly` / `index --full` / explicit `--auto-scip`.
 - Never idle SCIP. `init` installs no watcher/schedule.
 
+## Daily 5 (agent default path)
+
+Scannable day-to-day subset — not a replacement for the full Core Workflow below.
+Prefer **`--json`** on doctor / change-context / ledger status when parsing.
+Packet + colour env: [`docs/agent-output-contract.md`](../agent-output-contract.md).
+Agent command sheet (local pack path): `.agents/skills/ledgerful/references/commands.md`
+(or `references/commands.md` when the skill pack is installed as a unit).
+
+| # | Command | Role |
+|---|---|---|
+| 1 | `ledgerful doctor --json` | Session/env readiness (`readyForPublish`) |
+| 2 | `ledgerful change-context --json` | Default pre-edit packet |
+| 3 | `ledgerful ledger status --compact` or `--json` | Provenance / pending / drift |
+| 4 | `ledgerful search …` (prefer `--auto-index` when stale) | Discovery (not full impact) |
+| 5 | `ledgerful verify --scope fast` | Local gate (pre-push style); **≠** full CI |
+
+**Escalate (not Daily 5):**
+
+- `scan --impact --json` — B2 only (readSetCapped / high risk multi-module / unclear public API / user DoD / change-context not_ready)
+- `index --incremental` / `--full` / search `--auto-index` — freshness
+- `verify --scope full` / CI — not the local fast gate
+
+**Honesty:** doctor ≠ verify ≠ full CI. Empty-tree packets stay low risk with
+`analysisWarnings` (0129). Index/search freshness: prefer `--auto-index` or
+`index --incremental` (0128/0126) — not bare full impact as a refresh step.
+
 ## Core Workflow (Default)
 
 **Default preflight ladder** = doctor → audit → ledger status → **change-context --json**.
@@ -435,11 +461,21 @@ ledgerful ask --narrative
 
 When acting as a coding agent, use Ledgerful signals to adjust your strategy:
 
-1. **Temporal Coupling**: If `latest-impact.json` shows high affinity (e.g., >70%) between a changed file and an unchanged file, you **must** read the unchanged file. Assume there is a logical dependency that imports alone do not show. Coupling scores use recency weighting — recent shared commits count more.
+1. **Temporal Coupling**: Prefer live `change-context --json` (or an escalated
+   `scan --impact` packet when B2 fires) for coupling signals. If affinity is
+   high (e.g. >70%) between a changed file and an unchanged file, you **must**
+   read the unchanged file — imports alone often miss the dependency. Coupling
+   scores use recency weighting (recent shared commits count more).
+   `.ledgerful/reports/latest-impact.json` is an **escalate-tier cache only** —
+   never a default before-step source.
 2. **Hotspots**: Files with high hotspot scores are "brittle." If you must edit a hotspot, prioritize refactoring or extremely high test coverage. Avoid adding complexity to an already complex hotspot.
 3. **Federated Impact (Cross-Repo)**: If `federated_impact` warnings appear, your change might break a sibling repository. Explain this risk and suggest an `export-schema` to verify the contract.
 4. **Predictive Verification**: If `verify` suggests tests that seem unrelated to your change, trust the predictor. It is likely based on historical failure correlations that aren't obvious from the code alone.
-5. **Stale Data**: If you see a `data_stale` warning, run `ledgerful scan` and `ledgerful impact` immediately to refresh the local cache.
+5. **Stale Data / `data_stale`**: First refresh with `ledgerful index --incremental`
+   and/or re-run `ledgerful change-context --json` (prefer `search --auto-index`
+   / ask / hotspots / dead-code when those commands report stale). Escalate to
+   `ledgerful scan --impact --json` **only** on B2 — never bare `scan` + `impact`
+   as the first move.
 
 ## How To Interpret Results
 
