@@ -797,7 +797,7 @@ fn perform_search(
                             line_info
                         )
                         .if_supports_color(Stream::Stdout, |s| s.bold()),
-                        owo_colors::OwoColorize::yellow(&r.score)
+                        r.score.if_supports_color(Stream::Stdout, |s| s.yellow())
                     );
                     if let Some(snippet) = r.snippet {
                         let ranges = r.highlight_ranges.as_deref().unwrap_or(&[]);
@@ -948,7 +948,7 @@ fn handle_fuzzy_fallback(engine: &TantivySearchEngine, args: &SearchArgs) {
                         line_info
                     )
                     .if_supports_color(Stream::Stdout, |s| s.bold()),
-                    owo_colors::OwoColorize::yellow(&m.score)
+                    m.score.if_supports_color(Stream::Stdout, |s| s.yellow())
                 );
                 if let Some(snippet) = m.snippet {
                     let ranges = m.highlight_ranges.as_deref().unwrap_or(&[]);
