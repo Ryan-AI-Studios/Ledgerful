@@ -1108,27 +1108,52 @@ pub fn execute_verify(
                         )
                     }
                     None => {
-                        // Missing impact packet must not silent-full on --scope
-                        // fast (0135 P1): empty packet → EmptyChanges cheap plan
-                        // via the classifier. Full scope keeps build_plan.
+                        // No saved impact packet (0135 final codex P1):
+                        // - Full scope: keep build_plan (historical).
+                        // - Fast + clean working tree: EmptyChanges cheap path.
+                        // - Fast + dirty working tree: MappingRefuse (or allow
+                        //   full) — never pretend EmptyChanges and under-verify.
                         let profile = crate::platform::repository::detect_repository(
                             layout.root.as_std_path(),
                         );
                         let empty_packet = crate::impact::packet::ImpactPacket::default();
                         if scope.is_fast() {
-                            let conn = ctx.storage.as_ref().map(|s| s.get_connection());
-                            crate::verify::plan::build_plan_scoped_with_options(
-                                &empty_packet,
-                                &rules,
-                                &prediction.files,
-                                &config.verify,
-                                &profile,
-                                scope,
-                                conn,
-                                &layout,
-                                auto_index,
-                                allow_full_fallback,
-                            )
+                            if working_tree_has_material_changes(layout.root.as_std_path()) {
+                                if allow_full_fallback {
+                                    let mut plan = crate::verify::plan::build_plan(
+                                        &empty_packet,
+                                        &rules,
+                                        &[],
+                                        &config.verify,
+                                        &profile,
+                                        layout.root.as_std_path(),
+                                    );
+                                    plan.fallback_reason = Some(
+                                        "fast scope unavailable — no impact packet for dirty tree; run `ledgerful scan --impact`; running full (~5-8 min)"
+                                            .to_string(),
+                                    );
+                                    plan.refused = false;
+                                    plan
+                                } else {
+                                    crate::verify::plan::refuse_plan_for_trigger(
+                                        "no impact packet for dirty tree; run `ledgerful scan --impact`",
+                                    )
+                                }
+                            } else {
+                                let conn = ctx.storage.as_ref().map(|s| s.get_connection());
+                                crate::verify::plan::build_plan_scoped_with_options(
+                                    &empty_packet,
+                                    &rules,
+                                    &prediction.files,
+                                    &config.verify,
+                                    &profile,
+                                    scope,
+                                    conn,
+                                    &layout,
+                                    auto_index,
+                                    allow_full_fallback,
+                                )
+                            }
                         } else {
                             crate::verify::plan::build_plan(
                                 &empty_packet,
@@ -1624,6 +1649,97 @@ pub fn execute_verify(
     } else {
         Err(miette::miette!("Verification failed"))
     }
+}
+
+/// True when the working tree has **material** changes that verify should not
+/// ignore when there is no saved impact packet (0135 final codex P1).
+///
+/// Material = source-like extensions or known shared-infra basenames. Ignores
+/// `.ledgerful/**` (also default ignore) and PATH/test fixtures such as a
+/// root `cargo.bat` used by empty-repo integration tests.
+///
+/// On git discovery/status failure, returns false so clean EmptyChanges still
+/// works in non-git fixtures.
+fn working_tree_has_material_changes(repo_root: &std::path::Path) -> bool {
+    let Ok(repo) = crate::git::repo::open_repo(repo_root) else {
+        return false;
+    };
+    let Ok(changes) = crate::git::status::get_repo_status(&repo) else {
+        return false;
+    };
+    changes.iter().any(|c| is_material_verify_path(&c.path))
+}
+
+fn is_material_verify_path(path: &std::path::Path) -> bool {
+    let norm = path.to_string_lossy().replace('\\', "/");
+    let norm = norm.trim_start_matches("./");
+    if norm.starts_with(".ledgerful/") || norm == ".ledgerful" {
+        return false;
+    }
+    // PATH/test shim used by empty-repo verify tests — not product source.
+    if norm.eq_ignore_ascii_case("cargo.bat")
+        || norm.eq_ignore_ascii_case("cargo.cmd")
+        || norm.eq_ignore_ascii_case("cargo")
+    {
+        return false;
+    }
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    // Shared-infra basenames that already force full under --scope fast when
+    // present in a packet (see plan::touches_shared_infra).
+    const INFRA: &[&str] = &[
+        "cargo.toml",
+        "cargo.lock",
+        "package.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "go.mod",
+        "go.sum",
+        "pyproject.toml",
+        "requirements.txt",
+        "poetry.lock",
+        "dockerfile",
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "makefile",
+    ];
+    if INFRA.iter().any(|b| name == *b) {
+        return true;
+    }
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(
+        ext.as_str(),
+        "rs" | "ts"
+            | "tsx"
+            | "js"
+            | "jsx"
+            | "mjs"
+            | "cjs"
+            | "py"
+            | "go"
+            | "java"
+            | "kt"
+            | "kts"
+            | "toml"
+            | "yaml"
+            | "yml"
+            | "json"
+            | "md"
+            | "css"
+            | "scss"
+            | "html"
+            | "sql"
+            | "sh"
+            | "ps1"
+    )
 }
 
 /// Fast health check that only probes executable availability and basic ledger
