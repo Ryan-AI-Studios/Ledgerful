@@ -122,6 +122,25 @@ pub fn execute_ask(
         }
     }
 
+    // Product-docs / Daily 5 routing (0139): product-usage questions about
+    // the agent default path are answered from skill Daily 5 + live clap
+    // about text before any LLM backend. Wire order is load-bearing:
+    // CG-F20 → ProductDocs → CG-F31 → LLM, so "session start commands"
+    // is not swallowed by GenericDiscovery (operator-surface-policy.md §2).
+    if let Some(ref q) = query
+        && crate::commands::ask_routing::parse_product_docs_intent(q).is_some()
+    {
+        let corpus = crate::commands::ask_routing::build_command_corpus();
+        let answer = crate::commands::ask_routing::build_daily5_answer(&corpus);
+        println!(
+            "{}",
+            crate::commands::ask_routing::PRODUCT_DOCS_DAILY5_BANNER
+                .if_supports_color(Stream::Stdout, |s| s.cyan())
+        );
+        println!("\n{answer}");
+        return Ok(());
+    }
+
     // Command-discovery / repo-health routing (CG-F31): operator-intent
     // questions about *which CLI command* to run (e.g. "what commands show
     // repo health?") are answered directly from the live clap command
