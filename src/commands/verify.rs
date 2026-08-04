@@ -1118,7 +1118,7 @@ pub fn execute_verify(
                         );
                         let empty_packet = crate::impact::packet::ImpactPacket::default();
                         if scope.is_fast() {
-                            if working_tree_has_changes(layout.root.as_std_path()) {
+                            if working_tree_has_material_changes(layout.root.as_std_path()) {
                                 if allow_full_fallback {
                                     let mut plan = crate::verify::plan::build_plan(
                                         &empty_packet,
@@ -1651,15 +1651,95 @@ pub fn execute_verify(
     }
 }
 
-/// True when the working tree has tracked/untracked changes (dirty).
-/// On git discovery/status failure, returns false so clean-tree EmptyChanges
-/// still works in non-git temp fixtures; dirty-with-packet remains packet-driven.
-fn working_tree_has_changes(repo_root: &std::path::Path) -> bool {
-    crate::git::repo::open_repo(repo_root)
-        .ok()
-        .and_then(|repo| crate::git::status::get_repo_status(&repo).ok())
-        .map(|changes| !changes.is_empty())
-        .unwrap_or(false)
+/// True when the working tree has **material** changes that verify should not
+/// ignore when there is no saved impact packet (0135 final codex P1).
+///
+/// Material = source-like extensions or known shared-infra basenames. Ignores
+/// `.ledgerful/**` (also default ignore) and PATH/test fixtures such as a
+/// root `cargo.bat` used by empty-repo integration tests.
+///
+/// On git discovery/status failure, returns false so clean EmptyChanges still
+/// works in non-git fixtures.
+fn working_tree_has_material_changes(repo_root: &std::path::Path) -> bool {
+    let Ok(repo) = crate::git::repo::open_repo(repo_root) else {
+        return false;
+    };
+    let Ok(changes) = crate::git::status::get_repo_status(&repo) else {
+        return false;
+    };
+    changes.iter().any(|c| is_material_verify_path(&c.path))
+}
+
+fn is_material_verify_path(path: &std::path::Path) -> bool {
+    let norm = path.to_string_lossy().replace('\\', "/");
+    let norm = norm.trim_start_matches("./");
+    if norm.starts_with(".ledgerful/") || norm == ".ledgerful" {
+        return false;
+    }
+    // PATH/test shim used by empty-repo verify tests — not product source.
+    if norm.eq_ignore_ascii_case("cargo.bat")
+        || norm.eq_ignore_ascii_case("cargo.cmd")
+        || norm.eq_ignore_ascii_case("cargo")
+    {
+        return false;
+    }
+    let name = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    // Shared-infra basenames that already force full under --scope fast when
+    // present in a packet (see plan::touches_shared_infra).
+    const INFRA: &[&str] = &[
+        "cargo.toml",
+        "cargo.lock",
+        "package.json",
+        "package-lock.json",
+        "pnpm-lock.yaml",
+        "yarn.lock",
+        "go.mod",
+        "go.sum",
+        "pyproject.toml",
+        "requirements.txt",
+        "poetry.lock",
+        "dockerfile",
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "makefile",
+    ];
+    if INFRA.iter().any(|b| name == *b) {
+        return true;
+    }
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    matches!(
+        ext.as_str(),
+        "rs" | "ts"
+            | "tsx"
+            | "js"
+            | "jsx"
+            | "mjs"
+            | "cjs"
+            | "py"
+            | "go"
+            | "java"
+            | "kt"
+            | "kts"
+            | "toml"
+            | "yaml"
+            | "yml"
+            | "json"
+            | "md"
+            | "css"
+            | "scss"
+            | "html"
+            | "sql"
+            | "sh"
+            | "ps1"
+    )
 }
 
 /// Fast health check that only probes executable availability and basic ledger
