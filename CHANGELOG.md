@@ -42,6 +42,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **topFindings optional-category noise (0138):** Doctor sidecar `findings` and
+  change-context `doctor.topFindings` no longer include `DoctorCategory::Optional`
+  warns (e.g. dogfood `completion-unreachable`), so flaky optional backends do
+  not crowd the cap-5 budget. Eligibility is shared with dashboard `failures`
+  via `is_action_critical` (block always; non-optional warn; info never). Full
+  `doctor --json` `findings[]` stays complete (with `category`). schemaVersion
+  stays 1. Run `doctor` once after upgrade to flush pre-0138 sidecars.
+
 - **PATH/binary lag vs engine tree (0137 dogfood):** After merge without reinstall,
   `~/.cargo/bin/ledgerful` could share `CARGO_PKG_VERSION` with the tree while
   help/flags lagged. Doctor now warns on commit-level (and version) lag with

@@ -1395,8 +1395,13 @@ mod tests {
         assert!(section.top_findings.is_empty());
     }
 
+    /// Reader tolerates pre-0138 sidecars that still include optional-category
+    /// codes (e.g. `completion-unreachable`) until the next doctor write.
+    /// This is **stale-sidecar tolerance**, not writer policy — post-0138
+    /// `write_doctor_results` excludes optional warns via `is_action_critical`.
+    /// Parse still forwards sidecar findings as-is (no read-time category filter).
     #[test]
-    fn parse_doctor_sidecar_findings_and_remediation() {
+    fn parse_doctor_sidecar_tolerates_stale_optional_finding() {
         let contents = r#"{
             "failures": 1,
             "timestamp": "2099-01-01T00:00:00+00:00",
@@ -1426,6 +1431,7 @@ mod tests {
             section.top_findings[0].remediation.as_deref(),
             Some("ledgerful config set intent.trusted_public_keys '[\"abc\"]'")
         );
+        // Stale optional code accepted as-is (not re-filtered at read time).
         assert_eq!(section.top_findings[1].code, "completion-unreachable");
         assert!(
             section.top_findings[1].remediation.is_none(),

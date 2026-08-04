@@ -206,11 +206,15 @@ failures = count(block) + count(warn WHERE category != optional)
 
 Additive fields: `readyForPublish`, `block`, `warn`, `info`, and (0129) **`findings`**.
 
-**`findings` (agent top-N, 0129):** block \|\| warn only — **no category filter**
-(optional-category warns appear even when they do not increment `failures`).
+**`findings` (agent top-N, 0129 + 0138):** action-critical only — same eligibility as
+`dashboard_failures` / B1: **block always**, or **warn when category ≠ optional**;
+info never. Optional-category warns are excluded from sidecar top-N (they still
+appear on full `doctor --json` `findings[]`, which includes `category`).
 Severity-first re-sort (block before warn, then code, then message) before cap **5**.
-Info excluded. Optional `remediation` when present. Health/dashboard still scores
-only **`failures`** / counts — unknown `findings` is ignored by older readers.
+Optional `remediation` when present. Health/dashboard still scores only
+**`failures`** / counts — unknown `findings` is ignored by older readers.
+**Transition:** pre-0138 sidecars may still contain optional codes until the next
+doctor write; the reader trusts the sidecar as-is (no read-time category re-filter).
 
 **Orthogonal to readiness:** models down → ready + high health; search index corrupt
 or **empty** → ready (can still verify/push) **but** health penalized via non-optional

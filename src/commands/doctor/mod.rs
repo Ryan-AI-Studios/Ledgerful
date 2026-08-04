@@ -8,6 +8,7 @@ pub use binary_currency::{
     is_ledgerful_engine_worktree, probe_binary_currency, sha_prefix_equal, shorten_sha_for_display,
     worktree_package_version,
 };
+use finding::is_action_critical;
 pub use finding::{
     DoctorCategory, DoctorFinding, DoctorSeverity, DoctorSummary, dashboard_failures,
     ready_for_publish, summarize,
@@ -1170,10 +1171,13 @@ fn format_embedding_backend_availability(
 /// category != optional)`. Optional backends never contribute. Dashboard/health
 /// readers still use only `failures` / counts; unknown `findings` is ignored.
 ///
-/// **`findings`** (0129): top-N block/warn for agent packets — **no category
-/// filter** (optional-category warns appear). Independent severity-first re-sort
-/// (block before warn, then code, then message) before cap 5. Info excluded.
-/// Optional `remediation` when present (never null).
+/// **`findings`** (0129 + 0138): top-N **action-critical** findings for agent
+/// packets — block always; warn when category != Optional; info never.
+/// Eligibility is shared with [`dashboard_failures`] via [`is_action_critical`].
+/// Optional-category warns are **excluded** (they remain on full `doctor --json`
+/// `findings[]`, which includes `category`). Severity-first re-sort (block
+/// before warn, then code, then message) before cap 5. Optional
+/// `remediation` when present (never null).
 ///
 /// Legacy `results: [{passed}]` array shape is accepted on read only (writers
 /// no longer emit it).
@@ -1214,16 +1218,15 @@ fn write_doctor_results(layout: &Layout, findings: &[DoctorFinding]) -> Result<(
     Ok(())
 }
 
-/// Select top-N block/warn findings for the doctor sidecar (0129).
+/// Select top-N action-critical findings for the doctor sidecar (0129 + 0138).
 ///
-/// Filter: severity `block` or `warn` only — **no category filter**.
-/// Sort: block before warn, then code, then message — **before** take(5).
-/// Distinct from [`dashboard_failures`] (which excludes optional-category warns).
+/// Filter: [`is_action_critical`] — block always; warn when category != Optional;
+/// info never. Optional-category warns are excluded (full `doctor --json` remains
+/// complete). Sort: block before warn, then code, then message — **before** take(5).
+/// Eligibility shared with [`dashboard_failures`]; list vs count remain separate.
 fn select_sidecar_top_findings(findings: &[DoctorFinding]) -> Vec<&DoctorFinding> {
-    let mut selected: Vec<&DoctorFinding> = findings
-        .iter()
-        .filter(|f| matches!(f.severity, DoctorSeverity::Block | DoctorSeverity::Warn))
-        .collect();
+    let mut selected: Vec<&DoctorFinding> =
+        findings.iter().filter(|f| is_action_critical(f)).collect();
     selected.sort_by(|a, b| {
         sidecar_severity_rank(a.severity)
             .cmp(&sidecar_severity_rank(b.severity))
@@ -2043,20 +2046,12 @@ mod tests {
             serde_json::from_str(&std::fs::read_to_string(path.as_std_path()).unwrap()).unwrap();
         assert_eq!(json["failures"].as_u64(), Some(0));
         assert_eq!(json["readyForPublish"], true);
-        // 0129: optional-category warn appears in findings even when failures==0
+        // 0138: optional-category warns excluded from sidecar findings; warn count honest
+        assert_eq!(json["warn"].as_u64(), Some(1));
         let findings_arr = json["findings"].as_array().expect("findings array present");
         assert!(
-            !findings_arr.is_empty(),
-            "optional warn must appear in findings: {findings_arr:?}"
-        );
-        assert_eq!(findings_arr[0]["code"], "completion-unreachable");
-        assert_eq!(findings_arr[0]["severity"], "warn");
-        // info excluded
-        assert!(
-            findings_arr
-                .iter()
-                .all(|f| f.get("severity").and_then(|s| s.as_str()) != Some("info")),
-            "info must be excluded from findings"
+            findings_arr.is_empty(),
+            "optional-only warns must not appear in sidecar findings: {findings_arr:?}"
         );
     }
 
@@ -2174,6 +2169,103 @@ mod tests {
         assert_eq!(top.len(), 2);
         assert_eq!(top[0].code, "b1");
         assert_eq!(top[1].code, "w1");
+    }
+
+    #[test]
+    fn select_sidecar_top_findings_excludes_optional_warn() {
+        // Mixed optional + signing → only signing (0138).
+        let findings = vec![
+            DoctorFinding::warn(
+                "completion-unreachable",
+                DoctorCategory::Optional,
+                "optional down",
+            ),
+            DoctorFinding::warn("sig-pin", DoctorCategory::Signing, "pin missing"),
+            DoctorFinding::warn("embed-unreachable", DoctorCategory::Optional, "embed down"),
+            DoctorFinding::warn(
+                "binary-behind-tree",
+                DoctorCategory::Tools,
+                "PATH binary lags tree",
+            ),
+        ];
+        let top = select_sidecar_top_findings(&findings);
+        assert_eq!(top.len(), 2, "optional warns excluded: {top:?}");
+        let codes: Vec<&str> = top.iter().map(|f| f.code.as_str()).collect();
+        assert_eq!(codes, vec!["binary-behind-tree", "sig-pin"]);
+        assert!(
+            top.iter().all(|f| f.category != DoctorCategory::Optional),
+            "no optional codes in top: {codes:?}"
+        );
+    }
+
+    #[test]
+    fn select_sidecar_top_findings_cap_five_optional_does_not_consume() {
+        // 4 Tools blocks + 2 optional warns + 2 Index warns → 5 entries
+        // (4 blocks + 1 index by sort); optional does not consume cap budget.
+        let mut findings = Vec::new();
+        for i in 0..4 {
+            findings.push(DoctorFinding::block(
+                format!("block-{i}"),
+                DoctorCategory::Tools,
+                format!("block msg {i}"),
+            ));
+        }
+        findings.push(DoctorFinding::warn(
+            "completion-unreachable",
+            DoctorCategory::Optional,
+            "optional a",
+        ));
+        findings.push(DoctorFinding::warn(
+            "embed-unreachable",
+            DoctorCategory::Optional,
+            "optional b",
+        ));
+        findings.push(DoctorFinding::warn(
+            "search-corrupt",
+            DoctorCategory::Index,
+            "index a",
+        ));
+        findings.push(DoctorFinding::warn(
+            "search-empty",
+            DoctorCategory::Index,
+            "index b",
+        ));
+        let top = select_sidecar_top_findings(&findings);
+        assert_eq!(top.len(), 5, "cap 5: {top:?}");
+        assert!(
+            top.iter()
+                .take(4)
+                .all(|f| f.severity == DoctorSeverity::Block),
+            "first 4 must be blocks: {top:?}"
+        );
+        assert_eq!(top[4].severity, DoctorSeverity::Warn);
+        assert_eq!(top[4].category, DoctorCategory::Index);
+        // First index warn alphabetically by code: search-corrupt before search-empty
+        assert_eq!(top[4].code, "search-corrupt");
+        assert!(
+            top.iter().all(|f| f.category != DoctorCategory::Optional),
+            "optional must not consume cap: {:?}",
+            top.iter().map(|f| f.code.as_str()).collect::<Vec<_>>()
+        );
+    }
+
+    #[test]
+    fn select_sidecar_top_findings_optional_block_still_surfaces() {
+        // 1 Optional block + 1 Signing warn → both (block first) — locks B1.
+        let findings = vec![
+            DoctorFinding::warn("sig-pin", DoctorCategory::Signing, "pin missing"),
+            DoctorFinding::block(
+                "optional-block",
+                DoctorCategory::Optional,
+                "hypothetical optional block",
+            ),
+        ];
+        let top = select_sidecar_top_findings(&findings);
+        assert_eq!(top.len(), 2);
+        assert_eq!(top[0].code, "optional-block");
+        assert_eq!(top[0].severity, DoctorSeverity::Block);
+        assert_eq!(top[1].code, "sig-pin");
+        assert_eq!(top[1].severity, DoctorSeverity::Warn);
     }
 
     #[test]
