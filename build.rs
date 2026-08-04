@@ -28,6 +28,9 @@ fn main() {
 
 /// Prefer 12-hex short SHA via `git rev-parse --short=12 HEAD`.
 /// Returns None on any failure (missing git, non-repo, non-zero exit, empty).
+///
+/// Fail-soft contract mirrors `binary_currency::embed_sha_from_rev_parse`
+/// (unit-tested there): non-success / empty → treat as unknown at call site.
 fn git_short_sha() -> Option<String> {
     let output = std::process::Command::new("git")
         .args(["rev-parse", "--short=12", "HEAD"])

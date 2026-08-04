@@ -215,6 +215,29 @@ mod tests {
     use std::fs;
     use tempfile::tempdir;
 
+    /// Pure fail-soft mapping of `git rev-parse --short=12 HEAD` → embed token.
+    /// Mirrors root `build.rs` (keep in sync): non-success / empty → `"unknown"`.
+    fn embed_sha_from_rev_parse(success: bool, stdout: &str) -> String {
+        if !success {
+            return "unknown".to_string();
+        }
+        let s = stdout.trim();
+        if s.is_empty() {
+            "unknown".to_string()
+        } else {
+            s.to_string()
+        }
+    }
+
+    /// Pure long version string for clap `long_version` (mirrors `build.rs`).
+    fn compose_version_long(pkg_version: &str, sha: &str) -> String {
+        if sha != "unknown" && !sha.is_empty() {
+            format!("{pkg_version} ({sha})")
+        } else {
+            pkg_version.to_string()
+        }
+    }
+
     #[test]
     fn dogfood_same_version_different_sha_finds_commit_only() {
         let lag = classify_binary_currency(
@@ -440,5 +463,36 @@ version = "0.2.5"
             true,
         );
         assert!(lag.is_none(), "prefix of full HEAD must equal short embed");
+    }
+
+    #[test]
+    fn embed_sha_fail_soft_unknown_on_git_failure_or_empty() {
+        assert_eq!(embed_sha_from_rev_parse(false, "deadbeefcafe"), "unknown");
+        assert_eq!(embed_sha_from_rev_parse(true, ""), "unknown");
+        assert_eq!(embed_sha_from_rev_parse(true, "   \n"), "unknown");
+        assert_eq!(
+            embed_sha_from_rev_parse(true, "b57f4472efb3\n"),
+            "b57f4472efb3"
+        );
+    }
+
+    #[test]
+    fn version_long_includes_sha_only_when_known() {
+        assert_eq!(compose_version_long("0.2.5", "unknown"), "0.2.5");
+        assert_eq!(compose_version_long("0.2.5", ""), "0.2.5");
+        assert_eq!(
+            compose_version_long("0.2.5", "b57f4472efb3"),
+            "0.2.5 (b57f4472efb3)"
+        );
+    }
+
+    #[test]
+    fn compiled_embed_env_matches_version_long_contract() {
+        // Live binary under test: env! values must obey the same pure helper.
+        let sha = env!("LEDGERFUL_GIT_SHA");
+        let pkg = env!("CARGO_PKG_VERSION");
+        let long = env!("LEDGERFUL_VERSION_LONG");
+        assert!(!sha.is_empty(), "LEDGERFUL_GIT_SHA must be set by build.rs");
+        assert_eq!(long, compose_version_long(pkg, sha));
     }
 }
