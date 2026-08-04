@@ -268,6 +268,7 @@ multi-hit output.
 | `results[].content` | string | **Plain** snippet |
 | `searchIndexStatus` | object \| **omitted** | Empty-index / FTS-rebuild honesty (`state`, `documentCount`, optional `remediation` / `error`) |
 | `semantic` | object \| **omitted** | On `--semantic` paths: readiness fields + optional `error` |
+| `fallbackUsed` | string \| **omitted** | When hybrid empty path used identifier-literal AllPaths fallback and produced ≥1 hit: `"identifier_literal"`. `schemaVersion` stays **1**; kind vocabulary unchanged (`regex_match` for those hits) |
 
 **Empty results:** full envelope with `results: []`, `resultCount: 0`, exit **0**.
 

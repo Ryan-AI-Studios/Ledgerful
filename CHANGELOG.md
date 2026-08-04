@@ -42,6 +42,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Search identifier hybrid / snake_case (0141):** `CodeIdentifierTokenizer`
+  dual-emits full underscore identifiers (e.g. `verify_step_key`) plus `_`-parts
+  so BM25 finds full snake_case and partials; camelCase splits unchanged. Hybrid
+  empty path retries escaped identifier literal via `all_paths` candidates
+  (cap 5000) with human honesty and envelope `fallbackUsed: "identifier_literal"`
+  when hits are found. FTS format stamp `ledgerful_search_format` /
+  `code_tokenizer_v2` forces one-time rebuild when the tokenizer format changes
+  without a schema bump. `schemaVersion` stays 1.
+
 - **Bayesian verify join (0140):** Canonical `verify_step_key` join for failure
   probability ordering — write path stores step keys in `test_outcome_history`,
   extract re-buckets legacy full-command rows, scoped nextest (`-E` / filterset)

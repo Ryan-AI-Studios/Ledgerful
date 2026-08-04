@@ -50,6 +50,10 @@ pub struct SearchEnvelope {
     pub search_index_status: Option<SearchIndexStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub semantic: Option<SearchSemantic>,
+    /// Set when hybrid empty path used identifier-literal AllPaths fallback.
+    /// Wire: `fallbackUsed` (e.g. `"identifier_literal"`).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub fallback_used: Option<String>,
 }
 
 /// One match hit under the envelope (status/semantic meta are side fields).
@@ -147,6 +151,7 @@ pub struct SearchCollector {
     results: Vec<SearchHit>,
     search_index_status: Option<SearchIndexStatus>,
     semantic: Option<SearchSemantic>,
+    fallback_used: Option<String>,
 }
 
 impl SearchCollector {
@@ -161,6 +166,7 @@ impl SearchCollector {
             results: Vec::new(),
             search_index_status: None,
             semantic: None,
+            fallback_used: None,
         }
     }
 
@@ -190,6 +196,11 @@ impl SearchCollector {
 
     pub fn set_truncated(&mut self, truncated: bool) {
         self.truncated = truncated;
+    }
+
+    /// Record which search fallback produced hits (envelope `fallbackUsed`).
+    pub fn set_fallback_used(&mut self, value: impl Into<String>) {
+        self.fallback_used = Some(value.into());
     }
 
     /// Record a match hit. Lines mode also prints a BridgeRecord immediately.
@@ -360,6 +371,7 @@ impl SearchCollector {
             results: self.results,
             search_index_status: self.search_index_status,
             semantic: self.semantic,
+            fallback_used: self.fallback_used,
         };
         match serde_json::to_string(&envelope) {
             Ok(s) => println!("{s}"),
@@ -400,6 +412,7 @@ mod tests {
             }],
             search_index_status: None,
             semantic: None,
+            fallback_used: None,
         };
         let s = serde_json::to_string(&env).expect("serialize");
         let v: serde_json::Value = serde_json::from_str(&s).expect("parse");
@@ -407,6 +420,7 @@ mod tests {
         assert_eq!(v["resultCount"], 1);
         assert!(v.get("searchIndexStatus").is_none());
         assert!(v.get("semantic").is_none());
+        assert!(v.get("fallbackUsed").is_none());
         assert!(v["results"][0].get("line").is_none());
         assert!(v["results"][0].get("score").is_some());
         assert!(!s.contains("null"));
@@ -424,11 +438,38 @@ mod tests {
             results: vec![],
             search_index_status: None,
             semantic: None,
+            fallback_used: None,
         };
         let s = serde_json::to_string(&env).expect("serialize");
         let v: serde_json::Value = serde_json::from_str(&s).expect("parse");
         assert_eq!(v["results"], serde_json::json!([]));
         assert_eq!(v["resultCount"], 0);
+    }
+
+    #[test]
+    fn envelope_fallback_used_camel_case() {
+        let env = SearchEnvelope {
+            schema_version: 1,
+            query: "verify_step_key".into(),
+            mode: "hybrid".into(),
+            limit: 5,
+            truncated: false,
+            result_count: 1,
+            results: vec![SearchHit {
+                kind: "regex_match".into(),
+                path: "a.rs".into(),
+                line: Some(1),
+                score: Some(1.0),
+                content: "fn verify_step_key".into(),
+            }],
+            search_index_status: None,
+            semantic: None,
+            fallback_used: Some("identifier_literal".into()),
+        };
+        let s = serde_json::to_string(&env).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&s).expect("parse");
+        assert_eq!(v["fallbackUsed"], "identifier_literal");
+        assert!(!s.contains("fallback_used"));
     }
 
     #[test]

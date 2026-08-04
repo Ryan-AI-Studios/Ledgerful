@@ -496,8 +496,19 @@ impl Tokenizer for CodeIdentifierTokenizer {
             chars: text.char_indices().collect(),
             index: 0,
             token: Token::default(),
+            pending: std::collections::VecDeque::new(),
+            next_position: 0,
         }
     }
+}
+
+/// Pending dual-emit / multi-piece token ready to surface from [`advance`].
+struct PendingToken {
+    text: String,
+    offset_from: usize,
+    offset_to: usize,
+    position: usize,
+    position_length: usize,
 }
 
 pub struct CodeIdentifierTokenStream<'a> {
@@ -505,15 +516,125 @@ pub struct CodeIdentifierTokenStream<'a> {
     chars: Vec<(usize, char)>,
     index: usize,
     token: Token,
+    pending: std::collections::VecDeque<PendingToken>,
+    next_position: usize,
+}
+
+impl CodeIdentifierTokenStream<'_> {
+    fn emit_pending(&mut self, pending: PendingToken) {
+        self.token.offset_from = pending.offset_from;
+        self.token.offset_to = pending.offset_to;
+        self.token.text = pending.text;
+        self.token.position = pending.position;
+        self.token.position_length = pending.position_length;
+    }
+
+    fn take_next_position(&mut self) -> usize {
+        let pos = self.next_position;
+        self.next_position = self.next_position.wrapping_add(1);
+        pos
+    }
+
+    /// True if `c` may start or continue a code identifier (alnum or `_` glue).
+    fn is_ident_char(c: char) -> bool {
+        c.is_alphanumeric() || c == '_'
+    }
+
+    /// Split pure-alnum span with existing camelCase / PascalCase rules.
+    fn enqueue_camel_case_pieces(&mut self, start_char: usize, end_char: usize) {
+        let mut i = start_char;
+        while i < end_char {
+            let piece_start_char = i;
+            let first_char = self.chars[i].1;
+            i += 1;
+            let mut prev_char = first_char;
+            while i < end_char {
+                let curr_char = self.chars[i].1;
+
+                if prev_char.is_lowercase() && curr_char.is_uppercase() {
+                    break;
+                }
+
+                if prev_char.is_uppercase() && curr_char.is_uppercase() && i + 1 < end_char {
+                    let next_char = self.chars[i + 1].1;
+                    if next_char.is_lowercase() {
+                        break;
+                    }
+                }
+
+                prev_char = curr_char;
+                i += 1;
+            }
+
+            let offset_from = self.chars[piece_start_char].0;
+            let offset_to = if i < self.chars.len() {
+                self.chars[i].0
+            } else {
+                self.text.len()
+            };
+            let position = self.take_next_position();
+            self.pending.push_back(PendingToken {
+                text: self.text[offset_from..offset_to].to_string(),
+                offset_from,
+                offset_to,
+                position,
+                position_length: 1,
+            });
+        }
+    }
+
+    /// Dual-emit full underscore identifier + non-empty `_`-parts.
+    fn enqueue_underscore_dual(&mut self, offset_from: usize, offset_to: usize) {
+        let full = &self.text[offset_from..offset_to];
+        let mut parts: Vec<(usize, usize)> = Vec::new();
+        let mut part_start = offset_from;
+        for (rel, ch) in full.char_indices() {
+            if ch == '_' {
+                let part_end = offset_from + rel;
+                if part_end > part_start {
+                    parts.push((part_start, part_end));
+                }
+                part_start = part_end + ch.len_utf8();
+            }
+        }
+        if offset_to > part_start {
+            parts.push((part_start, offset_to));
+        }
+
+        let num_parts = parts.len();
+        let full_position_length = if num_parts == 0 { 1 } else { num_parts };
+
+        let full_pos = self.take_next_position();
+        self.pending.push_back(PendingToken {
+            text: full.to_string(),
+            offset_from,
+            offset_to,
+            position: full_pos,
+            position_length: full_position_length,
+        });
+
+        for (p_from, p_to) in parts {
+            let position = self.take_next_position();
+            self.pending.push_back(PendingToken {
+                text: self.text[p_from..p_to].to_string(),
+                offset_from: p_from,
+                offset_to: p_to,
+                position,
+                position_length: 1,
+            });
+        }
+    }
 }
 
 impl TokenStream for CodeIdentifierTokenStream<'_> {
     fn advance(&mut self) -> bool {
-        if self.index >= self.chars.len() {
-            return false;
+        if let Some(pending) = self.pending.pop_front() {
+            self.emit_pending(pending);
+            return true;
         }
 
-        while self.index < self.chars.len() && !self.chars[self.index].1.is_alphanumeric() {
+        // Skip non-identifier characters. `_` is identifier glue (may start ids).
+        while self.index < self.chars.len() && !Self::is_ident_char(self.chars[self.index].1) {
             self.index += 1;
         }
 
@@ -521,47 +642,35 @@ impl TokenStream for CodeIdentifierTokenStream<'_> {
             return false;
         }
 
-        let start = self.chars[self.index].0;
-        let first_char = self.chars[self.index].1;
-        self.index += 1;
+        let start_char = self.index;
+        let offset_from = self.chars[start_char].0;
 
-        let mut prev_char = first_char;
-        while self.index < self.chars.len() {
-            let curr_char = self.chars[self.index].1;
-
-            if !curr_char.is_alphanumeric() {
-                break;
-            }
-
-            if prev_char.is_lowercase() && curr_char.is_uppercase() {
-                break;
-            }
-
-            if prev_char.is_uppercase()
-                && curr_char.is_uppercase()
-                && self.index + 1 < self.chars.len()
-            {
-                let next_char = self.chars[self.index + 1].1;
-                if next_char.is_lowercase() {
-                    break;
-                }
-            }
-
-            prev_char = curr_char;
+        // Collect maximal identifier (alnum + `_`).
+        while self.index < self.chars.len() && Self::is_ident_char(self.chars[self.index].1) {
             self.index += 1;
         }
 
-        let end_idx = if self.index < self.chars.len() {
-            self.chars[self.index].0
+        let end_char = self.index;
+        let offset_to = if end_char < self.chars.len() {
+            self.chars[end_char].0
         } else {
             self.text.len()
         };
 
-        self.token.offset_from = start;
-        self.token.offset_to = end_idx;
-        self.token.text = self.text[start..end_idx].to_string();
-        self.token.position = self.token.position.wrapping_add(1);
-        true
+        let ident = &self.text[offset_from..offset_to];
+        if ident.contains('_') {
+            self.enqueue_underscore_dual(offset_from, offset_to);
+        } else {
+            // Pure alphanumeric: camelCase / PascalCase splits only (no dual full).
+            self.enqueue_camel_case_pieces(start_char, end_char);
+        }
+
+        if let Some(pending) = self.pending.pop_front() {
+            self.emit_pending(pending);
+            true
+        } else {
+            false
+        }
     }
 
     fn token(&self) -> &Token {
@@ -668,5 +777,120 @@ mod tests {
             .search_trigrams(&tgrams, 10)
             .expect("search_trigrams");
         assert!(!results.is_empty());
+    }
+
+    fn collect_tokens(text: &str) -> Vec<Token> {
+        let mut tokenizer = CodeIdentifierTokenizer;
+        let mut stream = tokenizer.token_stream(text);
+        let mut out = Vec::new();
+        while stream.advance() {
+            out.push(stream.token().clone());
+        }
+        out
+    }
+
+    #[test]
+    fn code_identifier_dual_emit_snake_case() {
+        let tokens = collect_tokens("verify_step_key");
+        let texts: Vec<&str> = tokens.iter().map(|t| t.text.as_str()).collect();
+        assert!(
+            texts.contains(&"verify_step_key"),
+            "expected full token, got {texts:?}"
+        );
+        assert!(texts.contains(&"verify"), "expected part verify: {texts:?}");
+        assert!(texts.contains(&"step"), "expected part step: {texts:?}");
+        assert!(texts.contains(&"key"), "expected part key: {texts:?}");
+
+        let full = tokens
+            .iter()
+            .find(|t| t.text == "verify_step_key")
+            .expect("full");
+        assert_eq!(full.position_length, 3);
+        assert_eq!(full.offset_from, 0);
+        assert_eq!(full.offset_to, "verify_step_key".len());
+
+        let parts: Vec<&Token> = tokens
+            .iter()
+            .filter(|t| matches!(t.text.as_str(), "verify" | "step" | "key"))
+            .collect();
+        assert_eq!(parts.len(), 3);
+        for p in &parts {
+            assert_eq!(p.position_length, 1);
+            assert_eq!(&text_slice(p), p.text.as_str());
+        }
+
+        // Sequential positions per emitted token.
+        let mut positions: Vec<usize> = tokens.iter().map(|t| t.position).collect();
+        positions.sort();
+        assert_eq!(positions, (0..tokens.len()).collect::<Vec<_>>());
+        // Full first, then parts in order.
+        assert_eq!(tokens[0].text, "verify_step_key");
+        assert_eq!(tokens[0].position, 0);
+        assert_eq!(tokens[1].text, "verify");
+        assert_eq!(tokens[1].position, 1);
+        assert_eq!(tokens[2].text, "step");
+        assert_eq!(tokens[2].position, 2);
+        assert_eq!(tokens[3].text, "key");
+        assert_eq!(tokens[3].position, 3);
+    }
+
+    fn text_slice(t: &Token) -> String {
+        // Offsets validated against the source used in dual-emit test.
+        "verify_step_key"[t.offset_from..t.offset_to].to_string()
+    }
+
+    #[test]
+    fn code_identifier_camel_case_preserved() {
+        let tokens = collect_tokens("MainRunner");
+        let texts: Vec<&str> = tokens.iter().map(|t| t.text.as_str()).collect();
+        assert_eq!(texts, vec!["Main", "Runner"]);
+        for t in &tokens {
+            assert_eq!(t.position_length, 1);
+        }
+        assert_eq!(tokens[0].position, 0);
+        assert_eq!(tokens[1].position, 1);
+    }
+
+    #[test]
+    fn code_identifier_pure_alphanumeric_single() {
+        let tokens = collect_tokens("hello");
+        assert_eq!(tokens.len(), 1);
+        assert_eq!(tokens[0].text, "hello");
+        assert_eq!(tokens[0].position_length, 1);
+        assert_eq!(tokens[0].position, 0);
+    }
+
+    #[test]
+    fn code_identifier_leading_underscore() {
+        let tokens = collect_tokens("_private");
+        let texts: Vec<&str> = tokens.iter().map(|t| t.text.as_str()).collect();
+        assert!(texts.contains(&"_private"));
+        assert!(texts.contains(&"private"));
+        let full = tokens.iter().find(|t| t.text == "_private").expect("full");
+        assert_eq!(full.position_length, 1);
+    }
+
+    #[test]
+    fn bm25_search_finds_full_snake_case_identifier() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = make_engine(&dir);
+        index_doc(&engine, "src/verify/bayesian.rs", "fn verify_step_key() {}");
+        let results = engine
+            .search("verify_step_key", 10)
+            .expect("search full id");
+        assert!(
+            !results.is_empty(),
+            "BM25 must find full snake_case identifier after dual-emit"
+        );
+
+        // Dual-emit parts should still hit (DoD-2: "step_key" or "verify").
+        // QueryParser ANDs dual-emitted terms, so a shorter compound query
+        // "step_key" also dual-emits a full term never indexed alone when only
+        // "verify_step_key" was present; single-part queries always work.
+        let part_verify = engine.search("verify", 10).expect("search verify");
+        assert!(!part_verify.is_empty(), "part verify should hit");
+
+        let part_step = engine.search("step", 10).expect("search step");
+        assert!(!part_step.is_empty(), "part step should hit");
     }
 }
