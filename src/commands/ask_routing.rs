@@ -5,6 +5,9 @@ use rusqlite::Connection;
 use std::collections::HashSet;
 use std::sync::OnceLock;
 
+use crate::search::tantivy_engine::{SearchResult, TantivySearchEngine};
+use crate::state::layout::Layout;
+
 #[derive(Debug)]
 pub enum ExactIntent {
     CallersOf(String),
@@ -96,7 +99,116 @@ pub fn parse_intent(query: &str) -> Option<ExactIntent> {
         return Some(ExactIntent::SymbolDefinition(caps[1].to_string()));
     }
 
+    // 0142: locate / find-symbol shapes → SymbolDefinition
+    // (docs/operator-surface-policy.md §2 — structured sources before LLM).
+    // Parse order is load-bearing: ListRoutes / callers / callees / route-owner /
+    // "where is … defined" / "find definition of" run first so bare `find X`
+    // never steals `find all axum route handlers` or `find callers of X`.
+    // Deliberately **no** `where is X` without "defined" (false-positive magnet).
+    if !has_conceptual_locate_tokens(q) {
+        if let Some(sym) = parse_find_type_qualified(q) {
+            return Some(ExactIntent::SymbolDefinition(sym));
+        }
+        if let Some(sym) = parse_locate_symbol(q) {
+            return Some(ExactIntent::SymbolDefinition(sym));
+        }
+        if let Some(sym) = parse_bare_find_symbol(q) {
+            return Some(ExactIntent::SymbolDefinition(sym));
+        }
+    }
+
     None
+}
+
+/// Whole-word conceptual / narrative tokens that must not map to locate intents.
+fn has_conceptual_locate_tokens(q: &str) -> bool {
+    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)\b(how|why|way|best|explain|architect|architecture|implement|implementation)\b",
+        )
+        .ok()
+    });
+    re.as_ref().is_some_and(|r| r.is_match(q))
+}
+
+/// Identifier class for locate/find targets: `^[A-Za-z_][A-Za-z0-9_:]*$`.
+fn is_code_identifier(s: &str) -> bool {
+    let mut chars = s.chars();
+    match chars.next() {
+        Some(c) if c.is_ascii_alphabetic() || c == '_' => {}
+        _ => return false,
+    }
+    chars.all(|c| c.is_ascii_alphanumeric() || c == '_' || c == ':')
+}
+
+/// Word count after stripping punctuation (for bare-find ≤8 guard).
+fn locate_query_word_count(q: &str) -> usize {
+    let stripped = strip_trailing_punct(q.trim());
+    stripped
+        .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_' || c == ':'))
+        .filter(|w| !w.is_empty())
+        .count()
+}
+
+/// `find (the )?(function|fn|method|struct|type|trait|enum|symbol) X`
+fn parse_find_type_qualified(q: &str) -> Option<String> {
+    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)^find\s+(?:the\s+)?(?:function|fn|method|struct|type|trait|enum|symbol)\s+([A-Za-z_][A-Za-z0-9_:]*)\s*[?.!]*$",
+        )
+        .ok()
+    });
+    let re = re.as_ref()?;
+    let caps = re.captures(q.trim())?;
+    let sym = caps.get(1)?.as_str();
+    if is_code_identifier(sym) {
+        Some(sym.to_string())
+    } else {
+        None
+    }
+}
+
+/// `locate (the )?(function|…|symbol)? X`
+fn parse_locate_symbol(q: &str) -> Option<String> {
+    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)^locate\s+(?:the\s+)?(?:(?:function|fn|method|struct|type|trait|enum|symbol)\s+)?([A-Za-z_][A-Za-z0-9_:]*)\s*[?.!]*$",
+        )
+        .ok()
+    });
+    let re = re.as_ref()?;
+    let caps = re.captures(q.trim())?;
+    let sym = caps.get(1)?.as_str();
+    if is_code_identifier(sym) {
+        Some(sym.to_string())
+    } else {
+        None
+    }
+}
+
+/// Bare `find X` / `find X in the codebase` when X is a single code identifier
+/// and the query has ≤ 8 words after punctuation strip.
+fn parse_bare_find_symbol(q: &str) -> Option<String> {
+    let q = q.trim();
+    if locate_query_word_count(q) > 8 {
+        return None;
+    }
+    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+    let re = RE.get_or_init(|| {
+        Regex::new(r"(?i)^find\s+([A-Za-z_][A-Za-z0-9_:]*)(?:\s+in\s+the\s+codebase)?\s*[?.!]*$")
+            .ok()
+    });
+    let re = re.as_ref()?;
+    let caps = re.captures(q)?;
+    let sym = caps.get(1)?.as_str();
+    if is_code_identifier(sym) {
+        Some(sym.to_string())
+    } else {
+        None
+    }
 }
 
 pub fn resolve_intent(intent: &ExactIntent, conn: &Connection) -> Result<Option<String>> {
@@ -337,6 +449,73 @@ pub enum ProductDocsIntent {
 
 /// Locked banner for ProductDocs early-exit (DoD-1; matches CG-F20/F31 style).
 pub const PRODUCT_DOCS_DAILY5_BANNER: &str = "Product-docs query resolved via skill Daily 5.";
+
+// --- Local grounding / locate (0142 Ask Local Grounding First) ---
+//
+// When CG-F20 SymbolDefinition primary SQL misses, execute_ask runs secondary
+// FTS (TermQuery full-id) or honest local miss — never LLM invent of
+// "no codebase" while search can answer. Policy:
+// `docs/operator-surface-policy.md` §2.
+
+/// Locked banner when secondary search evidence answers a locate intent (0142).
+pub const LOCAL_GROUNDING_SEARCH_BANNER: &str = "Local grounding query resolved via index/search.";
+
+/// Locked banner when primary symbols + secondary search both miss (0142).
+pub const LOCAL_GROUNDING_MISS_BANNER: &str = "Local grounding found no index/search hits.";
+
+/// Cap for secondary search evidence lines shown to the operator.
+const LOCAL_GROUNDING_SEARCH_CAP: usize = 5;
+
+/// Max chars for a single evidence snippet line (char-boundary safe).
+const LOCAL_GROUNDING_SNIPPET_CHARS: usize = 120;
+
+/// Secondary FTS locate for SymbolDefinition when SQL symbols miss.
+///
+/// Opens the Tantivy index under `layout.search_index_dir()` defensively:
+/// any open/search error yields an empty Vec (never panic; never hard-fail ask).
+/// Prefer TermQuery on the full lowercased identifier (0141 dual-emit).
+pub(crate) fn search_symbol_secondary(layout: &Layout, symbol: &str) -> Vec<SearchResult> {
+    let index_path = layout.search_index_dir();
+    let engine = match TantivySearchEngine::open_or_create(index_path.as_std_path()) {
+        Ok(e) => e,
+        Err(_) => return Vec::new(),
+    };
+    engine
+        .search_term_exact(symbol, LOCAL_GROUNDING_SEARCH_CAP)
+        .unwrap_or_default()
+}
+
+/// Format secondary search hits into the locked evidence body (0142).
+///
+/// ```text
+/// Search evidence for `X`:
+/// - {path} (line {ln}): {snippet}
+/// ```
+pub(crate) fn format_search_evidence(symbol: &str, hits: &[SearchResult]) -> String {
+    let mut lines = Vec::with_capacity(hits.len().saturating_add(1).min(6));
+    lines.push(format!("Search evidence for `{symbol}`:"));
+    for hit in hits.iter().take(LOCAL_GROUNDING_SEARCH_CAP) {
+        let ln = hit
+            .line_number
+            .map(|n| n.to_string())
+            .unwrap_or_else(|| "?".into());
+        let raw = hit.snippet.as_deref().unwrap_or("");
+        let snippet = crate::util::text::truncate_chars(raw, LOCAL_GROUNDING_SNIPPET_CHARS);
+        lines.push(format!("- {} (line {}): {}", hit.path, ln, snippet));
+    }
+    lines.join("\n")
+}
+
+/// Honest local-miss body: zero hits + ledgerful search remediation (no bare grep primary).
+pub(crate) fn format_local_grounding_miss(symbol: &str) -> String {
+    format!(
+        "Local index/search found no hits for `{symbol}`.\n\
+         \n\
+         Next steps:\n\
+         - `ledgerful search \"{symbol}\" --auto-index`\n\
+         - optional: `ledgerful index --incremental` if symbols may lag"
+    )
+}
 
 /// Daily 5 argv rows (skill table). Names used for clap corpus lookup;
 /// display argv tokens are skill-faithful (including flags).
@@ -713,6 +892,239 @@ mod tests {
     fn test_parse_intent_returns_none_for_narrative_questions() {
         assert!(parse_intent("what should I refactor in this module?").is_none());
         assert!(parse_intent("give me an overview of this codebase").is_none());
+    }
+
+    // --- 0142 local grounding / locate parse ---
+
+    #[test]
+    fn test_parse_intent_local_grounding_find_locate_positives() {
+        let positives = [
+            ("find the function verify_step_key", "verify_step_key"),
+            ("find verify_step_key", "verify_step_key"),
+            ("locate verify_step_key", "verify_step_key"),
+            ("find the fn foo", "foo"),
+            ("find FooBar", "FooBar"),
+            ("locate the function verify_step_key", "verify_step_key"),
+            ("find symbol run_with", "run_with"),
+            ("find verify_step_key in the codebase", "verify_step_key"),
+            ("find the method process_batch", "process_batch"),
+            ("locate struct Layout", "Layout"),
+        ];
+        for (q, expected) in positives {
+            assert!(
+                matches!(
+                    parse_intent(q),
+                    Some(ExactIntent::SymbolDefinition(ref t)) if t == expected
+                ),
+                "expected SymbolDefinition({expected}) for: {q}, got {:?}",
+                parse_intent(q)
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_intent_local_grounding_negatives() {
+        // No `where is X` without "defined"
+        assert!(parse_intent("where is the config").is_none());
+        assert!(parse_intent("where is the README").is_none());
+        assert!(parse_intent("where is Cargo.toml").is_none());
+
+        // Conceptual / narrative
+        assert!(parse_intent("how does verify_step_key work").is_none());
+        assert!(parse_intent("find the best way to handle errors").is_none());
+        assert!(parse_intent("explain the architecture of indexing").is_none());
+        assert!(parse_intent("how to implement verify_step_key").is_none());
+        assert!(parse_intent("why does verify_step_key exist").is_none());
+        assert!(parse_intent("find the architecture overview").is_none());
+        assert!(parse_intent("find the best implementation").is_none());
+    }
+
+    #[test]
+    fn test_parse_intent_local_grounding_list_routes_collision() {
+        // ListRoutes must win over bare find (parse order load-bearing).
+        assert!(
+            matches!(
+                parse_intent("find all axum route handlers"),
+                Some(ExactIntent::ListRoutes)
+            ),
+            "expected ListRoutes, got {:?}",
+            parse_intent("find all axum route handlers")
+        );
+    }
+
+    #[test]
+    fn test_local_grounding_banners_locked_strings() {
+        assert_eq!(
+            LOCAL_GROUNDING_SEARCH_BANNER,
+            "Local grounding query resolved via index/search."
+        );
+        assert_eq!(
+            LOCAL_GROUNDING_MISS_BANNER,
+            "Local grounding found no index/search hits."
+        );
+    }
+
+    #[test]
+    fn test_format_local_grounding_miss_body_remediation() {
+        let body = format_local_grounding_miss("verify_step_key");
+        assert!(
+            body.contains("no hits for `verify_step_key`"),
+            "must state local zero hits:\n{body}"
+        );
+        assert!(
+            body.contains("ledgerful search \"verify_step_key\" --auto-index")
+                || body.contains("ledgerful search") && body.contains("--auto-index"),
+            "must recommend ledgerful search --auto-index:\n{body}"
+        );
+        assert!(
+            body.contains("ledgerful search"),
+            "must name ledgerful search:\n{body}"
+        );
+        let lower = body.to_lowercase();
+        // Banned as primary advice: bare grep/rg without ledgerful search.
+        // Presence of ledgerful search is required; bare-grep-primary is not allowed.
+        assert!(
+            !lower.contains("use grep")
+                && !lower.contains("use rg")
+                && !lower.contains("run grep")
+                && !lower.contains("run rg"),
+            "must not recommend bare grep/rg as primary:\n{body}"
+        );
+    }
+
+    #[test]
+    fn test_format_search_evidence_body_shape() {
+        let hits = vec![SearchResult {
+            path: "src/verify/probability.rs".into(),
+            line_count: 10,
+            score: 1.0,
+            snippet: Some("fn verify_step_key() { /* body */ }".into()),
+            highlight_ranges: None,
+            line_number: Some(45),
+        }];
+        let body = format_search_evidence("verify_step_key", &hits);
+        assert!(
+            body.starts_with("Search evidence for `verify_step_key`:"),
+            "header:\n{body}"
+        );
+        assert!(
+            body.contains("- src/verify/probability.rs (line 45):"),
+            "path+line:\n{body}"
+        );
+        assert!(body.contains("verify_step_key"), "snippet:\n{body}");
+
+        // Missing line → `?`
+        let hits_no_line = vec![SearchResult {
+            path: "src/foo.rs".into(),
+            line_count: 1,
+            score: 1.0,
+            snippet: Some("x".into()),
+            highlight_ranges: None,
+            line_number: None,
+        }];
+        let body2 = format_search_evidence("x", &hits_no_line);
+        assert!(
+            body2.contains("(line ?):"),
+            "missing line must use `?`:\n{body2}"
+        );
+
+        // Snippet truncated ≤ 120 chars
+        let long = "a".repeat(200);
+        let hits_long = vec![SearchResult {
+            path: "p.rs".into(),
+            line_count: 1,
+            score: 1.0,
+            snippet: Some(long),
+            highlight_ranges: None,
+            line_number: Some(1),
+        }];
+        let body3 = format_search_evidence("a", &hits_long);
+        let snippet_part = body3
+            .lines()
+            .nth(1)
+            .and_then(|l| l.split(": ").nth(1))
+            .unwrap_or("");
+        assert!(
+            snippet_part.chars().count() <= 120,
+            "snippet must be ≤120 chars, got {}",
+            snippet_part.chars().count()
+        );
+    }
+
+    #[test]
+    fn test_residual_wording_forbids_overclaim_phrases() {
+        // Global empty-chunk note (execute.rs) and CodebaseFocus oracle (local_model).
+        let execute_src = include_str!("ask/execute.rs");
+        let context_src = include_str!("../local_model/context.rs");
+        assert!(
+            execute_src.contains("no retrieved snippets for this query"),
+            "execute.rs must use residual snippets wording"
+        );
+        assert!(
+            !execute_src.contains("no project context available for this query"),
+            "execute.rs must not overclaim no project context"
+        );
+        assert!(
+            context_src.contains("answering without retrieved snippets"),
+            "local_model context must use residual snippets wording"
+        );
+        assert!(
+            !context_src.contains("answering without codebase context"),
+            "local_model context must not overclaim without codebase context"
+        );
+    }
+
+    #[test]
+    fn test_search_symbol_secondary_term_exact_format() {
+        // tempdir + TantivySearchEngine + index_doc (not seeded_storage alone).
+        use crate::search::trigram::extract_trigrams;
+        use tantivy::TantivyDocument;
+
+        let tmp = tempdir().expect("tempdir");
+        let root = camino::Utf8Path::from_path(tmp.path()).expect("utf8");
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().expect("state dir");
+
+        let engine = TantivySearchEngine::open_or_create(layout.search_index_dir().as_std_path())
+            .expect("engine");
+        {
+            let schema = engine.schema();
+            let path_field = schema.get_field("path").expect("path");
+            let content_field = schema.get_field("content").expect("content");
+            let line_count_field = schema.get_field("line_count").expect("line_count");
+            let trigrams_field = schema.get_field("trigrams").expect("trigrams");
+            let content = "fn verify_step_key() { /* 0142 secondary */ }";
+            let tgrams_str = extract_trigrams(content)
+                .into_iter()
+                .collect::<Vec<_>>()
+                .join(" ");
+            let mut writer = engine.get_writer(15_000_000).expect("writer");
+            let mut doc = TantivyDocument::default();
+            doc.add_text(path_field, "src/verify/probability.rs");
+            doc.add_text(content_field, content);
+            doc.add_u64(line_count_field, 1);
+            doc.add_text(trigrams_field, &tgrams_str);
+            writer.add_document(doc).expect("add");
+            writer.commit().expect("commit");
+            engine.reload_reader().expect("reload");
+        }
+
+        let hits = search_symbol_secondary(&layout, "verify_step_key");
+        assert!(
+            !hits.is_empty(),
+            "secondary TermQuery must hit dual-emitted full id"
+        );
+        let body = format_search_evidence("verify_step_key", &hits);
+        assert!(
+            body.contains("Search evidence for `verify_step_key`:"),
+            "header:\n{body}"
+        );
+        assert!(body.contains("src/verify/probability.rs"), "path:\n{body}");
+        assert!(
+            body.lines()
+                .any(|l| l.starts_with("- ") && l.contains("(line ")),
+            "evidence lines:\n{body}"
+        );
     }
 
     // --- 0139 ProductDocs / Daily 5 tests ---

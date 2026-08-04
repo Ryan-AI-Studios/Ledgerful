@@ -42,6 +42,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Ask locate/find-symbol local grounding (0142):** `ask "find the function …"` /
+  `locate …` / short bare `find <identifier>` maps to symbol-definition routing
+  and early-exits from local symbols (primary) or Tantivy TermQuery full-id
+  search evidence (secondary), or an honest miss with `ledgerful search "X"
+  --auto-index` next steps — never Gemini invent of “no codebase / not found in
+  context” while local search hits exist. Residual empty-context prompts say
+  “no retrieved snippets” (not “no project context” / “without codebase
+  context”). Policy: `docs/operator-surface-policy.md` §2.
+
 - **Search identifier hybrid / snake_case (0141):** `CodeIdentifierTokenizer`
   dual-emits full underscore identifiers (e.g. `verify_step_key`) plus `_`-parts
   so BM25 finds full snake_case and partials; camelCase splits unchanged. Hybrid

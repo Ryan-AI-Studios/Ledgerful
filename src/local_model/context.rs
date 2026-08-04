@@ -49,7 +49,7 @@ pub fn assemble_context(
         }
         AdaptiveMode::CodebaseFocus => {
             let oracle_prompt = format!(
-                "{}\n\nCODEBASE ORACLE MODE: You are an expert on this codebase. Answer the user's question primarily using the provided code snippets. If the provided snippets do not contain the answer, you may use your general knowledge, but you MUST state that you are answering without codebase context. When using snippets, citations are MANDATORY: use [source] format.",
+                "{}\n\nCODEBASE ORACLE MODE: You are an expert on this codebase. Answer the user's question primarily using the provided code snippets. If the provided snippets do not contain the answer, you may use your general knowledge, but you MUST state that you are answering without retrieved snippets. When using snippets, citations are MANDATORY: use [source] format.",
                 system_prompt
             );
 

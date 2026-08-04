@@ -89,7 +89,36 @@ pub fn execute_ask(
                 return Ok(());
             }
             Ok(None) => {
+                // 0142: SymbolDefinition → secondary FTS + honest local miss
+                // (no LLM invent of "no codebase" while search can answer).
+                // CallersOf / CalleesOf / ListRoutes / RouteOwner keep fall-through.
                 let explanation = match intent {
+                    crate::commands::ask_routing::ExactIntent::SymbolDefinition(ref t) => {
+                        let hits =
+                            crate::commands::ask_routing::search_symbol_secondary(&layout, t);
+                        if !hits.is_empty() {
+                            println!(
+                                "{}",
+                                crate::commands::ask_routing::LOCAL_GROUNDING_SEARCH_BANNER
+                                    .if_supports_color(Stream::Stdout, |s| s.cyan())
+                            );
+                            println!(
+                                "\n{}",
+                                crate::commands::ask_routing::format_search_evidence(t, &hits)
+                            );
+                            return Ok(());
+                        }
+                        println!(
+                            "{}",
+                            crate::commands::ask_routing::LOCAL_GROUNDING_MISS_BANNER
+                                .if_supports_color(Stream::Stdout, |s| s.cyan())
+                        );
+                        println!(
+                            "\n{}",
+                            crate::commands::ask_routing::format_local_grounding_miss(t)
+                        );
+                        return Ok(());
+                    }
                     crate::commands::ask_routing::ExactIntent::CallersOf(ref t) => {
                         format!("searched for callers of `{}`", t)
                     }
@@ -101,9 +130,6 @@ pub fn execute_ask(
                     }
                     crate::commands::ask_routing::ExactIntent::RouteOwner(ref t) => {
                         format!("searched for handlers of route `{}`", t)
-                    }
-                    crate::commands::ask_routing::ExactIntent::SymbolDefinition(ref t) => {
-                        format!("searched for definition of `{}`", t)
                     }
                 };
                 eprintln!(
@@ -504,7 +530,7 @@ pub fn execute_ask(
     let base_system_prompt = if is_global {
         let mut base = "You are Ledgerful, an expert software engineering assistant. You act as a codebase oracle answering architectural and implementation questions based on retrieved knowledge graph and semantic context snippets. Provide direct, technical, and accurate answers citing the retrieved snippets where relevant.".to_string();
         if relevant_chunks.is_empty() {
-            base.push_str("\n\nNote: no project context available for this query.");
+            base.push_str("\n\nNote: no retrieved snippets for this query.");
         }
         base
     } else {
