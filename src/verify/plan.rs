@@ -597,23 +597,56 @@ pub struct VerificationPlan {
 }
 
 impl VerificationPlan {
-    /// Reorder the verification steps based on historical failure probabilities.
-    /// Steps with a higher probability of failure are sorted to execute first.
+    /// Reorder verification steps by Bayesian failure probability (0140).
+    ///
+    /// Returns `matched_steps` = count of plan steps whose
+    /// [`verify_step_key`](crate::verify::probability::verify_step_key) is
+    /// present in `probabilities` (history hit).
+    ///
+    /// - **matched_steps == 0:** no sort — preserve original plan order
+    ///   (true stable; do not alphabetical-only reshuffle).
+    /// - **matched_steps >= 1:** multi-band sort by
+    ///   `(band(key), −P, command)` where band(cargo-fmt)=0,
+    ///   band(cargo-clippy)=1, band(else)=2. Unmatched steps use P=0.0 for
+    ///   comparison only. Full-scope cheap `git diff --check` may move later
+    ///   when its P is low — intentional Bayesian fail-fast.
     pub fn apply_probability_ordering(
         &mut self,
         probabilities: &std::collections::HashMap<String, f64>,
-    ) {
-        self.steps.sort_by(|a, b| {
-            let prob_a = probabilities.get(&a.command).copied().unwrap_or(0.0);
-            let prob_b = probabilities.get(&b.command).copied().unwrap_or(0.0);
+    ) -> usize {
+        use crate::verify::probability::{verify_step_band, verify_step_key};
 
-            // Sort descending (higher probability first)
-            prob_b
-                .partial_cmp(&prob_a)
-                .unwrap_or(std::cmp::Ordering::Equal)
-                // Fallback to alphabetical sorting for deterministic ordering if probs are equal
+        let matched_steps = self
+            .steps
+            .iter()
+            .filter(|s| probabilities.contains_key(&verify_step_key(&s.command)))
+            .count();
+
+        if matched_steps == 0 {
+            return 0;
+        }
+
+        self.steps.sort_by(|a, b| {
+            let key_a = verify_step_key(&a.command);
+            let key_b = verify_step_key(&b.command);
+            let band_a = verify_step_band(&key_a);
+            let band_b = verify_step_band(&key_b);
+            let prob_a = probabilities.get(&key_a).copied().unwrap_or(0.0);
+            let prob_b = probabilities.get(&key_b).copied().unwrap_or(0.0);
+
+            band_a
+                .cmp(&band_b)
+                // Within band: higher P first (fail-fast)
+                .then(
+                    prob_b
+                        .partial_cmp(&prob_a)
+                        .unwrap_or(std::cmp::Ordering::Equal),
+                )
+                // Deterministic tiebreak
                 .then(a.command.cmp(&b.command))
         });
+
+        matched_steps
     }
 }
 
@@ -2367,6 +2400,185 @@ default-filter = 'test(/__slow$/)'
             plan.steps
                 .iter()
                 .any(|s| s.command.contains("test(cli_hotspots)"))
+        );
+    }
+
+    fn step(cmd: &str) -> VerificationStep {
+        VerificationStep {
+            command: cmd.to_string(),
+            timeout_secs: 60,
+            description: cmd.to_string(),
+            shell: false,
+        }
+    }
+
+    /// DoD-4: clippy P > fmt P still keeps fmt (band 0) before clippy (band 1).
+    #[test]
+    fn test_apply_probability_ordering_fmt_before_clippy_despite_higher_clippy_p() {
+        let mut plan = VerificationPlan {
+            source: None,
+            steps: vec![
+                step("cargo fmt --all -- --check"),
+                step("cargo clippy --all-targets --all-features -- -D warnings"),
+                step("cargo nextest run --workspace --all-features --profile ci"),
+            ],
+            fallback_reason: None,
+            refused: false,
+        };
+        // Synthetic Laplace: clippy higher than fmt (live DB shape).
+        let mut probs = std::collections::HashMap::new();
+        probs.insert("cargo-fmt".to_string(), 0.0385);
+        probs.insert("cargo-clippy".to_string(), 0.0388);
+        probs.insert("nextest-ci".to_string(), 0.25);
+
+        let matched = plan.apply_probability_ordering(&probs);
+        assert_eq!(matched, 3);
+        assert!(
+            plan.steps[0].command.contains("cargo fmt"),
+            "fmt must stay first (band 0): {:?}",
+            plan.steps.iter().map(|s| &s.command).collect::<Vec<_>>()
+        );
+        assert!(
+            plan.steps[1].command.contains("cargo clippy"),
+            "clippy must stay second (band 1): {:?}",
+            plan.steps.iter().map(|s| &s.command).collect::<Vec<_>>()
+        );
+    }
+
+    /// High-P band-2 step reorders among other band-2 steps (fail-fast).
+    #[test]
+    fn test_apply_probability_ordering_high_p_band2_reorders() {
+        let mut plan = VerificationPlan {
+            source: None,
+            steps: vec![
+                step("cargo fmt --all -- --check"),
+                step("cargo clippy --all-targets --all-features -- -D warnings"),
+                step("git diff --check"),
+                step("cargo nextest run --workspace --all-features --profile ci"),
+            ],
+            fallback_reason: None,
+            refused: false,
+        };
+        let mut probs = std::collections::HashMap::new();
+        probs.insert("cargo-fmt".to_string(), 0.03);
+        probs.insert("cargo-clippy".to_string(), 0.04);
+        probs.insert("git-diff-check".to_string(), 0.01);
+        probs.insert("nextest-ci".to_string(), 0.90);
+
+        let matched = plan.apply_probability_ordering(&probs);
+        assert_eq!(matched, 4);
+        // Band 0/1 first, then nextest-ci before git-diff (higher P).
+        assert!(plan.steps[0].command.contains("cargo fmt"));
+        assert!(plan.steps[1].command.contains("cargo clippy"));
+        assert!(
+            plan.steps[2].command.contains("nextest"),
+            "high-P nextest should lead band-2: {:?}",
+            plan.steps.iter().map(|s| &s.command).collect::<Vec<_>>()
+        );
+        assert!(plan.steps[3].command.contains("git diff"));
+    }
+
+    /// Two scoped argv strings share the nextest-scoped key / P.
+    #[test]
+    fn test_apply_probability_ordering_scoped_variants_share_key() {
+        let scoped_a = "cargo nextest run --workspace --all-features -E 'test(cli_scan)'";
+        let scoped_b = "cargo nextest run --workspace --all-features -E 'test(other_stem)'";
+        let mut plan = VerificationPlan {
+            source: None,
+            steps: vec![step("cargo fmt --all -- --check"), step(scoped_a)],
+            fallback_reason: None,
+            refused: false,
+        };
+        // History only has the step key (as extract_dataset emits).
+        let mut probs = std::collections::HashMap::new();
+        probs.insert("cargo-fmt".to_string(), 0.05);
+        probs.insert("nextest-scoped".to_string(), 0.80);
+
+        let matched = plan.apply_probability_ordering(&probs);
+        assert_eq!(
+            matched, 2,
+            "both steps must match via step key, not raw argv"
+        );
+
+        // A second plan with different -E still hits nextest-scoped.
+        let mut plan_b = VerificationPlan {
+            source: None,
+            steps: vec![step(scoped_b)],
+            fallback_reason: None,
+            refused: false,
+        };
+        let matched_b = plan_b.apply_probability_ordering(&probs);
+        assert_eq!(matched_b, 1);
+        // Raw-command-only lookup cannot pass this regression:
+        assert!(!probs.contains_key(scoped_a));
+        assert!(!probs.contains_key(scoped_b));
+    }
+
+    /// Spec §2.3 #6: hypothetical step between fmt and clippy still keeps
+    /// fmt before clippy via multi-band (not pair-swap).
+    #[test]
+    fn test_apply_probability_ordering_middle_step_keeps_fmt_before_clippy() {
+        let mut plan = VerificationPlan {
+            source: None,
+            steps: vec![
+                step("cargo nextest run --workspace --all-features --profile ci"),
+                step("cargo clippy --all-targets --all-features -- -D warnings"),
+                step("hypothetical-middle-tool"),
+                step("cargo fmt --all -- --check"),
+            ],
+            fallback_reason: None,
+            refused: false,
+        };
+        let mut probs = std::collections::HashMap::new();
+        // Clippy higher than fmt; middle tool highest band-2 P; order scrambled.
+        probs.insert("cargo-fmt".to_string(), 0.0385);
+        probs.insert("cargo-clippy".to_string(), 0.9);
+        probs.insert("nextest-ci".to_string(), 0.5);
+        probs.insert("hypothetical-middle-tool".to_string(), 0.99);
+
+        let matched = plan.apply_probability_ordering(&probs);
+        assert_eq!(matched, 4);
+        assert!(
+            plan.steps[0].command.contains("cargo fmt"),
+            "fmt band 0 first: {:?}",
+            plan.steps.iter().map(|s| &s.command).collect::<Vec<_>>()
+        );
+        assert!(
+            plan.steps[1].command.contains("cargo clippy"),
+            "clippy band 1 second even with P>fmt and middle step present: {:?}",
+            plan.steps.iter().map(|s| &s.command).collect::<Vec<_>>()
+        );
+        // Band-2: highest P first among remaining.
+        assert!(
+            plan.steps[2].command.contains("hypothetical-middle-tool"),
+            "highest-P band-2 next: {:?}",
+            plan.steps.iter().map(|s| &s.command).collect::<Vec<_>>()
+        );
+        assert!(plan.steps[3].command.contains("nextest"));
+    }
+
+    /// matched_steps==0 preserves original order (no alphabetical-only sort).
+    #[test]
+    fn test_apply_probability_ordering_zero_matches_preserves_order() {
+        let mut plan = VerificationPlan {
+            source: None,
+            // Deliberately reverse-alpha so alphabetical sort would reshuffle.
+            steps: vec![step("zebra-tool"), step("alpha-tool"), step("middle-tool")],
+            fallback_reason: None,
+            refused: false,
+        };
+        let original: Vec<String> = plan.steps.iter().map(|s| s.command.clone()).collect();
+        // Prob map has unrelated keys only.
+        let mut probs = std::collections::HashMap::new();
+        probs.insert("cargo-fmt".to_string(), 0.5);
+        probs.insert("nextest-ci".to_string(), 0.9);
+
+        let matched = plan.apply_probability_ordering(&probs);
+        assert_eq!(matched, 0);
+        let after: Vec<String> = plan.steps.iter().map(|s| s.command.clone()).collect();
+        assert_eq!(
+            after, original,
+            "vacuous apply must not alphabetical-sort: was {original:?}, now {after:?}"
         );
     }
 }

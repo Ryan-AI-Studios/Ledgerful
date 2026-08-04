@@ -35,6 +35,11 @@ pub struct VerifyCliJson {
     pub timestamp: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub tx_id: Option<String>,
+    /// Count of plan steps whose step key was present in the Bayesian
+    /// probability map (0140). Omitted when ordering was not attempted.
+    /// schemaVersion stays **1** (additive optional field).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub matched_steps: Option<usize>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -70,7 +75,14 @@ impl VerifyCliJson {
     ///
     /// `ok` is false when refused (vacuous-pass guard: empty results would
     /// otherwise make `overall_pass` true).
-    pub fn from_report(report: &VerificationReport, scope_requested: VerifyScope) -> Self {
+    ///
+    /// `matched_steps` is the Bayesian apply hit count (0140); pass `None`
+    /// when ordering was not attempted (no history / cold-start / no storage).
+    pub fn from_report(
+        report: &VerificationReport,
+        scope_requested: VerifyScope,
+        matched_steps: Option<usize>,
+    ) -> Self {
         let plan = report.plan.as_ref();
         let refused = plan.is_some_and(|p| p.refused);
         let fallback_reason = plan.and_then(|p| p.fallback_reason.clone());
@@ -103,6 +115,7 @@ impl VerifyCliJson {
             steps,
             timestamp: report.timestamp.clone(),
             tx_id: report.tx_id.clone(),
+            matched_steps,
         }
     }
 
@@ -1071,6 +1084,10 @@ pub fn execute_verify(
         return execute_verify_health(&layout, &config);
     }
 
+    // Bayesian apply hit count for honesty log + VerifyCliJson.matchedSteps (0140).
+    // None = ordering not attempted; Some(n) = extract_dataset succeeded.
+    let mut bayesian_matched_steps: Option<usize> = None;
+
     // 3. Build Plan
     let (plan, steps) = match command_str {
         Some(ref cmd) => (
@@ -1173,11 +1190,21 @@ pub fn execute_verify(
                         crate::verify::probability::extract_dataset(stg.get_connection())
                 {
                     let probs = crate::verify::probability::calculate_probabilities(&dataset);
-                    plan.apply_probability_ordering(&probs);
-                    info!(
-                        "Probabilistic verification ordering applied ({} active models).",
-                        probs.len()
-                    );
+                    let matched = plan.apply_probability_ordering(&probs);
+                    bayesian_matched_steps = Some(matched);
+                    if matched > 0 {
+                        info!(
+                            "Probabilistic verification ordering applied (matched_steps={matched}, dataset_keys={})",
+                            probs.len()
+                        );
+                    } else {
+                        // Honesty: never claim "applied N models" with dataset
+                        // size when zero plan steps hit the probability map.
+                        info!(
+                            "Probabilistic verification ordering skipped reorder (matched_steps=0, dataset_keys={})",
+                            probs.len()
+                        );
+                    }
                 }
 
                 // Announce fast→full fallback or MappingRefuse before the user
@@ -1309,7 +1336,7 @@ pub fn execute_verify(
         let mut report = VerificationReport::new(plan, Vec::new());
         report.overall_pass = false;
         if json {
-            let payload = VerifyCliJson::from_report(&report, scope);
+            let payload = VerifyCliJson::from_report(&report, scope, bayesian_matched_steps);
             println!("{}", payload.to_json_string()?);
         }
         let reason = report
@@ -1640,7 +1667,7 @@ pub fn execute_verify(
     // Emit versioned CLI payload before any error return (DoD-15 boundary):
     // JSON present + non-zero = validation rejection; no JSON + non-zero = fatal.
     if json {
-        let payload = VerifyCliJson::from_report(&report, scope);
+        let payload = VerifyCliJson::from_report(&report, scope, bayesian_matched_steps);
         println!("{}", payload.to_json_string()?);
     }
 
@@ -2514,7 +2541,7 @@ mod verify_cli_json_tests {
     #[test]
     fn schema_version_and_ok_from_report() {
         let report = sample_report(vec![sample_result("cargo test", 0)], None);
-        let payload = VerifyCliJson::from_report(&report, VerifyScope::Full);
+        let payload = VerifyCliJson::from_report(&report, VerifyScope::Full, None);
         assert_eq!(payload.schema_version, VERIFY_JSON_SCHEMA_VERSION);
         assert!(payload.ok);
         assert_eq!(payload.scope_requested, "full");
@@ -2524,6 +2551,7 @@ mod verify_cli_json_tests {
         assert_eq!(payload.steps[0].status, "pass");
         assert_eq!(payload.steps[0].exit_code, 0);
         assert!(payload.steps[0].failure_detail.is_none());
+        assert!(payload.matched_steps.is_none());
     }
 
     #[test]
@@ -2532,7 +2560,7 @@ mod verify_cli_json_tests {
             vec![sample_result("cargo test", 0)],
             Some("fast scope unavailable — empty test_mapping; running full (~5-8 min)"),
         );
-        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast);
+        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast, None);
         assert_eq!(payload.scope_requested, "fast");
         assert_eq!(payload.scope_executed, "full");
         assert!(payload.fallback_reason.as_ref().unwrap().contains("empty"));
@@ -2549,7 +2577,7 @@ mod verify_cli_json_tests {
         );
         // Vacuous overall_pass on empty results would be true without the force.
         assert!(!report.overall_pass || report.results.is_empty());
-        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast);
+        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast, None);
         assert!(!payload.ok, "refused must never report ok:true");
         assert_eq!(payload.scope_requested, "fast");
         assert_eq!(payload.scope_executed, "refused");
@@ -2578,7 +2606,7 @@ mod verify_cli_json_tests {
         report.timestamp = "2026-01-01T00:00:00Z".into();
         // Vacuous .all() on empty results is true — the bug 0135 guards against.
         assert!(report.overall_pass);
-        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast);
+        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast, None);
         assert!(!payload.ok);
         assert_eq!(payload.scope_executed, "refused");
         assert!(payload.steps.is_empty());
@@ -2593,7 +2621,7 @@ mod verify_cli_json_tests {
             ],
             None,
         );
-        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast);
+        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast, None);
         assert!(!payload.ok);
         assert_eq!(payload.steps[0].status, "pass");
         assert_eq!(payload.steps[1].status, "fail");
@@ -2607,7 +2635,7 @@ mod verify_cli_json_tests {
         let mut result = sample_result("cargo fmt --all -- --check", 1);
         result.stderr_summary = "Diff in src/lib.rs:\nDiff in src/main.rs:\n".into();
         let report = sample_report(vec![result], None);
-        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast);
+        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast, None);
         assert_eq!(payload.schema_version, 1);
         assert!(!payload.ok);
         let paths = payload.steps[0].failed_paths.as_ref().expect("paths");
@@ -2622,9 +2650,31 @@ mod verify_cli_json_tests {
         let pass = VerifyCliJson::from_report(
             &sample_report(vec![sample_result("cargo test", 0)], None),
             VerifyScope::Full,
+            None,
         );
         assert!(pass.steps[0].failed_paths.is_none());
         assert!(!pass.to_json_string().unwrap().contains("failedPaths"));
+    }
+
+    #[test]
+    fn matched_steps_additive_schema_v1() {
+        let report = sample_report(vec![sample_result("cargo test", 0)], None);
+        let with = VerifyCliJson::from_report(&report, VerifyScope::Full, Some(2));
+        assert_eq!(with.schema_version, 1);
+        assert_eq!(with.matched_steps, Some(2));
+        let json = with.to_json_string().unwrap();
+        assert!(json.contains("\"matchedSteps\": 2"));
+        let without = VerifyCliJson::from_report(&report, VerifyScope::Full, None);
+        assert!(without.matched_steps.is_none());
+        assert!(!without.to_json_string().unwrap().contains("matchedSteps"));
+        // Vacuous honesty: matched_steps=0 still serializes (ordering ran, zero hits).
+        let zero = VerifyCliJson::from_report(&report, VerifyScope::Full, Some(0));
+        assert_eq!(zero.matched_steps, Some(0));
+        assert!(
+            zero.to_json_string()
+                .unwrap()
+                .contains("\"matchedSteps\": 0")
+        );
     }
 
     #[test]
@@ -2648,10 +2698,10 @@ mod verify_cli_json_tests {
             ],
             None,
         );
-        let a = VerifyCliJson::from_report(&report, VerifyScope::Fast)
+        let a = VerifyCliJson::from_report(&report, VerifyScope::Fast, None)
             .to_json_string()
             .unwrap();
-        let b = VerifyCliJson::from_report(&report, VerifyScope::Fast)
+        let b = VerifyCliJson::from_report(&report, VerifyScope::Fast, None)
             .to_json_string()
             .unwrap();
         assert_eq!(a, b);
@@ -2677,7 +2727,7 @@ mod verify_cli_json_tests {
                 vec![sample_result("cargo test", exit)]
             };
             let report = sample_report(results, None);
-            let payload = VerifyCliJson::from_report(&report, VerifyScope::Full);
+            let payload = VerifyCliJson::from_report(&report, VerifyScope::Full, None);
             assert_eq!(payload.ok, expect_ok, "exit={exit}");
             assert_eq!(payload.ok, exit == 0);
         }
