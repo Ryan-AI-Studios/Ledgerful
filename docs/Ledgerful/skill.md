@@ -266,6 +266,8 @@ ledgerful dead-code --include-traits  # include standard traits (Eq, Clone, Debu
 
 Scannable day-to-day subset — not a replacement for the full Core Workflow below.
 Prefer **`--json`** on doctor / change-context / ledger status when parsing.
+`ask` answers Daily 5 / product-docs intents from this skill card (deterministic),
+not free-form LLM invention.
 Packet + colour env: [`docs/agent-output-contract.md`](../agent-output-contract.md).
 Agent command sheet (local pack path): `.agents/skills/ledgerful/references/commands.md`
 (or `references/commands.md` when the skill pack is installed as a unit).

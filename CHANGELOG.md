@@ -42,6 +42,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Ask Daily 5 / product-docs grounding (0139):** `ask` questions about Daily 5,
+  agent default path, or session start commands early-exit with a skill-grounded
+  five-command card (banner: `Product-docs query resolved via skill Daily 5.`)
+  before CG-F31 command-discovery and before any LLM backend. Prevents free-form
+  invention of “top 5 findings” framing or cargo-cult flags (`--machine-output`,
+  ask-only `--narrative`/`--mode`/`--semantic`/`--auto-scan`). Policy:
+  `docs/operator-surface-policy.md` §2 (Structured sources before LLM synthesis).
+
 - **topFindings optional-category noise (0138):** Doctor sidecar `findings` and
   change-context `doctor.topFindings` no longer include `DoctorCategory::Optional`
   warns (e.g. dogfood `completion-unreachable`), so flaky optional backends do

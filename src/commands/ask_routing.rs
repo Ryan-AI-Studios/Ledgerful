@@ -3,6 +3,7 @@ use miette::{IntoDiagnostic, Result};
 use regex::Regex;
 use rusqlite::Connection;
 use std::collections::HashSet;
+use std::sync::OnceLock;
 
 #[derive(Debug)]
 pub enum ExactIntent {
@@ -317,6 +318,137 @@ pub fn resolve_intent(intent: &ExactIntent, conn: &Connection) -> Result<Option<
     }
 }
 
+// --- Product-docs routing (0139 Ask Docs Grounding) ---
+//
+// Product-usage / Daily 5 / agent-default-path questions are answered from
+// the tracked skill SoT (`docs/Ledgerful/skill.md`) plus live clap `about`
+// text — never free-form LLM invention. Policy:
+// `docs/operator-surface-policy.md` §2 (Structured sources before LLM synthesis).
+// Wire order in `execute_ask` is normative: CG-F20 → ProductDocs → CG-F31 → LLM
+// so "session start commands" is not swallowed by GenericDiscovery.
+
+/// Product-docs intent class. Daily 5 is the load-bearing first member;
+/// AgentDefaultPath is a synonym that yields the same answer.
+#[derive(Debug, PartialEq, Eq)]
+pub enum ProductDocsIntent {
+    /// "What is the Daily 5?", "agent default path", "session start commands".
+    Daily5,
+}
+
+/// Locked banner for ProductDocs early-exit (DoD-1; matches CG-F20/F31 style).
+pub const PRODUCT_DOCS_DAILY5_BANNER: &str = "Product-docs query resolved via skill Daily 5.";
+
+/// Daily 5 argv rows (skill table). Names used for clap corpus lookup;
+/// display argv tokens are skill-faithful (including flags).
+const DAILY5_STEPS: &[(&str, &str, &str)] = &[
+    (
+        "doctor",
+        "`ledgerful doctor --json`",
+        "Session/env readiness (`readyForPublish`)",
+    ),
+    (
+        "change-context",
+        "`ledgerful change-context --json`",
+        "Default pre-edit packet",
+    ),
+    (
+        "ledger status",
+        "`ledgerful ledger status` (`--compact` or `--json`)",
+        "Provenance / pending / drift",
+    ),
+    (
+        "search",
+        "`ledgerful search …` (prefer `--auto-index` when stale)",
+        "Discovery (not full impact)",
+    ),
+    (
+        "verify",
+        "`ledgerful verify --scope fast`",
+        "Local gate (pre-push style); ≠ full CI; may refuse when mapping cannot scope",
+    ),
+];
+
+fn product_docs_trigger() -> Option<&'static Regex> {
+    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)\b(daily\s*5|daily\s*five|agent\s+default\s+path|session\s+start\s+commands)\b",
+        )
+        .ok()
+    })
+    .as_ref()
+}
+
+fn product_docs_impl_exclude() -> Option<&'static Regex> {
+    static RE: OnceLock<Option<Regex>> = OnceLock::new();
+    // Only true implementation words — do not exclude natural product
+    // phrasing like "how does Daily 5 work".
+    RE.get_or_init(|| {
+        Regex::new(
+            r"(?i)\b(compute|computes|calculation|calculations|calculate|calculates|score|scores|internal|internals|implement|implements|implementation|algorithm)\b",
+        )
+        .ok()
+    })
+    .as_ref()
+}
+
+/// Strip trailing punctuation so "Daily 5?" / "Daily 5!" still match product phrases.
+fn strip_trailing_punct(s: &str) -> &str {
+    s.trim_end_matches(|c: char| {
+        matches!(
+            c,
+            '?' | '!' | '.' | ',' | ';' | ':' | '\'' | '"' | '”' | '’'
+        )
+    })
+}
+
+/// Recognizes product-docs / Daily 5 / agent-default-path phrasing.
+/// Conservative: returns `None` for implementation questions, pure CG-F20
+/// structural shapes, and plain command-discovery without product phrases.
+///
+/// Policy: `docs/operator-surface-policy.md` §2 (Structured sources before LLM synthesis).
+pub fn parse_product_docs_intent(query: &str) -> Option<ProductDocsIntent> {
+    let q = strip_trailing_punct(query.trim());
+    if q.is_empty() {
+        return None;
+    }
+
+    // Implementation-flavored questions fall through even if they mention Daily 5.
+    if product_docs_impl_exclude().is_some_and(|re| re.is_match(q)) {
+        return None;
+    }
+
+    if product_docs_trigger().is_some_and(|re| re.is_match(q)) {
+        return Some(ProductDocsIntent::Daily5);
+    }
+
+    None
+}
+
+/// Builds the skill-grounded Daily 5 answer. Prefers live clap `about` text
+/// from `corpus` when the qualified name matches; else skill role text.
+/// Never lists CG-F31 REPO_HEALTH (different product set).
+pub fn build_daily5_answer(corpus: &[CommandSurface]) -> String {
+    let mut lines = Vec::with_capacity(DAILY5_STEPS.len());
+    for (i, (qualified_name, display_argv, skill_role)) in DAILY5_STEPS.iter().enumerate() {
+        let role = corpus
+            .iter()
+            .find(|c| c.qualified_name == *qualified_name)
+            .map(|c| c.about.as_str())
+            .unwrap_or(skill_role);
+        lines.push(format!("{}. {} — {}", i + 1, display_argv, role));
+    }
+
+    format!(
+        "Daily 5 (agent default path) — scannable day-to-day subset from skill:\n\
+         {}\n\n\
+         Honesty: step 5 may refuse when `test_mapping` cannot scope (not a surprise full suite). \
+         doctor ≠ verify ≠ full CI. Escalate `scan --impact` is **not** Daily 5 \
+         (B2 only: readSetCapped / high multi-module risk / unclear public API / user DoD).",
+        lines.join("\n")
+    )
+}
+
 // --- CG-F31: command-discovery / repo-health routing ---
 //
 // `ask_routing` already short-circuits structural code questions (CG-F20,
@@ -581,6 +713,161 @@ mod tests {
     fn test_parse_intent_returns_none_for_narrative_questions() {
         assert!(parse_intent("what should I refactor in this module?").is_none());
         assert!(parse_intent("give me an overview of this codebase").is_none());
+    }
+
+    // --- 0139 ProductDocs / Daily 5 tests ---
+
+    #[test]
+    fn test_parse_product_docs_intent_recognizes_daily5_phrasings() {
+        let positives = [
+            "What is the Daily 5?",
+            "what is the daily 5",
+            "daily five",
+            "What is Daily Five?",
+            "agent default path",
+            "What is the agent default path?",
+            "session start commands",
+            "what are the session start commands?",
+            "Daily 5!",
+            "tell me about the daily 5.",
+        ];
+        for q in positives {
+            assert_eq!(
+                parse_product_docs_intent(q),
+                Some(ProductDocsIntent::Daily5),
+                "expected ProductDocs for: {q}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_parse_product_docs_intent_ignores_non_product_queries() {
+        // Implementation (no product phrase, or impl keywords)
+        assert_eq!(
+            parse_product_docs_intent("how does doctor compute readiness"),
+            None
+        );
+        assert_eq!(
+            parse_product_docs_intent("how does the Daily 5 compute scores"),
+            None
+        );
+        // Pure CG-F20 structural shapes
+        assert_eq!(parse_product_docs_intent("what calls execute_ask"), None);
+        assert_eq!(
+            parse_product_docs_intent("where is symbol execute_ask defined"),
+            None
+        );
+        // Plain command-discovery without product phrases → leave for CG-F31
+        assert_eq!(
+            parse_product_docs_intent("what command shows hotspots"),
+            None
+        );
+        assert_eq!(
+            parse_product_docs_intent("what commands show repo health?"),
+            None
+        );
+        // Random narrative / daily noise without product phrase
+        assert_eq!(
+            parse_product_docs_intent("what should I refactor in this module?"),
+            None
+        );
+        assert_eq!(
+            parse_product_docs_intent("daily standup notes from git"),
+            None
+        );
+    }
+
+    #[test]
+    fn test_product_docs_wins_session_start_overlap_with_generic_discovery() {
+        // Wire-order regression (AI3): this phrase matches GenericDiscovery
+        // in isolation, but ProductDocs must own it when both parse.
+        let q = "what are the session start commands?";
+        assert_eq!(
+            parse_product_docs_intent(q),
+            Some(ProductDocsIntent::Daily5),
+            "ProductDocs must match session-start synonym"
+        );
+        assert_eq!(
+            parse_command_discovery_intent(q),
+            Some(CommandDiscoveryIntent::GenericDiscovery),
+            "GenericDiscovery may still match in isolation — wire order wins in execute_ask"
+        );
+    }
+
+    #[test]
+    fn test_build_daily5_answer_contains_required_argv_tokens() {
+        let corpus = build_command_corpus();
+        let answer = build_daily5_answer(&corpus);
+
+        for required in [
+            "doctor --json",
+            "change-context --json",
+            "ledger status",
+            "search",
+            "verify --scope fast",
+        ] {
+            assert!(
+                answer.contains(required),
+                "Daily 5 answer missing required token `{required}`:\n{answer}"
+            );
+        }
+    }
+
+    #[test]
+    fn test_build_daily5_answer_excludes_banned_flags_and_framing() {
+        let corpus = build_command_corpus();
+        let answer = build_daily5_answer(&corpus);
+        let lower = answer.to_lowercase();
+
+        for banned in [
+            "--machine-output",
+            "--json-lines",
+            "--narrative",
+            "--mode",
+            "--semantic",
+            "--auto-scan",
+        ] {
+            assert!(
+                !answer.contains(banned),
+                "Daily 5 answer must not contain banned flag `{banned}`:\n{answer}"
+            );
+        }
+        assert!(
+            !lower.contains("top 5 findings"),
+            "must not redefine Daily 5 as topFindings / top 5 findings:\n{answer}"
+        );
+        // Bare --json is legitimate on doctor/change-context — do not ban it.
+        assert!(
+            answer.contains("--json"),
+            "Daily 5 must retain skill --json on doctor/change-context:\n{answer}"
+        );
+    }
+
+    #[test]
+    fn test_daily5_skill_sot_contains_five_argv_substrings() {
+        // Tracked SoT only (docs/Ledgerful/skill.md). Path relative to this
+        // source file: src/commands/ask_routing.rs → ../../docs/Ledgerful/skill.md
+        let skill = include_str!("../../docs/Ledgerful/skill.md");
+        for token in [
+            "doctor --json",
+            "change-context --json",
+            "ledger status",
+            "search",
+            "verify --scope fast",
+        ] {
+            assert!(
+                skill.contains(token),
+                "skill.md missing Daily 5 argv substring `{token}`"
+            );
+        }
+    }
+
+    #[test]
+    fn test_product_docs_daily5_banner_locked_string() {
+        assert_eq!(
+            PRODUCT_DOCS_DAILY5_BANNER,
+            "Product-docs query resolved via skill Daily 5."
+        );
     }
 
     // --- CG-F31 tests ---
