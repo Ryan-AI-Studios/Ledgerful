@@ -105,10 +105,11 @@ impl OutcomePredictor {
 
             if !embed_config.base_url.is_empty() && !diff_text.is_empty() {
                 let mut semantic_warnings = Vec::new();
-                let cold_start = history_count < 5;
+                use crate::verify::predict::SEMANTIC_COLD_START_THRESHOLD;
+                let cold_start = history_count < SEMANTIC_COLD_START_THRESHOLD;
                 if cold_start {
                     let msg = format!(
-                        "Semantic prediction: warming up ({history_count}/50 history records)"
+                        "Semantic prediction: warming up ({history_count}/{SEMANTIC_COLD_START_THRESHOLD} history records)"
                     );
                     warn!("{msg}");
                     semantic_warnings.push(msg);

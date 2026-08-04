@@ -42,6 +42,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Bayesian verify join (0140):** Canonical `verify_step_key` join for failure
+  probability ordering — write path stores step keys in `test_outcome_history`,
+  extract re-buckets legacy full-command rows, scoped nextest (`-E` / filterset)
+  shares `nextest-scoped` history. Multi-band sort keeps fmt before clippy;
+  vacuous apply (matched_steps=0) preserves plan order and logs honestly (no
+  “applied N models” with dataset size alone). `verify --json` adds optional
+  `matchedSteps` (schemaVersion stays 1). Window query uses
+  `ORDER BY recorded_at DESC, diff_embedding_id DESC`. Semantic cold-start uses
+  named `SEMANTIC_COLD_START_THRESHOLD` (5); inverted `/50` explain branches
+  removed.
+
 - **Ask Daily 5 / product-docs grounding (0139):** `ask` questions about Daily 5,
   agent default path, or session start commands early-exit with a skill-grounded
   five-command card (banner: `Product-docs query resolved via skill Daily 5.`)

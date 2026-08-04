@@ -260,11 +260,14 @@ impl VerifyEngine {
         let diff_summary: String = diff_text.chars().take(200).collect();
         let commit_hash = packet.head_hash.clone().unwrap_or_default();
 
+        // Bayesian join (0140): store canonical step key in test_file so
+        // extract_dataset / apply_probability_ordering share identity with
+        // scoped nextest argv variants. Leave verification_results raw.
         let outcomes: Vec<crate::verify::semantic_predictor::TestOutcome> = results
             .iter()
             .map(|r| crate::verify::semantic_predictor::TestOutcome {
                 test_name: r.command.clone(),
-                test_file: r.command.clone(),
+                test_file: crate::verify::probability::verify_step_key(&r.command),
                 commit_hash: commit_hash.clone(),
                 status: if r.exit_code == 0 {
                     crate::verify::semantic_predictor::TestStatus::Passed

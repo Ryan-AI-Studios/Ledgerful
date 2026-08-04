@@ -388,15 +388,26 @@ fn build_semantic_basis(
     basis
 }
 
+/// Minimum `test_outcome_history` row count before semantic enrichment runs.
+/// Shared by the caller gate and any remaining warm-up messaging so the
+/// threshold cannot drift (0140 DoD-6). Distinct from Bayesian extract's
+/// cold-start of 10 *distinct diffs* — different units, not unified here.
+pub const SEMANTIC_COLD_START_THRESHOLD: usize = 5;
+
 /// Enrich a rule-based PredictionResult with semantic scores, blending,
 /// and explain-table lines. Returns a new PredictionResult with scores
 /// and explain_lines populated.
+///
+/// Caller only invokes this when `history_count >= SEMANTIC_COLD_START_THRESHOLD`,
+/// so cold-start / "warming up" language is never emitted here. Files with no
+/// similar-history failure basis get an honest per-file phrase (not inverted
+/// global-history messaging from the pre-0140 `<50` / `≥50` dual branch).
 pub fn enrich_with_semantic(
     mut result: PredictionResult,
     semantic_scores: &std::collections::HashMap<String, f64>,
     semantic_weight: f64,
     similar_outcomes: &[(crate::verify::semantic_predictor::TestOutcome, f32)],
-    cold_start_count: usize,
+    _history_count: usize,
 ) -> PredictionResult {
     let rule_scores = build_rule_scores(&result.files);
     let blended = crate::verify::semantic_predictor::blend_scores(
@@ -430,13 +441,13 @@ pub fn enrich_with_semantic(
             explain_lines.push(format!(
                 "    Semantic basis: {fails} of {total} similar past changes caused failures",
             ));
-        } else if cold_start_count < 50 {
-            explain_lines.push(format!(
-                "    Semantic basis: warming up ({cold_start_count}/50 history records)",
-            ));
         } else {
-            explain_lines
-                .push("    Semantic basis: insufficient history (< 5 samples)".to_string());
+            // Cold-start already cleared at the caller; no global-history
+            // basis for this file is not "insufficient history (< 5)".
+            explain_lines.push(
+                "    Semantic basis: no similar-history failures recorded for this file"
+                    .to_string(),
+            );
         }
     }
 
@@ -788,6 +799,55 @@ mod tests {
                 .iter()
                 .any(|l| l.contains("Semantic basis:") && l.contains("1 of 1"))
         );
+        // Never emit inverted cold-start language after gate cleared.
+        assert!(
+            enriched
+                .explain_lines
+                .iter()
+                .all(|l| !l.contains("insufficient history") && !l.contains("/50"))
+        );
+    }
+
+    /// After cold-start cleared, files with no similar-history basis must not
+    /// claim "insufficient history (< 5)" or "warming up (N/50)".
+    #[test]
+    fn test_enrich_with_semantic_no_basis_honest_phrase() {
+        let result = PredictionResult {
+            files: vec![PredictedFile {
+                path: PathBuf::from("tests/orphan.rs"),
+                reason: PredictionReason::Temporal,
+            }],
+            warnings: Vec::new(),
+            ..Default::default()
+        };
+        let semantic: std::collections::HashMap<String, f64> =
+            [("tests/orphan.rs".to_string(), 0.1)].into();
+        let outcomes: Vec<(crate::verify::semantic_predictor::TestOutcome, f32)> = Vec::new();
+
+        // history_count well above SEMANTIC_COLD_START_THRESHOLD (caller gate cleared).
+        let enriched = enrich_with_semantic(result, &semantic, 0.3, &outcomes, 100);
+        assert!(
+            enriched
+                .explain_lines
+                .iter()
+                .any(|l| l.contains("no similar-history failures recorded for this file")),
+            "expected honest per-file phrase; got {:?}",
+            enriched.explain_lines
+        );
+        assert!(
+            enriched.explain_lines.iter().all(|l| {
+                !l.contains("insufficient history")
+                    && !l.contains("warming up")
+                    && !l.contains("/50")
+            }),
+            "must not use inverted cold-start language when count >= threshold: {:?}",
+            enriched.explain_lines
+        );
+    }
+
+    #[test]
+    fn test_semantic_cold_start_threshold_is_five() {
+        assert_eq!(SEMANTIC_COLD_START_THRESHOLD, 5);
     }
 
     #[test]
