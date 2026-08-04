@@ -150,20 +150,31 @@ pub fn run_with(cli: Cli) -> Result<()> {
             limit,
             index,
             json,
+            json_lines,
             auto_index,
             hybrid,
-        } => dispatch_search(
-            current_dir,
-            query,
-            regex,
-            semantic,
-            limit,
-            index,
-            json,
-            auto_index,
-            hybrid,
-        )
-        .or_else(handle_schema_error),
+        } => {
+            use crate::commands::search::SearchJsonMode;
+            let json_mode = if json {
+                SearchJsonMode::Envelope
+            } else if json_lines {
+                SearchJsonMode::Lines
+            } else {
+                SearchJsonMode::Off
+            };
+            dispatch_search(
+                current_dir,
+                query,
+                regex,
+                semantic,
+                limit,
+                index,
+                json_mode,
+                auto_index,
+                hybrid,
+            )
+            .or_else(handle_schema_error)
+        }
         Commands::Hotspots { args } => crate::commands::hotspots::execute_hotspots(args),
         Commands::Endpoints(args) => crate::commands::endpoints::execute_endpoints(args),
         Commands::Federate { command } => dispatch_federate(command),
@@ -635,7 +646,7 @@ fn dispatch_search(
     semantic: bool,
     limit: usize,
     index: bool,
-    json: bool,
+    json_mode: crate::commands::search::SearchJsonMode,
     auto_index: bool,
     hybrid: bool,
 ) -> Result<()> {
@@ -649,7 +660,7 @@ fn dispatch_search(
         semantic,
         limit,
         index,
-        json,
+        json_mode,
         auto_index,
         project_id,
         hybrid,

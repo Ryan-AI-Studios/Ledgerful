@@ -1,4 +1,16 @@
-use crate::bridge::model::{BridgeDirection, BridgePayload, BridgeRecord, Privacy};
+//! Codebase search command (`ledgerful search`).
+//!
+//! Machine output (0136):
+//! - `--json` → single agent envelope (`schemaVersion: 1`)
+//! - `--json-lines` → legacy NDJSON BridgeRecord stream
+
+mod envelope;
+
+pub use envelope::{
+    HitEmit, SearchCollector, SearchEnvelope, SearchHit, SearchIndexStatus, SearchJsonMode,
+    SearchSemantic,
+};
+
 use crate::commands::helpers::get_layout;
 use crate::config::load::load_config;
 use crate::index::staleness::AutoIndexAction;
@@ -17,14 +29,27 @@ pub struct SearchArgs {
     pub semantic: bool,
     pub limit: usize,
     pub index: bool,
-    pub json: bool,
+    pub json_mode: SearchJsonMode,
     pub auto_index: bool,
     pub project_id: String,
     pub hybrid: bool,
 }
 
+impl SearchArgs {
+    #[inline]
+    pub fn is_machine(&self) -> bool {
+        self.json_mode.is_machine()
+    }
+}
+
 pub fn execute_search(args: SearchArgs) -> Result<()> {
     let layout = get_layout()?;
+    let mut collector = SearchCollector::new(
+        args.json_mode,
+        args.project_id.clone(),
+        args.query.clone(),
+        args.limit,
+    );
 
     // Track auto-index action so FTS rebuilds only when SQLite work ran (0128).
     let mut auto_index_action = AutoIndexAction::None;
@@ -49,15 +74,15 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                     auto_index_action = action;
                 }
                 Err(e) => {
-                    // B4: greppable remediation when SQLite auto-index work fails
-                    // (not only FTS rebuild). Still surface the error.
+                    // B4 / 0136 B3: greppable remediation on stderr for human;
+                    // machine modes emit **no** stdout then Err.
                     emit_auto_index_failed(&args, &e);
                     return Err(e);
                 }
             }
         } else if let Some(storage) = storage_opt {
             let is_stale = warn_if_stale(&storage, threshold);
-            if is_stale && !args.json && crate::util::term::is_interactive() {
+            if is_stale && !args.is_machine() && crate::util::term::is_interactive() {
                 use inquire::Confirm;
                 if let Ok(true) =
                     Confirm::new("Index is stale. Would you like to run auto-index now?")
@@ -87,7 +112,7 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
     );
     let mut fts_rebuilt_for_auto_index = false;
     if auto_index_ran_work {
-        if !args.json {
+        if !args.is_machine() {
             println!(
                 "{} Indexing repository for search...",
                 "INIT".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold()))
@@ -97,7 +122,7 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         match rebuild_tantivy_index(&layout) {
             Ok(()) => {
                 fts_rebuilt_for_auto_index = true;
-                if !args.json {
+                if !args.is_machine() {
                     println!(
                         "{} Index built successfully.\n",
                         "DONE".if_supports_color(Stream::Stdout, |s| s
@@ -107,12 +132,13 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
             }
             Err(e) => {
                 // B4: greppable residual; continue so semantic/BM25 can still run.
-                emit_fts_rebuild_failed(&args, /*document_count=*/ None, &e);
+                emit_fts_rebuild_failed(&args, &mut collector, /*document_count=*/ None, &e);
             }
         }
     }
 
     if args.semantic {
+        collector.set_engine_mode("semantic");
         let config = load_config(&layout)?;
         let storage = StorageManager::open_read_only(&layout)?;
         let cozo = storage
@@ -130,24 +156,8 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         // state-driven warnings replace it.
         let readiness = semantic_engine.check_readiness()?;
 
-        if args.json {
-            let record = BridgeRecord {
-                bridge_version: BridgeRecord::VERSION.to_string(),
-                direction: BridgeDirection::Outbound,
-                timestamp: chrono::Utc::now(),
-                parent_hash: None,
-                project_id: args.project_id.clone(),
-                session_id: None,
-                tx_id: None,
-                record_kind: "semantic_readiness".to_string(),
-                payload: BridgePayload::Insight {
-                    memory_id: "readiness".to_string(),
-                    relevance: 1.0,
-                    content: serde_json::to_string(&readiness).unwrap_or_default(),
-                },
-                privacy: Privacy::ProjectLocal,
-            };
-            println!("{}", serde_json::to_string(&record).unwrap_or_default());
+        if args.is_machine() {
+            collector.set_semantic_readiness(&readiness);
         } else {
             for msg in crate::semantic::semantic_readiness_messages(&readiness) {
                 let is_error = msg.contains("dimension mismatch") || msg.contains("Dimension");
@@ -170,12 +180,12 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         }
 
         debug!("Performing semantic search for: {}", args.query);
-        if !args.json {
+        if !args.is_machine() {
             println!("[Search Mode: Semantic]");
         }
         // On Err: print *failure* message (never Ready "no matches") and fall through.
         // On Ok([]): print empty-result once in the empty branch below.
-        // Never both (P3 double-emit). JSON Err emits record_kind "semantic_error".
+        // Never both (P3 double-emit). JSON Err emits semantic.error / semantic_error.
         // Overfetch limit+1 so human output can show "and more" without claiming K (0100 DoD-8).
         let semantic_fetch = args.limit.saturating_add(1);
         let (mut results, query_succeeded) = match semantic_engine
@@ -186,24 +196,8 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                 // Unconfigured / unreachable / Ready runtime failure: degrade to BM25
                 // with honesty about whether the search ran or failed.
                 let failure_msg = crate::semantic::semantic_query_failure_message(&readiness, &e);
-                if args.json {
-                    let record = BridgeRecord {
-                        bridge_version: BridgeRecord::VERSION.to_string(),
-                        direction: BridgeDirection::Outbound,
-                        timestamp: chrono::Utc::now(),
-                        parent_hash: None,
-                        project_id: args.project_id.clone(),
-                        session_id: None,
-                        tx_id: None,
-                        record_kind: "semantic_error".to_string(),
-                        payload: BridgePayload::Insight {
-                            memory_id: "semantic_error".to_string(),
-                            relevance: 0.0,
-                            content: failure_msg,
-                        },
-                        privacy: Privacy::ProjectLocal,
-                    };
-                    println!("{}", serde_json::to_string(&record).unwrap_or_default());
+                if args.is_machine() {
+                    collector.set_semantic_error(failure_msg);
                 } else {
                     println!(
                         "{} {}",
@@ -220,25 +214,23 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         if !results.is_empty() {
             let truncated = results.len() > args.limit;
             results.truncate(args.limit);
-            if args.json {
+            collector.set_truncated(truncated);
+            if args.is_machine() {
                 for (path, name, offset, dist) in results {
-                    let record = BridgeRecord {
-                        bridge_version: BridgeRecord::VERSION.to_string(),
-                        direction: BridgeDirection::Outbound,
-                        timestamp: chrono::Utc::now(),
-                        parent_hash: None,
-                        project_id: args.project_id.clone(),
-                        session_id: None,
-                        tx_id: None,
-                        record_kind: "insight".to_string(),
-                        payload: BridgePayload::Insight {
-                            memory_id: format!("{}::{}", path, name),
-                            relevance: 1.0 - dist as f64,
-                            content: format!("{} (offset {}, dist {:.4})", name, offset, dist),
-                        },
-                        privacy: Privacy::ProjectLocal,
-                    };
-                    println!("{}", serde_json::to_string(&record).unwrap_or_default());
+                    let score = 1.0 - dist as f64;
+                    let content = format!("{} (offset {}, dist {:.4})", name, offset, dist);
+                    let bridge_content = content.clone();
+                    let memory_id = format!("{}::{}", path, name);
+                    collector.push_hit(HitEmit {
+                        kind: "insight",
+                        path,
+                        line: None,
+                        score: Some(score),
+                        content,
+                        bridge_content,
+                        bridge_relevance: score,
+                        bridge_memory_id: memory_id,
+                    });
                 }
             } else {
                 println!(
@@ -260,11 +252,12 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                 }
                 println!();
             }
+            collector.finish();
             return Ok(());
         }
 
         // Only after a successful query that returned no hits (true empty / no-matches).
-        if query_succeeded && !args.json {
+        if query_succeeded && !args.is_machine() {
             println!(
                 "{} ⚠️ {}",
                 "WARN".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
@@ -283,6 +276,23 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         }
     }
 
+    let engine_mode = if use_hybrid {
+        "hybrid"
+    } else if use_regex {
+        "regex"
+    } else {
+        "bm25"
+    };
+    // Semantic fallthrough keeps semantic meta but engine_mode reflects BM25 path
+    // actually used for hits (requested mode already stored if pure semantic returned).
+    if !args.semantic {
+        collector.set_engine_mode(engine_mode);
+    } else {
+        // Fallthrough after semantic empty/error: hits are non-semantic; mode still
+        // names the BM25/hybrid/regex path that produces results[].kind.
+        collector.set_engine_mode(engine_mode);
+    }
+
     let index_path = layout.search_index_dir();
     let engine = TantivySearchEngine::open_or_create(index_path.as_std_path())?;
 
@@ -296,7 +306,7 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         args.index || pre_count == 0 || (auto_index_ran_work && !fts_rebuilt_for_auto_index);
 
     let engine = if needs_fts_rebuild {
-        if !args.json && !fts_rebuilt_for_auto_index {
+        if !args.is_machine() && !fts_rebuilt_for_auto_index {
             println!(
                 "{} Indexing repository for search...",
                 "INIT".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold()))
@@ -305,7 +315,7 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         debug!("Indexing repository for search...");
         match rebuild_tantivy_index(&layout) {
             Ok(()) => {
-                if !args.json {
+                if !args.is_machine() {
                     println!(
                         "{} Index built successfully.\n",
                         "DONE".if_supports_color(Stream::Stdout, |s| s
@@ -319,7 +329,7 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
             }
             Err(e) if auto_index_ran_work && !args.index => {
                 // B4 residual (retry after early rebuild failed, or empty-doc path).
-                emit_fts_rebuild_failed(&args, Some(pre_count), &e);
+                emit_fts_rebuild_failed(&args, &mut collector, Some(pre_count), &e);
                 engine
             }
             Err(e) => return Err(e),
@@ -336,46 +346,48 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
     let post_count = engine.document_count();
 
     // Empty-index honesty: do not collapse into silent no-matches for agents.
+    // Envelope has a single searchIndexStatus slot — do not overwrite a more
+    // specific fts_rebuild_failed signal (0136 codex P2). Lines mode still
+    // emits both BridgeRecords (legacy multi-line honesty).
     if pre_count == 0 {
-        emit_search_index_status(&args, post_count);
+        let skip_empty_status = args.json_mode.is_envelope() && collector.has_search_index_status();
+        if !skip_empty_status {
+            emit_search_index_status(&args, &mut collector, post_count);
+        }
         // Still empty after rebuild: status alone is enough (skip zero-hit noise).
         if post_count == 0 {
+            collector.finish();
             return Ok(());
         }
     }
 
-    perform_search(engine, &layout.root, &args, use_regex, use_hybrid)?;
+    perform_search(
+        engine,
+        &layout.root,
+        &args,
+        &mut collector,
+        use_regex,
+        use_hybrid,
+    )?;
 
+    collector.finish();
     Ok(())
 }
 
 /// B4 honesty when post-auto-index full FTS rebuild fails.
-fn emit_fts_rebuild_failed(args: &SearchArgs, document_count: Option<usize>, err: &miette::Report) {
-    if args.json {
-        let mut content = serde_json::json!({
-            "state": "fts_rebuild_failed",
-            "remediation": "ledgerful index --incremental",
+fn emit_fts_rebuild_failed(
+    args: &SearchArgs,
+    collector: &mut SearchCollector,
+    document_count: Option<usize>,
+    err: &miette::Report,
+) {
+    if args.is_machine() {
+        collector.set_search_index_status(SearchIndexStatus {
+            state: "fts_rebuild_failed".to_string(),
+            document_count,
+            remediation: Some("ledgerful index --incremental".to_string()),
+            error: None,
         });
-        if let Some(n) = document_count {
-            content["document_count"] = serde_json::json!(n);
-        }
-        let record = BridgeRecord {
-            bridge_version: BridgeRecord::VERSION.to_string(),
-            direction: BridgeDirection::Outbound,
-            timestamp: chrono::Utc::now(),
-            parent_hash: None,
-            project_id: args.project_id.clone(),
-            session_id: None,
-            tx_id: None,
-            record_kind: "search_index_status".to_string(),
-            payload: BridgePayload::Insight {
-                memory_id: "search_index_status".to_string(),
-                relevance: 0.0,
-                content: serde_json::to_string(&content).unwrap_or_default(),
-            },
-            privacy: Privacy::ProjectLocal,
-        };
-        println!("{}", serde_json::to_string(&record).unwrap_or_default());
     } else {
         eprintln!(
             "{} Search full-text rebuild failed after auto-index: {err}. Run {} to refresh BM25.",
@@ -386,81 +398,47 @@ fn emit_fts_rebuild_failed(args: &SearchArgs, document_count: Option<usize>, err
     }
 }
 
-/// B4 honesty when SQLite auto-index (`try_auto_index`) fails before FTS.
+/// B4 / 0136 B3: SQLite auto-index (`try_auto_index`) fails before FTS.
+/// Under **both** machine modes: **no** machine stdout (then caller returns Err).
 fn emit_auto_index_failed(args: &SearchArgs, err: &miette::Report) {
-    if args.json {
-        let content = serde_json::json!({
-            "state": "auto_index_failed",
-            "remediation": "ledgerful index --incremental",
-            "error": format!("{err}"),
-        });
-        let record = BridgeRecord {
-            bridge_version: BridgeRecord::VERSION.to_string(),
-            direction: BridgeDirection::Outbound,
-            timestamp: chrono::Utc::now(),
-            parent_hash: None,
-            project_id: args.project_id.clone(),
-            session_id: None,
-            tx_id: None,
-            record_kind: "search_index_status".to_string(),
-            payload: BridgePayload::Insight {
-                memory_id: "search_index_status".to_string(),
-                relevance: 0.0,
-                content: serde_json::to_string(&content).unwrap_or_default(),
-            },
-            privacy: Privacy::ProjectLocal,
-        };
-        println!("{}", serde_json::to_string(&record).unwrap_or_default());
-    } else {
-        eprintln!(
-            "{} Search auto-index failed: {err}. Run {} to refresh the index.",
-            "WARN".if_supports_color(Stream::Stderr, |s| s.style(Style::new().yellow().bold())),
-            "ledgerful index --incremental"
-                .if_supports_color(Stream::Stderr, |s| s.style(Style::new().cyan().bold()))
-        );
+    if args.is_machine() {
+        // Fatal class: no BridgeRecord line, no partial envelope.
+        return;
     }
+    eprintln!(
+        "{} Search auto-index failed: {err}. Run {} to refresh the index.",
+        "WARN".if_supports_color(Stream::Stderr, |s| s.style(Style::new().yellow().bold())),
+        "ledgerful index --incremental"
+            .if_supports_color(Stream::Stderr, |s| s.style(Style::new().cyan().bold()))
+    );
 }
 
-/// Emit human WARN / JSON `search_index_status` when the index was empty before
-/// query (0126). Mirror `semantic_readiness` Insight construction.
-fn emit_search_index_status(args: &SearchArgs, post_count: usize) {
+/// Emit human WARN / machine `searchIndexStatus` when the index was empty before
+/// query (0126).
+fn emit_search_index_status(args: &SearchArgs, collector: &mut SearchCollector, post_count: usize) {
     let state = if post_count == 0 {
         "empty_after_rebuild"
     } else {
         "was_empty"
     };
 
-    if args.json {
-        let mut content = serde_json::json!({
-            "state": state,
-            "document_count": post_count,
-        });
-        if post_count == 0 {
-            // B2 honesty: rebuild already ran; do not only say "run index".
-            content["remediation"] = serde_json::Value::String(
+    if args.is_machine() {
+        let remediation = if post_count == 0 {
+            Some(
                 "Rebuild already ran; no indexable content found (empty repo, \
                  ignore patterns, or filters). Check ignore patterns. \
                  `ledgerful index` may re-try but will not invent files."
                     .to_string(),
-            );
-        }
-        let record = BridgeRecord {
-            bridge_version: BridgeRecord::VERSION.to_string(),
-            direction: BridgeDirection::Outbound,
-            timestamp: chrono::Utc::now(),
-            parent_hash: None,
-            project_id: args.project_id.clone(),
-            session_id: None,
-            tx_id: None,
-            record_kind: "search_index_status".to_string(),
-            payload: BridgePayload::Insight {
-                memory_id: "search_index_status".to_string(),
-                relevance: 0.0,
-                content: serde_json::to_string(&content).unwrap_or_default(),
-            },
-            privacy: Privacy::ProjectLocal,
+            )
+        } else {
+            None
         };
-        println!("{}", serde_json::to_string(&record).unwrap_or_default());
+        collector.set_search_index_status(SearchIndexStatus {
+            state: state.to_string(),
+            document_count: Some(post_count),
+            remediation,
+            error: None,
+        });
     } else if post_count == 0 {
         println!(
             "{} Search index empty after rebuild (0 documents). No indexable \
@@ -497,16 +475,17 @@ fn perform_search(
     engine: TantivySearchEngine,
     root: &Utf8Path,
     args: &SearchArgs,
+    collector: &mut SearchCollector,
     use_regex: bool,
     use_hybrid: bool,
 ) -> Result<()> {
     // Overfetch by one so human path can emit a truncation affordance without
-    // claiming an exact "K more" total (0100 DoD-7). JSON still truncates to
-    // `args.limit` with no new fields.
+    // claiming an exact "K more" total (0100 DoD-7). Envelope uses the same
+    // signal for `truncated`.
     let overfetch = args.limit.saturating_add(1);
 
     if use_hybrid {
-        if !args.json {
+        if !args.is_machine() {
             println!("[Search Mode: Hybrid]");
         }
         let filter = RegexFilter::new(&engine);
@@ -531,7 +510,7 @@ fn perform_search(
 
         for r in bm25_results {
             // Seed from plain fragment (not pre-rendered highlighted). Emphasis
-            // is applied only on the human path; --json stays plain (DoD-5).
+            // is applied only on the human path; machine content stays plain (DoD-5).
             let content = r.snippet.clone().unwrap_or_default();
             let highlight_ranges = r.highlight_ranges.unwrap_or_default();
             merged.insert(
@@ -588,127 +567,120 @@ fn perform_search(
         });
         let truncated = merged_results.len() > args.limit;
         merged_results.truncate(args.limit);
+        collector.set_truncated(truncated);
 
         if merged_results.is_empty() {
-            handle_fuzzy_fallback(&engine, args);
-        } else {
-            if args.json {
-                for res in merged_results {
-                    let record = BridgeRecord {
-                        bridge_version: BridgeRecord::VERSION.to_string(),
-                        direction: BridgeDirection::Outbound,
-                        timestamp: chrono::Utc::now(),
-                        parent_hash: None,
-                        project_id: args.project_id.clone(),
-                        session_id: None,
-                        tx_id: None,
-                        record_kind: if res.is_regex {
-                            "regex_match".to_string()
-                        } else {
-                            "bm25_match".to_string()
-                        },
-                        payload: BridgePayload::Insight {
-                            memory_id: if let Some(line) = res.line_number {
-                                format!("{}::{}", res.path, line)
-                            } else {
-                                res.path.clone()
-                            },
-                            relevance: res.score.unwrap_or(1.0) as f64,
-                            content: if res.is_regex {
-                                format!(
-                                    "{}:{}: {}",
-                                    res.path,
-                                    res.line_number.unwrap_or(0),
-                                    res.content
-                                )
-                            } else {
-                                format!("{} ({})", res.path, res.content)
-                            },
-                        },
-                        privacy: Privacy::ProjectLocal,
-                    };
-                    println!("{}", serde_json::to_string(&record).unwrap_or_default());
-                }
-            } else {
-                println!(
-                    "\n{}",
-                    "Hybrid Search Results (BM25 + Regex):"
-                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
-                );
-                for res in merged_results {
-                    let line_info = if let Some(line) = res.line_number {
-                        format!(
-                            ":{}",
-                            line.to_string()
-                                .if_supports_color(Stream::Stdout, |s| s.yellow())
-                        )
-                    } else {
-                        String::new()
-                    };
-                    let source_label = if res.is_regex {
-                        "[Regex]"
-                            .if_supports_color(Stream::Stdout, |s| s.magenta())
-                            .to_string()
-                    } else {
-                        "[BM25]"
-                            .if_supports_color(Stream::Stdout, |s| s.green())
-                            .to_string()
-                    };
-                    let score_info = if let Some(score) = res.score {
-                        format!(" [score: {:.2}]", score)
-                    } else {
-                        String::new()
-                    };
-                    // Apply emphasis at print time via if_supports_color (0131 colour
-                    // gate). Under NO_COLOR / non-TTY, escapes are suppressed.
-                    let display = emphasize_snippet(&res.content, &res.highlight_ranges);
-                    println!(
-                        "{} {}{} {}",
-                        source_label,
-                        format!(
-                            "{}{}",
-                            res.path.if_supports_color(Stream::Stdout, |s| s.cyan()),
-                            line_info
-                        )
-                        .if_supports_color(Stream::Stdout, |s| s.bold()),
-                        score_info.if_supports_color(Stream::Stdout, |s| s.yellow()),
-                        display.trim()
-                    );
-                }
-                if truncated {
-                    print_search_truncation_affordance();
-                }
-                println!();
+            handle_fuzzy_fallback(&engine, args, collector);
+        } else if args.is_machine() {
+            for res in merged_results {
+                let kind = if res.is_regex {
+                    "regex_match"
+                } else {
+                    "bm25_match"
+                };
+                let score = res.score.map(|s| s as f64);
+                let bridge_content = if res.is_regex {
+                    format!(
+                        "{}:{}: {}",
+                        res.path,
+                        res.line_number.unwrap_or(0),
+                        res.content
+                    )
+                } else {
+                    format!("{} ({})", res.path, res.content)
+                };
+                let memory_id = if let Some(line) = res.line_number {
+                    format!("{}::{}", res.path, line)
+                } else {
+                    res.path.clone()
+                };
+                let relevance = res.score.unwrap_or(1.0) as f64;
+                collector.push_hit(HitEmit {
+                    kind,
+                    path: res.path,
+                    line: res.line_number,
+                    score,
+                    content: res.content,
+                    bridge_content,
+                    bridge_relevance: relevance,
+                    bridge_memory_id: memory_id,
+                });
             }
+        } else {
+            println!(
+                "\n{}",
+                "Hybrid Search Results (BM25 + Regex):"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+            );
+            for res in merged_results {
+                let line_info = if let Some(line) = res.line_number {
+                    format!(
+                        ":{}",
+                        line.to_string()
+                            .if_supports_color(Stream::Stdout, |s| s.yellow())
+                    )
+                } else {
+                    String::new()
+                };
+                let source_label = if res.is_regex {
+                    "[Regex]"
+                        .if_supports_color(Stream::Stdout, |s| s.magenta())
+                        .to_string()
+                } else {
+                    "[BM25]"
+                        .if_supports_color(Stream::Stdout, |s| s.green())
+                        .to_string()
+                };
+                let score_info = if let Some(score) = res.score {
+                    format!(" [score: {:.2}]", score)
+                } else {
+                    String::new()
+                };
+                // Apply emphasis at print time via if_supports_color (0131 colour
+                // gate). Under NO_COLOR / non-TTY, escapes are suppressed.
+                let display = emphasize_snippet(&res.content, &res.highlight_ranges);
+                println!(
+                    "{} {}{} {}",
+                    source_label,
+                    format!(
+                        "{}{}",
+                        res.path.if_supports_color(Stream::Stdout, |s| s.cyan()),
+                        line_info
+                    )
+                    .if_supports_color(Stream::Stdout, |s| s.bold()),
+                    score_info.if_supports_color(Stream::Stdout, |s| s.yellow()),
+                    display.trim()
+                );
+            }
+            if truncated {
+                print_search_truncation_affordance();
+            }
+            println!();
         }
     } else if use_regex {
-        if !args.json {
+        if !args.is_machine() {
             println!("[Search Mode: Regex]");
         }
         let filter = RegexFilter::new(&engine);
         let mut matches = filter.search(root, &args.query, overfetch)?;
         let truncated = matches.len() > args.limit;
         matches.truncate(args.limit);
+        collector.set_truncated(truncated);
 
-        if args.json {
+        if args.is_machine() {
             for m in matches {
-                let record = BridgeRecord {
-                    bridge_version: BridgeRecord::VERSION.to_string(),
-                    direction: BridgeDirection::Outbound,
-                    timestamp: chrono::Utc::now(),
-                    parent_hash: None,
-                    project_id: args.project_id.clone(),
-                    session_id: None,
-                    tx_id: None,
-                    record_kind: "regex_match".to_string(),
-                    payload: BridgePayload::Insight {
-                        memory_id: format!("{}::{}", m.path, m.line_number),
-                        relevance: 1.0,
-                        content: format!("{}:{}: {}", m.path, m.line_number, m.content),
-                    },
-                    privacy: Privacy::ProjectLocal,
-                };
-                println!("{}", serde_json::to_string(&record).unwrap_or_default());
+                let bridge_content = format!("{}:{}: {}", m.path, m.line_number, m.content);
+                let memory_id = format!("{}::{}", m.path, m.line_number);
+                collector.push_hit(HitEmit {
+                    kind: "regex_match",
+                    path: m.path,
+                    line: Some(m.line_number),
+                    score: Some(1.0),
+                    content: m.content,
+                    bridge_content,
+                    bridge_relevance: 1.0,
+                    bridge_memory_id: memory_id,
+                });
             }
         } else {
             println!(
@@ -743,73 +715,69 @@ fn perform_search(
             println!();
         }
     } else {
-        if !args.json {
+        if !args.is_machine() {
             println!("[Search Mode: BM25]");
         }
         let mut results = engine.search(&args.query, overfetch)?;
         let truncated = results.len() > args.limit;
         results.truncate(args.limit);
+        collector.set_truncated(truncated);
 
         if results.is_empty() {
-            handle_fuzzy_fallback(&engine, args);
-        } else {
-            if args.json {
-                for r in results {
-                    let record = BridgeRecord {
-                        bridge_version: BridgeRecord::VERSION.to_string(),
-                        direction: BridgeDirection::Outbound,
-                        timestamp: chrono::Utc::now(),
-                        parent_hash: None,
-                        project_id: args.project_id.clone(),
-                        session_id: None,
-                        tx_id: None,
-                        record_kind: "bm25_match".to_string(),
-                        payload: BridgePayload::Insight {
-                            memory_id: r.path.clone(),
-                            relevance: r.score as f64,
-                            content: format!("{} ({})", r.path, r.snippet.unwrap_or_default()),
-                        },
-                        privacy: Privacy::ProjectLocal,
-                    };
-                    println!("{}", serde_json::to_string(&record).unwrap_or_default());
-                }
-            } else {
-                println!(
-                    "\n{}",
-                    "Ranked Search Results (BM25):"
-                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
-                );
-                for r in results {
-                    let line_info = if let Some(line) = r.line_number {
-                        format!(
-                            ":{}",
-                            line.to_string()
-                                .if_supports_color(Stream::Stdout, |s| s.yellow())
-                        )
-                    } else {
-                        String::new()
-                    };
-                    println!(
-                        "{} [score: {:.2}]",
-                        format!(
-                            "{}{}",
-                            r.path.if_supports_color(Stream::Stdout, |s| s.cyan()),
-                            line_info
-                        )
-                        .if_supports_color(Stream::Stdout, |s| s.bold()),
-                        r.score.if_supports_color(Stream::Stdout, |s| s.yellow())
-                    );
-                    if let Some(snippet) = r.snippet {
-                        let ranges = r.highlight_ranges.as_deref().unwrap_or(&[]);
-                        let display = emphasize_snippet(&snippet, ranges);
-                        println!("  {}", display.trim());
-                    }
-                }
-                if truncated {
-                    print_search_truncation_affordance();
-                }
-                println!();
+            handle_fuzzy_fallback(&engine, args, collector);
+        } else if args.is_machine() {
+            for r in results {
+                let content = r.snippet.unwrap_or_default();
+                let bridge_content = format!("{} ({})", r.path, content);
+                let memory_id = r.path.clone();
+                let score = r.score as f64;
+                collector.push_hit(HitEmit {
+                    kind: "bm25_match",
+                    path: r.path,
+                    line: r.line_number,
+                    score: Some(score),
+                    content,
+                    bridge_content,
+                    bridge_relevance: score,
+                    bridge_memory_id: memory_id,
+                });
             }
+        } else {
+            println!(
+                "\n{}",
+                "Ranked Search Results (BM25):"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+            );
+            for r in results {
+                let line_info = if let Some(line) = r.line_number {
+                    format!(
+                        ":{}",
+                        line.to_string()
+                            .if_supports_color(Stream::Stdout, |s| s.yellow())
+                    )
+                } else {
+                    String::new()
+                };
+                println!(
+                    "{} [score: {:.2}]",
+                    format!(
+                        "{}{}",
+                        r.path.if_supports_color(Stream::Stdout, |s| s.cyan()),
+                        line_info
+                    )
+                    .if_supports_color(Stream::Stdout, |s| s.bold()),
+                    r.score.if_supports_color(Stream::Stdout, |s| s.yellow())
+                );
+                if let Some(snippet) = r.snippet {
+                    let ranges = r.highlight_ranges.as_deref().unwrap_or(&[]);
+                    let display = emphasize_snippet(&snippet, ranges);
+                    println!("  {}", display.trim());
+                }
+            }
+            if truncated {
+                print_search_truncation_affordance();
+            }
+            println!();
         }
     }
 
@@ -817,7 +785,7 @@ fn perform_search(
 }
 
 /// Human-only truncation affordance (0100 DoD-7). No exact remaining count —
-/// engines do not always return a total. JSON paths never call this.
+/// engines do not always return a total. Machine paths never call this.
 fn print_search_truncation_affordance() {
     println!("… and more results (use --limit N to see more)");
 }
@@ -861,8 +829,12 @@ fn emphasize_snippet(fragment: &str, ranges: &[(usize, usize)]) -> String {
     out
 }
 
-fn handle_fuzzy_fallback(engine: &TantivySearchEngine, args: &SearchArgs) {
-    if !args.json {
+fn handle_fuzzy_fallback(
+    engine: &TantivySearchEngine,
+    args: &SearchArgs,
+    collector: &mut SearchCollector,
+) {
+    if !args.is_machine() {
         println!(
             "{}",
             "Falling back to fuzzy search...".if_supports_color(Stream::Stdout, |s| s.yellow())
@@ -879,7 +851,7 @@ fn handle_fuzzy_fallback(engine: &TantivySearchEngine, args: &SearchArgs) {
     };
 
     if fuzzy_matches.is_empty() {
-        if !args.json {
+        if !args.is_machine() {
             println!("No matches found.");
             println!(
                 "{} No exact symbols found. Try {} or {}.",
@@ -896,33 +868,28 @@ fn handle_fuzzy_fallback(engine: &TantivySearchEngine, args: &SearchArgs) {
                     .if_supports_color(Stream::Stdout, |s| s.cyan())
             );
         }
+        // Envelope: empty results still finish with resultCount 0 (caller finishes).
     } else {
         let truncated = fuzzy_matches.len() > args.limit;
         fuzzy_matches.truncate(args.limit);
-        if args.json {
+        collector.set_truncated(truncated);
+        if args.is_machine() {
             for m in fuzzy_matches {
-                let record = BridgeRecord {
-                    bridge_version: BridgeRecord::VERSION.to_string(),
-                    direction: BridgeDirection::Outbound,
-                    timestamp: chrono::Utc::now(),
-                    parent_hash: None,
-                    project_id: args.project_id.clone(),
-                    session_id: None,
-                    tx_id: None,
-                    record_kind: "fuzzy_match".to_string(),
-                    payload: BridgePayload::Insight {
-                        memory_id: format!("{}::{}", m.path, m.line_number.unwrap_or(1)),
-                        relevance: m.score as f64,
-                        content: format!(
-                            "{}:{}: {}",
-                            m.path,
-                            m.line_number.unwrap_or(1),
-                            m.snippet.as_deref().unwrap_or_default()
-                        ),
-                    },
-                    privacy: Privacy::ProjectLocal,
-                };
-                println!("{}", serde_json::to_string(&record).unwrap_or_default());
+                let content = m.snippet.as_deref().unwrap_or_default().to_string();
+                let line = m.line_number;
+                let bridge_content = format!("{}:{}: {}", m.path, line.unwrap_or(1), content);
+                let memory_id = format!("{}::{}", m.path, line.unwrap_or(1));
+                let score = m.score as f64;
+                collector.push_hit(HitEmit {
+                    kind: "fuzzy_match",
+                    path: m.path,
+                    line,
+                    score: Some(score),
+                    content,
+                    bridge_content,
+                    bridge_relevance: score,
+                    bridge_memory_id: memory_id,
+                });
             }
         } else {
             println!(

@@ -226,6 +226,77 @@ Observe-mode would-block diagnostics go to **stderr** via `cli_summary`
 
 ---
 
+## `search --json` schema (v1)
+
+Track **0136**. Single camelCase object on stdout (same mental model as
+`doctor` / `change-context` / `verify`). Whole-stdout parsers
+(`ConvertFrom-Json`, one `serde_json::from_str`, MCP tool text) succeed on
+multi-hit output.
+
+```json
+{
+  "schemaVersion": 1,
+  "query": "change-context",
+  "mode": "bm25",
+  "limit": 3,
+  "truncated": false,
+  "resultCount": 3,
+  "results": [
+    {
+      "kind": "bm25_match",
+      "path": "src/commands/change_context.rs",
+      "score": 16.9,
+      "content": "plain snippet (no ANSI, no HTML entities)"
+    }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `schemaVersion` | number | Always **1** |
+| `query` | string | Echo of the search query |
+| `mode` | string | Requested/selected engine: `bm25` \| `regex` \| `semantic` \| `hybrid`. Fuzzy fallback **keeps parent mode**; per-hit source is `results[].kind` (`fuzzy_match`) |
+| `limit` | number | Requested limit |
+| `truncated` | bool | `true` when overfetch shows more hits than `limit` |
+| `resultCount` | number | `results.len()` |
+| `results` | array | Match hits only — **not** status/readiness meta |
+| `results[].kind` | string | `bm25_match` \| `regex_match` \| `fuzzy_match` \| `insight` |
+| `results[].path` | string | Repo-relative path |
+| `results[].line` | number \| **omitted** | Present only when known — never JSON `null` |
+| `results[].score` | number \| **omitted** | Same omit policy as `line` |
+| `results[].content` | string | **Plain** snippet |
+| `searchIndexStatus` | object \| **omitted** | Empty-index / FTS-rebuild honesty (`state`, `documentCount`, optional `remediation` / `error`) |
+| `semantic` | object \| **omitted** | On `--semantic` paths: readiness fields + optional `error` |
+
+**Empty results:** full envelope with `results: []`, `resultCount: 0`, exit **0**.
+
+**Fatal auto-index** (`try_auto_index` Err under `--auto-index`): **no** machine
+stdout (no partial envelope), non-zero exit; diagnostics on stderr.
+
+### Migration: `--json-lines`
+
+Pre-0136 `--json` emitted **NDJSON** BridgeRecord lines (`record_kind`,
+`bridge_version`, timestamps). That stream is opt-in:
+
+```powershell
+ledgerful search --json-lines --limit 5 -- "change-context"
+```
+
+Do **not** whole-parse `--json-lines` stdout. `--json` and `--json-lines`
+conflict (clap reject).
+
+### Invocation
+
+```powershell
+ledgerful search --json --limit 5 -- "change-context" | ConvertFrom-Json
+ledgerful search --json --semantic -- "blast radius"
+```
+
+MCP tool `search` spawns `search --json` (envelope; never `--json-lines`).
+
+---
+
 ## `change-context --json` schema (v1)
 
 Track **0114**. Canonical agent-consumable change packet composing impact

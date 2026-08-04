@@ -63,7 +63,8 @@ still writes concrete command/args and never writes secrets or embedding URLs.
 
 1. `change_context`: Budgeted agent change packet (impact risk, capped `readSet`, doctor readiness, pending ledger). Prefer after `doctor --json`.
 2. `scan`: Run impact scan on current repo.
-3. `search`: BM25/regex code search.
+3. `search`: BM25/regex code search. Tool text is a **single JSON object**
+   (`schemaVersion` 1, `results[]`) from CLI `search --json` — not NDJSON lines.
 4. `ask`: Semantic Q&A with context assembly (MCP children default to zero cloud egress).
 5. `ledger_status`: Current pending/unaudited state.
 6. `ledger_search`: Full-text search transactions.

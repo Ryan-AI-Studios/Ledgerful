@@ -101,10 +101,12 @@ health score until the first real index (`failures * 20` in `compute_health_scor
 This is intentional honesty, not a publish block: `readyForPublish` remains
 **block-only** (warn does not flip it).
 
-**Search CLI:** when the index was empty before a query, `search --json` emits a
-`record_kind: search_index_status` Insight (status first, then matches if any).
-States: `was_empty` (rebuilt to N>0) | `empty_after_rebuild` (still 0 — may mean
-no indexable content / ignore patterns, not only “run index again”).
+**Search CLI:** when the index was empty before a query, `search --json` sets
+envelope field `searchIndexStatus` (`state`, `documentCount`, optional
+`remediation`). States: `was_empty` (rebuilt to N>0) | `empty_after_rebuild`
+(still 0 — may mean no indexable content / ignore patterns, not only “run index
+again”). Under `--json-lines`, the legacy BridgeRecord
+`record_kind: search_index_status` stream remains (status first, then matches).
 
 ## Graph probe exclusivity (0133)
 

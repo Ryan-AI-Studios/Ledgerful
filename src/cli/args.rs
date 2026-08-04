@@ -213,9 +213,12 @@ pub enum Commands {
         /// Force re-index before searching
         #[arg(short, long)]
         index: bool,
-        /// Output results as NDJSON BridgeRecord entries
-        #[arg(long)]
+        /// Output a single JSON envelope for agents (`schemaVersion` 1)
+        #[arg(long, conflicts_with = "json_lines")]
         json: bool,
+        /// Output NDJSON BridgeRecord lines (legacy; pre-0136 `--json` behavior)
+        #[arg(long, conflicts_with = "json")]
+        json_lines: bool,
         /// Automatically run incremental index before searching if the index is stale
         #[arg(long)]
         auto_index: bool,
@@ -696,7 +699,9 @@ impl Commands {
             Commands::Impact { json, .. } => *json,
             Commands::ChangeContext { json, .. } => *json,
             Commands::Index { json, .. } => *json,
-            Commands::Search { json, .. } => *json,
+            Commands::Search {
+                json, json_lines, ..
+            } => *json || *json_lines,
             Commands::Hotspots { args } => {
                 args.json
                     || match &args.command {
@@ -1016,6 +1021,11 @@ mod machine_output_tests {
         assert!(parse(&["scan", "--impact", "--json"]).is_machine_output());
         assert!(parse(&["config", "view", "--json"]).is_machine_output());
         assert!(parse(&["search", "foo", "--json"]).is_machine_output());
+        assert!(parse(&["search", "foo", "--json-lines"]).is_machine_output());
+        assert!(
+            Cli::try_parse_from(["ledgerful", "search", "foo", "--json", "--json-lines"]).is_err(),
+            "search --json and --json-lines must conflict"
+        );
         assert!(parse(&["index", "--check", "--json"]).is_machine_output());
         assert!(parse(&["timings", "--json"]).is_machine_output());
         assert!(parse(&["hotspots", "--json"]).is_machine_output());
@@ -1473,6 +1483,7 @@ impl Commands {
                 limit,
                 index,
                 json,
+                json_lines,
                 auto_index,
                 hybrid,
             } => {
@@ -1493,6 +1504,9 @@ impl Commands {
                 }
                 if *json {
                     f.push("json");
+                }
+                if *json_lines {
+                    f.push("json_lines");
                 }
                 if *auto_index {
                     f.push("auto_index");

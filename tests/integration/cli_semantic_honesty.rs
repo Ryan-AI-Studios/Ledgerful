@@ -203,7 +203,7 @@ timeout_secs = 1
     );
 }
 
-/// JSON mode must not silence unconfigured failure — readiness and/or semantic_error.
+/// JSON mode must not silence unconfigured failure — envelope `semantic.*` fields.
 #[test]
 #[serial(test)]
 fn test_search_semantic_unconfigured_json_not_silent() {
@@ -216,19 +216,28 @@ fn test_search_semantic_unconfigured_json_not_silent() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let text = combined(&output);
 
-    let has_not_configured_status = stdout.contains("not_configured")
-        || stdout.contains("\"backend_status\":\"not_configured\"")
-        || stdout.contains("NotConfigured");
-    let has_semantic_error =
-        stdout.contains("semantic_error") || stdout.contains("\"record_kind\":\"semantic_error\"");
-    let has_honesty_in_stream = text.contains("not configured")
-        || text.contains("did not run")
-        || text.contains("Embedding backend not configured");
-
-    assert!(
-        has_not_configured_status || has_semantic_error || has_honesty_in_stream,
-        "JSON mode must surface NotConfigured readiness and/or semantic_error, not silent empty success:\n{text}"
+    // 0136: whole-stdout envelope must surface semantic readiness (no soft escape).
+    let env: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("search --json must be a single envelope (got parse error {e}):\n{text}")
+    });
+    assert_eq!(
+        env["schemaVersion"], 1,
+        "search --json must be envelope: {stdout}"
     );
+    let semantic = env
+        .get("semantic")
+        .expect("semantic side field required under --semantic --json");
+    let backend = semantic
+        .get("backendStatus")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let err = semantic.get("error").and_then(|v| v.as_str()).unwrap_or("");
+    assert_eq!(
+        backend, "not_configured",
+        "unconfigured semantic must set backendStatus=not_configured, got backend={backend:?} error={err:?} env={env}"
+    );
+    // Optional error string may also name the failure; readiness alone is sufficient.
+    let _ = err;
 }
 
 /// Doctor with partial config (model name set, base_url empty) is Not configured,
