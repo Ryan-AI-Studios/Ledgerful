@@ -6,6 +6,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Search `--json` agent envelope (0136):** multi-hit `search --json` is now a
+  **single** camelCase object (`schemaVersion: 1`, `results[]`) so whole-stdout
+  parsers succeed (PowerShell `ConvertFrom-Json`, `JSON.parse`, MCP tool text).
+  Closes dogfood Daily 5 search NDJSON parse friction. Migration: **`--json-lines`**
+  keeps the pre-0136 BridgeRecord NDJSON stream for line-by-line consumers;
+  `--json` and `--json-lines` conflict. MCP `search` stays on `--json` (gains
+  envelope with no argv change). Fatal auto-index under machine mode emits no
+  partial stdout. Contract: `docs/agent-output-contract.md`.
+
 ### Docs
 
 - **Agent Daily 5 short card (0132):** Tracked docs skill + local agent packs

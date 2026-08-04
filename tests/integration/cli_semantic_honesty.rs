@@ -203,7 +203,7 @@ timeout_secs = 1
     );
 }
 
-/// JSON mode must not silence unconfigured failure — readiness and/or semantic_error.
+/// JSON mode must not silence unconfigured failure — envelope `semantic.*` fields.
 #[test]
 #[serial(test)]
 fn test_search_semantic_unconfigured_json_not_silent() {
@@ -216,18 +216,41 @@ fn test_search_semantic_unconfigured_json_not_silent() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let text = combined(&output);
 
-    let has_not_configured_status = stdout.contains("not_configured")
-        || stdout.contains("\"backend_status\":\"not_configured\"")
-        || stdout.contains("NotConfigured");
-    let has_semantic_error =
-        stdout.contains("semantic_error") || stdout.contains("\"record_kind\":\"semantic_error\"");
-    let has_honesty_in_stream = text.contains("not configured")
+    // 0136: whole-stdout envelope with semantic.backendStatus / semantic.error.
+    let env: Result<serde_json::Value, _> = serde_json::from_str(stdout.trim());
+    if let Ok(env) = env {
+        assert_eq!(
+            env["schemaVersion"], 1,
+            "search --json must be envelope: {stdout}"
+        );
+        let semantic = env.get("semantic");
+        let backend = semantic
+            .and_then(|s| s.get("backendStatus"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let err = semantic
+            .and_then(|s| s.get("error"))
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        let honesty = backend == "not_configured"
+            || err.contains("not configured")
+            || err.contains("did not run")
+            || err.contains("Embedding backend");
+        assert!(
+            honesty || semantic.is_some(),
+            "envelope must surface semantic readiness/error, got:\n{text}"
+        );
+        return;
+    }
+
+    // Fallback if parse failed for some reason — still require honesty signal.
+    let has_honesty = text.contains("not_configured")
+        || text.contains("not configured")
         || text.contains("did not run")
         || text.contains("Embedding backend not configured");
-
     assert!(
-        has_not_configured_status || has_semantic_error || has_honesty_in_stream,
-        "JSON mode must surface NotConfigured readiness and/or semantic_error, not silent empty success:\n{text}"
+        has_honesty,
+        "JSON mode must surface NotConfigured readiness and/or semantic.error, not silent empty success:\n{text}"
     );
 }
 

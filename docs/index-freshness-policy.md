@@ -103,8 +103,9 @@ There is **no** incremental Tantivy API. After shared-path `--auto-index`:
 
 So: no full FTS reindex on **every** search when auto-index no-ops; full FTS
 **after** legitimate SQLite work is required for BM25 truth. If the FTS rebuild
-fails after auto-index, search emits a greppable WARN / `search_index_status`
-with remediation `ledgerful index --incremental`.
+fails after auto-index, search emits a greppable WARN (human) or machine
+`searchIndexStatus` under `--json` / BridgeRecord `search_index_status` under
+`--json-lines`, with remediation `ledgerful index --incremental`.
 
 ### MCP `search` and `--auto-index` (0134)
 

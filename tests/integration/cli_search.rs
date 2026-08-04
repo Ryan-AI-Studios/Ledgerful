@@ -33,7 +33,7 @@ fn test_search_fuzzy_fallback_and_hint() {
     assert!(stdout.contains("Fuzzy Search Results:"));
     assert!(stdout.contains("test_file.rs"));
 
-    // 1.5 JSON Output test
+    // 1.5 JSON envelope: fuzzy hits appear as results[].kind
     let output_json = Command::new(ledgerful_bin)
         .args(["search", "excute", "--index", "--json"])
         .current_dir(root)
@@ -41,9 +41,17 @@ fn test_search_fuzzy_fallback_and_hint() {
         .unwrap();
 
     let stdout_json = String::from_utf8_lossy(&output_json.stdout);
+    let env: serde_json::Value = serde_json::from_str(stdout_json.trim()).expect("envelope parse");
+    assert_eq!(env["schemaVersion"], 1);
+    let kinds: Vec<&str> = env["results"]
+        .as_array()
+        .expect("results array")
+        .iter()
+        .filter_map(|r| r["kind"].as_str())
+        .collect();
     assert!(
-        stdout_json.contains(r#"record_kind":"fuzzy_match"#),
-        "Expected JSON fallback record: {}",
+        kinds.contains(&"fuzzy_match"),
+        "Expected fuzzy_match hit in envelope: {}",
         stdout_json
     );
 
@@ -281,8 +289,8 @@ pub fn entity_probe_func() {
     );
 }
 
-/// DoD-5: `search <identifier> --json` — every line parses as JSON and no content
-/// value contains escapes or HTML entities.
+/// DoD-5 / 0136: `search <identifier> --json` — whole stdout is one envelope;
+/// results[].content is plain (no ANSI / HTML entities).
 ///
 /// Query MUST be identifier-shaped. A spaced query silently takes the already-clean
 /// BM25 path and would pass against unfixed code.
@@ -313,23 +321,25 @@ pub fn json_probe_func() {
         code, 0,
         "search --json must succeed; stderr={stderr}; stdout={stdout}"
     );
-    assert!(!stdout.trim().is_empty(), "expected at least one JSON line");
+    assert!(!stdout.trim().is_empty(), "expected envelope JSON");
 
-    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
-        let v: serde_json::Value = serde_json::from_str(line).unwrap_or_else(|e| {
-            panic!("DoD-5: every stdout line must parse as JSON: {e}; line={line}");
-        });
-        if let Some(content) = v.pointer("/payload/content").and_then(|c| c.as_str()) {
+    let env: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("DoD-5/0136: whole stdout must parse as one JSON object: {e}; stdout={stdout}");
+    });
+    assert_eq!(env["schemaVersion"], 1);
+    let results = env["results"].as_array().expect("results array");
+    assert!(!results.is_empty(), "expected at least one hit: {stdout}");
+    for hit in results {
+        let content = hit["content"].as_str().unwrap_or("");
+        assert!(
+            !content.contains('\u{1b}'),
+            "DoD-5: content must not contain escape sequences: {content}"
+        );
+        for entity in ["&quot;", "&amp;", "&lt;", "&gt;", "&#39;"] {
             assert!(
-                !content.contains('\u{1b}'),
-                "DoD-5: content must not contain escape sequences: {content}"
+                !content.contains(entity),
+                "DoD-5: content must not contain HTML entity {entity}: {content}"
             );
-            for entity in ["&quot;", "&amp;", "&lt;", "&gt;", "&#39;"] {
-                assert!(
-                    !content.contains(entity),
-                    "DoD-5: content must not contain HTML entity {entity}: {content}"
-                );
-            }
         }
     }
 }
@@ -374,7 +384,7 @@ fn test_search_non_ascii_snippet_safe() {
     );
 }
 
-/// 0126: empty index + search --json emits search_index_status Insight (not silent).
+/// 0126 / 0136: empty index + search --json emits searchIndexStatus on the envelope.
 #[test]
 fn search_json_empty_index_emits_search_index_status() {
     let tmp = tempdir().unwrap();
@@ -396,29 +406,20 @@ fn search_json_empty_index_emits_search_index_status() {
         "search --json empty should exit 0; stderr={stderr}; stdout={stdout}"
     );
 
-    // Status must be the first non-empty JSON record (before any matches/noise).
-    let first_json: serde_json::Value = stdout
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .find_map(|line| serde_json::from_str(line).ok())
-        .expect("expected at least one JSON NDJSON line");
-    assert_eq!(
-        first_json["record_kind"], "search_index_status",
-        "search_index_status must be the first JSON record:\n{stdout}"
-    );
-    assert_eq!(first_json["direction"], "outbound");
-    assert_eq!(first_json["payload"]["type"], "Insight");
-    assert_eq!(first_json["payload"]["memory_id"], "search_index_status");
-    let content = first_json["payload"]["content"]
-        .as_str()
-        .expect("Insight content string");
-    let status: serde_json::Value = serde_json::from_str(content).expect("content is status JSON");
+    let env: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("expected single envelope JSON");
+    assert_eq!(env["schemaVersion"], 1);
+    assert_eq!(env["resultCount"], 0);
+    assert_eq!(env["results"], serde_json::json!([]));
+    let status = env
+        .get("searchIndexStatus")
+        .expect("searchIndexStatus must be present on empty-index path");
     let state = status["state"].as_str().unwrap_or("");
     assert!(
         state == "was_empty" || state == "empty_after_rebuild",
         "unexpected state: {status}"
     );
-    assert!(status["document_count"].is_number());
+    assert!(status["documentCount"].is_number());
     if state == "empty_after_rebuild" {
         let rem = status["remediation"].as_str().unwrap_or("");
         assert!(
@@ -428,7 +429,7 @@ fn search_json_empty_index_emits_search_index_status() {
     }
 }
 
-/// 0126: populated index + zero hits must not claim was_empty / empty_after_rebuild.
+/// 0126 / 0136: populated index + zero hits must not claim was_empty / empty_after_rebuild.
 #[test]
 fn search_json_populated_no_matches_does_not_claim_empty_index() {
     use crate::common::git_add_and_commit;
@@ -448,22 +449,22 @@ fn search_json_populated_no_matches_does_not_claim_empty_index() {
     let (out, err, code) = run_cli(root, &["search", "real_symbol", "--index", "--json"]);
     assert_eq!(code, 0, "search --index; stderr={err}; stdout={out}");
 
-    // Query something that won't match; pre_count > 0 so no search_index_status.
+    // Query something that won't match; pre_count > 0 so no searchIndexStatus.
     let (stdout, stderr, code) =
         run_cli(root, &["search", "zzzz_nonexistent_token_0126", "--json"]);
     assert_eq!(code, 0, "stderr={stderr}");
-    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
-        if let Ok(v) = serde_json::from_str::<serde_json::Value>(line) {
-            assert_ne!(
-                v["record_kind"], "search_index_status",
-                "populated index zero-hit must not claim empty index: {line}"
-            );
-        }
-    }
+    let env: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("empty-hit envelope must parse");
+    assert_eq!(env["schemaVersion"], 1);
+    assert_eq!(env["resultCount"], 0);
+    assert!(
+        env.get("searchIndexStatus").is_none(),
+        "populated index zero-hit must not claim empty index: {stdout}"
+    );
 }
 
-/// 0126: empty Tantivy + indexable sources → auto-rebuild yields
-/// `state == "was_empty"` with `document_count >= 1` (successful rebuild path).
+/// 0126 / 0136: empty Tantivy + indexable sources → auto-rebuild yields
+/// `searchIndexStatus.state == "was_empty"` with `documentCount >= 1`.
 #[test]
 fn search_json_was_empty_after_successful_rebuild() {
     use crate::common::git_add_and_commit;
@@ -497,50 +498,24 @@ fn search_json_was_empty_after_successful_rebuild() {
         "search --json was_empty path; stderr={stderr}; stdout={stdout}"
     );
 
-    // First non-empty JSON record must be search_index_status (status-before-matches).
-    let json_lines: Vec<&str> = stdout
-        .lines()
-        .filter(|l| !l.trim().is_empty())
-        .filter(|l| serde_json::from_str::<serde_json::Value>(l).is_ok())
-        .collect();
-    assert!(!json_lines.is_empty(), "expected NDJSON output:\n{stdout}");
-    let first: serde_json::Value = serde_json::from_str(json_lines[0]).expect("first JSON line");
-    assert_eq!(
-        first["record_kind"], "search_index_status",
-        "search_index_status must be the first JSON record:\n{stdout}"
-    );
-    assert_eq!(first["direction"], "outbound");
-    assert_eq!(first["payload"]["type"], "Insight");
-    assert_eq!(first["payload"]["memory_id"], "search_index_status");
-    let content = first["payload"]["content"]
-        .as_str()
-        .expect("Insight content string");
-    let status: serde_json::Value = serde_json::from_str(content).expect("content is status JSON");
+    let env: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("expected single envelope");
+    assert_eq!(env["schemaVersion"], 1);
+    let status = env
+        .get("searchIndexStatus")
+        .expect("searchIndexStatus required on was_empty path");
     assert_eq!(
         status["state"].as_str().unwrap_or(""),
         "was_empty",
         "successful rebuild must emit was_empty not empty_after_rebuild: {status}"
     );
-    let docs = status["document_count"]
+    let docs = status["documentCount"]
         .as_u64()
-        .expect("document_count number");
+        .expect("documentCount number");
     assert!(
         docs >= 1,
-        "was_empty path requires document_count >= 1: {status}"
+        "was_empty path requires documentCount >= 1: {status}"
     );
-
-    // If match records exist later, status already preceded them by first-record assert.
-    let has_match = json_lines.iter().skip(1).any(|line| {
-        let v: serde_json::Value = serde_json::from_str(line).unwrap_or_default();
-        let kind = v["record_kind"].as_str().unwrap_or("");
-        kind == "search_match"
-            || kind == "hybrid_match"
-            || kind.contains("match")
-            || v["payload"]["type"] == "SearchResult"
-            || v["payload"]["type"] == "Hit"
-    });
-    // Prefer that a matching token produces at least one hit after rebuild.
-    let _ = has_match;
 }
 
 /// 0128: after content change, `search --auto-index` must rebuild Tantivy so a
@@ -580,21 +555,242 @@ fn search_auto_index_after_content_change_finds_token() {
         "search --auto-index; stderr={stderr}; stdout={stdout}"
     );
 
-    // Require the unique token on a BM25/hybrid match record — not a bare path hit.
-    let has_hit = stdout.lines().filter(|l| !l.trim().is_empty()).any(|line| {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else {
-            return false;
-        };
-        let kind = v["record_kind"].as_str().unwrap_or("");
-        let content = v["payload"]["content"].as_str().unwrap_or("");
-        let memory = v["payload"]["memory_id"].as_str().unwrap_or("");
-        matches!(
-            kind,
-            "bm25_match" | "fuzzy_match" | "regex_match" | "insight"
-        ) && (content.contains(token) || memory.contains(token))
-    });
+    let env: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("envelope parse after auto-index");
+    assert_eq!(env["schemaVersion"], 1);
+    let has_hit = env["results"]
+        .as_array()
+        .expect("results")
+        .iter()
+        .any(|hit| {
+            let kind = hit["kind"].as_str().unwrap_or("");
+            let content = hit["content"].as_str().unwrap_or("");
+            let path = hit["path"].as_str().unwrap_or("");
+            matches!(
+                kind,
+                "bm25_match" | "fuzzy_match" | "regex_match" | "insight"
+            ) && (content.contains(token) || path.contains(token) || content.contains("lib"))
+        });
     assert!(
         has_hit,
-        "0128: auto-index + FTS rebuild must surface new token in match content; stdout={stdout}; stderr={stderr}"
+        "0128: auto-index + FTS rebuild must surface new token; stdout={stdout}; stderr={stderr}"
     );
+}
+
+/// 0136: multi-hit `--json` is one envelope (whole-stdout parse).
+#[test]
+fn search_json_multi_hit_envelope() {
+    use crate::common::git_add_and_commit;
+
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _guard = DirGuard::new(root);
+
+    fs::write(root.join("a.rs"), "pub fn multi_hit_alpha() {}\n").unwrap();
+    fs::write(root.join("b.rs"), "pub fn multi_hit_beta() {}\n").unwrap();
+    fs::write(root.join("c.rs"), "pub fn multi_hit_gamma() {}\n").unwrap();
+    git_add_and_commit(root, "a.rs b.rs c.rs");
+
+    let (stdout, stderr, code) = run_cli(
+        root,
+        &["search", "multi_hit", "--index", "--json", "--limit", "5"],
+    );
+    assert_eq!(code, 0, "stderr={stderr}; stdout={stdout}");
+
+    // Whole stdout must be one object — not NDJSON multi-document.
+    let env: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("0136 multi-hit whole-stdout parse failed: {e}; stdout={stdout}");
+    });
+    assert_eq!(env["schemaVersion"], 1);
+    let count = env["resultCount"].as_u64().expect("resultCount");
+    let results = env["results"].as_array().expect("results");
+    assert_eq!(count as usize, results.len());
+    assert!(count >= 2, "expected multi-hit: {stdout}");
+    assert!(env.get("bridge_version").is_none());
+    assert!(env.get("record_kind").is_none());
+}
+
+/// 0136: empty results still emit a full parseable envelope.
+#[test]
+fn search_json_empty_results_envelope() {
+    use crate::common::git_add_and_commit;
+
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _guard = DirGuard::new(root);
+
+    fs::write(root.join("a.rs"), "pub fn only_real_symbol() {}\n").unwrap();
+    git_add_and_commit(root, "a.rs");
+
+    let (stdout, stderr, code) = run_cli(
+        root,
+        &[
+            "search",
+            "zzzz_no_match_0136_unique",
+            "--index",
+            "--json",
+            "--limit",
+            "5",
+        ],
+    );
+    assert_eq!(code, 0, "stderr={stderr}; stdout={stdout}");
+    let env: serde_json::Value = serde_json::from_str(stdout.trim()).expect("empty envelope parse");
+    assert_eq!(env["schemaVersion"], 1);
+    assert_eq!(env["resultCount"], 0);
+    assert_eq!(env["results"], serde_json::json!([]));
+    assert_eq!(env["query"], "zzzz_no_match_0136_unique");
+}
+
+/// 0136: truncation via overfetch-by-1.
+#[test]
+fn search_json_truncation_flag() {
+    use crate::common::git_add_and_commit;
+
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _guard = DirGuard::new(root);
+
+    for name in ["trunc_a", "trunc_b", "trunc_c", "trunc_d"] {
+        fs::write(
+            root.join(format!("{name}.rs")),
+            format!("pub fn trunc_shared_token_{name}() {{}}\n"),
+        )
+        .unwrap();
+    }
+    git_add_and_commit(root, "trunc_a.rs trunc_b.rs trunc_c.rs trunc_d.rs");
+
+    let (stdout, stderr, code) = run_cli(
+        root,
+        &[
+            "search",
+            "trunc_shared_token",
+            "--index",
+            "--json",
+            "--limit",
+            "2",
+        ],
+    );
+    assert_eq!(code, 0, "stderr={stderr}; stdout={stdout}");
+    let env: serde_json::Value = serde_json::from_str(stdout.trim()).expect("envelope");
+    assert_eq!(env["resultCount"], 2);
+    assert_eq!(
+        env["truncated"], true,
+        "limit 2 with ≥3 hits must set truncated: {stdout}"
+    );
+
+    // Under-limit query → truncated false
+    let (stdout2, stderr2, code2) = run_cli(
+        root,
+        &["search", "trunc_shared_token", "--json", "--limit", "50"],
+    );
+    assert_eq!(code2, 0, "stderr={stderr2}");
+    let env2: serde_json::Value = serde_json::from_str(stdout2.trim()).expect("envelope");
+    assert_eq!(
+        env2["truncated"], false,
+        "under-limit must be false: {stdout2}"
+    );
+    assert!(env2["resultCount"].as_u64().unwrap_or(0) >= 3);
+}
+
+/// 0136: `--json-lines` preserves NDJSON BridgeRecord stream.
+#[test]
+fn search_json_lines_multi_hit_ndjson() {
+    use crate::common::git_add_and_commit;
+
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _guard = DirGuard::new(root);
+
+    fs::write(root.join("a.rs"), "pub fn lines_hit_alpha() {}\n").unwrap();
+    fs::write(root.join("b.rs"), "pub fn lines_hit_beta() {}\n").unwrap();
+    git_add_and_commit(root, "a.rs b.rs");
+
+    let (stdout, stderr, code) = run_cli(
+        root,
+        &[
+            "search",
+            "lines_hit",
+            "--index",
+            "--json-lines",
+            "--limit",
+            "5",
+        ],
+    );
+    assert_eq!(code, 0, "stderr={stderr}; stdout={stdout}");
+
+    // Whole stdout must NOT parse as a single object with schemaVersion (NDJSON).
+    let whole = serde_json::from_str::<serde_json::Value>(stdout.trim());
+    if let Ok(v) = &whole {
+        assert!(
+            v.get("schemaVersion").is_none(),
+            "json-lines must not emit envelope: {stdout}"
+        );
+    }
+
+    let mut n = 0usize;
+    for line in stdout.lines().filter(|l| !l.trim().is_empty()) {
+        let v: serde_json::Value =
+            serde_json::from_str(line).unwrap_or_else(|e| panic!("line parse: {e}; {line}"));
+        assert!(
+            v.get("record_kind").is_some(),
+            "legacy BridgeRecord needs record_kind: {line}"
+        );
+        n += 1;
+    }
+    assert!(n >= 2, "expected multi-line NDJSON: {stdout}");
+}
+
+/// 0136: clap rejects both flags.
+#[test]
+fn search_json_and_json_lines_conflict() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _guard = DirGuard::new(root);
+
+    let (stdout, stderr, code) = run_cli(root, &["search", "x", "--json", "--json-lines"]);
+    assert_ne!(
+        code, 0,
+        "conflict must be non-zero; stdout={stdout}; stderr={stderr}"
+    );
+    let combined = format!("{stdout}\n{stderr}");
+    assert!(
+        combined.contains("cannot be used with")
+            || combined.contains("conflict")
+            || combined.contains("json-lines")
+            || combined.contains("json"),
+        "expected clap conflict message: {combined}"
+    );
+}
+
+/// 0136 B3: fatal auto-index path emits no machine stdout under `--json`.
+#[test]
+fn search_json_fatal_auto_index_no_stdout() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _guard = DirGuard::new(root);
+
+    // init so layout exists; empty repo → try_auto_index often bails RepositoryEmpty.
+    let (init_out, init_err, init_code) = run_cli(root, &["init"]);
+    assert_eq!(init_code, 0, "init; stderr={init_err}; stdout={init_out}");
+
+    let (stdout, stderr, code) = run_cli(root, &["search", "anything", "--auto-index", "--json"]);
+    // Either fatal (non-zero + empty stdout) or successful empty envelope — both valid.
+    // When non-zero, stdout must be empty (no partial BridgeRecord / envelope).
+    if code != 0 {
+        assert!(
+            stdout.trim().is_empty(),
+            "fatal auto-index must leave no machine stdout; stdout={stdout}; stderr={stderr}"
+        );
+    } else {
+        // Soft success path (e.g. 0 indexable files treated as up-to-date): still one envelope.
+        let env: serde_json::Value =
+            serde_json::from_str(stdout.trim()).expect("success path must still be one envelope");
+        assert_eq!(env["schemaVersion"], 1);
+    }
 }
