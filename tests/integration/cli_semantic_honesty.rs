@@ -216,42 +216,31 @@ fn test_search_semantic_unconfigured_json_not_silent() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let text = combined(&output);
 
-    // 0136: whole-stdout envelope with semantic.backendStatus / semantic.error.
-    let env: Result<serde_json::Value, _> = serde_json::from_str(stdout.trim());
-    if let Ok(env) = env {
-        assert_eq!(
-            env["schemaVersion"], 1,
-            "search --json must be envelope: {stdout}"
-        );
-        let semantic = env.get("semantic");
-        let backend = semantic
-            .and_then(|s| s.get("backendStatus"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let err = semantic
-            .and_then(|s| s.get("error"))
-            .and_then(|v| v.as_str())
-            .unwrap_or("");
-        let honesty = backend == "not_configured"
-            || err.contains("not configured")
-            || err.contains("did not run")
-            || err.contains("Embedding backend");
-        assert!(
-            honesty || semantic.is_some(),
-            "envelope must surface semantic readiness/error, got:\n{text}"
-        );
-        return;
-    }
-
-    // Fallback if parse failed for some reason — still require honesty signal.
-    let has_honesty = text.contains("not_configured")
-        || text.contains("not configured")
-        || text.contains("did not run")
-        || text.contains("Embedding backend not configured");
-    assert!(
-        has_honesty,
-        "JSON mode must surface NotConfigured readiness and/or semantic.error, not silent empty success:\n{text}"
+    // 0136: whole-stdout envelope must surface semantic readiness (no soft escape).
+    let env: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("search --json must be a single envelope (got parse error {e}):\n{text}")
+    });
+    assert_eq!(
+        env["schemaVersion"], 1,
+        "search --json must be envelope: {stdout}"
     );
+    let semantic = env
+        .get("semantic")
+        .expect("semantic side field required under --semantic --json");
+    let backend = semantic
+        .get("backendStatus")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    let err = semantic
+        .get("error")
+        .and_then(|v| v.as_str())
+        .unwrap_or("");
+    assert_eq!(
+        backend, "not_configured",
+        "unconfigured semantic must set backendStatus=not_configured, got backend={backend:?} error={err:?} env={env}"
+    );
+    // Optional error string may also name the failure; readiness alone is sufficient.
+    let _ = err;
 }
 
 /// Doctor with partial config (model name set, base_url empty) is Not configured,

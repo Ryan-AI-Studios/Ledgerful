@@ -767,6 +767,25 @@ fn search_json_and_json_lines_conflict() {
     );
 }
 
+/// Seed FreshEmpty + `empty_reason=RepositoryEmpty` so `try_auto_index` bails (B3 fatal).
+fn seed_repository_empty_fatal_auto_index(root: &std::path::Path) {
+    let db = root.join(".ledgerful").join("state").join("ledger.db");
+    let conn = rusqlite::Connection::open(&db).expect("open ledger.db");
+    let now = chrono::Utc::now().to_rfc3339();
+    conn.execute(
+        "INSERT OR REPLACE INTO index_metadata (key, value) VALUES ('last_indexed_at', ?1)",
+        [&now],
+    )
+    .expect("seed last_indexed_at");
+    conn.execute(
+        "INSERT OR REPLACE INTO index_metadata (key, value) VALUES ('empty_reason', 'RepositoryEmpty')",
+        [],
+    )
+    .expect("seed empty_reason");
+    // Ensure zero active rows so assess → FreshEmpty (not Populated).
+    let _ = conn.execute("DELETE FROM project_files", []);
+}
+
 /// 0136 B3: fatal auto-index path emits no machine stdout under `--json`.
 #[test]
 fn search_json_fatal_auto_index_no_stdout() {
@@ -775,22 +794,41 @@ fn search_json_fatal_auto_index_no_stdout() {
     setup_git_repo(root);
     let _guard = DirGuard::new(root);
 
-    // init so layout exists; empty repo → try_auto_index often bails RepositoryEmpty.
     let (init_out, init_err, init_code) = run_cli(root, &["init"]);
     assert_eq!(init_code, 0, "init; stderr={init_err}; stdout={init_out}");
+    seed_repository_empty_fatal_auto_index(root);
 
     let (stdout, stderr, code) = run_cli(root, &["search", "anything", "--auto-index", "--json"]);
-    // Either fatal (non-zero + empty stdout) or successful empty envelope — both valid.
-    // When non-zero, stdout must be empty (no partial BridgeRecord / envelope).
-    if code != 0 {
-        assert!(
-            stdout.trim().is_empty(),
-            "fatal auto-index must leave no machine stdout; stdout={stdout}; stderr={stderr}"
-        );
-    } else {
-        // Soft success path (e.g. 0 indexable files treated as up-to-date): still one envelope.
-        let env: serde_json::Value =
-            serde_json::from_str(stdout.trim()).expect("success path must still be one envelope");
-        assert_eq!(env["schemaVersion"], 1);
-    }
+    assert_ne!(
+        code, 0,
+        "forced RepositoryEmpty auto-index must fail; stderr={stderr}; stdout={stdout}"
+    );
+    assert!(
+        stdout.trim().is_empty(),
+        "fatal auto-index must leave no machine stdout; stdout={stdout}; stderr={stderr}"
+    );
+}
+
+/// 0136 B3: same fatal no-stdout contract under `--json-lines`.
+#[test]
+fn search_json_lines_fatal_auto_index_no_stdout() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _guard = DirGuard::new(root);
+
+    let (init_out, init_err, init_code) = run_cli(root, &["init"]);
+    assert_eq!(init_code, 0, "init; stderr={init_err}; stdout={init_out}");
+    seed_repository_empty_fatal_auto_index(root);
+
+    let (stdout, stderr, code) =
+        run_cli(root, &["search", "anything", "--auto-index", "--json-lines"]);
+    assert_ne!(
+        code, 0,
+        "forced RepositoryEmpty auto-index must fail; stderr={stderr}; stdout={stdout}"
+    );
+    assert!(
+        stdout.trim().is_empty(),
+        "fatal auto-index must leave no machine stdout under --json-lines; stdout={stdout}; stderr={stderr}"
+    );
 }
