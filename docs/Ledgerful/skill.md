@@ -272,7 +272,7 @@ Agent command sheet (local pack path): `.agents/skills/ledgerful/references/comm
 
 | # | Command | Role |
 |---|---|---|
-| 1 | `ledgerful doctor --json` | Session/env readiness (`readyForPublish`) |
+| 1 | `ledgerful doctor --json` | Session/env readiness (`readyForPublish`); if `binary-behind-tree`, reinstall (`cargo install --path . --force`) before trusting `--help` / new flags |
 | 2 | `ledgerful change-context --json` | Default pre-edit packet |
 | 3 | `ledgerful ledger status --compact` or `--json` | Provenance / pending / drift |
 | 4 | `ledgerful search …` (prefer `--auto-index` when stale) | Discovery (not full impact) |

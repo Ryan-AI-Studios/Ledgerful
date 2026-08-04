@@ -1,6 +1,13 @@
+mod binary_currency;
 mod finding;
 mod remediation;
 
+pub use binary_currency::{
+    BINARY_BEHIND_TREE_CODE, BINARY_BEHIND_TREE_REMEDIATION, BinaryCurrencyLag,
+    build_binary_behind_tree_finding, classify_binary_currency, compose_binary_currency_message,
+    is_ledgerful_engine_worktree, probe_binary_currency, sha_prefix_equal, shorten_sha_for_display,
+    worktree_package_version,
+};
 pub use finding::{
     DoctorCategory, DoctorFinding, DoctorSeverity, DoctorSummary, dashboard_failures,
     ready_for_publish, summarize,
@@ -77,6 +84,17 @@ pub fn execute_doctor(json: bool, apply_hook_refresh: bool, dry_run: bool) -> Re
     let path_display = current_dir.to_string_lossy().into_owned();
 
     let mut findings: Vec<DoctorFinding> = Vec::new();
+
+    // 0137: engine binary currency (version + embedded SHA vs worktree HEAD).
+    // Engine-only; install remediation only — never auto-install. Runtime HEAD via gix.
+    if let Some(finding) = probe_binary_currency(
+        layout.root.as_std_path(),
+        &current_dir,
+        env!("CARGO_PKG_VERSION"),
+        env!("LEDGERFUL_GIT_SHA"),
+    ) {
+        findings.push(finding);
+    }
 
     // Per-tool identity (0109): git missing = block; gemini missing = info/optional.
     for (name, status) in &tools {
@@ -653,6 +671,9 @@ pub fn execute_doctor(json: bool, apply_hook_refresh: bool, dry_run: bool) -> Re
                 "stateDir": state_dir_str,
                 "pathDisplay": path_display,
                 "targetTriple": env!("TARGET"),
+                // 0137 B5b — agents can read currency without parsing --version text.
+                "binaryVersion": env!("CARGO_PKG_VERSION"),
+                "buildSha": env!("LEDGERFUL_GIT_SHA"),
             },
         });
         let pretty = serde_json::to_string_pretty(&body).into_diagnostic()?;
