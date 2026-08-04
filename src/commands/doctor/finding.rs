@@ -146,20 +146,24 @@ pub fn summarize(findings: &[DoctorFinding]) -> DoctorSummary {
     summary
 }
 
+/// Action-critical findings for dashboard failures and sidecar top-N (0138).
+/// Block always; warn when category != Optional; info never.
+pub(crate) fn is_action_critical(f: &DoctorFinding) -> bool {
+    match f.severity {
+        DoctorSeverity::Block => true,
+        DoctorSeverity::Warn => f.category != DoctorCategory::Optional,
+        DoctorSeverity::Info => false,
+    }
+}
+
 /// Dashboard health `failures` field (§2.3b):
 /// `count(block) + count(warn WHERE category != Optional)`.
 ///
 /// Optional-category findings never contribute, whether `info` or `warn`.
 /// Info never contributes. Orthogonal to [`ready_for_publish`].
+/// Shares eligibility with sidecar top-N via [`is_action_critical`].
 pub fn dashboard_failures(findings: &[DoctorFinding]) -> u64 {
-    findings
-        .iter()
-        .filter(|f| match f.severity {
-            DoctorSeverity::Block => true,
-            DoctorSeverity::Warn => f.category != DoctorCategory::Optional,
-            DoctorSeverity::Info => false,
-        })
-        .count() as u64
+    findings.iter().filter(|f| is_action_critical(f)).count() as u64
 }
 
 #[cfg(test)]
@@ -325,6 +329,45 @@ mod tests {
                 info: 1
             }
         );
+    }
+
+    #[test]
+    fn is_action_critical_matrix() {
+        // Optional warn is ambient — not action-critical (0138 topFindings hygiene).
+        assert!(!is_action_critical(&f(
+            "completion-unreachable",
+            DoctorSeverity::Warn,
+            DoctorCategory::Optional,
+        )));
+        // Optional block still surfaces (severity-first B1; should not exist product-wise).
+        assert!(is_action_critical(&f(
+            "optional-block",
+            DoctorSeverity::Block,
+            DoctorCategory::Optional,
+        )));
+        // Non-optional signing warn remains action-critical.
+        assert!(is_action_critical(&f(
+            "sig-pin",
+            DoctorSeverity::Warn,
+            DoctorCategory::Signing,
+        )));
+        // Tools non-optional (e.g. binary-behind-tree) remains eligible.
+        assert!(is_action_critical(&f(
+            "binary-behind-tree",
+            DoctorSeverity::Warn,
+            DoctorCategory::Tools,
+        )));
+        // Info never action-critical.
+        assert!(!is_action_critical(&f(
+            "sccache-hint",
+            DoctorSeverity::Info,
+            DoctorCategory::Optional,
+        )));
+        assert!(!is_action_critical(&f(
+            "hook-template-stale",
+            DoctorSeverity::Info,
+            DoctorCategory::Gate,
+        )));
     }
 
     #[test]
