@@ -346,8 +346,15 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
     let post_count = engine.document_count();
 
     // Empty-index honesty: do not collapse into silent no-matches for agents.
+    // Envelope has a single searchIndexStatus slot — do not overwrite a more
+    // specific fts_rebuild_failed signal (0136 codex P2). Lines mode still
+    // emits both BridgeRecords (legacy multi-line honesty).
     if pre_count == 0 {
-        emit_search_index_status(&args, &mut collector, post_count);
+        let skip_empty_status =
+            args.json_mode.is_envelope() && collector.has_search_index_status();
+        if !skip_empty_status {
+            emit_search_index_status(&args, &mut collector, post_count);
+        }
         // Still empty after rebuild: status alone is enough (skip zero-hit noise).
         if post_count == 0 {
             collector.finish();

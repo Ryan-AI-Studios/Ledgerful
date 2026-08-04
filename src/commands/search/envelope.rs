@@ -227,6 +227,12 @@ impl SearchCollector {
         }
     }
 
+    /// Whether envelope mode already has a `searchIndexStatus` (single slot).
+    #[inline]
+    pub fn has_search_index_status(&self) -> bool {
+        self.search_index_status.is_some()
+    }
+
     pub fn set_search_index_status(&mut self, status: SearchIndexStatus) {
         match self.mode {
             SearchJsonMode::Off => {}

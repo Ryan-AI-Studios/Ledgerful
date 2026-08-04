@@ -569,11 +569,11 @@ fn search_auto_index_after_content_change_finds_token() {
             matches!(
                 kind,
                 "bm25_match" | "fuzzy_match" | "regex_match" | "insight"
-            ) && (content.contains(token) || path.contains(token) || content.contains("lib"))
+            ) && (content.contains(token) || path.contains(token))
         });
     assert!(
         has_hit,
-        "0128: auto-index + FTS rebuild must surface new token; stdout={stdout}; stderr={stderr}"
+        "0128: auto-index + FTS rebuild must surface new token in hit content/path; stdout={stdout}; stderr={stderr}"
     );
 }
 
