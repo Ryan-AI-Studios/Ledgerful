@@ -6,6 +6,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Doctor binary currency (0137):** Inside the Ledgerful **engine** worktree,
+  doctor emits greppable `binary-behind-tree` (warn / tools) when the executing
+  PATH/binary lags worktree **Cargo.toml version** and/or **embedded build short-SHA
+  vs HEAD** (same-version dogfood lag after merge without reinstall). Remediation is
+  install-only (`cargo install --path . --force`, `ledgerful update --binary`) —
+  **never** auto-install. Consumer repos stay silent. `doctor --json` `environment`
+  adds `binaryVersion` + `buildSha` (schemaVersion stays 1). Long `--version` may
+  show short SHA; short `-V` stays package version only.
+
 ### Changed
 
 - **Search `--json` agent envelope (0136):** multi-hit `search --json` is now a
@@ -30,6 +41,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Daily 5.
 
 ### Fixed
+
+- **PATH/binary lag vs engine tree (0137 dogfood):** After merge without reinstall,
+  `~/.cargo/bin/ledgerful` could share `CARGO_PKG_VERSION` with the tree while
+  help/flags lagged. Doctor now warns on commit-level (and version) lag with
+  copy-paste reinstall; build embeds short SHA for honest long `--version`.
 
 - **Verify fast-scope honesty (0135):** `verify --scope fast` is **fast-or-refuse**
   — never surprise multi-minute full hang. Closes dogfood A-paste verify-fast

@@ -14,7 +14,8 @@ use std::path::PathBuf;
     long_about = None,
     before_help = "Agent default path (Daily 5): doctor --json · change-context --json · ledger status · search · verify --scope fast — see skill Daily 5."
 )]
-#[command(version)]
+// Short `-V` = package version only; long `--version` may include build SHA (0137).
+#[command(version, long_version = env!("LEDGERFUL_VERSION_LONG"))]
 #[command(disable_help_subcommand = true)]
 pub struct Cli {
     #[command(subcommand)]

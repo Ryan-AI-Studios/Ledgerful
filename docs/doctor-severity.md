@@ -54,11 +54,34 @@ Pure stdout schema v1 (`schemaVersion` is integer `1`):
       "remediation": "ledgerful ledger re-sign --all --dry-run\nledgerful ledger re-sign --all --yes\nledgerful config set intent.min_sig_version=2\nledgerful verify --signatures"
     }
   ],
-  "environment": { "platform": "…", "shell": "…", "workRoot": "…", "stateDir": "…", "pathDisplay": "…", "targetTriple": "…" }
+  "environment": {
+    "platform": "…",
+    "shell": "…",
+    "workRoot": "…",
+    "stateDir": "…",
+    "pathDisplay": "…",
+    "targetTriple": "…",
+    "binaryVersion": "0.2.5",
+    "buildSha": "b57f4472efb3"
+  }
 }
 ```
 
 Exit code `1` iff any `block`; else `0`. Human banners (sccache/SCIP/VRAM) are skipped under `--json`.
+
+### `binary-behind-tree` (0137)
+
+| Field | Value |
+|---|---|
+| `code` | `binary-behind-tree` |
+| `severity` | `warn` |
+| `category` | `tools` |
+| When | **Engine worktree only** (`Cargo.toml` package name exactly `ledgerful` **and** `src/cli/args.rs` exists). Version string lag and/or embedded build short-SHA ≠ worktree HEAD (gix). |
+| Not | Consumer repos; matching version+SHA; embed `unknown` + equal version (no commit false positive). |
+| `readyForPublish` | **Not** blocked (warn only). Counts in `dashboard_failures` (category ≠ optional). |
+| `remediation` | Always: `cargo install --path . --force` then `ledgerful update --binary` then `ledgerful --version`. **No** auto-install from doctor. |
+
+Agents may also read currency from `environment.binaryVersion` + `environment.buildSha` (schemaVersion stays **1**).
 
 ### Remediation notes (0125)
 

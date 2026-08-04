@@ -79,6 +79,92 @@ fn doctor_json_stdout_is_pure_schema_v1() {
         }
     }
     assert!(v["environment"]["workRoot"].is_string());
+    // 0137 B5b: currency fields always present (schemaVersion stays 1).
+    assert!(
+        v["environment"]["binaryVersion"].is_string(),
+        "environment.binaryVersion required: {v}"
+    );
+    assert!(
+        v["environment"]["buildSha"].is_string(),
+        "environment.buildSha required: {v}"
+    );
+}
+
+/// 0137 B5: short `-V` is package version only; long `--version` may include SHA.
+#[test]
+fn version_flags_short_without_sha_long_may_include_embed() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+
+    let (short_out, short_err, short_code) = run_cli(root, &["-V"]);
+    assert_eq!(
+        short_code, 0,
+        "-V should exit 0; stderr={short_err} stdout={short_out}"
+    );
+    let short = short_out.trim();
+    assert!(
+        short.starts_with("ledgerful "),
+        "short -V should be clap package version: {short:?}"
+    );
+    assert!(
+        !short.contains('('),
+        "short -V must not include SHA parentheses: {short:?}"
+    );
+
+    let (long_out, long_err, long_code) = run_cli(root, &["--version"]);
+    assert_eq!(
+        long_code, 0,
+        "--version should exit 0; stderr={long_err} stdout={long_out}"
+    );
+    let long = long_out.trim();
+    assert!(
+        long.starts_with("ledgerful "),
+        "long --version should start with binary name: {long:?}"
+    );
+    let sha = env!("LEDGERFUL_GIT_SHA");
+    if sha != "unknown" && !sha.is_empty() {
+        assert!(
+            long.contains(sha),
+            "long --version should include embed SHA {sha} when known: {long:?}"
+        );
+    } else {
+        assert!(
+            !long.contains('('),
+            "unknown embed: long --version should match short form: {long:?}"
+        );
+    }
+}
+
+/// 0137: non-engine temp layout must not emit `binary-behind-tree`.
+#[test]
+fn doctor_non_engine_repo_has_no_binary_behind_tree() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+    // Consumer-like Cargo.toml (not package name ledgerful / no CLI layout).
+    fs::write(
+        root.join("Cargo.toml"),
+        r#"[package]
+name = "consumer-app"
+version = "1.0.0"
+"#,
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = run_cli(root, &["doctor", "--json"]);
+    assert_eq!(
+        code, 0,
+        "non-engine doctor --json should exit 0; stderr={stderr}"
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be pure JSON");
+    let findings = v["findings"].as_array().expect("findings array");
+    assert!(
+        !findings.iter().any(|f| f["code"] == "binary-behind-tree"),
+        "consumer layout must not emit binary-behind-tree: {v}"
+    );
 }
 
 /// 0109: malformed config is a structured warn, not a hard abort (JSON still pure).
