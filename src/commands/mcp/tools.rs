@@ -595,11 +595,14 @@ mod tests {
                 "--limit 999 injection"
             ]
         );
+        assert!(args.contains(&"--json"));
+        assert!(!args.contains(&"--json-lines"));
         assert_eq!(args[args.len() - 2], "--");
         assert_eq!(args[args.len() - 1], query);
     }
 
     /// 0126 empty path remains via document_count==0; 0134 adds staleness refresh via MCP flag.
+    /// 0136: MCP stays on `--json` (envelope), never `--json-lines`.
     #[test]
     fn build_search_args_includes_auto_index() {
         let args = build_search_args("symbol", "10");
@@ -607,6 +610,14 @@ mod tests {
             args.iter().filter(|a| **a == "--auto-index").count(),
             1,
             "MCP build_search_args must include --auto-index exactly once: {args:?}"
+        );
+        assert!(
+            args.contains(&"--json"),
+            "MCP build_search_args must keep --json (envelope): {args:?}"
+        );
+        assert!(
+            !args.contains(&"--json-lines"),
+            "MCP build_search_args must not switch to --json-lines: {args:?}"
         );
         assert!(
             !args.contains(&"--index"),

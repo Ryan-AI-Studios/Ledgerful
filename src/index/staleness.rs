@@ -1344,7 +1344,7 @@ mod tests {
     /// R1: post-auto-index rebuild must run before semantic early-return.
     #[test]
     fn search_fts_rebuild_gated_on_auto_index_action() {
-        let search_src = include_str!("../commands/search.rs");
+        let search_src = include_str!("../commands/search/mod.rs");
         assert!(
             search_src.contains("auto_index_ran_work")
                 || search_src.contains("AutoIndexAction::FullBootstrap"),
