@@ -254,6 +254,54 @@ fn test_verify_dry_run_mapping_refuse_is_err() {
     );
 }
 
+/// 0135 final codex P1: missing impact packet + dirty working tree must
+/// MappingRefuse under `--scope fast` (not EmptyChanges under-verify).
+#[test]
+fn test_verify_fast_missing_packet_dirty_tree_refuses() {
+    use ledgerful::state::layout::Layout;
+    use std::fs;
+
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path();
+
+    setup_git_repo(dir);
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(dir.join("src/lib.rs"), "pub fn x() {}").unwrap();
+    crate::common::git_add_and_commit(dir, "initial");
+
+    // Dirty tree, but never run impact — no snapshots packet.
+    fs::write(dir.join("src/lib.rs"), "pub fn x() { /* dirty */ }").unwrap();
+
+    let _guard = DirGuard::new(dir);
+    let layout = Layout::new(dir.to_string_lossy().as_ref());
+    layout.ensure_state_dir().unwrap();
+
+    let result = execute_verify(
+        None,
+        None,
+        5,
+        true, // no_predict — still builds plan from packet path
+        false,
+        None,
+        false,
+        true, // dry_run
+        VerifyScope::Fast,
+        false,
+        false, // allow_full_fallback
+        false,
+        false,
+    );
+    assert!(
+        result.is_err(),
+        "missing packet + dirty tree must refuse, got Ok"
+    );
+    let err = format!("{:?}", result.err().unwrap());
+    assert!(
+        err.contains("no impact packet") || err.contains("refusing full suite"),
+        "expected missing-packet refuse, got: {err}"
+    );
+}
+
 // CR5: --health flag should pass for a known executable.
 #[test]
 fn test_verify_health_check_known_executable() {

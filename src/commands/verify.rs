@@ -1108,27 +1108,52 @@ pub fn execute_verify(
                         )
                     }
                     None => {
-                        // Missing impact packet must not silent-full on --scope
-                        // fast (0135 P1): empty packet → EmptyChanges cheap plan
-                        // via the classifier. Full scope keeps build_plan.
+                        // No saved impact packet (0135 final codex P1):
+                        // - Full scope: keep build_plan (historical).
+                        // - Fast + clean working tree: EmptyChanges cheap path.
+                        // - Fast + dirty working tree: MappingRefuse (or allow
+                        //   full) — never pretend EmptyChanges and under-verify.
                         let profile = crate::platform::repository::detect_repository(
                             layout.root.as_std_path(),
                         );
                         let empty_packet = crate::impact::packet::ImpactPacket::default();
                         if scope.is_fast() {
-                            let conn = ctx.storage.as_ref().map(|s| s.get_connection());
-                            crate::verify::plan::build_plan_scoped_with_options(
-                                &empty_packet,
-                                &rules,
-                                &prediction.files,
-                                &config.verify,
-                                &profile,
-                                scope,
-                                conn,
-                                &layout,
-                                auto_index,
-                                allow_full_fallback,
-                            )
+                            if working_tree_has_changes(layout.root.as_std_path()) {
+                                if allow_full_fallback {
+                                    let mut plan = crate::verify::plan::build_plan(
+                                        &empty_packet,
+                                        &rules,
+                                        &[],
+                                        &config.verify,
+                                        &profile,
+                                        layout.root.as_std_path(),
+                                    );
+                                    plan.fallback_reason = Some(
+                                        "fast scope unavailable — no impact packet for dirty tree; run `ledgerful scan --impact`; running full (~5-8 min)"
+                                            .to_string(),
+                                    );
+                                    plan.refused = false;
+                                    plan
+                                } else {
+                                    crate::verify::plan::refuse_plan_for_trigger(
+                                        "no impact packet for dirty tree; run `ledgerful scan --impact`",
+                                    )
+                                }
+                            } else {
+                                let conn = ctx.storage.as_ref().map(|s| s.get_connection());
+                                crate::verify::plan::build_plan_scoped_with_options(
+                                    &empty_packet,
+                                    &rules,
+                                    &prediction.files,
+                                    &config.verify,
+                                    &profile,
+                                    scope,
+                                    conn,
+                                    &layout,
+                                    auto_index,
+                                    allow_full_fallback,
+                                )
+                            }
                         } else {
                             crate::verify::plan::build_plan(
                                 &empty_packet,
@@ -1624,6 +1649,17 @@ pub fn execute_verify(
     } else {
         Err(miette::miette!("Verification failed"))
     }
+}
+
+/// True when the working tree has tracked/untracked changes (dirty).
+/// On git discovery/status failure, returns false so clean-tree EmptyChanges
+/// still works in non-git temp fixtures; dirty-with-packet remains packet-driven.
+fn working_tree_has_changes(repo_root: &std::path::Path) -> bool {
+    crate::git::repo::open_repo(repo_root)
+        .ok()
+        .and_then(|repo| crate::git::status::get_repo_status(&repo).ok())
+        .map(|changes| !changes.is_empty())
+        .unwrap_or(false)
 }
 
 /// Fast health check that only probes executable availability and basic ledger

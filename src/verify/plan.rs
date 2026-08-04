@@ -357,6 +357,11 @@ fn format_fallback_reason(trigger: &str, consequence: &str) -> String {
 
 /// MappingRefuse plan: explicit `refused=true`, empty steps, greppable reason.
 fn refuse_plan(trigger: &str) -> VerificationPlan {
+    refuse_plan_for_trigger(trigger)
+}
+
+/// Public constructor for MappingRefuse (e.g. missing impact packet + dirty tree).
+pub fn refuse_plan_for_trigger(trigger: &str) -> VerificationPlan {
     VerificationPlan {
         source: Some(PlanSource::AutoPolicy),
         steps: vec![],
