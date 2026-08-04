@@ -937,6 +937,11 @@ mod tests {
         assert!(parse_intent("why does verify_step_key exist").is_none());
         assert!(parse_intent("find the architecture overview").is_none());
         assert!(parse_intent("find the best implementation").is_none());
+
+        // ProductDocs / CG-F31 phrases must not parse as SymbolDefinition (wire owns them).
+        assert!(parse_intent("What is the Daily 5?").is_none());
+        assert!(parse_intent("what are the session start commands?").is_none());
+        assert!(parse_intent("what commands show repo health").is_none());
     }
 
     #[test]
@@ -1061,7 +1066,7 @@ mod tests {
             "execute.rs must use residual snippets wording"
         );
         assert!(
-            !execute_src.contains("no project context available for this query"),
+            !execute_src.contains("no project context available"),
             "execute.rs must not overclaim no project context"
         );
         assert!(
