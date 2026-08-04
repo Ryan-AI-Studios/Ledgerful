@@ -15,7 +15,10 @@ use crate::commands::helpers::get_layout;
 use crate::config::load::load_config;
 use crate::index::staleness::AutoIndexAction;
 use crate::index::warn_if_stale;
-use crate::search::{RegexFilter, TantivySearchEngine, rebuild_tantivy_index};
+use crate::search::{
+    RegexCandidateSource, RegexFilter, RegexMatch, RegexSearchResult, TantivySearchEngine,
+    needs_format_rebuild, rebuild_tantivy_index,
+};
 use crate::state::storage::StorageManager;
 use camino::Utf8Path;
 use miette::Result;
@@ -299,11 +302,19 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
     // 0126: capture pre_count BEFORE rebuild — StreamIndexer consumes engine.
     let pre_count = engine.document_count();
 
+    // 0141: format stamp (tokenizer dual-emit) forces rebuild even when schema
+    // is unchanged and docs are present. Stamp check before empty-only path.
+    let stamp_rebuild = needs_format_rebuild(index_path.as_std_path());
+
     // 0128: full FTS rebuild when auto-index ran SQLite Full/Incremental work
-    // (already done above if successful), or explicit --index / empty docs.
-    // Never rebuild on every search when AutoIndexAction::None and docs present.
-    let needs_fts_rebuild =
-        args.index || pre_count == 0 || (auto_index_ran_work && !fts_rebuilt_for_auto_index);
+    // (already done above if successful), or explicit --index / empty docs /
+    // format stamp mismatch. Single rebuild path (no double rebuild).
+    // Never rebuild on every search when AutoIndexAction::None, docs present,
+    // and stamp matches.
+    let needs_fts_rebuild = args.index
+        || pre_count == 0
+        || (auto_index_ran_work && !fts_rebuilt_for_auto_index)
+        || stamp_rebuild;
 
     let engine = if needs_fts_rebuild {
         if !args.is_machine() && !fts_rebuilt_for_auto_index {
@@ -315,6 +326,7 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         debug!("Indexing repository for search...");
         match rebuild_tantivy_index(&layout) {
             Ok(()) => {
+                // write_stamp runs inside rebuild_tantivy_index on success.
                 if !args.is_machine() {
                     println!(
                         "{} Index built successfully.\n",
@@ -326,6 +338,30 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                 engine.verify_index_integrity(index_path.as_std_path())?;
                 debug!("Tantivy index integrity verified.");
                 engine
+            }
+            // Soft concurrency (0141): stamp-driven rebuild may fail under worktree
+            // writer contention. Never trust the pre-rebuild reader after failure —
+            // rebuild clears the index first, so re-open from disk and only soft-
+            // continue when documents remain. Empty/corrupt post-failure → hard err.
+            Err(e) if stamp_rebuild && !args.index && pre_count > 0 => {
+                match TantivySearchEngine::open_or_create(index_path.as_std_path()) {
+                    Ok(reopened) if reopened.document_count() > 0 => {
+                        if !args.is_machine() {
+                            eprintln!(
+                                "{} Search format-stamp rebuild failed (using on-disk index with {} docs): {e}",
+                                "WARN".if_supports_color(Stream::Stderr, |s| s
+                                    .style(Style::new().yellow().bold())),
+                                reopened.document_count()
+                            );
+                        }
+                        reopened
+                    }
+                    Ok(_) => {
+                        // Cleared or empty after failed rebuild — do not pretend success.
+                        return Err(e);
+                    }
+                    Err(_reopen_err) => return Err(e),
+                }
             }
             Err(e) if auto_index_ran_work && !args.index => {
                 // B4 residual (retry after early rebuild failed, or empty-doc path).
@@ -489,9 +525,25 @@ fn perform_search(
             println!("[Search Mode: Hybrid]");
         }
         let filter = RegexFilter::new(&engine);
-        let regex_matches = filter
-            .search(root, &args.query, overfetch)
+        // Identifier-likely hybrid: escape as literal so meta chars in ids are safe.
+        // Explicit --regex path keeps raw query (handled below).
+        let regex_pattern = if is_identifier_likely(&args.query) {
+            regex::escape(&args.query)
+        } else {
+            args.query.clone()
+        };
+        let regex_result = filter
+            .search_with(root, &regex_pattern, overfetch, RegexCandidateSource::Auto)
+            .ok();
+        let regex_candidates_truncated = regex_result
+            .as_ref()
+            .map(|r| r.candidates_truncated)
+            .unwrap_or(false);
+        let regex_matches = regex_result
+            .as_ref()
+            .map(|r| r.matches.clone())
             .unwrap_or_default();
+        let regex_had_hits = !regex_matches.is_empty();
         let bm25_results = engine.search(&args.query, overfetch).unwrap_or_default();
 
         struct MergedResult {
@@ -565,11 +617,39 @@ fn perform_search(
                 .partial_cmp(&score_a)
                 .unwrap_or(std::cmp::Ordering::Equal)
         });
-        let truncated = merged_results.len() > args.limit;
+        let truncated =
+            merged_results.len() > args.limit || (regex_candidates_truncated && regex_had_hits);
         merged_results.truncate(args.limit);
         collector.set_truncated(truncated);
 
-        if merged_results.is_empty() {
+        if merged_results.is_empty() && is_identifier_likely(&args.query) {
+            // Empty hybrid fallback: escaped literal + all_paths candidates.
+            match try_identifier_literal_fallback(&filter, root, &args.query, overfetch) {
+                Ok(Some(fallback)) => {
+                    if !args.is_machine() {
+                        println!(
+                            "{} identifier literal fallback (all_paths candidates)",
+                            "INFO".if_supports_color(Stream::Stdout, |s| s
+                                .style(Style::new().yellow().bold()))
+                        );
+                    }
+                    collector.set_fallback_used("identifier_literal");
+                    if fallback.candidates_truncated {
+                        collector.set_truncated(true);
+                    }
+                    let mut matches = fallback.matches;
+                    let truncated_hits = matches.len() > args.limit;
+                    matches.truncate(args.limit);
+                    if truncated_hits {
+                        collector.set_truncated(true);
+                    }
+                    emit_regex_style_hits(args, collector, matches, truncated_hits);
+                }
+                _ => {
+                    handle_fuzzy_fallback(&engine, args, collector);
+                }
+            }
+        } else if merged_results.is_empty() {
             handle_fuzzy_fallback(&engine, args, collector);
         } else if args.is_machine() {
             for res in merged_results {
@@ -786,6 +866,71 @@ fn perform_search(
 
 /// Human-only truncation affordance (0100 DoD-7). No exact remaining count —
 /// engines do not always return a total. Machine paths never call this.
+/// Emit regex_match hits for hybrid identifier-literal fallback (same shape as regex path).
+/// Empty-hybrid identifier fallback: escaped literal + index-bound all_paths.
+/// Returns `Ok(Some(...))` only when ≥1 hit was produced (DoD-3 / `fallbackUsed`).
+fn try_identifier_literal_fallback(
+    filter: &RegexFilter<'_>,
+    root: &Utf8Path,
+    query: &str,
+    limit: usize,
+) -> Result<Option<RegexSearchResult>> {
+    if !is_identifier_likely(query) {
+        return Ok(None);
+    }
+    let escaped = regex::escape(query);
+    let result = filter.search_with(root, &escaped, limit, RegexCandidateSource::AllPaths)?;
+    if result.matches.is_empty() {
+        Ok(None)
+    } else {
+        Ok(Some(result))
+    }
+}
+
+fn emit_regex_style_hits(
+    args: &SearchArgs,
+    collector: &mut SearchCollector,
+    matches: Vec<RegexMatch>,
+    truncated: bool,
+) {
+    if args.is_machine() {
+        for m in matches {
+            let bridge_content = format!("{}:{}: {}", m.path, m.line_number, m.content);
+            let memory_id = format!("{}::{}", m.path, m.line_number);
+            collector.push_hit(HitEmit {
+                kind: "regex_match",
+                path: m.path,
+                line: Some(m.line_number),
+                score: Some(1.0),
+                content: m.content,
+                bridge_content,
+                bridge_relevance: 1.0,
+                bridge_memory_id: memory_id,
+            });
+        }
+    } else {
+        println!(
+            "\n{}",
+            "Hybrid Search Results (identifier literal fallback):"
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+        );
+        for m in matches {
+            println!(
+                "{}:{}: {}",
+                m.path.if_supports_color(Stream::Stdout, |s| s.cyan()),
+                m.line_number
+                    .to_string()
+                    .if_supports_color(Stream::Stdout, |s| s.yellow()),
+                m.content.trim()
+            );
+        }
+        if truncated {
+            print_search_truncation_affordance();
+        }
+        println!();
+    }
+}
+
 fn print_search_truncation_affordance() {
     println!("… and more results (use --limit N to see more)");
 }
@@ -940,4 +1085,84 @@ pub fn execute_search_trigrams(trigrams: Vec<String>, limit: usize) -> Result<()
         println!("{path}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod identifier_fallback_tests {
+    use super::*;
+    use crate::search::trigram::extract_trigrams;
+    use tantivy::schema::TantivyDocument;
+    use tempfile::TempDir;
+
+    fn index_doc(engine: &TantivySearchEngine, path: &str, content: &str) {
+        let schema = engine.schema();
+        let path_field = schema.get_field("path").expect("path field");
+        let content_field = schema.get_field("content").expect("content field");
+        let line_count_field = schema.get_field("line_count").expect("line_count field");
+        let trigrams_field = schema.get_field("trigrams").expect("trigrams field");
+        let tgrams_str = extract_trigrams(content)
+            .into_iter()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let mut writer = engine.get_writer(15_000_000).expect("writer");
+        let mut doc = TantivyDocument::default();
+        doc.add_text(path_field, path);
+        doc.add_text(content_field, content);
+        doc.add_u64(line_count_field, 1);
+        doc.add_text(trigrams_field, &tgrams_str);
+        writer.add_document(doc).expect("add_document");
+        writer.commit().expect("commit");
+        engine.reload_reader().expect("reload_reader");
+    }
+
+    /// Forces the empty-BM25 case: FTS content does not contain the identifier,
+    /// but the live file does and the path is in the index so AllPaths fallback
+    /// recovers it. Fails if `try_identifier_literal_fallback` is unwired.
+    #[test]
+    fn identifier_literal_fallback_recovers_when_fts_content_misses() {
+        let dir = TempDir::new().expect("tempdir");
+        let fts_dir = dir.path().join("fts");
+        let engine = TantivySearchEngine::open_or_create(&fts_dir).expect("engine");
+        let root = dir.path().join("repo");
+        std::fs::create_dir_all(root.join("src")).expect("mkdir");
+        let file_rel = "src/miss.rs";
+        let live = "fn verify_step_key() { /* live */ }";
+        let indexed = "fn totally_unrelated_helper() {}";
+        std::fs::write(root.join(file_rel), live).expect("write live");
+        index_doc(&engine, file_rel, indexed);
+
+        let bm25 = engine
+            .search("verify_step_key", 10)
+            .expect("bm25")
+            .is_empty();
+        assert!(bm25, "precondition: BM25 empty on mismatched index content");
+
+        let filter = RegexFilter::new(&engine);
+        let root_utf8 = Utf8Path::from_path(&root).expect("utf8");
+        let recovered = try_identifier_literal_fallback(&filter, root_utf8, "verify_step_key", 10)
+            .expect("fallback ok")
+            .expect("fallback must produce hits");
+        assert!(
+            !recovered.matches.is_empty(),
+            "AllPaths literal fallback must find live identifier"
+        );
+        assert_eq!(recovered.matches[0].path, file_rel);
+        assert!(
+            recovered.matches[0].content.contains("verify_step_key"),
+            "hit content must reflect live file"
+        );
+
+        assert!(
+            try_identifier_literal_fallback(&filter, root_utf8, "hello world", 10)
+                .expect("ok")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn is_identifier_likely_snake_case() {
+        assert!(is_identifier_likely("verify_step_key"));
+        assert!(!is_identifier_likely("hello world"));
+        assert!(!is_identifier_likely(""));
+    }
 }
