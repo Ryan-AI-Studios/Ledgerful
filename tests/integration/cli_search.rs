@@ -821,8 +821,10 @@ fn search_json_lines_fatal_auto_index_no_stdout() {
     assert_eq!(init_code, 0, "init; stderr={init_err}; stdout={init_out}");
     seed_repository_empty_fatal_auto_index(root);
 
-    let (stdout, stderr, code) =
-        run_cli(root, &["search", "anything", "--auto-index", "--json-lines"]);
+    let (stdout, stderr, code) = run_cli(
+        root,
+        &["search", "anything", "--auto-index", "--json-lines"],
+    );
     assert_ne!(
         code, 0,
         "forced RepositoryEmpty auto-index must fail; stderr={stderr}; stdout={stdout}"

@@ -231,10 +231,7 @@ fn test_search_semantic_unconfigured_json_not_silent() {
         .get("backendStatus")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let err = semantic
-        .get("error")
-        .and_then(|v| v.as_str())
-        .unwrap_or("");
+    let err = semantic.get("error").and_then(|v| v.as_str()).unwrap_or("");
     assert_eq!(
         backend, "not_configured",
         "unconfigured semantic must set backendStatus=not_configured, got backend={backend:?} error={err:?} env={env}"

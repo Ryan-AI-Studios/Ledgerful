@@ -350,8 +350,7 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
     // specific fts_rebuild_failed signal (0136 codex P2). Lines mode still
     // emits both BridgeRecords (legacy multi-line honesty).
     if pre_count == 0 {
-        let skip_empty_status =
-            args.json_mode.is_envelope() && collector.has_search_index_status();
+        let skip_empty_status = args.json_mode.is_envelope() && collector.has_search_index_status();
         if !skip_empty_status {
             emit_search_index_status(&args, &mut collector, post_count);
         }
