@@ -176,117 +176,37 @@ pub fn execute_doctor(json: bool, apply_hook_refresh: bool, dry_run: bool) -> Re
         }
     }
 
-    // Embedding + completion probes: run concurrently when both apply so
-    // session-start doctor is bounded by max(embed, completion) not sum.
-    // SQLite/Cozo/StorageManager stay on the main thread; only network probes fan out.
-    {
-        let model_cfg_embed = model_config.clone();
-        let model_cfg_comp = model_config.clone();
-        let local_model = config.local_model.clone();
-        let generation_configured = !config.local_model.generation_model.is_empty();
-        let generation_endpoint = config
-            .local_model
-            .generation_url
-            .as_deref()
-            .unwrap_or(&config.local_model.base_url)
-            .to_string();
+    // Embedding + completion probes: spawn on owned background threads so
+    // network wait overlaps main-thread Cozo/Tantivy/content-hash/signing
+    // work (0143 Fix B). Do not join until after the heavy local section.
+    // SQLite/Cozo/StorageManager stay on the main thread; only network probes
+    // fan out. Prefer spawn (not scope-join-immediate) so local work proceeds.
+    let model_cfg_embed = model_config.clone();
+    let local_model_for_embed = config.local_model.clone();
+    let generation_configured = !config.local_model.generation_model.is_empty();
+    let generation_endpoint = config
+        .local_model
+        .generation_url
+        .as_deref()
+        .unwrap_or(&config.local_model.base_url)
+        .to_string();
 
-        let (avail, completion_probe) = if generation_configured {
-            std::thread::scope(|s| {
-                let embed_handle = s.spawn(|| {
-                    format_embedding_backend_availability(&local_model, &model_cfg_embed)
-                });
-                let completion_handle = s.spawn(|| {
-                    // Own the config so the 'static probe closure (abandoned on
-                    // timeout) never holds a non-static borrow (0143).
-                    let cfg = model_cfg_comp;
-                    probe_with_retry(move || crate::local_model::client::ping_completions(&cfg))
-                });
-                let avail = match embed_handle.join() {
-                    Ok(v) => v,
-                    Err(payload) => std::panic::resume_unwind(payload),
-                };
-                let completion = match completion_handle.join() {
-                    Ok(v) => v,
-                    Err(payload) => std::panic::resume_unwind(payload),
-                };
-                (avail, Some(completion))
-            })
-        } else {
-            (
-                format_embedding_backend_availability(&local_model, &model_cfg_embed),
-                None,
-            )
-        };
+    // Always spawn embed so main can run local probes in parallel even when
+    // generation is not configured (embed is often the only network probe).
+    let embed_handle = std::thread::spawn(move || {
+        format_embedding_backend_availability(&local_model_for_embed, &model_cfg_embed)
+    });
 
-        report.embedding_model_status = avail.display.clone();
-        report.embedding_model_failed = avail.is_failure;
-        if let Some(detail) = &avail.debug_detail {
-            tracing::debug!("Full embedding model error: {}", detail);
-        }
-        if let Some(f) = embedding_finding(&config.local_model, &avail) {
-            findings.push(f);
-        }
-
-        match completion_probe {
-            None => {
-                report.completion_model_status = "Not configured"
-                    .if_supports_color(Stream::Stdout, |s| s.yellow())
-                    .to_string();
-                findings.push(DoctorFinding::info(
-                    "completion-not-configured",
-                    DoctorCategory::Optional,
-                    "Completion model not configured",
-                ));
-            }
-            Some(ProbeResult::Healthy(model)) => {
-                report.completion_model_status = format!("{model} @ {generation_endpoint}");
-            }
-            Some(ProbeResult::ReachableAfterRetry {
-                val: model,
-                retries,
-            }) => {
-                report.completion_model_status = format!(
-                    "{} @ {} (reachable after retry: flaky/transient - {})",
-                    model,
-                    generation_endpoint,
-                    format!(
-                        "{} {}",
-                        retries,
-                        if retries == 1 { "retry" } else { "retries" }
-                    )
-                    .if_supports_color(Stream::Stdout, |s| s.green())
-                );
-            }
-            Some(ProbeResult::Unreachable { err, retries }) => {
-                let retry_suffix = if retries > 0 {
-                    format!(" after {retries} retries")
-                } else {
-                    String::new()
-                };
-                let truncated: String = err.chars().take(80).collect();
-                let detail_hint = if err.chars().count() > 80 {
-                    " [set RUST_LOG=debug for details]"
-                } else {
-                    ""
-                };
-                report.completion_model_status = format!(
-                    "unreachable ({}{}){}",
-                    truncated.if_supports_color(Stream::Stdout, |s| s.yellow()),
-                    retry_suffix,
-                    detail_hint
-                );
-                tracing::debug!("Full completion model error: {}", err);
-                findings.push(DoctorFinding::warn(
-                    "completion-unreachable",
-                    DoctorCategory::Optional,
-                    format!(
-                        "Completion model unreachable ({truncated}{retry_suffix}){detail_hint}"
-                    ),
-                ));
-            }
-        }
-    }
+    let completion_handle = if generation_configured {
+        // Own the config so the 'static probe closure (abandoned on timeout)
+        // never holds a non-static borrow (0143).
+        let cfg = model_config.clone();
+        Some(std::thread::spawn(move || {
+            probe_with_retry(move || crate::local_model::client::ping_completions(&cfg))
+        }))
+    } else {
+        None
+    };
 
     let mut total_nodes = 0;
     let mut total_edges = 0;
@@ -662,6 +582,91 @@ pub fn execute_doctor(json: bool, apply_hook_refresh: bool, dry_run: bool) -> Re
 
     // 0110: light team-sync findings (warn/info only). Disabled sync never blocks publish.
     findings.extend(sync_doctor_findings(&layout, &config));
+
+    // Join network probes after heavy local work (0143 Fix B). Apply the same
+    // finding codes/messages as before: embed fields/findings first, then
+    // completion. Final findings sort below keeps JSON order deterministic.
+    {
+        let avail = match embed_handle.join() {
+            Ok(v) => v,
+            Err(payload) => std::panic::resume_unwind(payload),
+        };
+        report.embedding_model_status = avail.display.clone();
+        report.embedding_model_failed = avail.is_failure;
+        if let Some(detail) = &avail.debug_detail {
+            tracing::debug!("Full embedding model error: {}", detail);
+        }
+        if let Some(f) = embedding_finding(&config.local_model, &avail) {
+            findings.push(f);
+        }
+
+        match completion_handle {
+            None => {
+                report.completion_model_status = "Not configured"
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
+                    .to_string();
+                findings.push(DoctorFinding::info(
+                    "completion-not-configured",
+                    DoctorCategory::Optional,
+                    "Completion model not configured",
+                ));
+            }
+            Some(handle) => {
+                let completion_probe = match handle.join() {
+                    Ok(v) => v,
+                    Err(payload) => std::panic::resume_unwind(payload),
+                };
+                match completion_probe {
+                    ProbeResult::Healthy(model) => {
+                        report.completion_model_status = format!("{model} @ {generation_endpoint}");
+                    }
+                    ProbeResult::ReachableAfterRetry {
+                        val: model,
+                        retries,
+                    } => {
+                        report.completion_model_status = format!(
+                            "{} @ {} (reachable after retry: flaky/transient - {})",
+                            model,
+                            generation_endpoint,
+                            format!(
+                                "{} {}",
+                                retries,
+                                if retries == 1 { "retry" } else { "retries" }
+                            )
+                            .if_supports_color(Stream::Stdout, |s| s.green())
+                        );
+                    }
+                    ProbeResult::Unreachable { err, retries } => {
+                        let retry_suffix = if retries > 0 {
+                            format!(" after {retries} retries")
+                        } else {
+                            String::new()
+                        };
+                        let truncated: String = err.chars().take(80).collect();
+                        let detail_hint = if err.chars().count() > 80 {
+                            " [set RUST_LOG=debug for details]"
+                        } else {
+                            ""
+                        };
+                        report.completion_model_status = format!(
+                            "unreachable ({}{}){}",
+                            truncated.if_supports_color(Stream::Stdout, |s| s.yellow()),
+                            retry_suffix,
+                            detail_hint
+                        );
+                        tracing::debug!("Full completion model error: {}", err);
+                        findings.push(DoctorFinding::warn(
+                            "completion-unreachable",
+                            DoctorCategory::Optional,
+                            format!(
+                                "Completion model unreachable ({truncated}{retry_suffix}){detail_hint}"
+                            ),
+                        ));
+                    }
+                }
+            }
+        }
+    }
 
     // Deterministic ordering for JSON/tests.
     findings.sort_by(|a, b| {
@@ -1300,19 +1305,24 @@ fn is_transient_error(err: &str) -> bool {
     false
 }
 
-/// Total wall-clock time `probe_with_retry` is allowed to spend sleeping
-/// between retries, per probe. `doctor` is a session-start health check
-/// (see `conductor/trackCG-F32/spec.md` requirement #4: "Keep doctor
-/// read-only and concise"), so this is intentionally small: 1.5s is
-/// enough for a couple of quick retries to catch a genuine flap (a
-/// service that comes back up after one or two blips) without letting a
-/// fully-down endpoint turn a "fast health check" into a multi-second
-/// stall. This budget bounds only the *sleep* time between retries, not
-/// the per-attempt network timeout (`model_config.timeout_secs`).
+/// Wall-clock cap on sleep time between retries (secondary bound).
+/// Primary session-start bound for 0143 is [`PROBE_MAX_RETRIES`]: production
+/// allows at most one retry (two attempts). `RETRY_BUDGET` still caps total
+/// sleep so a long hang path cannot keep retrying forever if max_retries is
+/// raised in tests.
+///
+/// This budget bounds only the *sleep* time between retries, not the
+/// per-attempt network timeout (`model_config.timeout_secs`).
 const RETRY_BUDGET: std::time::Duration = std::time::Duration::from_millis(1500);
 
+/// Production max retries after the first attempt (0143 Fix A).
+/// `1` → at most two attempts total: one try + one flap recovery retry.
+/// Kills multi-second retry tax on fast-fail unreachable while still
+/// recovering a single transient blip.
+const PROBE_MAX_RETRIES: u32 = 1;
+
 /// Delay between retry attempts. Kept short relative to `RETRY_BUDGET` so
-/// multiple retries can still fit inside the budget.
+/// a single production retry still fits inside the wall budget.
 const RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(200);
 
 /// Per-attempt hard deadline for production doctor probes (0143).
@@ -1333,19 +1343,21 @@ where
         RETRY_BUDGET,
         RETRY_DELAY,
         PROBE_PER_ATTEMPT_DEADLINE,
+        PROBE_MAX_RETRIES,
     )
 }
 
-/// Core retry loop, parameterized by retry budget, inter-retry delay, and
-/// per-attempt hard deadline so tests can exercise the deadline logic with
-/// tiny durations instead of waiting through the real production budget.
+/// Core retry loop, parameterized by retry budget, inter-retry delay,
+/// per-attempt hard deadline, and max retries so tests can exercise the
+/// deadline / multi-retry logic with tiny durations instead of waiting
+/// through the real production budget.
 ///
-/// Retries on transient errors (per `is_transient_error`) continue only
-/// while the elapsed wall-clock time spent in this call is still under
-/// `budget`; once the budget is exhausted, the probe returns
+/// Retries on transient errors (per `is_transient_error`) continue only while
+/// `retries < max_retries` **and** the elapsed wall-clock time spent in this
+/// call is still under `budget`; once either bound is hit, the probe returns
 /// `Unreachable` immediately with however many retries were actually
-/// attempted, rather than sleeping/retrying further. Non-transient
-/// ("semantic") errors always fail immediately with zero retries.
+/// attempted. Non-transient ("semantic") errors always fail immediately with
+/// zero retries.
 ///
 /// Each attempt is spawned on a detached worker thread and awaited via
 /// `recv_timeout` — **not** `thread::scope` join-first (0143 B1). On
@@ -1355,6 +1367,7 @@ fn probe_with_retry_budgeted<T, F>(
     budget: std::time::Duration,
     delay: std::time::Duration,
     per_attempt_deadline: std::time::Duration,
+    max_retries: u32,
 ) -> ProbeResult<T>
 where
     T: Send + 'static,
@@ -1407,7 +1420,7 @@ where
             }
             Err(err) => {
                 let elapsed = start.elapsed();
-                if is_transient_error(&err) && elapsed + delay <= budget {
+                if is_transient_error(&err) && retries < max_retries && elapsed + delay <= budget {
                     retries += 1;
                     std::thread::sleep(delay);
                     continue;
@@ -2361,6 +2374,8 @@ mod tests {
     fn test_probe_with_retry_flaky_success() {
         // Tiny budget, but generous enough relative to the tiny test delay
         // for 2 quick retries to land before the budget is exhausted.
+        // max_retries must be ≥ 2 so the flap-recovery path under test can
+        // reach the third attempt (0143).
         use std::sync::atomic::{AtomicUsize, Ordering};
         let budget = std::time::Duration::from_millis(50);
         let delay = std::time::Duration::from_millis(1);
@@ -2379,6 +2394,7 @@ mod tests {
             budget,
             delay,
             deadline,
+            2, // ≥ 2 so flap recovery can reach attempt 3
         );
         assert!(matches!(
             res,
@@ -2394,10 +2410,8 @@ mod tests {
     fn test_probe_with_retry_hard_unreachable() {
         // A probe that always fails transiently must eventually stop
         // retrying once the (tiny, test-only) budget is exhausted, rather
-        // than retrying forever. We don't assert an exact retry count
-        // since that's now a function of timing, not a fixed counter;
-        // instead assert the qualitative bound: at least one attempt, a
-        // small number of retries, and the error is preserved verbatim.
+        // than retrying forever. High max_retries so the wall budget (not
+        // the attempt cap) is the stop condition under test.
         use std::sync::atomic::{AtomicUsize, Ordering};
         let budget = std::time::Duration::from_millis(20);
         let delay = std::time::Duration::from_millis(5);
@@ -2412,6 +2426,7 @@ mod tests {
             budget,
             delay,
             deadline,
+            100,
         );
         match res {
             ProbeResult::Unreachable { err, retries } => {
@@ -2448,11 +2463,39 @@ mod tests {
             budget,
             delay,
             deadline,
+            10,
         );
         assert!(
             matches!(res, ProbeResult::Unreachable { ref err, retries: 0 } if err == "unreachable (connection refused)")
         );
         assert_eq!(count.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn test_probe_with_retry_max_retries_caps_attempts() {
+        // Production-shaped max_retries=1: fast-fail transient errors get at
+        // most one retry (two attempts total), even when the wall budget
+        // would still allow more (0143 Fix A).
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let budget = std::time::Duration::from_millis(1500);
+        let delay = std::time::Duration::from_millis(1);
+        let deadline = std::time::Duration::from_millis(500);
+        let count = std::sync::Arc::new(AtomicUsize::new(0));
+        let count_probe = std::sync::Arc::clone(&count);
+        let res: ProbeResult<()> = probe_with_retry_budgeted(
+            move || {
+                count_probe.fetch_add(1, Ordering::SeqCst);
+                Err("unreachable (connection refused)".to_string())
+            },
+            budget,
+            delay,
+            deadline,
+            1, // production PROBE_MAX_RETRIES
+        );
+        assert!(
+            matches!(res, ProbeResult::Unreachable { ref err, retries: 1 } if err == "unreachable (connection refused)")
+        );
+        assert_eq!(count.load(Ordering::SeqCst), 2);
     }
 
     #[test]
@@ -2474,6 +2517,7 @@ mod tests {
             budget,
             delay,
             deadline,
+            100,
         );
         let elapsed = start.elapsed();
         assert!(matches!(res, ProbeResult::Unreachable { .. }));
@@ -2514,6 +2558,7 @@ mod tests {
             budget,
             delay,
             deadline,
+            1, // production-shaped; budget also blocks further retries after hang
         );
         let elapsed = start.elapsed();
         match res {
