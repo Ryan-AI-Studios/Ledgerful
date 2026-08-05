@@ -191,6 +191,83 @@ fn test_verify_dry_run_does_not_execute() {
     );
 }
 
+/// 0145 DoD-1: live-clean working tree → EmptyChanges under `--scope fast`
+/// even when a saved impact packet still lists non-empty `changes`.
+/// Must not MappingRefuse solely from phantom packet + head lag, and must not
+/// schedule scoped nextest on obsolete change paths.
+#[test]
+fn test_verify_fast_live_clean_empty_changes_despite_stale_packet() {
+    use ledgerful::commands::impact::execute_impact;
+    use ledgerful::state::layout::Layout;
+    use std::fs;
+
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path();
+
+    setup_git_repo(dir);
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(
+        dir.join("src/lib.rs"),
+        "pub fn add(a: i32, b: i32) -> i32 { a + b }",
+    )
+    .unwrap();
+    crate::common::git_add_and_commit(dir, "initial");
+
+    // Dirty change so impact saves a non-empty packet.
+    fs::write(
+        dir.join("src/lib.rs"),
+        "pub fn add(a: i32, b: i32) -> i32 { a + b + 1 }",
+    )
+    .unwrap();
+
+    let _guard = DirGuard::new(dir);
+    let layout = Layout::new(dir.to_string_lossy().as_ref());
+    layout.ensure_state_dir().unwrap();
+
+    execute_impact(false, false, false, false, false, None)
+        .expect("execute_impact should produce a loadable packet with changes");
+
+    // Commit so the working tree is clean while the saved packet still has changes.
+    crate::common::git_add_and_commit(dir, "clean tree after impact");
+
+    let result = execute_verify(
+        None,
+        None,
+        5,
+        false,
+        false,
+        None,
+        false,
+        true, // dry_run
+        VerifyScope::Fast,
+        false, // auto_index
+        false, // allow_full_fallback
+        false,
+        false,
+    );
+    assert!(
+        result.is_ok(),
+        "live-clean + phantom packet must EmptyChanges (Ok), not MappingRefuse: {:?}",
+        result.err()
+    );
+
+    // F-002 / DoD-1 shape strengthen: Ok with a still-non-empty *saved* packet
+    // proves B1 live-empty short-circuit. Without B1, the same phantom packet
+    // + empty mapping would MappingRefuse (Err). Plan builder is not re-entered
+    // for EmptyChanges, so packet non-empty + Ok is the durable shape assert.
+    let db_path = layout.state_subdir().join("ledger.db");
+    let storage = ledgerful::state::storage::StorageManager::init(db_path.as_std_path())
+        .expect("open storage after impact+verify");
+    let packet = storage
+        .get_latest_packet()
+        .expect("get_latest_packet")
+        .expect("phantom packet must still be saved");
+    assert!(
+        !packet.changes.is_empty(),
+        "saved packet must retain non-empty changes (phantom); empty packet would not stress B1"
+    );
+}
+
 /// B7 / F-0135-01: MappingRefuse under `--dry-run` must return Err (exit 1),
 /// not the historical always-Ok dry-run assumption that still holds for
 /// manual commands / full scope.

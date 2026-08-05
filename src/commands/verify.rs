@@ -1112,22 +1112,32 @@ pub fn execute_verify(
 
                 let mut plan = match &ctx.packet {
                     Some(packet) => {
-                        let conn = ctx.storage.as_ref().map(|s| s.get_connection());
                         let profile = crate::platform::repository::detect_repository(
                             layout.root.as_std_path(),
                         );
-                        crate::verify::plan::build_plan_scoped_with_options(
-                            packet,
-                            &rules,
-                            &prediction.files,
-                            &config.verify,
-                            &profile,
-                            scope,
-                            conn,
-                            &layout,
-                            auto_index,
-                            allow_full_fallback,
-                        )
+                        // 0145 B1: live-clean working tree → EmptyChanges even when
+                        // a saved impact packet still lists changes (phantom packet).
+                        // Kept here (not in plan.rs) so Layout::new(".") unit tests
+                        // stay hermetic without a live git short-circuit.
+                        if scope.is_fast()
+                            && !working_tree_has_material_changes(layout.root.as_std_path())
+                        {
+                            crate::verify::plan::build_empty_changes_plan(&profile)
+                        } else {
+                            let conn = ctx.storage.as_ref().map(|s| s.get_connection());
+                            crate::verify::plan::build_plan_scoped_with_options(
+                                packet,
+                                &rules,
+                                &prediction.files,
+                                &config.verify,
+                                &profile,
+                                scope,
+                                conn,
+                                &layout,
+                                auto_index,
+                                allow_full_fallback,
+                            )
+                        }
                     }
                     None => {
                         // No saved impact packet (0135 final codex P1):

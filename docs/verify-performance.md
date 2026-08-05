@@ -26,14 +26,19 @@ intentional: fmt and clippy are cheap and catch issues the test suite does not.
 
 ### Fast-or-refuse class table (never surprise full hang)
 
-Classifier order is load-bearing (`build_plan_scoped_with_options`):
+Classifier order is load-bearing. **LiveEmpty** is decided in
+`commands/verify.rs` (before `build_plan_scoped_with_options`) so plan units stay
+hermetic; the rest lives in `build_plan_scoped_with_options`:
 
 | Class | Detection | Default under `--scope fast` |
 |---|---|---|
-| **SharedInfra** | changed paths match shared-infra globs (Cargo.toml, cli/args, config/**, migrations/**, …) | **Full suite** + announce (`scopeExecuted: "full"`) — justified |
-| **EmptyChanges** | `packet.changes` empty (checked **before** stem query) | **Cheap plan:** Rust repos → fmt + clippy only (no nextest); non-Rust / undetected profile → zero steps (still exit 0 — do not invent cargo). Exit 0 if steps pass |
-| **ScopedOk** | `test_mapping` yields stems for changed files | Existing 3-step scoped plan |
-| **MappingRefuse** | empty/stale mapping, no stems, no DB, auto-index still cannot scope | **Refuse** — do **not** execute full. Exit ≠ 0. `scopeExecuted: "refused"`, `plan.refused=true`, empty steps |
+| **LiveEmpty** | Working tree has **no material** changes (git status) — **before** SharedInfra; ignores non-empty saved impact packet | **EmptyChanges** cheap plan (Rust: fmt+clippy; non-Rust: zero steps). Exit 0 if steps pass. Prevents phantom scoped work after merge/pull. |
+| **SharedInfra** | (live dirty) changed paths in **packet** match shared-infra globs (Cargo.toml, cli/args, config/**, migrations/**, …) | **Full suite** + announce (`scopeExecuted: "full"`) — justified |
+| **EmptyChanges** | `packet.changes` empty (checked **before** stem query) | Same cheap plan as LiveEmpty |
+| **HeadMismatch** | `test_mapping` populated + index `head_hash` ≠ packet head | **Auto-repair once** (bounded incremental) **without** `--auto-index`; re-classify; still lag → **refuse**. Not silent ScopedOk on stems alone. |
+| **EmptyMapping** | `test_mapping` count == 0 / table missing | **Refuse** unless `--auto-index` (try once; still empty → refuse). Bootstrap cost is opt-in. |
+| **ScopedOk** | freshness Ok + `test_mapping` yields stems for changed files | Existing 3-step scoped plan |
+| **MappingRefuse** | empty mapping (no flag), head-lag still unusable after repair, PacketHeadMissing without flag, no stems, no DB | **Refuse** — do **not** execute full. Exit ≠ 0. `scopeExecuted: "refused"`, `plan.refused=true`, empty steps |
 
 **Escape hatches:**
 
@@ -41,8 +46,8 @@ Classifier order is load-bearing (`build_plan_scoped_with_options`):
 |---|---|
 | `--scope full` | Authoritative full suite (unchanged) |
 | `--allow-full-fallback` | Restore 0061 mapping-path full execute + announce |
-| `--auto-index` | Try refresh once; on still-cannot → **refuse** unless allow also set |
-| Pre-push | `verify --scope fast` **without** allow — refuse blocks push until index fixed |
+| `--auto-index` | Required for **empty** mapping bootstrap; also repairs PacketHeadMissing. Head-lag repairs **without** this flag. Still-cannot → **refuse** unless allow also set |
+| Pre-push | `verify --scope fast` **without** allow — benefits from LiveEmpty + head-lag auto-repair; empty mapping still blocks until index fixed |
 
 Human refuse first line is greppable:
 
@@ -113,12 +118,15 @@ so fmt stays first and sequential.
 
 ## `--auto-index`
 
-When `test_mapping` is empty or stale relative to the current `HEAD`,
-`--scope fast` **refuses** by default (does not start a multi-minute full suite).
-With `--auto-index`, verify refreshes the index for changed files first and
-retries scoped selection once. On success → ScopedOk; if still cannot scope →
-**refuse** unless `--allow-full-fallback` is also set. Opt-in because indexing
-can add noticeable latency.
+**Head lag** (populated `test_mapping`, index `head_hash` ≠ packet/HEAD) is
+repaired **automatically once** under `--scope fast` without this flag (0145).
+
+When `test_mapping` is **empty** (or PacketHeadMissing), `--scope fast`
+**refuses** by default (does not start a multi-minute full suite). With
+`--auto-index`, verify refreshes the index for changed files first and retries
+scoped selection once. On success → ScopedOk; if still cannot scope →
+**refuse** unless `--allow-full-fallback` is also set. Opt-in because empty
+bootstrap can add noticeable latency.
 
 ## Troubleshooting timeouts
 
