@@ -56,6 +56,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Empty-surface latency hygiene (0146):** Filter-only CLIs
+  (`data-models impact` [whole arm], `security impact --changed`,
+  `observability diff`, `endpoints --changed`) use git status path membership
+  instead of `execute_impact_silent` — no full federated impact, no
+  `latest-impact.json` cache rewrite on empty/filter paths. OpenAPI
+  `info.version` is `env!("CARGO_PKG_VERSION")` (artifact regenerated) so the
+  daemon contract tracks the crate instead of a frozen `0.2.1` pin.
+
 - **Verify fast mapping freshness (0145):** Live-clean working tree under
   `verify --scope fast` uses EmptyChanges (fmt+clippy / zero steps) even when a
   saved impact packet still lists changes — no phantom scoped nextest or false

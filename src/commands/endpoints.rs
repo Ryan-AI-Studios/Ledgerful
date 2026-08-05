@@ -221,24 +221,50 @@ pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
     let conn = storage.get_connection();
 
     // --changed: uncapped match keys from shared affected-flows library
-    // (handler symbol / impl file / registration file / blast edges). Report
-    // payloads still apply FLOWS_CAP; the filter must not inherit that truncate.
+    // (handler symbol / impl file / registration file). Report payloads still
+    // apply FLOWS_CAP; the filter must not inherit that truncate.
     // JSON keys stay non-breaking; only which rows appear widens vs the old
     // registration-file-only filter.
+    //
+    // endpoints --changed is a route-map filter on the working-tree diff (local
+    // symbols via map_snapshot_to_packet), NOT full blast-radius impact.
+    // P4–P5 blast edges are dropped intentionally (`blast_radius: None`).
+    // No execute_impact_silent / federation / cache rewrite (0146).
     let matched_route_keys: Option<std::collections::HashSet<(String, String)>> = if args.changed {
-        let packet = crate::commands::impact::execute_impact_silent()?;
+        use crate::git::RepoSnapshot;
+        use crate::git::repo::{get_head_info, open_repo};
+        use crate::git::status::collect_changed_files_for_filter;
         use crate::impact::enrichment::affected_flows::{
             AffectedFlowsOpts, match_affected_route_keys,
         };
-        let opts = AffectedFlowsOpts {
-            head_hash: packet.head_hash.clone(),
-        };
-        // Non-available statuses (empty_map / missing_table / no_change_seeds)
-        // → empty set (honest empty --changed). Matcher Err (true failures)
-        // propagates so we never claim "no endpoints changed" after a fault.
-        let set =
-            match_affected_route_keys(conn, &packet.changes, packet.blast_radius.as_ref(), &opts)?;
-        Some(set)
+        use crate::impact::orchestrator::map_snapshot_to_packet;
+
+        let wt_changes = collect_changed_files_for_filter(&layout)?;
+        if wt_changes.is_empty() {
+            // Empty short-circuit: no symbol extract / impact; honest CleanDiff
+            // vs NoIndexedData still decided downstream via all_rows_empty.
+            Some(std::collections::HashSet::new())
+        } else {
+            let repo = open_repo(layout.root.as_std_path())?;
+            let (head_hash, branch_name) = get_head_info(&repo)?;
+            let snapshot = RepoSnapshot {
+                head_hash: head_hash.clone(),
+                branch_name,
+                is_clean: false,
+                changes: wt_changes,
+            };
+            // Symbol extract only — no orchestrator.run / federation / persist.
+            let packet = map_snapshot_to_packet(snapshot, layout.root.as_std_path())?;
+            let opts = AffectedFlowsOpts {
+                head_hash: packet.head_hash.clone(),
+            };
+            // Non-available statuses (empty_map / missing_table / no_change_seeds)
+            // → empty set (honest empty --changed). Matcher Err (true failures)
+            // propagates so we never claim "no endpoints changed" after a fault.
+            let set =
+                match_affected_route_keys(conn, &packet.changes, None /* blast */, &opts)?;
+            Some(set)
+        }
     } else {
         None
     };

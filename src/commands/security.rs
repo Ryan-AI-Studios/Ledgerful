@@ -34,13 +34,13 @@ pub enum SecuritySubcommands {
     },
 }
 
-/// Extract changed file paths from the impact packet as a HashSet of normalized paths.
-fn collect_changed_files() -> Result<HashSet<String>> {
-    let packet = crate::commands::impact::execute_impact_silent()?;
-    let changed: HashSet<String> = packet
-        .changes
+/// Extract changed file paths via git status (ignore-filtered) as normalized paths.
+///
+/// Filter-only: no full impact / federation / cache rewrite (0146).
+fn collect_changed_files(layout: &Layout) -> Result<HashSet<String>> {
+    let changed: HashSet<String> = crate::git::status::collect_changed_files_for_filter(layout)?
         .iter()
-        .map(|c| c.path.to_string_lossy().replace('\\', "/"))
+        .map(|c| crate::git::status::normalize_filter_path(&c.path))
         .collect();
     Ok(changed)
 }
@@ -116,7 +116,7 @@ fn collect_detected_routes(conn: &rusqlite::Connection) -> Result<Vec<(String, S
 }
 
 fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layout) -> Result<()> {
-    let changed_files = collect_changed_files()?;
+    let changed_files = collect_changed_files(layout)?;
     let cozo = open_cozo(layout)?;
 
     // Query all policy nodes and determine impact in-memory

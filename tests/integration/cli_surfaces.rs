@@ -139,6 +139,87 @@ fn test_data_models_impact_changed() {
     assert!(result.is_ok());
 }
 
+/// B4 / DoD-2 / DoD-6: clean-tree `data-models impact --changed` must not
+/// create or rewrite `.ledgerful/reports/latest-impact.json`.
+///
+/// Filter CLIs use `collect_changed_files_for_filter` (git status only). If
+/// `execute_impact_silent` were reintroduced, `write_impact_report` would
+/// clobber a seeded report (or create one when absent).
+#[test]
+fn test_data_models_impact_changed_does_not_rewrite_latest_impact() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+
+    setup_git_repo(root);
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let _guard = DirGuard::new(root);
+    execute_init(false, false).unwrap();
+
+    let report_path = root
+        .join(".ledgerful")
+        .join("reports")
+        .join("latest-impact.json");
+    fs::create_dir_all(report_path.parent().expect("reports parent")).expect("mkdir reports");
+    let seed = r#"{"schemaVersion":"v1","headHash":"SEED_MARKER_0146_B4","riskReasons":["seed-do-not-clobber"]}"#;
+    fs::write(&report_path, seed).expect("seed latest-impact.json");
+    let before = fs::read(&report_path).expect("read seeded report");
+    assert!(
+        std::str::from_utf8(&before)
+            .expect("utf8 seed")
+            .contains("SEED_MARKER_0146_B4"),
+        "precondition: seed marker present"
+    );
+
+    // Clean tree (no dirty files after commit + init side-effects may remain
+    // uncommitted). Re-commit so git status is empty for a true clean filter path.
+    git_add_and_commit(root, "post-init clean");
+
+    let args = DataModelsArgs {
+        command: DataModelSubcommands::Impact {
+            changed: true,
+            json: true,
+        },
+    };
+    let result = execute_data_models(args);
+    assert!(
+        result.is_ok(),
+        "data-models impact --changed must succeed on clean tree: {result:?}"
+    );
+
+    assert!(
+        report_path.is_file(),
+        "seeded latest-impact.json must still exist after filter CLI"
+    );
+    let after = fs::read(&report_path).expect("read report after filter CLI");
+    assert_eq!(
+        before, after,
+        "data-models impact --changed must not rewrite latest-impact.json \
+         (filter path must not call execute_impact_silent / write_impact_report)"
+    );
+
+    // Absence case: remove report and re-run — must not create it.
+    fs::remove_file(&report_path).expect("remove seeded report");
+    assert!(!report_path.exists(), "precondition: report absent");
+
+    let args_again = DataModelsArgs {
+        command: DataModelSubcommands::Impact {
+            changed: true,
+            json: true,
+        },
+    };
+    let result_again = execute_data_models(args_again);
+    assert!(
+        result_again.is_ok(),
+        "second clean-tree run must succeed: {result_again:?}"
+    );
+    assert!(
+        !report_path.exists(),
+        "data-models impact --changed must not create latest-impact.json when absent"
+    );
+}
+
 #[test]
 fn test_observability_coverage_json() {
     let tmp = tempdir().unwrap();

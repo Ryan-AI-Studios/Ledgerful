@@ -121,6 +121,149 @@ fn main() { let app = Router::new().route(\"/\", get(handler)); }
     );
 }
 
+/// B2.1 / 0146 P2-2: dirty working-tree path for `endpoints --changed`.
+///
+/// Production wires non-empty git status → RepoSnapshot → map_snapshot_to_packet
+/// (symbol extract only) → match_affected_route_keys(..., blast None). Existing
+/// tests only covered the clean CleanDiff short-circuit and hand-built HashSet
+/// filtering. This hermetic e2e dirties a real indexed Axum registration file
+/// and asserts the route still appears via the production CLI.
+#[test]
+fn test_endpoints_changed_dirty_handler_appears() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+
+    setup_git_repo(root);
+    let route_src = r#"
+use axum::{routing::get, Router};
+async fn health() {}
+fn main() { let app = Router::new().route("/health", get(health)); }
+"#;
+    let main_path = root.join("main.rs");
+    fs::write(&main_path, route_src).unwrap();
+    git_add_and_commit(root, "init axum route");
+
+    let bin = env!("CARGO_BIN_EXE_ledgerful");
+    let init = Command::new(bin)
+        .arg("init")
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let index = Command::new(bin)
+        .arg("index")
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        index.status.success(),
+        "index failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&index.stdout),
+        String::from_utf8_lossy(&index.stderr)
+    );
+
+    // Prerequisite: routes were extracted (same clean-diff signal as f10).
+    let clean = Command::new(bin)
+        .args(["endpoints", "--changed"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        clean.status.success(),
+        "clean endpoints --changed failed: {}",
+        String::from_utf8_lossy(&clean.stderr)
+    );
+    let clean_stdout = String::from_utf8_lossy(&clean.stdout);
+    assert!(
+        clean_stdout.contains("No endpoints changed in the current diff."),
+        "expected indexed routes + clean tree before dirty step; got: {clean_stdout}"
+    );
+
+    // Snapshot latest-impact (0146: --changed must not rewrite impact cache).
+    let impact_path = root
+        .join(".ledgerful")
+        .join("reports")
+        .join("latest-impact.json");
+    let impact_before = impact_path
+        .exists()
+        .then(|| fs::read_to_string(&impact_path).ok());
+
+    // Dirty the registration/handler file without committing (B2.1 path).
+    fs::write(
+        &main_path,
+        format!("{route_src}\n// dirty working tree for endpoints --changed e2e\n"),
+    )
+    .unwrap();
+
+    let dirty = Command::new(bin)
+        .args(["endpoints", "--changed", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        dirty.status.success(),
+        "dirty endpoints --changed failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&dirty.stdout),
+        String::from_utf8_lossy(&dirty.stderr)
+    );
+    let dirty_stdout = String::from_utf8_lossy(&dirty.stdout);
+    assert!(
+        !dirty_stdout.contains("No endpoints changed in the current diff."),
+        "dirty registration file must not yield CleanDiff empty: {dirty_stdout}"
+    );
+    assert!(
+        !dirty_stdout.contains("noIndexedData") && !dirty_stdout.contains("No endpoints indexed"),
+        "routes must stay indexed after dirty; got: {dirty_stdout}"
+    );
+
+    let v: serde_json::Value = serde_json::from_str(&dirty_stdout).unwrap_or_else(|e| {
+        panic!("expected JSON from endpoints --changed --json: {e}; body={dirty_stdout}");
+    });
+    // Non-empty results: no emptyReason envelope (or results array with route).
+    let results = v
+        .get("results")
+        .and_then(|r| r.as_array())
+        .or_else(|| v.as_array())
+        .unwrap_or_else(|| {
+            panic!("expected results array in dirty --changed JSON: {dirty_stdout}");
+        });
+    assert!(
+        !results.is_empty(),
+        "dirty handler/registration file must surface matched routes; got: {dirty_stdout}"
+    );
+
+    let joined = dirty_stdout.to_lowercase();
+    assert!(
+        joined.contains("/health") || joined.contains("health"),
+        "expected /health route or health handler in --changed output: {dirty_stdout}"
+    );
+    // Method may be uppercased in JSON.
+    assert!(
+        results.iter().any(|r| {
+            let method = r.get("method").and_then(|m| m.as_str()).unwrap_or("");
+            let path = r.get("path").and_then(|p| p.as_str()).unwrap_or("");
+            let handler = r.get("handler").and_then(|h| h.as_str()).unwrap_or("");
+            method.eq_ignore_ascii_case("GET")
+                && (path.contains("/health") || handler.contains("health"))
+        }),
+        "expected GET /health (or health handler) among results: {dirty_stdout}"
+    );
+
+    let impact_after = impact_path
+        .exists()
+        .then(|| fs::read_to_string(&impact_path).ok());
+    assert_eq!(
+        impact_before, impact_after,
+        "endpoints --changed must not create/rewrite latest-impact.json; \
+         before={impact_before:?} after={impact_after:?}"
+    );
+}
+
 #[test]
 fn test_f10_doctor_graph_state_qualifier() {
     let tmp = tempdir().unwrap();
