@@ -43,7 +43,7 @@ pub(crate) use crate::commands::web::types::{
 #[openapi(
     info(
         title = "Ledgerful Daemon API",
-        version = "0.2.1",
+        version = env!("CARGO_PKG_VERSION"),
         description = "Machine-readable OpenAPI contract for the Ledgerful daemon `/api/*` endpoints. Generated from the Rust DTOs via utoipa."
     ),
     paths(
@@ -157,5 +157,21 @@ mod tests {
         assert!(json.starts_with('{'));
         let parsed: serde_json::Value = serde_json::from_str(&json).expect("OpenAPI JSON parses");
         assert!(parsed.get("openapi").is_some());
+    }
+
+    #[test]
+    fn openapi_info_version_matches_cargo_pkg_version() {
+        let json = generate_openapi_json();
+        let parsed: serde_json::Value = serde_json::from_str(&json).expect("OpenAPI JSON parses");
+        let version = parsed
+            .get("info")
+            .and_then(|i| i.get("version"))
+            .and_then(|v| v.as_str())
+            .expect("info.version present");
+        assert_eq!(
+            version,
+            env!("CARGO_PKG_VERSION"),
+            "OpenAPI info.version must track CARGO_PKG_VERSION (0146)"
+        );
     }
 }
