@@ -1,5 +1,7 @@
 use crate::output::human::print_verify_plan;
-use crate::output::verification::{VerificationReporter, should_print_suggested_actions};
+use crate::output::verification::{
+    VerificationReporter, print_dry_run_human, should_print_suggested_actions,
+};
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use crate::verify::engine::{VerificationContext, VerifyEngine};
@@ -13,7 +15,7 @@ use owo_colors::{OwoColorize, Stream, Style};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::path::Path;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 /// Stable schema version for `verify --json` CLI wire contract (track 0093).
 /// Distinct from the persisted `VerificationReport` / `latest-verify.json`.
@@ -1087,6 +1089,8 @@ pub fn execute_verify(
     // Bayesian apply hit count for honesty log + VerifyCliJson.matchedSteps (0140).
     // None = ordering not attempted; Some(n) = extract_dataset succeeded.
     let mut bayesian_matched_steps: Option<usize> = None;
+    // Probability map size when extract_dataset succeeds (0144 dry-run stdout).
+    let mut bayesian_dataset_keys: Option<usize> = None;
 
     // 3. Build Plan
     let (plan, steps) = match command_str {
@@ -1096,8 +1100,9 @@ pub fn execute_verify(
         ),
         None => {
             if let Some(config_plan) = config_plan {
-                // Plan banner only under --verbose (0121 quiet success).
-                if verbose && !json {
+                // Plan banner only under --verbose live path (0121 quiet success).
+                // Never on --dry-run: descriptions are pipe-merged walls (0144).
+                if verbose && !json && !dry_run {
                     print_verify_plan(&config_plan);
                 }
                 (Some(config_plan.clone()), config_plan.steps)
@@ -1192,15 +1197,18 @@ pub fn execute_verify(
                     let probs = crate::verify::probability::calculate_probabilities(&dataset);
                     let matched = plan.apply_probability_ordering(&probs);
                     bayesian_matched_steps = Some(matched);
+                    bayesian_dataset_keys = Some(probs.len());
+                    // 0144: product surface is dry-run stdout `matched_steps=`;
+                    // demote tracing so default RUST_LOG=info is not a duplicate.
                     if matched > 0 {
-                        info!(
+                        debug!(
                             "Probabilistic verification ordering applied (matched_steps={matched}, dataset_keys={})",
                             probs.len()
                         );
                     } else {
                         // Honesty: never claim "applied N models" with dataset
                         // size when zero plan steps hit the probability map.
-                        info!(
+                        debug!(
                             "Probabilistic verification ordering skipped reorder (matched_steps=0, dataset_keys={})",
                             probs.len()
                         );
@@ -1225,8 +1233,9 @@ pub fn execute_verify(
                     }
                 }
 
-                // Plan banner only under --verbose (0121 quiet success).
-                if verbose && !json {
+                // Plan banner only under --verbose live path (0121 quiet success).
+                // Never on --dry-run: descriptions are pipe-merged walls (0144).
+                if verbose && !json && !dry_run {
                     print_verify_plan(&plan);
                 }
                 let steps = plan.steps.clone();
@@ -1347,14 +1356,15 @@ pub fn execute_verify(
         return Err(miette::miette!("{reason}"));
     }
 
-    // Dry Run early exit with compressed output
+    // Dry Run early exit — plan-first scannable layout (0144).
+    // No print_verify_plan (gated above); no cargo execution.
     if dry_run {
         if json {
             return Err(miette::miette!(
                 "verify --json cannot be combined with --dry-run"
             ));
         }
-        // For manual commands, print the steps derived from the CLI arg
+        // Manual --command: keep simple Verification Plan + single step + footer.
         if manual_requested {
             println!(
                 "{}",
@@ -1367,79 +1377,21 @@ pub fn execute_verify(
                 timeout_secs
             );
             println!();
-        }
-
-        // Group predicted impacts by source for compressed output
-        let verbose = std::env::var("VERBOSE_DRY_RUN").is_ok();
-        let predicted: Vec<&VerificationStep> = steps
-            .iter()
-            .filter(|s| s.description.starts_with("Predicted impact"))
-            .collect();
-        let other: Vec<&VerificationStep> = steps
-            .iter()
-            .filter(|s| !s.description.starts_with("Predicted impact"))
-            .collect();
-
-        // Print non-predicted steps (rules, config)
-        if !other.is_empty() {
             println!(
                 "{}",
-                "Verification Steps:"
-                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+                "Dry run mode: verification plan displayed above. No commands were executed."
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
             );
-            for step in &other {
-                println!("  • {} (timeout: {}s)", step.command, step.timeout_secs);
-            }
+            return Ok(());
         }
 
-        // Print compressed predicted impacts
-        if !predicted.is_empty() {
-            println!(
-                "\n{}",
-                "Predicted Impacts (grouped by source):"
-                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
-            );
-            let mut groups: std::collections::BTreeMap<String, Vec<String>> =
-                std::collections::BTreeMap::new();
-            for step in &predicted {
-                // Extract group name from "Predicted impact (GroupName) on path"
-                let desc = &step.description;
-                if let Some(start) = desc.find('(')
-                    && let Some(end) = desc.find(')')
-                {
-                    let group = desc[start + 1..end].to_string();
-                    let path = desc[end + 5..].to_string(); // ") on " = 5 chars
-                    groups.entry(group).or_default().push(path);
-                }
-            }
-
-            for (source, paths) in &groups {
-                println!(
-                    "  {}",
-                    format!("Source: {} — {} items", source, paths.len())
-                        .if_supports_color(Stream::Stdout, |s| s.bold())
-                );
-                let show = if verbose {
-                    paths.len()
-                } else {
-                    std::cmp::min(5, paths.len())
-                };
-                for path in paths.iter().take(show) {
-                    println!("    • {}", path);
-                }
-                if !verbose && paths.len() > 5 {
-                    println!(
-                        "    ... and {} more (set VERBOSE_DRY_RUN=1 for full list)",
-                        paths.len() - 5
-                    );
-                }
-            }
-        }
-
-        println!(
-            "\n{}",
-            "Dry run mode: verification plan displayed above. No commands were executed."
-                .if_supports_color(Stream::Stdout, |s| s.yellow())
+        // CLI --verbose expands path lists; VERBOSE_DRY_RUN remains additive alias.
+        let dry_verbose = verbose || std::env::var("VERBOSE_DRY_RUN").is_ok();
+        print_dry_run_human(
+            &steps,
+            bayesian_matched_steps,
+            bayesian_dataset_keys,
+            dry_verbose,
         );
         return Ok(());
     }
@@ -2777,6 +2729,36 @@ mod verify_cli_json_tests {
         assert!(
             emit_idx < fail_idx,
             "DoD-15 boundary: JSON must emit before validation-rejection Err"
+        );
+    }
+
+    /// 0144 B1: dry-run must not print the plan-banner wall; both call sites gate
+    /// `print_verify_plan` with `!dry_run` (and verbose && !json).
+    #[test]
+    fn execute_verify_print_verify_plan_gated_off_dry_run() {
+        let src = include_str!("verify.rs");
+        // Production body only — include_str also sees this test module.
+        let prod = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production body before unit tests");
+        let mut from = 0usize;
+        let mut gated_sites = 0usize;
+        while let Some(rel) = prod[from..].find("print_verify_plan(") {
+            let abs = from + rel;
+            // Look back a short window for the dry-run gate on the same call site.
+            let window_start = abs.saturating_sub(120);
+            let window = &prod[window_start..abs];
+            assert!(
+                window.contains("!dry_run"),
+                "print_verify_plan at byte {abs} must be gated by !dry_run; nearby: {window:?}"
+            );
+            gated_sites += 1;
+            from = abs + "print_verify_plan(".len();
+        }
+        assert!(
+            gated_sites >= 2,
+            "expected both config_plan and plan print_verify_plan sites; found {gated_sites}"
         );
     }
 }
