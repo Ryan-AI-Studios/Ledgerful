@@ -42,6 +42,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Doctor session latency (0143):** Real probe hard deadline via `thread::spawn` +
+  `recv_timeout` (not `thread::scope` join-first); production per-attempt deadline
+  `timeout_secs*1000+250` ms = **2250 ms** (doctor `timeout_secs=2`); hang unit test.
+  Parallel embed + completion probes (network only; SQLite/Cozo stay main-thread).
+  Parallel content-hash drift walk (rayon, same counts + sorted sample_paths).
+  Warm session targets documented; hang-class ≤2.5s. Optional top-level
+  `durationMs` on `doctor --json` (schemaVersion stays 1).
+
 - **Ask locate/find-symbol local grounding (0142):** `ask "find the function …"` /
   `locate …` / short bare `find <identifier>` maps to symbol-definition routing
   and early-exits from local symbols (primary) or Tantivy TermQuery full-id
