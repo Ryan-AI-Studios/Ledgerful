@@ -63,11 +63,18 @@ Pure stdout schema v1 (`schemaVersion` is integer `1`):
     "targetTriple": "…",
     "binaryVersion": "0.2.5",
     "buildSha": "b57f4472efb3"
-  }
+  },
+  "durationMs": 842
 }
 ```
 
 Exit code `1` iff any `block`; else `0`. Human banners (sccache/SCIP/VRAM) are skipped under `--json`.
+
+### `durationMs` (0143 B5)
+
+Optional top-level `u64` wall-clock milliseconds from after the `--json`/`--apply-hook-refresh`
+conflict guard until immediately before JSON serialization. `schemaVersion` stays `1`.
+Agents may use it to spot session-start regressions; not a SLI contract.
 
 ### `binary-behind-tree` (0137)
 

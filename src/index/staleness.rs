@@ -289,16 +289,29 @@ pub fn assess_index_freshness_at(
     }
 }
 
+/// Per-file classification for the parallel content-hash walk (0143 B3).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FileHashDriftKind {
+    Clean,
+    Changed,
+    Unindexed,
+    Unreadable,
+}
+
 /// Compare worktree supported-source hashes against `project_files.content_hash`.
 ///
 /// Walks the same supported-extension set as the indexer. Relative paths are
 /// normalized to forward slashes so Windows worktrees match stored rows.
+///
+/// Per-file hashing is parallelized with rayon (0143); counts and sorted
+/// `sample_paths` remain deterministic (collect → sort → cap).
 pub fn count_content_hash_drift(
     storage: &StorageManager,
     repo_root: &Utf8Path,
 ) -> Result<ContentHashDrift> {
     use crate::index::orchestrator::{BINARY_EXTENSIONS, SUPPORTED_EXTENSIONS};
     use crate::index::walker::RepoWalker;
+    use rayon::prelude::*;
     use std::collections::HashMap;
 
     let discovered = RepoWalker::new(
@@ -325,46 +338,52 @@ pub fn count_content_hash_drift(
         stored.insert(path.replace('\\', "/"), hash);
     }
 
+    // Parallel map: hash each discovered file and classify vs stored rows.
+    let file_results: Vec<(String, FileHashDriftKind)> = discovered
+        .par_iter()
+        .map(|file_path| {
+            let relative = file_path
+                .strip_prefix(repo_root)
+                .unwrap_or(file_path)
+                .as_str()
+                .replace('\\', "/");
+
+            let current_hash =
+                match crate::util::fs::read_to_string_with_encoding(file_path.as_std_path()) {
+                    Ok(c) => blake3::hash(c.as_bytes()).to_hex().to_string(),
+                    Err(_) => {
+                        // Unreadable worktree path: treat as drift so refresh can retry.
+                        return (relative, FileHashDriftKind::Unreadable);
+                    }
+                };
+
+            let kind = match stored.get(&relative) {
+                Some(Some(stored_hash)) if stored_hash == &current_hash => FileHashDriftKind::Clean,
+                Some(Some(_)) => FileHashDriftKind::Changed,
+                Some(None) | None => FileHashDriftKind::Unindexed,
+            };
+            (relative, kind)
+        })
+        .collect();
+
+    // Sequential reduce: counts + sample candidates (deterministic after sort).
     let mut changed_or_unindexed = 0usize;
     let mut unindexed = 0usize;
     let mut sample_paths = Vec::new();
     let mut seen_stored: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for file_path in &discovered {
-        let relative = file_path
-            .strip_prefix(repo_root)
-            .unwrap_or(file_path)
-            .as_str()
-            .replace('\\', "/");
+    for (relative, kind) in file_results {
         seen_stored.insert(relative.clone());
-
-        let current_hash =
-            match crate::util::fs::read_to_string_with_encoding(file_path.as_std_path()) {
-                Ok(c) => blake3::hash(c.as_bytes()).to_hex().to_string(),
-                Err(_) => {
-                    // Unreadable worktree path: treat as drift so refresh can retry.
-                    changed_or_unindexed += 1;
-                    if sample_paths.len() < DRIFT_SAMPLE_LIMIT {
-                        sample_paths.push(relative);
-                    }
-                    continue;
-                }
-            };
-
-        match stored.get(&relative) {
-            Some(Some(stored_hash)) if stored_hash == &current_hash => {}
-            Some(Some(_)) => {
+        match kind {
+            FileHashDriftKind::Clean => {}
+            FileHashDriftKind::Changed | FileHashDriftKind::Unreadable => {
                 changed_or_unindexed += 1;
-                if sample_paths.len() < DRIFT_SAMPLE_LIMIT {
-                    sample_paths.push(relative);
-                }
+                sample_paths.push(relative);
             }
-            Some(None) | None => {
+            FileHashDriftKind::Unindexed => {
                 changed_or_unindexed += 1;
                 unindexed += 1;
-                if sample_paths.len() < DRIFT_SAMPLE_LIMIT {
-                    sample_paths.push(relative);
-                }
+                sample_paths.push(relative);
             }
         }
     }
@@ -372,6 +391,7 @@ pub fn count_content_hash_drift(
     // Indexed **code** files removed from the worktree are also drift (DoD-4).
     // Ignore enrichment-only rows (docs, CI, .env.example, …) which are not part of
     // supported-extension discovery and must not trigger false deletes.
+    // Deleted post-step stays sequential over stored.keys() (unchanged order policy).
     let mut deleted: Vec<String> = stored
         .keys()
         .filter(|path| !seen_stored.contains(*path) && is_supported_code_path(path))
@@ -380,12 +400,12 @@ pub fn count_content_hash_drift(
     deleted.sort();
     for path in deleted {
         changed_or_unindexed += 1;
-        if sample_paths.len() < DRIFT_SAMPLE_LIMIT {
-            sample_paths.push(path);
-        }
+        sample_paths.push(path);
     }
 
+    // Deterministic samples: sort all candidates then cap (parallel-safe).
     sample_paths.sort();
+    sample_paths.truncate(DRIFT_SAMPLE_LIMIT);
     Ok(ContentHashDrift {
         changed_or_unindexed,
         unindexed,
