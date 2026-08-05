@@ -4,7 +4,7 @@ use crate::git::RepoSnapshot;
 use crate::git::repo::{get_head_info, open_repo};
 use crate::git::status::get_repo_status;
 use crate::output::diagnostics::success_marker;
-use crate::state::reports::write_impact_report;
+use crate::state::reports::{ImpactReportWriteOutcome, write_impact_report};
 use miette::Result;
 use owo_colors::{OwoColorize, Stream};
 use std::env;
@@ -17,7 +17,10 @@ use std::env;
 /// enrichment pipeline.
 pub fn execute_impact_silent_with_snapshot(
     snapshot: crate::git::RepoSnapshot,
-) -> Result<crate::impact::packet::ImpactPacket> {
+) -> Result<(
+    crate::impact::packet::ImpactPacket,
+    ImpactReportWriteOutcome,
+)> {
     execute_impact_silent_with_snapshot_and_depth(snapshot, None)
 }
 
@@ -25,7 +28,10 @@ pub fn execute_impact_silent_with_snapshot(
 pub fn execute_impact_silent_with_snapshot_and_depth(
     snapshot: crate::git::RepoSnapshot,
     blast_depth: Option<u32>,
-) -> Result<crate::impact::packet::ImpactPacket> {
+) -> Result<(
+    crate::impact::packet::ImpactPacket,
+    ImpactReportWriteOutcome,
+)> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
 
@@ -58,22 +64,28 @@ pub fn execute_impact_silent_with_snapshot_and_depth(
         tracing::warn!("SQLite save failed: {e}");
     }
 
-    // Write report
-    write_impact_report(&layout, &packet)?;
+    // Write report (0147: may skip rewrite on stable CleanTree)
+    let write_outcome = write_impact_report(&layout, &packet)?;
 
     storage.shutdown()?;
 
-    Ok(packet)
+    Ok((packet, write_outcome))
 }
 
-pub fn execute_impact_silent() -> Result<crate::impact::packet::ImpactPacket> {
+pub fn execute_impact_silent() -> Result<(
+    crate::impact::packet::ImpactPacket,
+    ImpactReportWriteOutcome,
+)> {
     execute_impact_silent_with_depth(None)
 }
 
 /// Like [`execute_impact_silent`] with optional CLI `--blast-depth`.
 pub fn execute_impact_silent_with_depth(
     blast_depth: Option<u32>,
-) -> Result<crate::impact::packet::ImpactPacket> {
+) -> Result<(
+    crate::impact::packet::ImpactPacket,
+    ImpactReportWriteOutcome,
+)> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
 
@@ -126,12 +138,12 @@ pub fn execute_impact_silent_with_depth(
         tracing::warn!("SQLite save failed: {e}");
     }
 
-    // Write report
-    write_impact_report(&layout, &packet)?;
+    // Write report (0147: may skip rewrite on stable CleanTree)
+    let write_outcome = write_impact_report(&layout, &packet)?;
 
     storage.shutdown()?;
 
-    Ok(packet)
+    Ok((packet, write_outcome))
 }
 
 /// Compute a fresh `ImpactPacket` in-memory without persisting it.
@@ -238,10 +250,14 @@ pub fn compute_impact_from_snapshot_in_memory(
 ///
 /// Used by `execute_scan` so that the `--base-ref` snapshot flows through to
 /// the human output path without re-deriving changes from working-tree status.
+///
+/// `report_write_outcome` controls clean-tree wording honesty (0147): "refreshed"
+/// only when `latest-impact.json` was actually rewritten.
 pub fn execute_impact_human(
     packet: &crate::impact::packet::ImpactPacket,
     summary: bool,
     base_ref_mode: bool,
+    report_write_outcome: ImpactReportWriteOutcome,
 ) -> Result<()> {
     use crate::output::diagnostics::success_marker;
     use owo_colors::{OwoColorize, Stream};
@@ -251,10 +267,17 @@ pub fn execute_impact_human(
             println!("\n{} No changes detected vs base ref.", success_marker());
             println!("  All files between base ref and HEAD are clean.");
         } else {
-            println!(
-                "\n{} Working tree is clean — impact report refreshed.",
-                success_marker()
-            );
+            match report_write_outcome {
+                ImpactReportWriteOutcome::Written => {
+                    println!(
+                        "\n{} Working tree is clean — impact report refreshed.",
+                        success_marker()
+                    );
+                }
+                ImpactReportWriteOutcome::Unchanged => {
+                    println!("\n{} Working tree is clean.", success_marker());
+                }
+            }
         }
         return Ok(());
     }
@@ -366,8 +389,8 @@ pub fn execute_impact_with_blast_depth(
         tracing::warn!("SQLite save failed: {e}");
     }
 
-    // Write report
-    write_impact_report(&layout, &packet)?;
+    // Write report (0147: may skip rewrite on stable CleanTree)
+    let write_outcome = write_impact_report(&layout, &packet)?;
 
     storage.shutdown()?;
 
@@ -401,10 +424,17 @@ pub fn execute_impact_with_blast_depth(
     }
 
     if packet.tree_clean && packet.changes.is_empty() {
-        println!(
-            "\n{} Working tree is clean — impact report refreshed.",
-            success_marker()
-        );
+        match write_outcome {
+            ImpactReportWriteOutcome::Written => {
+                println!(
+                    "\n{} Working tree is clean — impact report refreshed.",
+                    success_marker()
+                );
+            }
+            ImpactReportWriteOutcome::Unchanged => {
+                println!("\n{} Working tree is clean.", success_marker());
+            }
+        }
         return Ok(());
     }
 

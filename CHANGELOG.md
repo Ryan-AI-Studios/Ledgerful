@@ -6,6 +6,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Empty-tree impact fast path (0147):** When `treeClean && changes` empty,
+  `impact` / `scan --impact` / `deploy impact` skip enrichment (AI reachability
+  probe, all providers including federation walk, analysis registry) and apply
+  low-risk defaults (`No changes detected`) without Cross-repo / changeguard
+  warnings. CleanTree `latest-impact.json` no longer rewrites when HEAD is
+  unchanged (stable content hash); human wording says "refreshed" only when a
+  write occurred.
+
 ## [0.2.6] - 2026-08-05
 
 ### Added

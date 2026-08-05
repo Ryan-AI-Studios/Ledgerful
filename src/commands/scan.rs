@@ -607,7 +607,7 @@ pub fn execute_scan_with_blast_depth(
         // Always use the snapshot derived above so that --base-ref changes are
         // passed through regardless of whether --json / --out is set.
         // Thread --blast-depth so scan --impact matches impact CLI (DoD-9).
-        let impact_packet = if base_ref.is_some() {
+        let (impact_packet, report_write_outcome) = if base_ref.is_some() {
             crate::commands::impact::execute_impact_silent_with_snapshot_and_depth(
                 snapshot,
                 blast_depth,
@@ -629,6 +629,7 @@ pub fn execute_scan_with_blast_depth(
                 &impact_packet,
                 summary,
                 base_ref.is_some(),
+                report_write_outcome,
             )?;
         }
     }

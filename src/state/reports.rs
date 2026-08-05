@@ -138,10 +138,32 @@ impl From<&FileChange> for ScanChange {
     }
 }
 
-pub fn write_impact_report(layout: &Layout, packet: &ImpactPacket) -> Result<()> {
+/// Whether [`write_impact_report`] rewrote `latest-impact.json` or left it
+/// unchanged (stable CleanTree skip when HEAD is unchanged — track 0147).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ImpactReportWriteOutcome {
+    Written,
+    Unchanged,
+}
+
+pub fn write_impact_report(
+    layout: &Layout,
+    packet: &ImpactPacket,
+) -> Result<ImpactReportWriteOutcome> {
     layout.ensure_state_dir()?;
 
     let report_path = layout.reports_dir().join(LATEST_IMPACT_REPORT);
+
+    // 0147 B4: stable CleanTree — skip rewrite when existing tombstone has the
+    // same head_hash (both-None equal) so content hash does not churn solely
+    // via timestamp_utc on repeated clean impact runs.
+    if packet.tree_clean
+        && packet.changes.is_empty()
+        && let Ok(Some(LatestImpactReport::CleanTree(existing))) = read_latest_impact_report(layout)
+        && existing.head_hash == packet.head_hash
+    {
+        return Ok(ImpactReportWriteOutcome::Unchanged);
+    }
 
     let json = if packet.tree_clean && packet.changes.is_empty() {
         serde_json::to_string_pretty(&CleanTreeTombstone::from_packet(packet))
@@ -164,7 +186,7 @@ pub fn write_impact_report(layout: &Layout, packet: &ImpactPacket) -> Result<()>
         source: e,
     })?;
 
-    Ok(())
+    Ok(ImpactReportWriteOutcome::Written)
 }
 
 pub fn write_clean_tree_tombstone(
@@ -407,6 +429,85 @@ mod tests {
             LatestImpactReport::Packet(_) => {
                 panic!("expected clean-tree tombstone, got full packet")
             }
+        }
+    }
+
+    /// 0147 B4: two CleanTree writes with the same head_hash → second is
+    /// Unchanged and on-disk content bytes are identical (no timestamp churn).
+    #[test]
+    fn test_write_impact_report_stable_clean_tree_same_head() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+
+        let packet = ImpactPacket {
+            head_hash: Some("same-head-hash".to_string()),
+            branch_name: Some("main".to_string()),
+            tree_clean: true,
+            changes: Vec::new(),
+            timestamp_utc: "2026-01-01T00:00:00Z".to_string(),
+            ..ImpactPacket::default()
+        };
+
+        let first = write_impact_report(&layout, &packet).unwrap();
+        assert_eq!(first, ImpactReportWriteOutcome::Written);
+
+        let report_path = layout.reports_dir().join(LATEST_IMPACT_REPORT);
+        let bytes_after_first = fs::read(&report_path).unwrap();
+
+        // Different timestamp on packet must not rewrite when head matches.
+        let packet2 = ImpactPacket {
+            head_hash: Some("same-head-hash".to_string()),
+            branch_name: Some("main".to_string()),
+            tree_clean: true,
+            changes: Vec::new(),
+            timestamp_utc: "2026-08-05T12:00:00Z".to_string(),
+            ..ImpactPacket::default()
+        };
+        let second = write_impact_report(&layout, &packet2).unwrap();
+        assert_eq!(second, ImpactReportWriteOutcome::Unchanged);
+
+        let bytes_after_second = fs::read(&report_path).unwrap();
+        assert_eq!(
+            bytes_after_first, bytes_after_second,
+            "CleanTree report content must be stable across same-head rewrites"
+        );
+    }
+
+    /// 0147 B4: head advance still rewrites CleanTree tombstone.
+    #[test]
+    fn test_write_impact_report_rewrites_when_head_changes() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+
+        let first_packet = ImpactPacket {
+            head_hash: Some("head-a".to_string()),
+            tree_clean: true,
+            changes: Vec::new(),
+            ..ImpactPacket::default()
+        };
+        assert_eq!(
+            write_impact_report(&layout, &first_packet).unwrap(),
+            ImpactReportWriteOutcome::Written
+        );
+
+        let second_packet = ImpactPacket {
+            head_hash: Some("head-b".to_string()),
+            tree_clean: true,
+            changes: Vec::new(),
+            ..ImpactPacket::default()
+        };
+        assert_eq!(
+            write_impact_report(&layout, &second_packet).unwrap(),
+            ImpactReportWriteOutcome::Written
+        );
+
+        match read_latest_impact_report(&layout).unwrap().unwrap() {
+            LatestImpactReport::CleanTree(t) => {
+                assert_eq!(t.head_hash, Some("head-b".to_string()));
+            }
+            LatestImpactReport::Packet(_) => panic!("expected CleanTree tombstone"),
         }
     }
 
