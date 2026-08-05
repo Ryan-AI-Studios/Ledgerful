@@ -1,8 +1,152 @@
 use crate::output::diagnostics::print_header;
 use crate::verify::engine::VerificationContext;
+use crate::verify::plan::VerificationStep;
 use crate::verify::results::VerificationReport;
 use crate::verify::suggestions::{Suggestion, SuggestionSeverity};
 use owo_colors::{OwoColorize, Stream, Style};
+use std::collections::BTreeMap;
+
+/// Default max predicted paths shown per source on dry-run (0144 scannability).
+/// Overflow points operators at `--verbose` for the full list.
+pub const DRY_RUN_PRED_PATH_DEFAULT: usize = 3;
+
+/// Marker prefix inside plan step descriptions for predicted-impact segments.
+const PREDICTED_IMPACT_PREFIX: &str = "Predicted impact (";
+
+/// Delimiter between source name and path in a predicted-impact segment.
+/// Must not use `find(')')` alone — `RuntimeDependency` reasons can embed `)`.
+const PREDICTED_SOURCE_PATH_DELIM: &str = ") on ";
+
+/// Parse predicted-impact `(source, path)` pairs from plan step descriptions.
+///
+/// Plan dedupe pipe-merges segments with ` | `, so a rule step description may
+/// contain multiple `Predicted impact (…)` segments after `From rules: …`.
+/// Walks every step, splits on ` | `, and extracts via the first `) on `
+/// after the prefix (nested parens in the source survive).
+///
+/// Returns a [`BTreeMap`] (deterministic source order). Paths per source are
+/// sorted and de-duplicated for stable dry-run output.
+pub fn parse_predicted_impacts(steps: &[VerificationStep]) -> BTreeMap<String, Vec<String>> {
+    let mut groups: BTreeMap<String, Vec<String>> = BTreeMap::new();
+
+    for step in steps {
+        for segment in step.description.split(" | ") {
+            let segment = segment.trim();
+            let Some(after_prefix) = segment
+                .find(PREDICTED_IMPACT_PREFIX)
+                .map(|i| &segment[i + PREDICTED_IMPACT_PREFIX.len()..])
+            else {
+                continue;
+            };
+            let Some(delim_at) = after_prefix.find(PREDICTED_SOURCE_PATH_DELIM) else {
+                // Malformed: no ") on " delimiter — skip (do not use first `)`).
+                continue;
+            };
+            let source = after_prefix[..delim_at].to_string();
+            let path = after_prefix[delim_at + PREDICTED_SOURCE_PATH_DELIM.len()..].to_string();
+            if source.is_empty() || path.is_empty() {
+                continue;
+            }
+            groups.entry(source).or_default().push(path);
+        }
+    }
+
+    for paths in groups.values_mut() {
+        paths.sort_unstable();
+        paths.dedup();
+    }
+
+    groups
+}
+
+/// Format human dry-run stdout (plan-first, scannable). Pure — no side effects.
+///
+/// Layout (0144 B1/B2):
+/// 1. Optional Bayesian line when `matched` is `Some` (ordering ran)
+/// 2. Verification Steps — every plan step's `command` + timeout (same set the
+///    engine would execute; do not filter by description — pure predicted-impact
+///    rows still carry real commands, B1 rule 2 / B5)
+/// 3. Predicted Impacts (grouped by source) — omit section when empty
+/// 4. Dry-run footer
+pub fn format_dry_run_human(
+    steps: &[VerificationStep],
+    matched: Option<usize>,
+    dataset_keys: Option<usize>,
+    dry_verbose: bool,
+) -> String {
+    let mut sections: Vec<String> = Vec::new();
+
+    if let Some(n) = matched {
+        let keys = dataset_keys.unwrap_or(0);
+        sections.push(format!(
+            "Bayesian ordering: matched_steps={n} dataset_keys={keys}"
+        ));
+    }
+
+    // Print all plan steps (engine executes all). Plan may already merge by
+    // command; do not drop pure-predicted description rows — they still run.
+    if !steps.is_empty() {
+        let mut block = String::from("Verification Steps:\n");
+        for step in steps {
+            block.push_str(&format!(
+                "  • {} (timeout: {}s)\n",
+                step.command, step.timeout_secs
+            ));
+        }
+        // trim trailing newline — sections join with blank lines
+        if block.ends_with('\n') {
+            block.pop();
+        }
+        sections.push(block);
+    }
+
+    let groups = parse_predicted_impacts(steps);
+    if !groups.is_empty() {
+        let mut block = String::from("Predicted Impacts (grouped by source):\n");
+        for (source, paths) in &groups {
+            block.push_str(&format!("  Source: {} — {} items\n", source, paths.len()));
+            let show = if dry_verbose {
+                paths.len()
+            } else {
+                paths.len().min(DRY_RUN_PRED_PATH_DEFAULT)
+            };
+            for path in paths.iter().take(show) {
+                block.push_str(&format!("    • {path}\n"));
+            }
+            if !dry_verbose && paths.len() > DRY_RUN_PRED_PATH_DEFAULT {
+                let more = paths.len() - DRY_RUN_PRED_PATH_DEFAULT;
+                block.push_str(&format!(
+                    "    … and {more} more (use --verbose for full list)\n"
+                ));
+            }
+        }
+        if block.ends_with('\n') {
+            block.pop();
+        }
+        sections.push(block);
+    }
+
+    sections.push(
+        "Dry run mode: verification plan displayed above. No commands were executed.".to_string(),
+    );
+
+    let mut out = sections.join("\n\n");
+    out.push('\n');
+    out
+}
+
+/// Print human dry-run stdout via [`format_dry_run_human`].
+pub fn print_dry_run_human(
+    steps: &[VerificationStep],
+    matched: Option<usize>,
+    dataset_keys: Option<usize>,
+    dry_verbose: bool,
+) {
+    print!(
+        "{}",
+        format_dry_run_human(steps, matched, dataset_keys, dry_verbose)
+    );
+}
 
 /// Whether to print Suggested Actions / full human report chatter after verify.
 ///
@@ -206,9 +350,20 @@ impl VerificationReporter {
 #[cfg(test)]
 mod tests {
     use super::{
+        DRY_RUN_PRED_PATH_DEFAULT, format_dry_run_human, parse_predicted_impacts,
         should_emit_verify_progress_info, should_print_success_step,
         should_print_suggested_actions, verify_step_result_label,
     };
+    use crate::verify::plan::VerificationStep;
+
+    fn step(command: &str, description: &str) -> VerificationStep {
+        VerificationStep {
+            command: command.to_string(),
+            timeout_secs: 60,
+            description: description.to_string(),
+            shell: false,
+        }
+    }
 
     #[test]
     fn should_print_suggested_actions_quiet_green_suppresses() {
@@ -253,5 +408,179 @@ mod tests {
         assert!(!should_emit_verify_progress_info(false, true));
         assert!(!should_emit_verify_progress_info(true, true));
         assert!(should_emit_verify_progress_info(true, false));
+    }
+
+    #[test]
+    fn parse_predicted_impacts_pipe_merged_both_sources() {
+        // Plan dedupe merges rule + CallGraph + Temporal into one description.
+        let steps = vec![step(
+            "cargo clippy",
+            "From rules: cargo clippy | Predicted impact (CallGraph) on a | Predicted impact (Temporal) on b",
+        )];
+        let groups = parse_predicted_impacts(&steps);
+        assert_eq!(groups.get("CallGraph"), Some(&vec!["a".to_string()]));
+        assert_eq!(groups.get("Temporal"), Some(&vec!["b".to_string()]));
+        // starts_with-only filter would have lost both segments.
+        assert!(!steps[0].description.starts_with("Predicted impact"));
+    }
+
+    #[test]
+    fn parse_predicted_impacts_nested_parens_in_source() {
+        // RuntimeDependency Display can embed ')' — must split on first ") on ".
+        let steps = vec![step(
+            "cargo test",
+            "Predicted impact (rdma (lib)) on src/x.rs",
+        )];
+        let groups = parse_predicted_impacts(&steps);
+        assert_eq!(
+            groups.get("rdma (lib)"),
+            Some(&vec!["src/x.rs".to_string()])
+        );
+    }
+
+    #[test]
+    fn parse_predicted_impacts_skips_malformed_without_on_delim() {
+        let steps = vec![step(
+            "cargo test",
+            "Predicted impact (CallGraph missing path",
+        )];
+        let groups = parse_predicted_impacts(&steps);
+        assert!(groups.is_empty());
+    }
+
+    #[test]
+    fn format_dry_run_default_top_n_and_matched_steps() {
+        let mut paths = Vec::new();
+        for i in 1..=5 {
+            paths.push(format!("src/file{i}.rs"));
+        }
+        // Build one pipe-merged description with 5 CallGraph paths.
+        let mut desc = String::from("From rules: cargo clippy");
+        for p in &paths {
+            desc.push_str(&format!(" | Predicted impact (CallGraph) on {p}"));
+        }
+        let steps = vec![
+            step("cargo clippy --all-targets", &desc),
+            step("cargo nextest run", "From rules: cargo nextest run"),
+        ];
+        let formatted = format_dry_run_human(&steps, Some(3), Some(11), false);
+
+        assert!(
+            formatted.contains("Bayesian ordering: matched_steps=3 dataset_keys=11"),
+            "greppable Bayesian line: {formatted}"
+        );
+        assert!(formatted.contains("Verification Steps:"));
+        assert!(formatted.contains("cargo clippy --all-targets (timeout: 60s)"));
+        assert!(formatted.contains("cargo nextest run (timeout: 60s)"));
+        // Description wall must not appear as a Verification Steps line.
+        assert!(
+            !formatted
+                .lines()
+                .any(|l| l.contains("From rules:") || l.contains(" | Predicted impact")),
+            "no pipe-merged description wall: {formatted}"
+        );
+        assert!(formatted.contains("Predicted Impacts (grouped by source):"));
+        assert!(formatted.contains("Source: CallGraph — 5 items"));
+        // Top-3 default
+        assert_eq!(DRY_RUN_PRED_PATH_DEFAULT, 3);
+        let path_lines: Vec<_> = formatted
+            .lines()
+            .filter(|l| l.trim_start().starts_with('•') && l.contains("src/file"))
+            .collect();
+        assert_eq!(path_lines.len(), 3, "default top-3 paths: {formatted}");
+        assert!(
+            formatted.contains("… and 2 more (use --verbose for full list)"),
+            "overflow points at --verbose: {formatted}"
+        );
+        assert!(
+            !formatted.contains("VERBOSE_DRY_RUN"),
+            "overflow must not only mention env: {formatted}"
+        );
+        assert!(formatted.contains(
+            "Dry run mode: verification plan displayed above. No commands were executed."
+        ));
+    }
+
+    #[test]
+    fn format_dry_run_verbose_all_paths_no_plan_banner() {
+        let desc = "From rules: cargo clippy \
+            | Predicted impact (CallGraph) on a.rs \
+            | Predicted impact (CallGraph) on b.rs \
+            | Predicted impact (CallGraph) on c.rs \
+            | Predicted impact (CallGraph) on d.rs";
+        let steps = vec![step("cargo clippy", desc)];
+        let formatted = format_dry_run_human(&steps, Some(1), Some(2), true);
+
+        // All 4 paths, one per line
+        for p in ["a.rs", "b.rs", "c.rs", "d.rs"] {
+            assert!(
+                formatted.lines().any(|l| l.trim() == format!("• {p}")),
+                "expected path {p} on own line: {formatted}"
+            );
+        }
+        assert!(
+            !formatted.contains("more (use --verbose for full list)"),
+            "verbose has no overflow: {formatted}"
+        );
+        // Plan-banner artifacts only come from print_verify_plan — format helper
+        // must never emit them (dry-run+verbose gates that printer off).
+        assert!(
+            !formatted.contains("Verification Plan\n")
+                && !formatted.contains("Runner:")
+                && !formatted
+                    .lines()
+                    .any(|l| l.trim_start().starts_with("Source: Auto-Policy")
+                        || l.trim_start().starts_with("Source: Explicit")),
+            "no plan-banner artifacts: {formatted}"
+        );
+        // Per-source heading uses "Source: CallGraph — N items" (product section),
+        // which is fine — not the plan banner "Source: Auto-Policy".
+        assert!(formatted.contains("Source: CallGraph — 4 items"));
+    }
+
+    #[test]
+    fn format_dry_run_empty_predictions_omits_section() {
+        let steps = vec![step(
+            "cargo clippy",
+            "From rules: cargo clippy --all-targets",
+        )];
+        let formatted = format_dry_run_human(&steps, None, None, false);
+        assert!(!formatted.contains("Predicted Impacts"));
+        assert!(!formatted.contains("Bayesian ordering:"));
+        assert!(formatted.contains("Verification Steps:"));
+        assert!(formatted.contains(
+            "Dry run mode: verification plan displayed above. No commands were executed."
+        ));
+    }
+
+    #[test]
+    fn format_dry_run_matched_zero_still_prints_line() {
+        // 0140 vacuous honesty: ordering ran, zero hits — still print key=value.
+        let steps = vec![step("cargo test", "From rules: cargo test")];
+        let formatted = format_dry_run_human(&steps, Some(0), Some(5), false);
+        assert!(formatted.contains("Bayesian ordering: matched_steps=0 dataset_keys=5"));
+    }
+
+    #[test]
+    fn format_dry_run_pure_predicted_step_still_lists_command() {
+        // Plan builder creates pure Predicted impact (…) descriptions that still
+        // carry real executable commands (B1 rule 2 / B5). Must appear under
+        // Verification Steps AND path under Predicted Impacts.
+        let steps = vec![step(
+            "cargo fmt --all -- --check",
+            "Predicted impact (Temporal) on docs/x.md",
+        )];
+        let formatted = format_dry_run_human(&steps, None, None, false);
+        assert!(
+            formatted.contains("cargo fmt --all -- --check"),
+            "executable command must appear in Verification Steps: {formatted}"
+        );
+        assert!(
+            formatted.contains("docs/x.md"),
+            "path must appear under Predicted Impacts: {formatted}"
+        );
+        assert!(formatted.contains("Verification Steps:"));
+        assert!(formatted.contains("Predicted Impacts (grouped by source):"));
+        assert!(formatted.contains("Source: Temporal — 1 items"));
     }
 }

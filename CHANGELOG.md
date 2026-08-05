@@ -19,6 +19,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Verify dry-run scannability (0144):** Plan-first `verify --dry-run` human
+  stdout — Verification Steps print **command + timeout only** (no pipe-merged
+  description walls); `print_verify_plan` is skipped on the dry-run path (including
+  `--verbose`). When Bayesian ordering ran, greppable
+  `Bayesian ordering: matched_steps=N dataset_keys=K` is printed on **stdout**
+  (independent of `RUST_LOG`); the former tracing `info!` lines are demoted to
+  `debug!`. Predicted Impacts keep heading
+  `Predicted Impacts (grouped by source):`; default path list is **top 3** per
+  source (was 5) with overflow `… and K more (use --verbose for full list)`;
+  CLI `--verbose` expands full paths (one path per line); `VERBOSE_DRY_RUN`
+  remains an additive alias. Pipe-merged and nested-paren prediction segments
+  are parsed correctly. `verify --json --dry-run` remains refused; schemaVersion
+  / `matchedSteps` unchanged.
+
 - **Search `--json` agent envelope (0136):** multi-hit `search --json` is now a
   **single** camelCase object (`schemaVersion: 1`, `results[]`) so whole-stdout
   parsers succeed (PowerShell `ConvertFrom-Json`, `JSON.parse`, MCP tool text).
