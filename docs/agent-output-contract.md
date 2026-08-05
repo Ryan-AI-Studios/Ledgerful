@@ -128,7 +128,7 @@ Primary example — **MappingRefuse** (default when fast cannot scope; empty
   "ok": false,
   "scopeRequested": "fast",
   "scopeExecuted": "refused",
-  "fallbackReason": "fast scope unavailable — test_mapping is stale or empty; run `ledgerful index --incremental` or use `--auto-index`; refusing full suite (~5-8 min)",
+  "fallbackReason": "fast scope unavailable — test_mapping is empty; run `ledgerful index --incremental` or use `--auto-index`; refusing full suite (~5-8 min)",
   "steps": [],
   "timestamp": "2026-07-28T12:00:00+00:00",
   "txId": "optional-pending-tx-id"

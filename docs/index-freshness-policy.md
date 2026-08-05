@@ -121,12 +121,15 @@ spawn ceiling.
 
 ### `verify --auto-index` (not `try_auto_index`)
 
-`verify --auto-index` only helps **`--scope fast`** when `test_mapping` is empty or
-stale relative to the impact packet `head_hash`. It runs a **changed-files
-incremental** refresh and retries scoped test selection — it does **not** perform
-the general time/drift/bootstrap `try_auto_index` refresh used by search/ask/
-hotspots/dead-code. For a full symbol/search floor, use those commands or
-`ledgerful index --incremental` / `--full`. See `docs/verify-performance.md`.
+`verify --auto-index` only helps **`--scope fast`** when `test_mapping` is
+**empty** (or PacketHeadMissing). **Head lag** (populated mapping, lagging
+`head_hash`) is auto-repaired once under bare `--scope fast` without this flag
+(0145). Empty bootstrap still needs `--auto-index` or `index --incremental`.
+Repair runs a **changed-files incremental** refresh and retries scoped test
+selection — it does **not** perform the general time/drift/bootstrap
+`try_auto_index` refresh used by search/ask/hotspots/dead-code. For a full
+symbol/search floor, use those commands or `ledgerful index --incremental` /
+`--full`. See `docs/verify-performance.md`.
 
 ## Watch mega-batch safety
 

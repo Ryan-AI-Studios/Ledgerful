@@ -278,11 +278,14 @@ Agent command sheet (local pack path): `.agents/skills/ledgerful/references/comm
 | 2 | `ledgerful change-context --json` | Default pre-edit packet |
 | 3 | `ledgerful ledger status --compact` or `--json` | Provenance / pending / drift |
 | 4 | `ledgerful search …` (prefer `--auto-index` when stale) | Discovery (not full impact) |
-| 5 | `ledgerful verify --scope fast` | Local gate (pre-push style); **≠** full CI; may **refuse** when mapping cannot scope |
+| 5 | `ledgerful verify --scope fast` | Local gate (pre-push style); **≠** full CI; self-repairs **head lag**; empty mapping still needs index / `--auto-index` |
 
-**Step 5 may refuse** (exit ≠ 0, greppable `refusing full suite`) when
-`test_mapping` is empty/stale/unusable — it will **not** surprise-run a multi-minute
-full suite. Remediation:
+**Step 5 notes (0145):** bare `verify --scope fast` **self-repairs head lag**
+(populated mapping, lagging `head_hash`) with one bounded incremental refresh.
+Live-clean trees use a cheap EmptyChanges plan even if a saved impact packet is
+non-empty. **Empty** `test_mapping` still **refuses** without
+`index --incremental` or `--auto-index` — it will **not** surprise-run a
+multi-minute full suite. Remediation when refused:
 
 ```bash
 ledgerful index --incremental
@@ -292,7 +295,7 @@ ledgerful verify --scope full
 ledgerful verify --scope fast --allow-full-fallback
 ```
 
-Empty tree (no file changes) uses a cheap plan (Rust: fmt+clippy, no nextest;
+Empty tree (no material file changes) → cheap plan (Rust: fmt+clippy, no nextest;
 non-Rust: zero steps, exit 0). Shared infra still runs full with an announcement.
 
 **Escalate (not Daily 5):**

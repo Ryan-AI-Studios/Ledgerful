@@ -188,16 +188,19 @@ fn build_scoped_nextest_command(test_stems: &[String]) -> String {
 /// Build a scoped test plan using `test_mapping` to run only the tests that
 /// cover the changed files.
 ///
-/// Classifier order under `--scope fast` (load-bearing, 0135):
+/// Classifier order under `--scope fast` (load-bearing, 0135 + 0145):
 /// 1. **SharedInfra** → full suite + announce
 /// 2. **EmptyChanges** → cheap fmt+clippy when Rust detected (no nextest);
 ///    non-Rust → zero steps, still pass
-/// 3. **Stale gate** (before trusting stems) + optional auto-index once
+///    (Live-empty working tree short-circuits in `commands/verify.rs` before
+///    this builder — not here, so plan unit tests stay hermetic.)
+/// 3. **Freshness gate** (before trusting stems): HeadMismatch auto-repairs
+///    once without `--auto-index`; Empty / PacketHeadMissing need the flag
 /// 4. **ScopedOk** → stems from a non-stale mapping → 3-step scoped plan
 /// 5. **MappingRefuse** → no stems / no conn (unless `allow_full_fallback` → full + announce)
 ///
-/// Spec B7: non-empty mapping + head mismatch must refuse (or auto-index path),
-/// never silent ScopedOk on stems alone.
+/// Spec B7/0145: non-empty mapping + head mismatch never silent ScopedOk on
+/// stems alone; HeadMismatch attempts one bounded repair first.
 ///
 /// `conn` is the SQLite connection from the storage manager. When `None` and
 /// changes exist, scoped selection is impossible → MappingRefuse (or full if allow).
@@ -222,10 +225,13 @@ pub fn build_plan_scoped(
 
 /// Internal entry point that also accepts `auto_index` and `allow_full_fallback`.
 ///
-/// When `auto_index` is true and `test_mapping` is empty/stale relative to the
-/// impact packet's `head_hash`, this triggers an incremental index for the
-/// changed files once, then re-checks staleness before trusting stems. On
-/// still-stale or cannot-scope, **refuses** unless `allow_full_fallback`.
+/// Freshness-aware repair (0145):
+/// - **HeadMismatch** → one bounded incremental repair **without** requiring
+///   `--auto-index`, then re-classify; still not Ok → refuse.
+/// - **Empty** → repair only with `--auto-index`; still empty → refuse.
+/// - **PacketHeadMissing** → repair only with `--auto-index`.
+///
+/// On still-cannot-scope, **refuses** unless `allow_full_fallback`.
 #[allow(clippy::too_many_arguments)]
 pub fn build_plan_scoped_with_options(
     packet: &ImpactPacket,
@@ -262,49 +268,41 @@ pub fn build_plan_scoped_with_options(
     // Profile-aware: only schedule cargo fmt/clippy when Rust is detected so
     // non-Rust / empty repos still exit 0 under --scope fast (Daily 5 honesty
     // without inventing a toolchain).
+    // Note: live-clean trees with a non-empty *saved* packet are handled in
+    // `commands/verify.rs` (B1) so this packet-empty path stays pure.
     if packet.changes.is_empty() {
         return build_empty_changes_plan(profile);
     }
 
-    // 3. Stale gate — must run before trusting stems (B7: non-empty mapping +
-    // head mismatch refuses; never silent ScopedOk on stems alone).
-    // Missing *index* head + count>0 is NOT stale (B2) — stems still OK.
-    let stale_remediation =
-        "test_mapping is stale or empty; run `ledgerful index --incremental` or use `--auto-index`";
+    // 3. Freshness gate — must run before trusting stems.
+    // HeadMismatch auto-repairs once (no flag). Empty still needs --auto-index.
+    const EMPTY_REMEDIATION: &str =
+        "test_mapping is empty; run `ledgerful index --incremental` or use `--auto-index`";
+    const HEAD_LAG_REMEDIATION: &str =
+        "test_mapping head_hash lags HEAD; run `ledgerful index --incremental`";
+    const UNVERIFIABLE_REMEDIATION: &str = "test_mapping freshness unverifiable; run `ledgerful index --incremental` or use `--auto-index`";
+
     if let Some(c) = conn {
-        if is_test_mapping_stale(c, packet) {
-            if auto_index {
-                if let Err(e) = run_incremental_index_for_changed_files(packet, layout, config) {
-                    let trigger = format!("auto-index failed ({e}); test_mapping empty/stale");
-                    return mapping_cannot_scope_outcome(
-                        &trigger,
-                        allow_full_fallback,
-                        packet,
-                        rules,
-                        predicted,
-                        config,
-                        profile,
-                        scope,
-                        repo_root,
-                    );
-                }
-                if is_test_mapping_stale(c, packet) {
-                    return mapping_cannot_scope_outcome(
-                        stale_remediation,
-                        allow_full_fallback,
-                        packet,
-                        rules,
-                        predicted,
-                        config,
-                        profile,
-                        scope,
-                        repo_root,
-                    );
-                }
-                // Fresh after auto-index — fall through to stem query.
-            } else {
+        let mut freshness = classify_test_mapping_freshness(c, packet);
+        let should_repair = match freshness {
+            MappingFreshness::Ok => false,
+            // Head-lag: auto-repair once without requiring --auto-index (0145).
+            MappingFreshness::HeadMismatch => true,
+            // Empty / PacketHeadMissing: only with --auto-index (0135 bootstrap).
+            MappingFreshness::Empty | MappingFreshness::PacketHeadMissing => auto_index,
+        };
+
+        if should_repair {
+            if let Err(e) = run_incremental_index_for_changed_files(packet, layout, config) {
+                let class_hint = match freshness {
+                    MappingFreshness::HeadMismatch => "test_mapping head_hash lags HEAD",
+                    MappingFreshness::Empty => "test_mapping empty",
+                    MappingFreshness::PacketHeadMissing => "test_mapping freshness unverifiable",
+                    MappingFreshness::Ok => "test_mapping",
+                };
+                let trigger = format!("auto-index failed ({e}); {class_hint}");
                 return mapping_cannot_scope_outcome(
-                    stale_remediation,
+                    &trigger,
                     allow_full_fallback,
                     packet,
                     rules,
@@ -315,7 +313,32 @@ pub fn build_plan_scoped_with_options(
                     repo_root,
                 );
             }
+            freshness = classify_test_mapping_freshness(c, packet);
+            if freshness == MappingFreshness::Ok {
+                tracing::debug!("test_mapping freshness repaired; continuing to stem query");
+            }
         }
+
+        if freshness != MappingFreshness::Ok {
+            let remediation = match freshness {
+                MappingFreshness::Empty => EMPTY_REMEDIATION,
+                MappingFreshness::HeadMismatch => HEAD_LAG_REMEDIATION,
+                MappingFreshness::PacketHeadMissing => UNVERIFIABLE_REMEDIATION,
+                MappingFreshness::Ok => EMPTY_REMEDIATION, // unreachable
+            };
+            return mapping_cannot_scope_outcome(
+                remediation,
+                allow_full_fallback,
+                packet,
+                rules,
+                predicted,
+                config,
+                profile,
+                scope,
+                repo_root,
+            );
+        }
+        // Fresh — fall through to stem query.
     } else {
         // No conn + has changes → MappingRefuse (or allow full).
         return mapping_cannot_scope_outcome(
@@ -376,7 +399,10 @@ pub fn refuse_plan_for_trigger(trigger: &str) -> VerificationPlan {
 /// EmptyChanges cheap plan: for Rust repos, fmt + clippy only (no nextest).
 /// Non-Rust (or undetected) profiles get zero steps and still pass — not a
 /// refuse. Daily 5 honesty without inventing a cargo toolchain.
-fn build_empty_changes_plan(
+///
+/// Public so `commands/verify.rs` can short-circuit live-clean trees (0145 B1)
+/// without re-entering the packet-based classifier.
+pub fn build_empty_changes_plan(
     profile: &crate::platform::repository::RepositoryProfile,
 ) -> VerificationPlan {
     let mut steps: Vec<VerificationStep> = Vec::new();
@@ -468,24 +494,41 @@ fn build_fast_scoped_plan(packet: &ImpactPacket, test_stems: &[String]) -> Verif
     }
 }
 
-/// Returns true if the test_mapping table is empty or its last-indexed HEAD
-/// differs from the impact packet's `head_hash`.
+/// Classification of `test_mapping` freshness relative to the impact packet.
 ///
-/// Stale matrix (0135 B2 — asymmetric by design):
-/// | Condition | stale? |
-/// | count==0 | true |
-/// | both heads present equal | false |
-/// | both present differ | true |
-/// | **indexed head missing** + count>0 | **false** (unknown ≠ force-stale) |
-/// | **packet head missing** + indexed present + count>0 | **true** (conservative) |
-/// | either missing + count==0 | true |
-/// | tables missing / query Err | degrade stale, no panic |
-fn is_test_mapping_stale(conn: &rusqlite::Connection, packet: &ImpactPacket) -> bool {
+/// Preserves the 0135 B2 asymmetric matrix; used by the 0145 freshness gate so
+/// HeadMismatch can auto-repair while Empty still requires `--auto-index`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MappingFreshness {
+    /// Stems trustworthy for the fast gate.
+    Ok,
+    /// `test_mapping` count is 0 / table missing / query error.
+    Empty,
+    /// count>0, both heads present and unequal.
+    HeadMismatch,
+    /// count>0, packet head missing, indexed head present (conservative).
+    PacketHeadMissing,
+}
+
+/// Classify `test_mapping` freshness against the impact packet's `head_hash`.
+///
+/// Matrix (0135 B2 — asymmetric by design):
+/// | Condition | class |
+/// | count==0 / missing tables / query Err | Empty |
+/// | both heads present equal | Ok |
+/// | both present differ | HeadMismatch |
+/// | **indexed head missing** + count>0 | **Ok** (unknown ≠ force-stale) |
+/// | **packet head missing** + indexed present + count>0 | PacketHeadMissing |
+/// | both missing + count>0 | Ok |
+pub fn classify_test_mapping_freshness(
+    conn: &rusqlite::Connection,
+    packet: &ImpactPacket,
+) -> MappingFreshness {
     let total: i64 = conn
         .query_row("SELECT count(*) FROM test_mapping", [], |row| row.get(0))
         .unwrap_or(0);
     if total == 0 {
-        return true;
+        return MappingFreshness::Empty;
     }
 
     let indexed_head: Option<String> = conn
@@ -497,26 +540,45 @@ fn is_test_mapping_stale(conn: &rusqlite::Connection, packet: &ImpactPacket) -> 
         .ok();
 
     match (&packet.head_hash, indexed_head.as_deref()) {
-        (Some(packet_head), Some(indexed_head)) => packet_head != indexed_head,
+        (Some(packet_head), Some(indexed)) if packet_head != indexed => {
+            MappingFreshness::HeadMismatch
+        }
+        (Some(_), Some(_)) => MappingFreshness::Ok,
         // Index head missing + populated mapping: allow stem query (product
         // bug we fix by writing head_hash on index finish — not force-stale).
-        (Some(_), None) => false,
+        (Some(_), None) => MappingFreshness::Ok,
         // Packet head missing + indexed present: cannot confirm freshness.
-        (None, Some(_)) => true,
-        // Both missing with count>0: treat as not force-stale so stem query
-        // can still produce ScopedOk; empty count already returned true above.
-        (None, None) => false,
+        (None, Some(_)) => MappingFreshness::PacketHeadMissing,
+        // Both missing with count>0: treat as Ok so stem query can still
+        // produce ScopedOk; empty count already returned Empty above.
+        (None, None) => MappingFreshness::Ok,
     }
 }
 
-/// Run an incremental index limited to the changed files in the packet. This
-/// delegates to the same indexer used by `ledgerful index --incremental` but
-/// does not spawn a separate CLI process.
+/// Returns true if the test_mapping table is empty or otherwise unusable for
+/// the fast gate without repair. Thin wrapper over
+/// [`classify_test_mapping_freshness`].
+#[allow(dead_code)] // retained public-style API; production uses classify directly
+fn is_test_mapping_stale(conn: &rusqlite::Connection, packet: &ImpactPacket) -> bool {
+    matches!(
+        classify_test_mapping_freshness(conn, packet),
+        MappingFreshness::Empty
+            | MappingFreshness::HeadMismatch
+            | MappingFreshness::PacketHeadMissing
+    )
+}
+
+/// Run an incremental index for the analysis root. This delegates to the same
+/// indexer used by `ledgerful index --incremental` but does not spawn a
+/// separate CLI process.
 ///
 /// Uses `layout.state_dir` for the DB (shared across linked worktrees) and
 /// `layout.root` as the analysis root — never invents `Layout::new(repo_root)`.
+///
+/// `packet` is retained for call-site symmetry / future delta-scoped repair;
+/// head_hash is **not** written from the packet (trust store_index_metadata).
 fn run_incremental_index_for_changed_files(
-    packet: &ImpactPacket,
+    _packet: &ImpactPacket,
     layout: &crate::state::layout::Layout,
     config: &VerifyConfig,
 ) -> Result<(), String> {
@@ -538,15 +600,9 @@ fn run_incremental_index_for_changed_files(
         .incremental_index()
         .map_err(|e| format!("incremental index failed: {e}"))?;
 
-    // Persist the packet's HEAD as the index HEAD so future runs can detect
-    // freshness without re-scanning.
-    if let Some(head) = &packet.head_hash {
-        let conn = indexer.storage().get_connection();
-        let _ = conn.execute(
-            "INSERT OR REPLACE INTO index_metadata (key, value) VALUES ('head_hash', ?1)",
-            [head],
-        );
-    }
+    // Trust `store_index_metadata` from incremental_index (writes current git
+    // HEAD). Do **not** overwrite with packet.head_hash — a stale packet head
+    // would mark the mapping "fresh" against obsolete stems (0145 DoD-6).
 
     // Return ownership of storage so it is dropped cleanly.
     let _ = indexer.into_storage().shutdown();
@@ -1736,7 +1792,7 @@ default-filter = 'test(/__slow$/)'
             Some(&conn),
             &layout,
         );
-        // Empty mapping → MappingRefuse (0135).
+        // Empty mapping → MappingRefuse (0135 / 0145 Empty class).
         assert!(plan.refused);
         assert!(plan.steps.is_empty());
         let reason = plan.fallback_reason.as_deref().unwrap_or("");
@@ -1745,7 +1801,8 @@ default-filter = 'test(/__slow$/)'
             "expected refuse reason, got {reason}"
         );
         assert!(
-            reason.contains("test_mapping is stale or empty")
+            reason.contains("test_mapping is empty")
+                || reason.contains("test_mapping is stale or empty")
                 || reason.contains("test_mapping has no mappings for the changed files")
                 || reason.contains("test_mapping unavailable"),
             "expected fallback reason to explain mapping unavailability, got {:?}",
@@ -1943,8 +2000,10 @@ default-filter = 'test(/__slow$/)'
 
     #[test]
     fn test_build_plan_scoped_head_mismatch_with_stems_refuses() {
-        // B7: head mismatch + non-empty mapping + stems present + !auto_index
-        // → MappingRefuse (not silent ScopedOk on stems alone).
+        // 0145: HeadMismatch + stems + !auto_index still attempts one repair.
+        // Hermetic in-memory conn stays HeadMismatch after repair (repair opens
+        // real layout storage, not this conn) → still refuse with head-lag
+        // message — never silent ScopedOk on stems alone.
         let packet = ImpactPacket {
             head_hash: Some("new-hash".to_string()),
             changes: vec![ChangedFile {
@@ -1994,7 +2053,10 @@ default-filter = 'test(/__slow$/)'
         )
         .unwrap();
 
-        let layout = crate::state::layout::Layout::new(".");
+        // Temp layout so repair does not open the real engine .ledgerful.
+        let tmp = tempfile::tempdir().unwrap();
+        let root = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let layout = crate::state::layout::Layout::new(&root);
         let plan = build_plan_scoped_with_options(
             &packet,
             &rules,
@@ -2004,12 +2066,12 @@ default-filter = 'test(/__slow$/)'
             VerifyScope::Fast,
             Some(&conn),
             &layout,
-            false, // !auto_index
+            false, // !auto_index — HeadMismatch still attempts repair
             false, // !allow_full_fallback
         );
         assert!(
             plan.refused,
-            "head mismatch must refuse, not ScopedOk; steps={:?}",
+            "head mismatch after failed/ineffective repair must refuse, not ScopedOk; steps={:?}",
             plan.steps
         );
         assert!(
@@ -2019,8 +2081,10 @@ default-filter = 'test(/__slow$/)'
         );
         let reason = plan.fallback_reason.as_deref().unwrap_or("");
         assert!(
-            reason.contains("stale or empty"),
-            "expected stale/empty remediation, got: {reason}"
+            reason.contains("head_hash lags HEAD")
+                || reason.contains("auto-index failed")
+                || reason.contains("head_hash"),
+            "expected head-lag remediation, got: {reason}"
         );
         assert!(
             reason.contains("refusing full suite"),
@@ -2039,6 +2103,143 @@ default-filter = 'test(/__slow$/)'
         assert_eq!(VerifyScope::default(), VerifyScope::Full);
     }
 
+    fn seed_mapping_row(conn: &rusqlite::Connection) {
+        conn.execute(
+            "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
+             tested_symbol_id INTEGER, tested_file_id INTEGER)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
+             VALUES (1, 1, 1, 1)",
+            [],
+        )
+        .unwrap();
+    }
+
+    fn seed_index_head(conn: &rusqlite::Connection, head: &str) {
+        conn.execute(
+            "CREATE TABLE index_metadata (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO index_metadata (key, value) VALUES ('head_hash', ?1)",
+            [head],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn test_classify_test_mapping_freshness_empty() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
+             tested_symbol_id INTEGER, tested_file_id INTEGER)",
+            [],
+        )
+        .unwrap();
+        let packet = ImpactPacket::default();
+        assert_eq!(
+            classify_test_mapping_freshness(&conn, &packet),
+            MappingFreshness::Empty
+        );
+        assert!(is_test_mapping_stale(&conn, &packet));
+    }
+
+    #[test]
+    fn test_classify_test_mapping_freshness_ok_heads_match() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        seed_mapping_row(&conn);
+        seed_index_head(&conn, "current-hash");
+        let packet = ImpactPacket {
+            head_hash: Some("current-hash".to_string()),
+            ..ImpactPacket::default()
+        };
+        assert_eq!(
+            classify_test_mapping_freshness(&conn, &packet),
+            MappingFreshness::Ok
+        );
+        assert!(!is_test_mapping_stale(&conn, &packet));
+    }
+
+    #[test]
+    fn test_classify_test_mapping_freshness_head_mismatch() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        seed_mapping_row(&conn);
+        seed_index_head(&conn, "old-hash");
+        let packet = ImpactPacket {
+            head_hash: Some("new-hash".to_string()),
+            ..ImpactPacket::default()
+        };
+        assert_eq!(
+            classify_test_mapping_freshness(&conn, &packet),
+            MappingFreshness::HeadMismatch
+        );
+        assert!(is_test_mapping_stale(&conn, &packet));
+    }
+
+    #[test]
+    fn test_classify_test_mapping_freshness_packet_head_missing() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        seed_mapping_row(&conn);
+        seed_index_head(&conn, "indexed");
+        let packet = ImpactPacket {
+            head_hash: None,
+            ..ImpactPacket::default()
+        };
+        assert_eq!(
+            classify_test_mapping_freshness(&conn, &packet),
+            MappingFreshness::PacketHeadMissing
+        );
+        assert!(is_test_mapping_stale(&conn, &packet));
+    }
+
+    #[test]
+    fn test_classify_test_mapping_freshness_indexed_head_missing_ok() {
+        // B2: indexed head missing + count>0 → Ok (allow stem query).
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        seed_mapping_row(&conn);
+        // No index_metadata table / no head_hash row.
+        let packet = ImpactPacket {
+            head_hash: Some("any-hash".to_string()),
+            ..ImpactPacket::default()
+        };
+        assert_eq!(
+            classify_test_mapping_freshness(&conn, &packet),
+            MappingFreshness::Ok
+        );
+        assert!(!is_test_mapping_stale(&conn, &packet));
+    }
+
+    #[test]
+    fn test_classify_test_mapping_freshness_both_heads_missing_ok() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        seed_mapping_row(&conn);
+        let packet = ImpactPacket {
+            head_hash: None,
+            ..ImpactPacket::default()
+        };
+        assert_eq!(
+            classify_test_mapping_freshness(&conn, &packet),
+            MappingFreshness::Ok
+        );
+        assert!(!is_test_mapping_stale(&conn, &packet));
+    }
+
+    #[test]
+    fn test_classify_test_mapping_freshness_missing_table_empty() {
+        // Query Err / missing tables → Empty (degrade, no panic).
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let packet = ImpactPacket::default();
+        assert_eq!(
+            classify_test_mapping_freshness(&conn, &packet),
+            MappingFreshness::Empty
+        );
+    }
+
+    // Thin-wrapper regressions (same matrix as classify_*).
     #[test]
     fn test_is_test_mapping_stale_empty_mapping() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
@@ -2055,28 +2256,8 @@ default-filter = 'test(/__slow$/)'
     #[test]
     fn test_is_test_mapping_stale_head_hash_mismatch() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute(
-            "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
-             tested_symbol_id INTEGER, tested_file_id INTEGER)",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
-             VALUES (1, 1, 1, 1)",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "CREATE TABLE index_metadata (key TEXT PRIMARY KEY, value TEXT)",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO index_metadata (key, value) VALUES ('head_hash', 'old-hash')",
-            [],
-        )
-        .unwrap();
+        seed_mapping_row(&conn);
+        seed_index_head(&conn, "old-hash");
         let packet = ImpactPacket {
             head_hash: Some("new-hash".to_string()),
             ..ImpactPacket::default()
@@ -2087,28 +2268,8 @@ default-filter = 'test(/__slow$/)'
     #[test]
     fn test_is_test_mapping_stale_head_hash_matches() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute(
-            "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
-             tested_symbol_id INTEGER, tested_file_id INTEGER)",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
-             VALUES (1, 1, 1, 1)",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "CREATE TABLE index_metadata (key TEXT PRIMARY KEY, value TEXT)",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO index_metadata (key, value) VALUES ('head_hash', 'current-hash')",
-            [],
-        )
-        .unwrap();
+        seed_mapping_row(&conn);
+        seed_index_head(&conn, "current-hash");
         let packet = ImpactPacket {
             head_hash: Some("current-hash".to_string()),
             ..ImpactPacket::default()
@@ -2118,21 +2279,8 @@ default-filter = 'test(/__slow$/)'
 
     #[test]
     fn test_is_test_mapping_stale_missing_index_head_not_force_stale() {
-        // B2: indexed head missing + count>0 → not force-stale (allow stem query).
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute(
-            "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
-             tested_symbol_id INTEGER, tested_file_id INTEGER)",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
-             VALUES (1, 1, 1, 1)",
-            [],
-        )
-        .unwrap();
-        // No index_metadata table / no head_hash row.
+        seed_mapping_row(&conn);
         let packet = ImpactPacket {
             head_hash: Some("any-hash".to_string()),
             ..ImpactPacket::default()
@@ -2142,35 +2290,38 @@ default-filter = 'test(/__slow$/)'
 
     #[test]
     fn test_is_test_mapping_stale_missing_packet_head_conservative() {
-        // B2: packet head None + indexed present + count>0 → stale true.
         let conn = rusqlite::Connection::open_in_memory().unwrap();
-        conn.execute(
-            "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
-             tested_symbol_id INTEGER, tested_file_id INTEGER)",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
-             VALUES (1, 1, 1, 1)",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "CREATE TABLE index_metadata (key TEXT PRIMARY KEY, value TEXT)",
-            [],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO index_metadata (key, value) VALUES ('head_hash', 'indexed')",
-            [],
-        )
-        .unwrap();
+        seed_mapping_row(&conn);
+        seed_index_head(&conn, "indexed");
         let packet = ImpactPacket {
             head_hash: None,
             ..ImpactPacket::default()
         };
         assert!(is_test_mapping_stale(&conn, &packet));
+    }
+
+    #[test]
+    fn test_run_incremental_index_does_not_overwrite_head_with_packet() {
+        // DoD-6 source guard: repair must not write packet.head_hash over
+        // store_index_metadata's current git HEAD.
+        let src = include_str!("plan.rs");
+        let fn_start = src
+            .find("fn run_incremental_index_for_changed_files")
+            .expect("repair helper present");
+        let body = &src[fn_start..];
+        let fn_end = body
+            .find("\nfn ")
+            .or_else(|| body.find("\n#[derive"))
+            .unwrap_or(body.len().min(2500));
+        let body = &body[..fn_end];
+        assert!(
+            !body.contains("INSERT OR REPLACE INTO index_metadata"),
+            "run_incremental_index_for_changed_files must not overwrite head_hash from packet"
+        );
+        assert!(
+            body.contains("_packet") || body.contains("store_index_metadata"),
+            "repair helper should document trust of store_index_metadata / unused packet head"
+        );
     }
 
     #[test]

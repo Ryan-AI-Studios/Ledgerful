@@ -56,6 +56,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Verify fast mapping freshness (0145):** Live-clean working tree under
+  `verify --scope fast` uses EmptyChanges (fmt+clippy / zero steps) even when a
+  saved impact packet still lists changes — no phantom scoped nextest or false
+  MappingRefuse from head lag alone. Populated `test_mapping` with head_hash lag
+  auto-repairs once without requiring `--auto-index`; empty mapping still refuses
+  without `index --incremental` / `--auto-index`. Repair no longer overwrites
+  index `head_hash` with a possibly stale packet head. Classification-aware refuse
+  messages (`empty` / `head_hash lags HEAD` / `freshness unverifiable`).
+
 - **Doctor session latency (0143):** Real probe hard deadline via `thread::spawn` +
   `recv_timeout` (not `thread::scope` join-first); production per-attempt deadline
   `timeout_secs*1000+250` ms = **2250 ms** (doctor `timeout_secs=2`); hang unit test.
