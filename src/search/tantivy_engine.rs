@@ -302,6 +302,74 @@ impl TantivySearchEngine {
         Ok(results)
     }
 
+    /// Exact full-identifier term match on the content field (lowercased).
+    ///
+    /// Prefers precision over QueryParser OR-disjunction for multi-part snake_case
+    /// ids: post-0141 dual-emit indexes the full id as a single token, so a
+    /// TermQuery on the lowercased full identifier is the right locate primitive
+    /// for ask local grounding (0142).
+    pub fn search_term_exact(&self, term: &str, limit: usize) -> Result<Vec<SearchResult>> {
+        use tantivy::query::TermQuery;
+
+        let searcher = self.reader.searcher();
+        let content_field = self.schema.get_field("content").into_diagnostic()?;
+        let path_field = self.schema.get_field("path").into_diagnostic()?;
+        let line_count_field = self.schema.get_field("line_count").into_diagnostic()?;
+
+        let term = Term::from_field_text(content_field, &term.to_lowercase());
+        let term_query = TermQuery::new(term, IndexRecordOption::WithFreqsAndPositions);
+
+        let snippet_generator =
+            SnippetGenerator::create(&searcher, &term_query, content_field).into_diagnostic()?;
+
+        let top_docs = searcher
+            .search(&term_query, &TopDocs::with_limit(limit).order_by_score())
+            .into_diagnostic()?;
+
+        let mut results = Vec::new();
+        for (score, doc_address) in top_docs {
+            let retrieved_doc: TantivyDocument = searcher.doc(doc_address).into_diagnostic()?;
+
+            let path = retrieved_doc
+                .get_first(path_field)
+                .and_then(|v| v.as_str())
+                .unwrap_or_default()
+                .to_string();
+
+            let line_count = retrieved_doc
+                .get_first(line_count_field)
+                .and_then(|v| v.as_u64())
+                .unwrap_or(0) as usize;
+
+            let mut snippet_opt = None;
+            let mut ranges_opt = None;
+            let mut line_number_opt = None;
+
+            if let Some(content_val) = retrieved_doc
+                .get_first(content_field)
+                .and_then(|v| v.as_str())
+            {
+                let snippet = snippet_generator.snippet_from_doc(&retrieved_doc);
+                if let Some(built) = build_snippet(&snippet, content_val) {
+                    snippet_opt = Some(built.fragment);
+                    ranges_opt = Some(built.ranges);
+                    line_number_opt = built.line_number;
+                }
+            }
+
+            results.push(SearchResult {
+                path,
+                line_count,
+                score,
+                snippet: snippet_opt,
+                highlight_ranges: ranges_opt,
+                line_number: line_number_opt,
+            });
+        }
+
+        Ok(results)
+    }
+
     pub fn search_fuzzy(&self, query_str: &str, limit: usize) -> Result<Vec<SearchResult>> {
         use tantivy::query::FuzzyTermQuery;
 
@@ -892,5 +960,24 @@ mod tests {
 
         let part_step = engine.search("step", 10).expect("search step");
         assert!(!part_step.is_empty(), "part step should hit");
+    }
+
+    #[test]
+    fn search_term_exact_finds_full_snake_case_identifier() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = make_engine(&dir);
+        index_doc(&engine, "src/verify/bayesian.rs", "fn verify_step_key() {}");
+        let results = engine
+            .search_term_exact("verify_step_key", 5)
+            .expect("search_term_exact");
+        assert!(
+            !results.is_empty(),
+            "TermQuery full-id must hit after dual-emit"
+        );
+        assert!(
+            results.iter().any(|r| r.path.contains("bayesian")),
+            "expected bayesian path, got {:?}",
+            results.iter().map(|r| &r.path).collect::<Vec<_>>()
+        );
     }
 }

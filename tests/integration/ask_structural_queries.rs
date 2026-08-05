@@ -165,6 +165,88 @@ fn test_ask_find_all_axum_route_handlers() {
     );
 }
 
+// --- 0142: locate / find-symbol local grounding ---
+
+#[test]
+#[serial(env, cwd)]
+fn test_ask_find_the_function_run_with_primary_hit() {
+    // Seeded SQLite symbols + no Gemini → primary structural path (no LLM).
+    let _env_non_interactive = non_interactive();
+    let _env_gemini = TempEnv::remove("GEMINI_API_KEY");
+
+    let tmp = tempdir().unwrap();
+    let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+    let _guard = DirGuard::from_utf8(root);
+    std::process::Command::new("git")
+        .arg("init")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    let storage = seeded_storage(&layout);
+    storage.shutdown().unwrap();
+
+    let result = execute_ask(
+        Some("find the function run_with".into()),
+        false,
+        10,
+        GeminiMode::Analyze,
+        false,
+        None,
+        false,
+        15,
+        false,
+        false,
+    );
+    assert!(
+        result.is_ok(),
+        "find-the-function must resolve via symbols without LLM: {:?}",
+        result
+    );
+}
+
+#[test]
+#[serial(env, cwd)]
+fn test_ask_find_totally_absent_symbol_local_grounding_miss() {
+    // Absent symbol → miss banner early-exit (no fall-through requiring backend).
+    let _env_non_interactive = non_interactive();
+    let _env_gemini = TempEnv::remove("GEMINI_API_KEY");
+
+    let tmp = tempdir().unwrap();
+    let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+    let _guard = DirGuard::from_utf8(root);
+    std::process::Command::new("git")
+        .arg("init")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    let storage = seeded_storage(&layout);
+    storage.shutdown().unwrap();
+
+    let result = execute_ask(
+        Some("find the function totally_absent_symbol_xyz_0142".into()),
+        false,
+        10,
+        GeminiMode::Analyze,
+        false,
+        None,
+        false,
+        15,
+        false,
+        false,
+    );
+    assert!(
+        result.is_ok(),
+        "absent locate symbol must honest-miss early-exit without LLM: {:?}",
+        result
+    );
+}
+
 // --- CG-F31: command-discovery / repo-health routing ---
 //
 // These tests spawn the actual compiled `ledgerful` binary (rather than
