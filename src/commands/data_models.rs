@@ -112,17 +112,16 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
             }
         }
         DataModelSubcommands::Impact { changed, json } => {
-            let packet = crate::commands::impact::execute_impact_silent()?;
+            // Path membership only — git status + ignore filter, not full impact.
+            // Avoids federation, cache rewrite, and multi-second empty paths (0146).
+            let changed_files: std::collections::HashSet<String> =
+                crate::git::status::collect_changed_files_for_filter(&layout)?
+                    .iter()
+                    .map(|c| crate::git::status::normalize_filter_path(&c.path))
+                    .collect();
 
             let storage = StorageManager::open_read_only(&layout)?;
             let conn = storage.get_connection();
-
-            // Collect the files that changed
-            let changed_files: std::collections::HashSet<String> = packet
-                .changes
-                .iter()
-                .map(|c| c.path.to_string_lossy().replace('\\', "/"))
-                .collect();
 
             // Now query data models and see which ones are in changed files
             let mut stmt = conn

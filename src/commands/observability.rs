@@ -173,12 +173,12 @@ pub fn execute_observability(args: ObservabilityArgs) -> Result<()> {
         ObservabilitySubcommands::Diff { json } => {
             // Identify changed observability files (YAML/YML in changed diff)
             // and surface which graph nodes (SLO, metric, alert) they map to.
-            let packet = crate::commands::impact::execute_impact_silent()?;
-            let changed_files: std::collections::HashSet<String> = packet
-                .changes
-                .iter()
-                .map(|c| c.path.to_string_lossy().replace('\\', "/"))
-                .collect();
+            // Path membership only — git status, not full impact (0146).
+            let changed_files: std::collections::HashSet<String> =
+                crate::git::status::collect_changed_files_for_filter(&layout)?
+                    .iter()
+                    .map(|c| crate::git::status::normalize_filter_path(&c.path))
+                    .collect();
 
             let cozo = storage
                 .cozo
