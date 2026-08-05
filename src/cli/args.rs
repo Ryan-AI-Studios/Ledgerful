@@ -325,9 +325,11 @@ pub enum Commands {
         /// `fast`. See `docs/verify-performance.md`.
         #[arg(long, default_value = "full")]
         scope: crate::verify::plan::VerifyScope,
-        /// Automatically refresh a stale or empty `test_mapping` index before
-        /// scoped selection on `--scope fast`. On success scopes; if still
-        /// cannot scope, refuses (unless `--allow-full-fallback`). Opt-in.
+        /// Refresh empty / unverifiable `test_mapping` before scoped selection
+        /// on `--scope fast`. Head-lag (index head behind packet/HEAD) auto-
+        /// repairs once without this flag — see `docs/verify-performance.md`.
+        /// On success scopes; if still cannot scope, refuses (unless
+        /// `--allow-full-fallback`). Opt-in for Empty / PacketHeadMissing.
         #[arg(long)]
         auto_index: bool,
         /// When `--scope fast` cannot map tests, run the full suite with an

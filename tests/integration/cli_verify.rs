@@ -250,6 +250,22 @@ fn test_verify_fast_live_clean_empty_changes_despite_stale_packet() {
         "live-clean + phantom packet must EmptyChanges (Ok), not MappingRefuse: {:?}",
         result.err()
     );
+
+    // F-002 / DoD-1 shape strengthen: Ok with a still-non-empty *saved* packet
+    // proves B1 live-empty short-circuit. Without B1, the same phantom packet
+    // + empty mapping would MappingRefuse (Err). Plan builder is not re-entered
+    // for EmptyChanges, so packet non-empty + Ok is the durable shape assert.
+    let db_path = layout.state_subdir().join("ledger.db");
+    let storage = ledgerful::state::storage::StorageManager::init(db_path.as_std_path())
+        .expect("open storage after impact+verify");
+    let packet = storage
+        .get_latest_packet()
+        .expect("get_latest_packet")
+        .expect("phantom packet must still be saved");
+    assert!(
+        !packet.changes.is_empty(),
+        "saved packet must retain non-empty changes (phantom); empty packet would not stress B1"
+    );
 }
 
 /// B7 / F-0135-01: MappingRefuse under `--dry-run` must return Err (exit 1),

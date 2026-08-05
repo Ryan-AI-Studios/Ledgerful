@@ -284,13 +284,7 @@ pub fn build_plan_scoped_with_options(
 
     if let Some(c) = conn {
         let mut freshness = classify_test_mapping_freshness(c, packet);
-        let should_repair = match freshness {
-            MappingFreshness::Ok => false,
-            // Head-lag: auto-repair once without requiring --auto-index (0145).
-            MappingFreshness::HeadMismatch => true,
-            // Empty / PacketHeadMissing: only with --auto-index (0135 bootstrap).
-            MappingFreshness::Empty | MappingFreshness::PacketHeadMissing => auto_index,
-        };
+        let should_repair = should_attempt_mapping_repair(freshness, auto_index);
 
         if should_repair {
             if let Err(e) = run_incremental_index_for_changed_files(packet, layout, config) {
@@ -566,6 +560,25 @@ fn is_test_mapping_stale(conn: &rusqlite::Connection, packet: &ImpactPacket) -> 
             | MappingFreshness::HeadMismatch
             | MappingFreshness::PacketHeadMissing
     )
+}
+
+/// Whether the fast-scope freshness gate should attempt one bounded incremental
+/// repair before re-classifying / refusing.
+///
+/// Behavior table (0145):
+/// | freshness            | auto_index | attempt |
+/// | Ok                   | *          | false   |
+/// | HeadMismatch         | *          | true    |
+/// | Empty                | false      | false   |
+/// | Empty                | true       | true    |
+/// | PacketHeadMissing    | false      | false   |
+/// | PacketHeadMissing    | true       | true    |
+fn should_attempt_mapping_repair(freshness: MappingFreshness, auto_index: bool) -> bool {
+    match freshness {
+        MappingFreshness::Ok => false,
+        MappingFreshness::HeadMismatch => true,
+        MappingFreshness::Empty | MappingFreshness::PacketHeadMissing => auto_index,
+    }
 }
 
 /// Run an incremental index for the analysis root. This delegates to the same
@@ -2090,6 +2103,220 @@ default-filter = 'test(/__slow$/)'
             reason.contains("refusing full suite"),
             "must refuse full, got: {reason}"
         );
+    }
+
+    #[test]
+    fn test_should_attempt_mapping_repair_behavior_table() {
+        // Full 0145 gate matrix for pure repair decision.
+        assert!(!should_attempt_mapping_repair(MappingFreshness::Ok, false));
+        assert!(!should_attempt_mapping_repair(MappingFreshness::Ok, true));
+        assert!(should_attempt_mapping_repair(
+            MappingFreshness::HeadMismatch,
+            false
+        ));
+        assert!(should_attempt_mapping_repair(
+            MappingFreshness::HeadMismatch,
+            true
+        ));
+        assert!(!should_attempt_mapping_repair(
+            MappingFreshness::Empty,
+            false
+        ));
+        assert!(should_attempt_mapping_repair(MappingFreshness::Empty, true));
+        assert!(!should_attempt_mapping_repair(
+            MappingFreshness::PacketHeadMissing,
+            false
+        ));
+        assert!(should_attempt_mapping_repair(
+            MappingFreshness::PacketHeadMissing,
+            true
+        ));
+    }
+
+    #[test]
+    fn test_build_plan_scoped_head_match_with_stems_scoped_ok_without_auto_index() {
+        // 0145 F-001: packet head == index head, non-empty mapping + stems,
+        // auto_index=false → ScopedOk (not refuse, nextest present).
+        // Proves the post-repair success state under !auto_index when heads
+        // already match (repair not needed; gate falls through to stems).
+        let packet = ImpactPacket {
+            head_hash: Some("matched-head".to_string()),
+            changes: vec![ChangedFile {
+                path: PathBuf::from("src/commands/hotspots.rs"),
+                ..Default::default()
+            }],
+            ..ImpactPacket::default()
+        };
+        let rules = Rules::default();
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
+             tested_symbol_id INTEGER, tested_file_id INTEGER)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE TABLE index_metadata (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO index_metadata (key, value) VALUES ('head_hash', 'matched-head')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_files (id, file_path) VALUES (1, 'src/commands/hotspots.rs')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_files (id, file_path) VALUES (2, 'tests/integration/cli_hotspots.rs')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
+             VALUES (10, 2, 20, 1)",
+            [],
+        )
+        .unwrap();
+
+        let layout = crate::state::layout::Layout::new(".");
+        let plan = build_plan_scoped_with_options(
+            &packet,
+            &rules,
+            &[],
+            &crate::config::model::VerifyConfig::default(),
+            &crate::platform::repository::RepositoryProfile::default(),
+            VerifyScope::Fast,
+            Some(&conn),
+            &layout,
+            false, // !auto_index
+            false,
+        );
+        assert!(
+            !plan.refused,
+            "head match + stems + !auto_index must ScopedOk, not refuse; reason={:?}",
+            plan.fallback_reason
+        );
+        assert!(
+            plan.steps.iter().any(|s| s.command.contains("nextest")),
+            "ScopedOk must schedule nextest, got {:?}",
+            plan.steps
+        );
+        assert!(plan.fallback_reason.is_none());
+    }
+
+    #[test]
+    fn test_build_plan_scoped_head_mismatch_repaired_file_backed_scoped_ok() {
+        // 0145 F-001 preferred: file-backed sqlite shared by conn.
+        // Populate HeadMismatch → manually set index head = packet head
+        // (simulates successful store_index_metadata after repair) →
+        // build_plan with !auto_index → ScopedOk.
+        // Proves Ok path after lag is fixed without full incremental_index.
+        let tmp = tempfile::tempdir().unwrap();
+        let db_path = tmp.path().join("ledger.db");
+        let conn = rusqlite::Connection::open(&db_path).unwrap();
+        conn.execute(
+            "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
+             tested_symbol_id INTEGER, tested_file_id INTEGER)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE TABLE index_metadata (key TEXT PRIMARY KEY, value TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO index_metadata (key, value) VALUES ('head_hash', 'old-hash')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_files (id, file_path) VALUES (1, 'src/commands/hotspots.rs')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_files (id, file_path) VALUES (2, 'tests/integration/cli_hotspots.rs')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
+             VALUES (10, 2, 20, 1)",
+            [],
+        )
+        .unwrap();
+
+        let packet = ImpactPacket {
+            head_hash: Some("new-hash".to_string()),
+            changes: vec![ChangedFile {
+                path: PathBuf::from("src/commands/hotspots.rs"),
+                ..Default::default()
+            }],
+            ..ImpactPacket::default()
+        };
+        assert_eq!(
+            classify_test_mapping_freshness(&conn, &packet),
+            MappingFreshness::HeadMismatch,
+            "precondition: lag must classify as HeadMismatch"
+        );
+        assert!(
+            should_attempt_mapping_repair(MappingFreshness::HeadMismatch, false),
+            "HeadMismatch must attempt repair under !auto_index"
+        );
+
+        // Simulate successful repair writing matching head (store_index_metadata).
+        conn.execute(
+            "UPDATE index_metadata SET value = 'new-hash' WHERE key = 'head_hash'",
+            [],
+        )
+        .unwrap();
+        assert_eq!(
+            classify_test_mapping_freshness(&conn, &packet),
+            MappingFreshness::Ok,
+            "post-repair heads must match"
+        );
+
+        let rules = Rules::default();
+        let root = camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let layout = crate::state::layout::Layout::new(&root);
+        let plan = build_plan_scoped_with_options(
+            &packet,
+            &rules,
+            &[],
+            &crate::config::model::VerifyConfig::default(),
+            &crate::platform::repository::RepositoryProfile::default(),
+            VerifyScope::Fast,
+            Some(&conn),
+            &layout,
+            false, // !auto_index — lag already repaired; gate trusts stems
+            false,
+        );
+        assert!(
+            !plan.refused,
+            "post-repair Ok + stems must ScopedOk under !auto_index; reason={:?}",
+            plan.fallback_reason
+        );
+        assert!(
+            plan.steps.iter().any(|s| s.command.contains("nextest")),
+            "ScopedOk must schedule nextest, got {:?}",
+            plan.steps
+        );
+        assert!(plan.fallback_reason.is_none());
     }
 
     #[test]
