@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-08-05
+
 ### Added
 
 - **Doctor binary currency (0137):** Inside the Ledgerful **engine** worktree,
