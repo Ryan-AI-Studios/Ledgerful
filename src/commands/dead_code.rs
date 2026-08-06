@@ -9,7 +9,28 @@ use crate::output::diagnostics::success_marker;
 use camino::Utf8PathBuf;
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
+use serde::Serialize;
 use std::path::Path;
+
+/// schemaVersion 1 machine envelope for `dead-code --json` (track 0149).
+///
+/// `findings[].factors` reuses `DeadCodeFinding` / `ConfidenceFactor` Serialize:
+/// unit variants are camelCase strings; `GitInactive` is an object
+/// `{"gitInactive":{"daysSinceLastCommit":N}}` — mixed shape is intentional.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeadCodeJsonEnvelope {
+    pub schema_version: u32,
+    pub threshold: f64,
+    pub limit: usize,
+    pub include_traits: bool,
+    pub truncated: bool,
+    pub finding_count: usize,
+    pub findings: Vec<DeadCodeFinding>,
+    pub heuristic_note: String,
+}
+
+const DEAD_CODE_HEURISTIC_NOTE: &str = "Heuristic evidence — not proof of dead code. Factors include reachability, git activity, and test coverage.";
 
 /// Trait abstracting an interactive confirmation prompt so tests can inject
 /// deterministic answers without relying on real TTY input.
@@ -61,6 +82,7 @@ pub fn execute_dead_code(
     prune: bool,
     expand: bool,
     explain: Option<String>,
+    json: bool,
 ) -> Result<()> {
     execute_dead_code_with_prompt(
         threshold,
@@ -70,6 +92,7 @@ pub fn execute_dead_code(
         prune,
         expand,
         explain,
+        json,
         &InquireConfirm,
     )
 }
@@ -85,8 +108,21 @@ pub fn execute_dead_code_with_prompt(
     prune: bool,
     expand: bool,
     explain: Option<String>,
+    json: bool,
     prompt: &dyn ConfirmPrompt,
 ) -> Result<()> {
+    // Early rejects (before storage/scan) — interactive combos have no JSON schema.
+    if json && prune {
+        return Err(miette::miette!(
+            "dead-code --json cannot be combined with --prune"
+        ));
+    }
+    if json && explain.is_some() {
+        return Err(miette::miette!(
+            "dead-code --json cannot be combined with --explain"
+        ));
+    }
+
     let layout = get_layout()?;
     let mut config = load_ledger_config(&layout)?;
     let threshold_days = config.index.stale_threshold_days;
@@ -105,7 +141,8 @@ pub fn execute_dead_code_with_prompt(
         storage
     } else {
         let storage = crate::state::storage::StorageManager::open_read_only(&layout)?;
-        if explain.is_none() {
+        // Under --json, no [STALE] banner on stderr (machine purity).
+        if explain.is_none() && !json {
             let _ = warn_if_stale(&storage, threshold_days);
         }
         storage
@@ -125,6 +162,7 @@ pub fn execute_dead_code_with_prompt(
     // only scores symbols for the requested file. Path normalization and
     // fallback matching is handled inside `explain_file` / `get_symbols_for_file`
     // so the command layer can pass the raw user input through.
+    // (`--json --explain` is rejected above; this path is human-only.)
     if let Some(file_path) = explain {
         let target = Path::new(&file_path);
 
@@ -152,6 +190,32 @@ pub fn execute_dead_code_with_prompt(
         }
 
         crate::output::human::print_dead_code_explanation_struct(&explanation);
+        return Ok(());
+    }
+
+    if json {
+        scorer.precompute()?;
+        // Honest truncation: scan_repo short-circuits at its arg, so overfetch
+        // limit+1 and compare length (cannot infer from len == limit alone).
+        let scan_cap = limit.saturating_add(1).max(1);
+        let mut all_findings = scorer.scan_repo(scan_cap)?;
+        all_findings.sort();
+        let truncated = all_findings.len() > limit;
+        if all_findings.len() > limit {
+            all_findings.truncate(limit);
+        }
+        let envelope = DeadCodeJsonEnvelope {
+            schema_version: 1,
+            threshold,
+            limit,
+            include_traits,
+            truncated,
+            finding_count: all_findings.len(),
+            findings: all_findings,
+            heuristic_note: DEAD_CODE_HEURISTIC_NOTE.to_string(),
+        };
+        let output = serde_json::to_string_pretty(&envelope).into_diagnostic()?;
+        println!("{output}");
         return Ok(());
     }
 
@@ -514,5 +578,147 @@ mod tests {
 
         assert!(remove_line_range(&file, 2, 1).is_err());
         assert!(remove_line_range(&file, 5, 5).is_err());
+    }
+
+    #[test]
+    fn empty_json_envelope_is_parseable_schema_version_1() {
+        let envelope = DeadCodeJsonEnvelope {
+            schema_version: 1,
+            threshold: 0.75,
+            limit: 50,
+            include_traits: false,
+            truncated: false,
+            finding_count: 0,
+            findings: vec![],
+            heuristic_note: DEAD_CODE_HEURISTIC_NOTE.to_string(),
+        };
+        let text = serde_json::to_string_pretty(&envelope).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&text).expect("parse");
+        assert_eq!(v["schemaVersion"], 1);
+        assert_eq!(v["findingCount"], 0);
+        assert_eq!(v["truncated"], false);
+        assert!(v["findings"].as_array().expect("array").is_empty());
+        assert!(v["heuristicNote"].as_str().is_some_and(|s| !s.is_empty()));
+    }
+
+    #[test]
+    fn truncated_flag_from_overfetch_honesty() {
+        // scan_repo short-circuits at its arg — honest truncated requires
+        // overfetch (limit+1) then len > limit (C2).
+        let limit = 2usize;
+        let overfetch_len = 3usize; // would come from scan_repo(limit + 1)
+        let truncated = overfetch_len > limit;
+        let finding_count = overfetch_len.min(limit);
+        assert!(truncated);
+        assert_eq!(finding_count, 2);
+
+        let findings: Vec<DeadCodeFinding> = (0..finding_count)
+            .map(|i| DeadCodeFinding {
+                symbol_name: format!("s{i}"),
+                file_path: std::path::PathBuf::from(format!("src/f{i}.rs")),
+                confidence: 0.9 - (i as f64 * 0.01),
+                factors: vec![],
+                recommendation: "review".into(),
+                line_start: Some(1),
+                line_end: Some(2),
+            })
+            .collect();
+        let envelope = DeadCodeJsonEnvelope {
+            schema_version: 1,
+            threshold: 0.75,
+            limit,
+            include_traits: false,
+            truncated,
+            finding_count: findings.len(),
+            findings,
+            heuristic_note: DEAD_CODE_HEURISTIC_NOTE.to_string(),
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&envelope).unwrap()).unwrap();
+        assert_eq!(v["truncated"], true);
+        assert_eq!(v["findingCount"], 2);
+        assert_eq!(v["findings"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn mixed_factors_serde_shape_in_envelope() {
+        use crate::impact::packet::ConfidenceFactor;
+        // C3: unit factors → camelCase strings; GitInactive → nested object.
+        let findings = vec![DeadCodeFinding {
+            symbol_name: "unused".into(),
+            file_path: std::path::PathBuf::from("src/u.rs"),
+            confidence: 0.81,
+            factors: vec![
+                ConfidenceFactor::NoTestCoverage,
+                ConfidenceFactor::GitInactive {
+                    days_since_last_commit: 42,
+                },
+                ConfidenceFactor::UnreachableFromEntrypoints,
+            ],
+            recommendation: "review".into(),
+            line_start: Some(10),
+            line_end: Some(20),
+        }];
+        let envelope = DeadCodeJsonEnvelope {
+            schema_version: 1,
+            threshold: 0.75,
+            limit: 50,
+            include_traits: false,
+            truncated: false,
+            finding_count: findings.len(),
+            findings,
+            heuristic_note: DEAD_CODE_HEURISTIC_NOTE.to_string(),
+        };
+        let v: serde_json::Value =
+            serde_json::from_str(&serde_json::to_string(&envelope).unwrap()).unwrap();
+        let factors = v["findings"][0]["factors"].as_array().expect("factors");
+        assert!(
+            factors.iter().any(|f| f.as_str() == Some("noTestCoverage")),
+            "expected unit factor string, got {factors:?}"
+        );
+        assert!(
+            factors
+                .iter()
+                .any(|f| f.as_str() == Some("unreachableFromEntrypoints")),
+            "expected unit factor string, got {factors:?}"
+        );
+        let git = factors.iter().find(|f| f.get("gitInactive").is_some());
+        assert!(
+            git.is_some(),
+            "expected gitInactive object, got {factors:?}"
+        );
+        assert_eq!(git.unwrap()["gitInactive"]["daysSinceLastCommit"], 42);
+    }
+
+    #[test]
+    fn json_prune_rejected_before_storage() {
+        // Early reject must not depend on repo layout / index.
+        let err = execute_dead_code(0.75, 50, false, false, true, false, None, true)
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("--prune") || err.contains("prune"),
+            "expected prune reject, got {err}"
+        );
+    }
+
+    #[test]
+    fn json_explain_rejected_before_storage() {
+        let err = execute_dead_code(
+            0.75,
+            50,
+            false,
+            false,
+            false,
+            false,
+            Some("src/x.rs".into()),
+            true,
+        )
+        .unwrap_err()
+        .to_string();
+        assert!(
+            err.contains("--explain") || err.contains("explain"),
+            "expected explain reject, got {err}"
+        );
     }
 }

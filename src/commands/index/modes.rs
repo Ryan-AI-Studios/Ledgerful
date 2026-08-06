@@ -280,8 +280,9 @@ fn execute_main_mode(
 }
 
 /// Severity of a check-mode message.
-/// Errors always go to stderr. Info (warnings/status) go to stdout in human mode
-/// and stderr under `--json` so stdout stays pure JSON.
+/// Errors always go to stderr (including under `--json`). Info (warnings/status)
+/// go to stdout in human mode and are suppressed under `--json` so success paths
+/// have empty stderr for agents that merge streams (`2>&1 | ConvertFrom-Json`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum CheckMsgKind {
     Error,
@@ -521,9 +522,12 @@ fn decide_check_verdict(
 fn emit_check_messages(messages: &[(CheckMsgKind, String)], json: bool) {
     for (kind, msg) in messages {
         match kind {
+            // Errors always go to stderr (including under --json) so fail paths
+            // keep human diagnostics; JSON is printed first before process::exit.
             CheckMsgKind::Error => eprintln!("{msg}"),
-            // Under --json, keep stdout pure JSON: route info to stderr.
-            CheckMsgKind::Info if json => eprintln!("{msg}"),
+            // Under --json, suppress Info entirely so success paths have empty
+            // stderr (agents often merge streams with `2>&1 | ConvertFrom-Json`).
+            CheckMsgKind::Info if json => {}
             CheckMsgKind::Info => println!("{msg}"),
         }
     }
@@ -556,7 +560,7 @@ fn execute_check_mode(indexer: &mut ProjectIndexer, args: &IndexArgs) -> Result<
     if args.json {
         let output = serde_json::to_string_pretty(&status).into_diagnostic()?;
         println!("{output}");
-        // Messages on stderr only — stdout is the JSON payload.
+        // Info suppressed under --json; Error still on stderr. JSON already on stdout.
         emit_check_messages(&verdict.messages, true);
     } else {
         emit_check_messages(&verdict.messages, false);

@@ -65,13 +65,18 @@ fn test_index_check_json_is_pure() {
     });
     assert!(index_result.is_ok(), "index must succeed: {index_result:?}");
 
-    let (stdout, _stderr, code) = run_cli(tmp.path(), &["index", "--check", "--json"]);
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["index", "--check", "--json"]);
     assert_eq!(code, 0, "check --json must exit 0; stdout={stdout}");
     // Assert by parsing the *entire* stdout — absence greps pass on empty output.
     let parsed: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
         panic!("DoD-3: entire stdout must parse as JSON: {e}; stdout={stdout}");
     });
     assert!(parsed.is_object(), "expected JSON object, got {parsed}");
+    // 0149 DoD-4: success path must not print human Info on stderr.
+    assert!(
+        stderr.trim().is_empty(),
+        "index --check --json success must have empty stderr, got: {stderr:?}"
+    );
 }
 
 /// DoD-2: `index --check --strict` on a stale index prints reason on stderr and exits 1.

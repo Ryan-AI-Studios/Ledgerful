@@ -8,7 +8,41 @@ This document is the machine-facing contract for non-interactive consumers
 names which flags select which streams and documents the versioned JSON
 payloads.
 
-**Track:** 0093-AgentCliOutputContract.
+**Track:** 0093-AgentCliOutputContract; extended by **0136** (search envelope),
+**0149** (uniform machine JSON: top-level `status`, `dead-code`, index-check
+purity, scan incomplete-flag tips).
+
+---
+
+## Agent-relevant inventory (`--json` purity)
+
+High-traffic surfaces agents parse. **Pure success** means stdout is the
+machine payload only and **stderr is empty** on the happy path (no human Info
+banners, spinners, or SUCCESS lines). Fail paths may still print diagnostics
+on stderr.
+
+| Command | Has `--json` | Pure success stderr | Notes |
+|---|---|---|---|
+| `doctor --json` | yes | yes | schemaVersion 1 findings |
+| `change-context --json` | yes | yes | impact-shaped packet |
+| `ledger status --json` | yes | yes | schemaVersion 1 |
+| `status --json` | yes (0149) | yes | **same payload** as `ledger status --json` |
+| `search --json` | yes | yes | 0136 envelope; empty results OK |
+| `verify --json` | yes | yes* | plan-execution payload; see rejected combos |
+| `index --check --json` | yes | yes (0149) | Info suppressed under json; Error still on stderr |
+| `dead-code --json` | yes (0149) | yes | schemaVersion 1 envelope; see rejected combos |
+| `hotspots --json` | yes | yes | |
+| `endpoints --json` | yes | yes | |
+| `scan --impact --json` | yes | yes | impact packet |
+| `scan --json` alone | incomplete | n/a | exit 1; requires `--impact` (or PR `--format json`) |
+| `scan --pr <range> --format json` | via `--format` | yes | PR-range machine output (not impact packet) |
+
+\* Non-essential progress INFO suppressed under machine mode; hard failures still
+use stderr.
+
+**Caveat:** `--auto-index` on any surface may print human progress on stderr when
+an index refresh actually runs (ambient `try_auto_index` path). Prefer a fresh
+index, or parse **stdout only** (not `2>&1`) when combining `--json --auto-index`.
 
 ---
 
@@ -80,6 +114,23 @@ These reject rather than emit empty stdout under machine mode.
 
 Apply is always a human path (rewrites `.git/hooks` under opt-in). Detect-only
 `doctor --json` remains pure schema-v1 findings JSON.
+
+### Rejected flag combinations (`dead-code --json`)
+
+| Combo | Error |
+|---|---|
+| `dead-code --json --prune` | `dead-code --json cannot be combined with --prune` |
+| `dead-code --json --explain …` | `dead-code --json cannot be combined with --explain` |
+
+Interactive prune and human explain have no machine schema (explain types lack
+`Serialize`). Rejects run **before** storage/scan.
+
+### Incomplete flags (`scan`)
+
+| Combo | Behavior |
+|---|---|
+| `scan --json` / `--summary` / `--out` without `--impact` | exit **1**; message names `--impact (impact packet)` and tips `scan --pr <range> --format json` for PR-range machine output |
+| `scan --json` auto-implies `--impact` | **Not supported** — impact analysis is expensive; pass `--impact` explicitly |
 
 ---
 
@@ -203,7 +254,11 @@ ledgerful verify --json --quiet   # quiet is redundant for agents; machine mode 
 
 ---
 
-## `ledger status --json` schema (v1)
+## `ledger status --json` / top-level `status --json` schema (v1)
+
+Top-level `status --json` (track **0149**) routes into the **same**
+`execute_ledger_status` path as `ledger status --json` — identical field set,
+no second DTO. Help text: ledger pending/drift status (same as `ledger status`).
 
 ```json
 {
@@ -225,6 +280,78 @@ ledgerful verify --json --quiet   # quiet is redundant for agents; machine mode 
 
 Observe-mode would-block diagnostics go to **stderr** via `cli_summary`
 `warn!`. Stdout remains parseable JSON alone.
+
+### Invocation
+
+```powershell
+ledgerful status --json
+ledgerful ledger status --json   # same payload
+```
+
+---
+
+## `dead-code --json` schema (v1)
+
+Track **0149**. Single camelCase object on stdout. Spinners, human tables,
+SUCCESS lines, and stale-index banners are off under `--json`.
+
+```json
+{
+  "schemaVersion": 1,
+  "threshold": 0.75,
+  "limit": 50,
+  "includeTraits": false,
+  "truncated": false,
+  "findingCount": 1,
+  "findings": [
+    {
+      "symbolName": "unused",
+      "filePath": "src/u.rs",
+      "confidence": 0.81,
+      "factors": [
+        "noTestCoverage",
+        { "gitInactive": { "daysSinceLastCommit": 42 } }
+      ],
+      "recommendation": "…",
+      "lineStart": 10,
+      "lineEnd": 20
+    }
+  ],
+  "heuristicNote": "Heuristic evidence — not proof of dead code. Factors include reachability, git activity, and test coverage."
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `schemaVersion` | number | Always **1** |
+| `threshold` / `limit` / `includeTraits` | echo of CLI flags | |
+| `truncated` | bool | **Honest overfetch:** `scan_repo(limit + 1)` then `truncated = len > limit`; display cap is `limit` |
+| `findingCount` | number | `findings.len()` after cap |
+| `findings` | array | Sorted confidence desc; reuses `DeadCodeFinding` Serialize |
+| `findings[].factors` | **mixed shape** | Unit variants serialize as **camelCase strings** (`"noTestCoverage"`, `"unreachableFromEntrypoints"`); `GitInactive` is an object `{"gitInactive":{"daysSinceLastCommit":N}}`. **Do not** flatten to string-only |
+| `heuristicNote` | string | Always present; findings are heuristic, not proof |
+
+**Empty results:** `findings: []`, `findingCount: 0`, exit **0**.
+
+### Invocation
+
+```powershell
+ledgerful dead-code --json --threshold 0.75 --limit 50
+```
+
+---
+
+## `index --check --json` purity (0149)
+
+Stdout is pretty-printed `IndexStatus` JSON. On **success**, human Info lines
+(e.g. `Index is up to date.`) are **not** emitted on stderr (0149; previously
+Info was routed to stderr under json, which broke `2>&1 | ConvertFrom-Json`).
+On **failure**, Error diagnostics still go to **stderr** (including under
+`--json`) so CI gates keep a human reason; JSON is printed first when the
+check path still emits status before `process::exit`.
+
+`assessment.state` in the JSON payload already carries Fresh/Stale — do not
+require stderr Info for machine consumers.
 
 ---
 

@@ -417,8 +417,12 @@ pub enum Commands {
         #[arg(long = "dry-run")]
         dry_run: bool,
     },
-    /// Quick status check of the project ledger and pending transactions
-    Status,
+    /// Ledger pending/drift status (same as `ledger status`)
+    Status {
+        /// Output as JSON (same payload as `ledger status --json`)
+        #[arg(long)]
+        json: bool,
+    },
     /// Configuration management
     // after_help only on Config (0100 DoD-8): clap auto-help is insufficient for
     // key=value set examples; do not spray after_help on every command group.
@@ -452,6 +456,9 @@ pub enum Commands {
         /// Explain why a specific file is flagged as dead code (per-symbol breakdown)
         #[arg(long)]
         explain: Option<String>,
+        /// Output as JSON (schemaVersion 1 envelope; rejects --prune / --explain)
+        #[arg(long)]
+        json: bool,
     },
     /// Perform a holistic project audit or history for an entity
     Audit {
@@ -783,7 +790,7 @@ impl Commands {
             Commands::Intent { .. } => false,
             Commands::Reset { .. } => false,
             Commands::Doctor { json, .. } => *json,
-            Commands::Status => false,
+            Commands::Status { json, .. } => *json,
             Commands::Timings { json, .. } => *json,
             Commands::Config { command } => match command {
                 ConfigCommands::Verify { json, .. } => *json,
@@ -793,7 +800,7 @@ impl Commands {
                 ConfigCommands::Set { .. } => false,
                 ConfigCommands::Unset { .. } => false,
             },
-            Commands::DeadCode { .. } => false,
+            Commands::DeadCode { json, .. } => *json,
             Commands::Viz { .. } => false,
             Commands::Update { .. } => false,
             Commands::Watch { json, .. } => *json,
@@ -936,7 +943,7 @@ impl Commands {
             },
             Commands::Reset { .. } => "reset",
             Commands::Doctor { .. } => "doctor",
-            Commands::Status => "status",
+            Commands::Status { .. } => "status",
             Commands::Timings { .. } => "timings",
             Commands::Config { command } => match command {
                 ConfigCommands::Verify { .. } => "config_verify",
@@ -1083,6 +1090,20 @@ mod machine_output_tests {
     fn doctor_json_is_machine_output() {
         assert!(parse(&["doctor", "--json"]).is_machine_output());
         assert!(!parse(&["doctor"]).is_machine_output());
+    }
+
+    #[test]
+    fn status_json_is_machine_output() {
+        assert!(parse(&["status", "--json"]).is_machine_output());
+        assert!(!parse(&["status"]).is_machine_output());
+        assert_eq!(parse(&["status", "--json"]).command_name(), "status");
+    }
+
+    #[test]
+    fn dead_code_json_is_machine_output() {
+        assert!(parse(&["dead-code", "--json"]).is_machine_output());
+        assert!(!parse(&["dead-code"]).is_machine_output());
+        assert_eq!(parse(&["dead-code", "--json"]).command_name(), "dead_code");
     }
 
     #[test]
@@ -1687,6 +1708,7 @@ impl Commands {
                 prune,
                 expand,
                 explain,
+                json,
             } => {
                 if (*threshold - 0.75).abs() > f64::EPSILON {
                     f.push("threshold");
@@ -1708,6 +1730,9 @@ impl Commands {
                 }
                 if explain.is_some() {
                     f.push("explain");
+                }
+                if *json {
+                    f.push("json");
                 }
             }
             Commands::Ledger { command } => match command {
@@ -2116,7 +2141,11 @@ impl Commands {
                     f.push("dry-run");
                 }
             }
-            Commands::Status => {}
+            Commands::Status { json } => {
+                if *json {
+                    f.push("json");
+                }
+            }
             Commands::Gate { command } => match command {
                 // `mode` is a positional optional value, not a long flag.
                 GateCommands::Mode { .. } => {}

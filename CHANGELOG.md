@@ -6,8 +6,27 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Uniform machine JSON mode (0149):** Agent-relevant CLI gaps closed for pure
+  `--json` parsing (`ConvertFrom-Json` / whole-stdout):
+  - **`status --json`** — top-level flag; same payload as `ledger status --json`
+    (single `execute_ledger_status` path).
+  - **`dead-code --json`** — schemaVersion 1 envelope (`findings[]`, honest
+    `truncated` via overfetch, mixed `factors[]` shape); rejects
+    `--json --prune` and `--json --explain` early; no spinners/stale banner.
+  - **`index --check --json`** — success path stderr empty (Info suppressed;
+    Error still on stderr).
+  - **`scan --json`** without `--impact` — clearer error naming impact packet
+    and PR-range tip (`scan --pr <range> --format json`).
+  - Contract inventory + schemas: `docs/agent-output-contract.md`.
+
 ### Changed
 
+- **`ConfidenceFactor::GitInactive` wire field (0149):** nested days field
+  serializes as `daysSinceLastCommit` (camelCase) so mixed `factors[]` matches
+  unit-factor camelCase strings. Affects `dead-code --json` and any
+  `deadCodeFindings[].factors` surfaces that reuse the type.
 - **Verify step-start progress + compact elapsed (0148):** Human `verify`
   prints greppable `[i/n] Running: <cmd>` before each step and, on the default
   (non-verbose) path, compact `[i/n] ok  <cmd>  (2.2s)` after each pass.
