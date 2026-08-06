@@ -90,11 +90,13 @@ Installed pre-push shells call `ledgerful verify --scope fast` **without**
 
 | Outcome | Default (non-verbose) stdout |
 |---|---|
-| **Pass** | One trailing `Verification passed` line; **no** per-step `SUCCESS` lines, **no** plan banner, **no** Suggested Actions |
-| **Fail** | Per-step `FAILURE` lines → structured fail block → Suggested Actions (if any) → miette on stderr; exit non-zero |
+| **Pass** | Per-step `[i/n] Running:` + compact `ok` + elapsed; trailing `Verification passed`; **no** SUCCESS banner / plan banner / Suggested Actions |
+| **Fail** | Per-step `[i/n] Running:` → `FAILURE` lines → structured fail block → Suggested Actions (if any) → miette on stderr; exit non-zero |
 
-`--verbose` / `-v` restores plan banner, per-step SUCCESS, progress `info!`, and
-Suggested Actions on green.
+`--verbose` / `-v` restores plan banner, per-step SUCCESS (as-is, no compact ok
+elapsed), aggregate “Running N step(s)…” progress `info!`, and Suggested Actions
+on green. Step-start `[i/n] Running:` still emits under verbose. `--json`
+never emits step-start / compact ok (pure schema + existing `durationMs`).
 
 ### Structured fail block (stdout, non-json fail)
 

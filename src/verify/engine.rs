@@ -2,6 +2,9 @@ use crate::config::model::Config;
 use crate::exec::ExecutionResult;
 use crate::impact::packet::ImpactPacket;
 use crate::output::human::print_verify_result;
+use crate::output::verification::{
+    format_verify_step_ok, format_verify_step_start, should_emit_verify_step_progress,
+};
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use crate::verify::plan::{VerificationPlan, VerificationStep};
@@ -101,13 +104,27 @@ impl VerifyEngine {
         let mut persisted_results = Vec::new();
         let mut overall_success = true;
         let policy = ctx.config.verify.effective_process_policy();
+        // Empty steps: loop body never runs — no [1/0] product lines.
+        let n = steps.len();
 
-        for step in steps {
+        for (idx, step) in steps.iter().enumerate() {
+            let i = idx + 1;
             let prepared = if manual_requested {
                 prepare_manual_step(step)
             } else {
                 prepare_rule_step(step, ctx.config.verify.allow_shell_steps, &policy)?
             };
+
+            // Product step-start progress (0148): greppable `[i/n] Running:` on
+            // human path only — never under --json. Not tracing::info! so 0154
+            // cannot strip it.
+            if should_emit_verify_step_progress(ctx.suppress_human_output) {
+                println!(
+                    "{}",
+                    format_verify_step_start(i, n, &prepared.display_command)
+                );
+            }
+
             // Progress INFO must not hit stderr under machine mode (`verify --json`)
             // or quiet (non-verbose) success path. Structural subscriber filter also
             // raises normal_layer to WARN under --json; demote here so even a
@@ -144,13 +161,27 @@ impl VerifyEngine {
             }
 
             let result = execute_step_with_command(&prepared, &policy, Some(command))?;
-            if !ctx.suppress_human_output {
-                print_verify_result(
-                    &prepared.display_command,
-                    step.timeout_secs,
-                    &result,
-                    ctx.verbose,
-                );
+
+            // Product step-done (0148 matrix):
+            // - default pass: compact ok + elapsed (no SUCCESS banner)
+            // - verbose pass: SUCCESS via print_verify_result (no compact ok)
+            // - fail (default or verbose): FAILURE via print_verify_result
+            // - json: never println
+            if should_emit_verify_step_progress(ctx.suppress_human_output) {
+                if result.exit_code == 0 && !ctx.verbose {
+                    println!(
+                        "{}",
+                        format_verify_step_ok(i, n, &prepared.display_command, result.duration)
+                    );
+                }
+                if result.exit_code != 0 || ctx.verbose {
+                    print_verify_result(
+                        &prepared.display_command,
+                        step.timeout_secs,
+                        &result,
+                        ctx.verbose,
+                    );
+                }
             }
 
             let report_result = Self::to_report_result(&prepared.display_command, &result);

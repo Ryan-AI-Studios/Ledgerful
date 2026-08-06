@@ -6,6 +6,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Verify step-start progress + compact elapsed (0148):** Human `verify`
+  prints greppable `[i/n] Running: <cmd>` before each step and, on the default
+  (non-verbose) path, compact `[i/n] ok  <cmd>  (2.2s)` after each pass.
+  Keeps 0121 quiet SUCCESS / plan banner / Suggested Actions discipline;
+  `--verbose` keeps SUCCESS as-is (no compact ok); `--json` stays pure with
+  existing `durationMs`. Contract: `docs/agent-output-contract.md`;
+  Progress UX matrix: `docs/verify-performance.md`.
+
 ### Fixed
 
 - **Empty-tree impact fast path (0147):** When `treeClean && changes` empty,
