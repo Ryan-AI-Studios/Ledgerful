@@ -284,8 +284,8 @@ pub fn run_with(cli: Cli) -> Result<()> {
             apply_hook_refresh,
             dry_run,
         } => crate::commands::doctor::execute_doctor(json, apply_hook_refresh, dry_run),
-        Commands::Status => crate::commands::ledger::execute_ledger_status(
-            None, false, false, false, false, false, false, None, false, false, false, false,
+        Commands::Status { json } => crate::commands::ledger::execute_ledger_status(
+            None, false, false, false, json, false, false, None, false, false, false, false,
         ),
         Commands::Config { command } => dispatch_config(command, cli.verbose),
         Commands::DeadCode {
@@ -296,6 +296,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
             prune,
             expand,
             explain,
+            json,
         } => crate::commands::dead_code::execute_dead_code(
             threshold,
             limit,
@@ -304,6 +305,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
             prune,
             expand,
             explain,
+            json,
         ),
         Commands::Viz {
             output,

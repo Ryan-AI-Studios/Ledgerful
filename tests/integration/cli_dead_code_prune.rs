@@ -41,7 +41,7 @@ fn test_prune_removes_lines_and_records_pending_transaction() {
     write_dead_code_config(root_utf8);
 
     let result =
-        execute_dead_code_with_prompt(0.75, 50, false, false, true, false, None, &AlwaysYes);
+        execute_dead_code_with_prompt(0.75, 50, false, false, true, false, None, false, &AlwaysYes);
     assert!(result.is_ok(), "prune command failed: {result:?}");
 
     let content = std::fs::read_to_string(&file).unwrap();

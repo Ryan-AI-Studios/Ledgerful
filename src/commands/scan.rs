@@ -378,7 +378,7 @@ fn validate_scan_args(
 
     if pr.is_none() && !impact && (summary || json || out.is_some()) {
         return Err(miette::miette!(
-            "--summary, --json and --out require --impact"
+            "--summary, --json and --out require --impact (impact packet). For PR-range machine output: scan --pr <range> --format json"
         ));
     }
 
@@ -1063,6 +1063,23 @@ mod tests {
         assert!(
             pr_err.contains("--pr") || pr_err.contains("impact"),
             "expected pr rejection, got {pr_err}"
+        );
+    }
+
+    #[test]
+    fn incomplete_json_flags_name_impact_and_pr_format_tip() {
+        // 0149: scan --json without --impact should tip impact packet + PR format.
+        let err = validate_scan_args(&None, &None, &None, false, false, true, &None)
+            .unwrap_err()
+            .to_string();
+        assert!(err.contains("--impact"), "expected --impact tip, got {err}");
+        assert!(
+            err.contains("--format json") || err.contains("scan --pr"),
+            "expected PR-range format tip, got {err}"
+        );
+        assert!(
+            validate_scan_args(&None, &None, &None, true, false, true, &None).is_ok(),
+            "json with impact must be allowed"
         );
     }
 }

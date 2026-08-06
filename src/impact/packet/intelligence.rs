@@ -103,7 +103,12 @@ pub struct KGImpact {
 #[serde(rename_all = "camelCase")]
 pub enum ConfidenceFactor {
     UnreachableFromEntrypoints,
-    GitInactive { days_since_last_commit: u32 },
+    /// Nested field is camelCase on the wire (`daysSinceLastCommit`) so agent
+    /// JSON matches unit-factor camelCase strings (0149 contract).
+    GitInactive {
+        #[serde(rename = "daysSinceLastCommit")]
+        days_since_last_commit: u32,
+    },
     NoTestCoverage,
 }
 
