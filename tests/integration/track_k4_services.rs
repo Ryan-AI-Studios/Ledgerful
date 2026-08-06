@@ -87,7 +87,7 @@ fn test_monorepo_service_impact() {
     )
     .unwrap();
 
-    let packet = ledgerful::commands::impact::execute_impact_silent().unwrap();
+    let (packet, _write_outcome) = ledgerful::commands::impact::execute_impact_silent().unwrap();
     let storage = ledgerful::state::storage::StorageManager::init(
         root.join(".ledgerful/state/ledger.db").as_path(),
     )

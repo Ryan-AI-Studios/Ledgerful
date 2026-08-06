@@ -148,6 +148,14 @@ impl ImpactOrchestrator {
     ) -> Result<()> {
         debug!("Starting impact orchestration...");
 
+        // 0147: empty-tree fast path — no AI probe, no providers, no analysis registry.
+        // Callers with zero structural seeds (clean tree or empty base-ref) get honest
+        // low-risk defaults without O(repo) enrichment (federation walk, hotspots, …).
+        if packet.tree_clean && packet.changes.is_empty() {
+            apply_empty_tree_impact_defaults(packet);
+            return Ok(());
+        }
+
         // Annotate AI enrichment availability up front so the output always shows
         // whether AI-driven enrichment (semantic / embedding / knowledge) was
         // skipped. This keeps the impact command deterministic and non-fatal when
@@ -234,6 +242,22 @@ impl ImpactOrchestrator {
         }
 
         Ok(())
+    }
+}
+
+/// Apply empty-tree impact defaults when there are no structural seeds.
+///
+/// Only meaningful when `tree_clean && changes.is_empty()`; no-ops otherwise.
+/// Matches the empty risk copy in [`ImpactPacket::finalize_risk_level`] so
+/// empty packets stay agent-honest without running the analysis registry.
+/// Does **not** add federation / Cross-repo analysis warnings.
+pub(crate) fn apply_empty_tree_impact_defaults(packet: &mut ImpactPacket) {
+    if !(packet.tree_clean && packet.changes.is_empty()) {
+        return;
+    }
+    packet.risk_level = crate::impact::packet::RiskLevel::Low;
+    if packet.risk_reasons.is_empty() {
+        packet.risk_reasons.push("No changes detected".to_string());
     }
 }
 
@@ -508,6 +532,174 @@ mod tests {
             "expected a backstop-timeout annotation in {:?}",
             packet.analysis_warnings
         );
+    }
+
+    /// 0147 B1: empty tree_clean + empty changes short-circuits before any
+    /// enrichment provider (spy panics if called) and before AI probe.
+    #[test]
+    #[serial_test::serial(env)]
+    fn test_empty_tree_short_circuit_skips_providers_and_ai_probe() {
+        use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
+        use crate::impact::packet::RiskLevel;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let called = Arc::new(AtomicBool::new(false));
+        struct FlagSpy {
+            called: Arc<AtomicBool>,
+        }
+        impl EnrichmentProvider for FlagSpy {
+            fn name(&self) -> &'static str {
+                "FlagSpy"
+            }
+            fn enrich(
+                &self,
+                _context: &EnrichmentContext,
+                _packet: &mut ImpactPacket,
+            ) -> Result<()> {
+                self.called.store(true, Ordering::SeqCst);
+                panic!("FlagSpy must not be called on empty-tree short-circuit");
+            }
+        }
+
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::state::migrations::get_migrations()
+            .to_latest(&mut conn)
+            .unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        // Unreachable model would normally annotate AI skip — short-circuit must
+        // not run the probe either.
+        let _no_net = TempEnv::remove(crate::util::network::NO_NETWORK_ENV);
+        let mut config = Config::default();
+        config.local_model.base_url = "http://127.0.0.1:1".to_string();
+        let temp = tempfile::tempdir().unwrap();
+
+        let mut packet = ImpactPacket {
+            tree_clean: true,
+            changes: Vec::new(),
+            head_hash: Some("abc123".to_string()),
+            ..ImpactPacket::default()
+        };
+
+        crate::util::network::reset_reachability_probe_call_count();
+        let probe_before = crate::util::network::reachability_probe_call_count();
+
+        let mut orchestrator = ImpactOrchestrator::new();
+        orchestrator.register_enrichment_provider(Box::new(FlagSpy {
+            called: Arc::clone(&called),
+        }));
+
+        orchestrator
+            .run(&mut packet, &storage, &config, temp.path())
+            .expect("empty-tree short-circuit should return Ok");
+
+        let probe_after = crate::util::network::reachability_probe_call_count();
+        assert_eq!(
+            probe_before, probe_after,
+            "AI reachability probe must not run on empty-tree short-circuit"
+        );
+        assert!(
+            !called.load(Ordering::SeqCst),
+            "enrichment provider must not be called on empty-tree short-circuit"
+        );
+        assert_eq!(packet.risk_level, RiskLevel::Low);
+        assert!(
+            packet
+                .risk_reasons
+                .iter()
+                .any(|r| r == "No changes detected"),
+            "expected 'No changes detected', got {:?}",
+            packet.risk_reasons
+        );
+        assert!(
+            packet.analysis_warnings.is_empty(),
+            "empty path must not emit federation/AI warnings, got {:?}",
+            packet.analysis_warnings
+        );
+    }
+
+    /// 0147 B5: dirty path still enters enrichment providers.
+    #[test]
+    fn test_dirty_path_still_runs_providers() {
+        use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let called = Arc::new(AtomicBool::new(false));
+        struct FlagSpy {
+            called: Arc<AtomicBool>,
+        }
+        impl EnrichmentProvider for FlagSpy {
+            fn name(&self) -> &'static str {
+                "FlagSpy"
+            }
+            fn enrich(
+                &self,
+                _context: &EnrichmentContext,
+                _packet: &mut ImpactPacket,
+            ) -> Result<()> {
+                self.called.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::state::migrations::get_migrations()
+            .to_latest(&mut conn)
+            .unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        let config = Config::default();
+        let temp = tempfile::tempdir().unwrap();
+
+        let mut packet = ImpactPacket {
+            tree_clean: false,
+            changes: vec![ChangedFile {
+                path: std::path::PathBuf::from("src/lib.rs"),
+                status: "Modified".to_string(),
+                ..ChangedFile::default()
+            }],
+            ..ImpactPacket::default()
+        };
+
+        let mut orchestrator = ImpactOrchestrator::new();
+        orchestrator.register_enrichment_provider(Box::new(FlagSpy {
+            called: Arc::clone(&called),
+        }));
+
+        orchestrator
+            .run(&mut packet, &storage, &config, temp.path())
+            .expect("dirty-path orchestrator run should return Ok");
+
+        assert!(
+            called.load(Ordering::SeqCst),
+            "enrichment provider must be called when changes are non-empty"
+        );
+    }
+
+    #[test]
+    fn test_apply_empty_tree_impact_defaults() {
+        use crate::impact::packet::RiskLevel;
+
+        let mut packet = ImpactPacket {
+            tree_clean: true,
+            changes: Vec::new(),
+            risk_level: RiskLevel::Medium,
+            risk_reasons: Vec::new(),
+            ..ImpactPacket::default()
+        };
+        apply_empty_tree_impact_defaults(&mut packet);
+        assert_eq!(packet.risk_level, RiskLevel::Low);
+        assert_eq!(packet.risk_reasons, vec!["No changes detected".to_string()]);
+
+        // No-op when not empty-tree.
+        let mut dirty = ImpactPacket {
+            tree_clean: false,
+            changes: Vec::new(),
+            risk_level: RiskLevel::Medium,
+            risk_reasons: Vec::new(),
+            ..ImpactPacket::default()
+        };
+        apply_empty_tree_impact_defaults(&mut dirty);
+        assert_eq!(dirty.risk_level, RiskLevel::Medium);
+        assert!(dirty.risk_reasons.is_empty());
     }
 
     #[test]
