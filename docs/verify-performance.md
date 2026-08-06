@@ -108,6 +108,30 @@ not wired into verify's command generation.
 `RUSTFLAGS="-C link-arg=-fuse-ld=lld"` or a `config.toml` linker setting. This
 is optional and not part of the verify plan.
 
+## Progress UX (0148)
+
+Human `ledgerful verify` shows which plan step is active while multi-second
+children run. Machine `--json` stays pure (no product progress lines; timings
+already live in `steps[].durationMs`).
+
+| Line | Default | Verbose | JSON |
+|---|---|---|---|
+| Aggregate “Running N step(s)…” | demoted `debug!` | keep (INFO) | skip |
+| `[i/n] Running: <cmd>` | yes | yes | no |
+| compact `ok (2.2s)` | yes | **no** | no |
+| SUCCESS banner | no | yes (as-is) | no |
+| FAILURE | yes | yes | no |
+
+LiveEmpty / EmptyChanges walls of tens of seconds under `--scope fast` are
+**real work** (fmt + clippy on a clean tree), not hangs — progress lines prove
+the step is alive. See the [fast-or-refuse class table](#fast-or-refuse-class-table-never-surprise-full-hang).
+
+**Stdout rationale:** step-start and compact ok go on **stdout** (not stderr) so
+pre-push / agent combined-stream logs (`2>&1`) keep progress greppable next to
+the trailing `Verification passed`. This is a deliberate departure from
+clig.dev’s “messaging on stderr” guidance; do not “fix” progress to stderr
+without revisiting hook log UX.
+
 ## Why `--scope fast` does not parallelize fmt with clippy
 
 The fast path runs `cargo fmt --all -- --check` (read-only) sequentially before

@@ -161,14 +161,57 @@ pub fn should_print_success_step(verbose: bool) -> bool {
     verbose
 }
 
-/// Whether the "Running N verification step(s)..." progress line may be emitted
-/// at INFO on `cli_summary` (default filter → stdout).
+/// Whether the aggregate "Running N verification step(s)..." progress banner may
+/// be emitted at INFO on `cli_summary` (default filter → stdout).
 ///
-/// Quiet/default demotes to `debug!` so DoD-1 quiet success stays free of
-/// progress noise; `--verbose` restores INFO. JSON / machine mode never uses
-/// INFO progress (caller also skips emission entirely when `json`).
+/// This gate covers **only** the aggregate banner under `--verbose`. Per-step
+/// product progress (`[i/n] Running:` / compact ok) is separate — see
+/// [`should_emit_verify_step_progress`] — and is emitted via `println!` on the
+/// human path (including default non-verbose), not via tracing INFO.
+///
+/// Quiet/default demotes the **banner** to `debug!`; `--verbose` restores INFO.
+/// JSON / machine mode never uses INFO progress (caller also skips emission
+/// entirely when `json`). Do **not** remove the aggregate banner under verbose.
 pub fn should_emit_verify_progress_info(verbose: bool, json: bool) -> bool {
     verbose && !json
+}
+
+/// Whether per-step product progress lines (`[i/n] Running:` / compact ok) may
+/// be printed on stdout.
+///
+/// True whenever human output is not suppressed (i.e. not `--json`). Independent
+/// of `verbose` — default and verbose both emit step-start; compact ok is
+/// default-only (see engine loop).
+pub fn should_emit_verify_step_progress(suppress_human_output: bool) -> bool {
+    !suppress_human_output
+}
+
+/// Format a greppable step-start product line (no leading newline).
+///
+/// Example: `"[1/2] Running: cargo fmt --all -- --check"`.
+pub fn format_verify_step_start(i: usize, n: usize, command: &str) -> String {
+    format!("[{i}/{n}] Running: {command}")
+}
+
+/// Compact elapsed for step-done lines.
+///
+/// - `ms >= 1000` → tenths of a second (`1.0s`, `2.2s`) via `as_secs_f64`
+/// - else → whole milliseconds (`999ms`, `340ms`)
+pub fn format_duration_compact(d: std::time::Duration) -> String {
+    let ms = d.as_millis();
+    if ms >= 1000 {
+        format!("{:.1}s", d.as_secs_f64())
+    } else {
+        format!("{ms}ms")
+    }
+}
+
+/// Format a compact default-path step-done line (no leading newline).
+///
+/// Example: `"[1/2] ok  cargo fmt --all -- --check  (2.2s)"` — double space
+/// after `ok`, then command, then double space before elapsed.
+pub fn format_verify_step_ok(i: usize, n: usize, command: &str, d: std::time::Duration) -> String {
+    format!("[{i}/{n}] ok  {command}  ({})", format_duration_compact(d))
 }
 
 /// Label for a per-step verify result line, or `None` when quiet SUCCESS.
@@ -350,11 +393,13 @@ impl VerificationReporter {
 #[cfg(test)]
 mod tests {
     use super::{
-        DRY_RUN_PRED_PATH_DEFAULT, format_dry_run_human, parse_predicted_impacts,
-        should_emit_verify_progress_info, should_print_success_step,
-        should_print_suggested_actions, verify_step_result_label,
+        DRY_RUN_PRED_PATH_DEFAULT, format_dry_run_human, format_duration_compact,
+        format_verify_step_ok, format_verify_step_start, parse_predicted_impacts,
+        should_emit_verify_progress_info, should_emit_verify_step_progress,
+        should_print_success_step, should_print_suggested_actions, verify_step_result_label,
     };
     use crate::verify::plan::VerificationStep;
+    use std::time::Duration;
 
     fn step(command: &str, description: &str) -> VerificationStep {
         VerificationStep {
@@ -403,11 +448,66 @@ mod tests {
 
     #[test]
     fn quiet_progress_not_emitted_at_info() {
-        // DoD-1: default/quiet path must not emit progress at INFO → stdout.
+        // Aggregate banner: default/quiet path must not emit at INFO → stdout.
+        // Per-step product progress is separate (`should_emit_verify_step_progress`).
         assert!(!should_emit_verify_progress_info(false, false));
         assert!(!should_emit_verify_progress_info(false, true));
         assert!(!should_emit_verify_progress_info(true, true));
         assert!(should_emit_verify_progress_info(true, false));
+    }
+
+    #[test]
+    fn format_verify_step_start_exact_prefix_no_leading_newline() {
+        let s = format_verify_step_start(1, 2, "cargo fmt --all -- --check");
+        assert!(
+            s.starts_with("[1/2] Running:"),
+            "exact prefix [i/n] Running:: {s}"
+        );
+        assert_eq!(s, "[1/2] Running: cargo fmt --all -- --check");
+        assert!(!s.starts_with('\n'), "no leading newline: {s:?}");
+    }
+
+    #[test]
+    fn format_duration_compact_999ms() {
+        assert_eq!(format_duration_compact(Duration::from_millis(999)), "999ms");
+    }
+
+    #[test]
+    fn format_duration_compact_1000ms() {
+        assert_eq!(format_duration_compact(Duration::from_millis(1000)), "1.0s");
+    }
+
+    #[test]
+    fn format_duration_compact_2200ms() {
+        assert_eq!(format_duration_compact(Duration::from_millis(2200)), "2.2s");
+    }
+
+    #[test]
+    fn format_verify_step_ok_contains_elapsed_no_leading_newline() {
+        let s = format_verify_step_ok(
+            1,
+            2,
+            "cargo fmt --all -- --check",
+            Duration::from_millis(2200),
+        );
+        assert_eq!(s, "[1/2] ok  cargo fmt --all -- --check  (2.2s)");
+        assert!(s.contains("(2.2s)"), "contains elapsed: {s}");
+        assert!(!s.starts_with('\n'), "no leading newline: {s:?}");
+        // Double space after "ok" is intentional (locked format).
+        assert!(s.contains("ok  cargo"), "double-space after ok: {s}");
+    }
+
+    #[test]
+    fn should_emit_verify_step_progress_respects_suppress() {
+        assert!(!should_emit_verify_step_progress(true));
+        assert!(should_emit_verify_step_progress(false));
+    }
+
+    #[test]
+    fn should_print_success_step_quiet_gate_unchanged() {
+        // 0121 / 0148: SUCCESS banner remains verbose-only.
+        assert!(!should_print_success_step(false));
+        assert!(should_print_success_step(true));
     }
 
     #[test]
