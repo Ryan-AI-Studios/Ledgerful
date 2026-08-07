@@ -138,6 +138,237 @@ mod tests {
     }
 
     #[test]
+    fn alias_config_show_parses_as_view() {
+        let cli = Cli::try_parse_from(["ledgerful", "config", "show"]).unwrap();
+        match cli.command {
+            Commands::Config { command } => match command {
+                ConfigCommands::View { .. } => {}
+                other => panic!("expected ConfigCommands::View, got {other:?}"),
+            },
+            _ => panic!("expected Config command"),
+        }
+    }
+
+    #[test]
+    fn primary_config_view_still_parses() {
+        let cli = Cli::try_parse_from(["ledgerful", "config", "view"]).unwrap();
+        match cli.command {
+            Commands::Config { command } => match command {
+                ConfigCommands::View { .. } => {}
+                other => panic!("expected ConfigCommands::View, got {other:?}"),
+            },
+            _ => panic!("expected Config command"),
+        }
+    }
+
+    #[test]
+    fn alias_policy_evaluate_parses_as_check() {
+        let cli = Cli::try_parse_from(["ledgerful", "policy", "evaluate"]).unwrap();
+        match cli.command {
+            Commands::Policy { command } => {
+                let PolicyCommands::Check { .. } = command;
+            }
+            _ => panic!("expected Policy command"),
+        }
+    }
+
+    #[test]
+    fn primary_policy_check_still_parses() {
+        let cli = Cli::try_parse_from(["ledgerful", "policy", "check"]).unwrap();
+        match cli.command {
+            Commands::Policy { command } => {
+                let PolicyCommands::Check { .. } = command;
+            }
+            _ => panic!("expected Policy command"),
+        }
+    }
+
+    #[test]
+    fn alias_gate_status_parses_as_mode_not_top_level_status() {
+        let cli = Cli::try_parse_from(["ledgerful", "gate", "status"]).unwrap();
+        match cli.command {
+            Commands::Gate { command } => {
+                let GateCommands::Mode { mode, .. } = command;
+                assert!(mode.is_none(), "bare gate status should not set mode");
+            }
+            Commands::Status { .. } => {
+                panic!("gate status must not parse as top-level Status")
+            }
+            _ => panic!("expected Gate command"),
+        }
+    }
+
+    #[test]
+    fn primary_gate_mode_still_parses() {
+        let cli = Cli::try_parse_from(["ledgerful", "gate", "mode"]).unwrap();
+        match cli.command {
+            Commands::Gate { command } => {
+                let GateCommands::Mode { .. } = command;
+            }
+            _ => panic!("expected Gate command"),
+        }
+    }
+
+    #[test]
+    fn alias_ledger_list_parses_as_status() {
+        let cli = Cli::try_parse_from(["ledgerful", "ledger", "list"]).unwrap();
+        match cli.command {
+            Commands::Ledger { command } => match command {
+                LedgerCommands::Status { .. } => {}
+                other => panic!("expected LedgerCommands::Status, got {other:?}"),
+            },
+            _ => panic!("expected Ledger command"),
+        }
+    }
+
+    #[test]
+    fn primary_ledger_status_still_parses() {
+        let cli = Cli::try_parse_from(["ledgerful", "ledger", "status"]).unwrap();
+        match cli.command {
+            Commands::Ledger { command } => match command {
+                LedgerCommands::Status { .. } => {}
+                other => panic!("expected LedgerCommands::Status, got {other:?}"),
+            },
+            _ => panic!("expected Ledger command"),
+        }
+    }
+
+    #[test]
+    fn alias_ledger_history_parses_as_search() {
+        let cli = Cli::try_parse_from(["ledgerful", "ledger", "history", "q"]).unwrap();
+        match cli.command {
+            Commands::Ledger { command } => match command {
+                LedgerCommands::Search { query, .. } => {
+                    assert_eq!(query, "q");
+                }
+                other => panic!("expected LedgerCommands::Search, got {other:?}"),
+            },
+            _ => panic!("expected Ledger command"),
+        }
+    }
+
+    #[test]
+    fn primary_ledger_search_still_parses() {
+        let cli = Cli::try_parse_from(["ledgerful", "ledger", "search", "q"]).unwrap();
+        match cli.command {
+            Commands::Ledger { command } => match command {
+                LedgerCommands::Search { query, .. } => {
+                    assert_eq!(query, "q");
+                }
+                other => panic!("expected LedgerCommands::Search, got {other:?}"),
+            },
+            _ => panic!("expected Ledger command"),
+        }
+    }
+
+    #[test]
+    fn ask_multi_word_unquoted_joins_query() {
+        let cli =
+            Cli::try_parse_from(["ledgerful", "ask", "what", "is", "change-context"]).unwrap();
+        match cli.command {
+            Commands::Ask {
+                query, semantic, ..
+            } => {
+                assert_eq!(query, vec!["what", "is", "change-context"]);
+                assert_eq!(query.join(" "), "what is change-context");
+                assert!(!semantic);
+            }
+            _ => panic!("expected Ask command"),
+        }
+    }
+
+    #[test]
+    fn ask_empty_query_vec() {
+        let cli = Cli::try_parse_from(["ledgerful", "ask"]).unwrap();
+        match cli.command {
+            Commands::Ask { query, .. } => {
+                assert!(query.is_empty(), "bare ask must leave query empty");
+                let joined = if query.is_empty() {
+                    None
+                } else {
+                    Some(query.join(" "))
+                };
+                assert_eq!(joined, None);
+            }
+            _ => panic!("expected Ask command"),
+        }
+    }
+
+    #[test]
+    fn ask_semantic_flags_first() {
+        let cli =
+            Cli::try_parse_from(["ledgerful", "ask", "--semantic", "what", "is", "X"]).unwrap();
+        match cli.command {
+            Commands::Ask {
+                query, semantic, ..
+            } => {
+                assert!(semantic, "flags-first must set semantic=true");
+                assert_eq!(query, vec!["what", "is", "X"]);
+                assert!(!query.iter().any(|w| w == "--semantic"));
+            }
+            _ => panic!("expected Ask command"),
+        }
+    }
+
+    #[test]
+    fn ask_semantic_flags_after_swallowed_as_query() {
+        let cli =
+            Cli::try_parse_from(["ledgerful", "ask", "what", "is", "X", "--semantic"]).unwrap();
+        match cli.command {
+            Commands::Ask {
+                query, semantic, ..
+            } => {
+                assert!(
+                    !semantic,
+                    "post-query --semantic must be swallowed as query text"
+                );
+                assert_eq!(query, vec!["what", "is", "X", "--semantic"]);
+            }
+            _ => panic!("expected Ask command"),
+        }
+    }
+
+    #[test]
+    fn update_check_alias_with_binary_sets_dry_run() {
+        let cli = Cli::try_parse_from(["ledgerful", "update", "--check", "--binary"]).unwrap();
+        match cli.command {
+            Commands::Update {
+                dry_run,
+                binary,
+                migrate,
+                repair_hooks,
+                ..
+            } => {
+                assert!(dry_run, "--check must alias to dry_run");
+                assert!(binary);
+                assert!(!migrate);
+                assert!(!repair_hooks);
+            }
+            _ => panic!("expected Update command"),
+        }
+    }
+
+    #[test]
+    fn update_check_alone_sets_dry_run_no_action() {
+        let cli = Cli::try_parse_from(["ledgerful", "update", "--check"]).unwrap();
+        match cli.command {
+            Commands::Update {
+                dry_run,
+                binary,
+                migrate,
+                repair_hooks,
+                ..
+            } => {
+                assert!(dry_run, "--check alone must set dry_run");
+                assert!(!binary);
+                assert!(!migrate);
+                assert!(!repair_hooks);
+            }
+            _ => panic!("expected Update command"),
+        }
+    }
+
+    #[test]
     fn verify_alias_dry_run() {
         let cli = Cli::try_parse_from(["ledgerful", "verify", "--dry-run"]).unwrap();
         match cli.command {

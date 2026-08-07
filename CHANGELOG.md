@@ -8,6 +8,18 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **CLI discoverability aliases (0150):** Dogfood wrong-guess synonyms and
+  multi-word `ask` without renaming primary commands:
+  - **Aliases (visible):** `config show` → `view`; `policy evaluate` → `check`;
+    `gate status` → `mode`; `ledger list` → `status`; `ledger history` →
+    `search`. Help tips for ledger list/history and honest `services` note
+    (no inventory `list` subcommand — use `services diff` / search).
+  - **Update:** bare / no-action path prints multi-line action menu
+    (`--binary` / `--migrate` / `--repair-hooks`); `--check` is a visible
+    alias of `--dry-run` (preview only — not a version-check).
+  - **Ask:** unquoted multi-word queries via trailing varargs (e.g.
+    `ask what is change-context`); flags must precede unquoted words or they
+    become query text.
 - **Uniform machine JSON mode (0149):** Agent-relevant CLI gaps closed for pure
   `--json` parsing (`ConvertFrom-Json` / whole-stdout):
   - **`status --json`** — top-level flag; same payload as `ledger status --json`
