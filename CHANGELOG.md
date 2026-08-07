@@ -57,6 +57,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Homebrew install binary resolution (0164):** Formula install finds `ledgerful`
+  as a direct child of brew `buildpath` first (`Pathname.glob`), with nested
+  `ledgerful-*/ledgerful` as fallback. Release archives still nest under
+  `ledgerful-{target}/`; Homebrew stages that directory as buildpath, so the old
+  CWD-relative `Dir["ledgerful-*/ledgerful"]` always missed. Live tap ships the
+  same fix; engine template + bump fixture + `verify-manifests` install-body
+  lockstep keep the next bump durable.
 - **Stderr log-file noise on default human runs (0154):** Default `doctor`,
   `search --semantic`, and human `impact` no longer emit timestamped tracing
   `INFO` lines (embed probe, semantic VectorStore/HNSW chatter, federated
