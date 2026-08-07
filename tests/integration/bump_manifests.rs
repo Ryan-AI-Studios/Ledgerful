@@ -267,6 +267,15 @@ fn bump_manifests_fixture_v018_writes_expected_hashes() {
         ),
         "formula should use v0.1.8 download URLs"
     );
+    // C4 also on real packaging/ SoT (not only stale-seed rewrite path).
+    assert!(
+        formula.contains("Pathname.glob(buildpath"),
+        "real packaging template must use Pathname.glob(buildpath):\n{formula}"
+    );
+    assert!(
+        !formula.contains("Dir[\"ledgerful-"),
+        "real packaging template must not use Dir[\"ledgerful-] locator:\n{formula}"
+    );
 
     assert!(
         scoop.contains("\"version\": \"0.1.8\""),
