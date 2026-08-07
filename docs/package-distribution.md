@@ -24,6 +24,10 @@ Published by `.github/workflows/release.yml` on tags `v*`:
 - `ledgerful-aarch64-apple-darwin.tar.gz` — nested binary
 - Matching `*.sha256` sidecars (authoritative hashes for manifests)
 
+Homebrew stages the archive’s top-level `ledgerful-{target}/` directory as
+`buildpath`, so the formula install looks for a direct child `ledgerful` first
+(nested path is archive-layout truth / fallback if staging leaves an extra level).
+
 URL scheme:
 
 ```text

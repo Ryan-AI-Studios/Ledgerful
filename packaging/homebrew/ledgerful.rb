@@ -36,9 +36,19 @@ class Ledgerful < Formula
   end
 
   def install
-    # Release archives nest the binary: ledgerful-{target}/ledgerful
-    binary = Dir["ledgerful-*/ledgerful"].first
-    odie "ledgerful binary not found in archive" if binary.nil?
+    # Archive tar nests ledgerful-{target}/…; Homebrew stages that directory as
+    # buildpath, so the binary is usually a direct child. Nested glob is fallback
+    # if staging ever leaves an extra level.
+    binary = Pathname.glob(buildpath/"ledgerful").first ||
+             Pathname.glob(buildpath/"ledgerful-*/ledgerful").first
+    if binary.nil?
+      children = begin
+        Dir.children(buildpath).sort.join(", ")
+      rescue StandardError
+        "(unreadable)"
+      end
+      odie "ledgerful binary not found in archive (buildpath children: #{children})"
+    end
 
     bin.install binary => "ledgerful"
   end

@@ -120,8 +120,19 @@ fn seed_stale_packaging(dir: &Path, version: &str) {
   end
 
   def install
-    binary = Dir["ledgerful-*/ledgerful"].first
-    odie "ledgerful binary not found in archive" if binary.nil?
+    # Archive tar nests ledgerful-{{target}}/…; Homebrew stages that directory as
+    # buildpath, so the binary is usually a direct child. Nested glob is fallback
+    # if staging ever leaves an extra level.
+    binary = Pathname.glob(buildpath/"ledgerful").first ||
+             Pathname.glob(buildpath/"ledgerful-*/ledgerful").first
+    if binary.nil?
+      children = begin
+        Dir.children(buildpath).sort.join(", ")
+      rescue StandardError
+        "(unreadable)"
+      end
+      odie "ledgerful binary not found in archive (buildpath children: #{{children}})"
+    end
     bin.install binary => "ledgerful"
   end
 end
@@ -182,6 +193,17 @@ fn assert_formula_rewritten(formula: &str, version: &str) {
     assert!(
         !formula.contains("/v0.0.1/"),
         "formula should not retain stale /v0.0.1/ URLs:\n{formula}"
+    );
+    // C4 (0164): install body must use buildpath-anchored Pathname.glob, not
+    // the old CWD-relative Dir["ledgerful-…"] locator (fallback still nests
+    // under Pathname.glob, so only ban the Dir[ form).
+    assert!(
+        formula.contains("Pathname.glob(buildpath"),
+        "formula install must use Pathname.glob(buildpath…):\n{formula}"
+    );
+    assert!(
+        !formula.contains("Dir[\"ledgerful-"),
+        "formula install must not use Dir[\"ledgerful-…] locator:\n{formula}"
     );
 }
 

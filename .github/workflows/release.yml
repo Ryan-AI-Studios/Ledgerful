@@ -858,10 +858,21 @@ jobs:
             echo "error: scoop-bucket ledgerful.json does not report version \"${version}\"" >&2
             exit 1
           fi
+          # C3 (0164): live formula install body lockstep — buildpath Pathname.glob,
+          # not the old CWD-relative Dir["ledgerful-…] locator.
+          if ! printf '%s\n' "$brew_rb" | grep -Fq 'Pathname.glob(buildpath'; then
+            echo "error: homebrew-tap ledgerful.rb install must use Pathname.glob(buildpath…)" >&2
+            exit 1
+          fi
+          if printf '%s\n' "$brew_rb" | grep -Fq 'Dir["ledgerful-'; then
+            echo "error: homebrew-tap ledgerful.rb install must not use Dir[\"ledgerful-…] locator" >&2
+            exit 1
+          fi
           {
             echo "### verify-manifests"
             echo ""
             echo "Live homebrew-tap and scoop-bucket report version ${version}."
+            echo "Homebrew install body: Pathname.glob(buildpath…) present; Dir[\"ledgerful-…] absent."
           } >> "$GITHUB_STEP_SUMMARY"
 
   # 0051 winget: subsequent version bumps via SHA-pinned winget-releaser.
