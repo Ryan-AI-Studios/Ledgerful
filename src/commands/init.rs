@@ -409,11 +409,13 @@ pub fn execute_init(no_gitignore: bool, enforce: bool) -> Result<()> {
         let existing_config = crate::config::load::load_config(&layout).unwrap_or_default();
         let actual_mode = existing_config.gate.mode.clone();
         print_init_status_block(&actual_mode);
-        info!("Ledgerful initialized successfully!");
+        // 0154: product success line must survive default WARN floor (not tracing INFO).
+        println!("Ledgerful initialized successfully!");
         return Ok(());
     }
     print_init_status_block(gate_mode);
-    info!("Ledgerful initialized successfully!");
+    // 0154: product success line must survive default WARN floor (not tracing INFO).
+    println!("Ledgerful initialized successfully!");
     Ok(())
 }
 

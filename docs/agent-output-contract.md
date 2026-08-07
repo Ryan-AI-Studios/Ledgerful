@@ -56,6 +56,7 @@ index, or parse **stdout only** (not `2>&1`) when combining `--json --auto-index
 | Progress / backend chatter (`ask`, retries) | **stderr** |
 | Hard signature failures (`INVALID`, required `UNSIGNED`) | **stderr** (raw `eprintln!`) |
 | Non-`cli_summary` progress `INFO` under machine mode | **suppressed** (normal_layer max `WARN`) |
+| Non-`cli_summary` diagnostic `INFO` under default human (no `-v`, no `RUST_LOG`) | **suppressed** (0154: normal_layer max **WARN**) |
 
 A command advertised as JSON must emit **only** JSON on stdout. Warnings must
 not precede or follow that JSON on stdout.
@@ -85,6 +86,17 @@ around the JSON payload.
 `WARN`**, so progress `INFO` lines (for example `Running verification command
 via Shell: …`) do not appear on stderr during a successful `verify --json`
 run. `WARN` / `ERROR` on `normal_layer` are **not** suppressed (Wave 0 honesty).
+
+**0154 extends the `normal_layer` WARN floor to default human runs** when
+`RUST_LOG` is unset (or empty): non-verbose interactive CLI no longer emits
+timestamped tracing-style `INFO target:` diagnostics on stderr. Dogfood-hot
+probes (embed probe, semantic init, federated Scanning progress) are demoted
+to `debug!` so ambient `RUST_LOG=info` does not re-flood them. Diagnostic
+detail returns with `-v` / `RUST_LOG=debug` (or a specific `RUST_LOG` directive).
+Product notices (web/viz bind, init success, layout migration, watch sync
+summary, verify step-start) use `println!` / `eprintln!` / `cli_summary`, not
+filterable `normal_layer` INFO. The `cli_summary` four-state table above is
+**unchanged**.
 
 `INVALID` and signing-required `UNSIGNED` are raw `eprintln!` outside the
 layer; no filter state suppresses them.

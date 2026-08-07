@@ -56,7 +56,8 @@ pub async fn serve_with_shutdown(
         .local_addr()
         .map(|a| a.to_string())
         .unwrap_or_else(|_| addr.to_string());
-    tracing::info!("ledgerful web listening on {}", bound);
+    // 0154: product bind notice must survive default WARN floor (not tracing INFO).
+    println!("ledgerful web listening on {}", bound);
 
     serve_listener(listener, router, state, external_shutdown).await
 }

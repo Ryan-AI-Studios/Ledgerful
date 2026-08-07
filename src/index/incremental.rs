@@ -20,7 +20,7 @@ use miette::{IntoDiagnostic, Result};
 use rusqlite::Connection;
 use serde_json::json;
 use std::collections::HashMap;
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 /// Maps used by incremental edge resolution and Cozo URN wiring.
 struct SymbolMaps {
@@ -70,7 +70,9 @@ impl IncrementalSyncEngine {
         let affected = self.apply_sqlite_delta(&events)?;
         let delta = self.apply_cozo_delta(&affected)?;
 
-        info!(
+        // 0154: diagnostic only — product surface is watch `println!` (B3).
+        // Keep debug so ambient RUST_LOG=info does not dual-emit with watch.
+        debug!(
             "Incremental sync: {} files, +{} nodes, -{} nodes, +{} edges, -{} edges",
             delta.files_processed,
             delta.nodes_added,

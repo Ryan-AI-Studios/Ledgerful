@@ -160,7 +160,7 @@ impl<'a> ScanContext<'a> {
             return;
         }
         if self.start_time.elapsed() >= Duration::from_secs(3) {
-            info!(
+            debug!(
                 "Scanning {} files for federated dependencies in {}...",
                 self.file_count, dir
             );

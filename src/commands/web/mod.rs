@@ -511,7 +511,8 @@ async fn run_server_then_open(
         .local_addr()
         .map(|a| a.to_string())
         .unwrap_or_else(|_| addr.to_string());
-    tracing::info!("ledgerful web listening on {bound}");
+    // 0154: product bind notice must survive default WARN floor (not tracing INFO).
+    println!("ledgerful web listening on {bound}");
 
     if let Some(url) = open_url.as_deref() {
         // Never print the `#c=` form (scrollback would defeat single-use handoff).

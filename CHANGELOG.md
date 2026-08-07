@@ -35,6 +35,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Default human CLI quiet for tracing INFO (0154):** Non-verbose, non-machine
+  runs use a `normal_layer` **WARN** floor when `RUST_LOG` is unset (was INFO).
+  Dogfood-hot diagnostic probes (embed probe, semantic init/HNSW serve,
+  federated Scanning progress) are demoted to `debug!`. Product bind/init/
+  migration/watch notices use `println!`/`eprintln!` so they remain visible
+  without `-v`. Escape hatches: `-v` (DEBUG) and ambient `RUST_LOG` on the
+  human path; machine/`--json` still forces WARN. Contract:
+  `docs/agent-output-contract.md`; policy: `docs/operator-surface-policy.md` §10.
 - **`ConfidenceFactor::GitInactive` wire field (0149):** nested days field
   serializes as `daysSinceLastCommit` (camelCase) so mixed `factors[]` matches
   unit-factor camelCase strings. Affects `dead-code --json` and any
@@ -49,6 +57,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Stderr log-file noise on default human runs (0154):** Default `doctor`,
+  `search --semantic`, and human `impact` no longer emit timestamped tracing
+  `INFO` lines (embed probe, semantic VectorStore/HNSW chatter, federated
+  Scanning progress). Aligns with clig.dev output guidance (do not treat
+  stderr as a log file by default). Use `-v` or `RUST_LOG` for diagnostics.
 - **Empty-tree impact fast path (0147):** When `treeClean && changes` empty,
   `impact` / `scan --impact` / `deploy impact` skip enrichment (AI reachability
   probe, all providers including federation walk, analysis registry) and apply

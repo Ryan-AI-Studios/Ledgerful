@@ -222,7 +222,7 @@ impl<'a> SemanticDiscovery<'a> {
         if config.dimensions == 0 && !config.base_url.is_empty() {
             match crate::embed::client::check_local_model(&config) {
                 Ok(dims) if dims.dimensions > 0 => {
-                    tracing::info!(
+                    tracing::debug!(
                         "Probed local model: {} ({} dimensions)",
                         dims.model_name,
                         dims.dimensions
@@ -248,7 +248,7 @@ impl<'a> SemanticDiscovery<'a> {
 
         let dim = config.dimensions;
         let skip_hnsw = config.disable_hnsw;
-        tracing::info!("Initializing VectorStore with {} dimensions", dim);
+        tracing::debug!("Initializing VectorStore with {} dimensions", dim);
         let embedder = SemanticEmbedder::new(config.clone());
         let vector_store = VectorStore::new_with_hnsw_threshold(
             storage,
@@ -324,7 +324,7 @@ impl<'a> SemanticDiscovery<'a> {
         let embeddings = self.embedder.embed_batch(&text_refs)?;
 
         if !embeddings.is_empty() {
-            tracing::info!(
+            tracing::debug!(
                 "Received {} embeddings of dimension {}",
                 embeddings.len(),
                 embeddings[0].len()
@@ -385,7 +385,7 @@ impl<'a> SemanticDiscovery<'a> {
             self.vector_store
                 .storage_ref()
                 .run_script(":create semantic_file_hash {file_path => content_hash: String}")?;
-            tracing::info!("Created semantic_file_hash relation for incremental tracking");
+            tracing::debug!("Created semantic_file_hash relation for incremental tracking");
         }
         Ok(())
     }
@@ -454,7 +454,7 @@ impl<'a> SemanticDiscovery<'a> {
             }
         }
         if pruned > 0 {
-            tracing::info!("Pruned snippets for {} deleted files", pruned);
+            tracing::debug!("Pruned snippets for {} deleted files", pruned);
         }
         Ok(())
     }
