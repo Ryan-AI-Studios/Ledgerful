@@ -329,12 +329,16 @@ mod tests {
             rendered.contains("warn") || rendered.to_lowercase().contains("warn"),
             "machine filter must be WARN-based; got {rendered}"
         );
-        // Verbose must not override machine.
+        // Verbose must not override machine (fixed WARN directive, not debug).
         let filter_v = build_log_filter(true, true);
         let rendered_v = format!("{filter_v:?}");
         assert!(
-            !rendered_v.contains("debug") || rendered_v.contains("warn"),
-            "machine must win over verbose; got {rendered_v}"
+            rendered_v.contains("warn") || rendered_v.to_lowercase().contains("warn"),
+            "machine must win over verbose (WARN floor); got {rendered_v}"
+        );
+        assert!(
+            !rendered_v.contains("debug") && !rendered_v.to_lowercase().contains("debug"),
+            "machine must not select DEBUG when verbose; got {rendered_v}"
         );
         // Machine also wins over with_env verbose injection.
         let filter_mv = build_log_filter_with_env(true, true, Some("debug".into()));
