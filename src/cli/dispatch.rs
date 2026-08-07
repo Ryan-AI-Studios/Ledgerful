@@ -250,19 +250,26 @@ pub fn run_with(cli: Cli) -> Result<()> {
             timeout,
             no_kg_fallback,
             auto_scan,
-        } => crate::commands::ask::execute_ask(
-            query,
-            semantic,
-            limit,
-            mode,
-            narrative,
-            backend,
-            auto_index,
-            timeout,
-            no_kg_fallback,
-            auto_scan,
-        )
-        .or_else(handle_schema_error),
+        } => {
+            let query = if query.is_empty() {
+                None
+            } else {
+                Some(query.join(" "))
+            };
+            crate::commands::ask::execute_ask(
+                query,
+                semantic,
+                limit,
+                mode,
+                narrative,
+                backend,
+                auto_index,
+                timeout,
+                no_kg_fallback,
+                auto_scan,
+            )
+            .or_else(handle_schema_error)
+        }
         Commands::Intent { command } => dispatch_intent(command),
         Commands::Reset {
             remove_config,

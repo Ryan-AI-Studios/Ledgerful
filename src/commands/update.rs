@@ -17,7 +17,7 @@ pub fn execute_update(
 ) -> Result<()> {
     if !migrate && !binary && !repair_hooks {
         println!(
-            "{} Specify what to update (e.g. --migrate, --binary, or --repair-hooks)",
+            "{} Specify what to update:\n  --binary         Rebuild/reinstall from this source tree\n  --migrate        Full re-index + schema upgrade\n  --repair-hooks   Rewrite retired hook commands to ledgerful\nPreview: add --dry-run or --check (alias; e.g. update --binary --check)",
             "HINT:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
         );
         return Ok(());

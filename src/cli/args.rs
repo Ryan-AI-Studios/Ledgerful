@@ -344,9 +344,32 @@ pub enum Commands {
         json: bool,
     },
     /// Ask Gemini or a local model for assistance based on the current context
+    ///
+    /// Unquoted multi-word queries are accepted. Flags (e.g. `--semantic`,
+    /// `--backend`) must precede unquoted query words; post-query flags are
+    /// treated as query text.
+    #[command(
+        long_about = "Ask Gemini or a local model for assistance based on the current context.\n\n\
+Unquoted multi-word queries are accepted (e.g. `ask what is change-context`).\n\
+Flags such as `--semantic` and `--backend` must precede unquoted query words;\n\
+anything after the first non-flag word is treated as query text (including\n\
+flag-like tokens). Prefer: `ask --semantic what is X`.",
+        after_help = "\
+Tips:
+  ledgerful ask what is change-context
+      Unquoted multi-word OK; put flags before query words
+  ledgerful ask --semantic what is X
+      Flags first — semantic=true, query = \"what is X\"
+  ledgerful ask what is X --semantic
+      Flags after words are query text (semantic stays false)
+"
+    )]
     Ask {
-        /// The query to ask
-        query: Option<String>,
+        /// Query words (unquoted multi-word OK). Prefer flags before words.
+        /// Flags (e.g. --semantic, --backend) must precede unquoted query words;
+        /// post-query flags are treated as query text.
+        #[arg(trailing_var_arg = true, allow_hyphen_values = true, num_args = 0..)]
+        query: Vec<String>,
         /// Use semantic search for code snippets instead of full impact context
         #[arg(long, short)]
         semantic: bool,
@@ -559,8 +582,10 @@ pub enum Commands {
         /// Use fast semantic index bypass (skip LLM semantic extraction during migration)
         #[arg(long)]
         fast: bool,
-        /// Show what update actions would be performed without executing them
-        #[arg(long = "dry-run")]
+        /// Show what update actions would be performed without executing them.
+        /// `--check` is an alias for `--dry-run` (preview without executing), not a
+        /// version-check.
+        #[arg(long = "dry-run", visible_alias = "check")]
         dry_run: bool,
         /// Rewrite retired Ledgerful hook commands to invoke `ledgerful`
         #[arg(long = "repair-hooks")]
@@ -2934,6 +2959,9 @@ pub enum AdrSubcommands {
 }
 
 #[derive(Subcommand, Debug)]
+#[command(after_help = "\
+There is no `services list` inventory subcommand. Use `services diff` for boundary/topology changes. Service symbols remain searchable via `search` / graph surfaces.
+")]
 pub enum ServiceSubcommands {
     /// Show service boundary changes and topology
     Diff(crate::commands::services_diff::ServicesDiffArgs),
@@ -3077,6 +3105,7 @@ pub enum IntentCommands {
 #[derive(Subcommand, Debug)]
 pub enum GateCommands {
     /// Show or set the gate mode
+    #[command(visible_alias = "status")]
     Mode {
         /// Set mode: observe or enforce
         mode: Option<String>,
@@ -3086,6 +3115,7 @@ pub enum GateCommands {
 #[derive(Subcommand, Debug)]
 pub enum PolicyCommands {
     /// Evaluate declared policy against PR/diff/ledger state
+    #[command(visible_alias = "evaluate")]
     Check {
         /// PR-style git range, e.g. `main...HEAD` or `main..HEAD`
         #[arg(long, value_name = "RANGE")]
@@ -3123,6 +3153,12 @@ pub enum FederateCommands {
 }
 
 #[derive(Subcommand, Debug)]
+#[command(after_help = "\
+Tips:
+  ledger list            Alias for `ledger status` (active transactions)
+  ledger history <q>     Alias for `ledger search <q>` (FTS; query required)
+  Use `ledger status --all` for chronological list; `ledger search <q>` for FTS.
+")]
 pub enum LedgerCommands {
     /// Start a new change transaction
     Start {
@@ -3190,6 +3226,7 @@ pub enum LedgerCommands {
         force: bool,
     },
     /// Show status of active transactions and uncommitted drift
+    #[command(visible_alias = "list")]
     Status {
         /// Show all historical transactions
         #[arg(short, long)]
@@ -3263,6 +3300,7 @@ pub enum LedgerCommands {
     /// Show the entity graph neighborhood governed by a transaction
     Graph(crate::commands::ledger_graph::LedgerGraphArgs),
     /// Full-text search across ledger history
+    #[command(visible_alias = "history")]
     Search {
         /// Search query
         query: String,
@@ -3454,6 +3492,7 @@ pub enum RegisterCommands {
 #[command(after_help = "\
 Examples:
   ledgerful config view                        Show resolved configuration
+  ledgerful config show                        Alias for `config view`
   ledgerful config verify                      Verify config and environment health
   ledgerful config set coverage.enabled=true   Set a configuration value
   ledgerful config diff                        Show declared vs inferred config
@@ -3472,6 +3511,7 @@ pub enum ConfigCommands {
         verbose: bool,
     },
     /// View resolved project configuration
+    #[command(visible_alias = "show")]
     View {
         /// Output as JSON
         #[arg(long)]

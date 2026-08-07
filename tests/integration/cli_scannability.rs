@@ -212,7 +212,7 @@ fn search_limit_shows_and_more_results() {
     }
 }
 
-/// Config help lists real subcommands only (no `show`) — DoD-8.
+/// Config help lists real subcommands; `show` is a visible alias of `view` (0150).
 #[test]
 fn config_help_includes_real_subcommand_examples() {
     let tmp = tempdir().unwrap();
@@ -232,9 +232,12 @@ fn config_help_includes_real_subcommand_examples() {
         combined.contains("config set") || combined.contains("coverage.enabled"),
         "examples must include config set key=value:\n{combined}"
     );
+    // 0150: `show` is a real visible alias of `view` (not a fake subcommand).
     assert!(
-        !combined.contains("config show"),
-        "must not advertise non-existent `show` subcommand:\n{combined}"
+        combined.contains("config show")
+            || combined.contains("[aliases: show]")
+            || combined.contains("aliases: show"),
+        "examples/help must advertise config show as alias of view:\n{combined}"
     );
 }
 
