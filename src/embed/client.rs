@@ -60,7 +60,7 @@ pub fn check_local_model(config: &LocalModelConfig) -> Result<Dimensions, String
     };
 
     let dims = vectors.first().map(|v| v.len()).unwrap_or(0);
-    tracing::info!("Probe at {} returned {} dimensions", url, dims);
+    tracing::debug!("Probe at {} returned {} dimensions", url, dims);
 
     Ok(Dimensions {
         dimensions: dims,

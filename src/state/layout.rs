@@ -134,9 +134,9 @@ impl Layout {
     /// Rename a legacy state directory to the current name when needed.
     ///
     /// Returns `true` if a rename was performed. On success emits a one-line
-    /// `tracing::info!` record naming both paths (DoD-2). Does **not** edit
-    /// `.gitignore` — that side-effect is applied at the dispatch startup
-    /// seam to keep the `state`/`git` boundary clean.
+    /// product notice on stderr naming both paths (0154: not filterable tracing
+    /// INFO). Does **not** edit `.gitignore` — that side-effect is applied at
+    /// the dispatch startup seam to keep the `state`/`git` boundary clean.
     pub fn migrate_legacy_state_dir(&self) -> Result<bool> {
         self.migrate_legacy_state_dir_with(|old, new| fs::rename(old, new))
     }
@@ -168,10 +168,10 @@ impl Layout {
                 source,
             }
         })?;
-        tracing::info!(
+        // 0154: one-shot state-dir migration is product-visible without -v.
+        eprintln!(
             "Migrated state directory from {} to {}",
-            legacy_state_dir,
-            self.state_dir
+            legacy_state_dir, self.state_dir
         );
         Ok(true)
     }

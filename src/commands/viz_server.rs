@@ -72,7 +72,9 @@ async fn start_server(bind: String, port: u16) -> Result<()> {
         port,
     );
     let listener = TcpListener::bind(addr).await.into_diagnostic()?;
-    info!("Viz server listening on {}", addr);
+    // 0154: product bind notice must survive default WARN floor (not tracing INFO).
+    // Only bind-address output for viz-server (no pre-bind println).
+    println!("Viz server listening on {}", addr);
 
     let snapshot = Arc::new(RwLock::new(None::<GraphSnapshot>));
     let (broadcast_tx, _broadcast_rx) = broadcast::channel::<String>(16);

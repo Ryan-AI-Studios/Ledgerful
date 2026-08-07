@@ -11,18 +11,32 @@ use tracing_subscriber::{EnvFilter, fmt, prelude::*};
 ///   stderr around a machine payload (0093; successful `verify --json` empty
 ///   stderr). WARN/ERROR still pass (Wave 0 honesty).
 /// - `verbose = true` (and not machine): use "debug" level for all crates
-/// - otherwise: respect `RUST_LOG` if set, else silence noisy third-party
-///   crates to WARN while keeping everything else at INFO.
+/// - otherwise: respect `RUST_LOG` if set, else default human floor **WARN**
+///   (0154; was INFO) so timestamped tracing INFO does not treat stderr as a
+///   log file on non-verbose runs.
 fn build_log_filter(verbose: bool, machine: bool) -> EnvFilter {
+    build_log_filter_with_env(verbose, machine, std::env::var("RUST_LOG").ok())
+}
+
+/// Injectable variant of [`build_log_filter`] for deterministic unit tests.
+///
+/// Pass `rust_log: None` (or empty string) to exercise the default human WARN
+/// floor without mutating process environment. Non-empty values honor the
+/// human-path `RUST_LOG` escape hatch.
+fn build_log_filter_with_env(verbose: bool, machine: bool, rust_log: Option<String>) -> EnvFilter {
     if machine {
         // Prefer a fixed WARN floor over RUST_LOG so agents cannot accidentally
         // re-enable progress INFO via an ambient RUST_LOG=info.
         EnvFilter::new("warn,graph_builder=warn,tantivy=warn,sqlite=warn")
     } else if verbose {
         EnvFilter::new("debug")
+    } else if let Some(spec) = rust_log.filter(|s| !s.is_empty()) {
+        // Escape hatch: honor ambient RUST_LOG when set (human path only).
+        EnvFilter::try_new(spec)
+            .unwrap_or_else(|_| EnvFilter::new("warn,graph_builder=warn,tantivy=warn,sqlite=warn"))
     } else {
-        EnvFilter::try_from_default_env()
-            .unwrap_or_else(|_| EnvFilter::new("info,graph_builder=warn,tantivy=warn,sqlite=warn"))
+        // 0154: default human floor WARN (was info,…).
+        EnvFilter::new("warn,graph_builder=warn,tantivy=warn,sqlite=warn")
     }
 }
 
@@ -268,6 +282,44 @@ mod tests {
     }
 
     #[test]
+    fn build_log_filter_default_human_is_warn_floor() {
+        // 0154 C1: inject None so ambient RUST_LOG cannot flaky the default floor.
+        let filter = build_log_filter_with_env(false, false, None);
+        let rendered = format!("{filter:?}");
+        assert!(
+            rendered.contains("warn") || rendered.to_lowercase().contains("warn"),
+            "default human filter must be WARN-based; got {rendered}"
+        );
+        // Must not retain the pre-0154 default info floor as the primary directive.
+        assert!(
+            !rendered.contains("info,") && !rendered.starts_with("info"),
+            "default human must not use INFO floor; got {rendered}"
+        );
+    }
+
+    #[test]
+    fn build_log_filter_verbose_is_debug_based() {
+        // 0154 C6 / DoD-4 filter-level: -v selects fixed debug.
+        let filter = build_log_filter_with_env(true, false, None);
+        let rendered = format!("{filter:?}");
+        assert!(
+            rendered.contains("debug") || rendered.to_lowercase().contains("debug"),
+            "verbose filter must be DEBUG-based; got {rendered}"
+        );
+    }
+
+    #[test]
+    fn build_log_filter_rust_log_escape_hatch_constructs() {
+        // Human path still honors RUST_LOG when set (escape hatch without -v).
+        let filter = build_log_filter_with_env(false, false, Some("info".into()));
+        let rendered = format!("{filter:?}");
+        assert!(
+            rendered.contains("info") || rendered.to_lowercase().contains("info"),
+            "RUST_LOG=info escape hatch must construct; got {rendered}"
+        );
+    }
+
+    #[test]
     fn build_log_filter_machine_forces_warn() {
         // Machine mode must silence normal_layer INFO regardless of ambient RUST_LOG.
         let filter = build_log_filter(false, true);
@@ -283,6 +335,13 @@ mod tests {
         assert!(
             !rendered_v.contains("debug") || rendered_v.contains("warn"),
             "machine must win over verbose; got {rendered_v}"
+        );
+        // Machine also wins over with_env verbose injection.
+        let filter_mv = build_log_filter_with_env(true, true, Some("debug".into()));
+        let rendered_mv = format!("{filter_mv:?}");
+        assert!(
+            rendered_mv.contains("warn") || rendered_mv.to_lowercase().contains("warn"),
+            "machine must win over verbose+RUST_LOG; got {rendered_mv}"
         );
     }
 

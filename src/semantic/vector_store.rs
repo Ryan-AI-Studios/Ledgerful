@@ -3,7 +3,7 @@ use crate::semantic::chunker::AstChunk;
 use crate::state::storage_cozo::CozoStorage;
 use cozo::{DataValue, Num};
 use miette::{Result, miette};
-use tracing::{info, warn};
+use tracing::{debug, warn};
 
 pub struct VectorStore<'a> {
     storage: &'a CozoStorage,
@@ -105,7 +105,7 @@ impl<'a> VectorStore<'a> {
                 self.dim
             );
             self.storage.run_script(&script)?;
-            info!(
+            debug!(
                 "Relation snippet_embedding created with {} dimensions",
                 self.dim
             );
@@ -251,7 +251,7 @@ impl<'a> VectorStore<'a> {
         );
         let mut rebuild_after_put = refresh_plan.rebuild_after_put;
         if refresh_plan.drop_before_put {
-            info!(
+            debug!(
                 "Large semantic batch detected ({} chunks). Temporarily dropping HNSW index for stable ingestion.",
                 chunks.len()
             );
@@ -345,7 +345,7 @@ impl<'a> VectorStore<'a> {
     }
 
     pub fn rebuild_hnsw_index(&self) -> Result<()> {
-        info!("Building HNSW index for snippet_embedding...");
+        debug!("Building HNSW index for snippet_embedding...");
 
         // 1. Ensure any stale index is gone
         let _ = self
@@ -374,7 +374,7 @@ impl<'a> VectorStore<'a> {
             }
         }
 
-        info!("HNSW index built successfully");
+        debug!("HNSW index built successfully");
         Ok(())
     }
 
@@ -415,7 +415,7 @@ impl<'a> VectorStore<'a> {
 
         match res {
             Ok(r) => {
-                info!("Semantic query served by HNSW index");
+                debug!("Semantic query served by HNSW index");
                 return parse_hnsw_results(r, k);
             }
             Err(e)
@@ -442,7 +442,7 @@ impl<'a> VectorStore<'a> {
 
         match cos_res {
             Ok(r) => {
-                info!("Semantic query served by Cozo-native cos_dist");
+                debug!("Semantic query served by Cozo-native cos_dist");
                 return parse_hnsw_results(r, k);
             }
             Err(e) if e.to_string().contains("no_implementation") => {

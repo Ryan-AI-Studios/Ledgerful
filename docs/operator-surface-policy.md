@@ -56,6 +56,10 @@ The goal is not novelty. The goal is to match the baseline operator expectations
 10. Default output should be concise
     - Interactive defaults should optimize for operator signal, not raw exhaustiveness.
     - Full graph, duplicate-heavy, or verbose outputs should be opt-in.
+    - Default (non-verbose, non-`RUST_LOG`) human runs must not emit timestamped
+      tracing-style `INFO` on stderr (log-file posture). Product notices use
+      `println!` / `eprintln!` / `cli_summary`; backend diagnostics require `-v`
+      or an explicit `RUST_LOG` directive (0154).
 
 11. Bounded work by default
     - Operator conveniences such as retries, graph expansion, and bootstrap helpers must be capped so a default invocation stays responsive on large repos.
