@@ -77,7 +77,7 @@ jobs:
         run: |
           set -euo pipefail
           # Mode-only noise from chmod must not dirtys the tree used by the
-          # four-file invariant. Prefer scripts already 100755 in git; also
+          # five-file invariant. Prefer scripts already 100755 in git; also
           # ignore filemode when measuring dirty paths after prepare.
           git config core.fileMode false
           chmod +x scripts/require-secret.sh \
@@ -142,11 +142,11 @@ jobs:
 
           branch="release/v${version}"
           echo "Plan: cut v${version} (current ${current}) on branch ${branch}"
-          echo "Would touch: CHANGELOG.md Cargo.toml Cargo.lock mcp-server/package.json"
+          echo "Would touch: CHANGELOG.md Cargo.toml Cargo.lock docs/api/openapi.json mcp-server/package.json"
 
           # --- 4. dry_run stops before any write (label create / push / PR) --
           if [ "${INPUT_DRY_RUN}" = "true" ]; then
-            echo "::notice::dry_run: would prepare v${version} on ${branch}; files: CHANGELOG.md Cargo.toml Cargo.lock mcp-server/package.json"
+            echo "::notice::dry_run: would prepare v${version} on ${branch}; files: CHANGELOG.md Cargo.toml Cargo.lock docs/api/openapi.json mcp-server/package.json"
             exit 0
           fi
 
@@ -175,13 +175,13 @@ jobs:
 
           git checkout -B "${branch}"
 
-          # --- 8. Prepare four files ----------------------------------------
+          # --- 8. Prepare five files ----------------------------------------
           bash scripts/prepare-release-cut.sh "${version}"
 
           # --- 9. Commit + push with PAT ------------------------------------
           git config user.name "ledgerful-release-cut[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add CHANGELOG.md Cargo.toml Cargo.lock mcp-server/package.json
+          git add CHANGELOG.md Cargo.toml Cargo.lock docs/api/openapi.json mcp-server/package.json
           git status --short
           git commit -m "chore(release): cut v${version}"
 
@@ -193,9 +193,10 @@ jobs:
 
           Automated Tier-2 cut (track 0104 / workflow \`release-cut\`).
 
-          ### Files (exactly four)
+          ### Files (exactly five)
           - \`CHANGELOG.md\` — retitle \`[Unreleased]\` → \`[${version}]\` + fresh empty Unreleased
           - \`Cargo.toml\` / \`Cargo.lock\` — package version \`${version}\`
+          - \`docs/api/openapi.json\` — \`info.version\` → \`${version}\` (offline info-block rewrite)
           - \`mcp-server/package.json\` — \`ledgerfulEngineTag\` → \`v${version}\` **and** npm wrapper patch bump
 
           ### Do not

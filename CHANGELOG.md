@@ -57,6 +57,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Release cut OpenAPI `info.version` (0162):** `prepare-release-cut.sh` rewrites
+  `docs/api/openapi.json` `info.version` offline (info-block-anchored awk; not a
+  full cargo/utoipa regen). Cut content set is **exactly five** files including
+  openapi; Gate A and Gate B assert openapi version == tag/Cargo. Stops every cut
+  PR going red on `openapi_drift_check` after 0146 tracked `CARGO_PKG_VERSION`.
 - **Homebrew install binary resolution (0164):** Formula install finds `ledgerful`
   as a direct child of brew `buildpath` first (`Pathname.glob`), with nested
   `ledgerful-*/ledgerful` as fallback. Release archives still nest under

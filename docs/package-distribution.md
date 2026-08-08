@@ -110,8 +110,8 @@ Tier-2 cut when there is work; a human still merges after `ai-reviewed` and the 
 | **Branch** | `release/vX.Y.Z` — **the version's only durable carrier** (tag job parses it) |
 | **Title** | `chore(release): cut vX.Y.Z` (cosmetic; editable — do not trust for version) |
 | **Label** | `release-cut` — identity of "a cut is proposed"; **do not remove** (tag job keys on it) |
-| **Files** | Exactly four: `CHANGELOG.md`, `Cargo.toml`, `Cargo.lock`, `mcp-server/package.json` (engine pin **and** npm wrapper patch). Never under `.github/` |
-| **Script** | `scripts/prepare-release-cut.sh <version>` (calls `changelog-unreleased.sh` first) |
+| **Files** | Exactly five: `CHANGELOG.md`, `Cargo.toml`, `Cargo.lock`, `docs/api/openapi.json` (`info.version`), `mcp-server/package.json` (engine pin **and** npm wrapper patch). Never under `.github/` |
+| **Script** | `scripts/prepare-release-cut.sh <version>` (calls `changelog-unreleased.sh` first; offline OpenAPI `info.version` rewrite — not a full cargo/utoipa regen) |
 | **Secret** | `RELEASE_CUT_TOKEN` (fine-grained PAT: contents + PR write on `Ledgerful` only) |
 
 **What the schedule does**
@@ -122,7 +122,7 @@ Tier-2 cut when there is work; a human still merges after `ai-reviewed` and the 
 4. On `dry_run: true` print version + file list and stop (no label create, push, or PR).
 5. Ensure the `release-cut` label exists (after dry_run only).
 6. Create `release/vX.Y.Z` (refuse if remote branch exists — **no force-push**; delete manually after inspect).
-7. Run prepare → commit four files → push with PAT (`gh auth setup-git`, never token-in-URL) → open PR.
+7. Run prepare → commit five files → push with PAT (`gh auth setup-git`, never token-in-URL) → open PR.
 
 **On merge** of a PR with label `release-cut`: tag job tags **`merge_commit_sha`** (not `github.sha`, not the PR head), asserts it is an ancestor of `origin/main`, pushes `vX.Y.Z` with the PAT so `release.yml` fires.
 
@@ -146,10 +146,17 @@ Tier-2 cut when there is work; a human still merges after `ai-reviewed` and the 
 ```bash
 bash scripts/changelog-unreleased.sh          # must exit 0
 bash scripts/prepare-release-cut.sh 0.2.4     # or v0.2.4
-# inspect: git diff --name-only -G.  → exactly the four content paths
+# inspect: git diff --name-only -G.  → exactly the five content paths
+# (CHANGELOG.md, Cargo.toml, Cargo.lock, docs/api/openapi.json, mcp-server/package.json)
 # (mode-only chmod noise on scripts is ignored by the invariant)
 bash scripts/test-prepare-release-cut.sh
 ```
+
+**Out-of-band / manual cut:** always run `prepare-release-cut.sh` (or otherwise bump
+`docs/api/openapi.json` `info.version` to match Cargo). Skipping the OpenAPI rewrite
+leaves `openapi_contract::openapi_drift_check` red on the cut PR. Gate A
+(`check-release-tag.sh`) and Gate B (`check-release-state.sh`) both require
+`info.version ==` Cargo/tag version (fail closed if the file is missing).
 
 ### Manifest bump after publish (Homebrew / Scoop)
 

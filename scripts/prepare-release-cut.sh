@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prepare a Tier-2 release cut (exactly four files).
+# Prepare a Tier-2 release cut (exactly five files).
 #
 # Edits:
 #   CHANGELOG.md              — retitle ## [Unreleased] → ## [X.Y.Z] - YYYY-MM-DD (UTC),
@@ -7,6 +7,8 @@
 #   Cargo.toml                — package version
 #   Cargo.lock                — root package ledgerful version (offline-safe edit;
 #                               equivalent to cargo update -w for a version-only bump)
+#   docs/api/openapi.json     — info.version → X.Y.Z (offline info-block rewrite;
+#                               NOT a full utoipa/cargo regen — cut stays offline)
 #   mcp-server/package.json   — ledgerfulEngineTag → vX.Y.Z AND patch-bump version
 #                               (0101 DoD-8: pin move without wrapper bump fails npm publish)
 #
@@ -18,7 +20,7 @@
 #   bash scripts/prepare-release-cut.sh <version>
 # Version: X.Y.Z or vX.Y.Z
 #
-# Exit non-zero on empty Unreleased, re-run, invalid version, or four-file invariant break.
+# Exit non-zero on empty Unreleased, re-run, invalid version, or five-file invariant break.
 # Do NOT commit under .github/ (enforced by assertion + PAT scope).
 set -euo pipefail
 
@@ -32,7 +34,8 @@ cd "$REPO_ROOT"
 usage() {
   echo "usage: $0 <version>" >&2
   echo "  Prepare a Tier-2 cut: retitle Unreleased, bump Cargo.toml/Cargo.lock," >&2
-  echo "  bump mcp-server package.json (version patch + ledgerfulEngineTag)." >&2
+  echo "  rewrite docs/api/openapi.json info.version, bump mcp-server package.json" >&2
+  echo "  (version patch + ledgerfulEngineTag)." >&2
   echo "  Version: X.Y.Z or vX.Y.Z (must be greater than current Cargo.toml version)." >&2
   exit 2
 }
@@ -112,6 +115,10 @@ if [ ! -f "Cargo.lock" ]; then
 fi
 if [ ! -f "mcp-server/package.json" ]; then
   echo "error: mcp-server/package.json not found" >&2
+  exit 2
+fi
+if [ ! -f "docs/api/openapi.json" ]; then
+  echo "error: docs/api/openapi.json not found — required for five-file cut (info.version)" >&2
   exit 2
 fi
 
@@ -232,10 +239,18 @@ awk -v new_ver="$mcp_new_version" -v tag="$engine_tag" '
 ' "$mcp_path" >"$mcp_tmp"
 mv "$mcp_tmp" "$mcp_path"
 
-# --- four-file invariant -----------------------------------------------------
+# 5. docs/api/openapi.json: info.version only (info-block-anchored, offline).
+rewrite_openapi_info_version "$version" "docs/api/openapi.json"
+openapi_ver="$(openapi_info_version "docs/api/openapi.json")"
+if [ "$openapi_ver" != "$version" ]; then
+  echo "error: openapi info.version is '${openapi_ver}', expected '${version}' after rewrite" >&2
+  exit 1
+fi
+
+# --- five-file invariant -----------------------------------------------------
 
 if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
-  echo "error: not a git work tree — cannot assert four-file invariant" >&2
+  echo "error: not a git work tree — cannot assert five-file invariant" >&2
   exit 2
 fi
 
@@ -245,7 +260,7 @@ fi
 # -G. selects diffs that add/remove any line content; pure filemode changes
 # have no matching patch text and are excluded.
 actual_sorted="$(git diff --name-only -G. | sed 's#\\#/#g' | sort -u)"
-expected_sorted="$(printf '%s\n' "CHANGELOG.md" "Cargo.lock" "Cargo.toml" "mcp-server/package.json" | sort)"
+expected_sorted="$(printf '%s\n' "CHANGELOG.md" "Cargo.lock" "Cargo.toml" "docs/api/openapi.json" "mcp-server/package.json" | sort)"
 
 if [ -z "$actual_sorted" ]; then
   echo "error: no content files changed after prepare — unexpected" >&2
@@ -253,7 +268,7 @@ if [ -z "$actual_sorted" ]; then
 fi
 
 if [ "$actual_sorted" != "$expected_sorted" ]; then
-  echo "error: four-file invariant broken — expected exactly (content changes):" >&2
+  echo "error: five-file invariant broken — expected exactly (content changes):" >&2
   printf '%s\n' "$expected_sorted" | sed 's/^/  /' >&2
   echo "error: got:" >&2
   printf '%s\n' "$actual_sorted" | sed 's/^/  /' >&2
@@ -273,6 +288,7 @@ if printf '%s\n' "$actual_sorted" | grep -E '(^|/)\.github/' >/dev/null; then
 fi
 
 echo "ok: prepared release cut v${version} (${utc_date} UTC)"
-echo "ok: files: CHANGELOG.md Cargo.toml Cargo.lock mcp-server/package.json"
+echo "ok: files: CHANGELOG.md Cargo.toml Cargo.lock docs/api/openapi.json mcp-server/package.json"
+echo "ok: openapi info.version → ${version}"
 echo "ok: mcp-server version ${mcp_old_version} → ${mcp_new_version}; ledgerfulEngineTag → ${engine_tag}"
 exit 0

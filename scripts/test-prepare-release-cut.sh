@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Unit matrix for scripts/prepare-release-cut.sh (0104).
+# Unit matrix for scripts/prepare-release-cut.sh (0104 / 0162).
 # Run from repo root: bash scripts/test-prepare-release-cut.sh
 set -euo pipefail
 
@@ -37,7 +37,7 @@ make_fixture() {
 - real work for the cut
 }"
   rm -rf "$dir"
-  mkdir -p "$dir/scripts/lib" "$dir/mcp-server" "$dir/.github/workflows"
+  mkdir -p "$dir/scripts/lib" "$dir/mcp-server" "$dir/docs/api" "$dir/.github/workflows"
   # Scripts: copy prepare + deps so relative paths resolve from fixture root.
   cp "$PREPARE" "$dir/scripts/prepare-release-cut.sh"
   cp "$LIB_SRC" "$dir/scripts/lib/release-changelog.sh"
@@ -73,6 +73,33 @@ EOF
   "version": "0.1.12",
   "ledgerfulEngineTag": "v0.2.3",
   "description": "fixture"
+}
+EOF
+
+  # Multi-line openapi stub: indented info.version + decoy schema "version": {
+  # later so info-block-anchored rewrite cannot hit the decoy (0162 B1/B3).
+  cat >"$dir/docs/api/openapi.json" <<'EOF'
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "fixture",
+    "version": "0.2.3",
+    "description": "stub"
+  },
+  "paths": {},
+  "components": {
+    "schemas": {
+      "Versioned": {
+        "type": "object",
+        "properties": {
+          "version": {
+            "type": "string",
+            "description": "decoy schema property — must not be rewritten"
+          }
+        }
+      }
+    }
+  }
 }
 EOF
 
@@ -131,7 +158,7 @@ else
   assert_fail "empty Unreleased: no files modified" "diff=$(git -C "$fx1" diff --name-only)"
 fi
 
-# --- 2. normal cut → four files, correct contents ----------------------------
+# --- 2. normal cut → five files, correct contents ----------------------------
 fx2="$TMP/normal"
 make_fixture "$fx2"
 # Freeze date for assertion by pre-computing what we expect (UTC).
@@ -146,12 +173,12 @@ else
   assert_fail "normal cut exits 0" "exit ${rc2}; out=${out2}"
 fi
 
-diff2="$(git -C "$fx2" diff --name-only | sed 's#\\#/#g' | sort)"
-expect2="$(printf '%s\n' "CHANGELOG.md" "Cargo.lock" "Cargo.toml" "mcp-server/package.json" | sort)"
+diff2="$(git -C "$fx2" diff --name-only -G. | sed 's#\\#/#g' | sort)"
+expect2="$(printf '%s\n' "CHANGELOG.md" "Cargo.lock" "Cargo.toml" "docs/api/openapi.json" "mcp-server/package.json" | sort)"
 if [ "$diff2" = "$expect2" ]; then
-  assert_pass "normal cut: exactly four files"
+  assert_pass "normal cut: exactly five files"
 else
-  assert_fail "normal cut: exactly four files" "got:
+  assert_fail "normal cut: exactly five files" "got:
 ${diff2}"
 fi
 
@@ -185,6 +212,28 @@ if grep -q '^## \[Unreleased\]$' "$fx2/CHANGELOG.md"; then
   fi
 else
   assert_fail "normal cut: fresh Unreleased heading present"
+fi
+
+# openapi info.version == cut version; decoy schema "version": { untouched
+# shellcheck source=lib/release-changelog.sh
+source "${SCRIPT_DIR}/lib/release-changelog.sh"
+openapi2="$(openapi_info_version "$fx2/docs/api/openapi.json" 2>/dev/null || true)"
+if [ "$openapi2" = "0.2.4" ]; then
+  assert_pass "normal cut: openapi info.version == 0.2.4"
+else
+  assert_fail "normal cut: openapi info.version == 0.2.4" "got=${openapi2}"
+fi
+if grep -qE '^\s*"version": \{\s*$' "$fx2/docs/api/openapi.json" \
+  || grep -q '"version": {' "$fx2/docs/api/openapi.json"; then
+  assert_pass "normal cut: decoy schema version object preserved"
+else
+  assert_fail "normal cut: decoy schema version object preserved" "openapi:
+$(cat "$fx2/docs/api/openapi.json")"
+fi
+if grep -q '"openapi": "3.1.0"' "$fx2/docs/api/openapi.json"; then
+  assert_pass "normal cut: openapi document version 3.1.0 untouched"
+else
+  assert_fail "normal cut: openapi document version 3.1.0 untouched"
 fi
 
 # --- 3. both mcp version and ledgerfulEngineTag changed ----------------------
@@ -274,26 +323,6 @@ make_fixture "$fx5b" "### Added
 - should not double-cut
 "
 # Insert a dated 0.2.5 section without bumping Cargo (simulate partial cut).
-awk '
-  BEGIN { done = 0 }
-  !done && /^## \[Unreleased\]$/ {
-    print
-    print ""
-    print "### Added"
-    print "- should not double-cut"
-    print ""
-    print "## [0.2.5] - 2026-07-28"
-    print ""
-    print "### Fixed"
-    print "- already titled"
-    print ""
-    done = 1
-    next
-  }
-  { print }
-' "$fx5b/CHANGELOG.md" >"$fx5b/CHANGELOG.md.tmp"
-mv "$fx5b/CHANGELOG.md.tmp" "$fx5b/CHANGELOG.md"
-# Drop the duplicate body that make_fixture put under Unreleased — rewrite cleanly.
 cat >"$fx5b/CHANGELOG.md" <<'EOF'
 # Changelog
 
@@ -365,7 +394,7 @@ else
   assert_fail "version not greater than current refused" "out=${out8}"
 fi
 
-# --- 9. mode-only chmod noise must not break four-file invariant -------------
+# --- 9. mode-only chmod noise must not break five-file invariant -------------
 # Reproduces release-cut.yml Linux failure: scripts committed 100644, CI
 # `chmod +x` dirties the tree; invariant must count content changes only.
 fx9="$TMP/mode-noise"
@@ -395,12 +424,41 @@ out9="$(run_prepare "$fx9" "0.2.4" 2>&1)"
 rc9=$?
 set -e
 content9="$(git -C "$fx9" diff --name-only -G. | sed 's#\\#/#g' | sort -u)"
-expect9="$(printf '%s\n' "CHANGELOG.md" "Cargo.lock" "Cargo.toml" "mcp-server/package.json" | sort)"
+expect9="$(printf '%s\n' "CHANGELOG.md" "Cargo.lock" "Cargo.toml" "docs/api/openapi.json" "mcp-server/package.json" | sort)"
 if [ "$rc9" -eq 0 ] && [ "$content9" = "$expect9" ]; then
-  assert_pass "mode-only chmod noise ignored by four-file invariant"
+  assert_pass "mode-only chmod noise ignored by five-file invariant"
 else
-  assert_fail "mode-only chmod noise ignored by four-file invariant" \
+  assert_fail "mode-only chmod noise ignored by five-file invariant" \
     "exit ${rc9}; content=${content9}; full=$(git -C "$fx9" diff --name-only | tr '\n' ' '); out=${out9}"
+fi
+
+# --- 10. C2: live release-cut.yml must stage/document all five files ---------
+# Grep the real repo workflow (not the fixture). Prevents script-fixed /
+# workflow-forgot regression (0162 C2 / 0164 verify-manifests analog).
+WF="${REPO_ROOT}/.github/workflows/release-cut.yml"
+if [ ! -f "$WF" ]; then
+  assert_fail "C2: release-cut.yml present" "missing ${WF}"
+else
+  if grep -E 'git add .*docs/api/openapi\.json' "$WF" >/dev/null \
+    || grep -E 'git add .*openapi\.json' "$WF" >/dev/null; then
+    assert_pass "C2: release-cut.yml git add includes docs/api/openapi.json"
+  else
+    assert_fail "C2: release-cut.yml git add includes docs/api/openapi.json" \
+      "no openapi on git add line in ${WF}"
+  fi
+  if grep -E 'Would touch:.*docs/api/openapi\.json|dry_run:.*docs/api/openapi\.json|files:.*docs/api/openapi\.json' "$WF" >/dev/null; then
+    assert_pass "C2: release-cut.yml dry_run / Would touch lists openapi"
+  else
+    assert_fail "C2: release-cut.yml dry_run / Would touch lists openapi" \
+      "no openapi in dry_run/Would touch lists"
+  fi
+  if grep -Eiq 'exactly five|five files|Files \(exactly five\)' "$WF" \
+    && grep -E 'docs/api/openapi\.json|openapi\.json|info\.version' "$WF" >/dev/null; then
+    assert_pass "C2: release-cut.yml PR body five-file / openapi"
+  else
+    assert_fail "C2: release-cut.yml PR body five-file / openapi" \
+      "missing five-file or openapi mention in PR body region"
+  fi
 fi
 
 echo ""

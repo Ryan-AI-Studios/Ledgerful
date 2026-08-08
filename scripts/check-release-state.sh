@@ -76,6 +76,21 @@ warn_stale_frontend_pins() {
 version="$(cargo_toml_version "Cargo.toml")"
 echo "Cargo.toml version: ${version}"
 
+# OpenAPI info.version must match Cargo package version (0162 Gate B).
+# Fail closed if the artifact is missing or misaligned — catches main/out-of-band
+# drift even without a cut-PR CI run.
+if [ ! -f "docs/api/openapi.json" ]; then
+  echo "error: docs/api/openapi.json not found — Gate B requires openapi info.version == Cargo ${version}" >&2
+  exit 1
+fi
+openapi_ver="$(openapi_info_version "docs/api/openapi.json")"
+if [ "$openapi_ver" != "$version" ]; then
+  echo "error: docs/api/openapi.json info.version is '${openapi_ver}', expected Cargo.toml version '${version}'" >&2
+  echo "error: openapi drift — run prepare-release-cut or rewrite_openapi_info_version (0162)" >&2
+  exit 1
+fi
+echo "ok: openapi info.version == Cargo.toml ${version}"
+
 if has_dated_changelog_section "$version" "CHANGELOG.md"; then
   tag="v${version}"
   remote="$(resolve_git_remote)"
