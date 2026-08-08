@@ -352,4 +352,124 @@ fn test_cli_tests_ergonomics_and_exclusivity() {
     assert!(stdout_ledger_audit_flag.contains("src/lib.rs"));
     assert!(!stderr_ledger_audit_flag.contains("cannot be used with"));
     assert!(!stderr_ledger_audit_flag.contains("An entity must be specified"));
+
+    // 8. Empty-state help must not cite the dead mint path `src/commands/doctor.rs` (0156 B3).
+    assert!(
+        !stdout_none.contains("src/commands/doctor.rs"),
+        "empty-state help must not cite non-indexed doctor.rs: {stdout_none}"
+    );
+}
+
+/// 0156: module-style alias `…/pkg.rs` → `…/pkg/mod.rs` is Mapped, not "not recognized".
+#[test]
+fn test_cli_tests_dir_module_alias() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _cwd_guard = DirGuard::new(root);
+    let state_dir = root.join(".ledgerful").join("state");
+    fs::create_dir_all(&state_dir).unwrap();
+    let storage = StorageManager::init(&state_dir.join("ledger.db")).unwrap();
+    // Baseline mapping keeps the table non-empty (M7); add dir-module fixture.
+    setup_db(&storage);
+
+    let conn = storage.get_connection();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path, last_indexed_at) VALUES (10, 'src/pkg/mod.rs', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path, last_indexed_at) VALUES (11, 'tests/pkg_test.rs', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_symbols (id, file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at) \
+         VALUES (10, 10, 'pkg_fn', 'pkg_fn', 'Function', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_symbols (id, file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at) \
+         VALUES (11, 11, 'test_pkg_fn', 'test_pkg_fn', 'Function', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id, confidence, mapping_kind, last_indexed_at) \
+         VALUES (11, 11, 10, 10, 1.0, 'MANUAL', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["tests", "src/pkg.rs"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stdout.contains("not a recognized indexed file path"),
+        "alias must not report EntityNotIndexed: STDOUT={stdout}\nSTDERR={stderr}"
+    );
+    assert!(
+        stdout.contains("Tests validating"),
+        "expected Mapped: STDOUT={stdout}\nSTDERR={stderr}"
+    );
+    // M4: header prefers resolved stored path.
+    assert!(
+        stdout.contains("src/pkg/mod.rs"),
+        "expected resolved path in header: {stdout}"
+    );
+    assert!(stdout.contains("tests/pkg_test.rs::test_pkg_fn"));
+}
+
+/// 0156: multi-match suffix is Ambiguous with candidates; no index remediation (M5).
+#[test]
+fn test_cli_tests_ambiguous_suffix() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _cwd_guard = DirGuard::new(root);
+    let state_dir = root.join(".ledgerful").join("state");
+    fs::create_dir_all(&state_dir).unwrap();
+    let storage = StorageManager::init(&state_dir.join("ledger.db")).unwrap();
+    setup_db(&storage);
+
+    let conn = storage.get_connection();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path, last_indexed_at) VALUES (10, 'src/a/mod.rs', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path, last_indexed_at) VALUES (11, 'src/b/mod.rs', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["tests", "mod.rs"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("indexed paths match"),
+        "expected Ambiguous message: {stdout}"
+    );
+    assert!(stdout.contains("src/a/mod.rs"));
+    assert!(stdout.contains("src/b/mod.rs"));
+    assert!(stdout.contains("Provide a more specific path"));
+    assert!(
+        !stdout.contains("index --incremental"),
+        "Ambiguous must not suggest re-index (M5): {stdout}"
+    );
+    assert!(!stdout.contains("not a recognized indexed file path"));
 }
