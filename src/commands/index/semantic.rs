@@ -852,9 +852,13 @@ mod tests {
         assert_eq!(reason, "auto-incremental");
     }
 
+    /// Pure cold-store alias of `resolve_mode_cold_neither_is_full_cold_store`.
+    ///
+    /// Documents the wipe-edge product rule: warm SoT is `vector_count > 0` only.
+    /// Orphan file hashes with zero vectors still resolve to full / `cold-store`
+    /// (not a separate wipe-edge mode string).
     #[test]
-    fn resolve_mode_orphan_hashes_empty_vectors_is_cold_store() {
-        // C1 wipe edge: hashes may exist but vector_count==0 → full bootstrap.
+    fn resolve_mode_wipe_edge_orphan_hashes_is_pure_cold_store_alias() {
         let (incr, reason) = resolve_semantic_index_mode(false, false, 0);
         assert!(!incr);
         assert_eq!(reason, "cold-store");
