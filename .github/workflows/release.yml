@@ -458,7 +458,7 @@ jobs:
           echo "Skipping GitHub SBOM attestation: repository is not public and this is not GitHub Enterprise Cloud."
           echo "Attestation will be enabled automatically once the repo is public (when the repository becomes public)."
       - name: Install cosign
-        uses: sigstore/cosign-installer@3094a48ba06382e0e6cfa5a4af4fcc55fc6942b9
+        uses: sigstore/cosign-installer@874852de93c66509b01dc7cd80f7a5385182d017
         with:
           cosign-release: v3.1.1
       - name: Sign archives + SBOM
