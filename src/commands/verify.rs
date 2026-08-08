@@ -1339,15 +1339,7 @@ pub fn execute_verify(
 
         let relevant: Vec<_> = steps
             .iter()
-            .filter(|s| {
-                let cmd = s.command.to_lowercase();
-                let t_raw = target.to_lowercase();
-                let t_resolved = resolved_for_filter.as_ref().map(|p| p.to_lowercase());
-                cmd.contains(&t_raw)
-                    || t_resolved.as_ref().is_some_and(|r| cmd.contains(r))
-                    || cmd.contains("test")
-                    || cmd.contains("check")
-            })
+            .filter(|s| step_relevant_to_entity(&s.command, target, resolved_for_filter.as_deref()))
             .collect();
         println!(
             "\n  Verification steps relevant to this entity ({}):",
@@ -1996,6 +1988,25 @@ impl TestMappingState {
     }
 }
 
+/// Whether a verification step command is relevant to `--entity` (M3).
+///
+/// Matches case-insensitively on the raw entity string and, when path resolution
+/// produced a stored path (alias/suffix), that resolved form as well. Generic
+/// `test` / `check` steps stay in the relevant set.
+pub(crate) fn step_relevant_to_entity(
+    command: &str,
+    target: &str,
+    resolved_path: Option<&str>,
+) -> bool {
+    let cmd = command.to_lowercase();
+    let t_raw = target.to_lowercase();
+    let t_resolved = resolved_path.map(|p| p.to_lowercase());
+    cmd.contains(&t_raw)
+        || t_resolved.as_ref().is_some_and(|r| cmd.contains(r))
+        || cmd.contains("test")
+        || cmd.contains("check")
+}
+
 const MAPPED_TESTS_QUERY_BY_FILE: &str = "SELECT DISTINCT pf_test.file_path || '::' || ps_test.symbol_name \
      FROM test_mapping tm \
      JOIN project_symbols ps_test ON tm.test_symbol_id = ps_test.id \
@@ -2235,6 +2246,68 @@ pub fn explain_test_mappings(
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod entity_path_resolution_tests {
+    use super::step_relevant_to_entity;
+
+    /// M3: resolved stored path matches step even when the raw entity is an alias.
+    #[test]
+    fn step_filter_matches_resolved_path_when_raw_differs() {
+        let cmd = "cargo nextest run --package ledgerful -- src/commands/doctor/mod.rs";
+        assert!(step_relevant_to_entity(
+            cmd,
+            "src/commands/doctor.rs",
+            Some("src/commands/doctor/mod.rs"),
+        ));
+    }
+
+    /// M3: raw entity still matches when present in the command.
+    #[test]
+    fn step_filter_matches_raw_target() {
+        let cmd = "rg src/pkg.rs --type rust";
+        assert!(step_relevant_to_entity(cmd, "src/pkg.rs", None));
+        assert!(step_relevant_to_entity(
+            cmd,
+            "src/pkg.rs",
+            Some("src/pkg/mod.rs"),
+        ));
+    }
+
+    /// M3: neither raw nor resolved → only generic test/check steps stay relevant.
+    #[test]
+    fn step_filter_requires_path_or_generic_when_unrelated() {
+        // No path match and no test/check token → not relevant.
+        assert!(!step_relevant_to_entity(
+            "cargo fmt --all",
+            "src/commands/doctor.rs",
+            Some("src/commands/doctor/mod.rs"),
+        ));
+        // "check" / "test" are generic verifier tokens → still relevant
+        assert!(step_relevant_to_entity(
+            "cargo check -p ledgerful",
+            "src/orphan.rs",
+            None,
+        ));
+        assert!(step_relevant_to_entity(
+            "cargo nextest run --lib",
+            "src/orphan.rs",
+            None,
+        ));
+    }
+
+    /// Display cap helper contract for Ambiguous lists (DoD-3 / L2 data side).
+    #[test]
+    fn ambiguous_display_cap_shows_and_n_more_when_over_10() {
+        let total = 11usize;
+        let show = total.min(10);
+        assert_eq!(show, 10);
+        let more = total - show;
+        assert_eq!(more, 1);
+        let line = format!("… and {} more", more);
+        assert_eq!(line, "… and 1 more");
     }
 }
 

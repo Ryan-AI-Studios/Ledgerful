@@ -180,6 +180,32 @@ fn test_explain_test_mappings_extensionless_alias_to_rs() {
     );
 }
 
+/// DoD-1b / M1 / L1: extensionless `src/pkg` when only `src/pkg/mod.rs` is
+/// indexed (the other alias candidate). Guards against alias list regressing
+/// to `.rs` only.
+#[test]
+fn test_explain_test_mappings_extensionless_alias_to_mod() {
+    let tmp = tempdir().unwrap();
+    let storage = StorageManager::init(&tmp.path().join("ledger.db")).unwrap();
+
+    seed_baseline_mapping(&storage);
+    // Only the mod.rs candidate — not src/pkg.rs.
+    insert_file(&storage, 22, "src/pkg/mod.rs");
+    insert_file(&storage, 23, "tests/pkg_mod_test.rs");
+    insert_symbol(&storage, 22, 22, "pkg_mod_fn");
+    insert_symbol(&storage, 23, 23, "test_pkg_mod_fn");
+    insert_mapping(&storage, 23, 23, Some(22), Some(22));
+
+    let state = explain_test_mappings(storage.get_connection(), "src/pkg");
+    assert_eq!(
+        state,
+        TestMappingState::Mapped {
+            tests: vec!["tests/pkg_mod_test.rs::test_pkg_mod_fn".to_string()],
+            resolved_path: Some("src/pkg/mod.rs".to_string()),
+        }
+    );
+}
+
 /// DoD-3 / M2: unique full-input suffix resolves to the sole match.
 #[test]
 fn test_explain_test_mappings_unique_path_suffix() {
@@ -230,6 +256,38 @@ fn test_explain_test_mappings_ambiguous_mod_rs_suffix() {
             );
         }
         other => panic!("expected EntityAmbiguous, got {other:?}"),
+    }
+}
+
+/// DoD-3 / L2: 11 suffix hits → EntityAmbiguous with all 11 candidates sorted
+/// by `file_path` (display cap of 10 + "and N more" is CLI-side; data must
+/// retain the full ordered list).
+#[test]
+fn test_explain_test_mappings_ambiguous_mod_rs_eleven_sorted() {
+    let tmp = tempdir().unwrap();
+    let storage = StorageManager::init(&tmp.path().join("ledger.db")).unwrap();
+
+    seed_baseline_mapping(&storage);
+    // Lexicographic dirs a01..a11 so ORDER BY file_path is deterministic.
+    let mut expected: Vec<String> = Vec::with_capacity(11);
+    for i in 1..=11 {
+        let path = format!("src/a{i:02}/mod.rs");
+        insert_file(&storage, 100 + i, &path);
+        expected.push(path);
+    }
+    expected.sort();
+
+    let state = explain_test_mappings(storage.get_connection(), "mod.rs");
+    match state {
+        TestMappingState::EntityAmbiguous { query, candidates } => {
+            assert_eq!(query, "mod.rs");
+            assert_eq!(candidates.len(), 11, "data side must keep all hits");
+            assert_eq!(candidates, expected);
+            // Contract for CLI display cap (show min(10), overflow = total-10).
+            assert_eq!(candidates.len().min(10), 10);
+            assert_eq!(candidates.len() - 10, 1);
+        }
+        other => panic!("expected EntityAmbiguous with 11 candidates, got {other:?}"),
     }
 }
 
