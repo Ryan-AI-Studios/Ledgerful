@@ -924,11 +924,12 @@ fn execute_hotspots_trend(
         match mode {
             TrendMode::Summary { limit } => {
                 let summary = build_trend_summary(&rows, limit);
+                let shown = summary.files.len();
                 println!(
                     "\n{}",
                     format!(
                         "Hotspot Trends (Last {} days) — top {} of {} files · {} snapshots",
-                        days, summary.limit, summary.total_files, summary.snapshot_count
+                        days, shown, summary.total_files, summary.snapshot_count
                     )
                     .if_supports_color(Stream::Stdout, |s| s.style(Style::new().blue().bold()))
                 );
