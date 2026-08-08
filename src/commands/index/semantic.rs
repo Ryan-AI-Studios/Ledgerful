@@ -8,7 +8,10 @@ use blake3;
 use indicatif::{ProgressBar, ProgressStyle};
 use miette::Result;
 use rayon::prelude::*;
+use serde::Serialize;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::time::{Duration, Instant};
 use tracing::{debug, info, warn};
 
 type ParsedSemanticFile = (
@@ -18,6 +21,114 @@ type ParsedSemanticFile = (
 );
 type ParsedSemanticFileResult = std::result::Result<ParsedSemanticFile, String>;
 const SEMANTIC_EMBEDDING_BATCH_SIZE: usize = 8;
+
+/// Product progress lines (0148 / 0161): never via filterable tracing INFO.
+/// Suppressed under `--json` so machine stdout stays pure (B6).
+fn emit_semantic_progress(json: bool, message: &str) {
+    if !json {
+        println!("{message}");
+    }
+}
+
+/// Resolve effective semantic index mode from flags + post-purge vector count.
+/// Warm SoT = `vector_count > 0` (not hash presence). Pure / unit-testable (0161).
+pub(crate) fn resolve_semantic_index_mode(
+    force_full: bool,
+    force_incremental: bool,
+    vector_count: usize,
+) -> (bool /* incremental */, &'static str /* reason */) {
+    if force_full {
+        return (false, "--full");
+    }
+    if force_incremental {
+        return (true, "explicit-incremental");
+    }
+    if vector_count > 0 {
+        (true, "auto-incremental")
+    } else {
+        (false, "cold-store")
+    }
+}
+
+/// Final machine summary for `index --semantic --json` (schemaVersion 1).
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct SemanticIndexJsonResult {
+    schema_version: u32,
+    mode: &'static str,
+    reason: &'static str,
+    files_processed: usize,
+    files_candidates: usize,
+    chunks_embedded: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    purged_foreign: Option<u64>,
+    up_to_date: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    hnsw_rebuilt: Option<bool>,
+}
+
+fn emit_semantic_json(result: &SemanticIndexJsonResult) -> Result<()> {
+    let json = serde_json::to_string(result)
+        .map_err(|e| miette::miette!("Failed to serialize semantic index JSON: {e}"))?;
+    println!("{json}");
+    Ok(())
+}
+
+/// Non-TTY mid-phase counters: AtomicUsize + background poller (no println in Rayon).
+struct NonTtyPhaseProgress {
+    counter: Arc<AtomicUsize>,
+    stop: Arc<AtomicBool>,
+    handle: Option<std::thread::JoinHandle<()>>,
+}
+
+impl NonTtyPhaseProgress {
+    fn start(label: &'static str, total: usize, unit: &'static str, json: bool) -> Self {
+        let counter = Arc::new(AtomicUsize::new(0));
+        let stop = Arc::new(AtomicBool::new(false));
+        let handle = if !json && !crate::util::term::is_interactive() && total > 1 {
+            let c = Arc::clone(&counter);
+            let s = Arc::clone(&stop);
+            // Throttle: every N files in [1, 25] (≈ total/20), or ~20s wall.
+            let step = (total / 20).clamp(1, 25);
+            Some(std::thread::spawn(move || {
+                let interval = Duration::from_secs(20);
+                let mut last_n = 0usize;
+                let mut last_t = Instant::now();
+                while !s.load(Ordering::Relaxed) {
+                    std::thread::sleep(Duration::from_millis(500));
+                    let n = c.load(Ordering::Relaxed);
+                    if n == 0 {
+                        continue;
+                    }
+                    if n >= total {
+                        break;
+                    }
+                    if n > last_n
+                        && (n.saturating_sub(last_n) >= step || last_t.elapsed() >= interval)
+                    {
+                        println!("Semantic index: {label} {n}/{total} {unit}…");
+                        last_n = n;
+                        last_t = Instant::now();
+                    }
+                }
+            }))
+        } else {
+            None
+        };
+        Self {
+            counter,
+            stop,
+            handle,
+        }
+    }
+
+    fn finish(self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(handle) = self.handle {
+            let _ = handle.join();
+        }
+    }
+}
 
 fn semantic_embedding_batches(
     chunks: &[crate::semantic::chunker::AstChunk],
@@ -93,8 +204,10 @@ pub(crate) fn execute_semantic_index(
     layout: &Layout,
     storage: StorageManager,
     config: &Config,
-    incremental: bool,
+    force_full: bool,
+    force_incremental: bool,
     concurrency_override: Option<usize>,
+    json: bool,
 ) -> Result<()> {
     // DoD-1: refuse before any write when no embedding backend is configured.
     // Non-zero exit is intentional — the command cannot succeed meaningfully.
@@ -125,27 +238,44 @@ pub(crate) fn execute_semantic_index(
     let parse_threads = resolved.parse_threads.get();
     let embed_cap = resolved.embed_threads.get();
 
+    let repo_root = layout.root.as_std_path();
+
+    // 0152: dual-relation foreign purge at start of BOTH modes BEFORE warm detection.
+    let purged = semantic.purge_foreign_semantic_keys(repo_root)?;
+    if purged > 0 {
+        debug!("Purged {purged} semantic path key(s) outside work root");
+    }
+
+    // Warm SoT = vector_count > 0 after purge (safe 0 on error — never panic).
+    let vector_count = semantic.get_vector_count().unwrap_or(0);
+    let (incremental, reason) =
+        resolve_semantic_index_mode(force_full, force_incremental, vector_count);
+    let mode_label: &'static str = if incremental { "incremental" } else { "full" };
+
+    // C5: mode line as soon as resolved (before walk/hash long work).
+    emit_semantic_progress(
+        json,
+        &format!("Semantic indexing: mode={mode_label} (reason={reason})"),
+    );
+    // Purge human line after mode when purged > 0 (0154 quiet default).
+    if purged > 0 {
+        emit_semantic_progress(
+            json,
+            &format!("Purged {purged} semantic path key(s) outside work root."),
+        );
+    }
+
     info!(
-        "Semantic indexing started: incremental={incremental}, cli_concurrency={:?}",
+        "Semantic indexing started: mode={mode_label}, reason={reason}, cli_concurrency={:?}",
         concurrency_override
     );
     info!("Semantic indexing threads: parse={parse_threads}, embed_concurrency={embed_cap}");
 
-    info!("Indexing repository for semantic search...");
-
     // ── Phase 1: Collect candidate files ───────────────────────────────────
-    let repo_root = layout.root.as_std_path();
     let candidate_paths = walk_repo_for_semantic_files(repo_root);
+    let files_candidates = candidate_paths.len();
 
-    // 0152: dual-relation foreign purge at full **and** incremental start.
-    let purged = semantic.purge_foreign_semantic_keys(repo_root)?;
-    if purged > 0 {
-        debug!("Purged {purged} semantic path key(s) outside work root");
-        // Human line only when purged > 0 (0154 quiet default — no routine chatter).
-        println!("Purged {purged} semantic path key(s) outside work root.");
-    }
-
-    // HP3: On incremental runs filter to only files whose hash has changed.
+    // HP3: On incremental runs filter to changed hashes OR missing snippets (C1).
     let files_to_process: Vec<std::path::PathBuf> = if incremental {
         let tracked_files = semantic.get_tracked_files()?;
         for tracked in tracked_files {
@@ -177,13 +307,14 @@ pub(crate) fn execute_semantic_index(
             .into_iter()
             .filter(|path| {
                 let Ok(content) = crate::util::fs::read_to_string_with_encoding(path) else {
-                    return true; // re-try unreadable files
+                    return true; // re-try unreadable files (C10 soft)
                 };
                 let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
                 let Ok(key) = semantic_path_key(repo_root, path) else {
                     return true;
                 };
-                !semantic.is_file_hash_current(&key, &hash)
+                // Skip only if hash-current AND has ≥1 snippet row.
+                !(semantic.is_file_hash_current(&key, &hash) && semantic.file_has_snippets(&key))
             })
             .collect()
     } else {
@@ -192,15 +323,42 @@ pub(crate) fn execute_semantic_index(
         candidate_paths
     };
 
+    let to_process = files_to_process.len();
+    emit_semantic_progress(
+        json,
+        &format!("Semantic indexing: candidates={files_candidates} to_process={to_process}"),
+    );
+
+    // B4: zero-delta up-to-date — always print (mode-aware); exit 0.
     if files_to_process.is_empty() {
-        info!("Semantic index is up to date: no files changed since last index");
+        if incremental {
+            emit_semantic_progress(
+                json,
+                "Semantic index up to date: 0 files changed (incremental).",
+            );
+        } else if files_candidates == 0 {
+            emit_semantic_progress(json, "Semantic index up to date: 0 candidate files.");
+        } else {
+            emit_semantic_progress(
+                json,
+                "Semantic index complete: 0/0 files (full, nothing to process).",
+            );
+        }
+        if json {
+            emit_semantic_json(&SemanticIndexJsonResult {
+                schema_version: 1,
+                mode: mode_label,
+                reason,
+                files_processed: 0,
+                files_candidates,
+                chunks_embedded: 0,
+                purged_foreign: if purged > 0 { Some(purged) } else { None },
+                up_to_date: true,
+                hnsw_rebuilt: None,
+            })?;
+        }
         return Ok(());
     }
-
-    info!(
-        "Semantic indexing will process {} files",
-        files_to_process.len()
-    );
 
     // ── Phase 2: Configure Rayon thread pool (U13/U14) ──────────────────────
 
@@ -211,8 +369,10 @@ pub(crate) fn execute_semantic_index(
 
     let embed_semaphore = Arc::new(EmbedSemaphore::new(embed_cap));
 
-    // ── Phase 3: Parallel parse + embed with progress bar (HP2 + HP4) ──────
+    // ── Phase 3: Parallel parse + embed with progress (HP2 + HP4 + 0161 B1) ─
     let total = files_to_process.len();
+
+    emit_semantic_progress(json, &format!("Semantic index: parsing 0/{total} files…"));
 
     let pb_parse = ProgressBar::new(total as u64);
     if !crate::util::term::is_interactive() {
@@ -226,6 +386,9 @@ pub(crate) fn execute_semantic_index(
         .progress_chars("█▓░"),
     );
     pb_parse.enable_steady_tick(std::time::Duration::from_millis(80));
+
+    let parse_progress = NonTtyPhaseProgress::start("parsing", total, "files", json);
+    let parse_counter = Arc::clone(&parse_progress.counter);
 
     let parsed_files_res: Vec<ParsedSemanticFileResult> = pool.install(|| {
         files_to_process
@@ -241,11 +404,17 @@ pub(crate) fn execute_semantic_index(
                     Err(e) => Err(format!("{}: {}", path.display(), e)),
                 };
                 pb_parse.inc(1);
+                parse_counter.fetch_add(1, Ordering::Relaxed);
                 res
             })
             .collect()
     });
+    parse_progress.finish();
     pb_parse.finish_and_clear();
+    emit_semantic_progress(
+        json,
+        &format!("Semantic index: parsing done {total} files…"),
+    );
 
     let mut parsed_files = Vec::new();
     let mut parse_errors = Vec::new();
@@ -280,10 +449,16 @@ pub(crate) fn execute_semantic_index(
     }
 
     let files_indexed_count = successful_files.len();
+    let chunks_to_embed = flat_chunks.len();
 
     // Batch embedding generation
     let mut all_embeddings = Vec::new();
     if !flat_chunks.is_empty() {
+        emit_semantic_progress(
+            json,
+            &format!("Semantic index: embedding 0/{chunks_to_embed} chunks…"),
+        );
+
         let pb_embed = ProgressBar::new(flat_chunks.len() as u64);
         if !crate::util::term::is_interactive() {
             pb_embed.set_draw_target(indicatif::ProgressDrawTarget::hidden());
@@ -302,6 +477,10 @@ pub(crate) fn execute_semantic_index(
 
         let pb_embed_ref = pb_embed.clone();
         let embed_sem_ref = embed_semaphore.clone();
+        let embed_progress =
+            NonTtyPhaseProgress::start("embedding", chunks_to_embed, "chunks", json);
+        let embed_counter = Arc::clone(&embed_progress.counter);
+
         let embedding_results: Result<Vec<Vec<Vec<f32>>>, String> = pool.install(|| {
             chunk_batches
                 .into_par_iter()
@@ -313,13 +492,20 @@ pub(crate) fn execute_semantic_index(
                         .embedder
                         .embed_batch(&text_refs)
                         .map_err(|e| e.to_string());
-                    pb_embed_ref.inc(batch.len() as u64);
+                    let n = batch.len();
+                    pb_embed_ref.inc(n as u64);
+                    embed_counter.fetch_add(n, Ordering::Relaxed);
                     embedder_res
                 })
                 .collect()
         });
 
+        embed_progress.finish();
         pb_embed.finish_and_clear();
+        emit_semantic_progress(
+            json,
+            &format!("Semantic index: embedding done {chunks_to_embed} chunks…"),
+        );
 
         match embedding_results {
             Ok(batches) => {
@@ -343,7 +529,30 @@ pub(crate) fn execute_semantic_index(
         }
     }
 
+    let mut hnsw_rebuilt = false;
     if !flat_chunks.is_empty() {
+        let threshold = config.semantic.hnsw_rebuild_threshold();
+        let skip_hnsw = config.local_model.disable_hnsw;
+        let will_rebuild = !skip_hnsw && flat_chunks.len() >= threshold;
+        // C7: announce total store size (after prune + new), not batch-only.
+        let count_after_prune = semantic.get_vector_count().unwrap_or(0);
+        let total_after = count_after_prune.saturating_add(flat_chunks.len());
+        if will_rebuild {
+            emit_semantic_progress(
+                json,
+                &format!(
+                    "Semantic index: rebuilding HNSW (~{total_after} total snippets; batch {} new) (may take several minutes)…",
+                    flat_chunks.len()
+                ),
+            );
+            hnsw_rebuilt = true;
+        } else {
+            emit_semantic_progress(
+                json,
+                &format!("Semantic index: ingesting {} snippets…", flat_chunks.len()),
+            );
+        }
+
         let spinner = ProgressBar::new_spinner();
         if !crate::util::term::is_interactive() {
             spinner.set_draw_target(indicatif::ProgressDrawTarget::hidden());
@@ -360,8 +569,13 @@ pub(crate) fn execute_semantic_index(
             "Ingesting {} snippets into vector store...",
             flat_chunks.len()
         );
+        let chunk_count = flat_chunks.len();
         semantic.index_chunks_batched(flat_chunks, all_embeddings)?;
         spinner.finish_and_clear();
+        emit_semantic_progress(
+            json,
+            &format!("Semantic index: ingest done ({chunk_count} snippets)…"),
+        );
     }
 
     // Record new hashes only for successfully processed files (relative keys).
@@ -371,10 +585,25 @@ pub(crate) fn execute_semantic_index(
         }
     }
 
-    println!(
+    let complete_msg = format!(
         "Semantic indexing complete: {files_indexed_count}/{total} files produced embeddings{}.",
         if incremental { " (incremental)" } else { "" }
     );
+    emit_semantic_progress(json, &complete_msg);
+
+    if json {
+        emit_semantic_json(&SemanticIndexJsonResult {
+            schema_version: 1,
+            mode: mode_label,
+            reason,
+            files_processed: files_indexed_count,
+            files_candidates,
+            chunks_embedded: chunks_to_embed,
+            purged_foreign: if purged > 0 { Some(purged) } else { None },
+            up_to_date: false,
+            hnsw_rebuilt: if hnsw_rebuilt { Some(true) } else { None },
+        })?;
+    }
     Ok(())
 }
 
@@ -607,6 +836,196 @@ mod tests {
         );
     }
 
+    // ── 0161 mode resolution matrix ────────────────────────────────────────
+
+    #[test]
+    fn resolve_mode_cold_neither_is_full_cold_store() {
+        let (incr, reason) = resolve_semantic_index_mode(false, false, 0);
+        assert!(!incr);
+        assert_eq!(reason, "cold-store");
+    }
+
+    #[test]
+    fn resolve_mode_warm_neither_is_auto_incremental() {
+        let (incr, reason) = resolve_semantic_index_mode(false, false, 42);
+        assert!(incr);
+        assert_eq!(reason, "auto-incremental");
+    }
+
+    /// Pure cold-store alias of `resolve_mode_cold_neither_is_full_cold_store`.
+    ///
+    /// Documents the wipe-edge product rule: warm SoT is `vector_count > 0` only.
+    /// Orphan file hashes with zero vectors still resolve to full / `cold-store`
+    /// (not a separate wipe-edge mode string).
+    #[test]
+    fn resolve_mode_wipe_edge_orphan_hashes_is_pure_cold_store_alias() {
+        let (incr, reason) = resolve_semantic_index_mode(false, false, 0);
+        assert!(!incr);
+        assert_eq!(reason, "cold-store");
+    }
+
+    #[test]
+    fn resolve_mode_full_wins_over_incremental_and_warm() {
+        let (incr, reason) = resolve_semantic_index_mode(true, true, 999);
+        assert!(!incr);
+        assert_eq!(reason, "--full");
+    }
+
+    #[test]
+    fn resolve_mode_explicit_incremental() {
+        let (incr, reason) = resolve_semantic_index_mode(false, true, 0);
+        assert!(incr);
+        assert_eq!(reason, "explicit-incremental");
+        let (incr_warm, reason_warm) = resolve_semantic_index_mode(false, true, 10);
+        assert!(incr_warm);
+        assert_eq!(reason_warm, "explicit-incremental");
+    }
+
+    #[test]
+    fn resolve_mode_vector_count_zero_never_panics() {
+        // unwrap_or(0) path: callers pass 0 on error; pure fn must not panic.
+        let _ = resolve_semantic_index_mode(false, false, 0);
+        let _ = resolve_semantic_index_mode(false, false, usize::MAX);
+    }
+
+    /// 0161 Codex R1 / B7: production `get_vector_count().unwrap_or(0)` must resolve
+    /// cold-store (full) without panic — count Err and missing relation both map to 0.
+    #[test]
+    fn count_error_or_zero_treated_as_cold_store_no_panic() {
+        // Production call site (execute_semantic_index):
+        //   let vector_count = semantic.get_vector_count().unwrap_or(0);
+        //   resolve_semantic_index_mode(..., vector_count)
+        // Same soft-fail contract as production unwrap_or(0).
+        fn soft_vector_count(count: Result<usize, miette::Report>) -> usize {
+            count.unwrap_or(0)
+        }
+        let vector_count = soft_vector_count(Err(miette::miette!("cozo count failed")));
+        assert_eq!(vector_count, 0);
+        let (incremental, reason) = resolve_semantic_index_mode(false, false, vector_count);
+        assert!(
+            !incremental,
+            "count error must not warm-skip into incremental"
+        );
+        assert_eq!(reason, "cold-store");
+        // Ok(0) / missing-relation path also resolves cold.
+        assert_eq!(soft_vector_count(Ok(0)), 0);
+        let (incr0, reason0) = resolve_semantic_index_mode(false, false, soft_vector_count(Ok(0)));
+        assert!(!incr0);
+        assert_eq!(reason0, "cold-store");
+        // Bounds: huge counts still pure / non-panicking.
+        let _ = resolve_semantic_index_mode(false, false, usize::MAX);
+    }
+
+    /// 0161 Codex R1 / B7: orphan file hashes + zero vectors ⇒ full/`cold-store` on the
+    /// real post-purge execute path, and C1 filter re-processes (not silent up-to-date).
+    ///
+    /// Mirrors `execute_semantic_index` order: purge → get_vector_count → resolve → filter.
+    #[test]
+    fn wipe_edge_orphan_hashes_execute_path_cold_store_and_reprocesses() {
+        use crate::config::model::LocalModelConfig;
+        use crate::semantic::SemanticDiscovery;
+        use crate::state::storage_cozo::CozoStorage;
+
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let config = LocalModelConfig {
+            dimensions: 3,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let semantic = SemanticDiscovery::new(config, &storage).expect("semantic");
+        semantic.ensure_file_hash_schema().expect("hash schema");
+
+        // Plant orphan hash rows with zero snippet_embedding vectors (dim-wipe edge).
+        let path_key = "src/orphan.rs";
+        let content_hash = "deadbeef_hash_only_no_vectors";
+        semantic
+            .record_file_hash(path_key, content_hash)
+            .expect("record orphan hash");
+        assert!(
+            semantic.is_file_hash_current(path_key, content_hash),
+            "precondition: hash must be current"
+        );
+        assert!(
+            !semantic.file_has_snippets(path_key),
+            "precondition: no snippet rows for orphan hash"
+        );
+
+        // Execute-path order: dual foreign purge BEFORE warm detection.
+        let work_root = tempfile::tempdir().expect("work root");
+        let purged = semantic
+            .purge_foreign_semantic_keys(work_root.path())
+            .expect("purge");
+        assert_eq!(
+            purged, 0,
+            "relative orphan hash is not foreign; purge must not remove it"
+        );
+
+        // Warm SoT = vector_count > 0 after purge (safe 0 on error — never panic).
+        let vector_count = semantic.get_vector_count().unwrap_or(0);
+        assert_eq!(
+            vector_count, 0,
+            "hash-only store must report zero vectors (not warm)"
+        );
+
+        let (incremental, reason) = resolve_semantic_index_mode(false, false, vector_count);
+        assert!(
+            !incremental,
+            "orphan hashes + empty vectors must full-bootstrap, not auto-incremental"
+        );
+        assert_eq!(reason, "cold-store");
+
+        // C1 filter (incremental branch): skip only when hash-current AND has snippets.
+        // Hash-only must re-process even under forced incremental.
+        let would_skip = semantic.is_file_hash_current(path_key, content_hash)
+            && semantic.file_has_snippets(path_key);
+        assert!(
+            !would_skip,
+            "hash-current without snippets must re-process (not silent up-to-date)"
+        );
+    }
+
+    #[test]
+    fn semantic_json_result_omits_zero_purge_and_false_hnsw() {
+        let result = SemanticIndexJsonResult {
+            schema_version: 1,
+            mode: "incremental",
+            reason: "auto-incremental",
+            files_processed: 0,
+            files_candidates: 3,
+            chunks_embedded: 0,
+            purged_foreign: None,
+            up_to_date: true,
+            hnsw_rebuilt: None,
+        };
+        let s = serde_json::to_string(&result).expect("serialize");
+        assert!(s.contains("\"schemaVersion\":1"));
+        assert!(s.contains("\"upToDate\":true"));
+        assert!(!s.contains("purgedForeign"));
+        assert!(!s.contains("hnswRebuilt"));
+        // Pure single object — no human prose.
+        assert!(s.starts_with('{'));
+        assert!(s.ends_with('}'));
+    }
+
+    #[test]
+    fn semantic_json_result_includes_purge_and_hnsw_when_set() {
+        let result = SemanticIndexJsonResult {
+            schema_version: 1,
+            mode: "full",
+            reason: "--full",
+            files_processed: 2,
+            files_candidates: 2,
+            chunks_embedded: 10,
+            purged_foreign: Some(3),
+            up_to_date: false,
+            hnsw_rebuilt: Some(true),
+        };
+        let s = serde_json::to_string(&result).expect("serialize");
+        assert!(s.contains("\"purgedForeign\":3"));
+        assert!(s.contains("\"hnswRebuilt\":true"));
+        assert!(s.contains("\"mode\":\"full\""));
+    }
+
     /// DoD-1: unconfigured backend refuses before any semantic write.
     #[test]
     fn execute_semantic_index_refuses_when_unconfigured() {
@@ -624,7 +1043,7 @@ mod tests {
             "precondition: default config must be unconfigured"
         );
 
-        let err = execute_semantic_index(&layout, storage, &config, false, None)
+        let err = execute_semantic_index(&layout, storage, &config, false, false, None, false)
             .expect_err("must refuse when unconfigured");
         let msg = format!("{err:#}");
         assert!(

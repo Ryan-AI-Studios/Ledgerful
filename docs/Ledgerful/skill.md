@@ -598,8 +598,8 @@ For Dependabot or audit findings:
 # Safely migrate repository state (clears indices, preserves ledger)
 ledgerful update --migrate --force
 
-# Rebuild indices after migration
-ledgerful index --semantic
+# Rebuild indices after migration (force full; bare --semantic may be warm no-op)
+ledgerful index --semantic --full
 ```
 
 ## Publish Hygiene (dual green)

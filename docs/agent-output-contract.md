@@ -30,6 +30,7 @@ on stderr.
 | `search --json` | yes | yes | 0136 envelope; empty results OK |
 | `verify --json` | yes | yes* | plan-execution payload; see rejected combos |
 | `index --check --json` | yes | yes (0149) | Info suppressed under json; Error still on stderr |
+| `index --semantic --json` | yes (0161) | yes | One final JSON object (`schemaVersion`, `mode`, `reason`, counts, `upToDate`); zero human mid-run lines on stdout |
 | `dead-code --json` | yes (0149) | yes | schemaVersion 1 envelope; see rejected combos |
 | `hotspots --json` | yes | yes | |
 | `endpoints --json` | yes | yes | |

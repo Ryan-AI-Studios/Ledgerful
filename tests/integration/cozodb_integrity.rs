@@ -64,16 +64,17 @@ timeout_secs = 5
     for i in 0..10 {
         println!("Migration Loop Iteration: {}", i + 1);
 
-        // 1. Semantic index (populates Cozo HNSW)
+        // 1. Semantic index (populates Cozo HNSW).
+        // 0161 C2: force --full so warm auto-incremental cannot no-op after first iter.
         let output = Command::new(binary_path)
-            .args(["index", "--semantic"])
+            .args(["index", "--semantic", "--full"])
             .current_dir(root)
             .output()
-            .expect("Failed to execute ledgerful index --semantic");
+            .expect("Failed to execute ledgerful index --semantic --full");
 
         if !output.status.success() {
             panic!(
-                "index --semantic failed on iteration {}: {}",
+                "index --semantic --full failed on iteration {}: {}",
                 i + 1,
                 String::from_utf8_lossy(&output.stderr)
             );

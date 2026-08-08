@@ -441,6 +441,29 @@ impl<'a> SemanticDiscovery<'a> {
         }
     }
 
+    /// Returns `true` if `snippet_embedding` has at least one row for work-root-relative
+    /// `path_key` (0161 C1 companion: hash-current alone must not skip empty snippets).
+    pub fn file_has_snippets(&self, path_key: &str) -> bool {
+        use cozo::{DataValue, ScriptMutability};
+        use std::collections::BTreeMap;
+
+        let path_str = path_key.replace('\\', "/");
+        let mut params = BTreeMap::new();
+        params.insert("path".to_string(), DataValue::from(path_str.as_str()));
+        // Parameterized path key — same honesty requirement as remove_file_snippets.
+        let script = "\
+            paths[file_path] := file_path = $path\n\
+            ?[file_path] := paths[file_path], *snippet_embedding{file_path}";
+        match self.vector_store.storage_ref().run_script_with_params(
+            script,
+            params,
+            ScriptMutability::Immutable,
+        ) {
+            Ok(res) => !res.rows.is_empty(),
+            Err(_) => false,
+        }
+    }
+
     /// Upsert the content hash for work-root-relative `path_key` into `semantic_file_hash`.
     pub fn record_file_hash(&self, path_key: &str, hash: &str) -> Result<()> {
         use cozo::{DataValue, ScriptMutability};
@@ -1026,5 +1049,216 @@ mod tests {
                 "unconfigured must not claim no matches (succeeded={succeeded}): {msg}"
             );
         }
+    }
+
+    /// 0161 C1 companion: hash-current + zero snippets → file_has_snippets false
+    /// so incremental filter re-processes (orphan hash after dim-wipe).
+    #[test]
+    fn file_has_snippets_false_when_hash_only_no_vectors() {
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let config = LocalModelConfig {
+            dimensions: 3,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let semantic = SemanticDiscovery::new(config, &storage).expect("semantic");
+        semantic.ensure_file_hash_schema().expect("hash schema");
+
+        let path_key = "src/orphan.rs";
+        semantic
+            .record_file_hash(path_key, "deadbeef")
+            .expect("record hash");
+        assert!(
+            semantic.is_file_hash_current(path_key, "deadbeef"),
+            "hash must be current"
+        );
+        assert!(
+            !semantic.file_has_snippets(path_key),
+            "orphan hash with no snippet rows must not report snippets"
+        );
+
+        // After a real put, snippets should be visible.
+        let chunk = crate::semantic::chunker::AstChunk {
+            file_path: path_key.to_string(),
+            name: "f".to_string(),
+            kind: crate::index::symbols::SymbolKind::Function,
+            content: "fn f() {}".to_string(),
+            docstring: None,
+            range: (0, 0),
+            lines: (1, 1),
+            offset: 0,
+        };
+        semantic
+            .index_chunks_batched(vec![chunk], vec![vec![1.0_f32, 0.0, 0.0]])
+            .expect("index chunk");
+        assert!(
+            semantic.file_has_snippets(path_key),
+            "after put, file_has_snippets must be true"
+        );
+        assert!(
+            !semantic.file_has_snippets("src/other.rs"),
+            "unrelated path must not have snippets"
+        );
+    }
+
+    /// 0161 Codex R1 / B7: dual-relation foreign purge removes absolute keys outside
+    /// work root from both `snippet_embedding` and `semantic_file_hash`.
+    /// Local relative warm keys survive so post-purge count can still warm-resolve.
+    #[test]
+    fn purge_foreign_before_warm_removes_absolute_outside_root() {
+        use cozo::{DataValue, ScriptMutability};
+        use std::collections::BTreeMap;
+
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let config = LocalModelConfig {
+            dimensions: 3,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let semantic = SemanticDiscovery::new(config, &storage).expect("semantic");
+        semantic.ensure_file_hash_schema().expect("hash schema");
+
+        let work = tempfile::tempdir().expect("work root");
+        let foreign = tempfile::tempdir().expect("foreign root");
+        let work_root = work.path();
+
+        // Local warm vector + hash (relative keys — keep).
+        let local_key = "src/local.rs";
+        let local_chunk = crate::semantic::chunker::AstChunk {
+            file_path: local_key.to_string(),
+            name: "local_fn".to_string(),
+            kind: crate::index::symbols::SymbolKind::Function,
+            content: "fn local_fn() {}".to_string(),
+            docstring: None,
+            range: (0, 0),
+            lines: (1, 1),
+            offset: 0,
+        };
+        semantic
+            .index_chunks_batched(vec![local_chunk], vec![vec![1.0_f32, 0.0, 0.0]])
+            .expect("index local");
+        semantic
+            .record_file_hash(local_key, "hash_local")
+            .expect("hash local");
+
+        // Foreign absolute poison in both relations (dogfood multi-root class).
+        let foreign_key = foreign
+            .path()
+            .join("src")
+            .join("poison.rs")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let mut params = BTreeMap::new();
+        params.insert(
+            "data".to_string(),
+            DataValue::from(vec![DataValue::List(Box::new(vec![
+                DataValue::from(foreign_key.as_str()),
+                DataValue::from("poison_fn"),
+                DataValue::from(0_i64),
+                DataValue::Vec(Box::new(cozo::Vector::F32(vec![0.0_f32, 1.0, 0.0].into()))),
+            ]))]),
+        );
+        storage
+            .run_script_with_params(
+                "?[file_path, name, line_offset, embedding] <- $data :put snippet_embedding",
+                params,
+                ScriptMutability::Mutable,
+            )
+            .expect("plant foreign embedding");
+        semantic
+            .record_file_hash(&foreign_key, "hash_foreign")
+            .expect("plant foreign hash");
+
+        assert!(
+            semantic.get_vector_count().expect("count before") >= 2,
+            "precondition: local + foreign vectors present"
+        );
+        assert!(
+            semantic.is_file_hash_current(&foreign_key, "hash_foreign"),
+            "precondition: foreign hash present"
+        );
+
+        // Production order: purge at start of BOTH modes BEFORE warm detection.
+        let purged = semantic
+            .purge_foreign_semantic_keys(work_root)
+            .expect("purge");
+        assert!(
+            purged >= 1,
+            "foreign absolute key must be purged (count={purged})"
+        );
+
+        // Foreign gone from both relations.
+        assert!(
+            !semantic.file_has_snippets(&foreign_key),
+            "foreign snippet rows must be gone after purge"
+        );
+        assert!(
+            !semantic.is_file_hash_current(&foreign_key, "hash_foreign"),
+            "foreign hash row must be gone after purge"
+        );
+        assert!(
+            !semantic
+                .get_tracked_files()
+                .expect("tracked")
+                .iter()
+                .any(|k| k == &foreign_key),
+            "tracked files must not list foreign key"
+        );
+
+        // Local warm remains → post-purge count > 0 → auto-incremental.
+        assert!(
+            semantic.file_has_snippets(local_key),
+            "local snippets must survive purge"
+        );
+        assert!(
+            semantic.is_file_hash_current(local_key, "hash_local"),
+            "local hash must survive purge"
+        );
+        let vector_count = semantic.get_vector_count().unwrap_or(0);
+        assert!(
+            vector_count >= 1,
+            "post-purge warm SoT must still see local vectors (count={vector_count})"
+        );
+    }
+
+    /// Companion: hash-only foreign key (no vectors) is still purged from
+    /// `semantic_file_hash` so it cannot poison warm tracking.
+    #[test]
+    fn purge_foreign_hash_only_key_removed() {
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let config = LocalModelConfig {
+            dimensions: 3,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let semantic = SemanticDiscovery::new(config, &storage).expect("semantic");
+        semantic.ensure_file_hash_schema().expect("hash schema");
+
+        let work = tempfile::tempdir().expect("work root");
+        let foreign = tempfile::tempdir().expect("foreign root");
+        let foreign_key = foreign
+            .path()
+            .join("only_hash.rs")
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        semantic
+            .record_file_hash(&foreign_key, "orphan_foreign_hash")
+            .expect("plant hash-only foreign");
+        assert!(semantic.is_file_hash_current(&foreign_key, "orphan_foreign_hash"));
+
+        let purged = semantic
+            .purge_foreign_semantic_keys(work.path())
+            .expect("purge");
+        assert_eq!(purged, 1, "hash-only foreign key counts as one purge");
+        assert!(
+            !semantic.is_file_hash_current(&foreign_key, "orphan_foreign_hash"),
+            "hash-only foreign must be removed"
+        );
+        assert_eq!(
+            semantic.get_vector_count().unwrap_or(0),
+            0,
+            "no vectors before or after"
+        );
     }
 }

@@ -625,8 +625,11 @@ fn dispatch_index(
     dry_run: bool,
     yes: bool,
 ) -> Result<()> {
+    // Pass raw `-i` / `-f` so semantic Auto can distinguish "neither" from
+    // explicit full (0161). Graph path collapses with `incremental && !full`.
     crate::commands::index::execute_index(crate::commands::index::IndexArgs {
-        incremental: incremental && !full,
+        incremental,
+        full,
         check,
         strict,
         json,
