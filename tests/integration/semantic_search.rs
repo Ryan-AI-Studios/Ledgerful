@@ -169,7 +169,6 @@ fn test_remove_file_snippets() {
 fn test_file_hash_tracking() {
     use ledgerful::config::model::LocalModelConfig;
     use ledgerful::semantic::SemanticDiscovery;
-    use std::path::Path;
 
     let tmp = tempfile::tempdir().unwrap();
     let storage = sled_cozo(&tmp);
@@ -183,7 +182,7 @@ fn test_file_hash_tracking() {
     let semantic = SemanticDiscovery::new(config, &storage).unwrap();
     semantic.ensure_file_hash_schema().unwrap();
 
-    let path_a = Path::new("src/foo.rs");
+    let path_a = "src/foo.rs";
     let hash_a = "abc123hash";
 
     // Initially hash should not be current
@@ -199,7 +198,7 @@ fn test_file_hash_tracking() {
     assert!(!semantic.is_file_hash_current(path_a, "different_hash"));
 
     // A different file with the same hash should not be current
-    let path_b = Path::new("src/bar.rs");
+    let path_b = "src/bar.rs";
     assert!(!semantic.is_file_hash_current(path_b, hash_a));
 }
 
@@ -208,7 +207,6 @@ fn test_file_hash_tracking() {
 fn test_get_tracked_files_and_remove_file_hash() {
     use ledgerful::config::model::LocalModelConfig;
     use ledgerful::semantic::SemanticDiscovery;
-    use std::path::Path;
 
     let tmp = tempfile::tempdir().unwrap();
     let storage = sled_cozo(&tmp);
@@ -222,8 +220,8 @@ fn test_get_tracked_files_and_remove_file_hash() {
     let semantic = SemanticDiscovery::new(config, &storage).unwrap();
     semantic.ensure_file_hash_schema().unwrap();
 
-    let path_a = Path::new("src/foo.rs");
-    let path_b = Path::new("src/bar.rs");
+    let path_a = "src/foo.rs";
+    let path_b = "src/bar.rs";
 
     semantic.record_file_hash(path_a, "hasha").unwrap();
     semantic.record_file_hash(path_b, "hashb").unwrap();
@@ -268,16 +266,16 @@ fn test_incremental_deletions_pruning() {
     std::fs::write(&file_a, "fn a() {}").unwrap();
     std::fs::write(&file_b, "fn b() {}").unwrap();
 
-    // Mock record hashes and snippets
-    let path_a_str = file_a.to_string_lossy().to_string();
-    let path_b_str = file_b.to_string_lossy().to_string();
+    // Relative keys under work root (0152 write path).
+    let key_a = "a.rs";
+    let key_b = "b.rs";
 
-    semantic.record_file_hash(&file_a, "hasha").unwrap();
-    semantic.record_file_hash(&file_b, "hashb").unwrap();
+    semantic.record_file_hash(key_a, "hasha").unwrap();
+    semantic.record_file_hash(key_b, "hashb").unwrap();
 
     let chunks = vec![
-        make_chunk(&path_a_str, "fn_a", 0, "fn a() {}"),
-        make_chunk(&path_b_str, "fn_b", 0, "fn b() {}"),
+        make_chunk(key_a, "fn_a", 0, "fn a() {}"),
+        make_chunk(key_b, "fn_b", 0, "fn b() {}"),
     ];
     let embeddings = vec![vec![1.0, 0.0, 0.0], vec![0.0, 1.0, 0.0]];
     semantic.index_chunks_batched(chunks, embeddings).unwrap();
@@ -289,11 +287,17 @@ fn test_incremental_deletions_pruning() {
     // Now remove file_a from the filesystem
     std::fs::remove_file(&file_a).unwrap();
 
-    // Simulating the incremental deletions phase in execute_semantic_index:
+    // Simulating the incremental deletions phase (root-joined exists — 0152):
+    use ledgerful::util::path::{path_is_under_work_root, resolve_under_work_root};
+    let work_root = ws_dir.path();
     let tracked_files = semantic.get_tracked_files().unwrap();
     for tracked in tracked_files {
-        let path = std::path::Path::new(&tracked);
-        if !path.exists() {
+        let gone = if !path_is_under_work_root(work_root, &tracked) {
+            true
+        } else {
+            !resolve_under_work_root(work_root, &tracked).exists()
+        };
+        if gone {
             semantic.remove_file_snippets(&tracked).unwrap();
             semantic.remove_file_hash(&tracked).unwrap();
         }
@@ -302,10 +306,10 @@ fn test_incremental_deletions_pruning() {
     // Verify file_a's snippets and hashes are completely pruned
     let remaining_hashes = semantic.get_tracked_files().unwrap();
     assert_eq!(remaining_hashes.len(), 1);
-    assert_eq!(remaining_hashes[0], path_b_str.replace('\\', "/"));
+    assert_eq!(remaining_hashes[0], key_b);
 
     assert_eq!(semantic.get_vector_count().unwrap(), 1);
     let remaining_query = semantic.query_raw(vec![0.0, 1.0, 0.0], 5).unwrap();
     assert_eq!(remaining_query.len(), 1);
-    assert_eq!(remaining_query[0].0, path_b_str.replace('\\', "/"));
+    assert_eq!(remaining_query[0].0, key_b);
 }

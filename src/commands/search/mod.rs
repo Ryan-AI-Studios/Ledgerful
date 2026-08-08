@@ -191,10 +191,20 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         // Never both (P3 double-emit). JSON Err emits semantic.error / semantic_error.
         // Overfetch limit+1 so human output can show "and more" without claiming K (0100 DoD-8).
         let semantic_fetch = args.limit.saturating_add(1);
-        let (mut results, query_succeeded) = match semantic_engine
-            .query(&args.query, semantic_fetch)
-        {
-            Ok(r) => (r, true),
+        let (mut results, query_succeeded) = match semantic_engine.query(
+            layout.root.as_std_path(),
+            &args.query,
+            semantic_fetch,
+        ) {
+            Ok((r, filtered_foreign)) => {
+                if filtered_foreign > 0 {
+                    collector.set_filtered_foreign_count(filtered_foreign);
+                    debug!(
+                        "Semantic query filtered {filtered_foreign} foreign path hit(s) outside work root"
+                    );
+                }
+                (r, true)
+            }
             Err(e) => {
                 // Unconfigured / unreachable / Ready runtime failure: degrade to BM25
                 // with honesty about whether the search ran or failed.

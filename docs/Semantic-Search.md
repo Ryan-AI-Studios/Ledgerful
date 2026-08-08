@@ -71,6 +71,23 @@ they are **not** auto-deleted. Query time excludes zero-magnitude stored vectors
 so ranking remains useful once a real backend is configured. To replace junk
 rows: configure the backend, then re-run `ledgerful index --semantic`.
 
+## Work-root isolation
+
+Semantic keys are **work-root-relative** (slash-normalized, e.g. `src/foo.rs`).
+Linked worktrees that share a tree intentionally share the same relative keys
+and may share `state_dir` (see worktree layout / 0108).
+
+| Guarantee | Behavior |
+|-----------|----------|
+| **Write** | New `snippet_embedding` / `semantic_file_hash` keys are relative to the active work root. |
+| **Read** | `search --semantic`, `ask` semantic context, and semantic hotspots drop foreign absolute / out-of-root keys even if the store still holds legacy poison. |
+| **Prune** | Full and incremental `index --semantic` purge foreign keys from both relations. |
+| **Honesty** | Envelope `search --json` may include `semantic.filteredForeignCount` when foreign hits were filtered (omit when zero). Residual count is **envelope-only** — not present on `--json-lines`. |
+
+**After upgrade or moving the repo to a new absolute path:** old absolute keys look empty / filtered until you run `ledgerful index --semantic` (full preferred) to purge leftovers and rewrite relative keys. Do not interpret residual empty results as “no matches” without checking that the index was rebuilt under the new root.
+
+**Do not share `LEDGERFUL_STATE_DIR` across unrelated repos.** Relative keys can collide (`src/main.rs` from repo A vs B). Linked worktrees of the **same** tree are fine; multi-root semantic federation is not productized on the default path.
+
 ## Related
 
 - Signature honesty precedent: `docs/Signature-Diff.md` (coverage table; ban on

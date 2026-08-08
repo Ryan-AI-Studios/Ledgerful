@@ -1,5 +1,6 @@
 use path_clean::PathClean;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+
 /// Securely normalizes a path relative to a repository root.
 /// Does NOT depend on canonicalize (filesystem access), making it safe for
 /// non-existent or deleted files.
@@ -148,6 +149,43 @@ pub fn ensure_path_within_root(repo_root: &Path, resolved: &Path) -> Result<(), 
     Ok(())
 }
 
+/// Join a stored path key under `work_root` for filesystem IO / `exists()` checks.
+///
+/// Prefer keys produced by [`normalize_relative_path`] / [`semantic_path_key`].
+/// Absolute keys under the work root are rewritten to relative before join so
+/// Windows absolute-path join replacement does not escape the root.
+/// Foreign / escape keys fall back to a best-effort join — callers that need
+/// isolation must use [`path_is_under_work_root`] first (e.g. dual foreign purge).
+pub fn resolve_under_work_root(work_root: &Path, key: &str) -> PathBuf {
+    match normalize_relative_path(work_root, key) {
+        Ok(rel) => work_root.join(rel),
+        Err(_) => work_root.join(key.replace('\\', "/")),
+    }
+}
+
+/// Semantic index path key: slash-normalized work-root-relative string.
+/// Thin alias over [`normalize_relative_path`] — **not** a second security SoT.
+pub fn semantic_path_key(work_root: &Path, path: &Path) -> Result<String, String> {
+    normalize_relative_path(work_root, &path.to_string_lossy())
+}
+
+/// Whether a stored semantic path key is eligible under the active work root.
+///
+/// | Key shape | Keep? |
+/// |---|---|
+/// | Relative | yes |
+/// | Absolute under `work_root` | yes (emit relative on display via normalize) |
+/// | Absolute outside / escape | no |
+pub fn path_is_under_work_root(work_root: &Path, key: &str) -> bool {
+    normalize_relative_path(work_root, key).is_ok()
+}
+
+/// If `key` is under `work_root`, return the slash-normalized relative form for
+/// display / re-keying. Otherwise `None`.
+pub fn display_path_under_work_root(work_root: &Path, key: &str) -> Option<String> {
+    normalize_relative_path(work_root, key).ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -170,10 +208,102 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("outside the repository root"));
 
-        // Windows-style (even on Unix)
+        // Windows-style separators (even on Unix)
         assert_eq!(
             normalize_relative_path(root, "src\\util.rs").unwrap(),
             "src/util.rs"
         );
+    }
+
+    #[test]
+    fn path_is_under_work_root_relative_ok() {
+        let root = Path::new("/repo");
+        assert!(path_is_under_work_root(root, "src/main.rs"));
+        assert!(path_is_under_work_root(root, "src\\util.rs"));
+        assert!(!path_is_under_work_root(root, "../sibling/x.rs"));
+        assert!(!path_is_under_work_root(root, "src/../../etc/passwd"));
+    }
+
+    #[test]
+    fn path_is_under_work_root_absolute_under_root() {
+        let root = Path::new("/repo");
+        assert!(path_is_under_work_root(root, "/repo/src/main.rs"));
+        assert!(!path_is_under_work_root(root, "/other/src/main.rs"));
+    }
+
+    #[test]
+    fn resolve_under_work_root_joins_relative() {
+        let root = Path::new("/repo");
+        let resolved = resolve_under_work_root(root, "src/main.rs");
+        assert_eq!(resolved, PathBuf::from("/repo/src/main.rs"));
+    }
+
+    #[test]
+    fn semantic_path_key_aliases_normalize() {
+        let root = Path::new("/repo");
+        let path = Path::new("/repo/src/lib.rs");
+        assert_eq!(
+            semantic_path_key(root, path).unwrap(),
+            normalize_relative_path(root, &path.to_string_lossy()).unwrap()
+        );
+    }
+
+    #[test]
+    fn display_path_under_work_root_rewrites_absolute() {
+        let root = Path::new("/repo");
+        assert_eq!(
+            display_path_under_work_root(root, "/repo/src/a.rs").as_deref(),
+            Some("src/a.rs")
+        );
+        assert!(display_path_under_work_root(root, "/other/a.rs").is_none());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_drive_letter_and_mixed_slash_under_root() {
+        let root = Path::new(r"C:\dev\ledgerful");
+        // Absolute under root with mixed separators → relative key.
+        assert_eq!(
+            normalize_relative_path(root, r"C:\dev\ledgerful\src\main.rs").unwrap(),
+            "src/main.rs"
+        );
+        assert_eq!(
+            normalize_relative_path(root, "C:/dev/ledgerful/src/main.rs").unwrap(),
+            "src/main.rs"
+        );
+        assert_eq!(
+            normalize_relative_path(root, r"C:/dev/ledgerful\src\util.rs").unwrap(),
+            "src/util.rs"
+        );
+        assert!(path_is_under_work_root(
+            root,
+            r"C:\dev\ledgerful\src\main.rs"
+        ));
+        // Sibling absolute (dogfood ChangeGuard class)
+        assert!(!path_is_under_work_root(
+            root,
+            r"C:\dev\ChangeGuard\src\main.rs"
+        ));
+        assert!(normalize_relative_path(root, r"C:\dev\ChangeGuard\CLAUDE.md").is_err());
+        // Relative with backslashes
+        assert_eq!(
+            normalize_relative_path(root, r"src\main.rs").unwrap(),
+            "src/main.rs"
+        );
+        // UNC-style reject
+        assert!(normalize_relative_path(root, r"\\server\share\x").is_err());
+        // resolve_under_work_root for relative key
+        let resolved = resolve_under_work_root(root, "src/main.rs");
+        assert_eq!(resolved, PathBuf::from(r"C:\dev\ledgerful\src\main.rs"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_drive_letter_case_and_escape() {
+        let root = Path::new(r"C:\dev\ledgerful");
+        // Traversal from relative key
+        assert!(!path_is_under_work_root(root, r"..\other\x.rs"));
+        // Absolute outside different drive letter (when present)
+        assert!(!path_is_under_work_root(root, r"D:\other\x.rs"));
     }
 }

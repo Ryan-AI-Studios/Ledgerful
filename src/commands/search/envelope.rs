@@ -83,6 +83,11 @@ pub struct SearchIndexStatus {
 }
 
 /// Semantic readiness + optional query error under `--semantic`.
+///
+/// Residual honesty (0152): when query-time work-root filter drops foreign
+/// path hits, `filtered_foreign_count` is set on the envelope only (omit when
+/// 0/None; never null). `--json-lines` does **not** carry this field —
+/// envelope-only honesty.
 #[derive(Debug, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SearchSemantic {
@@ -95,6 +100,9 @@ pub struct SearchSemantic {
     pub dimension_mismatch: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Foreign path hits dropped by work-root isolation (0152). Omit when zero.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filtered_foreign_count: Option<u64>,
 }
 
 impl SearchSemantic {
@@ -108,6 +116,7 @@ impl SearchSemantic {
             is_stale: readiness.is_stale,
             dimension_mismatch: readiness.dimension_mismatch,
             error: None,
+            filtered_foreign_count: None,
         }
     }
 
@@ -331,6 +340,7 @@ impl SearchCollector {
                         is_stale: false,
                         dimension_mismatch: false,
                         error: Some(failure_msg),
+                        filtered_foreign_count: None,
                     });
                 }
             }
@@ -353,6 +363,32 @@ impl SearchCollector {
                 };
                 Self::print_bridge(&record);
             }
+        }
+    }
+
+    /// Set residual foreign-path filter count (0152). Envelope-only; omit when 0.
+    /// No-op for Off / Lines (lines mode does not carry residual honesty).
+    pub fn set_filtered_foreign_count(&mut self, count: u64) {
+        if count == 0 {
+            return;
+        }
+        if !self.mode.is_envelope() {
+            return;
+        }
+        if let Some(sem) = self.semantic.as_mut() {
+            sem.filtered_foreign_count = Some(count);
+        } else {
+            self.semantic = Some(SearchSemantic {
+                backend_status: "unknown".to_string(),
+                model_name: String::new(),
+                dimensions: 0,
+                vector_count: 0,
+                zero_vector_count: 0,
+                is_stale: false,
+                dimension_mismatch: false,
+                error: None,
+                filtered_foreign_count: Some(count),
+            });
         }
     }
 
@@ -424,6 +460,58 @@ mod tests {
         assert!(v["results"][0].get("line").is_none());
         assert!(v["results"][0].get("score").is_some());
         assert!(!s.contains("null"));
+    }
+
+    /// 0152: `filteredForeignCount` omit-when-zero / None; never null; camelCase when set.
+    #[test]
+    fn envelope_omits_filtered_foreign_count_when_zero_or_none() {
+        let mut sem = SearchSemantic::from_readiness(&SemanticReadiness {
+            backend_status: BackendStatus::Ready,
+            model_name: "test".into(),
+            dimensions: 384,
+            vector_count: 10,
+            zero_vector_count: 0,
+            is_stale: false,
+            dimension_mismatch: false,
+        });
+        // Default None → key absent
+        let s = serde_json::to_string(&sem).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&s).expect("parse");
+        assert!(v.get("filteredForeignCount").is_none());
+        assert!(!s.contains("null"));
+        assert!(!s.contains("filtered_foreign_count"));
+
+        // Explicit None still omitted
+        sem.filtered_foreign_count = None;
+        let s = serde_json::to_string(&sem).expect("serialize");
+        assert!(!s.contains("filteredForeignCount"));
+
+        // Non-zero present as camelCase
+        sem.filtered_foreign_count = Some(3);
+        let s = serde_json::to_string(&sem).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&s).expect("parse");
+        assert_eq!(v["filteredForeignCount"], 3);
+        assert!(!s.contains("filtered_foreign_count"));
+        assert!(!s.contains("null"));
+    }
+
+    #[test]
+    fn collector_set_filtered_foreign_count_zero_is_noop() {
+        let mut c = SearchCollector::new(SearchJsonMode::Envelope, "proj".into(), "q".into(), 10);
+        c.set_semantic_readiness(&SemanticReadiness {
+            backend_status: BackendStatus::Ready,
+            model_name: "m".into(),
+            dimensions: 3,
+            vector_count: 1,
+            zero_vector_count: 0,
+            is_stale: false,
+            dimension_mismatch: false,
+        });
+        c.set_filtered_foreign_count(0);
+        let sem = c.semantic.as_ref().expect("semantic set");
+        assert!(sem.filtered_foreign_count.is_none());
+        c.set_filtered_foreign_count(2);
+        assert_eq!(c.semantic.as_ref().unwrap().filtered_foreign_count, Some(2));
     }
 
     #[test]

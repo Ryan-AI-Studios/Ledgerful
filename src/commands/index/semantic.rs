@@ -3,12 +3,13 @@ use crate::semantic::SemanticDiscovery;
 use crate::semantic::concurrency::EmbedSemaphore;
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
+use crate::util::path::{path_is_under_work_root, resolve_under_work_root, semantic_path_key};
 use blake3;
 use indicatif::{ProgressBar, ProgressStyle};
 use miette::Result;
 use rayon::prelude::*;
 use std::sync::Arc;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 type ParsedSemanticFile = (
     std::path::PathBuf,
@@ -136,12 +137,26 @@ pub(crate) fn execute_semantic_index(
     let repo_root = layout.root.as_std_path();
     let candidate_paths = walk_repo_for_semantic_files(repo_root);
 
+    // 0152: dual-relation foreign purge at full **and** incremental start.
+    let purged = semantic.purge_foreign_semantic_keys(repo_root)?;
+    if purged > 0 {
+        debug!("Purged {purged} semantic path key(s) outside work root");
+        // Human line only when purged > 0 (0154 quiet default — no routine chatter).
+        println!("Purged {purged} semantic snippets outside work root.");
+    }
+
     // HP3: On incremental runs filter to only files whose hash has changed.
     let files_to_process: Vec<std::path::PathBuf> = if incremental {
         let tracked_files = semantic.get_tracked_files()?;
         for tracked in tracked_files {
-            let path = std::path::Path::new(&tracked);
-            if !path.exists() {
+            // Relative keys must be root-joined for exists() (CWD-relative after B1 is a mass-prune bug).
+            // Foreign keys should already be gone via dual purge; re-check for defense in depth.
+            let gone = if !path_is_under_work_root(repo_root, &tracked) {
+                true
+            } else {
+                !resolve_under_work_root(repo_root, &tracked).exists()
+            };
+            if gone {
                 info!("Pruning deleted file from semantic index: {}", tracked);
                 if let Err(e) = semantic.remove_file_snippets(&tracked) {
                     warn!(
@@ -165,11 +180,14 @@ pub(crate) fn execute_semantic_index(
                     return true; // re-try unreadable files
                 };
                 let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
-                !semantic.is_file_hash_current(path, &hash)
+                let Ok(key) = semantic_path_key(repo_root, path) else {
+                    return true;
+                };
+                !semantic.is_file_hash_current(&key, &hash)
             })
             .collect()
     } else {
-        // Full index: prune snippets for files that no longer exist
+        // Full index: prune snippets for files that no longer exist (also purges foreign leftovers)
         semantic.prune_deleted_snippets(repo_root)?;
         candidate_paths
     };
@@ -242,13 +260,21 @@ pub(crate) fn execute_semantic_index(
         warn!("Semantic indexing skipped due to parse error: {}", err);
     }
 
-    // Flatten chunks
+    // Flatten chunks — rewrite absolute chunk.file_path to work-root-relative keys (0152 B1).
     let mut flat_chunks = Vec::new();
     let mut successful_files = Vec::new();
     for (path, content, chunks) in parsed_files {
         let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
-        successful_files.push((path.clone(), hash));
-        for chunk in chunks {
+        let Ok(path_key) = semantic_path_key(repo_root, &path) else {
+            warn!(
+                "Skipping semantic ingest for path outside work root: {}",
+                path.display()
+            );
+            continue;
+        };
+        successful_files.push((path_key.clone(), hash));
+        for mut chunk in chunks {
+            chunk.file_path = path_key.clone();
             flat_chunks.push(chunk);
         }
     }
@@ -310,14 +336,9 @@ pub(crate) fn execute_semantic_index(
     // ── Phase 4: Batch ingest into CozoDB (single-threaded for safety) ─────
     if !successful_files.is_empty() {
         info!("Pruning stale semantic database rows...");
-        for (path, _) in &successful_files {
-            let path_str = path.to_string_lossy();
-            if let Err(e) = semantic.remove_file_snippets(&path_str) {
-                warn!(
-                    "Failed to prune stale snippets for {}: {}",
-                    path.display(),
-                    e
-                );
+        for (path_key, _) in &successful_files {
+            if let Err(e) = semantic.remove_file_snippets(path_key) {
+                warn!("Failed to prune stale snippets for {path_key}: {e}");
             }
         }
     }
@@ -343,10 +364,10 @@ pub(crate) fn execute_semantic_index(
         spinner.finish_and_clear();
     }
 
-    // Record new hashes only for successfully processed files
-    for (path, hash) in successful_files {
-        if let Err(e) = semantic.record_file_hash(&path, &hash) {
-            warn!("Failed to record file hash for {}: {}", path.display(), e);
+    // Record new hashes only for successfully processed files (relative keys).
+    for (path_key, hash) in successful_files {
+        if let Err(e) = semantic.record_file_hash(&path_key, &hash) {
+            warn!("Failed to record file hash for {path_key}: {e}");
         }
     }
 
