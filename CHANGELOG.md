@@ -30,6 +30,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`data-models list` / `impact` duplicate rows (0155):** Emit-time dedupe keeps one
+  row per `(name, language, kind, file_id)` (keep-best: higher confidence, else lower
+  `id`). List SELECT joins `project_files` for path; human adds File column; JSON
+  gains additive `file_path` (normalized `/`). Empty-state / CleanDiff still use raw
+  table COUNT — not invent no-models from dedupe alone.
+- **Data model extract stacking on re-index (0155):** Full `extract_data_models`
+  mirrors routes: collect-then-atomic `DELETE` + insert; empty symbols clear the
+  table; partial walk (`files_skipped` from I/O or extract `Err`, not `Ok([])`)
+  leaves the table untouched and reports `partial: true` / `dm_files_skipped` on
+  index JSON.
 - **Unbounded `hotspots trend` default dump (0151):** Default human/JSON no longer
   emit ~MB timestamp×file matrices on long-lived repos; agents get a bounded
   summary. `historyAvailable` is honest when trend rows exist (not false with

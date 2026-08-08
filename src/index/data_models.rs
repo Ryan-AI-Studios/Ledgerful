@@ -5,7 +5,7 @@ use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use tracing::info;
+use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ModelKind {
@@ -41,6 +41,13 @@ pub struct ExtractedModel {
 pub struct DataModelStats {
     pub total_models: usize,
     pub files_processed: usize,
+    /// Source-language files skipped due to read or parse failure.
+    /// Default-safe for older serialized consumers.
+    #[serde(default)]
+    pub files_skipped: usize,
+    /// True when `files_skipped > 0` (inventory rebuild was suppressed).
+    #[serde(default)]
+    pub partial: bool,
 }
 
 pub struct DataModelExtractor<'a> {
@@ -100,11 +107,19 @@ impl<'a> DataModelExtractor<'a> {
 
         drop(sym_stmt);
 
+        // Full extract always rebuilds `data_models` (clear-before-insert). Empty
+        // symbols still DELETE so re-extract does not leave stale stacked rows.
         if symbol_rows.is_empty() {
-            info!("No project symbols indexed; skipping data model extraction.");
+            conn.execute("DELETE FROM data_models", [])
+                .into_diagnostic()?;
+            info!(
+                "No project symbols indexed; cleared data_models and skipping data model extraction."
+            );
             return Ok(DataModelStats {
                 total_models: 0,
                 files_processed: 0,
+                files_skipped: 0,
+                partial: false,
             });
         }
 
@@ -142,10 +157,10 @@ impl<'a> DataModelExtractor<'a> {
 
         drop(topo_stmt);
 
-        // 5. Iterate over source files, extract data models
-        let mut total_models = 0usize;
+        // 5. Walk source files and accumulate models (no DB writes yet).
         let mut files_processed = 0usize;
-        let mut model_batch: Vec<ModelRow> = Vec::new();
+        let mut files_skipped = 0usize;
+        let mut all_models: Vec<ModelRow> = Vec::new();
 
         for (file_id, file_path, language) in &file_rows {
             // Skip non-source language files
@@ -163,7 +178,15 @@ impl<'a> DataModelExtractor<'a> {
             let full_path = self.repo_path.join(file_path);
             let content = match std::fs::read_to_string(&full_path) {
                 Ok(c) => c,
-                Err(_) => continue,
+                Err(e) => {
+                    files_skipped += 1;
+                    warn!(
+                        path = %file_path,
+                        error = %e,
+                        "skipping data model extract: file unreadable"
+                    );
+                    continue;
+                }
             };
 
             let path = PathBuf::from(file_path);
@@ -172,9 +195,18 @@ impl<'a> DataModelExtractor<'a> {
             let extracted_models =
                 match languages::extract_data_models(&path, &content, &file_symbols) {
                     Ok(m) => m,
-                    Err(_) => continue,
+                    Err(e) => {
+                        files_skipped += 1;
+                        warn!(
+                            path = %file_path,
+                            error = %e,
+                            "skipping data model extract: parse failed"
+                        );
+                        continue;
+                    }
                 };
 
+            // Ok([]) is NOT a skip — file is fine, just no models.
             files_processed += 1;
 
             for model in &extracted_models {
@@ -185,7 +217,7 @@ impl<'a> DataModelExtractor<'a> {
                     (model.model_kind.clone(), model.confidence)
                 };
 
-                model_batch.push(ModelRow {
+                all_models.push(ModelRow {
                     model_name: model.model_name.clone(),
                     model_file_id: *file_id,
                     language: model.language.clone(),
@@ -194,19 +226,41 @@ impl<'a> DataModelExtractor<'a> {
                     evidence: Some(model.evidence.clone()),
                 });
             }
-
-            // 6. Batched inserts
-            if model_batch.len() >= DATA_MODEL_BATCH_SIZE {
-                total_models += model_batch.len();
-                self.insert_model_batch(&model_batch)?;
-                model_batch.clear();
-            }
         }
 
-        // Flush remaining models
-        if !model_batch.is_empty() {
-            total_models += model_batch.len();
-            self.insert_model_batch(&model_batch)?;
+        // Fail-safe inventory: a partial walk must not DELETE good rows.
+        // Leave `data_models` untouched and report existing count + skip honesty.
+        if files_skipped > 0 {
+            let existing_count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM data_models", [], |row| row.get(0))
+                .into_diagnostic()?;
+            warn!(
+                files_skipped,
+                files_processed,
+                existing_models = existing_count,
+                "data model extract partial: leaving data_models untouched (no atomic rebuild)"
+            );
+            return Ok(DataModelStats {
+                total_models: existing_count as usize,
+                files_processed,
+                files_skipped,
+                partial: true,
+            });
+        }
+
+        // 6. Atomic rebuild: one outer transaction DELETE + batched inserts.
+        //    Crash during the file walk leaves the previous table intact; crash
+        //    mid-tx rolls back to the pre-extract state. Only when every source
+        //    file was readable and parseable.
+        let total_models = all_models.len();
+        {
+            let tx = conn.unchecked_transaction().into_diagnostic()?;
+            tx.execute("DELETE FROM data_models", [])
+                .into_diagnostic()?;
+            for chunk in all_models.chunks(DATA_MODEL_BATCH_SIZE) {
+                Self::insert_model_batch(&tx, chunk)?;
+            }
+            tx.commit().into_diagnostic()?;
         }
 
         info!(
@@ -217,12 +271,13 @@ impl<'a> DataModelExtractor<'a> {
         Ok(DataModelStats {
             total_models,
             files_processed,
+            files_skipped: 0,
+            partial: false,
         })
     }
 
-    fn insert_model_batch(&self, models: &[ModelRow]) -> Result<()> {
-        let conn = self.storage.get_connection();
-        let tx = conn.unchecked_transaction().into_diagnostic()?;
+    /// Insert a batch of models on an open transaction (no commit).
+    fn insert_model_batch(tx: &rusqlite::Transaction<'_>, models: &[ModelRow]) -> Result<()> {
         let now = chrono::Utc::now().to_rfc3339();
 
         for model in models {
@@ -243,11 +298,12 @@ impl<'a> DataModelExtractor<'a> {
             .into_diagnostic()?;
         }
 
-        tx.commit().into_diagnostic()?;
         Ok(())
     }
 
     /// Delete data models belonging to specific file IDs, for incremental re-indexing.
+    /// Kept for tests / API symmetry — production full extract uses atomic rebuild;
+    /// incremental per-file cleanup goes through `delete_file_index_dependents`.
     pub fn clear_data_models(&self, file_ids: &[i64]) -> Result<()> {
         if file_ids.is_empty() {
             return Ok(());
@@ -325,10 +381,20 @@ mod tests {
         let stats = DataModelStats {
             total_models: 10,
             files_processed: 5,
+            files_skipped: 0,
+            partial: false,
         };
         let json = serde_json::to_string(&stats).unwrap();
         assert!(json.contains("total_models"));
         assert!(json.contains("files_processed"));
+        assert!(json.contains("files_skipped"));
+        assert!(json.contains("partial"));
+
+        // Older payloads without the new fields still deserialize (serde default).
+        let legacy = r#"{"total_models":1,"files_processed":0}"#;
+        let decoded: DataModelStats = serde_json::from_str(legacy).unwrap();
+        assert_eq!(decoded.files_skipped, 0);
+        assert!(!decoded.partial);
     }
 
     #[test]
@@ -480,6 +546,8 @@ pub struct User {
             stats.total_models >= 1,
             "expected at least 1 model extracted"
         );
+        assert_eq!(stats.files_skipped, 0);
+        assert!(!stats.partial);
 
         // 6. Verify data_models table has entries
         let count: i64 = conn
@@ -490,5 +558,283 @@ pub struct User {
             "expected at least 1 model in data_models table, got {}",
             count
         );
+    }
+
+    /// C3: two consecutive extracts must not stack; COUNT == unique models and
+    /// stats equal across runs. Also proves re-extract clears a manually stacked
+    /// duplicate identity (same name/lang/kind/file_id, different last_indexed_at).
+    #[test]
+    fn test_extract_twice_does_not_stack_models() {
+        use std::fs;
+
+        let dir = tempfile::tempdir().expect("failed to create temp dir");
+        let models_dir = dir.path().join("src").join("models");
+        fs::create_dir_all(&models_dir).expect("failed to create models dir");
+
+        let models_content = r#"use sqlx::FromRow;
+
+#[derive(FromRow)]
+pub struct User {
+    pub id: i64,
+    pub name: String,
+}
+"#;
+        fs::write(models_dir.join("user.rs"), models_content).expect("failed to write user.rs");
+
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            ("src/models/user.rs", "Rust", "hash_e2e_dm2", 200, "OK", "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, is_public, confidence, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![file_id, "crate::models::User", "User", "Struct", 1, 1.0, "2026-05-01T00:00:00Z"],
+        )
+        .unwrap();
+
+        let extractor = DataModelExtractor::new(&storage, dir.path().to_path_buf());
+        let stats1 = extractor.extract().expect("first extract failed");
+        let count1: i64 = conn
+            .query_row("SELECT COUNT(*) FROM data_models", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            count1 as usize, stats1.total_models,
+            "after first extract COUNT(*) must equal unique models"
+        );
+        assert!(
+            count1 >= 1,
+            "expected at least one model after first extract"
+        );
+
+        // Manually stack a duplicate identity (legacy multi-pass residue).
+        // Same model_name/language/model_kind/model_file_id; different last_indexed_at.
+        let (model_name, language, model_kind, confidence, evidence): (
+            String,
+            String,
+            String,
+            f64,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT model_name, language, model_kind, confidence, evidence \
+                 FROM data_models LIMIT 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO data_models \
+             (model_name, model_file_id, language, model_kind, confidence, evidence, last_indexed_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                model_name,
+                file_id,
+                language,
+                model_kind,
+                confidence,
+                evidence,
+                "2099-01-01T00:00:00Z",
+            ],
+        )
+        .unwrap();
+
+        let stacked_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM data_models", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            stacked_count,
+            count1 + 1,
+            "manual stack must leave unique+1 rows (count1={count1}, stacked={stacked_count})"
+        );
+
+        let stats2 = extractor.extract().expect("second extract failed");
+        let count2: i64 = conn
+            .query_row("SELECT COUNT(*) FROM data_models", [], |row| row.get(0))
+            .unwrap();
+
+        assert_eq!(
+            count2 as usize, stats2.total_models,
+            "COUNT(*) must equal unique models reported in stats after re-extract"
+        );
+        assert!(
+            count2 < stacked_count,
+            "re-extract must clear the stacked intermediate (count2={count2} < stacked={stacked_count})"
+        );
+        assert_eq!(
+            count1, count2,
+            "re-extract must restore unique count (count1={count1}, count2={count2})"
+        );
+        assert_eq!(stats1.total_models, stats2.total_models);
+        assert_eq!(stats1.files_processed, stats2.files_processed);
+        assert_eq!(stats1.files_skipped, 0);
+        assert!(!stats1.partial);
+        assert_eq!(stats2.files_skipped, 0);
+        assert!(!stats2.partial);
+
+        // DISTINCT-style uniqueness: no remaining identity stacks.
+        let distinct_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM (
+                    SELECT model_name, language, model_kind, model_file_id
+                    FROM data_models
+                    GROUP BY model_name, language, model_kind, model_file_id
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            distinct_count, count2,
+            "after re-extract, DISTINCT identities must equal raw COUNT(*)"
+        );
+    }
+
+    /// Empty-symbol extract must DELETE prior rows (no stale stacks left behind).
+    #[test]
+    fn test_extract_empty_symbols_clears_stale_models() {
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            ("src/models/user.rs", "Rust", "hash1", 100, "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO data_models (model_name, model_file_id, language, model_kind, confidence, evidence, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                "Stale",
+                file_id,
+                "Rust",
+                "STRUCT",
+                1.0_f64,
+                "stale",
+                "2026-05-01T00:00:00Z"
+            ],
+        )
+        .unwrap();
+
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM data_models", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(before, 1);
+
+        // No project_symbols → empty-symbols path must DELETE.
+        let extractor = DataModelExtractor::new(&storage, PathBuf::from("/tmp/test_repo"));
+        let stats = extractor.extract().unwrap();
+        assert_eq!(stats.total_models, 0);
+        assert_eq!(stats.files_processed, 0);
+        assert_eq!(stats.files_skipped, 0);
+        assert!(!stats.partial);
+
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM data_models", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(after, 0, "empty-symbols extract must clear data_models");
+    }
+
+    /// Partial walk (unreadable source file) must not wipe existing `data_models`.
+    #[test]
+    fn test_extract_skips_do_not_wipe_existing_models() {
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+
+        // project_file points at a path that does not exist on disk.
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                "src/missing_models.rs",
+                "Rust",
+                "hash_missing",
+                100,
+                "2026-05-01T00:00:00Z",
+            ),
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+
+        // Symbols present so we do not take the empty-symbols early DELETE path.
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                file_id,
+                "crate::User",
+                "User",
+                "Struct",
+                "2026-05-01T00:00:00Z",
+            ),
+        )
+        .unwrap();
+
+        conn.execute(
+            "INSERT INTO data_models (model_name, model_file_id, language, model_kind, confidence, evidence, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                "KeepMe",
+                file_id,
+                "Rust",
+                "STRUCT",
+                1.0_f64,
+                "keep",
+                "2026-05-01T00:00:00Z"
+            ],
+        )
+        .unwrap();
+
+        let before: i64 = conn
+            .query_row("SELECT COUNT(*) FROM data_models", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(before, 1);
+
+        // Repo root has no source files → read fails → files_skipped > 0.
+        let extractor =
+            DataModelExtractor::new(&storage, PathBuf::from("/tmp/ledgerful_no_such_repo"));
+        let stats = extractor.extract().unwrap();
+        assert!(
+            stats.files_skipped > 0,
+            "missing on-disk file must count as skip"
+        );
+        assert!(stats.partial);
+        assert_eq!(
+            stats.total_models, before as usize,
+            "total_models should report existing table count"
+        );
+
+        let after: i64 = conn
+            .query_row("SELECT COUNT(*) FROM data_models", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            after, before,
+            "partial extract must leave data_models untouched"
+        );
+
+        let kept_name: String = conn
+            .query_row(
+                "SELECT model_name FROM data_models WHERE model_name = 'KeepMe'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(kept_name, "KeepMe");
     }
 }
