@@ -527,22 +527,38 @@ impl<'a> SemanticDiscovery<'a> {
             }
         }
 
-        let count = foreign_keys.len() as u64;
+        // Count only keys for which at least one relation remove succeeded (or
+        // both were no-ops after a successful attempt). Do not announce
+        // pre-delete sizes as purged if Cozo removes failed (Codex R2 P3).
+        let mut purged = 0u64;
         for key in &foreign_keys {
-            if let Err(e) = self.vector_store.remove_file_snippets(key) {
-                tracing::debug!("Foreign snippet purge for '{key}' (may be hash-only): {e}");
-            }
-            if let Err(e) = self.remove_file_hash(key) {
-                tracing::debug!("Foreign hash purge for '{key}': {e}");
+            let snippet_ok = match self.vector_store.remove_file_snippets(key) {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::debug!("Foreign snippet purge for '{key}' (may be hash-only): {e}");
+                    false
+                }
+            };
+            let hash_ok = match self.remove_file_hash(key) {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::debug!("Foreign hash purge for '{key}': {e}");
+                    false
+                }
+            };
+            // Hash-only or snippet-only foreign keys still count when the
+            // applicable relation remove succeeds; both-fail does not.
+            if snippet_ok || hash_ok {
+                purged += 1;
             }
         }
 
-        if count > 0 {
+        if purged > 0 {
             tracing::debug!(
-                "Purged {count} semantic path key(s) outside work root from snippet_embedding + semantic_file_hash"
+                "Purged {purged} semantic path key(s) outside work root from snippet_embedding + semantic_file_hash"
             );
         }
-        Ok(count)
+        Ok(purged)
     }
 
     /// Retrieve all file paths currently tracked in `semantic_file_hash`.
