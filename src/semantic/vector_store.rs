@@ -205,16 +205,23 @@ impl<'a> VectorStore<'a> {
     }
 
     /// Remove all `snippet_embedding` rows for `file_path` (HP3 pruning).
+    ///
+    /// Uses a parameterized path key (`$path`) so apostrophes and other special
+    /// characters in keys are not string-interpolated into the Cozo script —
+    /// required for dual-relation foreign purge honesty (0152 Codex R1 P2).
     pub fn remove_file_snippets(&self, file_path: &str) -> Result<()> {
+        use cozo::ScriptMutability;
+        use std::collections::BTreeMap;
+
         let path_str = file_path.replace('\\', "/");
-        let escaped = path_str.replace('\'', "\\'");
-        let script = format!(
-            "paths[file_path] <- [['{}']]\n\
-             ?[file_path, name, line_offset] := paths[file_path], *snippet_embedding{{file_path, name, line_offset}}\n\
-             :rm snippet_embedding {{file_path, name, line_offset}}",
-            escaped
-        );
-        self.storage.run_script(&script)?;
+        let mut params = BTreeMap::new();
+        params.insert("path".to_string(), DataValue::from(path_str.as_str()));
+        let script = "\
+            paths[file_path] := file_path = $path\n\
+            ?[file_path, name, line_offset] := paths[file_path], *snippet_embedding{file_path, name, line_offset}\n\
+            :rm snippet_embedding {file_path, name, line_offset}";
+        self.storage
+            .run_script_with_params(script, params, ScriptMutability::Mutable)?;
         tracing::debug!("Pruned snippets for deleted file: {}", file_path);
         Ok(())
     }
@@ -1072,5 +1079,30 @@ mod tests {
         assert_eq!(retry_candidate_k(150), 200);
         assert_eq!(retry_candidate_k(200), 400);
         assert_eq!(retry_candidate_k(300), 500);
+    }
+
+    /// Codex R1 P2: Cozo string escape for `'` must be doubled (`''`), not `\'`.
+    /// Path keys with apostrophes must still purge from `snippet_embedding`.
+    #[test]
+    fn remove_file_snippets_handles_apostrophe_in_path_key() {
+        let storage = CozoStorage::new_in_memory().expect("in-memory cozo");
+        let store = VectorStore::new_without_hnsw(&storage, 3).expect("store");
+
+        let key = "src/o'brien.rs";
+        plant_embedding(&storage, key, "fn_ob", 0, vec![1.0, 0.0, 0.0]);
+        plant_embedding(&storage, "src/other.rs", "fn_other", 0, vec![0.0, 1.0, 0.0]);
+        assert_eq!(store.get_vector_count().expect("count"), 2);
+
+        store
+            .remove_file_snippets(key)
+            .expect("remove apostrophe path key");
+        assert_eq!(
+            store.get_vector_count().expect("count after"),
+            1,
+            "apostrophe path must fully remove snippet rows"
+        );
+        let results = store.query(vec![0.0, 1.0, 0.0], 5).expect("query");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "src/other.rs");
     }
 }

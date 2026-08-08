@@ -142,7 +142,7 @@ pub(crate) fn execute_semantic_index(
     if purged > 0 {
         debug!("Purged {purged} semantic path key(s) outside work root");
         // Human line only when purged > 0 (0154 quiet default — no routine chatter).
-        println!("Purged {purged} semantic snippets outside work root.");
+        println!("Purged {purged} semantic path key(s) outside work root.");
     }
 
     // HP3: On incremental runs filter to only files whose hash has changed.

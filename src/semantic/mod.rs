@@ -299,20 +299,32 @@ impl<'a> SemanticDiscovery<'a> {
         })
     }
 
-    pub fn index_file(&self, path: &Path, content: &str) -> Result<()> {
-        let (chunks, embeddings) = self.process_file(path, content)?;
+    /// Index one file under `work_root`, rewriting chunk keys to work-root-relative
+    /// paths (0152 B1). Prefer this over calling the chunker + `index_chunks` with
+    /// absolute `file_path` values.
+    pub fn index_file(&self, work_root: &Path, path: &Path, content: &str) -> Result<()> {
+        let (chunks, embeddings) = self.process_file(work_root, path, content)?;
         if !chunks.is_empty() {
             self.vector_store.index_chunks(chunks, embeddings)?;
         }
         Ok(())
     }
 
+    /// Parse + embed one file, returning chunks with **work-root-relative** `file_path`
+    /// keys (0152). Rejects paths outside `work_root`.
     pub fn process_file(
         &self,
+        work_root: &Path,
         path: &Path,
         content: &str,
     ) -> Result<(Vec<crate::semantic::chunker::AstChunk>, Vec<Vec<f32>>)> {
-        let chunks = AstChunker::chunk_file(path, content)?;
+        use crate::util::path::semantic_path_key;
+
+        let path_key = semantic_path_key(work_root, path).map_err(|e| miette::miette!("{e}"))?;
+        let mut chunks = AstChunker::chunk_file(path, content)?;
+        for chunk in &mut chunks {
+            chunk.file_path = path_key.clone();
+        }
         if chunks.is_empty() {
             return Ok((vec![], vec![]));
         }
@@ -552,17 +564,29 @@ impl<'a> SemanticDiscovery<'a> {
     }
 
     /// Remove the content hash for `file_path` from `semantic_file_hash`.
+    ///
+    /// Parameterized path key (same honesty requirement as
+    /// [`VectorStore::remove_file_snippets`]) so apostrophes in keys do not
+    /// break dual-relation foreign purge.
     pub fn remove_file_hash(&self, file_path: &str) -> Result<()> {
+        use cozo::{DataValue, ScriptMutability};
+        use std::collections::BTreeMap;
+
         let path_normalized = file_path.replace('\\', "/");
-        // Cozo escapes single quotes by doubling them, not with backslash.
-        let escaped = path_normalized.replace('\'', "''");
-        let script = format!(
-            "paths[file_path] <- [['{}']]\n\
-             ?[file_path, content_hash] := paths[file_path], *semantic_file_hash{{file_path, content_hash}}\n\
-             :rm semantic_file_hash {{file_path, content_hash}}",
-            escaped
+        let mut params = BTreeMap::new();
+        params.insert(
+            "path".to_string(),
+            DataValue::from(path_normalized.as_str()),
         );
-        self.vector_store.storage_ref().run_script(&script)?;
+        let script = "\
+            paths[file_path] := file_path = $path\n\
+            ?[file_path, content_hash] := paths[file_path], *semantic_file_hash{file_path, content_hash}\n\
+            :rm semantic_file_hash {file_path, content_hash}";
+        self.vector_store.storage_ref().run_script_with_params(
+            script,
+            params,
+            ScriptMutability::Mutable,
+        )?;
         Ok(())
     }
 }
