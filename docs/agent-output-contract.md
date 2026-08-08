@@ -35,6 +35,7 @@ on stderr.
 | `hotspots --json` | yes | yes | |
 | `hotspots trend --json` | yes (0151) | yes | schemaVersion 1; modes summary/full/entity; see schema below |
 | `endpoints --json` | yes | yes | |
+| `data-models list --json` | yes | yes | bare array; additive `file_path` (normalized `/`) per row (0155); one row per logical model identity |
 | `scan --impact --json` | yes | yes | impact packet |
 | `scan --json` alone | incomplete | n/a | exit 1; requires `--impact` (or PR `--format json`) |
 | `scan --pr <range> --format json` | via `--format` | yes | PR-range machine output (not impact packet) |
