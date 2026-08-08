@@ -9,6 +9,7 @@
 #   (b) CHANGELOG.md has a dated ## [version] - YYYY-MM-DD section
 #   (b2) that dated section has a non-empty body (not heading-only / empty)
 #   (c) mcp-server/package.json ledgerfulEngineTag == tag
+#   (d) docs/api/openapi.json info.version == tag without leading v (0162)
 #
 # Does NOT require non-empty [Unreleased] — at tag time empty Unreleased is
 # healthy (0101 §2.6a). Use scripts/changelog-unreleased.sh before the cut.
@@ -73,6 +74,18 @@ if [ "$mcp_tag" != "$tag" ]; then
   exit 1
 fi
 echo "ok: ledgerfulEngineTag == ${tag}"
+
+# (d) OpenAPI info.version (0162 — fail closed if missing)
+if [ ! -f "docs/api/openapi.json" ]; then
+  echo "error: docs/api/openapi.json not found — Gate A requires openapi info.version == ${version}" >&2
+  exit 1
+fi
+openapi_ver="$(openapi_info_version "docs/api/openapi.json")"
+if [ "$openapi_ver" != "$version" ]; then
+  echo "error: docs/api/openapi.json info.version is '${openapi_ver}', expected '${version}' (tag ${tag})" >&2
+  exit 1
+fi
+echo "ok: openapi info.version == ${version}"
 
 echo "check-release-tag: ok"
 exit 0

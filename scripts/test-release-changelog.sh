@@ -258,6 +258,110 @@ EOF
 assert_empty_content "empty dated body for 0.9.9" "0.9.9" "$TMP/empty-dated.md"
 assert_has "empty-dated file still has heading for 0.9.9" "0.9.9" "$TMP/empty-dated.md"
 
+# --- 0162: openapi info.version helpers (C3 / C1 / C5 style) -----------------
+
+# 12. openapi_info_version reads info-block version on multi-line stub
+cat >"$TMP/openapi-stub.json" <<'EOF'
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "fixture",
+    "version": "0.2.3",
+    "description": "stub"
+  },
+  "components": {
+    "schemas": {
+      "Versioned": {
+        "properties": {
+          "version": {
+            "type": "string"
+          }
+        }
+      }
+    }
+  }
+}
+EOF
+got_ov="$(openapi_info_version "$TMP/openapi-stub.json" 2>/dev/null || true)"
+if [ "$got_ov" = "0.2.3" ]; then
+  echo "PASS: openapi_info_version reads info.version 0.2.3"
+  pass=$((pass + 1))
+else
+  echo "FAIL: openapi_info_version reads info.version 0.2.3 — got '${got_ov}'" >&2
+  fail=$((fail + 1))
+fi
+
+# 13. rewrite then read equals new version; decoys untouched
+set +e
+rewrite_openapi_info_version "0.2.7" "$TMP/openapi-stub.json"
+rw_rc=$?
+set -e
+got_rw="$(openapi_info_version "$TMP/openapi-stub.json" 2>/dev/null || true)"
+if [ "$rw_rc" -eq 0 ] && [ "$got_rw" = "0.2.7" ]; then
+  echo "PASS: rewrite_openapi_info_version → openapi_info_version == 0.2.7"
+  pass=$((pass + 1))
+else
+  echo "FAIL: rewrite_openapi_info_version → openapi_info_version == 0.2.7 — rc=${rw_rc} got='${got_rw}'" >&2
+  fail=$((fail + 1))
+fi
+if grep -q '"openapi": "3.1.0"' "$TMP/openapi-stub.json"; then
+  echo "PASS: decoy openapi document version 3.1.0 not rewritten"
+  pass=$((pass + 1))
+else
+  echo "FAIL: decoy openapi document version 3.1.0 not rewritten" >&2
+  fail=$((fail + 1))
+fi
+if grep -q '"version": {' "$TMP/openapi-stub.json"; then
+  echo "PASS: decoy schema version object not rewritten"
+  pass=$((pass + 1))
+else
+  echo "FAIL: decoy schema version object not rewritten" >&2
+  fail=$((fail + 1))
+fi
+
+# 14. Gate A style: missing openapi fails
+set +e
+openapi_info_version "$TMP/no-such-openapi.json" >/dev/null 2>&1
+miss_rc=$?
+set -e
+if [ "$miss_rc" -ne 0 ]; then
+  echo "PASS: openapi_info_version missing file fails closed (exit ${miss_rc})"
+  pass=$((pass + 1))
+else
+  echo "FAIL: openapi_info_version missing file fails closed — expected non-zero" >&2
+  fail=$((fail + 1))
+fi
+
+# 15. Gate B style: mismatch detected (helper unit; cargo 0.9.9 vs openapi 0.2.7)
+if [ "$got_rw" != "0.9.9" ]; then
+  echo "PASS: Gate B style mismatch (openapi ${got_rw} != cargo 0.9.9) would fail"
+  pass=$((pass + 1))
+else
+  echo "FAIL: Gate B style mismatch detection" >&2
+  fail=$((fail + 1))
+fi
+
+# 16. rewrite fails when no info.version present
+cat >"$TMP/openapi-no-ver.json" <<'EOF'
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "no version field"
+  }
+}
+EOF
+set +e
+rewrite_openapi_info_version "0.2.7" "$TMP/openapi-no-ver.json" >/dev/null 2>&1
+nover_rc=$?
+set -e
+if [ "$nover_rc" -ne 0 ]; then
+  echo "PASS: rewrite fails when info has no string-semver version (exit ${nover_rc})"
+  pass=$((pass + 1))
+else
+  echo "FAIL: rewrite fails when info has no string-semver version — expected non-zero" >&2
+  fail=$((fail + 1))
+fi
+
 echo ""
 echo "release-changelog parser matrix: ${pass} passed, ${fail} failed"
 if [ "$fail" -ne 0 ]; then

@@ -28,6 +28,155 @@ cargo_toml_version() {
   printf '%s\n' "$line" | sed -E 's/^version = "([^"]+)".*/\1/'
 }
 
+# openapi_info_version [path]
+# Prints OpenAPI info.version from docs/api/openapi.json (default path).
+# Info-block-anchored: only the string-semver "version" inside the top-level
+# "info": { … } object (same state machine as rewrite_openapi_info_version).
+# Fails if file missing or no version found inside the info block.
+openapi_info_version() {
+  local path="${1:-docs/api/openapi.json}"
+  local ver
+  if [ ! -f "$path" ]; then
+    echo "error: openapi file not found: ${path}" >&2
+    return 1
+  fi
+  ver="$(
+    awk '
+      BEGIN { in_info = 0; depth = 0; found = 0 }
+      {
+        if (!in_info) {
+          if ($0 ~ /"info"[[:space:]]*:[[:space:]]*\{/) {
+            in_info = 1
+            depth = 0
+            s = $0
+            for (i = 1; i <= length(s); i++) {
+              c = substr(s, i, 1)
+              if (c == "{") depth++
+              else if (c == "}") depth--
+            }
+            if (depth <= 0) in_info = 0
+          }
+          next
+        }
+        # Inside info block: first string-semver "version" line only.
+        if (!found && $0 ~ /^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"/) {
+          if (match($0, /"version"[[:space:]]*:[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"/)) {
+            m = substr($0, RSTART, RLENGTH)
+            if (match(m, /"[0-9]+\.[0-9]+\.[0-9]+"/)) {
+              print substr(m, RSTART + 1, RLENGTH - 2)
+              found = 1
+              exit
+            }
+          }
+        }
+        s = $0
+        for (i = 1; i <= length(s); i++) {
+          c = substr(s, i, 1)
+          if (c == "{") depth++
+          else if (c == "}") depth--
+        }
+        if (depth <= 0) in_info = 0
+      }
+      END {
+        if (!found) {
+          print "error: no info.version string-semver found in openapi info block" > "/dev/stderr"
+          exit 1
+        }
+      }
+    ' "$path"
+  )" || return 1
+  if [ -z "$ver" ]; then
+    echo "error: no info.version string-semver found in ${path}" >&2
+    return 1
+  fi
+  printf '%s\n' "$ver"
+}
+
+# rewrite_openapi_info_version VERSION [path]
+# Line-preserving awk rewrite of info.version inside the "info": { … } object
+# only. Does not touch "openapi": "3.1.0" or schema "version": { … }.
+# Fails if file missing or no matching version line rewritten.
+# Soft C6: when python3 or jq is on PATH, parse JSON fail-closed after rewrite;
+# if neither tool is present, skip validation gracefully.
+rewrite_openapi_info_version() {
+  local version="$1"
+  local path="${2:-docs/api/openapi.json}"
+  local tmp
+  if [ -z "$version" ]; then
+    echo "error: rewrite_openapi_info_version requires VERSION" >&2
+    return 2
+  fi
+  if ! [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+    echo "error: version must match X.Y.Z (got: ${version})" >&2
+    return 2
+  fi
+  if [ ! -f "$path" ]; then
+    echo "error: openapi file not found: ${path}" >&2
+    return 1
+  fi
+  tmp="$(mktemp)"
+  # shellcheck disable=SC2016
+  if ! awk -v ver="$version" '
+    BEGIN { in_info = 0; depth = 0; done = 0 }
+    {
+      if (!in_info) {
+        if ($0 ~ /"info"[[:space:]]*:[[:space:]]*\{/) {
+          in_info = 1
+          depth = 0
+          s = $0
+          for (i = 1; i <= length(s); i++) {
+            c = substr(s, i, 1)
+            if (c == "{") depth++
+            else if (c == "}") depth--
+          }
+          print
+          if (depth <= 0) in_info = 0
+          next
+        }
+        print
+        next
+      }
+      # Inside info block.
+      if (!done && $0 ~ /^[[:space:]]*"version"[[:space:]]*:[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"/) {
+        sub(/"version"[[:space:]]*:[[:space:]]*"[0-9]+\.[0-9]+\.[0-9]+"/, "\"version\": \"" ver "\"")
+        done = 1
+      }
+      s = $0
+      for (i = 1; i <= length(s); i++) {
+        c = substr(s, i, 1)
+        if (c == "{") depth++
+        else if (c == "}") depth--
+      }
+      print
+      if (depth <= 0) in_info = 0
+    }
+    END {
+      if (!done) {
+        print "error: no info.version string-semver rewritten in openapi info block" > "/dev/stderr"
+        exit 1
+      }
+    }
+  ' "$path" >"$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  mv "$tmp" "$path"
+
+  # Soft C6: optional JSON validity when a parser is available.
+  if command -v python3 >/dev/null 2>&1; then
+    if ! python3 -c 'import json,sys; json.load(open(sys.argv[1], encoding="utf-8"))' "$path"; then
+      echo "error: openapi JSON invalid after info.version rewrite: ${path}" >&2
+      return 1
+    fi
+  elif command -v jq >/dev/null 2>&1; then
+    if ! jq empty "$path" >/dev/null 2>&1; then
+      echo "error: openapi JSON invalid after info.version rewrite: ${path}" >&2
+      return 1
+    fi
+  fi
+  return 0
+}
+
 # has_dated_changelog_section VERSION [changelog_path]
 # Exit 0 if CHANGELOG has a dated closed section ## [VERSION] - YYYY-MM-DD.
 # Anchors on ^## \[ so footers, ### headings, and tombstone prose cannot match.
