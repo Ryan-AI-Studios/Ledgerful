@@ -103,6 +103,44 @@ fn data_model_row_better_than(cand: &DataModelRow, prev: &DataModelRow) -> bool 
     cand.id < prev.id
 }
 
+/// SELECT `data_models` JOIN `project_files`, apply confidence threshold, then
+/// emit-time dedupe. Mirrors endpoints `query_filter_and_dedupe_endpoints`.
+fn query_and_dedupe_data_models(
+    conn: &rusqlite::Connection,
+    threshold: f64,
+) -> Result<Vec<DataModelRow>> {
+    let mut stmt = conn
+        .prepare(
+            "SELECT dm.id, dm.model_name, dm.language, dm.model_kind, dm.confidence, \
+             dm.model_file_id, pf.file_path \
+             FROM data_models dm \
+             INNER JOIN project_files pf ON dm.model_file_id = pf.id \
+             WHERE dm.confidence >= ?1",
+        )
+        .into_diagnostic()?;
+
+    let rows_iter = stmt
+        .query_map([threshold], |row| {
+            Ok(DataModelRow {
+                id: row.get::<_, i64>(0)?,
+                model_name: row.get::<_, String>(1)?,
+                language: row.get::<_, String>(2)?,
+                model_kind: row.get::<_, String>(3)?,
+                confidence: row.get::<_, f64>(4)?,
+                model_file_id: row.get::<_, i64>(5)?,
+                file_path: row.get::<_, String>(6)?.replace('\\', "/"),
+            })
+        })
+        .into_diagnostic()?;
+
+    let mut model_rows: Vec<DataModelRow> = Vec::new();
+    for row in rows_iter {
+        model_rows.push(row.into_diagnostic()?);
+    }
+    // Dedupe after confidence filter; sort inside helper.
+    Ok(dedupe_data_model_rows(model_rows))
+}
+
 pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
     let layout = get_layout()?;
 
@@ -116,37 +154,7 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
             let conn = storage.get_connection();
 
             let threshold = if all { 0.0 } else { min_confidence };
-
-            let mut stmt = conn
-                .prepare(
-                    "SELECT dm.id, dm.model_name, dm.language, dm.model_kind, dm.confidence, \
-                     dm.model_file_id, pf.file_path \
-                     FROM data_models dm \
-                     INNER JOIN project_files pf ON dm.model_file_id = pf.id \
-                     WHERE dm.confidence >= ?1",
-                )
-                .into_diagnostic()?;
-
-            let rows_iter = stmt
-                .query_map([threshold], |row| {
-                    Ok(DataModelRow {
-                        id: row.get::<_, i64>(0)?,
-                        model_name: row.get::<_, String>(1)?,
-                        language: row.get::<_, String>(2)?,
-                        model_kind: row.get::<_, String>(3)?,
-                        confidence: row.get::<_, f64>(4)?,
-                        model_file_id: row.get::<_, i64>(5)?,
-                        file_path: row.get::<_, String>(6)?.replace('\\', "/"),
-                    })
-                })
-                .into_diagnostic()?;
-
-            let mut model_rows: Vec<DataModelRow> = Vec::new();
-            for row in rows_iter {
-                model_rows.push(row.into_diagnostic()?);
-            }
-            // Dedupe after confidence filter; sort inside helper.
-            let model_rows = dedupe_data_model_rows(model_rows);
+            let model_rows = query_and_dedupe_data_models(conn, threshold)?;
 
             if json {
                 let results: Vec<serde_json::Value> = model_rows
@@ -349,6 +357,8 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::state::migrations::get_migrations;
+    use rusqlite::Connection;
 
     fn row(
         id: i64,
@@ -368,6 +378,39 @@ mod tests {
             model_file_id: file_id,
             file_path: path.to_string(),
         }
+    }
+
+    fn in_memory_storage() -> StorageManager {
+        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = conn;
+        get_migrations().to_latest(&mut conn).unwrap();
+        StorageManager::init_from_conn(conn)
+    }
+
+    fn seed_model(
+        conn: &Connection,
+        file_id: i64,
+        name: &str,
+        language: &str,
+        kind: &str,
+        confidence: f64,
+        last_indexed_at: &str,
+    ) {
+        conn.execute(
+            "INSERT INTO data_models \
+             (model_name, model_file_id, language, model_kind, confidence, evidence, last_indexed_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                name,
+                file_id,
+                language,
+                kind,
+                confidence,
+                "test",
+                last_indexed_at,
+            ],
+        )
+        .unwrap();
     }
 
     #[test]
@@ -504,5 +547,167 @@ mod tests {
             account_pos < user_a_pos && user_a_pos < user_b_pos,
             "expected deterministic order, got:\n{rendered}"
         );
+    }
+
+    /// SELECT + confidence filter + dedupe against a real migrated SQLite conn:
+    /// three stacked identical model identities collapse to one emit row
+    /// alongside a distinct second model; low-confidence stack is filtered out.
+    #[test]
+    fn query_and_dedupe_collapses_stacked_identical_models() {
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                "src/models/user.rs",
+                "Rust",
+                "hash_stack_dm",
+                100,
+                "2026-05-01T00:00:00Z",
+            ),
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                "src/models/account.rs",
+                "Rust",
+                "hash_stack_dm2",
+                100,
+                "2026-05-01T00:00:00Z",
+            ),
+        )
+        .unwrap();
+        let account_file_id = conn.last_insert_rowid();
+
+        // Three stacked identical User identities (legacy multi-pass residue).
+        // Vary confidence so keep-best is exercised (highest conf wins).
+        seed_model(
+            conn,
+            file_id,
+            "User",
+            "Rust",
+            "STRUCT",
+            0.7,
+            "2026-05-01T00:00:00Z",
+        );
+        seed_model(
+            conn,
+            file_id,
+            "User",
+            "Rust",
+            "STRUCT",
+            0.95,
+            "2026-05-02T00:00:00Z",
+        );
+        seed_model(
+            conn,
+            file_id,
+            "User",
+            "Rust",
+            "STRUCT",
+            0.8,
+            "2026-05-03T00:00:00Z",
+        );
+        // Distinct model must survive.
+        seed_model(
+            conn,
+            account_file_id,
+            "Account",
+            "Rust",
+            "STRUCT",
+            0.9,
+            "2026-05-01T00:00:00Z",
+        );
+        // Below default List threshold (0.5) — filtered before dedupe.
+        seed_model(
+            conn,
+            file_id,
+            "LowConf",
+            "Rust",
+            "STRUCT",
+            0.2,
+            "2026-05-01T00:00:00Z",
+        );
+
+        let raw_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM data_models", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(raw_count, 5, "fixture must leave stacked rows in the table");
+
+        let rows = query_and_dedupe_data_models(conn, 0.5).expect("query+dedupe");
+        assert_eq!(
+            rows.len(),
+            2,
+            "three stacked User collapse to one; Account remains; LowConf filtered"
+        );
+        assert_eq!(rows[0].model_name, "Account");
+        assert_eq!(rows[1].model_name, "User");
+        assert!(
+            (rows[1].confidence - 0.95).abs() < f64::EPSILON,
+            "keep-best must retain highest confidence stacked User"
+        );
+        assert_eq!(rows[1].file_path, "src/models/user.rs");
+
+        // Uniqueness of emit keys (name, language, kind, file_id).
+        let mut keys: Vec<(String, String, String, i64)> = rows
+            .iter()
+            .map(|r| {
+                (
+                    r.model_name.clone(),
+                    r.language.clone(),
+                    r.model_kind.clone(),
+                    r.model_file_id,
+                )
+            })
+            .collect();
+        keys.sort();
+        let mut uniq = keys.clone();
+        uniq.dedup();
+        assert_eq!(
+            keys, uniq,
+            "emit rows must be unique on (name, language, kind, file_id)"
+        );
+    }
+
+    #[test]
+    fn query_and_dedupe_all_threshold_includes_low_confidence() {
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            (
+                "src/models/low.rs",
+                "Rust",
+                "hash_low",
+                50,
+                "2026-05-01T00:00:00Z",
+            ),
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+        seed_model(
+            conn,
+            file_id,
+            "LowConf",
+            "Rust",
+            "STRUCT",
+            0.2,
+            "2026-05-01T00:00:00Z",
+        );
+
+        let filtered = query_and_dedupe_data_models(conn, 0.5).expect("query+dedupe");
+        assert!(filtered.is_empty(), "0.2 conf must fail default threshold");
+
+        let all = query_and_dedupe_data_models(conn, 0.0).expect("query+dedupe --all");
+        assert_eq!(all.len(), 1);
+        assert_eq!(all[0].model_name, "LowConf");
     }
 }

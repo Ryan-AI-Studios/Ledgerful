@@ -561,7 +561,8 @@ pub struct User {
     }
 
     /// C3: two consecutive extracts must not stack; COUNT == unique models and
-    /// stats equal across runs.
+    /// stats equal across runs. Also proves re-extract clears a manually stacked
+    /// duplicate identity (same name/lang/kind/file_id, different last_indexed_at).
     #[test]
     fn test_extract_twice_does_not_stack_models() {
         use std::fs;
@@ -602,6 +603,63 @@ pub struct User {
         let count1: i64 = conn
             .query_row("SELECT COUNT(*) FROM data_models", [], |row| row.get(0))
             .unwrap();
+        assert_eq!(
+            count1 as usize, stats1.total_models,
+            "after first extract COUNT(*) must equal unique models"
+        );
+        assert!(
+            count1 >= 1,
+            "expected at least one model after first extract"
+        );
+
+        // Manually stack a duplicate identity (legacy multi-pass residue).
+        // Same model_name/language/model_kind/model_file_id; different last_indexed_at.
+        let (model_name, language, model_kind, confidence, evidence): (
+            String,
+            String,
+            String,
+            f64,
+            Option<String>,
+        ) = conn
+            .query_row(
+                "SELECT model_name, language, model_kind, confidence, evidence \
+                 FROM data_models LIMIT 1",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO data_models \
+             (model_name, model_file_id, language, model_kind, confidence, evidence, last_indexed_at) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            rusqlite::params![
+                model_name,
+                file_id,
+                language,
+                model_kind,
+                confidence,
+                evidence,
+                "2099-01-01T00:00:00Z",
+            ],
+        )
+        .unwrap();
+
+        let stacked_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM data_models", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            stacked_count,
+            count1 + 1,
+            "manual stack must leave unique+1 rows (count1={count1}, stacked={stacked_count})"
+        );
 
         let stats2 = extractor.extract().expect("second extract failed");
         let count2: i64 = conn
@@ -609,12 +667,16 @@ pub struct User {
             .unwrap();
 
         assert_eq!(
-            count1, count2,
-            "re-extract must not stack rows (count1={count1}, count2={count2})"
+            count2 as usize, stats2.total_models,
+            "COUNT(*) must equal unique models reported in stats after re-extract"
+        );
+        assert!(
+            count2 < stacked_count,
+            "re-extract must clear the stacked intermediate (count2={count2} < stacked={stacked_count})"
         );
         assert_eq!(
-            count2 as usize, stats2.total_models,
-            "COUNT(*) must equal unique models reported in stats"
+            count1, count2,
+            "re-extract must restore unique count (count1={count1}, count2={count2})"
         );
         assert_eq!(stats1.total_models, stats2.total_models);
         assert_eq!(stats1.files_processed, stats2.files_processed);
@@ -622,7 +684,23 @@ pub struct User {
         assert!(!stats1.partial);
         assert_eq!(stats2.files_skipped, 0);
         assert!(!stats2.partial);
-        assert!(count2 >= 1, "expected at least one model after extract");
+
+        // DISTINCT-style uniqueness: no remaining identity stacks.
+        let distinct_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM (
+                    SELECT model_name, language, model_kind, model_file_id
+                    FROM data_models
+                    GROUP BY model_name, language, model_kind, model_file_id
+                )",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            distinct_count, count2,
+            "after re-extract, DISTINCT identities must equal raw COUNT(*)"
+        );
     }
 
     /// Empty-symbol extract must DELETE prior rows (no stale stacks left behind).
