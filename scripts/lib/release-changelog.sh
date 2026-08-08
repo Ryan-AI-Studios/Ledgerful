@@ -1,5 +1,6 @@
-# Shared release-changelog helpers (sourced by check-release-state.sh,
-# check-release-tag.sh, and changelog-unreleased.sh). Not executable standalone.
+# Shared release-changelog helpers (sourced by prepare-release-cut.sh,
+# check-release-state.sh, check-release-tag.sh, and changelog-unreleased.sh).
+# Not executable standalone.
 #
 # Version-section matcher anchors on ^## \[ so:
 # - tombstone prose lines ("> Note: 0.2.2 was prepared…") do not count as a section
