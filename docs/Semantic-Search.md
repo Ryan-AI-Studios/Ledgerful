@@ -25,9 +25,44 @@ This is a **capability that can be off**:
 | Model name | `local_model.embedding_model` |
 | Dimensions (optional; probed when 0) | `local_model.dimensions` |
 | Inspect without writing | `ledgerful index --semantic-dry-run` |
-| Populate the index | `ledgerful index --semantic` (**only after** the backend is configured) |
+| Populate / refresh the index | `ledgerful index --semantic` (**only after** the backend is configured) |
+| Force full rebuild | `ledgerful index --semantic --full` |
 
 There is **no** `--print-semantic-config` flag. Use `--semantic-dry-run`.
+
+## Indexing mode & progress
+
+Warm detection uses the **vector store row count** (`vector_count > 0` after
+setup and foreign purge), **not** hash-table presence alone. Dimension-mismatch
+recovery and some migrations can leave `semantic_file_hash` rows while
+`snippet_embedding` is empty — those stores are treated as **cold** and full-
+bootstrap so the index never silently stays empty.
+
+| Flags | Store state | Effective mode | reason |
+|-------|-------------|----------------|--------|
+| `--full` (`-f`) | any | full | `--full` |
+| `--incremental` (`-i`) without `--full` | any | incremental | `explicit-incremental` |
+| neither | warm (`vector_count > 0`) | **incremental** | `auto-incremental` |
+| neither | cold (`vector_count == 0`) | full | `cold-store` |
+
+- **First populate / cold / post-dim-wipe empty vectors:** bare
+  `index --semantic` full-bootstraps automatically (`cold-store`).
+- **Warm delta:** bare `index --semantic` re-embeds only changed files (and
+  files whose hash is current but that have zero snippet rows).
+- **Force rebuild:** `index --semantic --full` always wins over `-i`.
+- **After repo absolute-path move / isolation cleanup:** prefer
+  `index --semantic --full` once so foreign keys purge and relative keys rewrite.
+- **Progress:** interactive TTY keeps indicatif parse/embed bars + HNSW spinner.
+  Non-TTY / agent runs (`CI`, `LEDGERFUL_NON_INTERACTIVE`, non-TTY stdin) emit
+  product phase lines and throttled counters on stdout (mode early, parse,
+  embed, HNSW, complete) — not tracing INFO (which default human QUIET hides).
+- **Machine mode:** `index --semantic --json` suppresses all human progress;
+  success prints **one** final JSON object (`schemaVersion`, `mode`, `reason`,
+  counts, `upToDate`, optional `purgedForeign` / `hnswRebuilt`).
+- **HNSW rebuild:** large batches (≥ `semantic.hnsw_rebuild_threshold`, default
+  500) drop and rebuild the HNSW index over the **whole** relation. The
+  announce line uses total store size (existing + new), not batch-only undercount.
+  Wall clock can be multi-minute on large stores — expected.
 
 ## States (backend × index)
 
@@ -37,7 +72,7 @@ Backend health and index emptiness are **orthogonal**:
 |---------|-------|--------------|
 | **Not configured** | any | Configure `local_model.base_url` / `embedding_url`. Inspect with `--semantic-dry-run`. **Never** “run `index --semantic`” alone — that cannot populate a meaningful index. |
 | **Unreachable** | any | Check the model server at the configured URL. |
-| **Ready** | empty | Run `ledgerful index --semantic` to populate. |
+| **Ready** | empty | Run `ledgerful index --semantic` to populate (auto full when cold). |
 | **Ready** | populated | Semantic ranking runs; “no matches” means the query found nothing, not that semantic search was skipped. |
 | dimension mismatch | — | Run `ledgerful update --migrate` after aligning dimensions. |
 
@@ -69,7 +104,8 @@ Older versions could store all-zero embeddings when `index --semantic` ran
 without a backend. Those rows are **detected and reported** (count + remediation);
 they are **not** auto-deleted. Query time excludes zero-magnitude stored vectors
 so ranking remains useful once a real backend is configured. To replace junk
-rows: configure the backend, then re-run `ledgerful index --semantic`.
+rows: configure the backend, then re-run `ledgerful index --semantic --full`
+(or bare `--semantic` when the store is empty / cold).
 
 ## Work-root isolation
 
@@ -84,7 +120,7 @@ and may share `state_dir` (see worktree layout / 0108).
 | **Prune** | Full and incremental `index --semantic` purge foreign keys from both relations. |
 | **Honesty** | Envelope `search --json` may include `semantic.filteredForeignCount` when foreign hits were filtered (omit when zero). Residual count is **envelope-only** — not present on `--json-lines`. |
 
-**After upgrade or moving the repo to a new absolute path:** old absolute keys look empty / filtered until you run `ledgerful index --semantic` (full preferred) to purge leftovers and rewrite relative keys. Do not interpret residual empty results as “no matches” without checking that the index was rebuilt under the new root.
+**After upgrade or moving the repo to a new absolute path:** old absolute keys look empty / filtered until you run `ledgerful index --semantic --full` to purge leftovers and rewrite relative keys. Do not interpret residual empty results as “no matches” without checking that the index was rebuilt under the new root.
 
 **Do not share `LEDGERFUL_STATE_DIR` across unrelated repos.** Relative keys can collide (`src/main.rs` from repo A vs B). Linked worktrees of the **same** tree are fine; multi-root semantic federation is not productized on the default path.
 

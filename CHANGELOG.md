@@ -6,15 +6,32 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Warm default incremental for `index --semantic` (0161):** Bare
+  `ledgerful index --semantic` is **incremental** when the vector store is non-empty
+  (`vector_count > 0` after foreign purge — not hash presence alone). Cold/empty
+  vectors full-bootstrap (`cold-store`); `--full` forces rebuild; `-i` is explicit
+  incremental. Per-file skip only when hash-current **and** the file still has ≥1
+  snippet row. Graph/`index` without `--semantic` still requires `-i` for incremental.
+  See `docs/Semantic-Search.md` (Indexing mode & progress).
+
 ### Fixed
 
+- **Non-TTY semantic index progress (0161):** Multi-minute agent/CI runs no longer
+  look hung — product phase lines + throttled counters on stdout when non-interactive
+  (mode early, parse/embed, HNSW total-size announce, complete / up-to-date). TTY
+  keeps indicatif bars. Not tracing INFO (0154 quiet default).
+- **`index --semantic --json` human-line purity (0161):** Suppresses all mid-run
+  human stdout; success emits one final JSON object (`schemaVersion`, `mode`,
+  `reason`, counts, `upToDate`, optional `purgedForeign` / `hnswRebuilt`).
 - **Semantic search work-root isolation (0152):** Semantic keys are work-root-relative;
   `VectorStore::query_scoped` filters foreign absolute leftovers (filter-before-truncate
   + one-shot re-query); full/incremental `index --semantic` dual-purges
   `snippet_embedding` + `semantic_file_hash`; ask opens files via root join; semantic
   hotspots drop foreign-absolute pairs. Envelope optional `semantic.filteredForeignCount`
   (omit when zero; envelope-only — not on `--json-lines`). After upgrade or repo move,
-  run full `index --semantic`. Do not share `LEDGERFUL_STATE_DIR` across unrelated repos.
+  run `index --semantic --full`. Do not share `LEDGERFUL_STATE_DIR` across unrelated repos.
 
 ## [0.2.7] - 2026-08-08
 

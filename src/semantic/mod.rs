@@ -441,6 +441,29 @@ impl<'a> SemanticDiscovery<'a> {
         }
     }
 
+    /// Returns `true` if `snippet_embedding` has at least one row for work-root-relative
+    /// `path_key` (0161 C1 companion: hash-current alone must not skip empty snippets).
+    pub fn file_has_snippets(&self, path_key: &str) -> bool {
+        use cozo::{DataValue, ScriptMutability};
+        use std::collections::BTreeMap;
+
+        let path_str = path_key.replace('\\', "/");
+        let mut params = BTreeMap::new();
+        params.insert("path".to_string(), DataValue::from(path_str.as_str()));
+        // Parameterized path key — same honesty requirement as remove_file_snippets.
+        let script = "\
+            paths[file_path] := file_path = $path\n\
+            ?[file_path] := paths[file_path], *snippet_embedding{file_path}";
+        match self.vector_store.storage_ref().run_script_with_params(
+            script,
+            params,
+            ScriptMutability::Immutable,
+        ) {
+            Ok(res) => !res.rows.is_empty(),
+            Err(_) => false,
+        }
+    }
+
     /// Upsert the content hash for work-root-relative `path_key` into `semantic_file_hash`.
     pub fn record_file_hash(&self, path_key: &str, hash: &str) -> Result<()> {
         use cozo::{DataValue, ScriptMutability};
@@ -1026,5 +1049,55 @@ mod tests {
                 "unconfigured must not claim no matches (succeeded={succeeded}): {msg}"
             );
         }
+    }
+
+    /// 0161 C1 companion: hash-current + zero snippets → file_has_snippets false
+    /// so incremental filter re-processes (orphan hash after dim-wipe).
+    #[test]
+    fn file_has_snippets_false_when_hash_only_no_vectors() {
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let config = LocalModelConfig {
+            dimensions: 3,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let semantic = SemanticDiscovery::new(config, &storage).expect("semantic");
+        semantic.ensure_file_hash_schema().expect("hash schema");
+
+        let path_key = "src/orphan.rs";
+        semantic
+            .record_file_hash(path_key, "deadbeef")
+            .expect("record hash");
+        assert!(
+            semantic.is_file_hash_current(path_key, "deadbeef"),
+            "hash must be current"
+        );
+        assert!(
+            !semantic.file_has_snippets(path_key),
+            "orphan hash with no snippet rows must not report snippets"
+        );
+
+        // After a real put, snippets should be visible.
+        let chunk = crate::semantic::chunker::AstChunk {
+            file_path: path_key.to_string(),
+            name: "f".to_string(),
+            kind: crate::index::symbols::SymbolKind::Function,
+            content: "fn f() {}".to_string(),
+            docstring: None,
+            range: (0, 0),
+            lines: (1, 1),
+            offset: 0,
+        };
+        semantic
+            .index_chunks_batched(vec![chunk], vec![vec![1.0_f32, 0.0, 0.0]])
+            .expect("index chunk");
+        assert!(
+            semantic.file_has_snippets(path_key),
+            "after put, file_has_snippets must be true"
+        );
+        assert!(
+            !semantic.file_has_snippets("src/other.rs"),
+            "unrelated path must not have snippets"
+        );
     }
 }

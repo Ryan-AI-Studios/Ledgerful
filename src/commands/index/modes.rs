@@ -67,13 +67,16 @@ pub fn execute_index(args: IndexArgs) -> Result<()> {
     // (no-graph) or exclusively inside run_graph_analysis (--analyze-graph).
 
     // ── Mode: standalone semantic indexing ─────────────────────────────
+    // 0161: pass raw force_full / force_incremental / json (do not collapse Auto).
     if args.semantic && !args.analyze_graph {
         return execute_semantic_index(
             &layout,
             storage,
             &config,
+            args.full,
             args.incremental,
             args.concurrency,
+            args.json,
         );
     }
 
@@ -120,7 +123,8 @@ fn execute_main_mode(
     }
 
     // ── Sub-mode: incremental or full index ──────────────────────────────
-    let stats = if args.incremental {
+    // Graph path still collapses: only explicit `-i` without `--full` is incremental.
+    let stats = if args.incremental && !args.full {
         indexer.incremental_index()?
     } else {
         indexer.full_index()?

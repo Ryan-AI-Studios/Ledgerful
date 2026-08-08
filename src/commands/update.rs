@@ -55,6 +55,7 @@ fn execute_migration(_fast: bool, dry_run: bool) -> Result<()> {
     // 1. Re-index
     crate::commands::index::execute_index(crate::commands::index::IndexArgs {
         incremental: false,
+        full: false,
         analyze_graph: true,
         docs: true,
         contracts: true,

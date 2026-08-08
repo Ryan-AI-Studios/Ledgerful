@@ -10,7 +10,10 @@ pub(crate) mod semantic;
 /// CLI arguments for the `ledgerful index` command.
 #[derive(Default)]
 pub struct IndexArgs {
+    /// Raw CLI `-i/--incremental` (do not pre-collapse with `--full` for semantic Auto).
     pub incremental: bool,
+    /// Raw CLI `-f/--full`. Wins over incremental for both graph and semantic paths.
+    pub full: bool,
     pub check: bool,
     pub strict: bool,
     pub json: bool,
