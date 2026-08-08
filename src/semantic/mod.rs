@@ -299,20 +299,32 @@ impl<'a> SemanticDiscovery<'a> {
         })
     }
 
-    pub fn index_file(&self, path: &Path, content: &str) -> Result<()> {
-        let (chunks, embeddings) = self.process_file(path, content)?;
+    /// Index one file under `work_root`, rewriting chunk keys to work-root-relative
+    /// paths (0152 B1). Prefer this over calling the chunker + `index_chunks` with
+    /// absolute `file_path` values.
+    pub fn index_file(&self, work_root: &Path, path: &Path, content: &str) -> Result<()> {
+        let (chunks, embeddings) = self.process_file(work_root, path, content)?;
         if !chunks.is_empty() {
             self.vector_store.index_chunks(chunks, embeddings)?;
         }
         Ok(())
     }
 
+    /// Parse + embed one file, returning chunks with **work-root-relative** `file_path`
+    /// keys (0152). Rejects paths outside `work_root`.
     pub fn process_file(
         &self,
+        work_root: &Path,
         path: &Path,
         content: &str,
     ) -> Result<(Vec<crate::semantic::chunker::AstChunk>, Vec<Vec<f32>>)> {
-        let chunks = AstChunker::chunk_file(path, content)?;
+        use crate::util::path::semantic_path_key;
+
+        let path_key = semantic_path_key(work_root, path).map_err(|e| miette::miette!("{e}"))?;
+        let mut chunks = AstChunker::chunk_file(path, content)?;
+        for chunk in &mut chunks {
+            chunk.file_path = path_key.clone();
+        }
         if chunks.is_empty() {
             return Ok((vec![], vec![]));
         }
@@ -355,17 +367,35 @@ impl<'a> SemanticDiscovery<'a> {
         self.vector_store.index_chunks(chunks, embeddings)
     }
 
-    pub fn query(&self, query_text: &str, k: usize) -> Result<Vec<(String, String, usize, f32)>> {
+    /// Embed + work-root-scoped query. Returns `(hits, filtered_foreign_count)`.
+    /// Production SoT — callers must pass the active layout work root.
+    pub fn query(
+        &self,
+        work_root: &std::path::Path,
+        query_text: &str,
+        k: usize,
+    ) -> Result<crate::semantic::vector_store::ScopedQueryResult> {
         let query_vector = self.embedder.embed(query_text)?;
-        self.vector_store.query(query_vector, k)
+        self.vector_store.query_scoped(work_root, query_vector, k)
     }
 
+    /// Unscoped raw vector query (tests). Prefer [`Self::query`] / `query_scoped` in production.
     pub fn query_raw(
         &self,
         query_vector: Vec<f32>,
         k: usize,
-    ) -> Result<Vec<(String, String, usize, f32)>> {
+    ) -> Result<Vec<crate::semantic::vector_store::SemanticHit>> {
         self.vector_store.query(query_vector, k)
+    }
+
+    /// Work-root-scoped raw vector query (no embed).
+    pub fn query_raw_scoped(
+        &self,
+        work_root: &std::path::Path,
+        query_vector: Vec<f32>,
+        k: usize,
+    ) -> Result<crate::semantic::vector_store::ScopedQueryResult> {
+        self.vector_store.query_scoped(work_root, query_vector, k)
     }
 
     pub fn get_vector_count(&self) -> Result<usize> {
@@ -390,9 +420,10 @@ impl<'a> SemanticDiscovery<'a> {
         Ok(())
     }
 
-    /// Returns `true` if the stored hash for `path` matches `hash` (file unchanged).
-    pub fn is_file_hash_current(&self, path: &std::path::Path, hash: &str) -> bool {
-        let path_str = path.to_string_lossy().replace('\\', "/");
+    /// Returns `true` if the stored hash for work-root-relative `path_key` matches `hash`.
+    /// Keys must be slash-normalized relative strings (see `util::path::semantic_path_key`).
+    pub fn is_file_hash_current(&self, path_key: &str, hash: &str) -> bool {
+        let path_str = path_key.replace('\\', "/");
         let script = format!(
             "?[content_hash] := *semantic_file_hash{{file_path: \"{}\", content_hash}}",
             path_str.replace('"', "\\\"")
@@ -410,12 +441,12 @@ impl<'a> SemanticDiscovery<'a> {
         }
     }
 
-    /// Upsert the content hash for `path` into `semantic_file_hash`.
-    pub fn record_file_hash(&self, path: &std::path::Path, hash: &str) -> Result<()> {
+    /// Upsert the content hash for work-root-relative `path_key` into `semantic_file_hash`.
+    pub fn record_file_hash(&self, path_key: &str, hash: &str) -> Result<()> {
         use cozo::{DataValue, ScriptMutability};
         use std::collections::BTreeMap;
 
-        let path_str = path.to_string_lossy().replace('\\', "/");
+        let path_str = path_key.replace('\\', "/");
         let mut params = BTreeMap::new();
         params.insert(
             "data".to_string(),
@@ -433,8 +464,11 @@ impl<'a> SemanticDiscovery<'a> {
     }
 
     /// Remove snippet embeddings for files that no longer exist under `repo_root`.
+    /// Foreign absolute keys are also purged (defense in depth; dual purge is the primary path).
     /// Called before a full re-index to keep the vector store clean (HP3 pruning).
     pub fn prune_deleted_snippets(&self, repo_root: &std::path::Path) -> Result<()> {
+        use crate::util::path::{path_is_under_work_root, resolve_under_work_root};
+
         // Fetch all indexed file paths
         let script = "?[file_path] := *snippet_embedding{file_path}";
         let res = self.vector_store.storage_ref().run_script(script);
@@ -446,17 +480,85 @@ impl<'a> SemanticDiscovery<'a> {
         let mut pruned = 0usize;
         for row in res.rows {
             if let Some(cozo::DataValue::Str(fp)) = row.first() {
-                let full = repo_root.join(fp.as_str().trim_start_matches('/'));
-                if !full.exists() {
-                    self.vector_store.remove_file_snippets(fp.as_ref())?;
+                let key = fp.as_ref();
+                let should_remove = if !path_is_under_work_root(repo_root, key) {
+                    true
+                } else {
+                    !resolve_under_work_root(repo_root, key).exists()
+                };
+                if should_remove {
+                    self.vector_store.remove_file_snippets(key)?;
                     pruned += 1;
                 }
             }
         }
         if pruned > 0 {
-            tracing::debug!("Pruned snippets for {} deleted files", pruned);
+            tracing::debug!("Pruned snippets for {} deleted/foreign files", pruned);
         }
         Ok(())
+    }
+
+    /// Purge keys outside `work_root` from **both** `snippet_embedding` and
+    /// `semantic_file_hash` (0152 dual-relation foreign purge).
+    ///
+    /// Returns the number of distinct path keys removed across both relations.
+    /// Does not delete files on disk — Cozo rows only.
+    pub fn purge_foreign_semantic_keys(&self, work_root: &std::path::Path) -> Result<u64> {
+        use crate::util::path::path_is_under_work_root;
+        use std::collections::BTreeSet;
+
+        let mut foreign_keys: BTreeSet<String> = BTreeSet::new();
+
+        for relation_script in [
+            "?[file_path] := *snippet_embedding{file_path}",
+            "?[file_path] := *semantic_file_hash{file_path}",
+        ] {
+            let res = match self.vector_store.storage_ref().run_script(relation_script) {
+                Ok(r) => r,
+                Err(_) => continue, // relation may not exist yet
+            };
+            for row in res.rows {
+                if let Some(cozo::DataValue::Str(fp)) = row.first() {
+                    let key = fp.to_string();
+                    if !path_is_under_work_root(work_root, &key) {
+                        foreign_keys.insert(key);
+                    }
+                }
+            }
+        }
+
+        // Count only keys for which at least one relation remove succeeded (or
+        // both were no-ops after a successful attempt). Do not announce
+        // pre-delete sizes as purged if Cozo removes failed (Codex R2 P3).
+        let mut purged = 0u64;
+        for key in &foreign_keys {
+            let snippet_ok = match self.vector_store.remove_file_snippets(key) {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::debug!("Foreign snippet purge for '{key}' (may be hash-only): {e}");
+                    false
+                }
+            };
+            let hash_ok = match self.remove_file_hash(key) {
+                Ok(()) => true,
+                Err(e) => {
+                    tracing::debug!("Foreign hash purge for '{key}': {e}");
+                    false
+                }
+            };
+            // Hash-only or snippet-only foreign keys still count when the
+            // applicable relation remove succeeds; both-fail does not.
+            if snippet_ok || hash_ok {
+                purged += 1;
+            }
+        }
+
+        if purged > 0 {
+            tracing::debug!(
+                "Purged {purged} semantic path key(s) outside work root from snippet_embedding + semantic_file_hash"
+            );
+        }
+        Ok(purged)
     }
 
     /// Retrieve all file paths currently tracked in `semantic_file_hash`.
@@ -473,21 +575,34 @@ impl<'a> SemanticDiscovery<'a> {
                 files.push(fp.to_string());
             }
         }
+        files.sort();
         Ok(files)
     }
 
     /// Remove the content hash for `file_path` from `semantic_file_hash`.
+    ///
+    /// Parameterized path key (same honesty requirement as
+    /// [`VectorStore::remove_file_snippets`]) so apostrophes in keys do not
+    /// break dual-relation foreign purge.
     pub fn remove_file_hash(&self, file_path: &str) -> Result<()> {
+        use cozo::{DataValue, ScriptMutability};
+        use std::collections::BTreeMap;
+
         let path_normalized = file_path.replace('\\', "/");
-        // Cozo escapes single quotes by doubling them, not with backslash.
-        let escaped = path_normalized.replace('\'', "''");
-        let script = format!(
-            "paths[file_path] <- [['{}']]\n\
-             ?[file_path, content_hash] := paths[file_path], *semantic_file_hash{{file_path, content_hash}}\n\
-             :rm semantic_file_hash {{file_path, content_hash}}",
-            escaped
+        let mut params = BTreeMap::new();
+        params.insert(
+            "path".to_string(),
+            DataValue::from(path_normalized.as_str()),
         );
-        self.vector_store.storage_ref().run_script(&script)?;
+        let script = "\
+            paths[file_path] := file_path = $path\n\
+            ?[file_path, content_hash] := paths[file_path], *semantic_file_hash{file_path, content_hash}\n\
+            :rm semantic_file_hash {file_path, content_hash}";
+        self.vector_store.storage_ref().run_script_with_params(
+            script,
+            params,
+            ScriptMutability::Mutable,
+        )?;
         Ok(())
     }
 }

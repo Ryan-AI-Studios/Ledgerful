@@ -5,6 +5,12 @@ use cozo::{DataValue, Num};
 use miette::{Result, miette};
 use tracing::{debug, warn};
 
+/// One semantic ranking hit: `(file_path, name, line_offset, cos_dist)`.
+pub type SemanticHit = (String, String, usize, f32);
+
+/// Scoped query result: ranked hits + count of foreign path keys filtered out.
+pub type ScopedQueryResult = (Vec<SemanticHit>, u64);
+
 pub struct VectorStore<'a> {
     storage: &'a CozoStorage,
     dim: usize,
@@ -199,16 +205,23 @@ impl<'a> VectorStore<'a> {
     }
 
     /// Remove all `snippet_embedding` rows for `file_path` (HP3 pruning).
+    ///
+    /// Uses a parameterized path key (`$path`) so apostrophes and other special
+    /// characters in keys are not string-interpolated into the Cozo script —
+    /// required for dual-relation foreign purge honesty (0152 Codex R1 P2).
     pub fn remove_file_snippets(&self, file_path: &str) -> Result<()> {
+        use cozo::ScriptMutability;
+        use std::collections::BTreeMap;
+
         let path_str = file_path.replace('\\', "/");
-        let escaped = path_str.replace('\'', "\\'");
-        let script = format!(
-            "paths[file_path] <- [['{}']]\n\
-             ?[file_path, name, line_offset] := paths[file_path], *snippet_embedding{{file_path, name, line_offset}}\n\
-             :rm snippet_embedding {{file_path, name, line_offset}}",
-            escaped
-        );
-        self.storage.run_script(&script)?;
+        let mut params = BTreeMap::new();
+        params.insert("path".to_string(), DataValue::from(path_str.as_str()));
+        let script = "\
+            paths[file_path] := file_path = $path\n\
+            ?[file_path, name, line_offset] := paths[file_path], *snippet_embedding{file_path, name, line_offset}\n\
+            :rm snippet_embedding {file_path, name, line_offset}";
+        self.storage
+            .run_script_with_params(script, params, ScriptMutability::Mutable)?;
         tracing::debug!("Pruned snippets for deleted file: {}", file_path);
         Ok(())
     }
@@ -378,11 +391,90 @@ impl<'a> VectorStore<'a> {
         Ok(())
     }
 
-    pub fn query(
+    /// Unscoped semantic query (tests / internal). Production surfaces must use
+    /// [`Self::query_scoped`] so foreign work-root keys never surface.
+    pub fn query(&self, query_vector: Vec<f32>, k: usize) -> Result<Vec<SemanticHit>> {
+        let candidate_k = default_candidate_k(k);
+        let candidates = self.query_candidates(query_vector, candidate_k)?;
+        Ok(truncate_hits(candidates, k))
+    }
+
+    /// Work-root-scoped semantic query (production SoT).
+    ///
+    /// Pipeline (0152):
+    /// 1. Overfetch candidates (HNSW / cos_dist / Tier-3) with zero-vector exclusion (0096)
+    /// 2. Filter to paths under `work_root` (drop foreign absolute leftovers)
+    /// 3. Emit relative keys for absolute-under-root legacy hits
+    /// 4. Truncate to `k`
+    /// 5. If kept &lt; k and foreign drops &gt; 0: **one-shot** re-query with larger candidate cap
+    ///
+    /// Re-query formula: `retry_candidate_k = min(max(first_candidate_k * 2, 100), 200)`
+    /// when `first_candidate_k < 200`; otherwise `min(first_candidate_k * 2, 500)`.
+    ///
+    /// Returns `(hits, filtered_foreign_count)`.
+    pub fn query_scoped(
         &self,
+        work_root: &std::path::Path,
         query_vector: Vec<f32>,
         k: usize,
-    ) -> Result<Vec<(String, String, usize, f32)>> {
+    ) -> Result<ScopedQueryResult> {
+        let first_candidate_k = default_candidate_k(k);
+        let (mut hits, mut foreign) =
+            self.query_scoped_once(work_root, query_vector.clone(), k, first_candidate_k)?;
+
+        if hits.len() < k && foreign > 0 {
+            let retry_k = retry_candidate_k(first_candidate_k);
+            if retry_k > first_candidate_k {
+                debug!(
+                    "query_scoped under-filled (kept={}, k={}, foreign={}); re-query candidate_k {} → {}",
+                    hits.len(),
+                    k,
+                    foreign,
+                    first_candidate_k,
+                    retry_k
+                );
+                let (retry_hits, retry_foreign) =
+                    self.query_scoped_once(work_root, query_vector, k, retry_k)?;
+                hits = retry_hits;
+                // Report total foreign seen on the larger pass (honesty residual).
+                foreign = retry_foreign;
+            }
+        }
+
+        Ok((hits, foreign))
+    }
+
+    fn query_scoped_once(
+        &self,
+        work_root: &std::path::Path,
+        query_vector: Vec<f32>,
+        k: usize,
+        candidate_k: usize,
+    ) -> Result<ScopedQueryResult> {
+        use crate::util::path::{display_path_under_work_root, path_is_under_work_root};
+
+        let candidates = self.query_candidates(query_vector, candidate_k)?;
+        let mut kept = Vec::new();
+        let mut foreign: u64 = 0;
+        for (file_path, name, offset, dist) in candidates {
+            if path_is_under_work_root(work_root, &file_path) {
+                let display =
+                    display_path_under_work_root(work_root, &file_path).unwrap_or(file_path);
+                kept.push((display, name, offset, dist));
+            } else {
+                foreign = foreign.saturating_add(1);
+            }
+        }
+        Ok((truncate_hits(kept, k), foreign))
+    }
+
+    /// Fetch up to `candidate_k` ranked hits (zero-vector excluded). Does **not**
+    /// apply work-root filtering — use [`Self::query_scoped`] for production.
+    fn query_candidates(
+        &self,
+        query_vector: Vec<f32>,
+        candidate_k: usize,
+    ) -> Result<Vec<SemanticHit>> {
         use cozo::ScriptMutability;
         use std::collections::BTreeMap;
 
@@ -403,7 +495,6 @@ impl<'a> VectorStore<'a> {
         // Tier 1: HNSW candidate generation with exact Cozo-side cosine reranking.
         // Over-fetch candidates so zero-magnitude legacy rows excluded at parse
         // time (DoD-7b) do not starve the top-k.
-        let candidate_k = k.saturating_mul(10).max(50);
         let hnsw_script = format!(
             "?[file_path, name, line_offset, dist] := ~snippet_embedding:snippet_idx{{file_path, name, line_offset | query: $query_vec, k: {candidate_k}, ef: 100}}, *snippet_embedding{{file_path, name, line_offset, embedding}}, dist = cos_dist(embedding, $query_vec) :order +dist :limit {candidate_k}"
         );
@@ -416,7 +507,7 @@ impl<'a> VectorStore<'a> {
         match res {
             Ok(r) => {
                 debug!("Semantic query served by HNSW index");
-                return parse_hnsw_results(r, k);
+                return parse_hnsw_results(r, candidate_k);
             }
             Err(e)
                 if e.to_string().contains("hnsw_index_not_found")
@@ -429,10 +520,9 @@ impl<'a> VectorStore<'a> {
         }
 
         // Tier 2: CozoDB-native cos_dist query (over-fetch for DoD-7b filter)
-        let fetch_k = k.saturating_mul(10).max(50);
         let cos_dist_script = format!(
             "?[file_path, name, line_offset, dist] := *snippet_embedding{{file_path, name, line_offset, embedding}}, dist = cos_dist(embedding, $query_vec) :order +dist :limit {}",
-            fetch_k
+            candidate_k
         );
         let cos_res = self.storage.run_script_with_params(
             &cos_dist_script,
@@ -443,7 +533,7 @@ impl<'a> VectorStore<'a> {
         match cos_res {
             Ok(r) => {
                 debug!("Semantic query served by Cozo-native cos_dist");
-                return parse_hnsw_results(r, k);
+                return parse_hnsw_results(r, candidate_k);
             }
             Err(e) if e.to_string().contains("no_implementation") => {
                 warn!("Cozo-native cos_dist unavailable, falling back to Rust-side cosine_sim.");
@@ -501,16 +591,36 @@ impl<'a> VectorStore<'a> {
                 .then_with(|| a.0.cmp(&b.0))
         });
 
-        if scored_results.len() > k {
-            scored_results.truncate(k);
-        }
-
         // Return cos_dist values (1.0 - sim) for consistency with the HNSW/cos_dist paths
-        Ok(scored_results
-            .into_iter()
-            .map(|(f, n, o, s)| (f, n, o, 1.0 - s))
-            .collect())
+        Ok(truncate_hits(
+            scored_results
+                .into_iter()
+                .map(|(f, n, o, s)| (f, n, o, 1.0 - s))
+                .collect(),
+            candidate_k,
+        ))
     }
+}
+
+/// First-pass overfetch: `max(k * 10, 50)` (0096 zero-vector headroom).
+fn default_candidate_k(k: usize) -> usize {
+    k.saturating_mul(10).max(50)
+}
+
+/// One-shot re-query cap when work-root filter under-fills top-k (0152).
+fn retry_candidate_k(first_candidate_k: usize) -> usize {
+    if first_candidate_k < 200 {
+        first_candidate_k.saturating_mul(2).clamp(100, 200)
+    } else {
+        first_candidate_k.saturating_mul(2).min(500)
+    }
+}
+
+fn truncate_hits(mut hits: Vec<SemanticHit>, k: usize) -> Vec<SemanticHit> {
+    if hits.len() > k {
+        hits.truncate(k);
+    }
+    hits
 }
 
 /// True when every element is exactly `0.0` (all-zero / zero-length check
@@ -547,10 +657,7 @@ fn normalize_vector(mut vector: Vec<f32>) -> Option<Vec<f32>> {
 /// Parse Cozo HNSW / cos_dist rows. **Excludes** non-finite distances
 /// (DoD-7b: zero-magnitude stored vectors yield NaN from `cos_dist` and
 /// must not rank). Truncates to `limit` after filtering.
-fn parse_hnsw_results(
-    res: cozo::NamedRows,
-    limit: usize,
-) -> Result<Vec<(String, String, usize, f32)>> {
+fn parse_hnsw_results(res: cozo::NamedRows, limit: usize) -> Result<Vec<SemanticHit>> {
     let mut results = Vec::new();
     for row in res.rows {
         if let (
@@ -810,5 +917,192 @@ mod tests {
             "valid rows must still be returned under a valid query vector"
         );
         assert_eq!(results[0].1, "good_a");
+    }
+
+    fn plant_embedding(
+        storage: &CozoStorage,
+        file_path: &str,
+        name: &str,
+        offset: i64,
+        embedding: Vec<f32>,
+    ) {
+        use cozo::{DataValue, ScriptMutability};
+        use std::collections::BTreeMap;
+
+        // Normalize like production puts so cos_dist is well-defined.
+        let emb = normalize_vector(embedding).expect("test embedding must normalize");
+        let mut params = BTreeMap::new();
+        params.insert(
+            "data".to_string(),
+            DataValue::from(vec![DataValue::List(Box::new(vec![
+                DataValue::from(file_path),
+                DataValue::from(name),
+                DataValue::from(offset),
+                DataValue::Vec(Box::new(cozo::Vector::F32(emb.into()))),
+            ]))]),
+        );
+        storage
+            .run_script_with_params(
+                "?[file_path, name, line_offset, embedding] <- $data :put snippet_embedding",
+                params,
+                ScriptMutability::Mutable,
+            )
+            .expect("plant embedding");
+    }
+
+    /// 0152: filter-before-truncate — foreign top-k must not empty local hits.
+    #[test]
+    fn query_scoped_filter_before_truncate_keeps_local_hits() {
+        let storage = CozoStorage::new_in_memory().expect("in-memory cozo");
+        let store = VectorStore::new_without_hnsw(&storage, 3).expect("store");
+        let dir_local = tempfile::tempdir().expect("local root");
+        let dir_foreign = tempfile::tempdir().expect("foreign root");
+        let work_root = dir_local.path();
+
+        // Plant many foreign absolute keys that rank first (identical to query).
+        for i in 0..15 {
+            let fp = dir_foreign
+                .path()
+                .join(format!("foreign_{i}.rs"))
+                .to_string_lossy()
+                .replace('\\', "/");
+            plant_embedding(
+                &storage,
+                &fp,
+                &format!("foreign_{i}"),
+                i as i64,
+                vec![1.0, 0.0, 0.0],
+            );
+        }
+        // Local under-root hit ranks slightly lower (orthogonal component).
+        plant_embedding(&storage, "src/local.rs", "local_fn", 0, vec![0.9, 0.1, 0.0]);
+
+        let (hits, foreign) = store
+            .query_scoped(work_root, vec![1.0, 0.0, 0.0], 5)
+            .expect("query_scoped");
+        assert!(
+            foreign > 0,
+            "expected foreign rows filtered from overfetch: foreign={foreign}"
+        );
+        assert!(
+            !hits.is_empty(),
+            "local under-root hit must survive filter-before-truncate: {hits:?}"
+        );
+        let foreign_marker = dir_foreign.path().to_string_lossy().replace('\\', "/");
+        assert!(
+            hits.iter()
+                .all(|(p, _, _, _)| !p.replace('\\', "/").contains(&foreign_marker)),
+            "no foreign absolute paths in results: {hits:?}"
+        );
+        assert!(
+            hits.iter()
+                .any(|(p, n, _, _)| p == "src/local.rs" || n == "local_fn"),
+            "local hit missing: {hits:?}"
+        );
+    }
+
+    /// 0152 DoD-1: shared state with absolute poison under B never surfaces when querying from A.
+    #[test]
+    fn query_scoped_hermetic_multi_root_absolute_poison() {
+        let storage = CozoStorage::new_in_memory().expect("in-memory cozo");
+        let store = VectorStore::new_without_hnsw(&storage, 3).expect("store");
+
+        let dir_a = tempfile::tempdir().expect("tempdir A");
+        let dir_b = tempfile::tempdir().expect("tempdir B");
+        let root_a = dir_a.path();
+        let root_b = dir_b.path();
+
+        // Relative key under A (normal write path).
+        plant_embedding(&storage, "src/a.rs", "fn_a", 0, vec![1.0, 0.0, 0.0]);
+        // Absolute poison for B (dogfood class: multi-root shared state_dir).
+        let poison_b = root_b
+            .join("src")
+            .join("poison.rs")
+            .to_string_lossy()
+            .replace('\\', "/");
+        plant_embedding(&storage, &poison_b, "fn_poison", 0, vec![1.0, 0.0, 0.0]);
+        // Also plant absolute-under-A legacy key (should rewrite to relative, keep).
+        let legacy_a = root_a
+            .join("src")
+            .join("legacy.rs")
+            .to_string_lossy()
+            .replace('\\', "/");
+        plant_embedding(&storage, &legacy_a, "fn_legacy", 0, vec![0.0, 1.0, 0.0]);
+
+        let (hits, foreign) = store
+            .query_scoped(root_a, vec![1.0, 0.0, 0.0], 10)
+            .expect("query_scoped from A");
+        let b_marker = root_b.to_string_lossy().replace('\\', "/");
+        assert!(
+            hits.iter().all(|(p, _, _, _)| {
+                !p.contains("poison") && !p.replace('\\', "/").contains(&b_marker)
+            }),
+            "query from A must never return B poison paths: {hits:?}"
+        );
+        assert!(
+            foreign >= 1,
+            "absolute B poison should count as filtered foreign: foreign={foreign}"
+        );
+        assert!(
+            hits.iter()
+                .any(|(p, n, _, _)| p == "src/a.rs" || n == "fn_a"),
+            "A relative hit missing: {hits:?}"
+        );
+
+        // Legacy absolute under A should surface as relative key.
+        let (all_a, _) = store
+            .query_scoped(root_a, vec![0.5, 0.5, 0.0], 20)
+            .expect("broad query");
+        let legacy = all_a.iter().find(|(_, n, _, _)| n == "fn_legacy");
+        if let Some((p, _, _, _)) = legacy {
+            assert_eq!(
+                p, "src/legacy.rs",
+                "absolute-under-root legacy must emit relative key, got {p}"
+            );
+        }
+        for (p, _, _, _) in &all_a {
+            assert!(
+                path_looks_relative(p),
+                "results should emit relative keys, got {p}"
+            );
+        }
+    }
+
+    fn path_looks_relative(p: &str) -> bool {
+        !p.starts_with('/') && !(p.len() >= 2 && p.as_bytes()[1] == b':')
+    }
+
+    #[test]
+    fn retry_candidate_k_formula() {
+        assert_eq!(retry_candidate_k(50), 100);
+        assert_eq!(retry_candidate_k(100), 200);
+        assert_eq!(retry_candidate_k(150), 200);
+        assert_eq!(retry_candidate_k(200), 400);
+        assert_eq!(retry_candidate_k(300), 500);
+    }
+
+    /// Codex R1 P2: Cozo string escape for `'` must be doubled (`''`), not `\'`.
+    /// Path keys with apostrophes must still purge from `snippet_embedding`.
+    #[test]
+    fn remove_file_snippets_handles_apostrophe_in_path_key() {
+        let storage = CozoStorage::new_in_memory().expect("in-memory cozo");
+        let store = VectorStore::new_without_hnsw(&storage, 3).expect("store");
+
+        let key = "src/o'brien.rs";
+        plant_embedding(&storage, key, "fn_ob", 0, vec![1.0, 0.0, 0.0]);
+        plant_embedding(&storage, "src/other.rs", "fn_other", 0, vec![0.0, 1.0, 0.0]);
+        assert_eq!(store.get_vector_count().expect("count"), 2);
+
+        store
+            .remove_file_snippets(key)
+            .expect("remove apostrophe path key");
+        assert_eq!(
+            store.get_vector_count().expect("count after"),
+            1,
+            "apostrophe path must fully remove snippet rows"
+        );
+        let results = store.query(vec![0.0, 1.0, 0.0], 5).expect("query");
+        assert_eq!(results.len(), 1);
+        assert_eq!(results[0].0, "src/other.rs");
     }
 }

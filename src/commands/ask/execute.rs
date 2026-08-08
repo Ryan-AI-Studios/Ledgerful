@@ -428,6 +428,7 @@ pub fn execute_ask(
     }
     let (mut relevant_chunks, semantic_gather_kind) = match gather_semantic_chunks(
         &storage,
+        layout.root.as_std_path(),
         &query_string,
         limit,
         &config.local_model,

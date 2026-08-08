@@ -107,7 +107,11 @@ pub fn execute_hotspots(args: HotspotArgs) -> Result<()> {
             println!("Analyzing semantic similarity hotspots (duplication)...");
         }
 
-        let matches = crate::semantic::hotspots::find_semantic_hotspots(cozo, 0.85)?;
+        let matches = crate::semantic::hotspots::find_semantic_hotspots(
+            cozo,
+            layout.root.as_std_path(),
+            0.85,
+        )?;
 
         if args.json {
             println!(

@@ -6,6 +6,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Semantic search work-root isolation (0152):** Semantic keys are work-root-relative;
+  `VectorStore::query_scoped` filters foreign absolute leftovers (filter-before-truncate
+  + one-shot re-query); full/incremental `index --semantic` dual-purges
+  `snippet_embedding` + `semantic_file_hash`; ask opens files via root join; semantic
+  hotspots drop foreign-absolute pairs. Envelope optional `semantic.filteredForeignCount`
+  (omit when zero; envelope-only — not on `--json-lines`). After upgrade or repo move,
+  run full `index --semantic`. Do not share `LEDGERFUL_STATE_DIR` across unrelated repos.
+
 ## [0.2.7] - 2026-08-08
 
 ### Added

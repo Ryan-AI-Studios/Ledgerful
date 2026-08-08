@@ -60,11 +60,14 @@ pub(crate) enum SemanticGather {
 
 pub(crate) fn gather_semantic_chunks(
     storage: &StorageManager,
+    work_root: &std::path::Path,
     query_string: &str,
     limit: usize,
     config: &LocalModelConfig,
     is_global: bool,
 ) -> SemanticGather {
+    use crate::util::path::resolve_under_work_root;
+
     let Some(cozo) = &storage.cozo else {
         return SemanticGather::Skipped {
             reason: "CozoDB storage not available".to_string(),
@@ -101,8 +104,16 @@ pub(crate) fn gather_semantic_chunks(
         }
     };
 
-    let results = match vector_store.query(query_vector, limit) {
-        Ok(r) => r,
+    // 0152: work-root scoped query (filter-before-truncate + foreign residual).
+    let results = match vector_store.query_scoped(work_root, query_vector, limit) {
+        Ok((r, foreign)) => {
+            if foreign > 0 {
+                tracing::debug!(
+                    "ask semantic gather filtered {foreign} foreign path hit(s) outside work root"
+                );
+            }
+            r
+        }
         Err(e) => {
             return SemanticGather::Failed {
                 reason: format!("semantic query failed: {e}"),
@@ -117,9 +128,9 @@ pub(crate) fn gather_semantic_chunks(
         let score = 1.0 - (dist / 2.0);
         if score >= config.chunk_min_similarity {
             semantic_symbols.insert(name.clone());
-            if let Ok(content) =
-                crate::util::fs::read_to_string_with_encoding(std::path::Path::new(&file_path))
-            {
+            // Root-joined open only — never Path::new(relative) CWD-relative.
+            let open_path = resolve_under_work_root(work_root, &file_path);
+            if let Ok(content) = crate::util::fs::read_to_string_with_encoding(&open_path) {
                 let snippet = content.chars().take(1000).collect::<String>();
                 relevant_chunks.push(pruner::RankedChunk {
                     source: format!("{}:: {}", file_path, name),
@@ -232,6 +243,30 @@ mod tests {
     use crate::state::layout::Layout;
     use crate::state::storage::StorageManager;
 
+    /// 0152: relative semantic keys must open via work_root join, not CWD.
+    #[test]
+    fn ask_open_path_is_root_joined_not_cwd() {
+        use crate::util::path::resolve_under_work_root;
+
+        let root = tempfile::tempdir().expect("tempdir");
+        let rel = "src/nested/foo.rs";
+        let full = root.path().join("src").join("nested").join("foo.rs");
+        std::fs::create_dir_all(full.parent().expect("parent")).expect("mkdir");
+        std::fs::write(&full, "fn foo() {}").expect("write");
+
+        let open = resolve_under_work_root(root.path(), rel);
+        assert_eq!(open, full);
+        assert!(
+            open.exists(),
+            "root-joined path must exist when file is under work root"
+        );
+        // Contrast: bare Path::new(rel) is CWD-relative and must not be used.
+        assert!(
+            !std::path::Path::new(rel).is_absolute(),
+            "relative key is not absolute"
+        );
+    }
+
     #[test]
     fn gather_semantic_chunks_unconfigured_is_skipped_not_empty_success() {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -247,7 +282,14 @@ mod tests {
             "precondition: default config unconfigured"
         );
 
-        let outcome = gather_semantic_chunks(&storage, "how does indexing work", 5, &config, true);
+        let outcome = gather_semantic_chunks(
+            &storage,
+            tmp.path(),
+            "how does indexing work",
+            5,
+            &config,
+            true,
+        );
         match outcome {
             SemanticGather::Skipped { reason } => {
                 assert!(
