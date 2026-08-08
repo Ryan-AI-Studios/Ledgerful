@@ -33,6 +33,7 @@ on stderr.
 | `index --semantic --json` | yes (0161) | yes | One final JSON object (`schemaVersion`, `mode`, `reason`, counts, `upToDate`); zero human mid-run lines on stdout |
 | `dead-code --json` | yes (0149) | yes | schemaVersion 1 envelope; see rejected combos |
 | `hotspots --json` | yes | yes | |
+| `hotspots trend --json` | yes (0151) | yes | schemaVersion 1; modes summary/full/entity; see schema below |
 | `endpoints --json` | yes | yes | |
 | `scan --impact --json` | yes | yes | impact packet |
 | `scan --json` alone | incomplete | n/a | exit 1; requires `--impact` (or PR `--format json`) |
@@ -299,6 +300,81 @@ Observe-mode would-block diagnostics go to **stderr** via `cli_summary`
 ```powershell
 ledgerful status --json
 ledgerful ledger status --json   # same payload
+```
+
+---
+
+## `hotspots trend --json` schema (v1)
+
+Track **0151**. Default is a **top-N file summary** (limit **20**), not the full
+timestamp×file matrix. Pure stdout under `--json` (no human table). Mode
+precedence: `--entity` > `-a/--all` > summary.
+
+### Summary mode (default)
+
+```json
+{
+  "schemaVersion": 1,
+  "mode": "summary",
+  "days": 30,
+  "limit": 20,
+  "truncated": true,
+  "historyAvailable": true,
+  "bootstrapHint": null,
+  "totalFiles": 28,
+  "totalEntries": 3690,
+  "snapshotCount": 369,
+  "files": [
+    {
+      "filePath": "src/commands/index/modes.rs",
+      "latestScore": 0.044,
+      "displayScore": 3.809,
+      "priorDisplayScore": 3.790,
+      "delta": 0.019,
+      "sampleCount": 369,
+      "lastRecordedAt": "2026-08-08T15:59:19.529795500+00:00",
+      "commitHash": "85ebb481e9c882e0c7d90c5e6281fa739a9c7dc6"
+    }
+  ]
+}
+```
+
+### Full mode (`--all`) and entity mode (`--entity`)
+
+- **`mode`:** `"full"` or `"entity"`
+- **`entries`:** row array with **snake_case** keys (`file_path`, `recorded_at`,
+  `score`, `display_score`, `commit_hash`) — same as pre-0151 matrix dump
+- **`limit` / `files`:** omitted
+- **`truncated`:** always `false` (no file-rank cap)
+
+### Per-mode field rules
+
+| Field | summary | full (`--all`) | entity |
+|---|---|---|---|
+| `mode` | `"summary"` | `"full"` | `"entity"` |
+| `totalEntries` | `rows.len()` | same | same (entity-filtered) |
+| `snapshotCount` | distinct `recorded_at` | same | same |
+| `totalFiles` | distinct `file_path` | same | **1** if any rows else **0** |
+| `limit` | effective limit | omit | omit |
+| `truncated` | `totalFiles > limit` | **false** | **false** |
+| `files` | top-N array | omit | omit |
+| `entries` | omit | full row array | entity row array |
+
+| Field | Rules |
+|---|---|
+| `schemaVersion` | always **1** |
+| `historyAvailable` | **true** when `totalEntries > 0` **or** bootstrap/history flags say history exists — **never** false while `files`/`entries` non-empty |
+| `bootstrapHint` | null when history available; bootstrap command string when empty |
+| `commitHash` | **full** hash (no abbreviate) |
+| `priorDisplayScore` / `delta` | omit when `sampleCount < 2` (never invent Δ from 0) |
+
+### Invocation
+
+```powershell
+ledgerful hotspots trend --json
+ledgerful hotspots trend --limit 5 --json
+ledgerful hotspots trend --all --json
+ledgerful hotspots trend --entity src/lib.rs --json
 ```
 
 ---

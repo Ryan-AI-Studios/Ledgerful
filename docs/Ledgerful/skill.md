@@ -179,7 +179,7 @@ ledgerful doctor --json
 - **Dependency & Advisory Graph**: Cargo/npm/Python lockfile ingestion with cargo-audit/osv advisory matching.
 - **Test Mapping**: Durable test nodes linked to endpoints, symbols, services, and data models. `ledgerful verify --explain --entity <path>`.
 - **Observability Graph**: SLO, metric, alert, and signal nodes from OpenSLO YAML. `ledgerful observability diff` / `observability coverage`.
-- **Hotspot Trends**: Persistent hotspot and temporal coupling snapshots with trend deltas. `ledgerful hotspots trend` / `hotspots explain`.
+- **Hotspot Trends**: Persistent hotspot and temporal coupling snapshots with trend deltas. Default `ledgerful hotspots trend` is a top-20 file summary (`--limit N`, `-a/--all` for full matrix, `--entity` for one-file series). `hotspots explain`.
 - **Ledger Graph**: Per-transaction entity neighborhood view. `ledgerful ledger graph <tx-id>`.
 - **Security Boundaries**: Cedar policy parsing with cross-surface links. `ledgerful security boundaries` / `security impact --changed`.
 - **Team Sync [Available — opt-in shared-folder v1]**: Opt-in encrypted ledger entry bundles via `ledgerful sync` (default feature; `[sync].enabled = false` forever until you opt in). Pairing (`LF-PAIR-1` + `sync pair`), secure shared-folder transport/apply (`.lfbundle`, verify-then-apply), and low-friction ops (`sync setup` checklist, gated `setup --enable`, status next-action) are real (0110–0113). Not default-on, not cloud, not CRDT. Never auto-enables; setup/status never prompt for secret. See `docs/team-sync.md`. Not the same as watch “Real-time Sync”.
@@ -453,7 +453,10 @@ ledgerful verify --scope fast          # scoped to changed files
 ledgerful verify --scope full          # full suite
 ledgerful hotspots --limit 20 --commits 500
 ledgerful hotspots --json
-ledgerful hotspots trend
+ledgerful hotspots trend                 # top-20 file summary (Score/Prior/Δ)
+ledgerful hotspots trend --limit 5
+ledgerful hotspots trend --all           # full timestamp×file matrix
+ledgerful hotspots trend --entity PATH
 ledgerful hotspots explain
 ledgerful federate export
 ledgerful federate scan

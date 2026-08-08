@@ -18,6 +18,20 @@ This document tracks dependency and project-level compatibility concerns for the
 
 ## Project-Level Changes
 
+### `hotspots trend` default bounds (0151)
+
+**Breaking for scripts that parse the default dump:**
+
+| Before | After |
+|---|---|
+| Default human = full timestamp×file matrix (~MB on large history) | Default = **top-20 file summary** (`--limit`, default 20) |
+| Default `--json` = `{ history_available, bootstrap_hint, entries[] }` (snake_case, no schemaVersion) | Default `--json` = schemaVersion **1** summary envelope (`mode`, `files[]`, camelCase `historyAvailable` / `bootstrapHint`; no `entries`) |
+| Full matrix always | Full matrix: `hotspots trend --all` / `--all --json` (entries keep snake_case keys) |
+| Entity filter only | Entity still via `--entity` (mode `entity`; ignores `--limit` / `--all`) |
+
+Restore pre-0151 matrix: `ledgerful hotspots trend --all` (human) or
+`ledgerful hotspots trend --all --json` (entries).
+
 ### CLI Additions
 
 Phase 2 added:

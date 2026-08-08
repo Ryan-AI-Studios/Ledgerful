@@ -158,12 +158,22 @@ fn test_trend_no_history_non_bootstrap_json_shape_and_read_only() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
 
-    assert_eq!(json["history_available"], serde_json::json!(false));
+    // 0151: default --json is summary envelope (no full entries matrix).
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["mode"], "summary");
+    assert_eq!(json["historyAvailable"], serde_json::json!(false));
     assert_eq!(
-        json["bootstrap_hint"],
+        json["bootstrapHint"],
         serde_json::json!("ledgerful hotspots trend --bootstrap")
     );
-    assert!(json["entries"].as_array().unwrap().is_empty());
+    assert!(
+        json["files"].as_array().is_some_and(|a| a.is_empty()),
+        "empty window should yield empty files[], got: {stdout}"
+    );
+    assert!(
+        json.get("entries").is_none(),
+        "summary mode must omit entries, got: {stdout}"
+    );
 
     // Read-only contract: history must remain untouched.
     assert_eq!(
@@ -199,11 +209,34 @@ fn test_trend_bootstrap_on_empty_history_creates_one_snapshot_and_reports_availa
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
 
-    assert_eq!(json["history_available"], serde_json::json!(true));
-    assert_eq!(json["bootstrap_hint"], serde_json::Value::Null);
+    // Default bootstrap --json is summary mode (top-N files).
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["mode"], "summary");
+    assert_eq!(json["historyAvailable"], serde_json::json!(true));
+    assert_eq!(json["bootstrapHint"], serde_json::Value::Null);
     assert!(
-        !json["entries"].as_array().unwrap().is_empty(),
-        "expected the freshly bootstrapped snapshot to be visible in entries, got: {stdout}"
+        !json["files"].as_array().unwrap().is_empty(),
+        "expected the freshly bootstrapped snapshot to be visible in summary files, got: {stdout}"
+    );
+
+    // Full matrix still available via --all --json (F1 migration).
+    let all_out = Command::new(ledgerful_bin)
+        .args(["hotspots", "trend", "--all", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        all_out.status.success(),
+        "CLI --all --json failed: {:?}",
+        String::from_utf8_lossy(&all_out.stderr)
+    );
+    let all_json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&all_out.stdout)).unwrap();
+    assert_eq!(all_json["mode"], "full");
+    assert!(
+        !all_json["entries"].as_array().unwrap().is_empty(),
+        "expected --all --json entries from bootstrapped snapshot, got: {}",
+        String::from_utf8_lossy(&all_out.stdout)
     );
 
     let rows_after = hotspot_trends_count(root);
@@ -320,10 +353,25 @@ fn test_trend_bootstrap_succeeds_on_young_repo_with_insufficient_coupling_histor
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(json["history_available"], serde_json::json!(true));
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["mode"], "summary");
+    assert_eq!(json["historyAvailable"], serde_json::json!(true));
     assert!(
-        !json["entries"].as_array().unwrap().is_empty(),
-        "expected the freshly bootstrapped hotspot snapshot to be visible in entries, got: {stdout}"
+        !json["files"].as_array().unwrap().is_empty(),
+        "expected the freshly bootstrapped hotspot snapshot to be visible in summary files, got: {stdout}"
+    );
+    // Full matrix via --all --json (F1).
+    let all_out = Command::new(ledgerful_bin)
+        .args(["hotspots", "trend", "--all", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(all_out.status.success());
+    let all_json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&all_out.stdout)).unwrap();
+    assert!(
+        !all_json["entries"].as_array().unwrap().is_empty(),
+        "expected --all --json entries after young-repo bootstrap"
     );
 
     let rows_after = hotspot_trends_count(root);

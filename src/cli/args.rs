@@ -1602,6 +1602,8 @@ impl Commands {
                     Some(HotspotSubcommands::Trend {
                         entity,
                         days: _,
+                        limit: _,
+                        all,
                         json,
                         bootstrap,
                         samples,
@@ -1613,6 +1615,11 @@ impl Commands {
                         }
                         // days always present with default on Trend — always part of shape
                         f.push("days");
+                        // limit always present with default on Trend (summary cap)
+                        f.push("limit");
+                        if *all {
+                            f.push("all");
+                        }
                         if *json {
                             f.push("json");
                         }
@@ -3059,14 +3066,25 @@ pub struct HotspotArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum HotspotSubcommands {
-    /// Show hotspot and temporal coupling trends over time
+    /// Top-file hotspot trend summary (default); full matrix via --all
     Trend {
-        /// Entity path to filter by
+        /// Entity path to filter by (one-file series; ignores --limit / --all)
         #[arg(short, long)]
         entity: Option<String>,
         /// Number of days to look back
         #[arg(short, long, default_value_t = 30)]
         days: u32,
+        /// Max files in summary mode (default 20; ignored with --all / --entity).
+        /// Parent `hotspots --limit` is list-scoped and does not set this.
+        #[arg(
+            long,
+            default_value_t = 20,
+            value_parser = clap::value_parser!(u64).range(1..)
+        )]
+        limit: u64,
+        /// Full timestamp×file matrix for the days window (ignores --limit)
+        #[arg(short = 'a', long)]
+        all: bool,
         /// Output as JSON
         #[arg(long)]
         json: bool,
