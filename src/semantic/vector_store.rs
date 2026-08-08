@@ -1081,6 +1081,26 @@ mod tests {
         assert_eq!(retry_candidate_k(300), 500);
     }
 
+    /// 0161 Codex R1 / B7: missing `snippet_embedding` relation → Ok(0), not Err/panic.
+    /// Production `get_vector_count().unwrap_or(0)` then resolves cold-store.
+    #[test]
+    fn get_vector_count_missing_relation_returns_zero() {
+        let storage = CozoStorage::new_in_memory().expect("in-memory cozo");
+        let store = VectorStore::new_without_hnsw(&storage, 3).expect("store");
+        assert_eq!(store.get_vector_count().expect("initial count"), 0);
+
+        // Cozo uses `::remove <rel>` (double-colon) to drop a stored relation.
+        storage
+            .run_script("::remove snippet_embedding")
+            .expect("remove relation");
+        let count = store
+            .get_vector_count()
+            .expect("missing relation must be Ok(0), not Err");
+        assert_eq!(count, 0, "missing snippet_embedding must report 0 vectors");
+        // Production soft-fail: unwrap_or(0) is a no-op on Ok(0).
+        assert_eq!(store.get_vector_count().unwrap_or(0), 0);
+    }
+
     /// Codex R1 P2: Cozo string escape for `'` must be doubled (`''`), not `\'`.
     /// Path keys with apostrophes must still purge from `snippet_embedding`.
     #[test]

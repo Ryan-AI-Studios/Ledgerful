@@ -1100,4 +1100,165 @@ mod tests {
             "unrelated path must not have snippets"
         );
     }
+
+    /// 0161 Codex R1 / B7: dual-relation foreign purge removes absolute keys outside
+    /// work root from both `snippet_embedding` and `semantic_file_hash`.
+    /// Local relative warm keys survive so post-purge count can still warm-resolve.
+    #[test]
+    fn purge_foreign_before_warm_removes_absolute_outside_root() {
+        use cozo::{DataValue, ScriptMutability};
+        use std::collections::BTreeMap;
+
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let config = LocalModelConfig {
+            dimensions: 3,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let semantic = SemanticDiscovery::new(config, &storage).expect("semantic");
+        semantic.ensure_file_hash_schema().expect("hash schema");
+
+        let work = tempfile::tempdir().expect("work root");
+        let foreign = tempfile::tempdir().expect("foreign root");
+        let work_root = work.path();
+
+        // Local warm vector + hash (relative keys — keep).
+        let local_key = "src/local.rs";
+        let local_chunk = crate::semantic::chunker::AstChunk {
+            file_path: local_key.to_string(),
+            name: "local_fn".to_string(),
+            kind: crate::index::symbols::SymbolKind::Function,
+            content: "fn local_fn() {}".to_string(),
+            docstring: None,
+            range: (0, 0),
+            lines: (1, 1),
+            offset: 0,
+        };
+        semantic
+            .index_chunks_batched(vec![local_chunk], vec![vec![1.0_f32, 0.0, 0.0]])
+            .expect("index local");
+        semantic
+            .record_file_hash(local_key, "hash_local")
+            .expect("hash local");
+
+        // Foreign absolute poison in both relations (dogfood multi-root class).
+        let foreign_key = foreign
+            .path()
+            .join("src")
+            .join("poison.rs")
+            .to_string_lossy()
+            .replace('\\', "/");
+        let mut params = BTreeMap::new();
+        params.insert(
+            "data".to_string(),
+            DataValue::from(vec![DataValue::List(Box::new(vec![
+                DataValue::from(foreign_key.as_str()),
+                DataValue::from("poison_fn"),
+                DataValue::from(0_i64),
+                DataValue::Vec(Box::new(cozo::Vector::F32(vec![0.0_f32, 1.0, 0.0].into()))),
+            ]))]),
+        );
+        storage
+            .run_script_with_params(
+                "?[file_path, name, line_offset, embedding] <- $data :put snippet_embedding",
+                params,
+                ScriptMutability::Mutable,
+            )
+            .expect("plant foreign embedding");
+        semantic
+            .record_file_hash(&foreign_key, "hash_foreign")
+            .expect("plant foreign hash");
+
+        assert!(
+            semantic.get_vector_count().expect("count before") >= 2,
+            "precondition: local + foreign vectors present"
+        );
+        assert!(
+            semantic.is_file_hash_current(&foreign_key, "hash_foreign"),
+            "precondition: foreign hash present"
+        );
+
+        // Production order: purge at start of BOTH modes BEFORE warm detection.
+        let purged = semantic
+            .purge_foreign_semantic_keys(work_root)
+            .expect("purge");
+        assert!(
+            purged >= 1,
+            "foreign absolute key must be purged (count={purged})"
+        );
+
+        // Foreign gone from both relations.
+        assert!(
+            !semantic.file_has_snippets(&foreign_key),
+            "foreign snippet rows must be gone after purge"
+        );
+        assert!(
+            !semantic.is_file_hash_current(&foreign_key, "hash_foreign"),
+            "foreign hash row must be gone after purge"
+        );
+        assert!(
+            !semantic
+                .get_tracked_files()
+                .expect("tracked")
+                .iter()
+                .any(|k| k == &foreign_key),
+            "tracked files must not list foreign key"
+        );
+
+        // Local warm remains → post-purge count > 0 → auto-incremental.
+        assert!(
+            semantic.file_has_snippets(local_key),
+            "local snippets must survive purge"
+        );
+        assert!(
+            semantic.is_file_hash_current(local_key, "hash_local"),
+            "local hash must survive purge"
+        );
+        let vector_count = semantic.get_vector_count().unwrap_or(0);
+        assert!(
+            vector_count >= 1,
+            "post-purge warm SoT must still see local vectors (count={vector_count})"
+        );
+    }
+
+    /// Companion: hash-only foreign key (no vectors) is still purged from
+    /// `semantic_file_hash` so it cannot poison warm tracking.
+    #[test]
+    fn purge_foreign_hash_only_key_removed() {
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let config = LocalModelConfig {
+            dimensions: 3,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let semantic = SemanticDiscovery::new(config, &storage).expect("semantic");
+        semantic.ensure_file_hash_schema().expect("hash schema");
+
+        let work = tempfile::tempdir().expect("work root");
+        let foreign = tempfile::tempdir().expect("foreign root");
+        let foreign_key = foreign
+            .path()
+            .join("only_hash.rs")
+            .to_string_lossy()
+            .replace('\\', "/");
+
+        semantic
+            .record_file_hash(&foreign_key, "orphan_foreign_hash")
+            .expect("plant hash-only foreign");
+        assert!(semantic.is_file_hash_current(&foreign_key, "orphan_foreign_hash"));
+
+        let purged = semantic
+            .purge_foreign_semantic_keys(work.path())
+            .expect("purge");
+        assert_eq!(purged, 1, "hash-only foreign key counts as one purge");
+        assert!(
+            !semantic.is_file_hash_current(&foreign_key, "orphan_foreign_hash"),
+            "hash-only foreign must be removed"
+        );
+        assert_eq!(
+            semantic.get_vector_count().unwrap_or(0),
+            0,
+            "no vectors before or after"
+        );
+    }
 }

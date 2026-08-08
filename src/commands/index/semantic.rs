@@ -888,6 +888,102 @@ mod tests {
         let _ = resolve_semantic_index_mode(false, false, usize::MAX);
     }
 
+    /// 0161 Codex R1 / B7: production `get_vector_count().unwrap_or(0)` must resolve
+    /// cold-store (full) without panic — count Err and missing relation both map to 0.
+    #[test]
+    fn count_error_or_zero_treated_as_cold_store_no_panic() {
+        // Production call site (execute_semantic_index):
+        //   let vector_count = semantic.get_vector_count().unwrap_or(0);
+        //   resolve_semantic_index_mode(..., vector_count)
+        // Same soft-fail contract as production unwrap_or(0).
+        fn soft_vector_count(count: Result<usize, miette::Report>) -> usize {
+            count.unwrap_or(0)
+        }
+        let vector_count = soft_vector_count(Err(miette::miette!("cozo count failed")));
+        assert_eq!(vector_count, 0);
+        let (incremental, reason) = resolve_semantic_index_mode(false, false, vector_count);
+        assert!(
+            !incremental,
+            "count error must not warm-skip into incremental"
+        );
+        assert_eq!(reason, "cold-store");
+        // Ok(0) / missing-relation path also resolves cold.
+        assert_eq!(soft_vector_count(Ok(0)), 0);
+        let (incr0, reason0) = resolve_semantic_index_mode(false, false, soft_vector_count(Ok(0)));
+        assert!(!incr0);
+        assert_eq!(reason0, "cold-store");
+        // Bounds: huge counts still pure / non-panicking.
+        let _ = resolve_semantic_index_mode(false, false, usize::MAX);
+    }
+
+    /// 0161 Codex R1 / B7: orphan file hashes + zero vectors ⇒ full/`cold-store` on the
+    /// real post-purge execute path, and C1 filter re-processes (not silent up-to-date).
+    ///
+    /// Mirrors `execute_semantic_index` order: purge → get_vector_count → resolve → filter.
+    #[test]
+    fn wipe_edge_orphan_hashes_execute_path_cold_store_and_reprocesses() {
+        use crate::config::model::LocalModelConfig;
+        use crate::semantic::SemanticDiscovery;
+        use crate::state::storage_cozo::CozoStorage;
+
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let config = LocalModelConfig {
+            dimensions: 3,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let semantic = SemanticDiscovery::new(config, &storage).expect("semantic");
+        semantic.ensure_file_hash_schema().expect("hash schema");
+
+        // Plant orphan hash rows with zero snippet_embedding vectors (dim-wipe edge).
+        let path_key = "src/orphan.rs";
+        let content_hash = "deadbeef_hash_only_no_vectors";
+        semantic
+            .record_file_hash(path_key, content_hash)
+            .expect("record orphan hash");
+        assert!(
+            semantic.is_file_hash_current(path_key, content_hash),
+            "precondition: hash must be current"
+        );
+        assert!(
+            !semantic.file_has_snippets(path_key),
+            "precondition: no snippet rows for orphan hash"
+        );
+
+        // Execute-path order: dual foreign purge BEFORE warm detection.
+        let work_root = tempfile::tempdir().expect("work root");
+        let purged = semantic
+            .purge_foreign_semantic_keys(work_root.path())
+            .expect("purge");
+        assert_eq!(
+            purged, 0,
+            "relative orphan hash is not foreign; purge must not remove it"
+        );
+
+        // Warm SoT = vector_count > 0 after purge (safe 0 on error — never panic).
+        let vector_count = semantic.get_vector_count().unwrap_or(0);
+        assert_eq!(
+            vector_count, 0,
+            "hash-only store must report zero vectors (not warm)"
+        );
+
+        let (incremental, reason) = resolve_semantic_index_mode(false, false, vector_count);
+        assert!(
+            !incremental,
+            "orphan hashes + empty vectors must full-bootstrap, not auto-incremental"
+        );
+        assert_eq!(reason, "cold-store");
+
+        // C1 filter (incremental branch): skip only when hash-current AND has snippets.
+        // Hash-only must re-process even under forced incremental.
+        let would_skip = semantic.is_file_hash_current(path_key, content_hash)
+            && semantic.file_has_snippets(path_key);
+        assert!(
+            !would_skip,
+            "hash-current without snippets must re-process (not silent up-to-date)"
+        );
+    }
+
     #[test]
     fn semantic_json_result_omits_zero_purge_and_false_hnsw() {
         let result = SemanticIndexJsonResult {
