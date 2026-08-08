@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Default `hotspots trend` is top-file summary (0151):** Human + `--json` default
+  to a scannable top-**20** file rollup (Score / Prior / Δ / Samples / Last recorded),
+  not the full timestamp×file matrix. Mode precedence: `--entity` > `-a/--all` >
+  summary. JSON is schemaVersion **1** with per-mode counts (`summary` / `full` /
+  `entity`); full matrix via `--all --json`. See `docs/breaking.md` and
+  `docs/agent-output-contract.md`.
 - **Warm default incremental for `index --semantic` (0161):** Bare
   `ledgerful index --semantic` is **incremental** when the vector store is non-empty
   (`vector_count > 0` after foreign purge — not hash presence alone). Cold/empty
@@ -16,8 +22,18 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   snippet row. Graph/`index` without `--semantic` still requires `-i` for incremental.
   See `docs/Semantic-Search.md` (Indexing mode & progress).
 
+### Added
+
+- **`hotspots trend --limit` / `-a/--all` (0151):** `--limit N` (range `1..`, default
+  20) caps summary files; `-a/--all` restores the full days-window matrix. Parent
+  `hotspots --limit` remains list-scoped only.
+
 ### Fixed
 
+- **Unbounded `hotspots trend` default dump (0151):** Default human/JSON no longer
+  emit ~MB timestamp×file matrices on long-lived repos; agents get a bounded
+  summary. `historyAvailable` is honest when trend rows exist (not false with
+  non-empty `files`/`entries`).
 - **Non-TTY semantic index progress (0161):** Multi-minute agent/CI runs no longer
   look hung — product phase lines + throttled counters on stdout when non-interactive
   (mode early, parse/embed, HNSW total-size announce, complete / up-to-date). TTY

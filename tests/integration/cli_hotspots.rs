@@ -102,6 +102,34 @@ fn hotspot_trends_count(root: &std::path::Path) -> i64 {
         .unwrap()
 }
 
+/// Seed `hotspot_trends` with one row per path so summary/limit/entity e2e
+/// tests do not depend on multi-file git history from bootstrap.
+///
+/// Storage is opened write-mode then dropped before the CLI binary is invoked,
+/// so the binary can open the same SQLite file without lock contention.
+fn seed_hotspot_trends(root: &std::path::Path, paths_and_scores: &[(&str, f64)]) {
+    let repo_root = Utf8Path::from_path(root).unwrap();
+    let layout = Layout::new(repo_root);
+    let storage = StorageManager::init_with_layout(&layout).unwrap();
+    let conn = storage.get_connection();
+    // Recent RFC3339 timestamp so default --days window includes the rows.
+    let recorded_at = "2026-08-01T12:00:00+00:00";
+    for (i, (path, score)) in paths_and_scores.iter().enumerate() {
+        conn.execute(
+            "INSERT INTO hotspot_trends (file_path, score, frequency, complexity, commit_hash, recorded_at) \
+             VALUES (?1, ?2, NULL, NULL, ?3, ?4)",
+            rusqlite::params![
+                path,
+                score,
+                format!("seedcommit{i:02}"),
+                recorded_at,
+            ],
+        )
+        .unwrap();
+    }
+    drop(storage);
+}
+
 #[test]
 fn test_trend_no_history_non_bootstrap_human_shows_exact_command() {
     let tmp = setup_indexed_repo();
@@ -158,12 +186,22 @@ fn test_trend_no_history_non_bootstrap_json_shape_and_read_only() {
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
 
-    assert_eq!(json["history_available"], serde_json::json!(false));
+    // 0151: default --json is summary envelope (no full entries matrix).
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["mode"], "summary");
+    assert_eq!(json["historyAvailable"], serde_json::json!(false));
     assert_eq!(
-        json["bootstrap_hint"],
+        json["bootstrapHint"],
         serde_json::json!("ledgerful hotspots trend --bootstrap")
     );
-    assert!(json["entries"].as_array().unwrap().is_empty());
+    assert!(
+        json["files"].as_array().is_some_and(|a| a.is_empty()),
+        "empty window should yield empty files[], got: {stdout}"
+    );
+    assert!(
+        json.get("entries").is_none(),
+        "summary mode must omit entries, got: {stdout}"
+    );
 
     // Read-only contract: history must remain untouched.
     assert_eq!(
@@ -199,11 +237,34 @@ fn test_trend_bootstrap_on_empty_history_creates_one_snapshot_and_reports_availa
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
 
-    assert_eq!(json["history_available"], serde_json::json!(true));
-    assert_eq!(json["bootstrap_hint"], serde_json::Value::Null);
+    // Default bootstrap --json is summary mode (top-N files).
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["mode"], "summary");
+    assert_eq!(json["historyAvailable"], serde_json::json!(true));
+    assert_eq!(json["bootstrapHint"], serde_json::Value::Null);
     assert!(
-        !json["entries"].as_array().unwrap().is_empty(),
-        "expected the freshly bootstrapped snapshot to be visible in entries, got: {stdout}"
+        !json["files"].as_array().unwrap().is_empty(),
+        "expected the freshly bootstrapped snapshot to be visible in summary files, got: {stdout}"
+    );
+
+    // Full matrix still available via --all --json (F1 migration).
+    let all_out = Command::new(ledgerful_bin)
+        .args(["hotspots", "trend", "--all", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        all_out.status.success(),
+        "CLI --all --json failed: {:?}",
+        String::from_utf8_lossy(&all_out.stderr)
+    );
+    let all_json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&all_out.stdout)).unwrap();
+    assert_eq!(all_json["mode"], "full");
+    assert!(
+        !all_json["entries"].as_array().unwrap().is_empty(),
+        "expected --all --json entries from bootstrapped snapshot, got: {}",
+        String::from_utf8_lossy(&all_out.stdout)
     );
 
     let rows_after = hotspot_trends_count(root);
@@ -320,10 +381,25 @@ fn test_trend_bootstrap_succeeds_on_young_repo_with_insufficient_coupling_histor
 
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    assert_eq!(json["history_available"], serde_json::json!(true));
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["mode"], "summary");
+    assert_eq!(json["historyAvailable"], serde_json::json!(true));
     assert!(
-        !json["entries"].as_array().unwrap().is_empty(),
-        "expected the freshly bootstrapped hotspot snapshot to be visible in entries, got: {stdout}"
+        !json["files"].as_array().unwrap().is_empty(),
+        "expected the freshly bootstrapped hotspot snapshot to be visible in summary files, got: {stdout}"
+    );
+    // Full matrix via --all --json (F1).
+    let all_out = Command::new(ledgerful_bin)
+        .args(["hotspots", "trend", "--all", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(all_out.status.success());
+    let all_json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&all_out.stdout)).unwrap();
+    assert!(
+        !all_json["entries"].as_array().unwrap().is_empty(),
+        "expected --all --json entries after young-repo bootstrap"
     );
 
     let rows_after = hotspot_trends_count(root);
@@ -360,5 +436,169 @@ fn test_trend_bootstrap_succeeds_on_young_repo_with_insufficient_coupling_histor
     assert!(
         stdout_human.contains("Score"),
         "expected tabular 'Score' header in human output, got: {stdout_human}"
+    );
+}
+
+/// 0151 Codex P2: `--limit 5` is honored end-to-end (JSON limit + truncation).
+#[test]
+fn test_trend_limit_5_honored_in_summary_json() {
+    let tmp = setup_indexed_repo();
+    let root = tmp.path();
+
+    // Eight distinct files so limit 5 must truncate (totalFiles > 5 → truncated).
+    let path_bufs: Vec<String> = (0..8).map(|i| format!("src/file_{i}.rs")).collect();
+    let seeded: Vec<(&str, f64)> = path_bufs
+        .iter()
+        .enumerate()
+        .map(|(i, p)| (p.as_str(), f64::from(i as u32) + 1.0))
+        .collect();
+    seed_hotspot_trends(root, &seeded);
+
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["hotspots", "trend", "--limit", "5", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "CLI command failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["mode"], "summary");
+    assert_eq!(json["limit"], 5);
+    assert_eq!(json["totalFiles"], 8);
+    assert_eq!(json["truncated"], serde_json::json!(true));
+
+    let files = json["files"].as_array().expect("summary files array");
+    assert_eq!(
+        files.len(),
+        5,
+        "expected exactly 5 files when --limit 5 and totalFiles=8, got: {stdout}"
+    );
+    assert!(
+        json.get("entries").is_none(),
+        "summary mode must omit entries, got: {stdout}"
+    );
+}
+
+/// 0151 Codex P2: `--limit 0` is rejected by clap range `1..` (non-zero exit).
+#[test]
+fn test_trend_limit_0_rejected_by_clap() {
+    let tmp = setup_indexed_repo();
+    let root = tmp.path();
+
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["hotspots", "trend", "--limit", "0", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    assert!(
+        !output.status.success(),
+        "expected non-zero exit for --limit 0, got success; stdout={:?} stderr={:?}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    // clap range parser message: "0 is not in 1.." (wording may include "invalid value").
+    assert!(
+        combined.contains("0 is not in 1..")
+            || (combined.contains("invalid value") && combined.contains("limit")),
+        "expected clap range rejection for --limit 0, got: {combined}"
+    );
+}
+
+/// 0151 Codex P2: `--entity` JSON is mode entity with only that path's rows.
+#[test]
+fn test_trend_entity_json_mode_filters_to_path() {
+    let tmp = setup_indexed_repo();
+    let root = tmp.path();
+
+    let entity_path = "src/target.rs";
+    let other_path = "src/other.rs";
+    seed_hotspot_trends(
+        root,
+        &[
+            (entity_path, 9.0),
+            (entity_path, 8.0), // second sample for the same entity
+            (other_path, 3.0),
+            ("src/third.rs", 1.0),
+        ],
+    );
+    // Distinct recorded_at for the two entity samples so both are visible as series.
+    {
+        let repo_root = Utf8Path::from_path(root).unwrap();
+        let layout = Layout::new(repo_root);
+        let storage = StorageManager::init_with_layout(&layout).unwrap();
+        let conn = storage.get_connection();
+        // Bump one entity row's timestamp so we have two distinct samples.
+        conn.execute(
+            "UPDATE hotspot_trends SET recorded_at = ?1, score = ?2 \
+             WHERE file_path = ?3 AND score = 8.0",
+            rusqlite::params!["2026-08-02T12:00:00+00:00", 8.0, entity_path],
+        )
+        .unwrap();
+        drop(storage);
+    }
+
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["hotspots", "trend", "--entity", entity_path, "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "CLI command failed: {:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+
+    assert_eq!(json["schemaVersion"], 1);
+    assert_eq!(json["mode"], "entity");
+    assert_eq!(json["truncated"], serde_json::json!(false));
+    assert!(
+        json.get("limit").is_none(),
+        "entity mode should omit limit, got: {stdout}"
+    );
+    assert!(
+        json.get("files").is_none(),
+        "entity mode should omit files summary array, got: {stdout}"
+    );
+
+    let entries = json["entries"].as_array().expect("entity entries array");
+    assert!(
+        !entries.is_empty(),
+        "expected entity entries for {entity_path}, got: {stdout}"
+    );
+    assert!(
+        entries
+            .iter()
+            .all(|e| e["file_path"].as_str() == Some(entity_path)),
+        "all entity entries must match --entity path, got: {stdout}"
+    );
+    assert!(
+        entries
+            .iter()
+            .all(|e| e["file_path"].as_str() != Some(other_path)),
+        "entity mode must not include other files, got: {stdout}"
+    );
+    assert_eq!(
+        json["totalFiles"], 1,
+        "entity window should report a single file, got: {stdout}"
     );
 }

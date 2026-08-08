@@ -403,8 +403,9 @@ fn test_hotspots_trend_shows_multiple_timestamps_after_three_commits() {
     }
 
     let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    // F1: full matrix requires --all; default is top-N file summary.
     let output = Command::new(ledgerful_bin)
-        .args(["hotspots", "trend", "--json"])
+        .args(["hotspots", "trend", "--all", "--json"])
         .current_dir(root)
         .output()
         .unwrap();
@@ -416,6 +417,8 @@ fn test_hotspots_trend_shows_multiple_timestamps_after_three_commits() {
     );
     let stdout = String::from_utf8_lossy(&output.stdout);
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(json["mode"], "full");
+    assert_eq!(json["schemaVersion"], 1);
     let entries = json["entries"].as_array().unwrap();
     assert!(
         entries.len() >= 3,
