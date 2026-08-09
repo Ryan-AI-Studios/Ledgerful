@@ -144,7 +144,12 @@ fn read_manifest_value(root: &Path) -> Result<toml::Value> {
     toml::from_str(&content).into_diagnostic()
 }
 
-fn root_from_manifest(manifest: &toml::Value) -> Result<RootInfo> {
+/// Root package identity from live `[package]`.
+///
+/// Name is required. Version is taken only when `[package].version` is a
+/// string; workspace inheritance (`version.workspace = true`) leaves version
+/// unresolved so the lock fallback in [`resolve_root_info`] can fill it.
+fn root_identity_from_manifest(manifest: &toml::Value) -> Result<(String, Option<String>)> {
     let package = manifest.get("package").ok_or_else(|| {
         miette::miette!(
             "Cargo.toml has no [package] table (virtual workspace root). `dependencies list` scopes to the package at the work root only; run from a package directory or add a [package] section."
@@ -155,16 +160,60 @@ fn root_from_manifest(manifest: &toml::Value) -> Result<RootInfo> {
         .and_then(|v| v.as_str())
         .ok_or_else(|| miette::miette!("Cargo.toml [package] is missing `name`"))?
         .to_string();
+    // Only a plain string version counts; table form (`version.workspace = true`)
+    // or a missing key leaves version unresolved for lock fallback.
     let version = package
         .get("version")
         .and_then(|v| v.as_str())
-        .ok_or_else(|| miette::miette!("Cargo.toml [package] is missing `version`"))?
-        .to_string();
-    Ok(RootInfo {
-        name,
-        version,
-        source: "manifest".to_string(),
-    })
+        .map(|s| s.to_string());
+    Ok((name, version))
+}
+
+/// Resolve root package version from `Cargo.lock` when the manifest did not
+/// provide a string version (B1.7 lock fallback).
+///
+/// Preference: unique name match; if multiple, first entry with no `source`
+/// (workspace / path package).
+fn root_version_from_lock(packages: &[CargoLockPackage], root_name: &str) -> Option<String> {
+    let matches: Vec<&CargoLockPackage> = packages.iter().filter(|p| p.name == root_name).collect();
+    match matches.as_slice() {
+        [] => None,
+        [only] => Some(only.version.clone()),
+        many => many
+            .iter()
+            .find(|p| p.source.is_none())
+            .map(|p| p.version.clone()),
+    }
+}
+
+/// Build root envelope: version from manifest string when present (`source:
+/// "manifest"`), else from lock (`source: "lock"`). Errors clearly when
+/// version cannot be resolved from either source.
+fn resolve_root_info(
+    manifest: &toml::Value,
+    packages: &[CargoLockPackage],
+    lock_missing: bool,
+) -> Result<RootInfo> {
+    let (name, manifest_version) = root_identity_from_manifest(manifest)?;
+    if let Some(version) = manifest_version {
+        return Ok(RootInfo {
+            name,
+            version,
+            source: "manifest".to_string(),
+        });
+    }
+
+    if !lock_missing && let Some(version) = root_version_from_lock(packages, &name) {
+        return Ok(RootInfo {
+            name,
+            version,
+            source: "lock".to_string(),
+        });
+    }
+
+    Err(miette::miette!(
+        "Could not resolve root package version for `{name}`: Cargo.toml [package].version is missing or not a string (e.g. `version.workspace = true`) and no matching package was found in Cargo.lock. Add a string version under [package], generate/update Cargo.lock, or run from a package directory that has both."
+    ))
 }
 
 fn extract_req_and_optional(val: &toml::Value) -> (Option<String>, bool) {
@@ -328,7 +377,6 @@ fn find_lock_source(packages: &[CargoLockPackage], name: &str, version: &str) ->
 
 fn resolve_list(root: &Path) -> Result<ResolvedList> {
     let manifest = read_manifest_value(root)?;
-    let root_info = root_from_manifest(&manifest)?;
     let declared = collect_declared_deps(&manifest);
 
     let lock_path = root.join("Cargo.lock");
@@ -338,6 +386,8 @@ fn resolve_list(root: &Path) -> Result<ResolvedList> {
     } else {
         (Vec::new(), true)
     };
+
+    let root_info = resolve_root_info(&manifest, &packages, lock_missing)?;
 
     let version_map = if lock_missing {
         HashMap::new()
@@ -806,5 +856,112 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
             .expect("unix-only");
         assert!(unix.target.as_deref().is_some_and(|t| t.contains("unix")));
         assert_eq!(unix.version.as_deref(), Some("1.0.0"));
+    }
+
+    /// B1.7: `version.workspace = true` leaves manifest version unresolved;
+    /// lock root package supplies version and `root.source == "lock"`.
+    #[test]
+    fn workspace_version_falls_back_to_lock() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        write_fixture(
+            root,
+            r#"
+[package]
+name = "demo"
+version.workspace = true
+
+[dependencies]
+foo = "1"
+"#,
+            Some(
+                r#"
+version = 3
+
+[[package]]
+name = "demo"
+version = "9.9.9"
+dependencies = [
+ "foo 1.0.0",
+]
+
+[[package]]
+name = "foo"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#,
+            ),
+        );
+
+        let resolved = resolve_list(root).expect("resolve");
+        assert_eq!(resolved.root.name, "demo");
+        assert_eq!(resolved.root.version, "9.9.9");
+        assert_eq!(resolved.root.source, "lock");
+        assert_eq!(resolved.direct.len(), 1);
+        assert_eq!(resolved.direct[0].name, "foo");
+        assert_eq!(resolved.direct[0].version.as_deref(), Some("1.0.0"));
+    }
+
+    #[test]
+    fn workspace_version_without_lock_errors_clearly() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        write_fixture(
+            root,
+            r#"
+[package]
+name = "demo"
+version.workspace = true
+
+[dependencies]
+foo = "1"
+"#,
+            None,
+        );
+
+        let err = resolve_list(root).expect_err("no string version and no lock");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("version") && (msg.contains("lock") || msg.contains("Cargo.lock")),
+            "unexpected error: {msg}"
+        );
+    }
+
+    #[test]
+    fn manifest_string_version_keeps_manifest_source() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = tmp.path();
+        write_fixture(
+            root,
+            r#"
+[package]
+name = "demo"
+version = "0.1.0"
+
+[dependencies]
+foo = "1"
+"#,
+            Some(
+                r#"
+version = 3
+
+[[package]]
+name = "demo"
+version = "0.1.0"
+dependencies = [
+ "foo 1.0.0",
+]
+
+[[package]]
+name = "foo"
+version = "1.0.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+"#,
+            ),
+        );
+
+        let resolved = resolve_list(root).expect("resolve");
+        assert_eq!(resolved.root.version, "0.1.0");
+        assert_eq!(resolved.root.source, "manifest");
     }
 }

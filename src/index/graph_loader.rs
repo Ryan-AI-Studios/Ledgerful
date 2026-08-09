@@ -1618,8 +1618,8 @@ fn phase_cargo_dependencies(ctx: &mut GraphLoadContext) -> Result<()> {
     // in the current lockfile. Without this, a version bump (e.g. cozo
     // 0.8.0 -> 0.8.1) leaves the old version's node behind forever since its
     // URN never collides with the new version's URN -- and because such
-    // orphans typically lack a `source` value, they get mislabeled "local"
-    // by `dependencies list` even though they are stale third-party crates.
+    // orphans typically lack a `source` value; pre-0153 KG-backed list
+    // mislabeled them "local" (list is live Cargo.toml + Cargo.lock only now).
     // Compute the current run's URN set BEFORE inserting the fresh nodes so
     // the "existing nodes" query below still reflects the prior run only.
     //
