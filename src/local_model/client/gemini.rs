@@ -1,10 +1,20 @@
 use crate::config::model::GeminiConfig;
+use crate::gemini::DEFAULT_GEMINI_TIMEOUT_SECS;
 use crate::local_model::client::types::{ChatMessage, CompletionOptions};
 use crate::local_model::cloud_policy::deny_if_forbidden;
 use std::time::Duration;
 
 const GEMINI_API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 const GEMINI_FAST_MODEL: &str = "gemini-3.1-flash-lite";
+
+/// Effective ureq read timeout for Gemini completions.
+///
+/// Honors `config.timeout_secs` when set (including short cloud-fallback
+/// budgets from `complete`); otherwise [`DEFAULT_GEMINI_TIMEOUT_SECS`] (120).
+/// No floor at 300 — cloud fallback after local fail must stay 15-class (0158 H1).
+pub(crate) fn gemini_read_timeout_secs(config: &GeminiConfig) -> u64 {
+    config.timeout_secs.unwrap_or(DEFAULT_GEMINI_TIMEOUT_SECS)
+}
 
 /// Lightweight Gemini completion that returns the response text.
 /// Used by the semantic extractor's `--fast` mode to bypass the local model.
@@ -88,7 +98,7 @@ pub fn gemini_complete_unsanitized(
         body["system_instruction"] = serde_json::json!({ "parts": [system] });
     }
 
-    let timeout = config.timeout_secs.unwrap_or(120).max(300);
+    let timeout = gemini_read_timeout_secs(config);
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(Duration::from_secs(5))
         .timeout_read(Duration::from_secs(timeout))
@@ -155,4 +165,47 @@ pub fn gemini_complete_unsanitized(
     Err(format!(
         "Gemini request failed after 3 retries: {last_error}"
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::local_model::client::DEFAULT_CLOUD_FALLBACK_TIMEOUT_SECS;
+
+    #[test]
+    fn gemini_read_timeout_honors_short_cloud_fallback_budget() {
+        // complete() cloud-fallback stamps Some(cloud_timeout); must not floor to 300.
+        let cfg = GeminiConfig {
+            timeout_secs: Some(DEFAULT_CLOUD_FALLBACK_TIMEOUT_SECS),
+            ..Default::default()
+        };
+        assert_eq!(gemini_read_timeout_secs(&cfg), 15);
+        assert_eq!(
+            gemini_read_timeout_secs(&cfg),
+            DEFAULT_CLOUD_FALLBACK_TIMEOUT_SECS
+        );
+    }
+
+    #[test]
+    fn gemini_read_timeout_default_is_120_class_not_300() {
+        // Primary-class default when unset (semantic fast / default config).
+        let cfg = GeminiConfig::default();
+        assert_eq!(cfg.timeout_secs, None);
+        assert_eq!(gemini_read_timeout_secs(&cfg), DEFAULT_GEMINI_TIMEOUT_SECS);
+        assert_eq!(gemini_read_timeout_secs(&cfg), 120);
+    }
+
+    #[test]
+    fn gemini_read_timeout_honors_explicit_config() {
+        let cfg = GeminiConfig {
+            timeout_secs: Some(90),
+            ..Default::default()
+        };
+        assert_eq!(gemini_read_timeout_secs(&cfg), 90);
+        let cfg2 = GeminiConfig {
+            timeout_secs: Some(1),
+            ..Default::default()
+        };
+        assert_eq!(gemini_read_timeout_secs(&cfg2), 1);
+    }
 }

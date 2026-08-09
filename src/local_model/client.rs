@@ -296,8 +296,11 @@ fn complete_with_options(
     }
 
     if let Some(api_key) = cloud_fallback_env("GEMINI_API_KEY") {
+        // Same M2 budget as OR/OC: omit CLI → 15; explicit N → N.
+        // Do not use default GeminiConfig (None → 120) or the old .max(300) floor.
         let default_gemini = crate::config::model::GeminiConfig {
             api_key: Some(api_key),
+            timeout_secs: Some(cloud_timeout),
             ..Default::default()
         };
         // Messages already sanitized above — pass through once (no double-mangle).
@@ -1000,6 +1003,33 @@ mod tests {
             elapsed >= Duration::from_secs(10),
             "expected cloud arm to run ~15s class, got {elapsed:?}"
         );
+    }
+
+    /// 0158 H1: Gemini cloud-fallback arm uses short M2 budget when override is None
+    /// (not default GeminiConfig / not .max(300) floor).
+    #[test]
+    fn gemini_fallback_budget_is_short_when_override_none() {
+        use super::gemini::gemini_read_timeout_secs;
+        use crate::config::model::GeminiConfig;
+
+        // Mirrors complete_with_options Gemini arm wiring when CLI override is None.
+        let cloud_timeout = DEFAULT_CLOUD_FALLBACK_TIMEOUT_SECS;
+        let fallback = GeminiConfig {
+            api_key: Some("test-key-not-real".to_string()),
+            timeout_secs: Some(cloud_timeout),
+            ..Default::default()
+        };
+        assert_eq!(cloud_timeout, 15);
+        assert_eq!(gemini_read_timeout_secs(&fallback), 15);
+        // Explicit override N must also win (same as OR/OC).
+        let explicit = GeminiConfig {
+            api_key: Some("test-key-not-real".to_string()),
+            timeout_secs: Some(3),
+            ..Default::default()
+        };
+        assert_eq!(gemini_read_timeout_secs(&explicit), 3);
+        // Unset config (primary-class) stays 120, not 300.
+        assert_eq!(gemini_read_timeout_secs(&GeminiConfig::default()), 120);
     }
 
     #[test]

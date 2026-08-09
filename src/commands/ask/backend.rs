@@ -177,11 +177,13 @@ pub fn resolve_provider_entries(
                 entries.insert(0, entry);
             }
             None => {
+                // Cloud inserts must not stamp local_model.timeout_secs (300):
+                // None → resolve_ask_timeout → DEFAULT_CLOUD_PROVIDER (15) (0158 M-1).
                 let default_entry = match target {
                     Provider::OllamaCloud => ProviderEntry {
                         backend: Provider::OllamaCloud,
                         model: config.local_model.ollama_cloud_model.clone(),
-                        timeout_secs: Some(config.local_model.timeout_secs),
+                        timeout_secs: None,
                         api_key_env: None,
                         base_url: config.local_model.ollama_cloud_url.clone(),
                     },
@@ -202,7 +204,7 @@ pub fn resolve_provider_entries(
                     Provider::OpenRouter => ProviderEntry {
                         backend: Provider::OpenRouter,
                         model: env_reader("OPENROUTER_MODEL"),
-                        timeout_secs: Some(config.local_model.timeout_secs),
+                        timeout_secs: None,
                         api_key_env: Some("OPENROUTER_API_KEY".to_string()),
                         base_url: Some("https://openrouter.ai/api/v1".to_string()),
                     },
@@ -628,6 +630,68 @@ mod tests {
         let entries = resolve_provider_entries(&config, None).unwrap();
         assert!(entries.iter().all(|e| e.backend == Provider::Local));
         assert!(!entries.is_empty());
+    }
+
+    /// 0158 M-1: inserting missing OllamaCloud/OpenRouter via --backend must not
+    /// stamp local_model.timeout_secs (300); resolve path stays 15-class.
+    #[test]
+    #[serial_test::serial(env)]
+    fn resolve_provider_entries_cloud_default_entry_not_local_300() {
+        use crate::config::model::{Provider, ProviderEntry, ProvidersConfig};
+
+        clear_provider_env();
+        let mut config = Config::default();
+        config.local_model.timeout_secs = 300;
+        config.ask.providers = ProvidersConfig {
+            priority: vec![ProviderEntry {
+                backend: Provider::Local,
+                model: None,
+                timeout_secs: Some(300),
+                api_key_env: None,
+                base_url: None,
+            }],
+        };
+
+        let or_entries = resolve_provider_entries(&config, Some(Backend::OpenRouter)).unwrap();
+        assert_eq!(or_entries[0].backend, Provider::OpenRouter);
+        assert_ne!(
+            or_entries[0].timeout_secs,
+            Some(300),
+            "OpenRouter default_entry must not stamp local 300"
+        );
+        let or_resolved = or_entries[0]
+            .timeout_secs
+            .unwrap_or_else(|| resolve_ask_timeout(None, AskTimeoutKind::OpenRouter, &config));
+        assert_eq!(or_resolved, DEFAULT_CLOUD_PROVIDER_TIMEOUT_SECS);
+
+        let oc_entries = resolve_provider_entries(&config, Some(Backend::OllamaCloud)).unwrap();
+        assert_eq!(oc_entries[0].backend, Provider::OllamaCloud);
+        assert_ne!(
+            oc_entries[0].timeout_secs,
+            Some(300),
+            "OllamaCloud default_entry must not stamp local 300"
+        );
+        let oc_resolved = oc_entries[0]
+            .timeout_secs
+            .unwrap_or_else(|| resolve_ask_timeout(None, AskTimeoutKind::OllamaCloud, &config));
+        assert_eq!(oc_resolved, DEFAULT_CLOUD_PROVIDER_TIMEOUT_SECS);
+
+        // Local default_entry still uses local config timeout.
+        let mut config_gemini_only = Config::default();
+        config_gemini_only.local_model.timeout_secs = 300;
+        config_gemini_only.ask.providers = ProvidersConfig {
+            priority: vec![ProviderEntry {
+                backend: Provider::Gemini,
+                model: None,
+                timeout_secs: None,
+                api_key_env: None,
+                base_url: None,
+            }],
+        };
+        let local_entries =
+            resolve_provider_entries(&config_gemini_only, Some(Backend::Local)).unwrap();
+        assert_eq!(local_entries[0].backend, Provider::Local);
+        assert_eq!(local_entries[0].timeout_secs, Some(300));
     }
 
     #[test]
