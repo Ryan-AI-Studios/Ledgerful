@@ -10,24 +10,42 @@
 use crate::index::call_graph::{CallKind, ResolutionStatus};
 use crate::scip::range::parse_scip_range;
 use crate::scip::resolver::{
-    SCIP_EDGE_EVIDENCE, ScipNativeResolver, is_definition_role, load_native_spans_for_file,
-    resolve_caller_for_reference,
+    ResolveCallerOutcome, SCIP_EDGE_EVIDENCE, ScipNativeResolver, is_definition_role,
+    load_native_spans_for_file, resolve_caller_for_reference,
 };
 use miette::{IntoDiagnostic, Result};
 use rusqlite::Connection;
-use tracing::warn;
+use tracing::{debug, warn};
+
+/// Cap on path-aware disagreement `debug!` samples (0157 D4/D10).
+const DISAGREEMENT_SAMPLE_CAP: usize = 3;
 
 /// Result of SCIP edge augmentation (for JSON / logging).
 #[derive(Debug, Clone, Default, serde::Serialize)]
 pub struct ScipEdgeStats {
     pub edges_added: usize,
     pub edges_updated: usize,
+    /// No caller after resolve **or** no callee map. Excludes disagreement /
+    /// invalid-occ (exclusive accounting — 0157 D1b).
     pub edges_skipped_unmapped: usize,
     pub edges_skipped_duplicate: usize,
+    /// Both enclosing and occurrence ranges mapped to different native ids.
+    pub edges_skipped_enclosing_disagreement: usize,
+    /// Pass-2 occurrence classic range invalid / empty.
+    pub edges_skipped_invalid_occ_range: usize,
     pub definitions_mapped: usize,
     pub definitions_seen: usize,
+    /// Pass-1 definition classic range invalid.
+    pub definitions_skipped_invalid_range: usize,
+    /// Non-empty enclosing_range failed parse; resolution fell back to occ.
+    pub invalid_enclosing_fallback: usize,
+    /// Pass-2 reference occurrences considered (non-def, non-local, non-empty).
+    pub references_seen: usize,
     pub files_skipped: usize,
     pub files_processed: usize,
+    /// Documents where every non-local occurrence had an empty classic range
+    /// (typed-range contingency under scip 0.8.1 — D11 detect-only).
+    pub documents_all_classic_ranges_empty: usize,
 }
 
 /// Pending edge before insert / precedence update.
@@ -88,8 +106,8 @@ pub fn augment_edges_from_scip(
             }
             let range = match parse_scip_range(&occurrence.range) {
                 Ok(r) => r,
-                Err(e) => {
-                    warn!("SCIP definition range invalid: {e}");
+                Err(_) => {
+                    stats.definitions_skipped_invalid_range += 1;
                     continue;
                 }
             };
@@ -102,8 +120,15 @@ pub fn augment_edges_from_scip(
 
     // Pass 2: reference occurrences → edges
     let mut pending: Vec<PendingEdge> = Vec::new();
+    let mut disagreement_samples: usize = 0;
+    let mut typed_empty_docs: usize = 0;
 
     for document in documents {
+        // D11: classic ranges empty for all non-local non-empty symbols?
+        if document_all_classic_ranges_empty(document) {
+            typed_empty_docs += 1;
+        }
+
         let Some(file_id) = path_to_file_id(&document.relative_path) else {
             continue;
         };
@@ -121,37 +146,70 @@ pub fn augment_edges_from_scip(
                 continue;
             }
 
-            let Some(caller_id) =
-                resolve_caller_for_reference(&occurrence.range, &occurrence.enclosing_range, spans)
-            else {
-                stats.edges_skipped_unmapped += 1;
-                continue;
-            };
+            stats.references_seen += 1;
 
-            let Some(callee_id) = resolver.get(&occurrence.symbol) else {
-                stats.edges_skipped_unmapped += 1;
-                continue;
-            };
+            let result =
+                resolve_caller_for_reference(&occurrence.range, &occurrence.enclosing_range, spans);
+            if result.used_invalid_enclosing_fallback {
+                stats.invalid_enclosing_fallback += 1;
+            }
 
-            // Resolve callee file_id for the edge row
-            let callee_file_id: Option<i64> = conn
-                .query_row(
-                    "SELECT file_id FROM project_symbols WHERE id = ?1",
-                    [callee_id],
-                    |row| row.get(0),
-                )
-                .ok();
+            match result.outcome {
+                ResolveCallerOutcome::EnclosingDisagreement {
+                    enclosing_id,
+                    occurrence_id,
+                } => {
+                    stats.edges_skipped_enclosing_disagreement += 1;
+                    // D10: only format/debug under sample cap
+                    if disagreement_samples < DISAGREEMENT_SAMPLE_CAP {
+                        debug!(
+                            path = %document.relative_path,
+                            enclosing_id,
+                            occurrence_id,
+                            "SCIP enclosing_range disagreement sample"
+                        );
+                        disagreement_samples += 1;
+                    }
+                    // D1b: exclusive — never also unmapped
+                    continue;
+                }
+                ResolveCallerOutcome::InvalidOccurrenceRange => {
+                    stats.edges_skipped_invalid_occ_range += 1;
+                    continue;
+                }
+                ResolveCallerOutcome::Unmapped => {
+                    stats.edges_skipped_unmapped += 1;
+                    continue;
+                }
+                ResolveCallerOutcome::Resolved(caller_id) => {
+                    let Some(callee_id) = resolver.get(&occurrence.symbol) else {
+                        stats.edges_skipped_unmapped += 1;
+                        continue;
+                    };
 
-            pending.push(PendingEdge {
-                caller_symbol_id: caller_id,
-                caller_file_id: file_id,
-                callee_symbol_id: callee_id,
-                callee_file_id,
-                call_kind: CallKind::Direct.as_str().to_string(),
-                evidence: SCIP_EDGE_EVIDENCE.to_string(),
-            });
+                    // Resolve callee file_id for the edge row
+                    let callee_file_id: Option<i64> = conn
+                        .query_row(
+                            "SELECT file_id FROM project_symbols WHERE id = ?1",
+                            [callee_id],
+                            |row| row.get(0),
+                        )
+                        .ok();
+
+                    pending.push(PendingEdge {
+                        caller_symbol_id: caller_id,
+                        caller_file_id: file_id,
+                        callee_symbol_id: callee_id,
+                        callee_file_id,
+                        call_kind: CallKind::Direct.as_str().to_string(),
+                        evidence: SCIP_EDGE_EVIDENCE.to_string(),
+                    });
+                }
+            }
         }
     }
+
+    stats.documents_all_classic_ranges_empty = typed_empty_docs;
 
     // Deterministic insert order; dedup by (caller, callee) only — call_kind
     // is not part of identity for SCIP precedence.
@@ -162,7 +220,59 @@ pub fn augment_edges_from_scip(
         apply_edge_with_precedence(conn, &edge, &mut stats)?;
     }
 
+    emit_skip_summary_warn(&stats);
+    emit_typed_empty_range_warn(&stats);
+
     Ok(stats)
+}
+
+/// D3: one summary WARN iff disagreement and/or invalid-range counts > 0.
+/// Unmapped-only / duplicate-only must not trigger this WARN.
+fn emit_skip_summary_warn(stats: &ScipEdgeStats) {
+    let policy_skips = stats.edges_skipped_enclosing_disagreement
+        + stats.edges_skipped_invalid_occ_range
+        + stats.definitions_skipped_invalid_range;
+    if policy_skips == 0 {
+        return;
+    }
+    warn!(
+        edges_skipped_enclosing_disagreement = stats.edges_skipped_enclosing_disagreement,
+        edges_skipped_invalid_occ_range = stats.edges_skipped_invalid_occ_range,
+        definitions_skipped_invalid_range = stats.definitions_skipped_invalid_range,
+        edges_skipped_unmapped = stats.edges_skipped_unmapped,
+        references_seen = stats.references_seen,
+        invalid_enclosing_fallback = stats.invalid_enclosing_fallback,
+        "SCIP augment skipped edges: enclosing_range disagreements and/or invalid ranges \
+         (see scip.edges_skipped_* / references_seen on index --json; RUST_LOG=debug for ≤3 samples)"
+    );
+}
+
+/// D11: ≤1 process-level WARN when any document had only empty classic ranges.
+fn emit_typed_empty_range_warn(stats: &ScipEdgeStats) {
+    if stats.documents_all_classic_ranges_empty == 0 {
+        return;
+    }
+    warn!(
+        documents = stats.documents_all_classic_ranges_empty,
+        "SCIP document(s) have empty classic occurrence ranges; indexer may emit typed-only \
+         ranges unreadable under scip 0.8.1 (typed consumers not implemented)"
+    );
+}
+
+/// True when the document has ≥1 non-local non-empty symbol occurrence and
+/// **every** such occurrence's classic `range` is empty.
+fn document_all_classic_ranges_empty(document: &scip::types::Document) -> bool {
+    let mut any = false;
+    for occ in &document.occurrences {
+        if occ.symbol.is_empty() || occ.symbol.starts_with("local ") {
+            continue;
+        }
+        any = true;
+        if !occ.range.is_empty() {
+            return false;
+        }
+    }
+    any
 }
 
 /// Insert or update per DoD-8 precedence: SCIP evidence wins over native.
@@ -247,6 +357,11 @@ mod tests {
     use super::*;
     use crate::state::migrations::get_migrations;
     use rusqlite::Connection;
+    use std::io::{self, Write};
+    use std::sync::{Arc, Mutex};
+    use tracing::Level;
+    use tracing_subscriber::Layer;
+    use tracing_subscriber::fmt::MakeWriter;
 
     fn setup_db() -> Connection {
         let mut conn = Connection::open_in_memory().unwrap();
@@ -327,6 +442,74 @@ mod tests {
             occurrences: vec![def, r#ref],
             ..Default::default()
         }
+    }
+
+    /// Buffer make-writer for WARN capture tests.
+    #[derive(Clone, Default)]
+    struct BufWriter {
+        buf: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl<'a> MakeWriter<'a> for BufWriter {
+        type Writer = BufGuard;
+
+        fn make_writer(&'a self) -> Self::Writer {
+            BufGuard {
+                buf: Arc::clone(&self.buf),
+            }
+        }
+    }
+
+    struct BufGuard {
+        buf: Arc<Mutex<Vec<u8>>>,
+    }
+
+    impl Write for BufGuard {
+        fn write(&mut self, data: &[u8]) -> io::Result<usize> {
+            self.buf
+                .lock()
+                .map_err(|e| io::Error::other(e.to_string()))?
+                .extend_from_slice(data);
+            Ok(data.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    /// Capture WARN-level events while running `f`; returns (result, warn text).
+    fn with_warn_capture<T>(f: impl FnOnce() -> T) -> (T, String) {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        let buf = BufWriter::default();
+        let capture = Arc::clone(&buf.buf);
+        let layer = tracing_subscriber::fmt::layer()
+            .with_writer(buf)
+            .without_time()
+            .with_target(true)
+            .with_level(true)
+            .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
+                *meta.level() <= Level::WARN
+            }));
+        let _guard = tracing_subscriber::registry().with(layer).set_default();
+        let out = f();
+        let text = String::from_utf8_lossy(&capture.lock().unwrap()).to_string();
+        (out, text)
+    }
+
+    fn count_related_scip_warns(text: &str) -> usize {
+        text.lines()
+            .filter(|line| {
+                let lower = line.to_ascii_lowercase();
+                lower.contains("warn")
+                    && (lower.contains("scip")
+                        || lower.contains("enclosing")
+                        || lower.contains("skipped edges")
+                        || lower.contains("classic"))
+            })
+            .count()
     }
 
     #[test]
@@ -469,6 +652,8 @@ mod tests {
         assert_eq!(stats.definitions_mapped, 1);
         assert_eq!(stats.edges_added, 1);
         assert_eq!(stats.edges_updated, 0);
+        assert_eq!(stats.references_seen, 1);
+        assert_eq!(stats.edges_skipped_enclosing_disagreement, 0);
 
         let evidence: String = conn
             .query_row("SELECT evidence FROM structural_edges LIMIT 1", [], |r| {
@@ -545,5 +730,266 @@ mod tests {
             .query_row("SELECT COUNT(*) FROM structural_edges", [], |r| r.get(0))
             .unwrap();
         assert_eq!(count, 1);
+    }
+
+    /// Disagreement path must increment ONLY enclosing_disagreement (D1b).
+    #[test]
+    fn exclusive_disagreement_does_not_increment_unmapped() {
+        use crate::scip::resolver::SCIP_ROLE_DEFINITION;
+        let conn = setup_db();
+        let path = "src/disagree.rs";
+        let fid = insert_file(&conn, path);
+        // Two non-overlapping spans so enc/occ disagree
+        let _mod_sym = insert_symbol(&conn, fid, "mod_fn", 1, 20);
+        let _fn_sym = insert_symbol(&conn, fid, "inner_fn", 30, 50);
+        // Map a definition so callee is present (proves exclusivity even when
+        // callee would otherwise be resolvable).
+        let def = scip::types::Occurrence {
+            symbol: "rust-analyzer cargo test 0.1 target/".to_string(),
+            symbol_roles: SCIP_ROLE_DEFINITION,
+            range: vec![9, 0, 5], // native line 10 → mod_fn
+            ..Default::default()
+        };
+        // occ at native 40 (inner_fn); enc starts at native 10 (mod_fn)
+        let r#ref = scip::types::Occurrence {
+            symbol: "rust-analyzer cargo test 0.1 target/".to_string(),
+            symbol_roles: 0,
+            range: vec![39, 0, 5],
+            enclosing_range: vec![9, 0, 19, 0],
+            ..Default::default()
+        };
+        let docs = vec![scip::types::Document {
+            relative_path: path.to_string(),
+            occurrences: vec![def, r#ref],
+            ..Default::default()
+        }];
+        let stats = augment_edges_from_scip(&conn, &docs, &|rel| {
+            if rel == path { Some(fid) } else { None }
+        })
+        .unwrap();
+
+        assert_eq!(stats.edges_skipped_enclosing_disagreement, 1);
+        assert_eq!(stats.edges_skipped_unmapped, 0);
+        assert_eq!(stats.edges_added, 0);
+        assert_eq!(stats.references_seen, 1);
+    }
+
+    /// Resolved caller + missing callee → unmapped only.
+    #[test]
+    fn resolved_missing_callee_increments_unmapped_only() {
+        let conn = setup_db();
+        let path = "src/miss_callee.rs";
+        let fid = insert_file(&conn, path);
+        let _caller = insert_symbol(&conn, fid, "caller_fn", 1, 20);
+        // No definition occurrence → callee unmapped
+        let r#ref = scip::types::Occurrence {
+            symbol: "rust-analyzer cargo test 0.1 external/".to_string(),
+            symbol_roles: 0,
+            range: vec![9, 0, 5],
+            ..Default::default()
+        };
+        let docs = vec![scip::types::Document {
+            relative_path: path.to_string(),
+            occurrences: vec![r#ref],
+            ..Default::default()
+        }];
+        let stats = augment_edges_from_scip(&conn, &docs, &|rel| {
+            if rel == path { Some(fid) } else { None }
+        })
+        .unwrap();
+
+        assert_eq!(stats.edges_skipped_unmapped, 1);
+        assert_eq!(stats.edges_skipped_enclosing_disagreement, 0);
+        assert_eq!(stats.edges_skipped_invalid_occ_range, 0);
+        assert_eq!(stats.edges_added, 0);
+        assert_eq!(stats.references_seen, 1);
+    }
+
+    /// ≥100 synthetic disagreements → counter == N and ≤1 related summary WARN.
+    #[test]
+    fn many_disagreements_aggregate_to_one_summary_warn() {
+        use crate::scip::resolver::SCIP_ROLE_DEFINITION;
+        const N: usize = 100;
+
+        let conn = setup_db();
+        let path = "src/flood.rs";
+        let fid = insert_file(&conn, path);
+        let _mod_sym = insert_symbol(&conn, fid, "mod_fn", 1, 20);
+        let _fn_sym = insert_symbol(&conn, fid, "inner_fn", 30, 50);
+
+        let mut occurrences = Vec::with_capacity(N + 1);
+        // One definition so maps exist (not required for disagreement counting)
+        occurrences.push(scip::types::Occurrence {
+            symbol: "rust-analyzer cargo test 0.1 flood_target/".to_string(),
+            symbol_roles: SCIP_ROLE_DEFINITION,
+            range: vec![9, 0, 5],
+            ..Default::default()
+        });
+        for i in 0..N {
+            occurrences.push(scip::types::Occurrence {
+                symbol: format!("rust-analyzer cargo test 0.1 flood_target/{i}"),
+                symbol_roles: 0,
+                range: vec![39, 0, 5],              // native 40 → inner_fn
+                enclosing_range: vec![9, 0, 19, 0], // native 10 → mod_fn
+                ..Default::default()
+            });
+        }
+        let docs = vec![scip::types::Document {
+            relative_path: path.to_string(),
+            occurrences,
+            ..Default::default()
+        }];
+
+        let (stats, warn_text) = with_warn_capture(|| {
+            augment_edges_from_scip(&conn, &docs, &|rel| {
+                if rel == path { Some(fid) } else { None }
+            })
+            .unwrap()
+        });
+
+        assert_eq!(stats.edges_skipped_enclosing_disagreement, N);
+        assert_eq!(stats.edges_skipped_unmapped, 0);
+        assert_eq!(stats.references_seen, N);
+        assert_eq!(stats.edges_added, 0);
+
+        let related = count_related_scip_warns(&warn_text);
+        assert!(
+            related <= 1,
+            "expected ≤1 related SCIP WARN for {N} disagreements, got {related}; text={warn_text:?}"
+        );
+        assert!(
+            related == 1,
+            "expected exactly 1 summary WARN when disagreements > 0; text={warn_text:?}"
+        );
+        assert!(
+            warn_text.contains("skipped edges") || warn_text.contains("enclosing"),
+            "summary WARN should mention skip/enclosing; text={warn_text:?}"
+        );
+    }
+
+    /// Unmapped-only batch must not emit the summary WARN (D3 / M2).
+    #[test]
+    fn unmapped_only_emits_zero_summary_warn() {
+        let conn = setup_db();
+        let path = "src/unmapped_only.rs";
+        let fid = insert_file(&conn, path);
+        let _caller = insert_symbol(&conn, fid, "caller_fn", 1, 20);
+
+        let mut occurrences = Vec::new();
+        for i in 0..20 {
+            occurrences.push(scip::types::Occurrence {
+                symbol: format!("rust-analyzer cargo test 0.1 ext/{i}"),
+                symbol_roles: 0,
+                range: vec![9, 0, 5],
+                ..Default::default()
+            });
+        }
+        let docs = vec![scip::types::Document {
+            relative_path: path.to_string(),
+            occurrences,
+            ..Default::default()
+        }];
+
+        let (stats, warn_text) = with_warn_capture(|| {
+            augment_edges_from_scip(&conn, &docs, &|rel| {
+                if rel == path { Some(fid) } else { None }
+            })
+            .unwrap()
+        });
+
+        assert_eq!(stats.edges_skipped_unmapped, 20);
+        assert_eq!(stats.edges_skipped_enclosing_disagreement, 0);
+        assert_eq!(stats.edges_skipped_invalid_occ_range, 0);
+        assert_eq!(stats.definitions_skipped_invalid_range, 0);
+
+        let related = count_related_scip_warns(&warn_text);
+        assert_eq!(
+            related, 0,
+            "unmapped-only must not emit summary WARN; text={warn_text:?}"
+        );
+    }
+
+    /// D11: all-empty classic ranges → ≤1 WARN, no per-occ flood.
+    #[test]
+    fn typed_empty_classic_ranges_one_warn() {
+        let conn = setup_db();
+        let path = "src/typed_only.rs";
+        let fid = insert_file(&conn, path);
+        let _caller = insert_symbol(&conn, fid, "caller_fn", 1, 20);
+
+        let mut occurrences = Vec::new();
+        for i in 0..10 {
+            occurrences.push(scip::types::Occurrence {
+                symbol: format!("rust-analyzer cargo test 0.1 typed/{i}"),
+                symbol_roles: 0,
+                range: vec![], // empty classic range
+                ..Default::default()
+            });
+        }
+        let docs = vec![scip::types::Document {
+            relative_path: path.to_string(),
+            occurrences,
+            ..Default::default()
+        }];
+
+        let (stats, warn_text) = with_warn_capture(|| {
+            augment_edges_from_scip(&conn, &docs, &|rel| {
+                if rel == path { Some(fid) } else { None }
+            })
+            .unwrap()
+        });
+
+        assert_eq!(stats.documents_all_classic_ranges_empty, 1);
+        assert_eq!(stats.references_seen, 10);
+        assert_eq!(stats.edges_skipped_invalid_occ_range, 10);
+
+        // Summary WARN (invalid_occ) + D11 typed-empty WARN ≤ 2; never 10+
+        let related = count_related_scip_warns(&warn_text);
+        assert!(
+            related <= 2,
+            "expected ≤2 WARNs (summary + D11), got {related}; text={warn_text:?}"
+        );
+        assert!(
+            warn_text.to_ascii_lowercase().contains("classic")
+                || warn_text.to_ascii_lowercase().contains("typed"),
+            "D11 WARN should mention classic/typed ranges; text={warn_text:?}"
+        );
+    }
+
+    #[test]
+    fn invalid_enclosing_fallback_counted() {
+        use crate::scip::resolver::SCIP_ROLE_DEFINITION;
+        let conn = setup_db();
+        let path = "src/fallback.rs";
+        let fid = insert_file(&conn, path);
+        let _caller = insert_symbol(&conn, fid, "caller_fn", 1, 20);
+        let _callee = insert_symbol(&conn, fid, "callee_fn", 30, 40);
+
+        let def = scip::types::Occurrence {
+            symbol: "rust-analyzer cargo test 0.1 fb/".to_string(),
+            symbol_roles: SCIP_ROLE_DEFINITION,
+            range: vec![29, 0, 5],
+            ..Default::default()
+        };
+        let r#ref = scip::types::Occurrence {
+            symbol: "rust-analyzer cargo test 0.1 fb/".to_string(),
+            symbol_roles: 0,
+            range: vec![9, 0, 5],
+            enclosing_range: vec![1, 2], // invalid length → fallback
+            ..Default::default()
+        };
+        let docs = vec![scip::types::Document {
+            relative_path: path.to_string(),
+            occurrences: vec![def, r#ref],
+            ..Default::default()
+        }];
+        let stats = augment_edges_from_scip(&conn, &docs, &|rel| {
+            if rel == path { Some(fid) } else { None }
+        })
+        .unwrap();
+
+        assert_eq!(stats.invalid_enclosing_fallback, 1);
+        assert_eq!(stats.edges_added, 1);
+        assert_eq!(stats.edges_skipped_enclosing_disagreement, 0);
     }
 }

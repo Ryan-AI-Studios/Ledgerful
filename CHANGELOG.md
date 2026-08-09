@@ -31,6 +31,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **SCIP skip tallies + `references_seen` on `index --json` / human SCIP section (0157):**
+  Success `scip` object always includes
+  `edges_skipped_enclosing_disagreement`, `edges_skipped_unmapped`,
+  `edges_skipped_invalid_occ_range`, `edges_skipped_duplicate`,
+  `definitions_skipped_invalid_range`, `invalid_enclosing_fallback`,
+  `references_seen`, and `definitions_seen` (snake_case). Human SCIP success
+  prints non-zero skip/refs lines. Rate quality as
+  `edges_skipped_enclosing_disagreement / references_seen`.
 - **`ledgerful symbols` scoped inventory (0163):** Index-backed list of definitions
   under `--path` (prefix), `--changed` (WT ∩ indexed, includes Deleted still
   indexed), `--kind` (canonical PascalCase + aliases), `--pub`, with default
@@ -47,6 +55,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **SCIP enclosing_range WARN flood (0157):** Successful `--auto-scip` no longer
+  emits ~tens of thousands of per-occurrence
+  `enclosing_range … disagrees …` WARN lines. Skips are aggregated on
+  `ScipEdgeStats` / `scip.*` JSON; **one** summary WARN when disagreement and/or
+  invalid-range counts are non-zero (not for unmapped-only or duplicates). First
+  ≤3 disagreement samples at `debug!` with path + enc/occ ids. Skip **policy**
+  unchanged (disagreement → no edge). Typed-empty classic ranges → ≤1 process
+  WARN (scip 0.8.1 detect-only; no typed consumer).
 - **`dependencies list` stale self-version / Cozo coupling (0153, Cosmetic #3):**
   Default list no longer reads Cozo package nodes; root version comes from live
   `[package]` when it is a string (`source: "manifest"`), or falls back to the

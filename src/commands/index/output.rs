@@ -224,6 +224,49 @@ pub(crate) fn print_human_output(output: &IndexOutputStats) {
             if let Some(n) = scip.definitions_mapped {
                 println!("  Defs mapped:    {}", n);
             }
+            if let Some(n) = scip.definitions_seen
+                && n > 0
+            {
+                println!("  Defs seen:      {}", n);
+            }
+            if let Some(n) = scip.references_seen {
+                println!("  Refs seen:      {}", n);
+            }
+            if let Some(n) = scip.edges_skipped_enclosing_disagreement
+                && n > 0
+            {
+                println!("  Skip disagree:  {}", n);
+            }
+            if let Some(n) = scip.edges_skipped_unmapped
+                && n > 0
+            {
+                println!("  Skip unmapped:  {}", n);
+            }
+            if let Some(n) = scip.edges_skipped_invalid_occ_range
+                && n > 0
+            {
+                println!("  Skip inv. range: {}", n);
+            }
+            if let Some(n) = scip.edges_skipped_duplicate
+                && n > 0
+            {
+                println!("  Skip duplicate: {}", n);
+            }
+            if let Some(n) = scip.definitions_skipped_invalid_range
+                && n > 0
+            {
+                println!("  Defs inv. range: {}", n);
+            }
+            if let Some(n) = scip.invalid_enclosing_fallback
+                && n > 0
+            {
+                println!("  Enc. fallback:  {}", n);
+            }
+            if let Some(n) = scip.files_skipped
+                && n > 0
+            {
+                println!("  Files skipped:  {}", n);
+            }
         }
     }
     println!();
