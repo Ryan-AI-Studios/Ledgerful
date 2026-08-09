@@ -1446,20 +1446,6 @@ fn phase_security(ctx: &mut GraphLoadContext) -> Result<()> {
     Ok(())
 }
 
-#[derive(serde::Deserialize)]
-struct CargoLockFile {
-    #[serde(rename = "package")]
-    packages: Vec<CargoLockPackage>,
-}
-
-#[derive(serde::Deserialize, Clone, Debug)]
-struct CargoLockPackage {
-    name: String,
-    version: String,
-    source: Option<String>,
-    dependencies: Option<Vec<String>>,
-}
-
 // ---------------------------------------------------------------------------
 // Phase 10 — Cargo dependencies (from Cargo.lock)
 // ---------------------------------------------------------------------------
@@ -1471,46 +1457,8 @@ fn phase_cargo_dependencies(ctx: &mut GraphLoadContext) -> Result<()> {
     }
 
     let content = std::fs::read_to_string(&lock_path).into_diagnostic()?;
-
-    // Attempt strongly typed deserialization first
-    let typed_lock: Option<CargoLockFile> = toml::from_str(&content).ok();
-
-    let pkgs_data: Vec<CargoLockPackage> = if let Some(lock) = typed_lock {
-        lock.packages
-    } else {
-        tracing::warn!(
-            "Cargo.lock: Failed to parse with strongly typed schema; falling back to weakly typed parsing."
-        );
-        let value: serde_json::Value = toml::from_str(&content).into_diagnostic()?;
-        let packages = value.get("package").and_then(|p| p.as_array());
-        if let Some(pkgs) = packages {
-            pkgs.iter()
-                .map(|p| CargoLockPackage {
-                    name: p
-                        .get("name")
-                        .and_then(|n| n.as_str())
-                        .unwrap_or_default()
-                        .to_string(),
-                    version: p
-                        .get("version")
-                        .and_then(|v| v.as_str())
-                        .unwrap_or("0.0.0")
-                        .to_string(),
-                    source: p.get("source").and_then(|s| s.as_str()).map(String::from),
-                    dependencies: p
-                        .get("dependencies")
-                        .and_then(|d| d.as_array())
-                        .map(|deps| {
-                            deps.iter()
-                                .filter_map(|d| d.as_str().map(String::from))
-                                .collect()
-                        }),
-                })
-                .collect()
-        } else {
-            Vec::new()
-        }
-    };
+    // Shared parse (typed + weakly-typed fallback) — util/cargo_lock (0153 L6).
+    let pkgs_data = crate::util::cargo_lock::parse_cargo_lock(&content)?;
 
     if pkgs_data.is_empty() {
         return Ok(());
@@ -1582,20 +1530,20 @@ fn phase_cargo_dependencies(ctx: &mut GraphLoadContext) -> Result<()> {
 
         if let Some(deps) = &pkg.dependencies {
             for dep_str in deps {
-                let parts: Vec<&str> = dep_str.split_whitespace().collect();
-                if parts.is_empty() {
+                let (dep_name_owned, dep_version_opt) =
+                    crate::util::cargo_lock::parse_lock_dep_string(dep_str);
+                if dep_name_owned.is_empty() {
                     continue;
                 }
-                let dep_name = parts[0];
+                let dep_name = dep_name_owned.as_str();
 
-                let dep_urn = if parts.len() > 1 {
-                    let dep_version = parts[1];
+                let dep_urn = if let Some(ref dep_version) = dep_version_opt {
                     let candidates = name_to_packages.get(dep_name);
                     // Try to find a package that matches both name and version.
                     // If multiple sources exist for same name/version, try to match parent's source.
                     let pkg = if let Some(pkgs) = candidates {
                         let version_matches: Vec<&PkgInfo> =
-                            pkgs.iter().filter(|p| p.version == dep_version).collect();
+                            pkgs.iter().filter(|p| p.version == *dep_version).collect();
                         if version_matches.len() == 1 {
                             Some(version_matches[0])
                         } else {
