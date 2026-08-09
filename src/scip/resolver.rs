@@ -8,7 +8,6 @@ use crate::scip::range::{ScipRange, line_in_span, parse_scip_range};
 use miette::{IntoDiagnostic, Result};
 use rusqlite::Connection;
 use std::collections::HashMap;
-use tracing::warn;
 
 /// SCIP Definition bit (`SymbolRole::Definition = 1`).
 pub const SCIP_ROLE_DEFINITION: i32 = 0x1;
@@ -23,6 +22,34 @@ pub struct NativeSymbolSpan {
     pub file_id: i64,
     pub line_start: i32,
     pub line_end: i32,
+}
+
+/// Outcome of caller resolution for a SCIP reference occurrence (0157).
+///
+/// Callers must treat skip reasons as exclusive: one occurrence maps to at most
+/// one skip counter in `ScipEdgeStats`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ResolveCallerOutcome {
+    /// Mapped to a native caller symbol id.
+    Resolved(i64),
+    /// Both enclosing and occurrence ranges mapped, but to different symbols.
+    EnclosingDisagreement {
+        enclosing_id: i64,
+        occurrence_id: i64,
+    },
+    /// No native container for the chosen range(s).
+    Unmapped,
+    /// Occurrence classic range could not be parsed (empty / wrong length).
+    InvalidOccurrenceRange,
+}
+
+/// Full result of `resolve_caller_for_reference`, including fallback honesty.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResolveCallerResult {
+    pub outcome: ResolveCallerOutcome,
+    /// True when `enclosing_range` was non-empty but invalid, so resolution
+    /// fell back to the occurrence range (today's behavior; not an edge skip).
+    pub used_invalid_enclosing_fallback: bool,
 }
 
 /// Resolve SCIP definition occurrences to native symbol ids.
@@ -157,47 +184,69 @@ pub fn load_native_spans_for_file(
 /// Identify the caller native symbol for a reference occurrence.
 ///
 /// Prefer `enclosing_range` when present; fall back to occurrence range
-/// containment. When both are present they must agree — warn + skip on
-/// disagreement.
+/// containment. When both are present and both map, they must agree —
+/// disagreement yields `EnclosingDisagreement` (no edge; never guess).
+///
+/// Hot path does **not** emit `warn!` (0157 log budget); callers count and
+/// summarize.
 pub fn resolve_caller_for_reference(
     occurrence_range: &[i32],
     enclosing_range: &[i32],
     native_in_file: &[NativeSymbolSpan],
-) -> Option<i64> {
+) -> ResolveCallerResult {
     let occ_parsed = match parse_scip_range(occurrence_range) {
         Ok(r) => r,
-        Err(e) => {
-            warn!("Skipping SCIP occurrence with invalid range: {e}");
-            return None;
+        Err(_) => {
+            return ResolveCallerResult {
+                outcome: ResolveCallerOutcome::InvalidOccurrenceRange,
+                used_invalid_enclosing_fallback: false,
+            };
         }
     };
 
     let from_occ = resolve_innermost(occ_parsed.start_line, native_in_file);
 
     if enclosing_range.is_empty() {
-        return from_occ;
+        return ResolveCallerResult {
+            outcome: option_to_outcome(from_occ),
+            used_invalid_enclosing_fallback: false,
+        };
     }
 
     let enc_parsed = match parse_scip_range(enclosing_range) {
         Ok(r) => r,
-        Err(e) => {
-            warn!("SCIP enclosing_range invalid ({e}); falling back to occurrence range");
-            return from_occ;
+        Err(_) => {
+            // Invalid enclosing → fall back to occurrence range (policy unchanged).
+            return ResolveCallerResult {
+                outcome: option_to_outcome(from_occ),
+                used_invalid_enclosing_fallback: true,
+            };
         }
     };
 
     // Prefer a representative line of the enclosing range (start) for caller id.
     let from_enc = resolve_innermost(enc_parsed.start_line, native_in_file);
 
-    match (from_enc, from_occ) {
-        (Some(a), Some(b)) if a != b => {
-            warn!(
-                "SCIP enclosing_range caller {a} disagrees with occurrence-range caller {b}; skipping"
-            );
-            None
-        }
-        (Some(a), _) => Some(a),
-        (None, other) => other,
+    let outcome = match (from_enc, from_occ) {
+        (Some(a), Some(b)) if a != b => ResolveCallerOutcome::EnclosingDisagreement {
+            enclosing_id: a,
+            occurrence_id: b,
+        },
+        (Some(a), _) => ResolveCallerOutcome::Resolved(a),
+        (None, other) => option_to_outcome(other),
+    };
+
+    ResolveCallerResult {
+        outcome,
+        used_invalid_enclosing_fallback: false,
+    }
+}
+
+#[inline]
+fn option_to_outcome(id: Option<i64>) -> ResolveCallerOutcome {
+    match id {
+        Some(id) => ResolveCallerOutcome::Resolved(id),
+        None => ResolveCallerOutcome::Unmapped,
     }
 }
 
@@ -279,8 +328,9 @@ mod tests {
     fn caller_enclosing_agrees_with_occurrence() {
         let cands = vec![span(7, 1, 50)];
         // occurrence line 0-based 9 → native 10; enclosing same
-        let id = resolve_caller_for_reference(&[9, 0, 5], &[0, 0, 49, 0], &cands);
-        assert_eq!(id, Some(7));
+        let result = resolve_caller_for_reference(&[9, 0, 5], &[0, 0, 49, 0], &cands);
+        assert_eq!(result.outcome, ResolveCallerOutcome::Resolved(7));
+        assert!(!result.used_invalid_enclosing_fallback);
     }
 
     #[test]
@@ -288,7 +338,56 @@ mod tests {
         let cands = vec![span(1, 1, 20), span(2, 30, 50)];
         // occurrence at line 5 (0-based) → native 6 → id 1
         // enclosing starts at line 35 (0-based 34) → native 35 → id 2
-        let id = resolve_caller_for_reference(&[5, 0, 3], &[34, 0, 40, 0], &cands);
-        assert_eq!(id, None);
+        let result = resolve_caller_for_reference(&[5, 0, 3], &[34, 0, 40, 0], &cands);
+        assert_eq!(
+            result.outcome,
+            ResolveCallerOutcome::EnclosingDisagreement {
+                enclosing_id: 2,
+                occurrence_id: 1,
+            }
+        );
+        assert!(!result.used_invalid_enclosing_fallback);
+    }
+
+    #[test]
+    fn caller_empty_enclosing_uses_occurrence() {
+        let cands = vec![span(7, 1, 50)];
+        let result = resolve_caller_for_reference(&[9, 0, 5], &[], &cands);
+        assert_eq!(result.outcome, ResolveCallerOutcome::Resolved(7));
+        assert!(!result.used_invalid_enclosing_fallback);
+    }
+
+    #[test]
+    fn caller_unmapped_when_no_container() {
+        let cands = vec![span(1, 1, 5)];
+        // occurrence at native line 50 — outside any span
+        let result = resolve_caller_for_reference(&[49, 0, 5], &[], &cands);
+        assert_eq!(result.outcome, ResolveCallerOutcome::Unmapped);
+        assert!(!result.used_invalid_enclosing_fallback);
+    }
+
+    #[test]
+    fn caller_invalid_occurrence_range() {
+        let cands = vec![span(1, 1, 50)];
+        let result = resolve_caller_for_reference(&[], &[0, 0, 49, 0], &cands);
+        assert_eq!(result.outcome, ResolveCallerOutcome::InvalidOccurrenceRange);
+        assert!(!result.used_invalid_enclosing_fallback);
+    }
+
+    #[test]
+    fn caller_invalid_enclosing_fallback_to_occ() {
+        let cands = vec![span(7, 1, 50)];
+        // invalid enclosing length; valid occurrence
+        let result = resolve_caller_for_reference(&[9, 0, 5], &[1, 2], &cands);
+        assert_eq!(result.outcome, ResolveCallerOutcome::Resolved(7));
+        assert!(result.used_invalid_enclosing_fallback);
+    }
+
+    #[test]
+    fn caller_invalid_enclosing_fallback_unmapped_when_occ_unmapped() {
+        let cands = vec![span(1, 1, 5)];
+        let result = resolve_caller_for_reference(&[49, 0, 5], &[1, 2], &cands);
+        assert_eq!(result.outcome, ResolveCallerOutcome::Unmapped);
+        assert!(result.used_invalid_enclosing_fallback);
     }
 }

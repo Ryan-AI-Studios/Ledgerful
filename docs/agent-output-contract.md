@@ -31,6 +31,7 @@ on stderr.
 | `verify --json` | yes | yes* | plan-execution payload; see rejected combos |
 | `index --check --json` | yes | yes (0149) | Info suppressed under json; Error still on stderr |
 | `index --semantic --json` | yes (0161) | yes | One final JSON object (`schemaVersion`, `mode`, `reason`, counts, `upToDate`); zero human mid-run lines on stdout |
+| `index --json` (main / `--auto-scip` / `--scip`) | yes | yes* | Merged index stats object; top-level **`scip`** (0157): `status`, `edges_added`/`edges_updated`, `definitions_mapped`/`definitions_seen`, `files_skipped`, skip tallies (`edges_skipped_enclosing_disagreement`, `edges_skipped_unmapped`, `edges_skipped_invalid_occ_range`, `edges_skipped_duplicate`, `definitions_skipped_invalid_range`, `invalid_enclosing_fallback`), `references_seen`, optional `message`. On Success skip fields are always present (incl. 0). WARN summary for disagreement/invalid-range is **stderr** only (O(1)); not part of the JSON payload |
 | `dead-code --json` | yes (0149) | yes | schemaVersion 1 envelope; see rejected combos |
 | `hotspots --json` | yes | yes | |
 | `hotspots trend --json` | yes (0151) | yes | schemaVersion 1; modes summary/full/entity; see schema below |

@@ -225,7 +225,13 @@ ledgerful index --incremental
 # Use for precision work / impact prep — not a universal quality KPI.
 # Requires a capable indexer (capability probe). Adds structural_edges with
 # evidence=scip:ref onto native symbols only — does not replace the native index.
-# Under --json, read scip.status, scip.edges_added, scip.edges_updated.
+# Under --json Success, read scip.status, edges_added/updated, definitions_mapped,
+# definitions_seen, files_skipped, references_seen, and skip tallies:
+#   edges_skipped_enclosing_disagreement, edges_skipped_unmapped,
+#   edges_skipped_invalid_occ_range, edges_skipped_duplicate,
+#   definitions_skipped_invalid_range, invalid_enclosing_fallback.
+# Rate quality: edges_skipped_enclosing_disagreement / references_seen.
+# O(1) related WARN on stderr when disagreements/invalid ranges > 0 (not flood).
 # ledgerful index --auto-scip --json
 # ledgerful index --scip path/to/index.scip --json
 
