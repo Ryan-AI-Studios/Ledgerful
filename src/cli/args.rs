@@ -2370,12 +2370,19 @@ impl Commands {
                 }
             },
             Commands::Dependencies(args) => match &args.command {
-                crate::commands::dependencies::DependencySubcommands::List { json, verbose } => {
+                crate::commands::dependencies::DependencySubcommands::List {
+                    json,
+                    verbose,
+                    all,
+                } => {
                     if *json {
                         f.push("json");
                     }
                     if *verbose {
                         f.push("verbose");
+                    }
+                    if *all {
+                        f.push("all");
                     }
                 }
                 crate::commands::dependencies::DependencySubcommands::Audit { json, .. } => {

@@ -1,13 +1,13 @@
-//! Regression test for Codex finding #2 (docs/codex-findings1.md): `dependencies list`
-//! misclassified real third-party crates (gix, rusqlite, cozo) as "Local Dependencies"
-//! because stale `package` nodes from a previous Cargo.lock version lingered in the
-//! graph after a version bump, sitting alongside the correct, sourced, current-version
-//! node under a different URN (URNs are keyed by name+version[+source]).
+//! Regression tests for Cargo.lock package-node orphan pruning in
+//! `phase_cargo_dependencies` (src/index/graph_loader.rs).
 //!
-//! The fix lives in `phase_cargo_dependencies` (src/index/graph_loader.rs): on each
-//! re-index, any `package` node whose URN is not part of the current Cargo.lock's
-//! package set is now pruned (along with its outgoing DependsOn edges) before/around
-//! inserting the fresh node set.
+//! On each re-index, any Cargo.lock-manifest `package` node whose URN is not
+//! part of the current lock package set is pruned (with DependsOn edges). OSV
+//! audit-imported package nodes must survive (different URN scheme / no
+//! `metadata.manifest == "Cargo.lock"`).
+//!
+//! Graph assertions use `package_node_ids()` / Cozo directly (0153 L1). Default
+//! `dependencies list` no longer observes KG package nodes.
 
 use crate::common::setup_git_repo;
 use camino::Utf8PathBuf;
@@ -159,55 +159,44 @@ fn test_stale_package_version_pruned_on_lockfile_bump() {
     );
 }
 
+/// After lockfile bump + re-index, Cozo must hold only current package URNs
+/// (stale versions pruned). Observes the graph via `package_node_ids()` — not
+/// `dependencies list`, which since 0153 reads live Cargo.toml/lock only (L1).
 #[test]
-fn test_dependencies_list_no_longer_shows_stale_version_as_local() {
+fn test_stale_package_nodes_pruned_from_cozo_after_lock_bump() {
     let harness = TestHarness::new_with_lock(LOCK_V1);
     harness.build_graph();
 
     harness.write_lock(LOCK_V2);
     harness.build_graph();
 
-    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
-    let output = std::process::Command::new(ledgerful_bin)
-        .args(["dependencies", "list", "--json"])
-        .current_dir(&harness.root)
-        .output()
-        .unwrap();
+    let ids = harness.package_node_ids();
+
+    // Stale sourceless/old-version nodes must be gone from Cozo.
     assert!(
-        output.status.success(),
-        "stderr: {}",
-        String::from_utf8_lossy(&output.stderr)
+        !ids.iter()
+            .any(|id| id == "urn:ledgerful:package:gix:0.83.0"),
+        "stale gix@0.83.0 must be pruned from Cozo, still in: {ids:?}"
+    );
+    assert!(
+        !ids.iter().any(|id| id.contains("rusqlite:0.39.0")),
+        "stale rusqlite@0.39.0 must be pruned from Cozo, still in: {ids:?}"
     );
 
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let json_val: serde_json::Value = serde_json::from_str(&stdout).unwrap();
-    let arr = json_val.as_array().expect("expected a JSON array");
-
-    // gix and rusqlite must each appear exactly once now, sourced, and not local --
-    // the stale sourceless old-version duplicate must be gone.
-    let gix_entries: Vec<&serde_json::Value> = arr
-        .iter()
-        .filter(|e| e["name"].as_str() == Some("gix"))
-        .collect();
+    // Current versions present (sourced gix uses hashed URN — match by version token).
+    assert!(
+        ids.iter().any(|id| id.contains("gix:0.84.0")),
+        "expected gix@0.84.0 in Cozo, got: {ids:?}"
+    );
+    assert!(
+        ids.iter().any(|id| id.contains("rusqlite:0.40.1")),
+        "expected rusqlite@0.40.1 in Cozo, got: {ids:?}"
+    );
     assert_eq!(
-        gix_entries.len(),
-        1,
-        "expected exactly one gix entry, got: {gix_entries:?}"
+        ids.len(),
+        2,
+        "expected exactly 2 package nodes after prune, got: {ids:?}"
     );
-    assert_eq!(gix_entries[0]["version"].as_str().unwrap(), "0.84.0");
-    assert!(!gix_entries[0]["is_local"].as_bool().unwrap());
-
-    let rusqlite_entries: Vec<&serde_json::Value> = arr
-        .iter()
-        .filter(|e| e["name"].as_str() == Some("rusqlite"))
-        .collect();
-    assert_eq!(
-        rusqlite_entries.len(),
-        1,
-        "expected exactly one rusqlite entry, got: {rusqlite_entries:?}"
-    );
-    assert_eq!(rusqlite_entries[0]["version"].as_str().unwrap(), "0.40.1");
-    assert!(!rusqlite_entries[0]["is_local"].as_bool().unwrap());
 }
 
 /// Regression test: `phase_cargo_dependencies`'s orphan-cleanup logic (added to fix
@@ -303,26 +292,41 @@ fn test_osv_imported_package_node_survives_reindex() {
          deleted by the Cargo.lock orphan-cleanup logic. Present ids: {ids_after_reindex:?}"
     );
 
-    // Also confirm it's still visible via the user-facing `dependencies list --json`
-    // surface, not just present at the raw graph-storage level.
-    let list_output = std::process::Command::new(ledgerful_bin)
-        .args(["dependencies", "list", "--json"])
+    // Confirm the advisory is still visible on the audit path (not default list —
+    // list is live Cargo.toml/lock since 0153 and never showed OSV-only nodes).
+    // Re-run audit --json against the same fixture and assert the package name
+    // appears in the OSV result payload (populate_kg already verified via Cozo).
+    let audit_json_output = std::process::Command::new(ledgerful_bin)
+        .args([
+            "dependencies",
+            "audit",
+            "--input",
+            "osv-report.json",
+            "--json",
+        ])
         .current_dir(&harness.root)
         .output()
         .unwrap();
     assert!(
-        list_output.status.success(),
-        "dependencies list failed: {}",
-        String::from_utf8_lossy(&list_output.stderr)
+        audit_json_output.status.success(),
+        "dependencies audit --json failed: {}",
+        String::from_utf8_lossy(&audit_json_output.stderr)
     );
-    let list_stdout = String::from_utf8_lossy(&list_output.stdout);
-    let list_json: serde_json::Value = serde_json::from_str(&list_stdout).unwrap();
-    let list_arr = list_json.as_array().expect("expected a JSON array");
+    let audit_stdout = String::from_utf8_lossy(&audit_json_output.stdout);
+    let audit_json: serde_json::Value = serde_json::from_str(&audit_stdout).unwrap();
+    let found_osv = audit_json
+        .pointer("/results")
+        .and_then(|r| r.as_array())
+        .into_iter()
+        .flatten()
+        .filter_map(|src| src.get("packages")?.as_array())
+        .flatten()
+        .any(|pkg| {
+            pkg.pointer("/package/name").and_then(|n| n.as_str())
+                == Some("totally-unique-osv-only-package")
+        });
     assert!(
-        list_arr
-            .iter()
-            .any(|e| e["name"].as_str() == Some("totally-unique-osv-only-package")),
-        "expected OSV-imported package to still appear in `dependencies list --json` \
-         after re-index, got: {list_arr:?}"
+        found_osv,
+        "expected OSV package in audit --json after re-index; payload: {audit_json}"
     );
 }
