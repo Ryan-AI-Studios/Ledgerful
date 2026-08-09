@@ -60,6 +60,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Ask cloud-fallback multi-cause honesty (0160):** When local completion fails and
+  cloud fallback exhausts (or cloud-only fails), the operator no longer sees only
+  `Cloud fallback exhausted. Last error: …` (which erased the local trigger). Errors
+  now report a **primary class** (content-quality > auth > rate-limit > transport),
+  retain the local cause when a local attempt ran, keep greppable 0159
+  `reasoning only` / empty tokens and the literal `Cloud fallback exhausted`
+  substring, sanitize each cause before embed, omit a false `Local:` section on
+  cloud-only, size the hard-deadline budget for the full cascade when cloud
+  credentials exist, and include actionable Next steps (warm/timeout, disable
+  cloud keys / `LEDGERFUL_CLOUD_POLICY=forbidden`, `--backend gemini`). Terminal
+  prints the full multi-line report once; miette / next-provider paths use a
+  compact single-line form. Content-quality multi-cause reports stay
+  non-degradable (no silent graph-only success).
 - **Local / OpenAI-compatible thinking-only completions no longer dump CoT (0159):**
   Empty `content` with non-empty `reasoning` / `reasoning_content` (and Ollama
   `thinking`) no longer promotes chain-of-thought as the product answer. Known
