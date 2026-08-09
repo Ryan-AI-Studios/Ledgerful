@@ -397,10 +397,12 @@ Tips:
         /// Automatically run incremental index before querying if the index is stale
         #[arg(long)]
         auto_index: bool,
-        /// Per-request timeout in seconds for LLM backend calls (default: 15).
-        /// Prevents `ledgerful ask` from hanging when a backend is slow or unresponsive.
-        #[arg(long, default_value_t = 15)]
-        timeout: u64,
+        /// Per-request timeout in seconds for LLM backend calls.
+        /// When omitted: Local uses `local_model.timeout_secs` (default 300; cold load
+        /// headroom); Gemini uses `gemini.timeout_secs` / 120-class starter; other cloud
+        /// providers default short (15s). Explicit value always wins for all backends.
+        #[arg(long)]
+        timeout: Option<u64>,
         /// Disable Knowledge Graph BM25 fallback when semantic index is empty
         #[arg(long)]
         no_kg_fallback: bool,
@@ -1702,7 +1704,7 @@ impl Commands {
                 if *auto_index {
                     f.push("auto_index");
                 }
-                if *timeout != 15 {
+                if timeout.is_some() {
                     f.push("timeout");
                 }
                 if *no_kg_fallback {

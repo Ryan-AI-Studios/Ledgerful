@@ -16,8 +16,10 @@ const MIN_CONTEXT_CHARS: usize = 32_768;
 
 /// Entry point for the `ledgerful ask` CLI subcommand.
 ///
-/// `timeout_secs` is the per-request LLM timeout (U22). It is the primary
-/// value the `--timeout` CLI flag (default 15) is wired into.
+/// `timeout_secs` is the optional CLI `--timeout` override (U22 / 0158).
+/// When `None`, backends resolve their own defaults (Local →
+/// `local_model.timeout_secs` 300-class, Gemini → 120-class, other cloud 15).
+/// Explicit `Some(n)` always wins for all backends.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_ask(
     query: Option<String>,
@@ -27,7 +29,7 @@ pub fn execute_ask(
     narrative: bool,
     backend: Option<Backend>,
     auto_index: bool,
-    timeout_secs: u64,
+    timeout_secs: Option<u64>,
     no_kg_fallback: bool,
     auto_scan: bool,
 ) -> Result<()> {
@@ -538,6 +540,21 @@ pub fn execute_ask(
         crate::local_model::context::get_system_prompt(&mode.to_string())
     };
 
+    // 0158: backend-aware timeout. Prefer explicit CLI --backend for kind
+    // (M6: collapsed OllamaCloud→Local must not get 300s local load budget).
+    let timeout_kind =
+        crate::commands::ask::AskTimeoutKind::from_backends(backend, resolved_backend);
+    let effective_timeout =
+        crate::commands::ask::resolve_ask_timeout(timeout_secs, timeout_kind, &config);
+    let complete_override =
+        crate::commands::ask::complete_timeout_override(timeout_secs, timeout_kind, &config);
+    // Gemini primary always resolves via Gemini kind (120-class when omitted).
+    let gemini_timeout = crate::commands::ask::resolve_ask_timeout(
+        timeout_secs,
+        crate::commands::ask::AskTimeoutKind::Gemini,
+        &config,
+    );
+
     // TA14: If a provider priority list is configured, try each provider
     // in order, falling back to the next on degradable errors. If all
     // providers fail, degrade to context-only output (R4).
@@ -563,37 +580,9 @@ pub fn execute_ask(
         Backend::Local | Backend::OllamaCloud | Backend::OpenRouter => {
             let max_tokens = config.local_model.context_window;
 
-            // Phase 1: Probe local model completions endpoint for fail-fast
-            let mut probe_config = config.local_model.clone();
-            probe_config.timeout_secs = 5;
-            if let Err(e) = crate::local_model::client::ping_completions(&probe_config) {
-                if crate::local_model::client::has_cloud_fallback(&config.local_model) {
-                    tracing::warn!(
-                        "Local completion probe failed ({e}); cloud fallback is configured"
-                    );
-                } else if crate::commands::ask::render::is_degradable_error(&e.to_string()) {
-                    // Unreachable local model with no cloud fallback — degrade
-                    // to rendering the gathered retrieval context instead of hard-failing.
-                    return degrade_to_context(&config, &relevant_chunks, &e.to_string(), || {
-                        run_gemini_synthesis(
-                            &config,
-                            &base_system_prompt,
-                            &user_prompt,
-                            &relevant_chunks,
-                            timeout_secs,
-                            mode,
-                            &latest_packet,
-                            adaptive_mode,
-                            truncated,
-                        )
-                    });
-                } else {
-                    return Err(miette::miette!(
-                        "Local completion model probe failed ({}). Check your server or use --backend gemini.",
-                        e
-                    ));
-                }
-            }
+            // B2: skip fixed 5s Local HTTP probe — status classification
+            // (401/429/503) happens on the complete path (L1). Reachability
+            // and connect budgets live in complete (B2b/B3).
 
             let messages = crate::local_model::context::assemble_context(
                 &base_system_prompt,
@@ -605,13 +594,22 @@ pub fn execute_ask(
 
             // Show progress indicator before LLM call with backend selection
             eprintln!("Using local/cloud model...");
+            // B4: wait honesty when Local effective budget is large enough
+            // that cold load may consume most of it.
+            if matches!(timeout_kind, crate::commands::ask::AskTimeoutKind::Local)
+                && effective_timeout >= 60
+            {
+                eprintln!(
+                    "Waiting for local model (up to {effective_timeout}s; cold load may use most of this)…"
+                );
+            }
             eprintln!("Contacting LLM...");
 
             match crate::local_model::client::complete_with_hard_deadline(
                 &config.local_model,
                 &messages,
                 &crate::commands::ask::ask_completion_options(),
-                Some(timeout_secs),
+                complete_override,
             ) {
                 Ok(response) => {
                     println!(
@@ -633,7 +631,7 @@ pub fn execute_ask(
                                 &base_system_prompt,
                                 &user_prompt,
                                 &relevant_chunks,
-                                timeout_secs,
+                                gemini_timeout,
                                 mode,
                                 &latest_packet,
                                 adaptive_mode,
@@ -642,6 +640,16 @@ pub fn execute_ask(
                         });
                     }
                     eprintln!("{}", err_str.if_supports_color(Stream::Stderr, |s| s.red()));
+                    // B5: actionable timeout messaging for Local hard deadlines / reads.
+                    if crate::commands::ask::render::is_timeout_error(&e.to_string()) {
+                        eprintln!(
+                            "{}",
+                            format!(
+                                "Hint: Local model timed out after ~{effective_timeout}s. Raise --timeout or local_model.timeout_secs; warm/preload the model; or try --backend gemini."
+                            )
+                            .if_supports_color(Stream::Stderr, |s| s.yellow())
+                        );
+                    }
                     if e.to_string().contains("401") {
                         eprintln!(
                             "{}",
@@ -665,7 +673,7 @@ pub fn execute_ask(
             &base_system_prompt,
             &user_prompt,
             &relevant_chunks,
-            timeout_secs,
+            gemini_timeout,
             mode,
             &latest_packet,
             adaptive_mode,

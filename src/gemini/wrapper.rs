@@ -8,7 +8,9 @@ use std::path::Path;
 use std::thread;
 use std::time::Duration;
 
-const DEFAULT_GEMINI_TIMEOUT_SECS: u64 = 120;
+/// Default Gemini request timeout when CLI `--timeout` is omitted and
+/// `config.gemini.timeout_secs` is unset (starter ships 120).
+pub const DEFAULT_GEMINI_TIMEOUT_SECS: u64 = 120;
 const GEMINI_API_BASE: &str = "https://generativelanguage.googleapis.com/v1beta/models";
 const MAX_RETRIES: u32 = 3;
 

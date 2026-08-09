@@ -56,12 +56,12 @@ fn test_ask_kg_fallback_logic() {
         false, // semantic
         10,    // limit
         GeminiMode::Analyze,
-        false, // narrative
-        None,  // backend
-        false, // auto_index
-        1,     // timeout_secs (short)
-        false, // no_kg_fallback
-        false, // auto_scan
+        false,   // narrative
+        None,    // backend
+        false,   // auto_index
+        Some(1), // timeout_secs (short)
+        false,   // no_kg_fallback
+        false,   // auto_scan
     );
 
     if let Err(e) = result {
@@ -114,12 +114,12 @@ fn test_ask_no_kg_fallback_suppression() {
         false, // semantic
         10,    // limit
         GeminiMode::Analyze,
-        false, // narrative
-        None,  // backend
-        false, // auto_index
-        1,     // timeout_secs
-        true,  // no_kg_fallback = TRUE
-        false, // auto_scan
+        false,   // narrative
+        None,    // backend
+        false,   // auto_index
+        Some(1), // timeout_secs
+        true,    // no_kg_fallback = TRUE
+        false,   // auto_scan
     );
 
     // With no_kg_fallback = true, ask must NOT surface the "Global Ask requires

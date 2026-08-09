@@ -9,24 +9,35 @@ use owo_colors::{OwoColorize, Stream, Style};
 /// Tries each provider in order with per-provider timeout. Degradable
 /// errors trigger fallback to the next provider. If all providers fail,
 /// degrades to context-only output (R4).
+///
+/// `cli_timeout` is the raw CLI `--timeout` Option. Per-entry
+/// `timeout_secs` and backend-aware resolve apply when CLI is omitted (0158).
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn execute_ask_with_providers(
     config: &Config,
     base_system_prompt: &str,
     user_prompt: &str,
     relevant_chunks: &[pruner::RankedChunk],
-    default_timeout_secs: u64,
+    cli_timeout: Option<u64>,
     mode: GeminiMode,
     latest_packet: &crate::impact::packet::ImpactPacket,
     adaptive_mode: crate::local_model::context::AdaptiveMode,
     truncated: bool,
     entries: &[crate::config::model::ProviderEntry],
 ) -> Result<()> {
+    use crate::commands::ask::{AskTimeoutKind, complete_timeout_override, resolve_ask_timeout};
     use crate::config::model::Provider;
 
     for entry in entries {
         let provider_name = entry.backend.display_name();
-        let provider_timeout = entry.timeout_secs.unwrap_or(default_timeout_secs);
+        let kind = AskTimeoutKind::from_provider(entry.backend);
+        // D1: CLI always wins; else entry.timeout_secs; else backend-aware resolve.
+        let provider_timeout = match cli_timeout {
+            Some(n) => n,
+            None => entry
+                .timeout_secs
+                .unwrap_or_else(|| resolve_ask_timeout(None, kind, config)),
+        };
 
         match entry.backend {
             Provider::Local | Provider::OllamaCloud | Provider::OpenRouter => {
@@ -62,6 +73,16 @@ pub(crate) fn execute_ask_with_providers(
                     provider_config.ollama_cloud_model = Some(model.clone());
                 }
 
+                // Per-entry timeout on Local primary when CLI omitted: set on
+                // config so complete uses it for local while cloud fallback
+                // stays at DEFAULT_CLOUD_FALLBACK (M2) when override is None.
+                if cli_timeout.is_none()
+                    && entry.backend == Provider::Local
+                    && let Some(t) = entry.timeout_secs
+                {
+                    provider_config.timeout_secs = t;
+                }
+
                 let max_tokens = provider_config.context_window;
                 let messages = crate::local_model::context::assemble_context(
                     base_system_prompt,
@@ -72,13 +93,26 @@ pub(crate) fn execute_ask_with_providers(
                 );
 
                 eprintln!("Using {provider_name}...");
+                if entry.backend == Provider::Local && provider_timeout >= 60 {
+                    eprintln!(
+                        "Waiting for local model (up to {provider_timeout}s; cold load may use most of this)…"
+                    );
+                }
                 eprintln!("Contacting LLM...");
+
+                // Local + CLI omitted → None override (cloud fallback 15);
+                // explicit CLI / cloud providers → Some(budget).
+                let complete_override = if entry.backend == Provider::Local {
+                    complete_timeout_override(cli_timeout, AskTimeoutKind::Local, config)
+                } else {
+                    Some(provider_timeout)
+                };
 
                 match crate::local_model::client::complete_with_hard_deadline(
                     &provider_config,
                     &messages,
                     &crate::commands::ask::ask_completion_options(),
-                    Some(provider_timeout),
+                    complete_override,
                 ) {
                     Ok(response) => {
                         println!(
@@ -287,18 +321,18 @@ pub(crate) fn degrade_to_context(
         .unwrap_or(&config.local_model.base_url);
     eprintln!(
         "{}",
-        degrade_warning(base_url).if_supports_color(Stream::Stderr, |s| s.yellow())
+        degrade_warning(base_url, err).if_supports_color(Stream::Stderr, |s| s.yellow())
     );
     tracing::warn!("Local completion degraded to context render: {err}");
 
     if should_prompt_for_cloud(config, crate::util::term::is_interactive()) {
         use inquire::Confirm;
-        if let Ok(true) = Confirm::new(
-            "Local model unavailable. Try with Gemini instead? (Requires GEMINI_API_KEY)",
-        )
-        .with_default(true)
-        .prompt()
-        {
+        let prompt = if is_timeout_error(err) {
+            "Local model timed out. Try with Gemini instead? (Requires GEMINI_API_KEY)"
+        } else {
+            "Local model unavailable. Try with Gemini instead? (Requires GEMINI_API_KEY)"
+        };
+        if let Ok(true) = Confirm::new(prompt).with_default(true).prompt() {
             return gemini_synthesis();
         }
     }
@@ -348,11 +382,39 @@ pub(crate) fn degrade_context_header() -> &'static str {
 /// and `ask` degrades to graph/semantic search. Extracted as a pure helper so
 /// the exact wording (including the configured URL) is unit-testable without
 /// capturing stderr.
-pub(crate) fn degrade_warning(base_url: &str) -> String {
+///
+/// Prefer [`degrade_warning`] with an error string for error-aware wording (M5).
+pub(crate) fn degrade_warning_unreachable(base_url: &str) -> String {
     format!(
         "Warning: Local completion model at {} is unreachable. Falling back to graph/semantic search.",
         base_url
     )
+}
+
+/// Error-aware degrade warning (0158 M5): timeout/hard-deadline errors must
+/// not claim the server "is unreachable".
+pub(crate) fn degrade_warning(base_url: &str, err: &str) -> String {
+    if is_timeout_error(err) {
+        format!(
+            "Warning: Local completion model at {} timed out waiting for a response. Falling back to graph/semantic search. Raise --timeout or local_model.timeout_secs, warm/preload the model, or try --backend gemini.",
+            base_url
+        )
+    } else {
+        degrade_warning_unreachable(base_url)
+    }
+}
+
+/// True when `err` indicates a hard deadline / read timeout (not TCP refused).
+pub(crate) fn is_timeout_error(err: &str) -> bool {
+    let lower = err.to_lowercase();
+    // Prefer specific timeout markers over generic "unreachable".
+    if lower.contains("unreachable") && !lower.contains("timed out") && !lower.contains("timeout") {
+        return false;
+    }
+    lower.contains("timed out")
+        || lower.contains("hard timeout")
+        || lower.contains("first byte timeout")
+        || (lower.contains("timeout") && !lower.contains("gateway timeout"))
 }
 
 /// Build the body of the degraded-context output as a string. Separated from
@@ -496,16 +558,50 @@ mod tests {
     }
 
     #[test]
-    fn degrade_warning_pins_spec_text() {
-        let warning = degrade_warning("http://127.0.0.1:1");
+    fn degrade_warning_pins_spec_text_for_unreachable() {
+        let warning = degrade_warning("http://127.0.0.1:1", "connection refused");
         assert_eq!(
             warning,
             "Warning: Local completion model at http://127.0.0.1:1 is unreachable. Falling back to graph/semantic search."
         );
+        assert_eq!(degrade_warning_unreachable("http://127.0.0.1:1"), warning);
         assert_eq!(
             degrade_context_header(),
             "Retrieved context (local model unavailable, skipping synthesis):"
         );
+    }
+
+    #[test]
+    fn degrade_warning_error_aware_for_timeout() {
+        let warning = degrade_warning(
+            "http://127.0.0.1:8081",
+            "Hard timeout: request did not complete within 300s",
+        );
+        assert!(
+            warning.contains("timed out waiting for a response"),
+            "timeout must not claim unreachable: {warning}"
+        );
+        assert!(
+            !warning.contains("is unreachable"),
+            "timeout must not claim unreachable: {warning}"
+        );
+        assert!(warning.contains("--timeout") || warning.contains("timeout_secs"));
+    }
+
+    #[test]
+    fn is_timeout_error_classifies() {
+        assert!(is_timeout_error("Local model server timed out after 15s"));
+        assert!(is_timeout_error(
+            "Hard timeout: request did not complete within 300s"
+        ));
+        assert!(is_timeout_error(
+            "First byte timeout: model did not begin responding within 2s"
+        ));
+        assert!(!is_timeout_error(
+            "Local model server at http://127.0.0.1:1 is unreachable"
+        ));
+        assert!(!is_timeout_error("connection refused (os error 10061)"));
+        assert!(!is_timeout_error("cloud returned 504: Gateway Timeout"));
     }
 
     #[test]

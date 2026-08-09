@@ -44,12 +44,12 @@ fn test_ask_command_no_packet() {
         false, // semantic
         10,    // limit
         GeminiMode::Analyze,
-        false, // narrative
-        None,  // backend
-        false, // auto_index
-        15,    // timeout_secs
-        false, // no_kg_fallback
-        false, // auto_scan
+        false,    // narrative
+        None,     // backend
+        false,    // auto_index
+        Some(15), // timeout_secs
+        false,    // no_kg_fallback
+        false,    // auto_scan
     );
 
     // It should NOT fail with "No impact report found" anymore.
@@ -121,12 +121,12 @@ fn test_ask_resolves_exact_caller_query_without_llm_backend() {
         false, // semantic
         10,    // limit
         GeminiMode::Analyze,
-        false, // narrative
-        None,  // backend
-        false, // auto_index
-        15,    // timeout_secs
-        false, // no_kg_fallback
-        false, // auto_scan
+        false,    // narrative
+        None,     // backend
+        false,    // auto_index
+        Some(15), // timeout_secs
+        false,    // no_kg_fallback
+        false,    // auto_scan
     );
 
     assert!(
@@ -165,12 +165,12 @@ fn test_ask_invalid_config_fails_before_query_execution() {
         false, // semantic
         10,    // limit
         GeminiMode::Analyze,
-        false, // narrative
-        None,  // backend
-        false, // auto_index
-        15,    // timeout_secs
-        false, // no_kg_fallback
-        false, // auto_scan
+        false,    // narrative
+        None,     // backend
+        false,    // auto_index
+        Some(15), // timeout_secs
+        false,    // no_kg_fallback
+        false,    // auto_scan
     )
     .unwrap_err();
     assert!(format!("{err:?}").contains("debounce_ms"));
@@ -327,11 +327,9 @@ fn test_ask_degrades_gracefully_when_local_model_unreachable() {
     );
 }
 
-/// Track DX2: a 429 (rate limit) from the local completion endpoint must NOT
-/// degrade — it must keep the existing hard-fail behavior. The probe
-/// `ping_completions` surfaces the 429 as a status error (no "unreachable" /
-/// "timeout" signature), so `is_degradable_error` returns false and
-/// `execute_ask` returns `Err` instead of falling back to context render.
+/// Track DX2 / 0158 L1: a 429 (rate limit) from the local completion endpoint
+/// must NOT degrade — hard-fail. Classification runs on the complete path
+/// (probe skipped for Local); `is_degradable_error` returns false for 429.
 #[test]
 #[serial(env, cwd)]
 fn test_ask_does_not_degrade_on_rate_limit() {
@@ -374,12 +372,12 @@ fn test_ask_does_not_degrade_on_rate_limit() {
         false, // semantic
         10,    // limit
         GeminiMode::Analyze,
-        false, // narrative
-        None,  // backend
-        false, // auto_index
-        5,     // timeout_secs
-        false, // no_kg_fallback
-        false, // auto_scan
+        false,   // narrative
+        None,    // backend
+        false,   // auto_index
+        Some(5), // timeout_secs
+        false,   // no_kg_fallback
+        false,   // auto_scan
     );
 
     assert!(
@@ -387,26 +385,18 @@ fn test_ask_does_not_degrade_on_rate_limit() {
         "rate-limit must NOT degrade — expected hard-fail Err, got: {result:?}"
     );
     let err = format!("{result:?}");
-    // The probe surfaces the 429 status code in its error string; the wrapper
-    // message says "probe failed" (not "unreachable", which would mislabel a
-    // rate-limit as a transport outage). Assert the rate-limit signal
-    // specifically — do NOT rely on the circular "unreachable" substring.
+    // Complete path surfaces rate-limit (not "unreachable"). Assert the
+    // rate-limit signal specifically.
     assert!(
-        err.contains("429") || err.contains("rate limit"),
+        err.contains("429") || err.to_lowercase().contains("rate limit"),
         "expected 429/rate-limit signal in error, got: {err}"
     );
 }
 
-/// Track DX2 review finding 1: a 503 (service unavailable) from the local
-/// completion endpoint must degrade to context — 503 is a transient
-/// model-unavailability (e.g. a warming model), not an auth/rate-limit
-/// failure. The probe `ping_completions` surfaces the 503 as `"503 server
-/// error (...)`"; `is_degradable_error` now classifies 503/502/504 (and their
-/// textual forms) as degradable, so `execute_ask` returns `Ok(())` and the
-/// degrade path fires. The 503 single-retry + 2s sleep inside
-/// `complete_with_endpoint` happens at the client level for the *completion*
-/// path; here the probe short-circuits before that, but the classification
-/// fires on the final error string regardless, which is the existing behavior.
+/// Track DX2 review finding 1 / 0158 L1: a 503 (service unavailable) from the
+/// local completion endpoint must degrade to context. With the Local probe
+/// skipped, complete handles 503 (single 2s retry) then surfaces a degradable
+/// error so `execute_ask` returns `Ok(())`.
 #[test]
 #[serial(env, cwd)]
 fn test_ask_degrades_on_503_service_unavailable() {
@@ -449,12 +439,12 @@ fn test_ask_degrades_on_503_service_unavailable() {
         false, // semantic
         10,    // limit
         GeminiMode::Analyze,
-        false, // narrative
-        None,  // backend
-        false, // auto_index
-        5,     // timeout_secs
-        false, // no_kg_fallback
-        false, // auto_scan
+        false,   // narrative
+        None,    // backend
+        false,   // auto_index
+        Some(5), // timeout_secs
+        false,   // no_kg_fallback
+        false,   // auto_scan
     );
 
     assert!(
@@ -463,11 +453,9 @@ fn test_ask_degrades_on_503_service_unavailable() {
     );
 }
 
-/// Track DX2 review finding 2a: a 401 (unauthorized) from the local
-/// completion endpoint must NOT degrade — auth failures stay hard-fail,
-/// mirroring the 429 rate-limit test. The probe surfaces the 401 status code
-/// in its error string; `is_degradable_error` does not classify 401 as
-/// transient, so `execute_ask` returns `Err`.
+/// Track DX2 review finding 2a / 0158 L1: a 401 (unauthorized) from the local
+/// completion endpoint must NOT degrade — auth stays hard-fail on the complete
+/// path (probe skipped for Local).
 #[test]
 #[serial(env, cwd)]
 fn test_ask_does_not_degrade_on_401_unauthorized() {
@@ -510,12 +498,12 @@ fn test_ask_does_not_degrade_on_401_unauthorized() {
         false, // semantic
         10,    // limit
         GeminiMode::Analyze,
-        false, // narrative
-        None,  // backend
-        false, // auto_index
-        5,     // timeout_secs
-        false, // no_kg_fallback
-        false, // auto_scan
+        false,   // narrative
+        None,    // backend
+        false,   // auto_index
+        Some(5), // timeout_secs
+        false,   // no_kg_fallback
+        false,   // auto_scan
     );
 
     assert!(
