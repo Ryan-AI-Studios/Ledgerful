@@ -60,6 +60,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Local / OpenAI-compatible thinking-only completions no longer dump CoT (0159):**
+  Empty `content` with non-empty `reasoning` / `reasoning_content` (and Ollama
+  `thinking`) no longer promotes chain-of-thought as the product answer. Known
+  think tags (`<think>`, `<thinking>`, `<thought>`, `<reasoning>`,
+  `<|begin_of_thought|>`) are stripped non-greedily (multi-block + unclosed
+  open→EOF); post-tag or last line-anchored `Final answer:` / `Answer:` /
+  `## Answer` may extract a real answer; otherwise fail-closed with greppable
+  `reasoning only`. Shared pure helper covers local and cloud OpenAI-compatible
+  parse paths (and Ollama-native).
 - **Local `ask` cold-start false-fail (0158):** On-demand local routers no longer die
   solely on the CLI default 15s, a fixed **5s** HTTP probe, or a **500ms** Local TCP
   precheck while the model loads. Local TCP precheck/connect use `min(30, effective)`;

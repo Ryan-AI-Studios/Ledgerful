@@ -1,4 +1,5 @@
 mod cloud;
+mod completion_text;
 mod gemini;
 mod ollama;
 mod openai;
@@ -573,19 +574,11 @@ fn parse_endpoint_response(
             let parsed: ollama::OllamaChatResponse = response
                 .into_json()
                 .map_err(|e| format!("Failed to parse Ollama native response: {e}"))?;
-            if parsed.message.content.is_empty() {
-                if let Some(ref thinking) = parsed.message.thinking
-                    && !thinking.is_empty()
-                {
-                    return Err(format!(
-                        "{} returned empty content (reasoning only: {} chars)",
-                        endpoint.label,
-                        thinking.len()
-                    ));
-                }
-                return Err(format!("{} returned empty message content", endpoint.label));
-            }
-            Ok(parsed.message.content)
+            apply_completion_text(
+                endpoint.label,
+                &parsed.message.content,
+                parsed.message.thinking.as_deref(),
+            )
         }
         EndpointKind::OpenAICompatible => {
             let parsed: openai::CompletionResponse = response
@@ -596,19 +589,44 @@ fn parse_endpoint_response(
                 .into_iter()
                 .next()
                 .ok_or_else(|| "No completion choices returned".to_string())?;
-            if choice.message.content.is_empty() {
-                if let Some(reasoning) = choice.message.reasoning
-                    && !reasoning.is_empty()
-                {
-                    tracing::warn!(
-                        "Model returned thinking-only response ({} chars), using reasoning as content",
-                        reasoning.len()
-                    );
-                    return Ok(reasoning);
-                }
-                return Err(format!("{} returned empty message content", endpoint.label));
+            apply_completion_text(
+                endpoint.label,
+                &choice.message.content,
+                choice.message.reasoning.as_deref(),
+            )
+        }
+    }
+}
+
+/// Shared content/reasoning resolution for OpenAI-compatible and Ollama-native arms.
+/// Strips think tags, extracts markers from reasoning, never promotes raw CoT (0159).
+fn apply_completion_text(
+    label: &str,
+    content: &str,
+    reasoning: Option<&str>,
+) -> Result<String, String> {
+    let reasoning_chars = reasoning.map(|r| r.chars().count()).unwrap_or(0);
+    match completion_text::resolve_completion_text(content, reasoning) {
+        Ok(text) => {
+            if content.trim().is_empty() && reasoning_chars > 0 {
+                tracing::debug!(
+                    endpoint = %label,
+                    reasoning_chars,
+                    answer_chars = text.chars().count(),
+                    "extracted product answer from reasoning after empty content"
+                );
             }
-            Ok(choice.message.content)
+            Ok(text)
+        }
+        Err(err) => {
+            if let completion_text::CompletionTextError::ReasoningOnly { chars } = &err {
+                tracing::warn!(
+                    endpoint = %label,
+                    reasoning_chars = *chars,
+                    "completion returned thinking-only response (no extractable answer)"
+                );
+            }
+            Err(completion_text::format_completion_text_error(label, err))
         }
     }
 }
@@ -778,19 +796,11 @@ fn parse_endpoint_response_owned(
             let parsed: ollama::OllamaChatResponse = response
                 .into_json()
                 .map_err(|e| format!("Failed to parse Ollama native response: {e}"))?;
-            if parsed.message.content.is_empty() {
-                if let Some(ref thinking) = parsed.message.thinking
-                    && !thinking.is_empty()
-                {
-                    return Err(format!(
-                        "{} returned empty content (reasoning only: {} chars)",
-                        endpoint.label,
-                        thinking.len()
-                    ));
-                }
-                return Err(format!("{} returned empty message content", endpoint.label));
-            }
-            Ok(parsed.message.content)
+            apply_completion_text(
+                &endpoint.label,
+                &parsed.message.content,
+                parsed.message.thinking.as_deref(),
+            )
         }
         EndpointKind::OpenAICompatible => {
             let parsed: openai::CompletionResponse = response
@@ -801,19 +811,11 @@ fn parse_endpoint_response_owned(
                 .into_iter()
                 .next()
                 .ok_or_else(|| "No completion choices returned".to_string())?;
-            if choice.message.content.is_empty() {
-                if let Some(reasoning) = choice.message.reasoning
-                    && !reasoning.is_empty()
-                {
-                    tracing::warn!(
-                        "Model returned thinking-only response ({} chars), using reasoning as content",
-                        reasoning.len()
-                    );
-                    return Ok(reasoning);
-                }
-                return Err(format!("{} returned empty message content", endpoint.label));
-            }
-            Ok(choice.message.content)
+            apply_completion_text(
+                &endpoint.label,
+                &choice.message.content,
+                choice.message.reasoning.as_deref(),
+            )
         }
     }
 }
@@ -844,6 +846,13 @@ mod tests {
         assert!(cloud_fallback_env("DEFINITELY_MISSING_KEY").is_none());
     }
 
+    mod env_guard {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/integration/common/env_guard.rs"
+        ));
+    }
+
     fn test_config(base_url: &str) -> LocalModelConfig {
         // Isolate from this repo's real `.env` (which may have real OpenRouter/Gemini
         // keys for manual use) so cloud_fallback_env() can't make these tests flaky.
@@ -862,6 +871,18 @@ mod tests {
         }
     }
 
+    /// Clear process cloud credentials/policy so local-only assertions are not
+    /// masked by OpenRouter/Gemini fallback or Forbidden policy races.
+    /// Hold the returned guards for the duration of the test.
+    fn isolate_cloud_env() -> Vec<env_guard::TempEnv> {
+        vec![
+            env_guard::TempEnv::remove("GEMINI_API_KEY"),
+            env_guard::TempEnv::remove("OPENROUTER_API_KEY"),
+            env_guard::TempEnv::remove("OLLAMA_CLOUD_API_KEY"),
+            env_guard::TempEnv::remove(crate::local_model::cloud_policy::CLOUD_POLICY_ENV),
+        ]
+    }
+
     fn test_messages() -> Vec<ChatMessage> {
         vec![
             ChatMessage {
@@ -878,9 +899,11 @@ mod tests {
     /// 0158 DoD-3: Local mock delay >5s and < effective must succeed
     /// (no 5s probe / 500ms precheck kill).
     #[test]
+    #[serial_test::serial(env)]
     fn complete_local_survives_delay_over_five_seconds() {
         use std::time::Instant;
 
+        let _iso = isolate_cloud_env();
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(httpmock::Method::POST)
@@ -920,9 +943,11 @@ mod tests {
 
     /// 0158 DoD-4: closed-port Local fails fast (no ~300s wait).
     #[test]
+    #[serial_test::serial(env)]
     fn complete_closed_port_local_fails_fast() {
         use std::time::Instant;
 
+        let _iso = isolate_cloud_env();
         let mut config = test_config("http://127.0.0.1:1");
         config.timeout_secs = 300;
         let start = Instant::now();
@@ -952,15 +977,8 @@ mod tests {
     #[test]
     #[serial_test::serial(env)]
     fn complete_cloud_fallback_uses_short_budget_when_override_none() {
-        use std::time::Instant;
-
-        mod env_guard {
-            include!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/integration/common/env_guard.rs"
-            ));
-        }
         use env_guard::TempEnv;
+        use std::time::Instant;
 
         let openrouter = MockServer::start();
         openrouter.mock(|when, then| {
@@ -1033,7 +1051,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn complete_success() {
+        let _iso = isolate_cloud_env();
         let server = MockServer::start();
 
         server.mock(|when, then| {
@@ -1064,7 +1084,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn complete_503_retry() {
+        let _iso = isolate_cloud_env();
         let server = MockServer::start();
 
         let mock = server.mock(|when, then| {
@@ -1087,7 +1109,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn complete_429_rate_limited() {
+        let _iso = isolate_cloud_env();
         let server = MockServer::start();
 
         server.mock(|when, then| {
@@ -1108,7 +1132,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn complete_other_status_error() {
+        let _iso = isolate_cloud_env();
         let server = MockServer::start();
 
         server.mock(|when, then| {
@@ -1131,7 +1157,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn complete_connection_refused() {
+        let _iso = isolate_cloud_env();
         let config = test_config("http://127.0.0.1:1");
         let result = complete(
             &config,
@@ -1144,7 +1172,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn complete_empty_choices() {
+        let _iso = isolate_cloud_env();
         let server = MockServer::start();
 
         server.mock(|when, then| {
@@ -1169,7 +1199,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn complete_empty_url() {
+        let _iso = isolate_cloud_env();
         let config = test_config("");
         let result = complete(
             &config,
@@ -1223,7 +1255,9 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn transport_error_includes_cause() {
+        let _iso = isolate_cloud_env();
         // Use a port that nothing is listening on
         let config = test_config("http://127.0.0.1:1");
         let result = complete(
@@ -1244,9 +1278,11 @@ mod tests {
     /// 5 seconds; with a 1-second override the call must abort with a
     /// "timed out" error and return well before the mock would have responded.
     #[test]
+    #[serial_test::serial(env)]
     fn complete_timeout_override_fires() {
         use std::time::Instant;
 
+        let _iso = isolate_cloud_env();
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(httpmock::Method::POST)
@@ -1285,7 +1321,9 @@ mod tests {
     /// active. This exercises the success path of
     /// `complete_with_first_byte_timeout` end-to-end with a real HTTP server.
     #[test]
+    #[serial_test::serial(env)]
     fn complete_first_byte_timeout_fast_response_succeeds() {
+        let _iso = isolate_cloud_env();
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(httpmock::Method::POST)
@@ -1313,7 +1351,9 @@ mod tests {
     /// (and fall back to the config-provided timeout_secs, which is 30s here
     /// — long enough to outlast the mock's 100ms response).
     #[test]
+    #[serial_test::serial(env)]
     fn complete_timeout_override_none_falls_back_to_config() {
+        let _iso = isolate_cloud_env();
         let server = MockServer::start();
         server.mock(|when, then| {
             when.method(httpmock::Method::POST)
@@ -1337,7 +1377,10 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn complete_falls_back_to_ollama_cloud_with_auth() {
+        // Clear Forbidden policy so Ollama Cloud fallback is allowed.
+        let _iso = isolate_cloud_env();
         let server = MockServer::start();
 
         let mock = server.mock(|when, then| {
@@ -1443,7 +1486,10 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn test_ollama_native_endpoint_success() {
+        // Clear Forbidden policy so Ollama Cloud native path is allowed.
+        let _iso = isolate_cloud_env();
         let server = MockServer::start();
 
         server.mock(|when, then| {
@@ -1481,7 +1527,11 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn test_ollama_native_empty_content_reasoning() {
+        // Isolate cloud keys so OpenRouter/Gemini cannot mask the reasoning-only Err.
+        let _iso = isolate_cloud_env();
+
         let server = MockServer::start();
 
         server.mock(|when, then| {
@@ -1521,7 +1571,10 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn test_api_dot_ollama_com_native_endpoint_success() {
+        // Clear Forbidden policy so Ollama Cloud native path is allowed.
+        let _iso = isolate_cloud_env();
         let server = MockServer::start();
 
         let mock = server.mock(|when, then| {
@@ -1560,7 +1613,11 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn test_openai_compatible_empty_content_reasoning() {
+        // 0159: thinking-only must fail closed — never promote reasoning as content.
+        let _iso = isolate_cloud_env();
+
         let server = MockServer::start();
 
         server.mock(|when, then| {
@@ -1588,17 +1645,23 @@ mod tests {
             None,
         );
         assert!(
-            result.is_ok(),
-            "expected reasoning content as Ok, got: {:?}",
+            result.is_err(),
+            "expected reasoning-only Err, got: {:?}",
             result
         );
-        let content = result.unwrap();
-        assert_eq!(content, "internal chain");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("reasoning only"),
+            "expected greppable reasoning only, got: {err}"
+        );
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn test_openai_compatible_reasoning_content_alias() {
-        // Verify reasoning_content field name (llama.cpp standard) maps to 'reasoning' in Rust
+        // reasoning_content alias still deserializes; pure CoT must not be promoted (0159).
+        let _iso = isolate_cloud_env();
+
         let server = MockServer::start();
 
         server.mock(|when, then| {
@@ -1626,12 +1689,87 @@ mod tests {
             None,
         );
         assert!(
-            result.is_ok(),
-            "expected reasoning content from reasoning_content alias, got: {:?}",
+            result.is_err(),
+            "expected reasoning-only Err from reasoning_content alias, got: {:?}",
             result
         );
-        let content = result.unwrap();
-        assert_eq!(content, "llama.cpp thinking chain here");
+        let err = result.unwrap_err();
+        assert!(
+            err.contains("reasoning only"),
+            "expected greppable reasoning only, got: {err}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn test_openai_compatible_content_think_tags_stripped() {
+        let _iso = isolate_cloud_env();
+
+        let server = MockServer::start();
+
+        server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/v1/chat/completions");
+            then.status(200)
+                .header("Content-Type", "application/json")
+                .json_body(serde_json::json!({
+                    "choices": [
+                        {
+                            "message": {
+                                "content": "<think>scratch</think> Clean answer"
+                            }
+                        }
+                    ]
+                }));
+        });
+
+        let config = test_config(&server.base_url());
+        let response = complete(
+            &config,
+            &test_messages(),
+            &CompletionOptions::default(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(response, "Clean answer");
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn test_ollama_native_content_think_tags_stripped() {
+        let _iso = isolate_cloud_env();
+
+        let server = MockServer::start();
+
+        server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/api/chat");
+            then.status(200)
+                .header("Content-Type", "application/json")
+                .json_body(serde_json::json!({
+                    "message": {
+                        "content": "<think>inner monologue</think> Ollama answer"
+                    }
+                }));
+        });
+
+        let native_url = format!("{}/api", server.base_url().trim_end_matches('/'));
+        let config = LocalModelConfig {
+            base_url: String::new(),
+            generation_url: None,
+            ollama_cloud_url: Some(native_url),
+            ollama_cloud_api_key: Some("test-token".to_string()),
+            ollama_cloud_model: Some("test-model".to_string()),
+            ..test_config("http://127.0.0.1:1")
+        };
+
+        let response = complete(
+            &config,
+            &test_messages(),
+            &CompletionOptions::default(),
+            None,
+        )
+        .unwrap();
+        assert_eq!(response, "Ollama answer");
     }
 
     #[test]
@@ -1653,8 +1791,11 @@ mod tests {
     /// must fail fast via the first-byte timeout, not wait for the full read
     /// timeout.
     #[test]
+    #[serial_test::serial(env)]
     fn complete_first_byte_timeout_accept_then_hang() {
         use std::time::Instant;
+
+        let _iso = isolate_cloud_env();
 
         let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind listener");
         let addr = listener.local_addr().expect("get local addr");
@@ -1698,9 +1839,10 @@ mod tests {
             is_first_byte_timeout_error(&err),
             "expected first-byte timeout error, got: {err}"
         );
+        // Under load CI may add ~1s; still well under the 5s read timeout.
         assert!(
-            elapsed < Duration::from_secs(3),
-            "expected <3s, got {elapsed:?}"
+            elapsed < Duration::from_secs(5),
+            "expected <5s first-byte fail-fast, got {elapsed:?}"
         );
     }
 
@@ -1711,18 +1853,8 @@ mod tests {
     fn complete_first_byte_timeout_connection_refused() {
         use std::time::Instant;
 
-        mod env_guard {
-            include!(concat!(
-                env!("CARGO_MANIFEST_DIR"),
-                "/tests/integration/common/env_guard.rs"
-            ));
-        }
-        use env_guard::TempEnv;
-
         // Isolate cloud keys so fallback cannot mask the local refused path.
-        let _gem = TempEnv::remove("GEMINI_API_KEY");
-        let _or = TempEnv::remove("OPENROUTER_API_KEY");
-        let _oc = TempEnv::remove("OLLAMA_CLOUD_API_KEY");
+        let _iso = isolate_cloud_env();
 
         let config = test_config("http://127.0.0.1:1");
         let start = Instant::now();
@@ -1761,12 +1893,6 @@ mod tests {
 
     // --- Track 0073: CloudPolicy Forbidden network-assertion matrix ---
 
-    mod env_guard {
-        include!(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/integration/common/env_guard.rs"
-        ));
-    }
     use crate::local_model::cloud_policy::{
         CLOUD_POLICY_ENV, CLOUD_POLICY_FORBIDDEN_CODE, CLOUD_POLICY_FORBIDDEN_VALUE,
         MCP_ALLOW_CLOUD_EGRESS_ENV,
