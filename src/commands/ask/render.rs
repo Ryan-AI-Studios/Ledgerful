@@ -126,18 +126,23 @@ pub(crate) fn execute_ask_with_providers(
                     Err(e) => {
                         let err_str =
                             crate::commands::ask::sanitize_error_for_logging(&e.to_string());
+                        // M6: compact single-line for next-provider / degrade templates
+                        // (multi-cause reports must not embed newlines).
+                        let compact =
+                            crate::local_model::client::compact_completion_error(&err_str);
                         if is_degradable_error(&e.to_string()) {
                             eprintln!(
                                 "{}",
                                 format!(
-                                    "{provider_name} failed ({err_str}); trying next provider..."
+                                    "{provider_name} failed ({compact}); trying next provider..."
                                 )
                                 .if_supports_color(Stream::Stderr, |s| s.yellow())
                             );
-                            tracing::warn!("{provider_name} failed: {err_str}");
+                            tracing::warn!("{provider_name} failed: {compact}");
                             continue;
                         }
-                        eprintln!("{}", err_str.if_supports_color(Stream::Stderr, |s| s.red()));
+                        // Content-quality may still continue to next provider after red print.
+                        eprintln!("{}", compact.if_supports_color(Stream::Stderr, |s| s.red()));
                         continue;
                     }
                 }
@@ -450,6 +455,11 @@ pub(crate) fn format_retrieved_context_body(chunks: &[pruner::RankedChunk]) -> S
 /// or transient server-unavailability) versus non-degradable (auth/rate-limit/other).
 /// Degradable errors fall back to rendering retrieved context; non-degradable keep
 /// the existing hard-fail behavior.
+///
+/// **0160 DoD-4:** multi-cause fallback reports often embed words like
+/// `unreachable` / `timeout` even when the **primary** class is content-quality,
+/// auth, or rate-limit. Those classes must remain **non-degradable** so legacy
+/// terminal ask does not silent graph-success on empty/reasoning-only.
 pub(crate) fn is_degradable_error(err: &str) -> bool {
     // cloud_policy_forbidden may embed "unreachable" in the message; treat it
     // as non-degradable for the interactive Gemini arm (context-only degrade
@@ -459,6 +469,39 @@ pub(crate) fn is_degradable_error(err: &str) -> bool {
         return false;
     }
     let lower = err.to_lowercase();
+
+    // Content-quality (0159 tokens / 0160 primary) — never degradable, even when
+    // the same multi-cause string also mentions unreachable/timeout.
+    if lower.contains("reasoning only")
+        || lower.contains("empty content")
+        || lower.contains("empty message content")
+        || lower.contains("primary: content-quality")
+        || lower.contains("primary content-quality")
+    {
+        return false;
+    }
+
+    // Auth / rate-limit stay non-degradable (including multi-cause primary lines).
+    if lower.contains("401")
+        || lower.contains("403")
+        || lower.contains("429")
+        || lower.contains("rate limited")
+        || lower.contains("primary: auth")
+        || lower.contains("primary auth")
+        || lower.contains("primary: rate-limit")
+        || lower.contains("primary rate-limit")
+    {
+        return false;
+    }
+
+    // M4 / DoD-4b: cascade-aware hard-timeout (cloud was actually possible) must
+    // hard-fail on the legacy terminal path so remediations are visible. Opaque
+    // local-only "Hard timeout: … within Ns" without cascade context stays
+    // degradable (transport soft-fail to retrieved context).
+    if lower.contains("cloud cascade unfinished") {
+        return false;
+    }
+
     lower.contains("unreachable")
         || lower.contains("timed out")
         || lower.contains("connection refused")
@@ -515,6 +558,62 @@ mod tests {
         assert!(!is_degradable_error("cloud returned 500: boom"));
         assert!(!is_degradable_error(
             "cloud_policy_forbidden: local model at http://127.0.0.1:1 unreachable; cloud fallback denied"
+        ));
+    }
+
+    /// 0160 DoD-4: multi-cause report with local unreachable + cloud reasoning-only
+    /// must NOT degrade (would silent graph-success despite content-quality primary).
+    #[test]
+    fn degradable_error_multi_cause_content_quality_not_degradable() {
+        let multi = "Cloud fallback exhausted after local attempt.\n\n\
+Primary: content-quality — Ollama Cloud fallback returned empty content (reasoning only: 1996 chars)\n\
+Local: Local model server at http://127.0.0.1:1 is unreachable\n\
+Cloud: Ollama Cloud fallback returned empty content (reasoning only: 1996 chars)\n\n\
+Next:\n\
+- Start the local router / check base_url\n\
+- Raise --timeout if cold\n";
+        assert!(
+            !is_degradable_error(multi),
+            "content-quality multi-cause must be non-degradable despite unreachable/timeout words"
+        );
+        assert!(!is_degradable_error(
+            "Cloud fallback exhausted: primary content-quality (reasoning only: 3 chars); local: unreachable; cloud: empty"
+        ));
+        assert!(!is_degradable_error(
+            "Ollama Cloud fallback returned empty content (reasoning only: 10 chars)"
+        ));
+    }
+
+    #[test]
+    fn degradable_error_multi_cause_auth_and_rate_limit_not_degradable() {
+        let auth = "Cloud fallback exhausted after local attempt.\n\n\
+Primary: auth — Ollama Cloud returned 401: unauthorized\n\
+Local: Local model server at http://127.0.0.1:1 is unreachable\n\
+Cloud: Ollama Cloud returned 401: unauthorized\n";
+        assert!(!is_degradable_error(auth));
+        let rate = "Cloud fallback exhausted: primary rate-limit (OpenRouter rate limited); local: unreachable";
+        assert!(!is_degradable_error(rate));
+    }
+
+    /// Codex R2 P2 / DoD-4b: cascade-aware hard-timeout must not be swallowed by
+    /// degrade_to_context on the legacy ask path.
+    #[test]
+    fn degradable_error_cascade_aware_hard_timeout_not_degradable() {
+        let cascade = "Hard timeout: request did not complete within 40s \
+(local attempt + cloud cascade unfinished; primary budget 10s). \
+Raise `--timeout` / `local_model.timeout_secs`, warm the model, or disable cloud fallback \
+(clear ollama_cloud_* / OPENROUTER_API_KEY / GEMINI_API_KEY; or LEDGERFUL_CLOUD_POLICY=forbidden).";
+        assert!(
+            !is_degradable_error(cascade),
+            "cascade-aware hard-timeout must hard-fail so operator sees remediations"
+        );
+        let cloud_only = "Hard timeout: request did not complete within 40s \
+(cloud cascade unfinished (no local attempt configured); primary budget 10s). \
+Raise `--timeout`.";
+        assert!(!is_degradable_error(cloud_only));
+        // Opaque local-only hard timeout (no cascade context) remains degradable.
+        assert!(is_degradable_error(
+            "Hard timeout: request did not complete within 30s"
         ));
     }
 

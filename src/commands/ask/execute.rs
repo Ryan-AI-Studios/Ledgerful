@@ -621,11 +621,14 @@ pub fn execute_ask(
                     Ok(())
                 }
                 Err(e) => {
-                    let err_str = crate::commands::ask::sanitize_error_for_logging(&e.to_string());
-                    if crate::commands::ask::render::is_degradable_error(&e.to_string()) {
+                    let raw = e.to_string();
+                    let err_str = crate::commands::ask::sanitize_error_for_logging(&raw);
+                    // M6/M7: compact for degrade path and miette; full multi-line once on stderr.
+                    let compact = crate::local_model::client::compact_completion_error(&err_str);
+                    if crate::commands::ask::render::is_degradable_error(&raw) {
                         // Transport-level failure during synthesis — degrade
                         // to context render instead of hard-failing.
-                        return degrade_to_context(&config, &relevant_chunks, &err_str, || {
+                        return degrade_to_context(&config, &relevant_chunks, &compact, || {
                             run_gemini_synthesis(
                                 &config,
                                 &base_system_prompt,
@@ -639,9 +642,18 @@ pub fn execute_ask(
                             )
                         });
                     }
+                    // Full multi-cause report once on terminal (M6/M7).
                     eprintln!("{}", err_str.if_supports_color(Stream::Stderr, |s| s.red()));
-                    // B5: actionable timeout messaging for Local hard deadlines / reads.
-                    if crate::commands::ask::render::is_timeout_error(&e.to_string()) {
+                    // Timeout remediations when **local** cause is timeout even if
+                    // primary is cloud content-quality (0160). For multi-cause reports,
+                    // only inspect the Local: section (Next: may mention --timeout generically).
+                    let local_timeout =
+                        if crate::local_model::client::is_multi_cause_fallback_error(&raw) {
+                            crate::local_model::client::local_cause_is_timeout(&raw)
+                        } else {
+                            crate::commands::ask::render::is_timeout_error(&raw)
+                        };
+                    if local_timeout {
                         eprintln!(
                             "{}",
                             format!(
@@ -650,21 +662,22 @@ pub fn execute_ask(
                             .if_supports_color(Stream::Stderr, |s| s.yellow())
                         );
                     }
-                    if e.to_string().contains("401") {
+                    if raw.contains("401") {
                         eprintln!(
                             "{}",
                             "Hint: Check your OLLAMA_CLOUD_API_KEY or ollama_key in config.toml"
                                 .if_supports_color(Stream::Stderr, |s| s.yellow())
                         );
                     }
-                    if e.to_string().contains("api.ollama.com") {
+                    if raw.contains("api.ollama.com") {
                         eprintln!(
                             "{}",
                             "Hint: Use ollama_cloud_url = \"https://ollama.com/api\" (native) or \"https://ollama.com\" (OpenAI-compatible)"
                                 .if_supports_color(Stream::Stderr, |s| s.yellow())
                         );
                     }
-                    Err(miette::miette!("Local model failed: {e}"))
+                    // M7: miette compact single-line — never dump full multi-line body twice.
+                    Err(miette::miette!("Local model failed: {compact}"))
                 }
             }
         }

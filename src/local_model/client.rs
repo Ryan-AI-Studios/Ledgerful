@@ -1,5 +1,6 @@
 mod cloud;
 mod completion_text;
+mod fallback_error;
 mod gemini;
 mod ollama;
 mod openai;
@@ -7,6 +8,10 @@ mod types;
 mod util;
 
 pub use cloud::has_ollama_cloud_fallback;
+pub use fallback_error::{
+    compact_completion_error, format_compact_report, format_full_report,
+    is_multi_cause_fallback_error, local_cause_is_timeout, sanitize_cause,
+};
 pub use gemini::{gemini_complete, gemini_complete_unsanitized};
 pub use types::{ChatMessage, CompletionOptions, EndpointKind, EndpointTarget};
 pub use util::{
@@ -25,6 +30,10 @@ pub const LOCAL_TCP_PRECHECK_CAP_SECS: u64 = 30;
 /// Cloud-fallback arm budget when CLI `--timeout` is omitted (M2 / B3b).
 /// Must not inherit the local load budget (300).
 pub const DEFAULT_CLOUD_FALLBACK_TIMEOUT_SECS: u64 = 15;
+
+/// Extra seconds beyond primary (+ cloud cascade when configured) for the hard-deadline
+/// wrapper so ureq can fire a specific error first (0160 M4 / TA15).
+pub const HARD_DEADLINE_BUFFER_SECS: u64 = 5;
 
 /// Cloud endpoints keep a short connect budget.
 const CLOUD_CONNECT_TIMEOUT_SECS: u64 = 5;
@@ -73,6 +82,49 @@ pub fn has_cloud_fallback(config: &LocalModelConfig) -> bool {
 /// Under Forbidden, cloud keys do not count as configured.
 pub fn is_configured(config: &LocalModelConfig) -> bool {
     !config.base_url.is_empty() || config.generation_url.is_some() || has_cloud_fallback(config)
+}
+
+/// Count configured cloud fallback arms (credentials present; ignores policy).
+/// Used for hard-deadline sizing (0160 M4).
+pub fn configured_cloud_arm_count(config: &LocalModelConfig) -> u64 {
+    let mut n = 0u64;
+    if has_ollama_cloud_fallback(config) {
+        n += 1;
+    }
+    if cloud_fallback_env("OPENROUTER_API_KEY").is_some() {
+        n += 1;
+    }
+    if cloud_fallback_env("GEMINI_API_KEY").is_some() {
+        n += 1;
+    }
+    n
+}
+
+/// Outer hard-deadline seconds for [`complete_with_hard_deadline`].
+///
+/// **Formula (0160 M4):**
+/// - When cloud fallback is **actually available** ([`has_cloud_fallback`] — credentials
+///   **and** policy allows; not mere credentials under `LEDGERFUL_CLOUD_POLICY=forbidden`):
+///   `primary_timeout + (configured_cloud_arm_count * cloud_timeout) + HARD_DEADLINE_BUFFER_SECS`
+///   so a full local+cloud cascade can finish under normal budgets and emit a multi-cause
+///   report instead of opaque hard-timeout-only mid-cascade.
+/// - No cloud fallback possible (no credentials or Forbidden):
+///   `primary_timeout + HARD_DEADLINE_BUFFER_SECS` (legacy local-only).
+///
+/// `primary_timeout` / `cloud_timeout` match [`complete`]: `Some(n)` applies to all arms;
+/// `None` uses config for local and [`DEFAULT_CLOUD_FALLBACK_TIMEOUT_SECS`] for cloud.
+pub fn hard_deadline_secs(config: &LocalModelConfig, timeout_secs: Option<u64>) -> u64 {
+    let primary_timeout = timeout_secs.unwrap_or(config.timeout_secs);
+    let cloud_timeout = timeout_secs.unwrap_or(DEFAULT_CLOUD_FALLBACK_TIMEOUT_SECS);
+    // Must match complete_with_options cloud_ok path (policy-aware), not credentials alone.
+    if has_cloud_fallback(config) {
+        let arms = configured_cloud_arm_count(config);
+        primary_timeout
+            .saturating_add(arms.saturating_mul(cloud_timeout))
+            .saturating_add(HARD_DEADLINE_BUFFER_SECS)
+    } else {
+        primary_timeout.saturating_add(HARD_DEADLINE_BUFFER_SECS)
+    }
 }
 
 use cloud::ollama_cloud_endpoint;
@@ -190,6 +242,9 @@ fn complete_with_options(
     }
 
     let local_base_url = config.generation_url.as_deref().unwrap_or(&config.base_url);
+    // 0160: retain local failure when cloud cascade runs (multi-cause report).
+    let mut local_error: Option<String> = None;
+
     if !local_base_url.is_empty() {
         // Local TCP precheck: min(30, effective). Delayed-accept cold routers
         // survive; connection refused on loopback stays OS-immediate (B2b/D5).
@@ -212,6 +267,7 @@ fn complete_with_options(
                 Ok(response) => return Ok(response),
                 Err(error) if cloud_ok => {
                     tracing::debug!("Local completion failed ({error}); trying cloud fallback");
+                    local_error = Some(error);
                 }
                 Err(error) => {
                     if policy.is_forbidden() && has_cloud_fallback_credentials(config) {
@@ -237,6 +293,9 @@ fn complete_with_options(
                 "Local model server at {} is unreachable; trying cloud fallback",
                 local_base_url
             );
+            local_error = Some(format!(
+                "Local model server at {local_base_url} is unreachable"
+            ));
         }
     }
 
@@ -250,7 +309,8 @@ fn complete_with_options(
     // Single sanitize pass before any cloud network call (RT-A1).
     let sanitized_messages = sanitize_messages_for_egress(messages);
 
-    let mut last_error = String::new();
+    // 0160: collect each cloud attempt (label, error) for multi-cause exhaust.
+    let mut cloud_attempts: Vec<(String, String)> = Vec::new();
 
     if let Some(endpoint) = ollama_cloud_endpoint(config) {
         match complete_with_endpoint(
@@ -263,8 +323,16 @@ fn complete_with_options(
         ) {
             Ok(response) => return Ok(response),
             Err(e) => {
-                last_error = e.clone();
                 tracing::debug!("Ollama cloud fallback failed: {}", e);
+                let is_cq = fallback_error::classify_error(&e)
+                    == fallback_error::ErrorClass::ContentQuality;
+                cloud_attempts.push((endpoint.label.to_string(), e));
+                // B4 soft: short-circuit cascade after content-quality fail
+                // (do not charge later providers for the same unusable pattern).
+                // Transport failures still cascade.
+                if is_cq {
+                    return Err(format_full_report(local_error.as_deref(), &cloud_attempts));
+                }
             }
         }
     }
@@ -290,8 +358,13 @@ fn complete_with_options(
         ) {
             Ok(response) => return Ok(response),
             Err(e) => {
-                last_error = e.clone();
                 tracing::debug!("OpenRouter fallback failed: {}", e);
+                let is_cq = fallback_error::classify_error(&e)
+                    == fallback_error::ErrorClass::ContentQuality;
+                cloud_attempts.push((endpoint.label.to_string(), e));
+                if is_cq {
+                    return Err(format_full_report(local_error.as_deref(), &cloud_attempts));
+                }
             }
         }
     }
@@ -308,17 +381,16 @@ fn complete_with_options(
         match gemini_complete_unsanitized(&default_gemini, &sanitized_messages, options) {
             Ok(response) => return Ok(response),
             Err(e) => {
-                last_error = e.clone();
                 tracing::debug!("Gemini fallback failed: {}", e);
+                cloud_attempts.push(("Gemini fallback".to_string(), e));
+                // Last arm — short-circuit not needed; exhaust below.
             }
         }
     }
 
-    if !last_error.is_empty() {
-        Err(format!(
-            "Cloud fallback exhausted. Last error: {}",
-            last_error
-        ))
+    if !cloud_attempts.is_empty() {
+        // M2: multi-cause report always contains greppable `Cloud fallback exhausted`.
+        Err(format_full_report(local_error.as_deref(), &cloud_attempts))
     } else {
         Err(format!(
             "Local model server at {} is unreachable. Start llama-server, configure OpenRouter or Gemini fallback.",
@@ -358,13 +430,20 @@ pub fn is_first_byte_timeout_error(err: &str) -> bool {
     err.to_lowercase().contains("first byte timeout")
 }
 
-/// Hard-deadline wrapper for `complete` (Track TA15).
+/// Hard-deadline wrapper for `complete` (Track TA15 / 0160 M4).
 ///
 /// Spawns the HTTP call in a thread and uses `recv_timeout` to enforce a
 /// hard deadline that covers the ENTIRE request lifecycle (DNS, connect,
 /// TLS handshake, read). The inner ureq timeouts fire first when possible,
-/// giving a more specific error. The `+5` buffer gives ureq a chance to fire
-/// before the hard deadline.
+/// giving a more specific error.
+///
+/// **Deadline formula** (see [`hard_deadline_secs`]):
+/// - Cloud credentials present:
+///   `primary + (configured_cloud_arm_count * cloud_timeout) + HARD_DEADLINE_BUFFER_SECS`
+/// - No cloud credentials: `primary + HARD_DEADLINE_BUFFER_SECS`
+///
+/// Sizing lets a normal local+cloud cascade finish and return a multi-cause
+/// report instead of discarding in-flight work as opaque hard-timeout-only.
 ///
 /// `timeout_secs` semantics match [`complete`]: `Some(n)` is an explicit
 /// budget for all arms; `None` uses config for Local and
@@ -381,9 +460,11 @@ pub fn complete_with_hard_deadline(
     options: &CompletionOptions,
     timeout_secs: Option<u64>,
 ) -> Result<String, String> {
-    // Outer hard deadline tracks the primary (local) budget.
     let primary_timeout = timeout_secs.unwrap_or(config.timeout_secs);
-    let deadline = Duration::from_secs(primary_timeout + 5);
+    let deadline_secs = hard_deadline_secs(config, timeout_secs);
+    let deadline = Duration::from_secs(deadline_secs);
+    // Policy-aware: Forbidden + credentials must not claim an unfinished cascade.
+    let cloud_possible = has_cloud_fallback(config);
 
     let (tx, rx) = std::sync::mpsc::channel();
     let config_clone = config.clone();
@@ -398,13 +479,32 @@ pub fn complete_with_hard_deadline(
 
     match rx.recv_timeout(deadline) {
         Ok(result) => result,
-        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(format!(
-            "Hard timeout: request did not complete within {}s",
-            primary_timeout
-        )),
+        Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+            if cloud_possible {
+                // M4: multi-cause-aware hard-timeout — never sole opaque hard-timeout
+                // when a cascade was possible. Word local attempt only when local
+                // was configured (M1: cloud-only must not claim a local try).
+                let local_configured =
+                    !config.base_url.is_empty() || config.generation_url.is_some();
+                let cascade_clause = if local_configured {
+                    "local attempt + cloud cascade unfinished"
+                } else {
+                    "cloud cascade unfinished (no local attempt configured)"
+                };
+                Err(format!(
+                    "Hard timeout: request did not complete within {deadline_secs}s \
+({cascade_clause}; primary budget {primary_timeout}s). \
+Raise `--timeout` / `local_model.timeout_secs`, warm the model, or disable cloud fallback \
+(clear ollama_cloud_* / OPENROUTER_API_KEY / GEMINI_API_KEY; or LEDGERFUL_CLOUD_POLICY=forbidden)."
+                ))
+            } else {
+                Err(format!(
+                    "Hard timeout: request did not complete within {primary_timeout}s"
+                ))
+            }
+        }
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(format!(
-            "Provider thread panicked during request (timeout: {}s)",
-            primary_timeout
+            "Provider thread panicked during request (timeout: {primary_timeout}s)"
         )),
     }
 }
@@ -2292,6 +2392,320 @@ mod tests {
         assert!(
             ok_mock.hits() >= 1,
             "expected at least one sanitized OpenRouter call"
+        );
+    }
+
+    // --- 0160 multi-cause cloud fallback honesty ---
+
+    /// DoD-1: local unreachable + OC thinking-only → multi-cause with local + reasoning only + remediation.
+    #[test]
+    #[serial_test::serial(env)]
+    fn multi_cause_local_unreachable_plus_oc_reasoning_only() {
+        let _iso = isolate_cloud_env();
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/api/chat");
+            then.status(200)
+                .header("Content-Type", "application/json")
+                .json_body(serde_json::json!({
+                    "message": {
+                        "content": "",
+                        "thinking": "I am thinking deeply about the dogfood case..."
+                    }
+                }));
+        });
+
+        let native_url = format!("{}/api", server.base_url().trim_end_matches('/'));
+        let config = LocalModelConfig {
+            base_url: "http://127.0.0.1:1".to_string(),
+            generation_url: None,
+            generation_model: "test-model".to_string(),
+            timeout_secs: 10,
+            ollama_cloud_url: Some(native_url),
+            ollama_cloud_api_key: Some("test-token".to_string()),
+            ollama_cloud_model: Some("test-model".to_string()),
+            ..LocalModelConfig::default()
+        };
+
+        let err = complete(
+            &config,
+            &test_messages(),
+            &CompletionOptions::default(),
+            Some(5),
+        )
+        .expect_err("expected multi-cause exhaust");
+        assert!(
+            err.contains("Cloud fallback exhausted"),
+            "M2 greppable exhausted: {err}"
+        );
+        assert!(
+            err.to_lowercase().contains("unreachable")
+                || err.to_lowercase().contains("not reachable"),
+            "local cause retained: {err}"
+        );
+        assert!(
+            err.contains("reasoning only"),
+            "0159 greppable reasoning only: {err}"
+        );
+        assert!(
+            err.contains("Next:")
+                || err.contains("LEDGERFUL_CLOUD_POLICY")
+                || err.to_lowercase().contains("gemini")
+                || err.to_lowercase().contains("timeout"),
+            "actionable remediation: {err}"
+        );
+        assert!(
+            err.contains("Primary: content-quality") || err.contains("content-quality"),
+            "primary CQ: {err}"
+        );
+    }
+
+    /// DoD-3 / M1: cloud-only OC reasoning-only — no false local claim.
+    #[test]
+    #[serial_test::serial(env)]
+    fn multi_cause_cloud_only_reasoning_only_no_false_local() {
+        let _iso = isolate_cloud_env();
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/v1/chat/completions");
+            then.status(200)
+                .header("Content-Type", "application/json")
+                .json_body(serde_json::json!({
+                    "choices": [{
+                        "message": {
+                            "content": "",
+                            "reasoning": "cloud-only chain of thought"
+                        }
+                    }]
+                }));
+        });
+
+        let config = LocalModelConfig {
+            base_url: String::new(),
+            generation_url: None,
+            generation_model: "test-model".to_string(),
+            timeout_secs: 10,
+            ollama_cloud_url: Some(server.base_url()),
+            ollama_cloud_api_key: Some("test-token".to_string()),
+            ollama_cloud_model: Some("test-model".to_string()),
+            ..LocalModelConfig::default()
+        };
+
+        let err = complete(
+            &config,
+            &test_messages(),
+            &CompletionOptions::default(),
+            Some(5),
+        )
+        .expect_err("expected cloud-only CQ fail");
+        assert!(err.contains("Cloud fallback exhausted"), "M2: {err}");
+        assert!(
+            !err.contains("after local attempt"),
+            "M1 no after local attempt: {err}"
+        );
+        assert!(
+            !err.lines().any(|l| l.trim().starts_with("Local:")),
+            "M1 no Local: section: {err}"
+        );
+        assert!(err.contains("reasoning only"), "reasoning only: {err}");
+    }
+
+    /// M4: hard-deadline sizing includes cloud arms; cascade report not erased.
+    #[test]
+    #[serial_test::serial(env)]
+    fn hard_deadline_sizing_and_multi_cause_not_opaque_only() {
+        let _iso = isolate_cloud_env();
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/v1/chat/completions");
+            then.status(200)
+                .delay(Duration::from_millis(400))
+                .header("Content-Type", "application/json")
+                .json_body(serde_json::json!({
+                    "choices": [{
+                        "message": {
+                            "content": "",
+                            "reasoning": "delayed reasoning only"
+                        }
+                    }]
+                }));
+        });
+
+        let config = LocalModelConfig {
+            base_url: "http://127.0.0.1:1".to_string(),
+            generation_model: "test-model".to_string(),
+            timeout_secs: 30,
+            ollama_cloud_url: Some(server.base_url()),
+            ollama_cloud_api_key: Some("test-token".to_string()),
+            ollama_cloud_model: Some("test-model".to_string()),
+            ..LocalModelConfig::default()
+        };
+
+        // Explicit short CLI timeout: primary=3, cloud=3, arms=1 → deadline = 3+3+5 = 11.
+        let override_secs = Some(3u64);
+        let deadline = hard_deadline_secs(&config, override_secs);
+        assert!(
+            deadline >= 3 + 3 + HARD_DEADLINE_BUFFER_SECS,
+            "M4 formula primary + arms*cloud + buffer, got {deadline}"
+        );
+        // Without cloud, would be primary+5 only.
+        let mut no_cloud = config.clone();
+        no_cloud.ollama_cloud_url = None;
+        no_cloud.ollama_cloud_api_key = None;
+        no_cloud.ollama_cloud_model = None;
+        assert_eq!(
+            hard_deadline_secs(&no_cloud, override_secs),
+            3 + HARD_DEADLINE_BUFFER_SECS
+        );
+
+        let err = complete_with_hard_deadline(
+            &config,
+            &test_messages(),
+            &CompletionOptions::default(),
+            override_secs,
+        )
+        .expect_err("expected multi-cause or cascade error");
+        // Must not be opaque hard-timeout-only when cascade can produce a report.
+        let is_hard_only = err.starts_with("Hard timeout:")
+            && !err.contains("cascade")
+            && !err.contains("reasoning only");
+        assert!(
+            !is_hard_only,
+            "M4 must not erase to opaque hard-timeout-only, got: {err}"
+        );
+        assert!(
+            err.contains("Cloud fallback exhausted") || err.contains("reasoning only"),
+            "expected multi-cause or CQ tokens, got: {err}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn hard_deadline_message_mentions_cascade_when_cloud_possible() {
+        // Pure formula unit (no HTTP): with credentials, deadline expands.
+        let _iso = isolate_cloud_env();
+        let config = LocalModelConfig {
+            base_url: "http://127.0.0.1:1".to_string(),
+            ollama_cloud_url: Some("https://example.invalid".to_string()),
+            ollama_cloud_api_key: Some("k".to_string()),
+            ollama_cloud_model: Some("m".to_string()),
+            timeout_secs: 10,
+            ..LocalModelConfig::default()
+        };
+        assert_eq!(configured_cloud_arm_count(&config), 1);
+        // arms=1 → primary + 1*cloud + buffer
+        assert_eq!(
+            hard_deadline_secs(&config, Some(10)),
+            10 + 10 + HARD_DEADLINE_BUFFER_SECS
+        );
+        assert_eq!(
+            hard_deadline_secs(&config, None),
+            10 + DEFAULT_CLOUD_FALLBACK_TIMEOUT_SECS + HARD_DEADLINE_BUFFER_SECS
+        );
+    }
+
+    /// B4: content-quality on OC short-circuits — OR mock must not be hit.
+    #[test]
+    #[serial_test::serial(env)]
+    fn content_quality_short_circuits_further_cloud_arms() {
+        use env_guard::TempEnv;
+
+        let oc = MockServer::start();
+        oc.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/v1/chat/completions");
+            then.status(200)
+                .header("Content-Type", "application/json")
+                .json_body(serde_json::json!({
+                    "choices": [{
+                        "message": {
+                            "content": "",
+                            "reasoning": "stop here"
+                        }
+                    }]
+                }));
+        });
+        let or = MockServer::start();
+        let or_mock = or.mock(|when, then| {
+            when.any_request();
+            then.status(200)
+                .header("Content-Type", "application/json")
+                .json_body(serde_json::json!({
+                    "choices": [{ "message": { "content": "should not be called" } }]
+                }));
+        });
+
+        let _gem = TempEnv::remove("GEMINI_API_KEY");
+        let _pol = TempEnv::remove(crate::local_model::cloud_policy::CLOUD_POLICY_ENV);
+        let _or = TempEnv::set("OPENROUTER_API_KEY", "sk-or-test-not-real");
+        let _orm = TempEnv::set("OPENROUTER_MODEL", "test/model");
+        let _orb = TempEnv::set("OPENROUTER_BASE_URL", &or.base_url());
+        // Isolate repo .env (Gemini keys etc.) without leaking process cwd.
+        // nosemgrep: rust.lang.security.temp-dir.temp-dir
+        let _cwd = if let Ok(tmp) = std::env::temp_dir().canonicalize() {
+            Some(crate::tests::DirGuard::new(&tmp))
+        } else {
+            None
+        };
+
+        let config = LocalModelConfig {
+            base_url: "http://127.0.0.1:1".to_string(),
+            generation_model: "test-model".to_string(),
+            timeout_secs: 10,
+            ollama_cloud_url: Some(oc.base_url()),
+            ollama_cloud_api_key: Some("test-token".to_string()),
+            ollama_cloud_model: Some("test-model".to_string()),
+            ..LocalModelConfig::default()
+        };
+
+        let err = complete(
+            &config,
+            &test_messages(),
+            &CompletionOptions::default(),
+            Some(5),
+        )
+        .expect_err("CQ exhaust");
+        assert!(err.contains("reasoning only") || err.contains("content-quality"));
+        assert_eq!(
+            or_mock.hits(),
+            0,
+            "B4: OpenRouter must not be called after OC content-quality"
+        );
+    }
+
+    /// Codex P2: Forbidden policy + credentials must not expand hard-deadline for
+    /// nonexistent cloud arms (has_cloud_fallback, not credentials alone).
+    #[test]
+    #[serial_test::serial(env)]
+    fn hard_deadline_forbidden_policy_does_not_expand_for_creds() {
+        use env_guard::TempEnv;
+        let _iso = isolate_cloud_env();
+        let _pol = TempEnv::set(
+            crate::local_model::cloud_policy::CLOUD_POLICY_ENV,
+            "forbidden",
+        );
+        let config = LocalModelConfig {
+            base_url: "http://127.0.0.1:1".to_string(),
+            ollama_cloud_url: Some("https://example.invalid".to_string()),
+            ollama_cloud_api_key: Some("k".to_string()),
+            ollama_cloud_model: Some("m".to_string()),
+            timeout_secs: 10,
+            ..LocalModelConfig::default()
+        };
+        assert!(
+            has_cloud_fallback_credentials(&config),
+            "creds present for fixture"
+        );
+        assert!(
+            !has_cloud_fallback(&config),
+            "Forbidden must deny cloud fallback"
+        );
+        assert_eq!(
+            hard_deadline_secs(&config, Some(10)),
+            10 + HARD_DEADLINE_BUFFER_SECS,
+            "must not expand for cloud arms when policy forbids cascade"
         );
     }
 }
