@@ -60,6 +60,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **SCIP nest-prefer caller resolve (0166):** When `enclosing_range` and occurrence
+  range map to different native symbol ids but one native span **strictly contains**
+  the other, prefer the **innermost** id and emit the edge instead of skipping as
+  enclosing disagreement (common Rust + rust-analyzer trivia → ancestor miss).
+  Disjoint / equal-span / missing-span cases still disagree. Success `scip` JSON
+  always includes `edges_recovered_nest_prefer` (incl. 0); human SCIP section prints
+  non-zero nest recovery. Remaining quality rate is still
+  `edges_skipped_enclosing_disagreement / references_seen`. See
+  `docs/Call-Resolution.md`.
 - **Ask cloud-fallback multi-cause honesty (0160):** When local completion fails and
   cloud fallback exhausts (or cloud-only fails), the operator no longer sees only
   `Cloud fallback exhausted. Last error: …` (which erased the local trigger). Errors

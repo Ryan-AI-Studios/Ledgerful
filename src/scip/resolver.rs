@@ -50,6 +50,9 @@ pub struct ResolveCallerResult {
     /// True when `enclosing_range` was non-empty but invalid, so resolution
     /// fell back to the occurrence range (today's behavior; not an edge skip).
     pub used_invalid_enclosing_fallback: bool,
+    /// True when enclosing and occurrence mapped to different ids but nest
+    /// geometry recovered the innermost (0166). Exclusive with disagreement.
+    pub recovered_nest_prefer: bool,
 }
 
 /// Resolve SCIP definition occurrences to native symbol ids.
@@ -181,11 +184,38 @@ pub fn load_native_spans_for_file(
     Ok(out)
 }
 
+/// True when `outer` strictly contains `inner` on the line axis.
+///
+/// Equal full spans return `false` (ambiguity refuse — same posture as
+/// equal-span innermost ties).
+pub fn strictly_contains(outer: &NativeSymbolSpan, inner: &NativeSymbolSpan) -> bool {
+    outer.line_start <= inner.line_start
+        && outer.line_end >= inner.line_end
+        && (outer.line_start < inner.line_start || outer.line_end > inner.line_end)
+}
+
+/// Prefer the innermost of two mapped native ids when one span strictly contains
+/// the other. Missing span rows, equal full spans, or non-nested geometry →
+/// `None` (keep enclosing disagreement; never invent).
+pub fn prefer_nested(a: i64, b: i64, spans: &[NativeSymbolSpan]) -> Option<i64> {
+    let sa = spans.iter().find(|s| s.id == a)?;
+    let sb = spans.iter().find(|s| s.id == b)?;
+    if strictly_contains(sa, sb) {
+        return Some(b);
+    }
+    if strictly_contains(sb, sa) {
+        return Some(a);
+    }
+    None
+}
+
 /// Identify the caller native symbol for a reference occurrence.
 ///
 /// Prefer `enclosing_range` when present; fall back to occurrence range
-/// containment. When both are present and both map, they must agree —
-/// disagreement yields `EnclosingDisagreement` (no edge; never guess).
+/// containment. When both are present and both map to **different** ids:
+/// prefer the **innermost** if one native span strictly contains the other
+/// (0166 nest-prefer recovery); otherwise `EnclosingDisagreement` (no edge;
+/// never invent a caller for disjoint / equal-span / non-nested geometry).
 ///
 /// Hot path does **not** emit `warn!` (0157 log budget); callers count and
 /// summarize.
@@ -200,6 +230,7 @@ pub fn resolve_caller_for_reference(
             return ResolveCallerResult {
                 outcome: ResolveCallerOutcome::InvalidOccurrenceRange,
                 used_invalid_enclosing_fallback: false,
+                recovered_nest_prefer: false,
             };
         }
     };
@@ -210,6 +241,7 @@ pub fn resolve_caller_for_reference(
         return ResolveCallerResult {
             outcome: option_to_outcome(from_occ),
             used_invalid_enclosing_fallback: false,
+            recovered_nest_prefer: false,
         };
     }
 
@@ -220,6 +252,7 @@ pub fn resolve_caller_for_reference(
             return ResolveCallerResult {
                 outcome: option_to_outcome(from_occ),
                 used_invalid_enclosing_fallback: true,
+                recovered_nest_prefer: false,
             };
         }
     };
@@ -227,18 +260,25 @@ pub fn resolve_caller_for_reference(
     // Prefer a representative line of the enclosing range (start) for caller id.
     let from_enc = resolve_innermost(enc_parsed.start_line, native_in_file);
 
-    let outcome = match (from_enc, from_occ) {
-        (Some(a), Some(b)) if a != b => ResolveCallerOutcome::EnclosingDisagreement {
-            enclosing_id: a,
-            occurrence_id: b,
+    let (outcome, recovered_nest_prefer) = match (from_enc, from_occ) {
+        (Some(a), Some(b)) if a != b => match prefer_nested(a, b, native_in_file) {
+            Some(id) => (ResolveCallerOutcome::Resolved(id), true),
+            None => (
+                ResolveCallerOutcome::EnclosingDisagreement {
+                    enclosing_id: a,
+                    occurrence_id: b,
+                },
+                false,
+            ),
         },
-        (Some(a), _) => ResolveCallerOutcome::Resolved(a),
-        (None, other) => option_to_outcome(other),
+        (Some(a), _) => (ResolveCallerOutcome::Resolved(a), false),
+        (None, other) => (option_to_outcome(other), false),
     };
 
     ResolveCallerResult {
         outcome,
         used_invalid_enclosing_fallback: false,
+        recovered_nest_prefer,
     }
 }
 
@@ -325,11 +365,61 @@ mod tests {
     }
 
     #[test]
+    fn strictly_contains_nested_and_equal() {
+        let outer = span(1, 1, 100);
+        let inner = span(3, 20, 30);
+        assert!(strictly_contains(&outer, &inner));
+        assert!(!strictly_contains(&inner, &outer));
+        let a = span(1, 1, 50);
+        let b = span(2, 1, 50);
+        assert!(!strictly_contains(&a, &b));
+        assert!(!strictly_contains(&b, &a));
+    }
+
+    #[test]
+    fn prefer_nested_picks_innermost() {
+        let cands = vec![span(1, 1, 100), span(3, 20, 30)];
+        assert_eq!(prefer_nested(1, 3, &cands), Some(3));
+        assert_eq!(prefer_nested(3, 1, &cands), Some(3));
+    }
+
+    #[test]
+    fn prefer_nested_disjoint_is_none() {
+        let cands = vec![span(1, 1, 20), span(2, 30, 50)];
+        assert_eq!(prefer_nested(1, 2, &cands), None);
+    }
+
+    #[test]
+    fn prefer_nested_equal_span_is_none() {
+        let cands = vec![span(1, 1, 50), span(2, 1, 50)];
+        assert_eq!(prefer_nested(1, 2, &cands), None);
+    }
+
+    #[test]
+    fn prefer_nested_missing_span_is_none() {
+        // Only id 1 present — id 3 missing → refuse (no invent).
+        let cands = vec![span(1, 1, 100)];
+        assert_eq!(prefer_nested(1, 3, &cands), None);
+    }
+
+    #[test]
     fn caller_enclosing_agrees_with_occurrence() {
         let cands = vec![span(7, 1, 50)];
         // occurrence line 0-based 9 → native 10; enclosing same
         let result = resolve_caller_for_reference(&[9, 0, 5], &[0, 0, 49, 0], &cands);
         assert_eq!(result.outcome, ResolveCallerOutcome::Resolved(7));
+        assert!(!result.used_invalid_enclosing_fallback);
+        assert!(!result.recovered_nest_prefer);
+    }
+
+    #[test]
+    fn caller_nest_prefer_recovers_innermost() {
+        // outer 1–100 id=1, inner 20–30 id=3; enc start → outer, occ → inner
+        let cands = vec![span(1, 1, 100), span(3, 20, 30)];
+        // occ 0-based 24 → native 25 → id 3; enc start 0-based 0 → native 1 → id 1
+        let result = resolve_caller_for_reference(&[24, 0, 5], &[0, 0, 99, 0], &cands);
+        assert_eq!(result.outcome, ResolveCallerOutcome::Resolved(3));
+        assert!(result.recovered_nest_prefer);
         assert!(!result.used_invalid_enclosing_fallback);
     }
 
@@ -347,6 +437,7 @@ mod tests {
             }
         );
         assert!(!result.used_invalid_enclosing_fallback);
+        assert!(!result.recovered_nest_prefer);
     }
 
     #[test]
@@ -355,6 +446,7 @@ mod tests {
         let result = resolve_caller_for_reference(&[9, 0, 5], &[], &cands);
         assert_eq!(result.outcome, ResolveCallerOutcome::Resolved(7));
         assert!(!result.used_invalid_enclosing_fallback);
+        assert!(!result.recovered_nest_prefer);
     }
 
     #[test]
@@ -364,6 +456,7 @@ mod tests {
         let result = resolve_caller_for_reference(&[49, 0, 5], &[], &cands);
         assert_eq!(result.outcome, ResolveCallerOutcome::Unmapped);
         assert!(!result.used_invalid_enclosing_fallback);
+        assert!(!result.recovered_nest_prefer);
     }
 
     #[test]
@@ -372,6 +465,7 @@ mod tests {
         let result = resolve_caller_for_reference(&[], &[0, 0, 49, 0], &cands);
         assert_eq!(result.outcome, ResolveCallerOutcome::InvalidOccurrenceRange);
         assert!(!result.used_invalid_enclosing_fallback);
+        assert!(!result.recovered_nest_prefer);
     }
 
     #[test]
@@ -381,6 +475,7 @@ mod tests {
         let result = resolve_caller_for_reference(&[9, 0, 5], &[1, 2], &cands);
         assert_eq!(result.outcome, ResolveCallerOutcome::Resolved(7));
         assert!(result.used_invalid_enclosing_fallback);
+        assert!(!result.recovered_nest_prefer);
     }
 
     #[test]
@@ -389,5 +484,6 @@ mod tests {
         let result = resolve_caller_for_reference(&[49, 0, 5], &[1, 2], &cands);
         assert_eq!(result.outcome, ResolveCallerOutcome::Unmapped);
         assert!(result.used_invalid_enclosing_fallback);
+        assert!(!result.recovered_nest_prefer);
     }
 }

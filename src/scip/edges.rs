@@ -31,6 +31,9 @@ pub struct ScipEdgeStats {
     pub edges_skipped_duplicate: usize,
     /// Both enclosing and occurrence ranges mapped to different native ids.
     pub edges_skipped_enclosing_disagreement: usize,
+    /// Nest-prefer recovery: enc/occ disagreed but one span strictly contained
+    /// the other — chose innermost (0166). Exclusive with disagreement.
+    pub edges_recovered_nest_prefer: usize,
     /// Pass-2 occurrence classic range invalid / empty.
     pub edges_skipped_invalid_occ_range: usize,
     pub definitions_mapped: usize,
@@ -182,6 +185,11 @@ pub fn augment_edges_from_scip(
                     continue;
                 }
                 ResolveCallerOutcome::Resolved(caller_id) => {
+                    // Count recovery as soon as nest-prefer chose innermost
+                    // (even if callee is later unmapped — recovery is visible).
+                    if result.recovered_nest_prefer {
+                        stats.edges_recovered_nest_prefer += 1;
+                    }
                     let Some(callee_id) = resolver.get(&occurrence.symbol) else {
                         stats.edges_skipped_unmapped += 1;
                         continue;
@@ -796,9 +804,57 @@ mod tests {
         .unwrap();
 
         assert_eq!(stats.edges_skipped_enclosing_disagreement, 1);
+        assert_eq!(stats.edges_recovered_nest_prefer, 0);
         assert_eq!(stats.edges_skipped_unmapped, 0);
         assert_eq!(stats.edges_added, 0);
         assert_eq!(stats.references_seen, 1);
+    }
+
+    /// Nest-prefer: enc maps to outer mod, occ to inner fn → recover edge, not disagree.
+    #[test]
+    fn nest_prefer_recovers_edge_without_disagreement() {
+        use crate::scip::resolver::SCIP_ROLE_DEFINITION;
+        let conn = setup_db();
+        let path = "src/nest.rs";
+        let fid = insert_file(&conn, path);
+        // Outer mod 1–100, inner fn 20–30, callee 40–50 (also under mod)
+        let _mod_sym = insert_symbol(&conn, fid, "mod_item", 1, 100);
+        let _fn_sym = insert_symbol(&conn, fid, "inner_fn", 20, 30);
+        let _callee = insert_symbol(&conn, fid, "callee_fn", 40, 50);
+
+        let def = scip::types::Occurrence {
+            symbol: "rust-analyzer cargo test 0.1 nest_target/".to_string(),
+            symbol_roles: SCIP_ROLE_DEFINITION,
+            range: vec![44, 0, 5], // native 45 → callee_fn
+            ..Default::default()
+        };
+        // occ at native 25 (inner_fn); enc starts at native 1 (mod only)
+        let r#ref = scip::types::Occurrence {
+            symbol: "rust-analyzer cargo test 0.1 nest_target/".to_string(),
+            symbol_roles: 0,
+            range: vec![24, 0, 5],
+            enclosing_range: vec![0, 0, 99, 0],
+            ..Default::default()
+        };
+        let docs = vec![scip::types::Document {
+            relative_path: path.to_string(),
+            occurrences: vec![def, r#ref],
+            ..Default::default()
+        }];
+        let stats = augment_edges_from_scip(&conn, &docs, &|rel| {
+            if rel == path { Some(fid) } else { None }
+        })
+        .unwrap();
+
+        assert_eq!(stats.edges_recovered_nest_prefer, 1);
+        assert_eq!(stats.edges_skipped_enclosing_disagreement, 0);
+        assert!(
+            stats.edges_added >= 1,
+            "expected recovered nest path to insert edge; edges_added={}",
+            stats.edges_added
+        );
+        assert_eq!(stats.references_seen, 1);
+        assert_eq!(stats.edges_skipped_unmapped, 0);
     }
 
     /// Resolved caller + missing callee → unmapped only.

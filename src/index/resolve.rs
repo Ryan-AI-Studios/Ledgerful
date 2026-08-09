@@ -1128,10 +1128,14 @@ mod tests {
                 || skill.contains("off by default"),
             "skill must mention SCIP opt-in / json fields honesty"
         );
-        // 0157: tracked skill SoT must list skip tallies + quality rate, not only edges_added.
+        // 0157/0166: tracked skill SoT must list skip/recovery tallies + quality rate.
         assert!(
             skill.contains("edges_skipped_enclosing_disagreement"),
             "docs/Ledgerful/skill.md must document edges_skipped_enclosing_disagreement"
+        );
+        assert!(
+            skill.contains("edges_recovered_nest_prefer"),
+            "docs/Ledgerful/skill.md must document edges_recovered_nest_prefer"
         );
         assert!(
             skill.contains("references_seen"),
