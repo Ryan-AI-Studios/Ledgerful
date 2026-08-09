@@ -1264,13 +1264,19 @@ pub fn execute_verify(
                 .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
         );
 
+        // M3: prefer resolved stored path for step relevance when alias/suffix resolved.
+        let mut resolved_for_filter: Option<String> = None;
+
         if let Some(storage) = &ctx.storage {
             let conn = storage.get_connection();
             let normalized_entity =
                 crate::util::path::normalize_relative_path(layout.root.as_std_path(), target)
                     .unwrap_or_else(|_| target.to_string());
 
-            match explain_test_mappings(conn, &normalized_entity) {
+            let mapping_state = explain_test_mappings(conn, &normalized_entity);
+            resolved_for_filter = mapping_state.resolved_path().map(|p| p.to_string());
+
+            match mapping_state {
                 TestMappingState::TableMissing => {
                     println!(
                         "  Test-mapping table is not present in the index. Run `ledgerful index --incremental` to build it."
@@ -1291,18 +1297,39 @@ pub fn execute_verify(
                         target
                     );
                 }
-                TestMappingState::NoMappingsForEntity => {
+                TestMappingState::EntityAmbiguous { query, candidates } => {
+                    let total = candidates.len();
+                    println!("  {} indexed paths match '{}':", total, query);
+                    let show = total.min(10);
+                    for p in candidates.iter().take(show) {
+                        println!("    • {}", p);
+                    }
+                    if total > 10 {
+                        println!("    … and {} more", total - 10);
+                    }
+                    println!("  Provide a more specific path.");
+                }
+                TestMappingState::NoMappingsForEntity { resolved_path } => {
+                    let display = resolved_path
+                        .as_deref()
+                        .unwrap_or(normalized_entity.as_str());
                     println!(
                         "  '{}' is indexed, but no tests currently map to it.",
-                        normalized_entity
+                        display
                     );
                     println!(
                         "  This may be accurate (no covering tests yet) -- use `ledgerful search \"{}\"` to confirm test coverage manually.",
-                        normalized_entity
+                        display
                     );
                 }
-                TestMappingState::Mapped(tests) => {
-                    println!("  Mapped tests ({}):", tests.len());
+                TestMappingState::Mapped {
+                    tests,
+                    resolved_path,
+                } => {
+                    let display = resolved_path
+                        .as_deref()
+                        .unwrap_or(normalized_entity.as_str());
+                    println!("  Mapped tests for '{}' ({}):", display, tests.len());
                     for t in &tests {
                         println!("    • {}", t);
                     }
@@ -1312,11 +1339,7 @@ pub fn execute_verify(
 
         let relevant: Vec<_> = steps
             .iter()
-            .filter(|s| {
-                let cmd = s.command.to_lowercase();
-                let t = target.to_lowercase();
-                cmd.contains(&t) || cmd.contains("test") || cmd.contains("check")
-            })
+            .filter(|s| step_relevant_to_entity(&s.command, target, resolved_for_filter.as_deref()))
             .collect();
         println!(
             "\n  Verification steps relevant to this entity ({}):",
@@ -1933,10 +1956,55 @@ pub enum TestMappingState {
     TableEmpty,
     /// The entity didn't resolve to an indexed file path or a known symbol name.
     EntityNotIndexed,
+    /// Full-input path suffix matched more than one indexed file (unique-only).
+    /// Candidates are sorted by `file_path`; display may cap the list.
+    EntityAmbiguous {
+        query: String,
+        candidates: Vec<String>,
+    },
     /// The entity is indexed, but no test currently maps to it.
-    NoMappingsForEntity,
+    NoMappingsForEntity {
+        /// Stored `project_files.file_path` when resolved via a file path.
+        resolved_path: Option<String>,
+    },
     /// Mapped tests, formatted as `"<test file path>::<test symbol name>"`.
-    Mapped(Vec<String>),
+    Mapped {
+        tests: Vec<String>,
+        /// Stored `project_files.file_path` when resolved via a file path
+        /// (`None` for pure symbol-name matches).
+        resolved_path: Option<String>,
+    },
+}
+
+impl TestMappingState {
+    /// Stored path when the entity resolved to a file (alias/suffix/exact).
+    pub fn resolved_path(&self) -> Option<&str> {
+        match self {
+            Self::Mapped { resolved_path, .. } | Self::NoMappingsForEntity { resolved_path } => {
+                resolved_path.as_deref()
+            }
+            _ => None,
+        }
+    }
+}
+
+/// Whether a verification step command is relevant to `--entity` (M3).
+///
+/// Matches case-insensitively on the raw entity string and, when path resolution
+/// produced a stored path (alias/suffix), that resolved form as well. Generic
+/// `test` / `check` steps stay in the relevant set.
+pub(crate) fn step_relevant_to_entity(
+    command: &str,
+    target: &str,
+    resolved_path: Option<&str>,
+) -> bool {
+    let cmd = command.to_lowercase();
+    let t_raw = target.to_lowercase();
+    let t_resolved = resolved_path.map(|p| p.to_lowercase());
+    cmd.contains(&t_raw)
+        || t_resolved.as_ref().is_some_and(|r| cmd.contains(r))
+        || cmd.contains("test")
+        || cmd.contains("check")
 }
 
 const MAPPED_TESTS_QUERY_BY_FILE: &str = "SELECT DISTINCT pf_test.file_path || '::' || ps_test.symbol_name \
@@ -1954,16 +2022,187 @@ const MAPPED_TESTS_QUERY_BY_SYMBOL: &str = "SELECT DISTINCT pf_test.file_path ||
      WHERE ps_tested.symbol_name = ?1 \
      ORDER BY 1";
 
+/// Outcome of path/symbol resolution before mapping lookup.
+#[derive(Debug, PartialEq, Eq)]
+enum ResolvedEntity {
+    ExactPath {
+        file_id: i64,
+        stored_path: String,
+    },
+    Ambiguous {
+        query: String,
+        candidates: Vec<String>,
+    },
+    Symbol {
+        name: String,
+    },
+    NotFound,
+}
+
+/// Build generalized path-alias candidates (M1). Accept iff exactly one exists.
+///
+/// | Input shape | Candidates |
+/// | ends with `.rs` | `{stem}/mod.rs` only |
+/// | no extension / trailing `/` | `{trim}/mod.rs` and `{trim}.rs` |
+/// | other extension | none |
+fn alias_path_candidates(normalized: &str) -> Vec<String> {
+    if normalized.ends_with(".rs") {
+        let stem = match normalized.strip_suffix(".rs") {
+            Some(s) if !s.is_empty() => s,
+            _ => return Vec::new(),
+        };
+        return vec![format!("{stem}/mod.rs")];
+    }
+
+    let trimmed = normalized.trim_end_matches('/');
+    if trimmed.is_empty() {
+        return Vec::new();
+    }
+
+    let last_seg = trimmed.rsplit('/').next().unwrap_or(trimmed);
+    // Other extension (.ts, .go, …): no module-layout candidates.
+    if last_seg.contains('.') {
+        return Vec::new();
+    }
+
+    vec![format!("{trimmed}/mod.rs"), format!("{trimmed}.rs")]
+}
+
+/// Exact `project_files` lookup. Windows uses `LOWER` equality (dead-code mirror).
+fn lookup_file_exact(conn: &rusqlite::Connection, path: &str) -> Option<(i64, String)> {
+    use rusqlite::OptionalExtension;
+
+    let sql = if cfg!(target_os = "windows") {
+        "SELECT id, file_path FROM project_files WHERE LOWER(file_path) = LOWER(?1)"
+    } else {
+        "SELECT id, file_path FROM project_files WHERE file_path = ?1"
+    };
+    conn.query_row(sql, [path], |row| Ok((row.get(0)?, row.get(1)?)))
+        .optional()
+        .ok()
+        .flatten()
+}
+
+/// Unique-only full-input path suffix (M2). No LCS scoring.
+/// `file_path = ?1 OR file_path LIKE '%/' || ?1`, ordered by `file_path`.
+fn lookup_files_by_suffix(conn: &rusqlite::Connection, query: &str) -> Vec<(i64, String)> {
+    let mut stmt = match conn.prepare(
+        "SELECT id, file_path FROM project_files \
+         WHERE file_path = ?1 OR file_path LIKE '%/' || ?1 \
+         ORDER BY file_path",
+    ) {
+        Ok(s) => s,
+        Err(_) => return Vec::new(),
+    };
+    let rows = match stmt.query_map([query], |row| Ok((row.get(0)?, row.get(1)?))) {
+        Ok(r) => r,
+        Err(_) => return Vec::new(),
+    };
+    rows.filter_map(|r| r.ok()).collect()
+}
+
+fn symbol_name_exists(conn: &rusqlite::Connection, name: &str) -> bool {
+    use rusqlite::OptionalExtension;
+
+    conn.query_row(
+        "SELECT 1 FROM project_symbols WHERE symbol_name = ?1 LIMIT 1",
+        [name],
+        |_| Ok(true),
+    )
+    .optional()
+    .ok()
+    .flatten()
+    .unwrap_or(false)
+}
+
+/// Resolve entity → indexed file or symbol.
+/// Order: exact path → generalized alias (exactly one hit) → unique-only
+/// full-input suffix → exact symbol name → NotFound.
+fn resolve_tested_entity(conn: &rusqlite::Connection, normalized: &str) -> ResolvedEntity {
+    // 1. Exact path always first (BS1).
+    if let Some((file_id, stored_path)) = lookup_file_exact(conn, normalized) {
+        return ResolvedEntity::ExactPath {
+            file_id,
+            stored_path,
+        };
+    }
+
+    // 2. Generalized path alias (M1): accept iff exactly one candidate exists.
+    let mut alias_hits: Vec<(i64, String)> = Vec::new();
+    for cand in alias_path_candidates(normalized) {
+        if let Some(hit) = lookup_file_exact(conn, &cand) {
+            // Deduplicate by file id (Windows LOWER can collapse case variants).
+            if !alias_hits.iter().any(|(id, _)| *id == hit.0) {
+                alias_hits.push(hit);
+            }
+        }
+    }
+    if alias_hits.len() == 1 {
+        let (file_id, stored_path) = alias_hits.remove(0);
+        return ResolvedEntity::ExactPath {
+            file_id,
+            stored_path,
+        };
+    }
+    // 0 or >1 alias hits: do not guess; fall through.
+
+    // 3. Unique-only full-input path suffix (M2 — no LCS).
+    let mut suffix_hits = lookup_files_by_suffix(conn, normalized);
+    match suffix_hits.len() {
+        1 => {
+            let (file_id, stored_path) = suffix_hits.remove(0);
+            return ResolvedEntity::ExactPath {
+                file_id,
+                stored_path,
+            };
+        }
+        n if n > 1 => {
+            let candidates: Vec<String> = suffix_hits.into_iter().map(|(_, p)| p).collect();
+            return ResolvedEntity::Ambiguous {
+                query: normalized.to_string(),
+                candidates,
+            };
+        }
+        _ => {}
+    }
+
+    // 4. Exact symbol name.
+    if symbol_name_exists(conn, normalized) {
+        return ResolvedEntity::Symbol {
+            name: normalized.to_string(),
+        };
+    }
+
+    ResolvedEntity::NotFound
+}
+
+fn query_mapped_tests_by_file(conn: &rusqlite::Connection, file_id: i64) -> Vec<String> {
+    conn.prepare(MAPPED_TESTS_QUERY_BY_FILE)
+        .and_then(|mut s| {
+            s.query_map([file_id], |row| row.get(0))
+                .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<String>>())
+        })
+        .unwrap_or_default()
+}
+
+fn query_mapped_tests_by_symbol(conn: &rusqlite::Connection, name: &str) -> Vec<String> {
+    conn.prepare(MAPPED_TESTS_QUERY_BY_SYMBOL)
+        .and_then(|mut s| {
+            s.query_map([name], |row| row.get(0))
+                .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<String>>())
+        })
+        .unwrap_or_default()
+}
+
 /// Resolves test-mapping coverage for an entity against the real
 /// `test_mapping` schema (`test_symbol_id`/`test_file_id`/`tested_symbol_id`/
-/// `tested_file_id`), trying an exact indexed file path first and falling
-/// back to a symbol-name match if the entity isn't a file path.
+/// `tested_file_id`). Path resolution: exact → module/extensionless alias →
+/// unique-only full-input suffix → symbol (shared by `tests -e` and
+/// `verify --explain --entity`).
 pub fn explain_test_mappings(
     conn: &rusqlite::Connection,
     normalized_entity: &str,
 ) -> TestMappingState {
-    use rusqlite::OptionalExtension;
-
     let total: i64 = match conn.query_row("SELECT count(*) FROM test_mapping", [], |row| row.get(0))
     {
         Ok(c) => c,
@@ -1973,49 +2212,102 @@ pub fn explain_test_mappings(
         return TestMappingState::TableEmpty;
     }
 
-    let file_id: Option<i64> = conn
-        .query_row(
-            "SELECT id FROM project_files WHERE file_path = ?1",
-            [normalized_entity],
-            |row| row.get(0),
-        )
-        .optional()
-        .unwrap_or(None);
-
-    let mapped = if let Some(fid) = file_id {
-        conn.prepare(MAPPED_TESTS_QUERY_BY_FILE)
-            .and_then(|mut s| {
-                s.query_map([fid], |row| row.get(0))
-                    .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<String>>())
-            })
-            .unwrap_or_default()
-    } else {
-        let symbol_exists: bool = conn
-            .query_row(
-                "SELECT 1 FROM project_symbols WHERE symbol_name = ?1 LIMIT 1",
-                [normalized_entity],
-                |_| Ok(true),
-            )
-            .optional()
-            .unwrap_or(None)
-            .unwrap_or(false);
-
-        if !symbol_exists {
-            return TestMappingState::EntityNotIndexed;
+    match resolve_tested_entity(conn, normalized_entity) {
+        ResolvedEntity::Ambiguous { query, candidates } => {
+            TestMappingState::EntityAmbiguous { query, candidates }
         }
+        ResolvedEntity::NotFound => TestMappingState::EntityNotIndexed,
+        ResolvedEntity::ExactPath {
+            file_id,
+            stored_path,
+        } => {
+            let mapped = query_mapped_tests_by_file(conn, file_id);
+            if mapped.is_empty() {
+                TestMappingState::NoMappingsForEntity {
+                    resolved_path: Some(stored_path),
+                }
+            } else {
+                TestMappingState::Mapped {
+                    tests: mapped,
+                    resolved_path: Some(stored_path),
+                }
+            }
+        }
+        ResolvedEntity::Symbol { name } => {
+            let mapped = query_mapped_tests_by_symbol(conn, &name);
+            if mapped.is_empty() {
+                TestMappingState::NoMappingsForEntity {
+                    resolved_path: None,
+                }
+            } else {
+                TestMappingState::Mapped {
+                    tests: mapped,
+                    resolved_path: None,
+                }
+            }
+        }
+    }
+}
 
-        conn.prepare(MAPPED_TESTS_QUERY_BY_SYMBOL)
-            .and_then(|mut s| {
-                s.query_map([normalized_entity], |row| row.get(0))
-                    .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<String>>())
-            })
-            .unwrap_or_default()
-    };
+#[cfg(test)]
+mod entity_path_resolution_tests {
+    use super::step_relevant_to_entity;
 
-    if mapped.is_empty() {
-        TestMappingState::NoMappingsForEntity
-    } else {
-        TestMappingState::Mapped(mapped)
+    /// M3: resolved stored path matches step even when the raw entity is an alias.
+    #[test]
+    fn step_filter_matches_resolved_path_when_raw_differs() {
+        let cmd = "cargo nextest run --package ledgerful -- src/commands/doctor/mod.rs";
+        assert!(step_relevant_to_entity(
+            cmd,
+            "src/commands/doctor.rs",
+            Some("src/commands/doctor/mod.rs"),
+        ));
+    }
+
+    /// M3: raw entity still matches when present in the command.
+    #[test]
+    fn step_filter_matches_raw_target() {
+        let cmd = "rg src/pkg.rs --type rust";
+        assert!(step_relevant_to_entity(cmd, "src/pkg.rs", None));
+        assert!(step_relevant_to_entity(
+            cmd,
+            "src/pkg.rs",
+            Some("src/pkg/mod.rs"),
+        ));
+    }
+
+    /// M3: neither raw nor resolved → only generic test/check steps stay relevant.
+    #[test]
+    fn step_filter_requires_path_or_generic_when_unrelated() {
+        // No path match and no test/check token → not relevant.
+        assert!(!step_relevant_to_entity(
+            "cargo fmt --all",
+            "src/commands/doctor.rs",
+            Some("src/commands/doctor/mod.rs"),
+        ));
+        // "check" / "test" are generic verifier tokens → still relevant
+        assert!(step_relevant_to_entity(
+            "cargo check -p ledgerful",
+            "src/orphan.rs",
+            None,
+        ));
+        assert!(step_relevant_to_entity(
+            "cargo nextest run --lib",
+            "src/orphan.rs",
+            None,
+        ));
+    }
+
+    /// Display cap helper contract for Ambiguous lists (DoD-3 / L2 data side).
+    #[test]
+    fn ambiguous_display_cap_shows_and_n_more_when_over_10() {
+        let total = 11usize;
+        let show = total.min(10);
+        assert_eq!(show, 10);
+        let more = total - show;
+        assert_eq!(more, 1);
+        let line = format!("… and {} more", more);
+        assert_eq!(line, "… and 1 more");
     }
 }
 

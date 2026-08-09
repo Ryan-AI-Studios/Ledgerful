@@ -72,23 +72,55 @@ pub fn execute_tests_for_entity(args: TestsForEntityArgs) -> Result<()> {
                     )
                 },
             ),
-            TestMappingState::NoMappingsForEntity => crate::output::empty::format_json_empty_state(
-                Vec::<String>::new(),
-                "mappings",
-                || {
-                    (
-                        crate::output::empty::EmptyReason::NoMatches,
-                        format!(
-                            "'{}' is indexed, but no tests currently map to it.",
-                            normalized_entity
-                        ),
-                    )
-                },
-            ),
-            TestMappingState::Mapped(tests) => {
-                serde_json::json!({
+            TestMappingState::EntityAmbiguous { query, candidates } => {
+                let total = candidates.len();
+                let show = total.min(10);
+                let mut listed = candidates[..show].join(", ");
+                if total > 10 {
+                    listed.push_str(&format!(", and {} more", total - 10));
+                }
+                crate::output::empty::format_json_empty_state(
+                    Vec::<String>::new(),
+                    "mappings",
+                    || {
+                        (
+                            // Stable existing reason; honesty lives in the message (M5: no index remediation).
+                            crate::output::empty::EmptyReason::MissingSourceFiles,
+                            format!(
+                                "{total} indexed paths match '{query}': {listed}. Provide a more specific path."
+                            ),
+                        )
+                    },
+                )
+            }
+            TestMappingState::NoMappingsForEntity { resolved_path } => {
+                let display = resolved_path
+                    .as_deref()
+                    .unwrap_or(normalized_entity.as_str());
+                crate::output::empty::format_json_empty_state(
+                    Vec::<String>::new(),
+                    "mappings",
+                    || {
+                        (
+                            crate::output::empty::EmptyReason::NoMatches,
+                            format!("'{display}' is indexed, but no tests currently map to it."),
+                        )
+                    },
+                )
+            }
+            TestMappingState::Mapped {
+                tests,
+                resolved_path,
+            } => {
+                let mut obj = serde_json::json!({
                     "mappings": tests.into_iter().map(|t| serde_json::json!({"test": t})).collect::<Vec<_>>()
-                })
+                });
+                if let Some(path) = resolved_path
+                    && let Some(map) = obj.as_object_mut()
+                {
+                    map.insert("resolvedPath".to_string(), serde_json::json!(path));
+                }
+                obj
             }
         };
         println!(
@@ -125,25 +157,47 @@ pub fn execute_tests_for_entity(args: TestsForEntityArgs) -> Result<()> {
                     entity_val
                 );
             }
-            TestMappingState::NoMappingsForEntity => {
+            TestMappingState::EntityAmbiguous { query, candidates } => {
+                let total = candidates.len();
                 println!(
                     "  {}",
-                    format!(
-                        "'{}' is indexed, but no tests currently map to it.",
-                        normalized_entity
-                    )
-                    .if_supports_color(Stream::Stdout, |s| s.yellow())
+                    format!("{total} indexed paths match '{query}':")
+                        .if_supports_color(Stream::Stdout, |s| s.yellow())
+                );
+                let show = total.min(10);
+                for p in candidates.iter().take(show) {
+                    println!("    • {}", p);
+                }
+                if total > 10 {
+                    println!("    … and {} more", total - 10);
+                }
+                // M5: no "run index --incremental" remediation for Ambiguous.
+                println!("  Provide a more specific path.");
+            }
+            TestMappingState::NoMappingsForEntity { resolved_path } => {
+                let display = resolved_path
+                    .as_deref()
+                    .unwrap_or(normalized_entity.as_str());
+                println!(
+                    "  {}",
+                    format!("'{display}' is indexed, but no tests currently map to it.")
+                        .if_supports_color(Stream::Stdout, |s| s.yellow())
                 );
                 println!(
                     "  This may be accurate (no covering tests yet) -- use `ledgerful search \"{}\"` to confirm test coverage manually.",
-                    normalized_entity
+                    display
                 );
             }
-            TestMappingState::Mapped(tests) => {
+            TestMappingState::Mapped {
+                tests,
+                resolved_path,
+            } => {
+                // M4: prefer resolved stored path in the header when available.
+                let display = resolved_path.as_deref().unwrap_or(entity_val.as_str());
                 println!(
                     "{} {}",
                     "Tests validating".if_supports_color(Stream::Stdout, |s| s.bold()),
-                    entity_val.if_supports_color(Stream::Stdout, |s| s.cyan())
+                    display.if_supports_color(Stream::Stdout, |s| s.cyan())
                 );
                 for t in tests {
                     println!("  • {}", t);
@@ -192,8 +246,8 @@ fn show_tests_empty_state() -> Result<()> {
     println!();
     println!("Examples:");
     println!("  ledgerful tests src/index/languages/rust/symbols.rs");
-    println!("  ledgerful tests --entity src/commands/doctor.rs");
-    println!("  ledgerful tests --entity src/commands/doctor.rs --json");
+    println!("  ledgerful tests --entity src/commands/doctor/mod.rs");
+    println!("  ledgerful tests --entity src/commands/verify.rs --json");
     println!();
     println!("Available entities (top 10 by symbol count):");
     for (file_path, count) in &rows {

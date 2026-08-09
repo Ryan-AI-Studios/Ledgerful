@@ -30,6 +30,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`tests -e` / `verify --explain --entity` path resolve (0156):** Shared resolver
+  in `explain_test_mappings` now does exact path (Windows `LOWER`) → module +
+  extensionless aliases (`X.rs`→`X/mod.rs`; extensionless→`.rs`/`mod.rs`, accept
+  iff exactly one hit) → unique-only full-input path suffix → symbol. Multi-match
+  is **Ambiguous** (sorted candidates, “more specific path”) — not silent pick and
+  not “run index”. Mapped/NoMappings headers prefer the resolved stored path.
+- **`tests` empty-state help (0156):** Examples no longer cite non-indexed
+  `src/commands/doctor.rs` (use `doctor/mod.rs` / `verify.rs`).
 - **`data-models list` / `impact` duplicate rows (0155):** Emit-time dedupe keeps one
   row per `(name, language, kind, file_id)` (keep-best: higher confidence, else lower
   `id`). List SELECT joins `project_files` for path; human adds File column; JSON
