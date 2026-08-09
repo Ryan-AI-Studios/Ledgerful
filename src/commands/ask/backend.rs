@@ -1,6 +1,96 @@
 use crate::commands::ask::Backend;
 use crate::config::model::Config;
+use crate::gemini::DEFAULT_GEMINI_TIMEOUT_SECS;
 use std::env;
+
+/// Short default for OllamaCloud / OpenRouter primary when CLI `--timeout` is omitted.
+pub const DEFAULT_CLOUD_PROVIDER_TIMEOUT_SECS: u64 = 15;
+
+/// Cloud-fallback arm budget when CLI `--timeout` is omitted (M2).
+/// Re-export of the client constant so ask callers share one value.
+pub use crate::local_model::client::DEFAULT_CLOUD_FALLBACK_TIMEOUT_SECS;
+
+/// Backend-aware timeout kind for [`resolve_ask_timeout`].
+/// Prefer **explicit** CLI `--backend` (pre-collapse) so OllamaCloud/OpenRouter
+/// do not inherit Local's 300s load budget (M6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AskTimeoutKind {
+    Local,
+    Gemini,
+    OllamaCloud,
+    OpenRouter,
+}
+
+impl AskTimeoutKind {
+    /// Map an explicit CLI backend, falling back to the resolved primary.
+    pub fn from_backends(explicit: Option<Backend>, resolved: Backend) -> Self {
+        match explicit {
+            Some(Backend::Local) => Self::Local,
+            Some(Backend::Gemini) => Self::Gemini,
+            Some(Backend::OllamaCloud) => Self::OllamaCloud,
+            Some(Backend::OpenRouter) => Self::OpenRouter,
+            None => Self::from_backend(resolved),
+        }
+    }
+
+    pub fn from_backend(backend: Backend) -> Self {
+        match backend {
+            Backend::Local => Self::Local,
+            Backend::Gemini => Self::Gemini,
+            Backend::OllamaCloud => Self::OllamaCloud,
+            Backend::OpenRouter => Self::OpenRouter,
+        }
+    }
+
+    pub fn from_provider(provider: crate::config::model::Provider) -> Self {
+        match provider {
+            crate::config::model::Provider::Local => Self::Local,
+            crate::config::model::Provider::Gemini => Self::Gemini,
+            crate::config::model::Provider::OllamaCloud => Self::OllamaCloud,
+            crate::config::model::Provider::OpenRouter => Self::OpenRouter,
+        }
+    }
+}
+
+/// Resolve the effective ask timeout in seconds.
+///
+/// - Explicit CLI `--timeout` always wins (all backends) — D1.
+/// - Otherwise backend-aware defaults (Local → `local_model.timeout_secs`,
+///   Gemini → config/wrapper 120-class, OllamaCloud/OpenRouter → 15).
+pub fn resolve_ask_timeout(cli: Option<u64>, kind: AskTimeoutKind, config: &Config) -> u64 {
+    if let Some(n) = cli {
+        return n;
+    }
+    match kind {
+        AskTimeoutKind::Local => config.local_model.timeout_secs,
+        AskTimeoutKind::Gemini => config
+            .gemini
+            .timeout_secs
+            .unwrap_or(DEFAULT_GEMINI_TIMEOUT_SECS),
+        AskTimeoutKind::OllamaCloud | AskTimeoutKind::OpenRouter => {
+            DEFAULT_CLOUD_PROVIDER_TIMEOUT_SECS
+        }
+    }
+}
+
+/// Override passed into `complete` / hard-deadline helpers.
+///
+/// - CLI `Some(n)` → `Some(n)` for all arms (local + cloud fallback).
+/// - CLI omitted + Local kind → `None` so local uses config and cloud
+///   fallback stays at [`DEFAULT_CLOUD_FALLBACK_TIMEOUT_SECS`] (M2).
+/// - CLI omitted + non-Local kind → `Some(resolved)` so cloud-class
+///   primary does not inherit a 300s local load budget (M6).
+pub fn complete_timeout_override(
+    cli: Option<u64>,
+    kind: AskTimeoutKind,
+    config: &Config,
+) -> Option<u64> {
+    match (cli, kind) {
+        (Some(n), _) => Some(n),
+        (None, AskTimeoutKind::Local) => None,
+        (None, other) => Some(resolve_ask_timeout(None, other, config)),
+    }
+}
 
 /// Resolve the ordered provider entries with full per-provider config
 /// (model, timeout, base_url, api_key_env). Applies env var overrides
@@ -258,6 +348,104 @@ mod tests {
         ] {
             let _ = TempEnv::remove(key);
         }
+    }
+
+    #[test]
+    fn resolve_ask_timeout_local_omitted_uses_config_300() {
+        let config = Config::default();
+        assert_eq!(
+            resolve_ask_timeout(None, AskTimeoutKind::Local, &config),
+            300
+        );
+        assert_eq!(
+            resolve_ask_timeout(None, AskTimeoutKind::Local, &config),
+            config.local_model.timeout_secs
+        );
+    }
+
+    #[test]
+    fn resolve_ask_timeout_gemini_omitted_uses_120_class() {
+        let config = Config::default();
+        // Starter-like: gemini.timeout_secs is None → wrapper default 120.
+        assert_eq!(config.gemini.timeout_secs, None);
+        assert_eq!(
+            resolve_ask_timeout(None, AskTimeoutKind::Gemini, &config),
+            DEFAULT_GEMINI_TIMEOUT_SECS
+        );
+        assert_eq!(
+            resolve_ask_timeout(None, AskTimeoutKind::Gemini, &config),
+            120
+        );
+    }
+
+    #[test]
+    fn resolve_ask_timeout_gemini_respects_config_when_set() {
+        let mut config = Config::default();
+        config.gemini.timeout_secs = Some(90);
+        assert_eq!(
+            resolve_ask_timeout(None, AskTimeoutKind::Gemini, &config),
+            90
+        );
+    }
+
+    #[test]
+    fn resolve_ask_timeout_cloud_kinds_are_short() {
+        let config = Config::default();
+        assert_eq!(
+            resolve_ask_timeout(None, AskTimeoutKind::OllamaCloud, &config),
+            DEFAULT_CLOUD_PROVIDER_TIMEOUT_SECS
+        );
+        assert_eq!(
+            resolve_ask_timeout(None, AskTimeoutKind::OpenRouter, &config),
+            15
+        );
+    }
+
+    #[test]
+    fn resolve_ask_timeout_explicit_always_wins() {
+        let mut config = Config::default();
+        config.local_model.timeout_secs = 300;
+        config.gemini.timeout_secs = Some(120);
+        for kind in [
+            AskTimeoutKind::Local,
+            AskTimeoutKind::Gemini,
+            AskTimeoutKind::OllamaCloud,
+            AskTimeoutKind::OpenRouter,
+        ] {
+            assert_eq!(resolve_ask_timeout(Some(1), kind, &config), 1);
+            assert_eq!(resolve_ask_timeout(Some(42), kind, &config), 42);
+        }
+    }
+
+    #[test]
+    fn resolve_ask_timeout_m6_explicit_cloud_backend_not_local_300() {
+        // Explicit --backend ollama-cloud collapses to Local for legacy routing,
+        // but timeout kind must stay cloud-class (not 300s local load budget).
+        let config = Config::default();
+        let kind = AskTimeoutKind::from_backends(Some(Backend::OllamaCloud), Backend::Local);
+        assert_eq!(kind, AskTimeoutKind::OllamaCloud);
+        assert_eq!(resolve_ask_timeout(None, kind, &config), 15);
+
+        let kind = AskTimeoutKind::from_backends(Some(Backend::OpenRouter), Backend::Local);
+        assert_eq!(kind, AskTimeoutKind::OpenRouter);
+        assert_eq!(resolve_ask_timeout(None, kind, &config), 15);
+    }
+
+    #[test]
+    fn complete_timeout_override_m2_local_omitted_is_none() {
+        let config = Config::default();
+        assert_eq!(
+            complete_timeout_override(None, AskTimeoutKind::Local, &config),
+            None
+        );
+        assert_eq!(
+            complete_timeout_override(Some(30), AskTimeoutKind::Local, &config),
+            Some(30)
+        );
+        assert_eq!(
+            complete_timeout_override(None, AskTimeoutKind::OllamaCloud, &config),
+            Some(15)
+        );
     }
 
     #[test]

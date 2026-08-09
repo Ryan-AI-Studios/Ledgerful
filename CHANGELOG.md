@@ -8,6 +8,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`ask --timeout` is optional and backend-aware (0158):** Omitted timeout no longer
+  forces 15s for every backend. Local uses `local_model.timeout_secs` (default **300**);
+  Gemini uses `gemini.timeout_secs` / starter **120**-class; OllamaCloud/OpenRouter stay
+  short (**15**). Explicit `--timeout N` always wins. Cloud fallback after a local attempt
+  does not inherit the 300s local budget when CLI timeout is omitted.
 - **Default `dependencies list` is direct deps from live Cargo.toml + Cargo.lock (0153):**
   Shows declared direct dependencies (normal/build/dev + target tables) with locked
   versions resolved from the **root package’s own** lock `dependencies` array (not a
@@ -55,6 +60,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Local `ask` cold-start false-fail (0158):** On-demand local routers no longer die
+  solely on the CLI default 15s, a fixed **5s** HTTP probe, or a **500ms** Local TCP
+  precheck while the model loads. Local TCP precheck/connect use `min(30, effective)`;
+  closed-port refuse stays fail-fast. Wait/timeout/degrade messages distinguish
+  unreachable vs timed-out; MCP `ask` child passes `--timeout` ~110 so product errors
+  surface before the 120s parent kill.
 - **SCIP enclosing_range WARN flood (0157):** Successful `--auto-scip` no longer
   emits ~tens of thousands of per-occurrence
   `enclosing_range … disagrees …` WARN lines. Skips are aggregated on

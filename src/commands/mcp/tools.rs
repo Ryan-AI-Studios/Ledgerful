@@ -5,6 +5,10 @@ use std::time::Duration;
 use super::sanitize::{sanitize_mcp_content, sanitize_mcp_structured};
 
 const MCP_TOOL_TIMEOUT_SECS: u64 = 120;
+/// Child `ask --timeout` so product messaging fires before the parent kill (M4).
+/// Must stay strictly under [`MCP_TOOL_TIMEOUT_SECS`].
+const MCP_ASK_CHILD_TIMEOUT_SECS: u64 = 110;
+const MCP_ASK_CHILD_TIMEOUT_FLAG: &str = "110";
 const MCP_SUBPROCESS_OUTPUT_MAX: usize = 4 * 1024 * 1024;
 
 fn get_ledgerful_exe() -> std::path::PathBuf {
@@ -332,15 +336,28 @@ fn handle_ask(params: Value) -> Value {
 }
 
 fn build_ask_args(query: &str, allow_cloud: bool) -> Vec<&str> {
+    // 0158 M4: pass child --timeout under parent MCP_TOOL_TIMEOUT_SECS so
+    // ledgerful timeout messaging surfaces before the generic 120s kill.
+    const {
+        assert!(MCP_ASK_CHILD_TIMEOUT_SECS < MCP_TOOL_TIMEOUT_SECS);
+    }
     if allow_cloud {
-        vec!["ask", "--", query]
+        vec!["ask", "--timeout", MCP_ASK_CHILD_TIMEOUT_FLAG, "--", query]
     } else {
         // Force local backend so an autonomous agent cannot silently route
         // untrusted repository content to a cloud provider via a configured
         // default backend (0031 confused-deputy mitigation). The `--` separator
         // prevents a malicious query starting with `--backend cloud` from
         // overriding the forced local backend.
-        vec!["ask", "--backend", "local", "--", query]
+        vec![
+            "ask",
+            "--backend",
+            "local",
+            "--timeout",
+            MCP_ASK_CHILD_TIMEOUT_FLAG,
+            "--",
+            query,
+        ]
     }
 }
 
@@ -558,14 +575,42 @@ mod tests {
         let args = build_ask_args("what is the risk", false);
         assert_eq!(
             args,
-            vec!["ask", "--backend", "local", "--", "what is the risk"]
+            vec![
+                "ask",
+                "--backend",
+                "local",
+                "--timeout",
+                "110",
+                "--",
+                "what is the risk"
+            ]
         );
     }
 
     #[test]
     fn build_ask_args_allow_cloud_omits_backend_flag() {
         let args = build_ask_args("what is the risk", true);
-        assert_eq!(args, vec!["ask", "--", "what is the risk"]);
+        assert_eq!(
+            args,
+            vec!["ask", "--timeout", "110", "--", "what is the risk"]
+        );
+    }
+
+    #[test]
+    fn build_ask_args_includes_timeout_under_mcp_parent_ceiling() {
+        let args = build_ask_args("q", false);
+        let timeout_idx = args.iter().position(|a| *a == "--timeout");
+        assert!(timeout_idx.is_some(), "expected --timeout in {args:?}");
+        let idx = timeout_idx.expect("checked");
+        let value: u64 = args[idx + 1].parse().expect("timeout value");
+        assert!(
+            value < MCP_TOOL_TIMEOUT_SECS,
+            "child timeout {value} must be < parent {MCP_TOOL_TIMEOUT_SECS}"
+        );
+        assert!(
+            (100..=119).contains(&value),
+            "expected ~110-class child timeout, got {value}"
+        );
     }
 
     #[test]
@@ -573,7 +618,15 @@ mod tests {
         let args = build_ask_args("--backend gemini", false);
         assert_eq!(
             args,
-            vec!["ask", "--backend", "local", "--", "--backend gemini"]
+            vec![
+                "ask",
+                "--backend",
+                "local",
+                "--timeout",
+                "110",
+                "--",
+                "--backend gemini"
+            ]
         );
     }
 

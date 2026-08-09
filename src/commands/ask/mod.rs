@@ -6,8 +6,9 @@ pub(crate) mod render;
 // Re-export the public API surface so existing `crate::commands::ask::*`
 // import paths keep working after the split.
 pub use backend::{
-    resolve_backend, resolve_backend_with, resolve_provider_entries, resolve_provider_priority,
-    sanitize_error_for_logging,
+    AskTimeoutKind, DEFAULT_CLOUD_FALLBACK_TIMEOUT_SECS, DEFAULT_CLOUD_PROVIDER_TIMEOUT_SECS,
+    complete_timeout_override, resolve_ask_timeout, resolve_backend, resolve_backend_with,
+    resolve_provider_entries, resolve_provider_priority, sanitize_error_for_logging,
 };
 pub use context::{build_ask_user_prompt, escape_cozo_string, should_prune_impact};
 pub use execute::execute_ask;

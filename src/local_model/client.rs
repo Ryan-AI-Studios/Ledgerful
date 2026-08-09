@@ -16,6 +16,31 @@ use crate::config::model::LocalModelConfig;
 use crate::local_model::cloud_policy::{CloudPolicy, cloud_policy_forbidden_error};
 use std::time::Duration;
 
+/// Cap for Local TCP precheck and connect budgets (B2b / B3).
+/// Cold delayed-accept routers need more than 500ms; connection refused
+/// on loopback still returns immediately from the OS.
+pub const LOCAL_TCP_PRECHECK_CAP_SECS: u64 = 30;
+
+/// Cloud-fallback arm budget when CLI `--timeout` is omitted (M2 / B3b).
+/// Must not inherit the local load budget (300).
+pub const DEFAULT_CLOUD_FALLBACK_TIMEOUT_SECS: u64 = 15;
+
+/// Cloud endpoints keep a short connect budget.
+const CLOUD_CONNECT_TIMEOUT_SECS: u64 = 5;
+
+/// Local TCP precheck / connect budget: `min(cap, effective)`.
+fn local_tcp_budget_secs(effective_timeout: u64) -> u64 {
+    std::cmp::min(LOCAL_TCP_PRECHECK_CAP_SECS, effective_timeout)
+}
+
+fn connect_timeout_secs(is_local: bool, effective_timeout: u64) -> u64 {
+    if is_local {
+        local_tcp_budget_secs(effective_timeout)
+    } else {
+        CLOUD_CONNECT_TIMEOUT_SECS
+    }
+}
+
 /// Reads a cloud-fallback credential/setting from the real process environment first,
 /// falling back to a `.env` file in the current directory — matching the resolution
 /// pattern already used for `OLLAMA_CLOUD_API_KEY` elsewhere in this module.
@@ -59,8 +84,10 @@ pub fn ping_completions(config: &LocalModelConfig) -> Result<String, String> {
     }
 
     let check_url = config.generation_url.as_deref().unwrap_or(&config.base_url);
-    // CR3: Increased from 150ms to 500ms to prevent false negatives on WSL/container hosts.
-    if !crate::util::network::is_url_reachable(check_url, Duration::from_millis(500)) {
+    // Local TCP precheck uses min(30, effective) so delayed-accept cold routers
+    // are not killed at 500ms (B2b). Connection refused on loopback stays fast.
+    let precheck = Duration::from_secs(local_tcp_budget_secs(config.timeout_secs));
+    if !crate::util::network::is_url_reachable(check_url, precheck) {
         return Err(format!(
             "Local model server at {} is unreachable",
             check_url
@@ -81,9 +108,10 @@ pub fn ping_completions(config: &LocalModelConfig) -> Result<String, String> {
         "stream": false,
     });
 
-    // Use config timeout: lazy-loading servers need time to load the model before responding.
+    // Local connect budget matches complete path (B3); read uses full config timeout.
+    let connect_secs = connect_timeout_secs(true, config.timeout_secs);
     let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(std::cmp::min(config.timeout_secs, 5)))
+        .timeout_connect(Duration::from_secs(connect_secs))
         .timeout_read(Duration::from_secs(config.timeout_secs))
         .timeout_write(Duration::from_secs(30))
         .build();
@@ -142,6 +170,12 @@ fn complete_with_options(
     let policy = CloudPolicy::from_env();
     let cloud_ok = has_cloud_fallback(config);
 
+    // Local primary budget: explicit override or config (default 300).
+    // Cloud fallback budget: explicit override or DEFAULT_CLOUD_FALLBACK (15)
+    // so omitted CLI does not hang multi-minute on dead cloud keys (M2 / B3b).
+    let local_timeout = timeout_secs_override.unwrap_or(config.timeout_secs);
+    let cloud_timeout = timeout_secs_override.unwrap_or(DEFAULT_CLOUD_FALLBACK_TIMEOUT_SECS);
+
     if config.base_url.is_empty() && config.generation_url.is_none() && !cloud_ok {
         if policy.is_forbidden() {
             return Err(cloud_policy_forbidden_error(
@@ -156,21 +190,23 @@ fn complete_with_options(
 
     let local_base_url = config.generation_url.as_deref().unwrap_or(&config.base_url);
     if !local_base_url.is_empty() {
-        // CR3: Fast network probe to prevent 20s TCP hangs when model server is down.
-        if crate::util::network::is_url_reachable(local_base_url, Duration::from_millis(500)) {
+        // Local TCP precheck: min(30, effective). Delayed-accept cold routers
+        // survive; connection refused on loopback stays OS-immediate (B2b/D5).
+        let precheck = Duration::from_secs(local_tcp_budget_secs(local_timeout));
+        if crate::util::network::is_url_reachable(local_base_url, precheck) {
             let endpoint = CompletionEndpoint {
                 label: "Local model server",
                 base_url: local_base_url,
                 model: &config.generation_model,
                 authorization: None,
             };
-            let effective_timeout = timeout_secs_override.unwrap_or(config.timeout_secs);
             match complete_with_endpoint(
                 &endpoint,
-                effective_timeout,
+                local_timeout,
                 messages,
                 options,
                 first_byte_secs,
+                true, // is_local — explicit param, never label match (D7/L3)
             ) {
                 Ok(response) => return Ok(response),
                 Err(error) if cloud_ok => {
@@ -213,16 +249,16 @@ fn complete_with_options(
     // Single sanitize pass before any cloud network call (RT-A1).
     let sanitized_messages = sanitize_messages_for_egress(messages);
 
-    let effective_timeout = timeout_secs_override.unwrap_or(config.timeout_secs);
     let mut last_error = String::new();
 
     if let Some(endpoint) = ollama_cloud_endpoint(config) {
         match complete_with_endpoint(
             &endpoint,
-            effective_timeout,
+            cloud_timeout,
             &sanitized_messages,
             options,
             first_byte_secs,
+            false, // cloud
         ) {
             Ok(response) => return Ok(response),
             Err(e) => {
@@ -245,10 +281,11 @@ fn complete_with_options(
         };
         match complete_with_endpoint(
             &endpoint,
-            effective_timeout,
+            cloud_timeout,
             &sanitized_messages,
             options,
             first_byte_secs,
+            false, // cloud
         ) {
             Ok(response) => return Ok(response),
             Err(e) => {
@@ -321,10 +358,13 @@ pub fn is_first_byte_timeout_error(err: &str) -> bool {
 ///
 /// Spawns the HTTP call in a thread and uses `recv_timeout` to enforce a
 /// hard deadline that covers the ENTIRE request lifecycle (DNS, connect,
-/// TLS handshake, read). The inner ureq timeouts (`timeout_connect(5)` +
-/// `timeout_read(timeout_secs)`) fire first when possible, giving a more
-/// specific error. The `+5` buffer gives ureq a chance to fire before the
-/// hard deadline.
+/// TLS handshake, read). The inner ureq timeouts fire first when possible,
+/// giving a more specific error. The `+5` buffer gives ureq a chance to fire
+/// before the hard deadline.
+///
+/// `timeout_secs` semantics match [`complete`]: `Some(n)` is an explicit
+/// budget for all arms; `None` uses config for Local and
+/// [`DEFAULT_CLOUD_FALLBACK_TIMEOUT_SECS`] for cloud fallback (M2).
 ///
 /// Known limitation: if ureq hangs at the DNS resolution level, the spawned
 /// thread cannot be forcefully killed in Rust. The thread leaks until the
@@ -337,21 +377,18 @@ pub fn complete_with_hard_deadline(
     options: &CompletionOptions,
     timeout_secs: Option<u64>,
 ) -> Result<String, String> {
-    let effective_timeout = timeout_secs.unwrap_or(config.timeout_secs);
-    let deadline = Duration::from_secs(effective_timeout + 5);
+    // Outer hard deadline tracks the primary (local) budget.
+    let primary_timeout = timeout_secs.unwrap_or(config.timeout_secs);
+    let deadline = Duration::from_secs(primary_timeout + 5);
 
     let (tx, rx) = std::sync::mpsc::channel();
     let config_clone = config.clone();
     let messages_clone: Vec<ChatMessage> = messages.to_vec();
     let options_clone = options.clone();
 
+    // Pass Option through so cloud fallback stays short when CLI omitted (M2).
     std::thread::spawn(move || {
-        let result = complete(
-            &config_clone,
-            &messages_clone,
-            &options_clone,
-            Some(effective_timeout),
-        );
+        let result = complete(&config_clone, &messages_clone, &options_clone, timeout_secs);
         let _ = tx.send(result);
     });
 
@@ -359,11 +396,11 @@ pub fn complete_with_hard_deadline(
         Ok(result) => result,
         Err(std::sync::mpsc::RecvTimeoutError::Timeout) => Err(format!(
             "Hard timeout: request did not complete within {}s",
-            effective_timeout
+            primary_timeout
         )),
         Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => Err(format!(
             "Provider thread panicked during request (timeout: {}s)",
-            effective_timeout
+            primary_timeout
         )),
     }
 }
@@ -385,6 +422,7 @@ fn complete_with_endpoint(
     messages: &[ChatMessage],
     options: &CompletionOptions,
     first_byte_secs: Option<u64>,
+    is_local: bool,
 ) -> Result<String, String> {
     let target = completion_target(endpoint.base_url);
 
@@ -402,10 +440,17 @@ fn complete_with_endpoint(
     );
 
     if let Some(fb_secs) = first_byte_secs {
-        return complete_endpoint_with_first_byte(endpoint, &target, &body, timeout_secs, fb_secs);
+        return complete_endpoint_with_first_byte(
+            endpoint,
+            &target,
+            &body,
+            timeout_secs,
+            fb_secs,
+            is_local,
+        );
     }
 
-    let response = send_endpoint_request(endpoint, &target, &body, timeout_secs)?;
+    let response = send_endpoint_request(endpoint, &target, &body, timeout_secs, is_local)?;
     parse_endpoint_response(response, endpoint, &target)
 }
 
@@ -444,9 +489,13 @@ fn send_endpoint_request(
     target: &EndpointTarget,
     body: &serde_json::Value,
     timeout_secs: u64,
+    is_local: bool,
 ) -> Result<ureq::Response, String> {
+    // Local: min(30, effective); cloud: 5s. Explicit is_local param — never
+    // match on endpoint.label (D7/L3).
+    let connect_secs = connect_timeout_secs(is_local, timeout_secs);
     let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(5))
+        .timeout_connect(Duration::from_secs(connect_secs))
         .timeout_read(Duration::from_secs(timeout_secs))
         .timeout_write(Duration::from_secs(30))
         .build();
@@ -576,6 +625,7 @@ fn complete_endpoint_with_first_byte(
     body: &serde_json::Value,
     timeout_secs: u64,
     first_byte_secs: u64,
+    is_local: bool,
 ) -> Result<String, String> {
     let (headers_tx, headers_rx) = std::sync::mpsc::channel::<Result<(), String>>();
     let (result_tx, result_rx) = std::sync::mpsc::channel::<Result<String, String>>();
@@ -591,7 +641,7 @@ fn complete_endpoint_with_first_byte(
     let body = body.clone();
 
     std::thread::spawn(move || {
-        match send_endpoint_request_owned(&endpoint_owned, &target, &body, timeout_secs) {
+        match send_endpoint_request_owned(&endpoint_owned, &target, &body, timeout_secs, is_local) {
             Ok(response) => {
                 let headers_ok = headers_tx.send(Ok(())).is_ok();
                 if headers_ok {
@@ -645,9 +695,12 @@ fn send_endpoint_request_owned(
     target: &EndpointTarget,
     body: &serde_json::Value,
     timeout_secs: u64,
+    is_local: bool,
 ) -> Result<ureq::Response, String> {
+    // Local: min(30, effective); cloud: 5s. Explicit is_local param (D7/L3).
+    let connect_secs = connect_timeout_secs(is_local, timeout_secs);
     let agent = ureq::AgentBuilder::new()
-        .timeout_connect(Duration::from_secs(5))
+        .timeout_connect(Duration::from_secs(connect_secs))
         .timeout_read(Duration::from_secs(timeout_secs))
         .timeout_write(Duration::from_secs(30))
         .build();
@@ -817,6 +870,136 @@ mod tests {
                 content: "Hello!".to_string(),
             },
         ]
+    }
+
+    /// 0158 DoD-3: Local mock delay >5s and < effective must succeed
+    /// (no 5s probe / 500ms precheck kill).
+    #[test]
+    fn complete_local_survives_delay_over_five_seconds() {
+        use std::time::Instant;
+
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/v1/chat/completions");
+            then.status(200)
+                .delay(Duration::from_secs(8))
+                .header("Content-Type", "application/json")
+                .json_body(serde_json::json!({
+                    "choices": [{"message": {"content": "cold-ok"}}]
+                }));
+        });
+
+        let mut config = test_config(&server.base_url());
+        config.timeout_secs = 15;
+        let start = Instant::now();
+        let result = complete(
+            &config,
+            &test_messages(),
+            &CompletionOptions::default(),
+            Some(15),
+        );
+        let elapsed = start.elapsed();
+        assert!(
+            result.is_ok(),
+            "delay 8s under 15s budget must succeed: {result:?}"
+        );
+        assert_eq!(result.unwrap().trim(), "cold-ok");
+        assert!(
+            elapsed >= Duration::from_secs(7),
+            "expected ~8s delay, got {elapsed:?}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(14),
+            "expected under effective, got {elapsed:?}"
+        );
+    }
+
+    /// 0158 DoD-4: closed-port Local fails fast (no ~300s wait).
+    #[test]
+    fn complete_closed_port_local_fails_fast() {
+        use std::time::Instant;
+
+        let mut config = test_config("http://127.0.0.1:1");
+        config.timeout_secs = 300;
+        let start = Instant::now();
+        let result = complete(
+            &config,
+            &test_messages(),
+            &CompletionOptions::default(),
+            None, // omitted CLI → would be 300 primary, but refused is immediate
+        );
+        let elapsed = start.elapsed();
+        assert!(result.is_err(), "expected unreachable, got: {result:?}");
+        let err = result.unwrap_err();
+        assert!(
+            err.to_lowercase().contains("unreachable")
+                || err.to_lowercase().contains("refused")
+                || err.to_lowercase().contains("not reachable"),
+            "expected unreachable/refused, got: {err}"
+        );
+        assert!(
+            elapsed < Duration::from_secs(5),
+            "closed port must not wait local budget, got {elapsed:?}"
+        );
+    }
+
+    /// 0158 M2: when CLI override is None, cloud fallback uses ≤15-class budget,
+    /// not local 300.
+    #[test]
+    #[serial_test::serial(env)]
+    fn complete_cloud_fallback_uses_short_budget_when_override_none() {
+        use std::time::Instant;
+
+        mod env_guard {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/integration/common/env_guard.rs"
+            ));
+        }
+        use env_guard::TempEnv;
+
+        let openrouter = MockServer::start();
+        openrouter.mock(|when, then| {
+            when.method(httpmock::Method::POST)
+                .path("/v1/chat/completions");
+            then.status(200)
+                .delay(Duration::from_secs(20))
+                .header("Content-Type", "application/json")
+                .json_body(serde_json::json!({
+                    "choices": [{"message": {"content": "too-slow"}}]
+                }));
+        });
+
+        let _gem = TempEnv::remove("GEMINI_API_KEY");
+        let _or = TempEnv::set("OPENROUTER_API_KEY", "sk-or-test-not-real");
+        let _orm = TempEnv::set("OPENROUTER_MODEL", "test/model");
+        let _orb = TempEnv::set("OPENROUTER_BASE_URL", &openrouter.base_url());
+
+        let mut config = test_config("http://127.0.0.1:1"); // local unreachable
+        config.timeout_secs = 300;
+
+        let start = Instant::now();
+        let result = complete(
+            &config,
+            &test_messages(),
+            &CompletionOptions::default(),
+            None, // omitted → cloud fallback 15s class
+        );
+        let elapsed = start.elapsed();
+        assert!(
+            result.is_err(),
+            "expected cloud timeout/fail, got: {result:?}"
+        );
+        // Must finish well under local 300s; cloud arm is 15 + connect buffer.
+        assert!(
+            elapsed < Duration::from_secs(25),
+            "cloud fallback must not inherit 300s local budget, got {elapsed:?}"
+        );
+        assert!(
+            elapsed >= Duration::from_secs(10),
+            "expected cloud arm to run ~15s class, got {elapsed:?}"
+        );
     }
 
     #[test]
@@ -1494,8 +1677,22 @@ mod tests {
     /// U17.2: connection-refused must fail fast without waiting for the first
     /// byte or the read timeout.
     #[test]
+    #[serial_test::serial(env)]
     fn complete_first_byte_timeout_connection_refused() {
         use std::time::Instant;
+
+        mod env_guard {
+            include!(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/integration/common/env_guard.rs"
+            ));
+        }
+        use env_guard::TempEnv;
+
+        // Isolate cloud keys so fallback cannot mask the local refused path.
+        let _gem = TempEnv::remove("GEMINI_API_KEY");
+        let _or = TempEnv::remove("OPENROUTER_API_KEY");
+        let _oc = TempEnv::remove("OLLAMA_CLOUD_API_KEY");
 
         let config = test_config("http://127.0.0.1:1");
         let start = Instant::now();
@@ -1518,8 +1715,8 @@ mod tests {
             "expected 'is unreachable' in error, got: {err}"
         );
         assert!(
-            elapsed < Duration::from_secs(2),
-            "expected fast fail <2s, got {elapsed:?}"
+            elapsed < Duration::from_secs(5),
+            "expected fast fail <5s, got {elapsed:?}"
         );
     }
 

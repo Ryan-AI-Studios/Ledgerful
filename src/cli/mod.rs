@@ -328,6 +328,37 @@ mod tests {
         }
     }
 
+    /// 0158 M7: argv fingerprint marks `timeout` only when the flag is present
+    /// (not via a hardcoded default of 15).
+    #[test]
+    fn ask_timeout_fingerprint_only_when_flag_present() {
+        let without = Cli::try_parse_from(["ledgerful", "ask", "hello"]).unwrap();
+        match &without.command {
+            Commands::Ask { timeout, .. } => {
+                assert_eq!(*timeout, None, "omitted --timeout must be None");
+            }
+            _ => panic!("expected Ask"),
+        }
+        assert!(
+            !without.command.argv_shape().contains("timeout"),
+            "omitted timeout must not appear in argv shape: {}",
+            without.command.argv_shape()
+        );
+
+        let with = Cli::try_parse_from(["ledgerful", "ask", "--timeout", "30", "hello"]).unwrap();
+        match &with.command {
+            Commands::Ask { timeout, .. } => {
+                assert_eq!(*timeout, Some(30));
+            }
+            _ => panic!("expected Ask"),
+        }
+        assert!(
+            with.command.argv_shape().contains("timeout"),
+            "explicit --timeout must appear in argv shape: {}",
+            with.command.argv_shape()
+        );
+    }
+
     #[test]
     fn update_check_alias_with_binary_sets_dry_run() {
         let cli = Cli::try_parse_from(["ledgerful", "update", "--check", "--binary"]).unwrap();

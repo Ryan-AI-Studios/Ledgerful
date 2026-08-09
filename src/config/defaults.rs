@@ -63,6 +63,10 @@ stale_threshold_days = 3
 # Use 127.0.0.1 — 'localhost' resolves to ::1 (IPv6) on Windows, which breaks IPv4-only servers
 base_url = "http://127.0.0.1:8081"
 embedding_url = "http://127.0.0.1:8083"
+# Default ask budget for Local when CLI --timeout is omitted (default 300).
+# Cold on-demand model loads often need well more than 15s; set lower for
+# snappy fail, or raise --timeout per request.
+# timeout_secs = 300
 # Optional fallback for Ollama Cloud completions.
 # Prefer OLLAMA_CLOUD_* environment variables or local .env for secrets.
 # Native:   ollama_cloud_url = "https://ollama.com/api"  (POST /api/chat)

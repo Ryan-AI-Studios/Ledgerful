@@ -76,7 +76,7 @@ fn test_ask_what_calls_run_with() {
         false,
         None,
         false,
-        15,
+        Some(15),
         false, // no_kg_fallback
         false, // auto_scan
     );
@@ -115,7 +115,7 @@ fn test_ask_show_callers_of_run_with() {
         false,
         None,
         false,
-        15,
+        Some(15),
         false, // no_kg_fallback
         false, // auto_scan
     );
@@ -154,7 +154,7 @@ fn test_ask_find_all_axum_route_handlers() {
         false,
         None,
         false,
-        15,
+        Some(15),
         false, // no_kg_fallback
         false, // auto_scan
     );
@@ -196,7 +196,7 @@ fn test_ask_find_the_function_run_with_primary_hit() {
         false,
         None,
         false,
-        15,
+        Some(15),
         false,
         false,
     );
@@ -236,7 +236,7 @@ fn test_ask_find_totally_absent_symbol_local_grounding_miss() {
         false,
         None,
         false,
-        15,
+        Some(15),
         false,
         false,
     );
