@@ -177,6 +177,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
         }
         Commands::Hotspots { args } => crate::commands::hotspots::execute_hotspots(args),
         Commands::Endpoints(args) => crate::commands::endpoints::execute_endpoints(args),
+        Commands::Symbols(args) => crate::commands::symbols::execute_symbols(args),
         Commands::Federate { command } => dispatch_federate(command),
         Commands::Bridge { subcommand } => crate::commands::bridge::execute(subcommand),
         Commands::Export { command } => dispatch_export(command),
