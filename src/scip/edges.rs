@@ -478,11 +478,22 @@ mod tests {
         }
     }
 
-    /// Capture tracing events at `max_level` and below while running `f`.
+    /// Serialize tracing-subscriber capture tests (set_default races under
+    /// nextest/cargo test multi-thread otherwise).
+    static CAPTURE_LOCK: Mutex<()> = Mutex::new(());
+
+    /// Capture tracing events at `max_level` and more severe while running `f`.
+    ///
+    /// Uses `LevelFilter::from_level` (ERROR..max_level inclusive). Tests that
+    /// need DEBUG samples must pass `Level::DEBUG` so `debug!` events reach the
+    /// buffer — a bare `filter_fn(*level <= max)` is easy to get wrong and races
+    /// with sibling capture tests without `CAPTURE_LOCK`.
     fn with_level_capture<T>(max_level: Level, f: impl FnOnce() -> T) -> (T, String) {
+        use tracing_subscriber::filter::LevelFilter;
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
 
+        let _serial = CAPTURE_LOCK.lock().unwrap_or_else(|e| e.into_inner());
         let buf = BufWriter::default();
         let capture = Arc::clone(&buf.buf);
         let layer = tracing_subscriber::fmt::layer()
@@ -490,9 +501,7 @@ mod tests {
             .without_time()
             .with_target(true)
             .with_level(true)
-            .with_filter(tracing_subscriber::filter::filter_fn(move |meta| {
-                *meta.level() <= max_level
-            }));
+            .with_filter(LevelFilter::from_level(max_level));
         let _guard = tracing_subscriber::registry().with(layer).set_default();
         let out = f();
         let text = String::from_utf8_lossy(&capture.lock().unwrap()).to_string();
