@@ -199,75 +199,8 @@ pub(crate) fn print_human_output(output: &IndexOutputStats) {
         .as_ref()
         .cloned()
         .unwrap_or_else(crate::scip::ScipIndexJson::did_not_run);
-    println!("SCIP augment:");
-    match scip.status {
-        crate::scip::ScipRunStatus::DidNotRun => {
-            println!("  Status:         did not run");
-        }
-        crate::scip::ScipRunStatus::Failed => {
-            println!(
-                "  Status:         failed ({})",
-                scip.message.as_deref().unwrap_or("unknown")
-            );
-        }
-        crate::scip::ScipRunStatus::SkippedStale => {
-            println!("  Status:         skipped (index hash unchanged)");
-        }
-        crate::scip::ScipRunStatus::Success => {
-            println!("  Status:         success");
-            if let Some(n) = scip.edges_added {
-                println!("  Edges added:    {}", n);
-            }
-            if let Some(n) = scip.edges_updated {
-                println!("  Edges updated:  {}", n);
-            }
-            if let Some(n) = scip.definitions_mapped {
-                println!("  Defs mapped:    {}", n);
-            }
-            if let Some(n) = scip.definitions_seen
-                && n > 0
-            {
-                println!("  Defs seen:      {}", n);
-            }
-            if let Some(n) = scip.references_seen {
-                println!("  Refs seen:      {}", n);
-            }
-            if let Some(n) = scip.edges_skipped_enclosing_disagreement
-                && n > 0
-            {
-                println!("  Skip disagree:  {}", n);
-            }
-            if let Some(n) = scip.edges_skipped_unmapped
-                && n > 0
-            {
-                println!("  Skip unmapped:  {}", n);
-            }
-            if let Some(n) = scip.edges_skipped_invalid_occ_range
-                && n > 0
-            {
-                println!("  Skip inv. range: {}", n);
-            }
-            if let Some(n) = scip.edges_skipped_duplicate
-                && n > 0
-            {
-                println!("  Skip duplicate: {}", n);
-            }
-            if let Some(n) = scip.definitions_skipped_invalid_range
-                && n > 0
-            {
-                println!("  Defs inv. range: {}", n);
-            }
-            if let Some(n) = scip.invalid_enclosing_fallback
-                && n > 0
-            {
-                println!("  Enc. fallback:  {}", n);
-            }
-            if let Some(n) = scip.files_skipped
-                && n > 0
-            {
-                println!("  Files skipped:  {}", n);
-            }
-        }
+    for line in format_scip_human_lines(&scip) {
+        println!("{line}");
     }
     println!();
     println!("API Routes:");
@@ -355,4 +288,161 @@ pub(crate) fn print_human_output(output: &IndexOutputStats) {
         "  Files assigned:    {}",
         output.service_stats.files_assigned
     );
+}
+
+/// Pure SCIP human lines for `print_human_output` (DoD-5 unit-testable).
+pub(crate) fn format_scip_human_lines(scip: &crate::scip::ScipIndexJson) -> Vec<String> {
+    let mut lines = vec!["SCIP augment:".to_string()];
+    match scip.status {
+        crate::scip::ScipRunStatus::DidNotRun => {
+            lines.push("  Status:         did not run".to_string());
+        }
+        crate::scip::ScipRunStatus::Failed => {
+            lines.push(format!(
+                "  Status:         failed ({})",
+                scip.message.as_deref().unwrap_or("unknown")
+            ));
+        }
+        crate::scip::ScipRunStatus::SkippedStale => {
+            lines.push("  Status:         skipped (index hash unchanged)".to_string());
+        }
+        crate::scip::ScipRunStatus::Success => {
+            lines.push("  Status:         success".to_string());
+            if let Some(n) = scip.edges_added {
+                lines.push(format!("  Edges added:    {n}"));
+            }
+            if let Some(n) = scip.edges_updated {
+                lines.push(format!("  Edges updated:  {n}"));
+            }
+            if let Some(n) = scip.definitions_mapped {
+                lines.push(format!("  Defs mapped:    {n}"));
+            }
+            if let Some(n) = scip.definitions_seen
+                && n > 0
+            {
+                lines.push(format!("  Defs seen:      {n}"));
+            }
+            if let Some(n) = scip.references_seen {
+                lines.push(format!("  Refs seen:      {n}"));
+            }
+            if let Some(n) = scip.edges_skipped_enclosing_disagreement
+                && n > 0
+            {
+                lines.push(format!("  Skip disagree:  {n}"));
+            }
+            if let Some(n) = scip.edges_skipped_unmapped
+                && n > 0
+            {
+                lines.push(format!("  Skip unmapped:  {n}"));
+            }
+            if let Some(n) = scip.edges_skipped_invalid_occ_range
+                && n > 0
+            {
+                lines.push(format!("  Skip inv. range: {n}"));
+            }
+            if let Some(n) = scip.edges_skipped_duplicate
+                && n > 0
+            {
+                lines.push(format!("  Skip duplicate: {n}"));
+            }
+            if let Some(n) = scip.definitions_skipped_invalid_range
+                && n > 0
+            {
+                lines.push(format!("  Defs inv. range: {n}"));
+            }
+            if let Some(n) = scip.invalid_enclosing_fallback
+                && n > 0
+            {
+                lines.push(format!("  Enc. fallback:  {n}"));
+            }
+            if let Some(n) = scip.files_skipped
+                && n > 0
+            {
+                lines.push(format!("  Files skipped:  {n}"));
+            }
+        }
+    }
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_scip_human_lines;
+    use crate::scip::{ScipEdgeStats, ScipIndexJson, ScipRunStatus};
+
+    #[test]
+    fn scip_human_success_shows_skip_and_refs_labels() {
+        let stats = ScipEdgeStats {
+            edges_added: 2,
+            edges_updated: 1,
+            definitions_mapped: 4,
+            definitions_seen: 5,
+            files_skipped: 0,
+            edges_skipped_enclosing_disagreement: 3,
+            edges_skipped_unmapped: 7,
+            edges_skipped_invalid_occ_range: 0,
+            edges_skipped_duplicate: 0,
+            definitions_skipped_invalid_range: 0,
+            invalid_enclosing_fallback: 0,
+            references_seen: 20,
+            ..Default::default()
+        };
+        let scip = ScipIndexJson::from_stats(&stats);
+        assert!(matches!(scip.status, ScipRunStatus::Success));
+
+        let text = format_scip_human_lines(&scip).join("\n");
+        assert!(
+            text.contains("Skip disagree"),
+            "expected Skip disagree label; got:\n{text}"
+        );
+        assert!(
+            text.contains("Refs seen"),
+            "expected Refs seen label; got:\n{text}"
+        );
+        assert!(
+            text.contains("Skip unmapped"),
+            "expected Skip unmapped label; got:\n{text}"
+        );
+        assert!(
+            text.contains("Status:         success"),
+            "expected success status; got:\n{text}"
+        );
+        // Non-zero skip values must appear
+        assert!(text.contains("3"), "disagree count missing:\n{text}");
+        assert!(text.contains("7"), "unmapped count missing:\n{text}");
+        assert!(text.contains("20"), "refs_seen count missing:\n{text}");
+    }
+
+    #[test]
+    fn scip_human_success_omits_zero_skip_labels() {
+        let stats = ScipEdgeStats {
+            edges_added: 1,
+            references_seen: 1,
+            edges_skipped_enclosing_disagreement: 0,
+            edges_skipped_unmapped: 0,
+            ..Default::default()
+        };
+        let scip = ScipIndexJson::from_stats(&stats);
+        let text = format_scip_human_lines(&scip).join("\n");
+        assert!(
+            !text.contains("Skip disagree"),
+            "zero disagree must not print label; got:\n{text}"
+        );
+        assert!(
+            !text.contains("Skip unmapped"),
+            "zero unmapped must not print label; got:\n{text}"
+        );
+        assert!(
+            text.contains("Refs seen"),
+            "refs_seen always printed on success; got:\n{text}"
+        );
+    }
+
+    #[test]
+    fn scip_human_did_not_run() {
+        let scip = ScipIndexJson::did_not_run();
+        let text = format_scip_human_lines(&scip).join("\n");
+        assert!(text.contains("did not run"), "got:\n{text}");
+        assert!(!text.contains("Skip disagree"), "got:\n{text}");
+    }
 }

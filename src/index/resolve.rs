@@ -1128,6 +1128,15 @@ mod tests {
                 || skill.contains("off by default"),
             "skill must mention SCIP opt-in / json fields honesty"
         );
+        // 0157: tracked skill SoT must list skip tallies + quality rate, not only edges_added.
+        assert!(
+            skill.contains("edges_skipped_enclosing_disagreement"),
+            "docs/Ledgerful/skill.md must document edges_skipped_enclosing_disagreement"
+        );
+        assert!(
+            skill.contains("references_seen"),
+            "docs/Ledgerful/skill.md must document references_seen"
+        );
         // Required honest framing present in full doc
         assert!(
             lower.contains("unique-local-candidate") || lower.contains("unique local candidate"),

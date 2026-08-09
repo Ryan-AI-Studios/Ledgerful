@@ -478,8 +478,8 @@ mod tests {
         }
     }
 
-    /// Capture WARN-level events while running `f`; returns (result, warn text).
-    fn with_warn_capture<T>(f: impl FnOnce() -> T) -> (T, String) {
+    /// Capture tracing events at `max_level` and below while running `f`.
+    fn with_level_capture<T>(max_level: Level, f: impl FnOnce() -> T) -> (T, String) {
         use tracing_subscriber::layer::SubscriberExt;
         use tracing_subscriber::util::SubscriberInitExt;
 
@@ -490,13 +490,23 @@ mod tests {
             .without_time()
             .with_target(true)
             .with_level(true)
-            .with_filter(tracing_subscriber::filter::filter_fn(|meta| {
-                *meta.level() <= Level::WARN
+            .with_filter(tracing_subscriber::filter::filter_fn(move |meta| {
+                *meta.level() <= max_level
             }));
         let _guard = tracing_subscriber::registry().with(layer).set_default();
         let out = f();
         let text = String::from_utf8_lossy(&capture.lock().unwrap()).to_string();
         (out, text)
+    }
+
+    /// Capture WARN-level events while running `f`; returns (result, warn text).
+    fn with_warn_capture<T>(f: impl FnOnce() -> T) -> (T, String) {
+        with_level_capture(Level::WARN, f)
+    }
+
+    /// Capture DEBUG-and-above events while running `f` (DoD-6 sample pins).
+    fn with_debug_capture<T>(f: impl FnOnce() -> T) -> (T, String) {
+        with_level_capture(Level::DEBUG, f)
     }
 
     fn count_related_scip_warns(text: &str) -> usize {
@@ -509,6 +519,14 @@ mod tests {
                         || lower.contains("skipped edges")
                         || lower.contains("classic"))
             })
+            .count()
+    }
+
+    fn count_disagreement_sample_debugs(text: &str) -> usize {
+        // Match only the D10 sample event message — not the summary WARN that
+        // mentions RUST_LOG=debug / "≤3 samples" in its help text.
+        text.lines()
+            .filter(|line| line.to_ascii_lowercase().contains("disagreement sample"))
             .count()
     }
 
@@ -991,5 +1009,77 @@ mod tests {
         assert_eq!(stats.invalid_enclosing_fallback, 1);
         assert_eq!(stats.edges_added, 1);
         assert_eq!(stats.edges_skipped_enclosing_disagreement, 0);
+    }
+
+    /// DoD-6: ≥5 disagreements → counter == N, but ≤3 path-aware debug samples
+    /// (path + enclosing_id / occurrence_id context). Never flood 5+ sample lines.
+    #[test]
+    fn disagreement_debug_samples_capped_at_three() {
+        use crate::scip::resolver::SCIP_ROLE_DEFINITION;
+        const N: usize = 10;
+        let path = "src/sample_cap.rs";
+
+        let conn = setup_db();
+        let fid = insert_file(&conn, path);
+        let _mod_sym = insert_symbol(&conn, fid, "mod_fn", 1, 20);
+        let _fn_sym = insert_symbol(&conn, fid, "inner_fn", 30, 50);
+
+        let mut occurrences = Vec::with_capacity(N + 1);
+        occurrences.push(scip::types::Occurrence {
+            symbol: "rust-analyzer cargo test 0.1 sample_cap/".to_string(),
+            symbol_roles: SCIP_ROLE_DEFINITION,
+            range: vec![9, 0, 5],
+            ..Default::default()
+        });
+        for i in 0..N {
+            occurrences.push(scip::types::Occurrence {
+                symbol: format!("rust-analyzer cargo test 0.1 sample_cap/{i}"),
+                symbol_roles: 0,
+                range: vec![39, 0, 5],              // native 40 → inner_fn
+                enclosing_range: vec![9, 0, 19, 0], // native 10 → mod_fn
+                ..Default::default()
+            });
+        }
+        let docs = vec![scip::types::Document {
+            relative_path: path.to_string(),
+            occurrences,
+            ..Default::default()
+        }];
+
+        let (stats, debug_text) = with_debug_capture(|| {
+            augment_edges_from_scip(&conn, &docs, &|rel| {
+                if rel == path { Some(fid) } else { None }
+            })
+            .unwrap()
+        });
+
+        assert_eq!(stats.edges_skipped_enclosing_disagreement, N);
+        assert_eq!(stats.references_seen, N);
+
+        let sample_lines = count_disagreement_sample_debugs(&debug_text);
+        assert_eq!(
+            sample_lines, DISAGREEMENT_SAMPLE_CAP,
+            "expected exactly {DISAGREEMENT_SAMPLE_CAP} sample debug lines for {N} disagreements, \
+             got {sample_lines}; text={debug_text:?}"
+        );
+        assert!(
+            sample_lines < N,
+            "samples must not equal disagreement count ({N}); got {sample_lines}"
+        );
+
+        // Sample messages must include relative_path and enc/occ id context.
+        assert!(
+            debug_text.contains(path),
+            "sample debug must include relative_path {path:?}; text={debug_text:?}"
+        );
+        let lower = debug_text.to_ascii_lowercase();
+        assert!(
+            lower.contains("enclosing_id") || lower.contains("enclosing"),
+            "sample debug must include enclosing id context; text={debug_text:?}"
+        );
+        assert!(
+            lower.contains("occurrence_id") || lower.contains("occurrence"),
+            "sample debug must include occurrence id context; text={debug_text:?}"
+        );
     }
 }
