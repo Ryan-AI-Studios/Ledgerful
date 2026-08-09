@@ -43,10 +43,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **`dependencies list` stale self-version / Cozo coupling (0153, Cosmetic #3):**
   Default list no longer reads Cozo package nodes; root version comes from live
-  `[package]` (`source: "manifest"`). Works without index/Cozo and on non-git
-  cwd with a valid cargo project (`get_layout_or_cwd_if_not_git`). Missing
-  Cargo.toml → clear non-zero error (no KG fallback). Missing lock → direct
-  names with locked version `-`/null and an honest note.
+  `[package]` when it is a string (`source: "manifest"`), or falls back to the
+  root package entry in `Cargo.lock` when the manifest uses non-string version
+  (e.g. `version.workspace = true`; `source: "lock"`). Works without index/Cozo
+  and on non-git cwd with a valid cargo project (`get_layout_or_cwd_if_not_git`).
+  Missing Cargo.toml → clear non-zero error (no KG fallback). Missing lock →
+  direct names with locked version `-`/null and an honest note.
 - **`tests -e` / `verify --explain --entity` path resolve (0156):** Shared resolver
   in `explain_test_mappings` now does exact path (Windows `LOWER`) → module +
   extensionless aliases (`X.rs`→`X/mod.rs`; extensionless→`.rs`/`mod.rs`, accept

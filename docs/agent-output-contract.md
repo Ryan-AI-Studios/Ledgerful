@@ -419,7 +419,7 @@ from the **root package’s** `Cargo.lock` `dependencies` array. Full lock is
 | `schemaVersion` | always **1** |
 | `mode` | `"direct"` (default) or `"all"` (`--all`) |
 | `ecosystem` | `"rust/cargo"` for this surface |
-| `root` | Live `[package]` name/version; `source` is `"manifest"` |
+| `root` | Live `[package]` name + version; `source` is `"manifest"` when version is a plain string in the manifest, or `"lock"` when filled from the root lock package (e.g. `version.workspace = true`) |
 | `directCount` | Declared direct rows after kind expansion (all kinds + target tables) |
 | `lockPackageCount` | `[[package]]` count from live lock (0 if no lock) |
 | `packages` | Direct rows (`mode=direct`) or full lock rows (`mode=all`); sorted kind then name (direct) or name/version (all) |
