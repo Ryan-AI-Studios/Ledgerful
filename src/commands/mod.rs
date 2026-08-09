@@ -51,6 +51,7 @@ pub mod search;
 pub mod security;
 pub mod services_diff;
 pub mod setup;
+pub mod symbols;
 #[cfg(feature = "sync")]
 pub mod sync;
 pub mod test_mapping;

@@ -31,6 +31,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`ledgerful symbols` scoped inventory (0163):** Index-backed list of definitions
+  under `--path` (prefix), `--changed` (WT ∩ indexed, includes Deleted still
+  indexed), `--kind` (canonical PascalCase + aliases), `--pub`, with default
+  `--limit 200` / hard max **5000**. Pure `--json` schemaVersion **1**
+  (`totalMatching` = COUNT, honest `truncated`, optional `indexStatus` when the
+  DB is missing). Not search; not dump-all. See `docs/agent-output-contract.md`.
 - **`dependencies list --all` / `-a` (0153):** Full lock packages from live
   `Cargo.lock` (sorted name/version; Source column = lock source or `-` for
   path/workspace). `-v/--verbose` remains richer **direct** columns (Req, Source),

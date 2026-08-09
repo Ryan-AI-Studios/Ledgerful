@@ -234,6 +234,15 @@ pub enum Commands {
     },
     /// List and filter API endpoints
     Endpoints(crate::commands::endpoints::EndpointsArgs),
+    /// List indexed symbols (scoped path/changed/kind/pub inventory; not search)
+    #[command(
+        long_about = "List indexed symbols from project_symbols (scoped inventory).\n\n\
+This is a bounded catalog of definitions under a path or change set — not BM25/semantic search.\n\n\
+--path is a path *prefix* (file equals prefix or lives under prefix/), not a substring like endpoints --path.\n\
+Class and Interface kinds are accepted but currently unpopulated by extractors (reserved).\n\
+--changed includes Deleted paths still present in the index until re-index."
+    )]
+    Symbols(crate::commands::symbols::SymbolsArgs),
     /// Manage cross-repo federation
     Federate {
         #[command(subcommand)]
@@ -747,6 +756,7 @@ impl Commands {
                     }
             }
             Commands::Endpoints(args) => args.wants_json(),
+            Commands::Symbols(args) => args.wants_json(),
             Commands::Export { .. } => false,
             Commands::Federate { .. } => false,
             Commands::Services { command } => match command {
@@ -889,6 +899,7 @@ impl Commands {
                 None => "hotspots",
             },
             Commands::Endpoints(_) => "endpoints",
+            Commands::Symbols(_) => "symbols",
             Commands::Export { command } => match command {
                 ExportCommands::Evidence { .. } => "export_evidence",
                 ExportCommands::Head { .. } => "export_head",
@@ -1064,6 +1075,17 @@ mod machine_output_tests {
         assert!(parse(&["index", "--check", "--json"]).is_machine_output());
         assert!(parse(&["timings", "--json"]).is_machine_output());
         assert!(parse(&["hotspots", "--json"]).is_machine_output());
+        assert!(parse(&["symbols", "--json"]).is_machine_output());
+        assert!(!parse(&["symbols"]).is_machine_output());
+        assert_eq!(parse(&["symbols"]).command_name(), "symbols");
+        assert!(
+            Cli::try_parse_from(["ledgerful", "symbols", "--limit", "5001"]).is_err(),
+            "symbols --limit > 5000 must be rejected"
+        );
+        assert!(
+            Cli::try_parse_from(["ledgerful", "symbols", "--limit", "0"]).is_err(),
+            "symbols --limit 0 must be rejected"
+        );
         #[cfg(feature = "sync")]
         {
             assert!(!parse(&["sync", "setup"]).is_machine_output());
@@ -1646,6 +1668,9 @@ impl Commands {
                 }
             }
             Commands::Endpoints(args) => {
+                f.extend(args.present_flag_names());
+            }
+            Commands::Symbols(args) => {
                 f.extend(args.present_flag_names());
             }
             Commands::Ask {

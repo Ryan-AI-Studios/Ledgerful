@@ -35,6 +35,7 @@ on stderr.
 | `hotspots --json` | yes | yes | |
 | `hotspots trend --json` | yes (0151) | yes | schemaVersion 1; modes summary/full/entity; see schema below |
 | `endpoints --json` | yes | yes | |
+| `symbols --json` | yes (0163) | yes | schemaVersion **1** inventory; path/changed/kind/pub filters; COUNT-backed `totalMatching`; optional `indexStatus`; see schema below |
 | `data-models list --json` | yes | yes | bare array; additive `file_path` (normalized `/`) per row (0155); one row per logical model identity |
 | `dependencies list --json` | yes (0153) | yes | schemaVersion **1** envelope; `mode`: `direct` (default) \| `all`; live Cargo.toml+lock — not Cozo; see schema below |
 | `scan --impact --json` | yes | yes | impact packet |
@@ -377,6 +378,78 @@ ledgerful hotspots trend --json
 ledgerful hotspots trend --limit 5 --json
 ledgerful hotspots trend --all --json
 ledgerful hotspots trend --entity src/lib.rs --json
+```
+
+---
+
+## `symbols --json` schema (v1)
+
+Track **0163**. Pure stdout object — scoped, index-backed symbol inventory
+(not search ranking). Default `--limit 200`, hard max **5000** (clap range).
+`totalMatching` is a true `COUNT(*)` under the same filters (not overfetch).
+Identity for consumers (e.g. AI-Brains T233): **`(path, name, kind)`** (+
+`line` when present) — **`qualifiedName` is not globally unique**.
+
+```json
+{
+  "schemaVersion": 1,
+  "scope": {
+    "path": "src/commands",
+    "changed": false,
+    "kind": "Function",
+    "pubOnly": true
+  },
+  "limit": 200,
+  "truncated": false,
+  "resultCount": 12,
+  "totalMatching": 12,
+  "symbols": [
+    {
+      "name": "execute_step",
+      "kind": "Function",
+      "path": "src/verify/engine.rs",
+      "line": 40,
+      "isPublic": true,
+      "qualifiedName": "execute_step"
+    }
+  ],
+  "indexStatus": {
+    "state": "missing",
+    "remediation": "ledgerful index --incremental"
+  }
+}
+```
+
+| Field | Rules |
+|---|---|
+| `schemaVersion` | always **1** |
+| `scope.path` / `scope.kind` | **null** when unset; `kind` is **canonical** PascalCase (never raw `fn`) |
+| `scope.changed` / `scope.pubOnly` | always present bools |
+| `truncated` | `totalMatching > limit` |
+| `resultCount` | `symbols.len()` (≤ limit) |
+| `totalMatching` | **COUNT** before limit (same filters) |
+| `symbols[].line` | **omit** when unknown — never JSON `null` |
+| `symbols[].qualifiedName` | omit when empty/absent; not a global vault key |
+| `indexStatus` | **optional**; omit when index usable. When present: `state` + optional `remediation`. Used when `ledger.db` is **missing** without `--auto-index` (exit **0**, empty `symbols`). Other open failures propagate as errors (not silent empty). |
+| Empty | full envelope, `symbols: []`, exit **0** |
+
+### Flags
+
+| Flag | Notes |
+|---|---|
+| `--path` | **Prefix** (`file_path == prefix` OR starts with `prefix/`); not endpoints substring. Trailing `/` trimmed; empty-after-trim → error |
+| `--changed` | WT change set ∩ indexed paths; empty change set → empty inventory exit 0; **includes Deleted** and rename **old_path** still in index until re-index; membership **case-insensitive on Windows only** |
+| `--kind` | Single kind; aliases (`fn`→`Function`, `mod`/`module`→`Module`, …); Class/Interface reserved/unpopulated |
+| `--pub` | `is_public = 1` |
+| `-l/--limit` | default 200; range `1..=5000` |
+| `--auto-index` | bootstrap missing DB + `try_auto_index`; fatal under `--json` emits no partial machine stdout |
+
+### Invocation
+
+```powershell
+ledgerful symbols --path src/commands --pub --limit 50 --json
+ledgerful symbols --changed --json
+ledgerful symbols --kind fn --path src/cli --json
 ```
 
 ---

@@ -46,6 +46,7 @@ mod cli_services_diff_messaging;
 mod cli_setup;
 mod cli_sparse_empty_states;
 mod cli_surfaces;
+mod cli_symbols;
 mod cli_update;
 #[cfg(feature = "usage-metrics")]
 mod cli_usage;
