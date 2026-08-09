@@ -36,6 +36,7 @@ on stderr.
 | `hotspots trend --json` | yes (0151) | yes | schemaVersion 1; modes summary/full/entity; see schema below |
 | `endpoints --json` | yes | yes | |
 | `data-models list --json` | yes | yes | bare array; additive `file_path` (normalized `/`) per row (0155); one row per logical model identity |
+| `dependencies list --json` | yes (0153) | yes | schemaVersion **1** envelope; `mode`: `direct` (default) \| `all`; live Cargo.toml+lock — not Cozo; see schema below |
 | `scan --impact --json` | yes | yes | impact packet |
 | `scan --json` alone | incomplete | n/a | exit 1; requires `--impact` (or PR `--format json`) |
 | `scan --pr <range> --format json` | via `--format` | yes | PR-range machine output (not impact packet) |
@@ -376,6 +377,64 @@ ledgerful hotspots trend --json
 ledgerful hotspots trend --limit 5 --json
 ledgerful hotspots trend --all --json
 ledgerful hotspots trend --entity src/lib.rs --json
+```
+
+---
+
+## `dependencies list --json` schema (v1)
+
+Track **0153**. Pure stdout object (not a bare array). Default mode lists
+**declared direct** dependencies from live `Cargo.toml` with locked versions
+from the **root package’s** `Cargo.lock` `dependencies` array. Full lock is
+`--all`. No Cozo / index required. No progress on stdout under `--json`.
+
+```json
+{
+  "schemaVersion": 1,
+  "mode": "direct",
+  "ecosystem": "rust/cargo",
+  "root": {
+    "name": "ledgerful",
+    "version": "0.2.7",
+    "source": "manifest"
+  },
+  "directCount": 96,
+  "lockPackageCount": 859,
+  "packages": [
+    {
+      "name": "clap",
+      "version": "4.6.1",
+      "kind": "normal",
+      "ecosystem": "rust/cargo",
+      "source": "registry+https://github.com/rust-lang/crates.io-index",
+      "optional": false,
+      "req": "4.6.1"
+    }
+  ]
+}
+```
+
+| Field | Rules |
+|---|---|
+| `schemaVersion` | always **1** |
+| `mode` | `"direct"` (default) or `"all"` (`--all`) |
+| `ecosystem` | `"rust/cargo"` for this surface |
+| `root` | Live `[package]` name + version; `source` is `"manifest"` when version is a plain string in the manifest, or `"lock"` when filled from the root lock package (e.g. `version.workspace = true`) |
+| `directCount` | Declared direct rows after kind expansion (all kinds + target tables) |
+| `lockPackageCount` | `[[package]]` count from live lock (0 if no lock) |
+| `packages` | Direct rows (`mode=direct`) or full lock rows (`mode=all`); sorted kind then name (direct) or name/version (all) |
+| `packages[].version` | Locked version string, or **omitted/null** when not selected / no lock |
+| `packages[].kind` | `normal` \| `build` \| `dev` in direct mode; omit in `--all` |
+| `packages[].source` | Lock source string when known; omit/null for path/workspace |
+| `packages[].optional` / `req` / `target` | Present when known from manifest (direct mode) |
+| `truncated` | **Omitted** (no truncation logic on this surface) |
+
+### Invocation
+
+```powershell
+ledgerful dependencies list --json
+ledgerful dependencies list --all --json
+ledgerful dependencies list -v --json
 ```
 
 ---

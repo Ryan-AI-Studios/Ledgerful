@@ -1,3 +1,4 @@
+pub mod cargo_lock;
 pub mod clock;
 pub mod fs;
 pub mod hashing;

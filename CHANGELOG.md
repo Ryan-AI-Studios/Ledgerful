@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Default `dependencies list` is direct deps from live Cargo.toml + Cargo.lock (0153):**
+  Shows declared direct dependencies (normal/build/dev + target tables) with locked
+  versions resolved from the **root package’s own** lock `dependencies` array (not a
+  multi-version name-join; not Cozo package nodes). Header no longer claims “from
+  Knowledge Graph”. JSON is a schemaVersion **1** envelope (`mode`: `direct`|`all`,
+  `root`, `directCount`, `lockPackageCount`, `packages`). Dual-kind names emit one
+  row per kind. See `docs/agent-output-contract.md`.
 - **Default `hotspots trend` is top-file summary (0151):** Human + `--json` default
   to a scannable top-**20** file rollup (Score / Prior / Δ / Samples / Last recorded),
   not the full timestamp×file matrix. Mode precedence: `--entity` > `-a/--all` >
@@ -24,12 +31,24 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`dependencies list --all` / `-a` (0153):** Full lock packages from live
+  `Cargo.lock` (sorted name/version; Source column = lock source or `-` for
+  path/workspace). `-v/--verbose` remains richer **direct** columns (Req, Source),
+  not a synonym of `--all`.
 - **`hotspots trend --limit` / `-a/--all` (0151):** `--limit N` (range `1..`, default
   20) caps summary files; `-a/--all` restores the full days-window matrix. Parent
   `hotspots --limit` remains list-scoped only.
 
 ### Fixed
 
+- **`dependencies list` stale self-version / Cozo coupling (0153, Cosmetic #3):**
+  Default list no longer reads Cozo package nodes; root version comes from live
+  `[package]` when it is a string (`source: "manifest"`), or falls back to the
+  root package entry in `Cargo.lock` when the manifest uses non-string version
+  (e.g. `version.workspace = true`; `source: "lock"`). Works without index/Cozo
+  and on non-git cwd with a valid cargo project (`get_layout_or_cwd_if_not_git`).
+  Missing Cargo.toml → clear non-zero error (no KG fallback). Missing lock →
+  direct names with locked version `-`/null and an honest note.
 - **`tests -e` / `verify --explain --entity` path resolve (0156):** Shared resolver
   in `explain_test_mappings` now does exact path (Windows `LOWER`) → module +
   extensionless aliases (`X.rs`→`X/mod.rs`; extensionless→`.rs`/`mod.rs`, accept
