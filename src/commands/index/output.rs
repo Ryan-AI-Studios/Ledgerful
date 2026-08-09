@@ -330,6 +330,11 @@ pub(crate) fn format_scip_human_lines(scip: &crate::scip::ScipIndexJson) -> Vec<
             {
                 lines.push(format!("  Skip disagree:  {n}"));
             }
+            if let Some(n) = scip.edges_recovered_nest_prefer
+                && n > 0
+            {
+                lines.push(format!("  Nest recovered: {n}"));
+            }
             if let Some(n) = scip.edges_skipped_unmapped
                 && n > 0
             {
@@ -379,6 +384,7 @@ mod tests {
             definitions_seen: 5,
             files_skipped: 0,
             edges_skipped_enclosing_disagreement: 3,
+            edges_recovered_nest_prefer: 4,
             edges_skipped_unmapped: 7,
             edges_skipped_invalid_occ_range: 0,
             edges_skipped_duplicate: 0,
@@ -396,6 +402,10 @@ mod tests {
             "expected Skip disagree label; got:\n{text}"
         );
         assert!(
+            text.contains("Nest recovered"),
+            "expected Nest recovered label; got:\n{text}"
+        );
+        assert!(
             text.contains("Refs seen"),
             "expected Refs seen label; got:\n{text}"
         );
@@ -409,6 +419,7 @@ mod tests {
         );
         // Non-zero skip values must appear
         assert!(text.contains("3"), "disagree count missing:\n{text}");
+        assert!(text.contains("4"), "nest recovered count missing:\n{text}");
         assert!(text.contains("7"), "unmapped count missing:\n{text}");
         assert!(text.contains("20"), "refs_seen count missing:\n{text}");
     }
@@ -419,6 +430,7 @@ mod tests {
             edges_added: 1,
             references_seen: 1,
             edges_skipped_enclosing_disagreement: 0,
+            edges_recovered_nest_prefer: 0,
             edges_skipped_unmapped: 0,
             ..Default::default()
         };
@@ -427,6 +439,10 @@ mod tests {
         assert!(
             !text.contains("Skip disagree"),
             "zero disagree must not print label; got:\n{text}"
+        );
+        assert!(
+            !text.contains("Nest recovered"),
+            "zero nest recovered must not print label; got:\n{text}"
         );
         assert!(
             !text.contains("Skip unmapped"),

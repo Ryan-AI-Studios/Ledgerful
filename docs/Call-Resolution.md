@@ -106,21 +106,27 @@ duplicate rows and skip the upgrade.
 additive under the top-level `scip` object (`edges_added` / `edges_updated` / status, plus skip
 tallies and `references_seen` on Success — see below).
 
-**Caller resolve + skip hygiene (0157):** when both `enclosing_range` and occurrence `range` map
-to native symbols, they must **agree** or the reference is skipped (no edge; never invent a
-caller). High-cardinality skips are **counted**, not per-occurrence `warn!` spam: look at
-`scip.edges_skipped_enclosing_disagreement`, `scip.edges_skipped_unmapped`,
+**Caller resolve + skip hygiene (0157 / 0166):** when both `enclosing_range` and occurrence `range`
+map to native symbols, they must **agree** or nest-recover. If the two mapped native spans
+**strictly nest** (one properly contains the other on the line axis), prefer the **innermost**
+id and emit the edge (`edges_recovered_nest_prefer`). Disjoint spans, equal full spans with
+different ids, non-nested partial overlap, or a missing span row for either id still yield
+`EnclosingDisagreement` (no edge; never invent a caller). High-cardinality skips are **counted**,
+not per-occurrence `warn!` spam: look at `scip.edges_skipped_enclosing_disagreement`,
+`scip.edges_recovered_nest_prefer`, `scip.edges_skipped_unmapped`,
 `scip.edges_skipped_invalid_occ_range`, `scip.definitions_skipped_invalid_range`, and
 `scip.references_seen` on `index --json` (and non-zero lines in the human SCIP section). Rate
-quality as `edges_skipped_enclosing_disagreement / references_seen`. One summary WARN fires only
-when disagreement and/or invalid-range counts are non-zero (not for unmapped-only / re-run
-duplicates). First ≤3 disagreement samples (path + enc/occ ids) are at `debug!`
-(`RUST_LOG=debug`).
+**remaining** disagreement quality as
+`edges_skipped_enclosing_disagreement / references_seen` (recovery is counted separately and
+does not inflate disagreement). One summary WARN fires only when disagreement and/or invalid-range
+counts are non-zero (not for unmapped-only / re-run duplicates / nest recovery alone). First ≤3
+disagreement samples (path + enc/occ ids) are at `debug!` (`RUST_LOG=debug`).
 
 **Honesty note (common on Rust + rust-analyzer):** enclosing spans often include leading trivia
-(doc comments / attributes) while native tree-sitter spans start at the item, so disagreement is
-frequent and many skips are conservative false negatives — not a policy change in 0157. Soft-next
-quality work may prefer innermost when spans nest; this track only measures and log-budgets.
+(doc comments / attributes) while native tree-sitter spans start at the item, so enc/occ map to
+ancestor vs function. **0166 nest-prefer** recovers those nested cases via native span geometry;
+disjoint or ambiguous non-nested geometry remains a conservative skip. This is not stack-graph
+completeness and does not drop the disagreement fence for non-nested cases.
 
 **What SCIP does not do here:** write `project_symbols` (that path was removed — external symbols,
 off-by-one lines, and last-occurrence ranges are gone with it); flip on by default; cover every

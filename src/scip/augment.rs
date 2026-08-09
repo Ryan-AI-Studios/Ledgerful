@@ -43,6 +43,8 @@ pub struct ScipIndexJson {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edges_skipped_enclosing_disagreement: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    pub edges_recovered_nest_prefer: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub edges_skipped_unmapped: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub edges_skipped_invalid_occ_range: Option<usize>,
@@ -68,6 +70,7 @@ impl ScipIndexJson {
             definitions_seen: None,
             files_skipped: None,
             edges_skipped_enclosing_disagreement: None,
+            edges_recovered_nest_prefer: None,
             edges_skipped_unmapped: None,
             edges_skipped_invalid_occ_range: None,
             edges_skipped_duplicate: None,
@@ -104,6 +107,7 @@ impl ScipIndexJson {
             definitions_seen: Some(stats.definitions_seen),
             files_skipped: Some(stats.files_skipped),
             edges_skipped_enclosing_disagreement: Some(stats.edges_skipped_enclosing_disagreement),
+            edges_recovered_nest_prefer: Some(stats.edges_recovered_nest_prefer),
             edges_skipped_unmapped: Some(stats.edges_skipped_unmapped),
             edges_skipped_invalid_occ_range: Some(stats.edges_skipped_invalid_occ_range),
             edges_skipped_duplicate: Some(stats.edges_skipped_duplicate),
@@ -231,13 +235,14 @@ pub fn execute_scip_index(
 
     info!(
         "SCIP augment complete: {} edges added, {} updated, {} defs mapped, {} files skipped, \
-         {} refs seen, {} enclosing disagreements, {} unmapped",
+         {} refs seen, {} enclosing disagreements, {} nest-prefer recovered, {} unmapped",
         stats.edges_added,
         stats.edges_updated,
         stats.definitions_mapped,
         stats.files_skipped,
         stats.references_seen,
         stats.edges_skipped_enclosing_disagreement,
+        stats.edges_recovered_nest_prefer,
         stats.edges_skipped_unmapped
     );
 
@@ -259,6 +264,7 @@ mod tests {
         assert!(matches!(j.status, ScipRunStatus::DidNotRun));
         assert!(j.message.is_some());
         assert!(j.edges_skipped_enclosing_disagreement.is_none());
+        assert!(j.edges_recovered_nest_prefer.is_none());
         assert!(j.references_seen.is_none());
     }
 
@@ -277,6 +283,7 @@ mod tests {
             definitions_seen: 4,
             files_skipped: 0,
             edges_skipped_enclosing_disagreement: 5,
+            edges_recovered_nest_prefer: 0,
             edges_skipped_unmapped: 6,
             edges_skipped_invalid_occ_range: 0,
             edges_skipped_duplicate: 1,
@@ -289,6 +296,7 @@ mod tests {
         assert!(matches!(j.status, ScipRunStatus::Success));
         assert_eq!(j.edges_added, Some(1));
         assert_eq!(j.edges_skipped_enclosing_disagreement, Some(5));
+        assert_eq!(j.edges_recovered_nest_prefer, Some(0));
         assert_eq!(j.edges_skipped_unmapped, Some(6));
         assert_eq!(j.references_seen, Some(100));
         assert_eq!(j.edges_skipped_invalid_occ_range, Some(0));
@@ -307,6 +315,7 @@ mod tests {
             definitions_seen: 55,
             files_skipped: 1,
             edges_skipped_enclosing_disagreement: 7,
+            edges_recovered_nest_prefer: 11,
             edges_skipped_unmapped: 20,
             edges_skipped_invalid_occ_range: 2,
             edges_skipped_duplicate: 4,
@@ -323,6 +332,11 @@ mod tests {
             obj.get("edges_skipped_enclosing_disagreement")
                 .and_then(|x| x.as_u64()),
             Some(7)
+        );
+        assert_eq!(
+            obj.get("edges_recovered_nest_prefer")
+                .and_then(|x| x.as_u64()),
+            Some(11)
         );
         assert_eq!(
             obj.get("edges_skipped_unmapped").and_then(|x| x.as_u64()),
@@ -357,6 +371,7 @@ mod tests {
         );
         // snake_case only — no camelCase twin
         assert!(!obj.contains_key("edgesSkippedEnclosingDisagreement"));
+        assert!(!obj.contains_key("edgesRecoveredNestPrefer"));
         assert!(!obj.contains_key("referencesSeen"));
     }
 
@@ -366,6 +381,7 @@ mod tests {
         let v = serde_json::to_value(&failed).unwrap();
         let obj = v.as_object().unwrap();
         assert!(!obj.contains_key("edges_skipped_enclosing_disagreement"));
+        assert!(!obj.contains_key("edges_recovered_nest_prefer"));
         assert!(!obj.contains_key("references_seen"));
         assert_eq!(obj.get("status").and_then(|x| x.as_str()), Some("failed"));
 
@@ -373,6 +389,7 @@ mod tests {
         let v = serde_json::to_value(&dnr).unwrap();
         let obj = v.as_object().unwrap();
         assert!(!obj.contains_key("references_seen"));
+        assert!(!obj.contains_key("edges_recovered_nest_prefer"));
         assert_eq!(
             obj.get("status").and_then(|x| x.as_str()),
             Some("did_not_run")
