@@ -36,7 +36,11 @@ const BUILD_ARTIFACT_PATTERNS: &[&str] = &[
     ".cargo/registry",
 ];
 
-const SOURCE_EXTENSIONS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "py", "go", "java"];
+// D2 C/C++ extensions aligned with analysis/semantic index support.
+const SOURCE_EXTENSIONS: &[&str] = &[
+    "rs", "ts", "tsx", "js", "jsx", "py", "go", "java", //
+    "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "h++",
+];
 const TEST_PATTERNS_FILE: &[&str] = &["_test.", "_spec.", "test_", "spec_", "_test_", "_spec_"];
 const CONFIG_EXTENSIONS: &[&str] = &["toml", "yaml", "yml", "json", "env", "ini"];
 const DOC_EXTENSIONS: &[&str] = &["md", "rst", "adoc", "html"];
@@ -404,6 +408,10 @@ mod tests {
         assert!(is_source_file("main.rs"));
         assert!(is_source_file("app.ts"));
         assert!(is_source_file("handler.py"));
+        assert!(is_source_file("main.cpp"));
+        assert!(is_source_file("widget.hpp"));
+        assert!(is_source_file("lib.c"));
+        assert!(is_source_file("lib.h"));
 
         assert!(is_test_file("main_test.rs"));
         assert!(is_test_file("spec_handler.ts"));

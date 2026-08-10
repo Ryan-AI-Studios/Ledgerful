@@ -164,39 +164,59 @@ pub(crate) fn resolve_semantic_concurrency(
 }
 
 /// Walk the repository for candidate semantic-index files.
+///
+/// Uses `ignore::WalkBuilder` with `git_ignore(true)` (same class as
+/// `RepoWalker`) so gitignored deps/headers do not flood the embed set (D3).
+/// Fixed directory name skips remain for non-git noise.
 pub(crate) fn walk_repo_for_semantic_files(root: &std::path::Path) -> Vec<std::path::PathBuf> {
-    fn walk_dir(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
-        let Ok(entries) = std::fs::read_dir(dir) else {
-            return;
-        };
-        for entry in entries.flatten() {
-            let path = entry.path();
-            if path.is_dir() {
-                let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
-                if matches!(
-                    name,
-                    ".git"
-                        | ".ledgerful"
-                        | "target"
-                        | "node_modules"
-                        | ".agents"
-                        | ".claude"
-                        | ".codex"
-                        | ".opencode"
-                ) {
-                    continue;
-                }
-                walk_dir(&path, out);
-            } else {
-                let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
-                if matches!(ext, "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go") {
-                    out.push(path);
-                }
+    const SKIP_DIRS: &[&str] = &[
+        ".git",
+        ".ledgerful",
+        "target",
+        "node_modules",
+        ".agents",
+        ".claude",
+        ".codex",
+        ".opencode",
+    ];
+    const SEMANTIC_EXTS: &[&str] = &[
+        "rs", "ts", "tsx", "js", "jsx", "py", "go", //
+        "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "h++",
+    ];
+
+    let mut out = Vec::new();
+    let walker = ignore::WalkBuilder::new(root)
+        .hidden(true)
+        .git_ignore(true)
+        .git_global(true)
+        .git_exclude(true)
+        .filter_entry(|entry| {
+            if entry.file_type().is_some_and(|ft| ft.is_dir()) {
+                let name = entry.file_name().to_string_lossy();
+                return !SKIP_DIRS.iter().any(|s| *s == name);
             }
+            true
+        })
+        .build();
+
+    for entry in walker {
+        let entry = match entry {
+            Ok(e) => e,
+            Err(e) => {
+                tracing::warn!("Error walking directory for semantic files: {e}");
+                continue;
+            }
+        };
+        if !entry.file_type().is_some_and(|ft| ft.is_file()) {
+            continue;
+        }
+        let path = entry.path();
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("");
+        if SEMANTIC_EXTS.contains(&ext) {
+            out.push(path.to_path_buf());
         }
     }
-    let mut out = Vec::new();
-    walk_dir(root, &mut out);
+    out.sort();
     out
 }
 

@@ -27,6 +27,9 @@ pub fn extract_import_export(path: &Path, content: &str) -> Result<Option<Import
         "ts" | "tsx" | "js" | "jsx" => extract_typescript_import_export(content)?,
         "py" => extract_python_import_export(content)?,
         "go" => extract_go_import_export(content)?,
+        "c" | "h" | "cpp" | "cc" | "cxx" | "hpp" | "hh" | "hxx" | "h++" => {
+            extract_cpp_import_export(content)?
+        }
         _ => return Ok(None),
     };
 
@@ -192,6 +195,31 @@ fn extract_go_import_export(content: &str) -> Result<ImportExport> {
     Ok(ImportExport {
         imported_from,
         exported_symbols,
+    })
+}
+
+/// C/C++ `#include` → `imported_from` with D12 strip of surrounding `"` / `<>`.
+fn extract_cpp_import_export(content: &str) -> Result<ImportExport> {
+    let mut parser = Parser::new();
+    let language = tree_sitter_cpp::LANGUAGE;
+    parser.set_language(&language.into()).into_diagnostic()?;
+    let tree = parser
+        .parse(content, None)
+        .ok_or_else(|| miette::miette!("Failed to parse C/C++ content"))?;
+
+    let import_query =
+        Query::new(&language.into(), r#"(preproc_include path: (_) @import)"#).into_diagnostic()?;
+
+    let imported_from = capture_texts(&import_query, &tree, content, "import")?
+        .into_iter()
+        .map(|s| crate::index::languages::cpp::strip_include_delimiters(&s))
+        .filter(|s| !s.is_empty())
+        .collect();
+
+    // No reliable export surface without linkage analysis — leave empty.
+    Ok(ImportExport {
+        imported_from,
+        exported_symbols: Vec::new(),
     })
 }
 
@@ -858,6 +886,51 @@ var Debug = true
         assert!(result.exported_symbols.contains(&"User".to_string()));
         assert!(result.exported_symbols.contains(&"Max".to_string()));
         assert!(result.exported_symbols.contains(&"Debug".to_string()));
+    }
+
+    #[test]
+    fn test_extract_cpp_include_strips_quotes_and_angles() {
+        let content = r#"
+#include "module.hpp"
+#include <vector>
+#include <string>
+int main() { return 0; }
+"#;
+        let result = extract_import_export(Path::new("src/main.cpp"), content)
+            .unwrap()
+            .unwrap();
+        assert!(
+            result.imported_from.contains(&"module.hpp".to_string()),
+            "quote-include must strip quotes; got {:?}",
+            result.imported_from
+        );
+        assert!(
+            result.imported_from.contains(&"vector".to_string()),
+            "angle-include must strip <>; got {:?}",
+            result.imported_from
+        );
+        assert!(
+            result.imported_from.contains(&"string".to_string()),
+            "got {:?}",
+            result.imported_from
+        );
+        // D12: never store delimiters in the path token
+        assert!(
+            result
+                .imported_from
+                .iter()
+                .all(|p| !p.contains('"') && !p.starts_with('<') && !p.ends_with('>')),
+            "imported_from must not retain quote/angle delimiters: {:?}",
+            result.imported_from
+        );
+    }
+
+    #[test]
+    fn strip_cpp_include_delimiters_unit() {
+        use crate::index::languages::cpp::strip_include_delimiters;
+        assert_eq!(strip_include_delimiters("\"foo.hpp\""), "foo.hpp");
+        assert_eq!(strip_include_delimiters("<vector>"), "vector");
+        assert_eq!(strip_include_delimiters("bare"), "bare");
     }
 
     // --- 0092 DoD-1 binding extraction ---

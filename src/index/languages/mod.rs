@@ -1,3 +1,4 @@
+pub mod cpp;
 pub mod go;
 pub mod python;
 pub mod rust;
@@ -13,6 +14,13 @@ use crate::index::symbols::Symbol;
 use miette::Result;
 use std::path::Path;
 
+/// C/C++ extensions sharing `Language::Cpp` / tree-sitter-cpp (D2).
+const CPP_EXTS: &[&str] = &["c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "h++"];
+
+fn is_cpp_ext(ext: &str) -> bool {
+    CPP_EXTS.contains(&ext)
+}
+
 pub fn parse_symbols(path: &Path, content: &str) -> Result<Option<Vec<Symbol>>> {
     let extension = path.extension().and_then(|s| s.to_str()).unwrap_or("");
 
@@ -21,6 +29,7 @@ pub fn parse_symbols(path: &Path, content: &str) -> Result<Option<Vec<Symbol>>> 
         "ts" | "tsx" | "js" | "jsx" => typescript::extract_symbols(content, Some(path)),
         "py" => python::extract_symbols(content),
         "go" => go::extract_symbols(content),
+        ext if is_cpp_ext(ext) => cpp::extract_symbols(content),
         _ => Ok(None),
     }
 }
@@ -31,6 +40,7 @@ pub fn extract_calls(path: &Path, content: &str, symbols: &[Symbol]) -> Result<V
         Some("ts") | Some("tsx") => typescript::extract_calls(path, content, symbols),
         Some("py") => python::extract_calls(path, content, symbols),
         Some("go") => go::extract_calls(path, content, symbols),
+        Some(ext) if is_cpp_ext(ext) => cpp::extract_calls(path, content, symbols),
         _ => Ok(Vec::new()),
     }
 }
@@ -45,6 +55,7 @@ pub fn extract_routes(
         Some("ts") | Some("tsx") => typescript::extract_routes(content, symbols),
         Some("py") => python::extract_routes(content, symbols),
         Some("go") => go::extract_routes(content, symbols),
+        Some(ext) if is_cpp_ext(ext) => cpp::extract_routes(content, symbols),
         _ => Ok(Vec::new()),
     }
 }
@@ -61,6 +72,9 @@ pub fn extract_data_models(
         }
         Some("py") => python::extract_data_models(content, &path.to_string_lossy(), symbols),
         Some("go") => go::extract_data_models(content, &path.to_string_lossy(), symbols),
+        Some(ext) if is_cpp_ext(ext) => {
+            cpp::extract_data_models(content, &path.to_string_lossy(), symbols)
+        }
         _ => Ok(Vec::new()),
     }
 }
@@ -71,6 +85,7 @@ pub fn extract_logging_patterns(path: &Path, content: &str) -> Result<Vec<Loggin
         Some("ts") | Some("tsx") => typescript::extract_logging_patterns(content),
         Some("py") => python::extract_logging_patterns(content),
         Some("go") => go::extract_logging_patterns(content),
+        Some(ext) if is_cpp_ext(ext) => cpp::extract_logging_patterns(content),
         _ => Ok(Vec::new()),
     }
 }
@@ -81,6 +96,7 @@ pub fn extract_error_handling(path: &Path, content: &str) -> Result<Vec<ErrorHan
         Some("ts") | Some("tsx") => typescript::extract_error_handling(content),
         Some("py") => python::extract_error_handling(content),
         Some("go") => go::extract_error_handling(content),
+        Some(ext) if is_cpp_ext(ext) => cpp::extract_error_handling(content),
         _ => Ok(Vec::new()),
     }
 }
@@ -91,6 +107,7 @@ pub fn extract_telemetry_patterns(path: &Path, content: &str) -> Result<Vec<Tele
         Some("ts") | Some("tsx") => typescript::extract_telemetry_patterns(content),
         Some("py") => python::extract_telemetry_patterns(content),
         Some("go") => go::extract_telemetry_patterns(content),
+        Some(ext) if is_cpp_ext(ext) => cpp::extract_telemetry_patterns(content),
         _ => Ok(Vec::new()),
     }
 }

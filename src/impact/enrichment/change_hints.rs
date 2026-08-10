@@ -20,7 +20,10 @@ pub const NOTES_CAP: usize = 5;
 const ADJACENT_PER_PREFIX: usize = 3;
 
 /// Source-like extensions used for mostly-added math.
-const SOURCE_EXTS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "py", "go"];
+const SOURCE_EXTS: &[&str] = &[
+    "rs", "ts", "tsx", "js", "jsx", "py", "go", //
+    "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "h++",
+];
 
 /// Entrypoint / CLI basenames (path-primary signal).
 const ENTRYPOINT_BASENAMES: &[&str] = &[

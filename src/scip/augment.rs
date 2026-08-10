@@ -18,8 +18,11 @@ use tracing::{debug, info, warn};
 pub enum ScipRunStatus {
     /// Neither `--auto-scip` nor `--scip` was requested.
     DidNotRun,
-    /// Indexer not available / generation failed / ingest failed (native continues).
+    /// Generation failed / ingest failed (native continues).
     Failed,
+    /// Capability probe found **no** capable indexer (honest non-alarming status).
+    /// Distinct from `Failed` (which means something was expected to run and did not).
+    Unavailable,
     /// Reserved for API stability. Requested augment always re-applies edges
     /// (idempotent via precedence); hash is audit-only, not a skip gate.
     SkippedStale,
@@ -92,6 +95,15 @@ impl ScipIndexJson {
     pub fn failed(msg: impl Into<String>) -> Self {
         Self {
             status: ScipRunStatus::Failed,
+            message: Some(msg.into()),
+            ..Self::empty_stats_fields()
+        }
+    }
+
+    /// Empty capability probe — no capable SCIP indexer for this repo.
+    pub fn unavailable(msg: impl Into<String>) -> Self {
+        Self {
+            status: ScipRunStatus::Unavailable,
             message: Some(msg.into()),
             ..Self::empty_stats_fields()
         }
@@ -171,10 +183,11 @@ pub fn maybe_run_scip_augment(
                 }
             },
             None => {
+                // D7: empty probe is Unavailable (not Failed) — non-alarming honesty.
                 warn!(
                     "No capable SCIP indexer found (capability probe). Continuing with native index only."
                 );
-                return ScipIndexJson::failed("no capable SCIP indexer".to_string());
+                return ScipIndexJson::unavailable("no capable SCIP indexer".to_string());
             }
         }
     };
@@ -394,5 +407,20 @@ mod tests {
             obj.get("status").and_then(|x| x.as_str()),
             Some("did_not_run")
         );
+    }
+
+    #[test]
+    fn unavailable_serde_snake_case_and_omits_skip_fields() {
+        let j = ScipIndexJson::unavailable("no capable SCIP indexer");
+        assert!(matches!(j.status, ScipRunStatus::Unavailable));
+        assert_eq!(j.message.as_deref(), Some("no capable SCIP indexer"));
+        let v = serde_json::to_value(&j).unwrap();
+        let obj = v.as_object().unwrap();
+        assert_eq!(
+            obj.get("status").and_then(|x| x.as_str()),
+            Some("unavailable")
+        );
+        assert!(!obj.contains_key("edges_added"));
+        assert!(!obj.contains_key("references_seen"));
     }
 }

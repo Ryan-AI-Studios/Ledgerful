@@ -1740,6 +1740,16 @@ fn is_material_verify_path(path: &std::path::Path) -> bool {
             | "java"
             | "kt"
             | "kts"
+            // D2 C/C++ (aligned with analysis/semantic index support)
+            | "c"
+            | "h"
+            | "cpp"
+            | "cc"
+            | "cxx"
+            | "hpp"
+            | "hh"
+            | "hxx"
+            | "h++"
             | "toml"
             | "yaml"
             | "yml"
@@ -1752,6 +1762,33 @@ fn is_material_verify_path(path: &std::path::Path) -> bool {
             | "sh"
             | "ps1"
     )
+}
+
+#[cfg(test)]
+mod material_verify_path_tests {
+    use super::is_material_verify_path;
+    use std::path::Path;
+
+    #[test]
+    fn cpp_source_and_header_are_material() {
+        assert!(is_material_verify_path(Path::new("src/widget.cpp")));
+        assert!(is_material_verify_path(Path::new("include/widget.hpp")));
+        assert!(is_material_verify_path(Path::new("src/main.c")));
+        assert!(is_material_verify_path(Path::new("src/lib.h")));
+        assert!(is_material_verify_path(Path::new("src/util.cc")));
+        assert!(is_material_verify_path(Path::new("src/util.cxx")));
+        assert!(is_material_verify_path(Path::new("include/types.hh")));
+        assert!(is_material_verify_path(Path::new("include/types.hxx")));
+        assert!(is_material_verify_path(Path::new("include/types.h++")));
+    }
+
+    #[test]
+    fn ledgerful_and_non_source_not_material() {
+        assert!(!is_material_verify_path(Path::new(
+            ".ledgerful/state/ledger.cozo"
+        )));
+        assert!(!is_material_verify_path(Path::new("notes.txt")));
+    }
 }
 
 /// Fast health check that only probes executable availability and basic ledger

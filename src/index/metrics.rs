@@ -131,6 +131,20 @@ impl NativeComplexityScorer {
                         | "&&"
                         | "||"
                 ),
+                Language::Cpp => matches!(
+                    kind,
+                    "if_statement"
+                        | "for_statement"
+                        | "for_range_loop"
+                        | "while_statement"
+                        | "do_statement"
+                        | "switch_statement"
+                        | "case_statement"
+                        | "conditional_expression"
+                        | "&&"
+                        | "||"
+                        | "catch_clause"
+                ),
                 Language::Markdown => false,
             };
 
@@ -193,6 +207,17 @@ impl NativeComplexityScorer {
                     | "type_switch_statement"
                     | "select_statement"
             ),
+            Language::Cpp => matches!(
+                kind,
+                "if_statement"
+                    | "for_statement"
+                    | "for_range_loop"
+                    | "while_statement"
+                    | "do_statement"
+                    | "switch_statement"
+                    | "try_statement"
+                    | "lambda_expression"
+            ),
             Language::Markdown => false,
         };
 
@@ -225,6 +250,7 @@ impl NativeComplexityScorer {
                         | "&&"
                         | "||"
                 ),
+                Language::Cpp => matches!(kind, "case_statement" | "&&" | "||" | "catch_clause"),
                 Language::Markdown => false,
             };
             if is_other_increment {
@@ -279,6 +305,7 @@ impl ComplexityScorer for NativeComplexityScorer {
             Language::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             Language::Python => tree_sitter_python::LANGUAGE.into(),
             Language::Go => tree_sitter_go::LANGUAGE.into(),
+            Language::Cpp => tree_sitter_cpp::LANGUAGE.into(),
             Language::Markdown => unreachable!(), // Handled above
         };
         parser
@@ -308,15 +335,27 @@ impl ComplexityScorer for NativeComplexityScorer {
                     | "generator_function_declaration"
                     // Go anonymous funcs/closures (goroutine bodies, callbacks).
                     | "func_literal"
+                    // C++ lambdas (parity with Go func_literal).
+                    | "lambda_expression"
             ) {
-                let name = node
-                    .child_by_field_name("name")
-                    .map(|n| {
-                        n.utf8_text(source.as_bytes())
-                            .unwrap_or("anonymous")
-                            .to_string()
-                    })
-                    .unwrap_or_else(|| "anonymous".to_string());
+                let name = if kind == "lambda_expression" {
+                    "lambda".to_string()
+                } else if kind == "function_definition" && matches!(language, Language::Cpp) {
+                    // C++ function_definition has no `name` field — walk declarator.
+                    crate::index::languages::cpp::cpp_declarator_name(
+                        node.child_by_field_name("declarator").unwrap_or(node),
+                        source,
+                    )
+                    .unwrap_or_else(|| "anonymous".to_string())
+                } else {
+                    node.child_by_field_name("name")
+                        .map(|n| {
+                            n.utf8_text(source.as_bytes())
+                                .unwrap_or("anonymous")
+                                .to_string()
+                        })
+                        .unwrap_or_else(|| "anonymous".to_string())
+                };
 
                 functions.push(SymbolComplexity {
                     name,
@@ -343,6 +382,69 @@ impl ComplexityScorer for NativeComplexityScorer {
 mod tests {
     use super::*;
     use camino::Utf8Path;
+
+    #[test]
+    fn cpp_branched_function_scores_above_base() {
+        let source = r#"
+int branched(int n) {
+    int t = 0;
+    if (n > 0) {
+        for (int i = 0; i < n; ++i) {
+            if (i % 2 == 0) {
+                t += i;
+            }
+        }
+    }
+    switch (n) {
+    case 0: return 1;
+    default: return t;
+    }
+}
+"#;
+        let scorer = NativeComplexityScorer::new();
+        let result = scorer
+            .score_file(Utf8Path::new("main.cpp"), source, Language::Cpp)
+            .expect("score cpp file");
+        let branched = result
+            .functions
+            .iter()
+            .find(|f| f.name == "branched")
+            .expect("branched function must not be anonymous");
+        assert!(
+            branched.cyclomatic > 1,
+            "expected cyclomatic > 1, got {branched:?}"
+        );
+        assert!(
+            result
+                .functions
+                .iter()
+                .all(|f| f.name != "anonymous" || f.name == "lambda"),
+            "function_definition names via declarator; got {:?}",
+            result.functions
+        );
+    }
+
+    #[test]
+    fn cpp_lambda_expression_is_scored() {
+        let source = r#"
+int run(int n) {
+    auto f = [&](int x) {
+        if (x > 0) return x;
+        return 0;
+    };
+    return f(n);
+}
+"#;
+        let scorer = NativeComplexityScorer::new();
+        let result = scorer
+            .score_file(Utf8Path::new("main.cpp"), source, Language::Cpp)
+            .expect("score");
+        assert!(
+            result.functions.iter().any(|f| f.name == "lambda"),
+            "lambda_expression must be scored as lambda; got {:?}",
+            result.functions
+        );
+    }
 
     #[test]
     fn go_function_has_nonzero_cyclomatic_and_cognitive() {

@@ -11,7 +11,10 @@ pub const BINARY_EXTENSIONS: &[&str] = &[
     "exe", "dll", "so", "dylib", "wasm", "class", "jar", "pyc",
 ];
 
-pub const SUPPORTED_EXTENSIONS: &[&str] = &["rs", "ts", "tsx", "js", "jsx", "py", "go"];
+pub const SUPPORTED_EXTENSIONS: &[&str] = &[
+    "rs", "ts", "tsx", "js", "jsx", "py", "go", //
+    "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "h++",
+];
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct IndexStats {

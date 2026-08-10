@@ -36,6 +36,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Native C/C++ language support (0165):** `Language::Cpp` via `tree-sitter-cpp` 0.23.4 for
+  `.c`/`.h`/`.cpp`/`.cc`/`.cxx`/`.hpp`/`.hh`/`.hxx`/`.h++`. Symbols (shared declarator-name
+  helper — C++ `function_definition` has no `name` field), `#include` → `imported_from` with
+  quote/angle strip, same-file calls with template/qualified/member unwrap (**unique** local
+  name → resolved; overloads / same-name multi-def stay unresolved), complexity
+  (incl. `lambda_expression`). Routes/observability empty Ok. Semantic walk honors gitignore
+  (`ignore::WalkBuilder`); sample SQL includes `Cpp`. Soft honesty: empty SCIP probe →
+  `status = unavailable` (not failed); Cargo.lock WARN only when `Cargo.toml` exists;
+  doctor `scip-clang-not-wired` (manual `index --scip` only — not auto-generate).
+  **Auto-on:** D2 extensions on `Language::from_extension` also enable daemon complexity
+  diagnostics and the federated scanner language gate (same map; no separate flag).
 - **SCIP skip tallies + `references_seen` on `index --json` / human SCIP section (0157):**
   Success `scip` object always includes
   `edges_skipped_enclosing_disagreement`, `edges_skipped_unmapped`,

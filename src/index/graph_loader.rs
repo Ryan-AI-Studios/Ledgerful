@@ -1452,6 +1452,14 @@ fn phase_security(ctx: &mut GraphLoadContext) -> Result<()> {
 fn phase_cargo_dependencies(ctx: &mut GraphLoadContext) -> Result<()> {
     let lock_path = ctx.storage.root_path().join("Cargo.lock");
     if !lock_path.exists() {
+        // D8: only WARN when this is a Cargo/Rust tree (Cargo.toml present).
+        let cargo_toml = ctx.storage.root_path().join("Cargo.toml");
+        if !cargo_toml.exists() {
+            tracing::debug!(
+                "Cargo.lock not found and no Cargo.toml at repository root; skipping dependency ingestion (non-Rust tree)."
+            );
+            return Ok(());
+        }
         tracing::warn!("Cargo.lock not found at repository root; skipping dependency ingestion.");
         return Ok(());
     }

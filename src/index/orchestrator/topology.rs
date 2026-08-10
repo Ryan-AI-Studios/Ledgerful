@@ -122,7 +122,11 @@ pub fn index_service_boundaries(indexer: &mut ProjectIndexer) -> Result<()> {
     tracing::debug!("K4: Indexed {} service boundaries", boundaries.len());
 
     // 2. Scan source files for HTTP client call patterns
-    let source_extensions = ["rs", "ts", "tsx", "js", "jsx", "py"];
+    // Include go + D2 C/C++ so service-edge scans match other source gates.
+    let source_extensions = [
+        "rs", "ts", "tsx", "js", "jsx", "py", "go", //
+        "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "h++",
+    ];
     let all_files = super::discovery::discover_files(indexer)?;
 
     // Build a map from dir-prefix → service name for resolution
