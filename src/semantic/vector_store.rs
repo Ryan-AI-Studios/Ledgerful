@@ -18,6 +18,24 @@ pub struct VectorStore<'a> {
     hnsw_rebuild_threshold: usize,
 }
 
+/// Count embedding **rows** in `snippet_embedding` (cozo-redux bag aggregation; not distinct files).
+///
+/// Shared by `VectorStore::get_vector_count` and dry-run so the count script cannot diverge.
+pub fn count_snippet_embedding_rows(storage: &CozoStorage) -> Result<usize> {
+    let relations = storage.get_relations()?;
+    if !relations.contains(&"snippet_embedding".to_string()) {
+        return Ok(0);
+    }
+    let script = "?[count(file_path)] := *snippet_embedding{file_path}";
+    let res = storage.run_script(script)?;
+    if let Some(row) = res.rows.first()
+        && let Some(DataValue::Num(Num::Int(count))) = row.first()
+    {
+        return Ok(*count as usize);
+    }
+    Ok(0)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct HnswRefreshPlan {
     drop_before_put: bool,
@@ -160,19 +178,12 @@ impl<'a> VectorStore<'a> {
         Ok(())
     }
 
+    /// Count embedding **rows** in `snippet_embedding`.
+    ///
+    /// On cozo-redux, bag aggregation with no grouping vars yields the row count
+    /// (not distinct `file_path` values).
     pub fn get_vector_count(&self) -> Result<usize> {
-        let relations = self.storage.get_relations()?;
-        if !relations.contains(&"snippet_embedding".to_string()) {
-            return Ok(0);
-        }
-        let script = "?[count(file_path)] := *snippet_embedding{file_path}";
-        let res = self.storage.run_script(script)?;
-        if let Some(row) = res.rows.first()
-            && let Some(DataValue::Num(Num::Int(count))) = row.first()
-        {
-            return Ok(*count as usize);
-        }
-        Ok(0)
+        count_snippet_embedding_rows(self.storage)
     }
 
     /// Count stored embeddings that are zero-length or all-zero (legacy junk).
