@@ -71,6 +71,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Non-TTY semantic index progress flood (0167):** Mid-phase parse/embed counters
+  no longer clamp the report stride to 25, so large totals emit ~`total/20`
+  mid-lines (~20) plus the 20s wall-clock OR instead of hundreds of lines on
+  dogfood-scale cold fulls. Also: "embedding done" prints only after a successful
+  embed collect (not before a batch `Err`); ProgressBar/spinner (and steady tick)
+  stay hidden under `--json` even on interactive TTY.
 - **SCIP nest-prefer caller resolve (0166):** When `enclosing_range` and occurrence
   range map to different native symbol ids but one native span **strictly contains**
   the other, prefer the **innermost** id and emit the edge instead of skipping as

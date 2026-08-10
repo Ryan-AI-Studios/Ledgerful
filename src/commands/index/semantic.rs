@@ -74,6 +74,28 @@ fn emit_semantic_json(result: &SemanticIndexJsonResult) -> Result<()> {
     Ok(())
 }
 
+/// Non-TTY mid-phase report stride: ~total/20 ticks (no upper clamp).
+/// Poller only starts when total > 1 (caller gate).
+fn non_tty_progress_step(total: usize) -> usize {
+    (total / 20).max(1)
+}
+
+/// Soft E (0167 D8): hide ProgressBar/spinner when machine JSON or non-interactive.
+/// Pure so interactive-TTY+`--json` is unit-testable without a real TTY.
+fn hide_semantic_progress_bars(json: bool, interactive: bool) -> bool {
+    json || !interactive
+}
+
+/// Soft C (0167 D6): "embedding done" progress line only after successful embed collect.
+/// Returns `None` on failure so callers cannot print a false done line.
+fn embedding_done_progress_line(chunks: usize, succeeded: bool) -> Option<String> {
+    if succeeded {
+        Some(format!("Semantic index: embedding done {chunks} chunks…"))
+    } else {
+        None
+    }
+}
+
 /// Non-TTY mid-phase counters: AtomicUsize + background poller (no println in Rayon).
 struct NonTtyPhaseProgress {
     counter: Arc<AtomicUsize>,
@@ -88,8 +110,8 @@ impl NonTtyPhaseProgress {
         let handle = if !json && !crate::util::term::is_interactive() && total > 1 {
             let c = Arc::clone(&counter);
             let s = Arc::clone(&stop);
-            // Throttle: every N files in [1, 25] (≈ total/20), or ~20s wall.
-            let step = (total / 20).clamp(1, 25);
+            // Throttle: every ~total/20 files (no upper clamp), or ~20s wall.
+            let step = non_tty_progress_step(total);
             Some(std::thread::spawn(move || {
                 let interval = Duration::from_secs(20);
                 let mut last_n = 0usize;
@@ -394,8 +416,9 @@ pub(crate) fn execute_semantic_index(
 
     emit_semantic_progress(json, &format!("Semantic index: parsing 0/{total} files…"));
 
+    let hide_bars = hide_semantic_progress_bars(json, crate::util::term::is_interactive());
     let pb_parse = ProgressBar::new(total as u64);
-    if !crate::util::term::is_interactive() {
+    if hide_bars {
         pb_parse.set_draw_target(indicatif::ProgressDrawTarget::hidden());
     }
     pb_parse.set_style(
@@ -405,7 +428,9 @@ pub(crate) fn execute_semantic_index(
         .unwrap_or_else(|_| ProgressStyle::with_template("{pos}/{len}").unwrap())
         .progress_chars("█▓░"),
     );
-    pb_parse.enable_steady_tick(std::time::Duration::from_millis(80));
+    if !hide_bars {
+        pb_parse.enable_steady_tick(std::time::Duration::from_millis(80));
+    }
 
     let parse_progress = NonTtyPhaseProgress::start("parsing", total, "files", json);
     let parse_counter = Arc::clone(&parse_progress.counter);
@@ -480,7 +505,7 @@ pub(crate) fn execute_semantic_index(
         );
 
         let pb_embed = ProgressBar::new(flat_chunks.len() as u64);
-        if !crate::util::term::is_interactive() {
+        if hide_bars {
             pb_embed.set_draw_target(indicatif::ProgressDrawTarget::hidden());
         }
         pb_embed.set_style(
@@ -490,7 +515,9 @@ pub(crate) fn execute_semantic_index(
             .unwrap_or_else(|_| ProgressStyle::with_template("{pos}/{len}").unwrap())
             .progress_chars("█▓░"),
         );
-        pb_embed.enable_steady_tick(std::time::Duration::from_millis(80));
+        if !hide_bars {
+            pb_embed.enable_steady_tick(std::time::Duration::from_millis(80));
+        }
 
         let chunk_batches: Vec<Vec<crate::semantic::chunker::AstChunk>> =
             semantic_embedding_batches(&flat_chunks, SEMANTIC_EMBEDDING_BATCH_SIZE);
@@ -522,18 +549,19 @@ pub(crate) fn execute_semantic_index(
 
         embed_progress.finish();
         pb_embed.finish_and_clear();
-        emit_semantic_progress(
-            json,
-            &format!("Semantic index: embedding done {chunks_to_embed} chunks…"),
-        );
 
         match embedding_results {
             Ok(batches) => {
+                if let Some(line) = embedding_done_progress_line(chunks_to_embed, true) {
+                    emit_semantic_progress(json, &line);
+                }
                 for batch in batches {
                     all_embeddings.extend(batch);
                 }
             }
             Err(e) => {
+                // Soft C: never emit "embedding done" on failure (None when succeeded=false).
+                debug_assert!(embedding_done_progress_line(chunks_to_embed, false).is_none());
                 return Err(miette::miette!("Embedding generation failed: {}", e));
             }
         }
@@ -574,7 +602,7 @@ pub(crate) fn execute_semantic_index(
         }
 
         let spinner = ProgressBar::new_spinner();
-        if !crate::util::term::is_interactive() {
+        if hide_bars {
             spinner.set_draw_target(indicatif::ProgressDrawTarget::hidden());
         }
         spinner.set_style(
@@ -583,7 +611,9 @@ pub(crate) fn execute_semantic_index(
             )
             .unwrap_or_else(|_| ProgressStyle::default_spinner()),
         );
-        spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+        if !hide_bars {
+            spinner.enable_steady_tick(std::time::Duration::from_millis(100));
+        }
 
         info!(
             "Ingesting {} snippets into vector store...",
@@ -656,21 +686,7 @@ pub(crate) fn execute_semantic_dry_run(
 
     let current_vector_count = cozo
         .as_ref()
-        .map(|db| {
-            let relations = db.get_relations().unwrap_or_default();
-            if !relations.contains(&"snippet_embedding".to_string()) {
-                return 0;
-            }
-            let script = "?[count(file_path)] := *snippet_embedding{file_path}";
-            if let Ok(res) = db.run_script(script)
-                && let Some(row) = res.rows.first()
-                && let Some(cozo::DataValue::Num(cozo::Num::Int(count))) = row.first()
-            {
-                *count as usize
-            } else {
-                0
-            }
-        })
+        .map(|db| crate::semantic::vector_store::count_snippet_embedding_rows(db).unwrap_or(0))
         .unwrap_or(0);
 
     let current_file_count = cozo
@@ -854,6 +870,48 @@ mod tests {
                 .map(|chunk| chunk.name.as_str())
                 .collect::<Vec<_>>()
         );
+    }
+
+    // ── 0167 non-TTY progress step (0161-A) ─────────────────────────────────
+    // Poller only starts when total > 1 (caller gate in NonTtyPhaseProgress::start).
+
+    #[test]
+    fn non_tty_progress_step_matrix() {
+        assert_eq!(non_tty_progress_step(0), 1);
+        assert_eq!(non_tty_progress_step(1), 1);
+        assert_eq!(non_tty_progress_step(2), 1);
+        assert_eq!(non_tty_progress_step(20), 1);
+        assert_eq!(non_tty_progress_step(25), 1);
+        assert_eq!(non_tty_progress_step(100), 5);
+        assert_eq!(non_tty_progress_step(500), 25);
+        // Large totals must not clamp to 25 (0161 flood: ~522 mid-lines).
+        assert_eq!(non_tty_progress_step(13_065), 653);
+        assert_ne!(non_tty_progress_step(13_065), 25);
+    }
+
+    /// Soft E (0167 D8): bars/spinners hidden under `--json` even when TTY is interactive.
+    #[test]
+    fn hide_semantic_progress_bars_matrix() {
+        // json | interactive | hide
+        assert!(hide_semantic_progress_bars(true, true));
+        assert!(hide_semantic_progress_bars(true, false));
+        assert!(!hide_semantic_progress_bars(false, true));
+        assert!(hide_semantic_progress_bars(false, false));
+    }
+
+    /// Soft C (0167 D6): "embedding done" line only when embed collect succeeded.
+    #[test]
+    fn embedding_done_progress_line_only_on_success() {
+        let ok = embedding_done_progress_line(42, true).expect("Ok path must emit a line");
+        assert!(
+            ok.contains("embedding done") && ok.contains("42"),
+            "success line: {ok}"
+        );
+        assert!(
+            embedding_done_progress_line(42, false).is_none(),
+            "failure path must not produce an embedding-done line"
+        );
+        assert!(embedding_done_progress_line(0, false).is_none());
     }
 
     // ── 0161 mode resolution matrix ────────────────────────────────────────
