@@ -209,4 +209,44 @@ mod tests {
         assert_eq!(outcome.analysis_warnings.len(), 1);
         assert!(outcome.analysis_warnings[0].contains("failed to read file"));
     }
+
+    /// DoD-1 / 0165: production `analyze_file` path accepts `.cpp` (D2 gate) and
+    /// extracts non-empty non-anonymous symbol names — not only direct extractors.
+    #[test]
+    fn test_analyze_file_cpp_symbols_via_production_path() {
+        let tmp = tempdir().unwrap();
+        let rel = Path::new("widget.cpp");
+        let full = tmp.path().join(rel);
+        std::fs::write(
+            &full,
+            r#"
+int helper(int x) { return x + 1; }
+int caller() { return helper(0); }
+"#,
+        )
+        .unwrap();
+
+        let outcome = analyze_file(rel, tmp.path());
+
+        assert_eq!(
+            outcome.analysis_status.symbols,
+            AnalysisStatus::Ok,
+            "cpp must not be unsupported/failed; warnings={:?}",
+            outcome.analysis_warnings
+        );
+        let symbols = outcome.symbols.expect("symbols present when status is Ok");
+        let named: Vec<_> = symbols
+            .iter()
+            .filter(|s| !s.name.is_empty() && s.name != "<anonymous>")
+            .collect();
+        assert!(
+            !named.is_empty(),
+            "expected non-empty non-anonymous C++ symbols; symbols={symbols:?}"
+        );
+        let names: Vec<&str> = named.iter().map(|s| s.name.as_str()).collect();
+        assert!(
+            names.contains(&"helper") && names.contains(&"caller"),
+            "expected helper/caller; names={names:?}"
+        );
+    }
 }

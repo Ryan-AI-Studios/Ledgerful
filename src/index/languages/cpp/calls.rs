@@ -2,7 +2,7 @@ use super::common::{find_enclosing_function, node_text, truncate_evidence, unwra
 use crate::index::call_graph::{CallEdge, CallKind, ResolutionStatus};
 use crate::index::symbols::{Symbol, SymbolKind};
 use miette::{IntoDiagnostic, Result};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::path::Path;
 use tree_sitter::Parser;
 
@@ -15,19 +15,25 @@ pub fn extract_calls(path: &Path, content: &str, symbols: &[Symbol]) -> Result<V
         .parse(content, None)
         .ok_or_else(|| miette::miette!("Failed to parse C/C++ content"))?;
 
-    // Same-file callable names for D5 resolution (Function / Method only).
-    let local_callables: HashSet<String> = symbols
+    // Same-file callable name multiplicity for D5 resolution (Function / Method only).
+    // Resolved only when exactly one local definition shares the name; overloads
+    // (count > 1) and missing names (count == 0) stay Unresolved — no silent collapse.
+    let mut local_callable_counts: HashMap<String, usize> = HashMap::new();
+    for symbol in symbols
         .iter()
         .filter(|s| matches!(s.kind, SymbolKind::Function | SymbolKind::Method))
-        .map(|s| s.name.clone())
-        .collect();
+    {
+        *local_callable_counts
+            .entry(symbol.name.clone())
+            .or_insert(0) += 1;
+    }
 
     let mut edges = Vec::new();
     collect_cpp_call_edges(
         path,
         tree.root_node(),
         content,
-        &local_callables,
+        &local_callable_counts,
         &mut edges,
     );
 
@@ -45,7 +51,7 @@ fn collect_cpp_call_edges(
     path: &Path,
     node: tree_sitter::Node,
     content: &str,
-    local_callables: &HashSet<String>,
+    local_callable_counts: &HashMap<String, usize>,
     edges: &mut Vec<CallEdge>,
 ) {
     if node.kind() == "call_expression" {
@@ -58,10 +64,11 @@ fn collect_cpp_call_edges(
             };
 
             if let Some(callee_name) = unwrap_callee_name(function_node, content) {
-                let resolution_status = if local_callables.contains(&callee_name) {
-                    ResolutionStatus::Resolved
-                } else {
-                    ResolutionStatus::Unresolved
+                // D5: unique same-file name after unwrap → Resolved; overload /
+                // zero matches → Unresolved (do not collapse overloads).
+                let resolution_status = match local_callable_counts.get(&callee_name).copied() {
+                    Some(1) => ResolutionStatus::Resolved,
+                    _ => ResolutionStatus::Unresolved,
                 };
                 let full = truncate_evidence(&node_text(function_node, content), 120);
                 let confidence = if resolution_status == ResolutionStatus::Resolved {
@@ -85,7 +92,7 @@ fn collect_cpp_call_edges(
 
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
-        collect_cpp_call_edges(path, child, content, local_callables, edges);
+        collect_cpp_call_edges(path, child, content, local_callable_counts, edges);
     }
 }
 
@@ -132,11 +139,12 @@ void f() {
 
     #[test]
     fn member_call_unwrap_field_expression() {
+        // Single in-class definition only — decl+def of the same name would be
+        // multiplicity > 1 and correctly Unresolved under D5 overload honesty.
         let content = r#"
 struct S {
-    void work();
+    void work() {}
 };
-void S::work() {}
 void caller(S* s) {
     s->work();
 }
@@ -172,5 +180,48 @@ int caller() {
             !hit.is_empty(),
             "expected template_function unwrap to id; edges={edges:?}"
         );
+    }
+
+    #[test]
+    fn overloaded_same_name_call_is_unresolved() {
+        // D5 honesty: two same-file definitions of `foo` must not collapse to
+        // a single HashSet entry and falsely resolve the call.
+        let content = r#"
+int foo(int x) { return x; }
+int foo(double x) { return static_cast<int>(x); }
+int caller() {
+    return foo(1);
+}
+"#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let foo_defs: Vec<_> = symbols
+            .iter()
+            .filter(|s| {
+                s.name == "foo"
+                    && matches!(
+                        s.kind,
+                        crate::index::symbols::SymbolKind::Function
+                            | crate::index::symbols::SymbolKind::Method
+                    )
+            })
+            .collect();
+        assert!(
+            foo_defs.len() >= 2,
+            "fixture needs ≥2 foo callables; symbols={symbols:?}"
+        );
+
+        let edges = extract_calls(Path::new("demo.cpp"), content, &symbols).unwrap();
+        let foo_calls: Vec<_> = edges.iter().filter(|e| e.callee_name == "foo").collect();
+        assert!(
+            !foo_calls.is_empty(),
+            "expected call edge for foo; edges={edges:?}"
+        );
+        for edge in &foo_calls {
+            assert_eq!(
+                edge.resolution_status,
+                ResolutionStatus::Unresolved,
+                "overload must stay Unresolved; edge={edge:?}"
+            );
+        }
     }
 }
