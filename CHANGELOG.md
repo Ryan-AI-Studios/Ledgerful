@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-08-10
+
 ### Changed
 
 - **`ask --timeout` is optional and backend-aware (0158):** Omitted timeout no longer
