@@ -415,7 +415,18 @@ pub fn execute_scan(
     pr: Option<String>,
     format: Option<String>,
 ) -> Result<()> {
-    execute_scan_with_blast_depth(run_impact, summary, json, out, base_ref, pr, format, None)
+    execute_scan_with_opts(
+        run_impact,
+        summary,
+        json,
+        out,
+        base_ref,
+        pr,
+        format,
+        None,
+        Vec::new(),
+        false,
+    )
 }
 
 /// Scan entrypoint with optional CLI `--blast-depth` (DoD-9 dual surface).
@@ -430,23 +441,78 @@ pub fn execute_scan_with_blast_depth(
     format: Option<String>,
     blast_depth: Option<u32>,
 ) -> Result<()> {
+    execute_scan_with_opts(
+        run_impact,
+        summary,
+        json,
+        out,
+        base_ref,
+        pr,
+        format,
+        blast_depth,
+        Vec::new(),
+        false,
+    )
+}
+
+/// Scan entrypoint with 0173 `--paths` / `--include-governance`.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_scan_with_opts(
+    run_impact: bool,
+    summary: bool,
+    json: bool,
+    out: Option<PathBuf>,
+    base_ref: Option<String>,
+    pr: Option<String>,
+    format: Option<String>,
+    blast_depth: Option<u32>,
+    paths: Vec<String>,
+    include_governance: bool,
+) -> Result<()> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
 
     validate_scan_args(&pr, &base_ref, &format, run_impact, summary, json, &out)?;
     validate_blast_depth_requires_impact(run_impact, &pr, blast_depth)?;
 
-    let repo = open_repo(&current_dir)?;
-    let (head_hash, branch_name) = get_head_info(&repo)?;
+    if !paths.is_empty() {
+        if !run_impact {
+            return Err(miette::miette!("--paths requires --impact"));
+        }
+        if base_ref.is_some() {
+            return Err(miette::miette!(
+                "--paths and --base-ref are mutually exclusive"
+            ));
+        }
+        if pr.is_some() {
+            return Err(miette::miette!("--paths and --pr are mutually exclusive"));
+        }
+    }
 
-    // When --base-ref is provided, derive the changed file list from git diff
-    // instead of from the working-tree status (which is empty in CI).
+    // Prefer layout root so `--paths` resolve against the repo root (parity with
+    // change-context) even when scan is invoked from a subdirectory.
     let layout = crate::commands::helpers::get_layout()?;
     let config = load_config(&layout).unwrap_or_default();
+    let project_root = layout.root.as_std_path();
+    let work_dir = if project_root.exists() {
+        project_root
+    } else {
+        current_dir.as_path()
+    };
+
+    let repo = open_repo(work_dir)?;
+    let (head_hash, branch_name) = get_head_info(&repo)?;
+
+    let prospective = !paths.is_empty();
+    let prospective_parsed = if prospective {
+        Some(crate::commands::impact::parse_prospective_paths(&paths)?)
+    } else {
+        None
+    };
 
     let (changes, is_clean, pr_base_ref, pr_head_ref) = if let Some(ref range) = pr {
         let (base, head, git_range) = parse_pr_range(range)?;
-        let all_changes = files_changed_between(&current_dir, &git_range, &base)?;
+        let all_changes = files_changed_between(work_dir, &git_range, &base)?;
         let filtered = crate::git::ignore::filter_ignored_changes(
             all_changes,
             &config.watch.ignore_patterns,
@@ -455,7 +521,7 @@ pub fn execute_scan_with_blast_depth(
         let clean = filtered.is_empty();
         (filtered, clean, Some(base), Some(head))
     } else if let Some(ref ref_str) = base_ref {
-        let all_changes = files_changed_since(&current_dir, ref_str)?;
+        let all_changes = files_changed_since(work_dir, ref_str)?;
         let filtered = crate::git::ignore::filter_ignored_changes(
             all_changes,
             &config.watch.ignore_patterns,
@@ -463,6 +529,9 @@ pub fn execute_scan_with_blast_depth(
         )?;
         let clean = filtered.is_empty();
         (filtered, clean, None, None)
+    } else if let Some(ref parsed) = prospective_parsed {
+        let snap = crate::commands::impact::build_prospective_snapshot(work_dir, parsed)?;
+        (snap.changes, false, None, None)
     } else {
         let all_changes = get_repo_status(&repo)?;
         let filtered = crate::git::ignore::filter_ignored_changes(
@@ -483,7 +552,9 @@ pub fn execute_scan_with_blast_depth(
 
     // PR path is intentionally index-free (0115 DoD-5): never create `.ledgerful`
     // via write_scan_report / tombstone. Soft-open for testGaps is existence-check only.
-    if pr.is_none() {
+    // Prospective (--paths): also skip durable scan report write (0173-G — no
+    // hypothetical clobber of latest-scan.json).
+    if pr.is_none() && !prospective {
         // Working-tree diffs are empty when --base-ref is used; skip get_diff_summary.
         let mut diff_summaries = if base_ref.is_some() {
             vec![]
@@ -604,16 +675,72 @@ pub fn execute_scan_with_blast_depth(
             }
         }
 
-        // Always use the snapshot derived above so that --base-ref changes are
-        // passed through regardless of whether --json / --out is set.
+        // Always use the snapshot derived above so that --base-ref / --paths
+        // changes are passed through regardless of whether --json / --out is set.
         // Thread --blast-depth so scan --impact matches impact CLI (DoD-9).
+        // Prospective (--paths): in-memory only — no latest-impact.json clobber (0173-G).
+        if prospective {
+            let parsed = prospective_parsed
+                .clone()
+                .ok_or_else(|| miette::miette!("internal: prospective paths missing"))?;
+            let mut config = load_config(&layout).unwrap_or_default();
+            let depth_note = crate::impact::enrichment::blast::apply_cli_blast_depth(
+                &mut config.impact.blast_depth,
+                config.impact.blast_depth_max,
+                blast_depth,
+            );
+            let storage = crate::state::storage::StorageManager::init_with_layout(&layout)?;
+            let snap = crate::commands::impact::build_prospective_snapshot(work_dir, &parsed)?;
+            let mut impact_packet =
+                crate::commands::impact::compute_impact_from_snapshot_in_memory_with_mode(
+                    &storage,
+                    &config,
+                    work_dir,
+                    snap,
+                    include_governance,
+                    "prospective",
+                    parsed,
+                )?;
+            if let Some(note) = depth_note {
+                impact_packet.analysis_warnings.push(note);
+                impact_packet.analysis_warnings.sort();
+                impact_packet.analysis_warnings.dedup();
+            }
+            let _ = storage.shutdown();
+
+            if write_impact_json {
+                let json_output = serde_json::to_string_pretty(&impact_packet).into_diagnostic()?;
+                if let Some(path) = out {
+                    std::fs::write(&path, json_output).into_diagnostic()?;
+                } else {
+                    println!("{}", json_output);
+                }
+            } else if summary {
+                crate::output::human::print_impact_brief(&impact_packet);
+                println!(
+                    "\nProspective analysis (in-memory only — did not rewrite latest-impact.json)"
+                );
+            } else {
+                crate::output::human::print_impact_summary(&impact_packet);
+                println!(
+                    "\nProspective analysis (in-memory only — did not rewrite latest-impact.json)"
+                );
+            }
+            return Ok(());
+        }
+
         let (impact_packet, report_write_outcome) = if base_ref.is_some() {
-            crate::commands::impact::execute_impact_silent_with_snapshot_and_depth(
+            crate::commands::impact::execute_impact_silent_with_snapshot_opts(
                 snapshot,
                 blast_depth,
+                include_governance,
+                "base_ref",
             )?
         } else {
-            crate::commands::impact::execute_impact_silent_with_depth(blast_depth)?
+            crate::commands::impact::execute_impact_silent_with_depth_opts(
+                blast_depth,
+                include_governance,
+            )?
         };
 
         if write_impact_json {
@@ -1081,5 +1208,164 @@ mod tests {
             validate_scan_args(&None, &None, &None, true, false, true, &None).is_ok(),
             "json with impact must be allowed"
         );
+    }
+
+    /// Mirrors scan --impact --paths prospective branch: in-memory only, no
+    /// `write_impact_report` / `write_scan_report` clobber (0173-G).
+    #[test]
+    fn scan_prospective_impact_path_does_not_clobber_latest_impact() {
+        use crate::commands::impact::{
+            build_prospective_snapshot, compute_impact_from_snapshot_in_memory_with_mode,
+            parse_prospective_paths,
+        };
+        use crate::state::reports::{
+            LATEST_IMPACT_REPORT, LATEST_SCAN_REPORT, ScanReport, write_impact_report,
+            write_scan_report,
+        };
+        use crate::state::storage::StorageManager;
+        use std::fs;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "T"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::write(root.join("src/exists.rs"), "fn x() {}").unwrap();
+        fs::write(root.join("README.md"), "hi").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        let utf8 = camino::Utf8Path::from_path(root).unwrap();
+        let layout = Layout::new(utf8);
+        layout.ensure_state_dir().unwrap();
+        let seed = crate::impact::packet::ImpactPacket {
+            schema_version: "v1".to_string(),
+            head_hash: Some("SEED_MARKER_0173_SCAN".to_string()),
+            risk_reasons: vec!["seed-scan-do-not-clobber".to_string()],
+            ..Default::default()
+        };
+        write_impact_report(&layout, &seed).unwrap();
+        let report_path = layout.reports_dir().join(LATEST_IMPACT_REPORT);
+        let before = fs::read_to_string(report_path.as_std_path()).unwrap();
+        assert!(before.contains("SEED_MARKER_0173_SCAN"));
+
+        // Seed latest-scan.json with a marker; prospective must not clobber it.
+        let scan_seed = ScanReport::from_snapshot(
+            &RepoSnapshot {
+                head_hash: Some("SEED_SCAN_0173".into()),
+                branch_name: Some("main".into()),
+                is_clean: true,
+                changes: vec![],
+            },
+            vec![],
+        );
+        write_scan_report(&layout, &scan_seed).unwrap();
+        let scan_path = layout.reports_dir().join(LATEST_SCAN_REPORT);
+        let scan_before = fs::read_to_string(scan_path.as_std_path()).unwrap();
+        assert!(scan_before.contains("SEED_SCAN_0173"));
+
+        let storage =
+            StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+        let config = crate::config::model::Config::default();
+        let parsed = parse_prospective_paths(&["src/exists.rs".into()]).unwrap();
+        let snap = build_prospective_snapshot(root, &parsed).unwrap();
+        // Same SoT as scan.rs prospective branch (no write_impact_report).
+        let packet = compute_impact_from_snapshot_in_memory_with_mode(
+            &storage,
+            &config,
+            root,
+            snap,
+            false,
+            "prospective",
+            parsed,
+        )
+        .unwrap();
+        assert_eq!(packet.analysis_mode, "prospective");
+        assert!(!packet.changes.is_empty());
+
+        let after = fs::read_to_string(report_path.as_std_path()).unwrap();
+        assert_eq!(
+            before, after,
+            "scan prospective path must not rewrite latest-impact.json"
+        );
+        // Policy: prospective skips write_scan_report (execute_scan_with_opts).
+        // Assert seed still present after in-memory compute (no accidental write helper).
+        let scan_after = fs::read_to_string(scan_path.as_std_path()).unwrap();
+        assert_eq!(
+            scan_before, scan_after,
+            "scan prospective path must not rewrite latest-scan.json"
+        );
+        let _ = storage.shutdown();
+    }
+
+    #[test]
+    fn prospective_snapshot_roots_paths_at_repo_root_not_cwd_subdir() {
+        use crate::commands::impact::{build_prospective_snapshot, parse_prospective_paths};
+        use crate::git::ChangeType;
+        use std::fs;
+        use tempfile::tempdir;
+
+        let dir = tempdir().unwrap();
+        let root = dir.path();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "T"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        fs::create_dir_all(root.join("src")).unwrap();
+        fs::create_dir_all(root.join("nested")).unwrap();
+        fs::write(root.join("src/exists.rs"), "fn x() {}").unwrap();
+        fs::write(root.join("README.md"), "hi").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(root)
+            .output()
+            .unwrap();
+
+        let parsed = parse_prospective_paths(&["src/exists.rs".into()]).unwrap();
+        // Resolve against repo root even if a subdir exists (caller must pass root).
+        let snap = build_prospective_snapshot(root, &parsed).unwrap();
+        assert_eq!(snap.changes.len(), 1);
+        assert_eq!(snap.changes[0].change_type, ChangeType::Modified);
+        // Wrong root (nested subdir) would mark the same path as Added/missing.
+        let wrong = build_prospective_snapshot(&root.join("nested"), &parsed).unwrap();
+        assert_eq!(wrong.changes[0].change_type, ChangeType::Added);
     }
 }

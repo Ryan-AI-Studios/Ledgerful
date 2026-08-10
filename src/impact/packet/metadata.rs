@@ -83,6 +83,27 @@ pub struct ImpactPacket {
     pub analysis_warnings: Vec<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dead_code_findings: Vec<super::DeadCodeFinding>,
+    /// Path mode for temporal demotion: `"code"` (default) or `"all"` (0173).
+    /// Always serialized for honesty when the packet is emitted after analysis.
+    #[serde(default = "default_path_mode")]
+    pub path_mode: String,
+    /// Count of temporal couplings at/above risk threshold demoted under `path_mode` (0173).
+    #[serde(default)]
+    pub demoted_temporal_count: u32,
+    /// How structural changes were sourced: `working_tree` | `base_ref` | `prospective` (0173).
+    #[serde(default = "default_analysis_mode")]
+    pub analysis_mode: String,
+    /// Normalized prospective paths when `analysis_mode == "prospective"` (0173).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub prospective_paths: Vec<String>,
+}
+
+fn default_path_mode() -> String {
+    "code".to_string()
+}
+
+fn default_analysis_mode() -> String {
+    "working_tree".to_string()
 }
 
 impl ImpactPacket {
@@ -120,6 +141,9 @@ impl ImpactPacket {
             && self.service_impact.is_empty()
             && self.analysis_warnings.is_empty()
             && self.dead_code_findings.is_empty()
+            && self.prospective_paths.is_empty()
+        // path_mode / demoted_temporal_count / analysis_mode are metadata defaults —
+        // they do not make a clean packet "non-empty" for empty-tree checks.
     }
 }
 
@@ -166,6 +190,10 @@ impl Default for ImpactPacket {
             service_impact: Vec::new(),
             analysis_warnings: Vec::new(),
             dead_code_findings: Vec::new(),
+            path_mode: default_path_mode(),
+            demoted_temporal_count: 0,
+            analysis_mode: default_analysis_mode(),
+            prospective_paths: Vec::new(),
         }
     }
 }

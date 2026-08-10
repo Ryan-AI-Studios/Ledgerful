@@ -782,6 +782,8 @@ structure, doctor readiness, open ledger work, and a budgeted `readSet`.
 | `schemaVersion` | u32 | Always **`1`** for this packet (doctor/verify style) |
 | `impactSchemaVersion` | string | Forwarded from `ImpactPacket.schema_version` (different field/type) |
 | `status` | string | `ready` \| `empty` \| `not_ready` |
+| `summary` | string | Freeform one-line human/JSON summary (0114+). **Unchanged** by 0173. |
+| `agentSummary` | object | **0173** structured scannable header. **Coexists** with `summary` — does not replace it. Present on `ready`/`empty`; **omitted** on `not_ready`. Fields: `riskOneLiner`, `changed` (`total`/`code`/`governance`/`contract`), `topSymbols` (≤5), `mustTouchSample` (≤5), `suggestedTestsSample` (≤3), `demotedTemporalCount`, `pathMode` (`code`\|`all`), `analysisMode` (`working_tree`\|`base_ref`\|`prospective`). |
 | `readSetCapped` / `readSetTotalCandidates` | bool / usize | **Required**; `true` / total when truncated by `--max-files` |
 | `blast` | object | **Counts only** — not full edges. Always includes nested `confidenceSummary` (class counts: `scipBound`, `resolved`, `ambiguous`, `unresolved`, `capped`, `unknown`, `expandable`, `total`) at both `minimal` and `standard` detail. Same shape as ImpactPacket `blastRadius.confidenceSummary`. Full edges remain on `impact --json` only (0114 token-budget fence). |
 | `testCoverage` | object | **0115 deepened** structural test-gap report (same schema as PR `testGaps`). Status: `available` \| `empty_mapping` \| `missing_table` \| `no_source_seeds` \| `unavailable`. **Never** bare `"empty"`. Empty `ImpactPacket.test_coverage` vec is **not** full cover — use these counts/status. Caps: unmapped ≤20, mappedSample ≤5. Notes always include structural + LCOV ceiling. |
@@ -801,7 +803,32 @@ structure, doctor readiness, open ledger work, and a budgeted `readSet`.
 ### Stream rules
 
 - `--json` → **machine mode**: pure JSON on **stdout only** (0093).
-- Human mode (no `--json`): short summary (status, risk, readSet count, readyForPublish, next steps).
+- Human mode (no `--json`): print **`agentSummary` header first**, then status,
+  freeform `summary`, risk, readSet count, readyForPublish, next steps.
+
+### Path mode (code vs governance) — 0173
+
+Default **`pathMode=code`**: process/governance temporal couplings (conductor /
+deferred / process docs, and code↔governance pairs) are **demoted** from risk
+weight/reasons and from `readSet` priority-3. Full `temporalCouplings` remain on
+`impact --json` for audit; `demotedTemporalCount` is honest. Restore pre-0173
+behavior with **`--include-governance`** (`pathMode=all`). Contract allowlist
+paths (agent-output-contract, Engineering, SKILL.md, Cargo.toml, …) never demote.
+
+### Prospective `--paths` — 0173
+
+```powershell
+ledgerful change-context --json --paths src/foo.rs
+ledgerful change-context --json --paths src/a.rs,src/b.rs
+ledgerful impact --paths src/foo.rs --summary
+ledgerful scan --impact --json --paths src/foo.rs
+```
+
+- Synthetic snapshot: on-disk → Modified; missing → **Added** (greenfield).
+- `analysisMode=prospective`; `is_clean=false` so empty-tree short-circuit does not fire.
+- Mutually exclusive with `--base-ref`. Cap ≤ 50. Empty/whitespace → usage error.
+- **Write policy:** prospective does **not** rewrite `latest-impact.json`
+  (in-memory only). Working-tree impact without `--paths` keeps current write.
 
 ### `--base-ref` present-tense rule
 
@@ -818,8 +845,11 @@ for the full change set. Do not assume a capped `readSet` is complete.
 ### MCP
 
 Tool name: `change_context` (params: `detail`, `max_files`, `base_ref`,
-`blast_depth`). Same builder as the CLI; impact is in-memory and does **not**
-rewrite `.ledgerful/reports/latest-impact.json`.
+`blast_depth`, **`paths[]`**, **`include_governance`**). Same builder as the CLI;
+impact is in-memory and does **not** rewrite `.ledgerful/reports/latest-impact.json`.
+
+**MCP `scan`:** remains a full-impact dump **without** `paths` / `include_governance`
+in v1 — use CLI or `change_context` for prospective / path mode.
 
 ### Invocation
 
@@ -828,6 +858,8 @@ ledgerful doctor --json
 ledgerful change-context --json
 ledgerful change-context --json --detail minimal --max-files 5
 ledgerful change-context --json --base-ref HEAD~1
+ledgerful change-context --json --paths src/impact/analysis/temporal.rs
+ledgerful change-context --json --include-governance
 ```
 
 ---

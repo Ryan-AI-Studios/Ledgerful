@@ -6,7 +6,27 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Prospective `--paths` on change-context / impact / scan --impact (0173):** Analyze
+  explicit paths as if changed without a dirty working tree (`analysisMode=prospective`).
+  On-disk → Modified; missing → Added (greenfield). Cap ≤50; mutually exclusive with
+  `--base-ref`. **Does not** rewrite `latest-impact.json` (in-memory only). MCP
+  `change_context` gains `paths[]` + `include_governance`; MCP `scan` stays unscoped in v1.
+- **`agentSummary` on change-context (0173):** Structured scannable header
+  (`riskOneLiner`, class counts, capped samples, `demotedTemporalCount`, `pathMode`,
+  `analysisMode`) coexists with freeform `summary`. Human mode prints it first.
+
 ### Changed
+
+- **Default pathMode=code demotes process/governance temporal (0173):** Code↔governance
+  and governance↔governance temporal couplings no longer dominate risk weight/reasons
+  or `readSet` p3 under the default agent path. Full `temporalCouplings` remain on
+  impact JSON for audit; `demotedTemporalCount` is honest. Restore pre-0173 behavior
+  with `--include-governance` (`pathMode=all`). Process co-evolution is demoted for
+  agent budget — not claimed as CodeScene “noise.”
+- **ImpactPacket honesty fields (0173):** `pathMode`, `demotedTemporalCount`,
+  `analysisMode`, optional `prospectivePaths` (legacy JSON still deserializes).
 
 - **`ask --timeout` is optional and backend-aware (0158):** Omitted timeout no longer
   forces 15s for every backend. Local uses `local_model.timeout_secs` (default **300**);

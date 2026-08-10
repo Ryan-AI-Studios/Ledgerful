@@ -133,12 +133,27 @@ fn handle_change_context(params: Value) -> Value {
         .max(1);
     let base_ref = params["base_ref"].as_str().map(|s| s.to_string());
     let blast_depth = params["blast_depth"].as_u64().map(|n| n as u32);
+    let paths: Vec<String> = params["paths"]
+        .as_array()
+        .map(|arr| {
+            arr.iter()
+                .filter_map(|v| v.as_str().map(|s| s.to_string()))
+                .collect()
+        })
+        .unwrap_or_default();
+    let include_governance = params["include_governance"].as_bool().unwrap_or(false);
+
+    if !paths.is_empty() && base_ref.is_some() {
+        return error_response("paths and base_ref are mutually exclusive");
+    }
 
     let opts = ChangeContextOpts {
         detail,
         max_files,
         base_ref,
         blast_depth,
+        paths,
+        include_governance,
     };
 
     let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
@@ -562,12 +577,117 @@ mod tests {
         assert_eq!(v["schemaVersion"], 1);
         assert!(v.get("doctor").is_some(), "doctor key missing: {v}");
         assert!(v.get("ledger").is_some(), "ledger key missing: {v}");
+        // 0173: agentSummary on ready/empty; summary always present
+        assert!(v.get("summary").is_some(), "summary key missing: {v}");
+        if v["status"] == "ready" || v["status"] == "empty" {
+            assert!(
+                v.get("agentSummary").is_some(),
+                "agentSummary missing on ready/empty: {v}"
+            );
+        }
         assert!(
             v.get("readSetCapped").is_some(),
             "readSetCapped key missing: {v}"
         );
         assert!(v.get("readSet").is_some());
         assert!(v.get("status").is_some());
+    }
+
+    #[test]
+    fn change_context_mcp_paths_and_include_governance() {
+        use crate::state::layout::Layout;
+        use crate::state::storage::StorageManager;
+        use crate::tests::DirGuard;
+        use std::fs;
+        use tempfile::tempdir;
+
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "T"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/exists.rs"), "fn x() {}").unwrap();
+        fs::write(dir.join("README.md"), "hi").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+
+        let root = camino::Utf8Path::from_path(dir).unwrap();
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        let storage =
+            StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+        let _ = storage.shutdown();
+
+        let _guard = DirGuard::new(dir);
+
+        // Mutex: paths + base_ref must hard-error via MCP.
+        let mutex = dispatch_tool(
+            "change_context",
+            serde_json::json!({
+                "paths": ["src/exists.rs"],
+                "base_ref": "HEAD"
+            }),
+        );
+        assert_eq!(
+            mutex.get("isError"),
+            Some(&serde_json::Value::Bool(true)),
+            "paths+base_ref must error: {mutex}"
+        );
+        let mutex_text = mutex["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            mutex_text
+                .to_ascii_lowercase()
+                .contains("mutually exclusive"),
+            "mutex message: {mutex_text}"
+        );
+
+        // Prospective paths + include_governance.
+        let response = dispatch_tool(
+            "change_context",
+            serde_json::json!({
+                "paths": ["src/exists.rs", "src/missing.rs"],
+                "include_governance": true
+            }),
+        );
+        assert_ne!(
+            response.get("isError"),
+            Some(&serde_json::Value::Bool(true)),
+            "dispatch must not error: {response}"
+        );
+        let text = response["content"][0]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("MCP text content missing: {response}"));
+        let json_slice = text.find('{').map(|i| &text[i..]).unwrap_or(text);
+        let v: serde_json::Value = serde_json::from_str(json_slice)
+            .unwrap_or_else(|e| panic!("packet JSON ({e}): text={text:?}"));
+        assert_eq!(v["status"], "ready");
+        assert!(v.get("summary").is_some());
+        let agent = v
+            .get("agentSummary")
+            .unwrap_or_else(|| panic!("agentSummary missing: {v}"));
+        assert_eq!(agent["analysisMode"], "prospective");
+        assert_eq!(agent["pathMode"], "all");
     }
 
     #[test]

@@ -71,6 +71,10 @@ pub struct ChangeContextOpts {
     pub max_files: usize,
     pub base_ref: Option<String>,
     pub blast_depth: Option<u32>,
+    /// Prospective paths (0173). Mutually exclusive with `base_ref`.
+    pub paths: Vec<String>,
+    /// When true, pathMode=all — restore pre-0173 governance temporal risk/readSet.
+    pub include_governance: bool,
 }
 
 impl Default for ChangeContextOpts {
@@ -80,6 +84,8 @@ impl Default for ChangeContextOpts {
             max_files: DEFAULT_MAX_FILES,
             base_ref: None,
             blast_depth: None,
+            paths: Vec::new(),
+            include_governance: false,
         }
     }
 }
@@ -91,6 +97,10 @@ pub struct ChangeContextPacket {
     pub schema_version: u32,
     pub status: String,
     pub summary: String,
+    /// Structured scannable header (0173). Coexists with freeform `summary`.
+    /// Present on `ready`/`empty`; omitted on `not_ready`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub agent_summary: Option<AgentSummary>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub reason: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -125,6 +135,33 @@ pub struct ChangeContextPacket {
     pub next_actions: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub impact_schema_version: Option<String>,
+}
+
+/// Structured agent scannable header (0173). Coexists with freeform `summary`.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct AgentSummary {
+    pub risk_one_liner: String,
+    pub changed: ChangedClassCounts,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub top_symbols: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub must_touch_sample: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggested_tests_sample: Vec<String>,
+    pub demoted_temporal_count: u32,
+    pub path_mode: String,
+    pub analysis_mode: String,
+}
+
+/// Per-class counts of changed files for agentSummary.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct ChangedClassCounts {
+    pub total: usize,
+    pub code: usize,
+    pub governance: usize,
+    pub contract: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -210,6 +247,13 @@ pub fn build_change_context(
     storage: &StorageManager,
     config: &Config,
 ) -> Result<ChangeContextPacket> {
+    // Usage error: hard-fail (do not fold into not_ready).
+    if !opts.paths.is_empty() && opts.base_ref.is_some() {
+        return Err(miette::miette!(
+            "--paths and --base-ref are mutually exclusive"
+        ));
+    }
+
     let project_root = layout.root.as_std_path();
     let mut config = config.clone();
     let mut analysis_warnings: Vec<String> = Vec::new();
@@ -245,8 +289,14 @@ pub fn build_change_context(
     let (ledger, ledger_warnings) = read_ledger_section_with_warnings(layout, storage, &config);
     analysis_warnings.extend(ledger_warnings);
 
-    let (read_set, read_set_capped, read_set_total_candidates) =
-        build_read_set(&impact, opts.max_files, config.temporal.coupling_threshold);
+    let path_mode =
+        crate::impact::path_class::path_mode_from_include_governance(opts.include_governance);
+    let (read_set, read_set_capped, read_set_total_candidates) = build_read_set(
+        &impact,
+        opts.max_files,
+        config.temporal.coupling_threshold,
+        path_mode,
+    );
 
     if read_set_capped {
         analysis_warnings.push(format!(
@@ -276,6 +326,11 @@ pub fn build_change_context(
         &doctor,
         change_hints.as_ref(),
     );
+    let agent_summary = Some(build_agent_summary(
+        &impact,
+        change_hints.as_ref(),
+        risk_level_str(impact.risk_level),
+    ));
     let risk_reasons = trim_reasons(&impact.risk_reasons, opts.detail);
     let mut warnings = trim_reasons(&analysis_warnings, opts.detail);
     warnings.sort();
@@ -304,6 +359,7 @@ pub fn build_change_context(
         schema_version: CHANGE_CONTEXT_SCHEMA_VERSION,
         status: status.to_string(),
         summary,
+        agent_summary,
         reason: None,
         head_hash: impact.head_hash.clone(),
         base_ref: opts.base_ref.clone(),
@@ -331,7 +387,14 @@ pub fn execute_change_context(
     max_files: Option<usize>,
     base_ref: Option<String>,
     blast_depth: Option<u32>,
+    paths: Vec<String>,
+    include_governance: bool,
 ) -> Result<()> {
+    if !paths.is_empty() && base_ref.is_some() {
+        return Err(miette::miette!(
+            "--paths and --base-ref are mutually exclusive"
+        ));
+    }
     let detail = match detail {
         Some(s) => ChangeContextDetail::parse(&s)?,
         None => ChangeContextDetail::Minimal,
@@ -342,6 +405,8 @@ pub fn execute_change_context(
         max_files,
         base_ref,
         blast_depth,
+        paths,
+        include_governance,
     };
 
     let layout = match crate::commands::helpers::get_layout() {
@@ -410,6 +475,37 @@ fn print_human(packet: &ChangeContextPacket) {
         "Ledgerful change-context"
             .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
     );
+    // agentSummary header first (0173) — ≤ ~12 lines, then existing sections.
+    if let Some(ref agent) = packet.agent_summary {
+        println!("  agentSummary:");
+        println!("    risk:             {}", agent.risk_one_liner);
+        println!(
+            "    changed:          total={} code={} governance={} contract={}",
+            agent.changed.total,
+            agent.changed.code,
+            agent.changed.governance,
+            agent.changed.contract
+        );
+        if !agent.top_symbols.is_empty() {
+            println!("    topSymbols:       {}", agent.top_symbols.join(", "));
+        }
+        if !agent.must_touch_sample.is_empty() {
+            println!(
+                "    mustTouch:        {}",
+                agent.must_touch_sample.join(", ")
+            );
+        }
+        if !agent.suggested_tests_sample.is_empty() {
+            println!(
+                "    suggestedTests:   {}",
+                agent.suggested_tests_sample.join(", ")
+            );
+        }
+        println!(
+            "    demotedTemporal:  {}  pathMode={}  analysisMode={}",
+            agent.demoted_temporal_count, agent.path_mode, agent.analysis_mode
+        );
+    }
     println!("  status:           {}", packet.status);
     println!("  summary:          {}", packet.summary);
     if let Some(ref risk) = packet.risk_level {
@@ -478,17 +574,64 @@ fn compute_structural_impact(
     config: &Config,
     project_root: &Path,
 ) -> Result<ImpactPacket> {
-    if let Some(ref base_ref) = opts.base_ref {
-        let snapshot = build_repo_snapshot_from_base_ref(project_root, base_ref, config)?;
-        crate::commands::impact::compute_impact_from_snapshot_in_memory(
+    if !opts.paths.is_empty() && opts.base_ref.is_some() {
+        return Err(miette::miette!(
+            "--paths and --base-ref are mutually exclusive"
+        ));
+    }
+
+    if !opts.paths.is_empty() {
+        let parsed = crate::commands::impact::parse_prospective_paths(&opts.paths)?;
+        let snapshot = crate::commands::impact::build_prospective_snapshot(project_root, &parsed)?;
+        return crate::commands::impact::compute_impact_from_snapshot_in_memory_with_mode(
             storage,
             config,
             project_root,
             snapshot,
-        )
-    } else {
-        crate::commands::impact::compute_impact_in_memory_at(storage, config, project_root)
+            opts.include_governance,
+            "prospective",
+            parsed,
+        );
     }
+
+    if let Some(ref base_ref) = opts.base_ref {
+        let snapshot = build_repo_snapshot_from_base_ref(project_root, base_ref, config)?;
+        return crate::commands::impact::compute_impact_from_snapshot_in_memory_with_mode(
+            storage,
+            config,
+            project_root,
+            snapshot,
+            opts.include_governance,
+            "base_ref",
+            Vec::new(),
+        );
+    }
+
+    // Working tree — always with_mode so pathMode is set before temporal demotion.
+    let repo = open_repo(project_root)?;
+    let (head_hash, branch_name) = get_head_info(&repo)?;
+    let all_changes = crate::git::status::get_repo_status(&repo)?;
+    let changes = crate::git::ignore::filter_ignored_changes(
+        all_changes,
+        &config.watch.ignore_patterns,
+        true,
+    )?;
+    let is_clean = changes.is_empty();
+    let snapshot = RepoSnapshot {
+        head_hash,
+        branch_name,
+        is_clean,
+        changes,
+    };
+    crate::commands::impact::compute_impact_from_snapshot_in_memory_with_mode(
+        storage,
+        config,
+        project_root,
+        snapshot,
+        opts.include_governance,
+        "working_tree",
+        Vec::new(),
+    )
 }
 
 /// Build a [`RepoSnapshot`] from `git diff base_ref...HEAD` (structure only).
@@ -525,6 +668,7 @@ fn not_ready_packet(
         schema_version: CHANGE_CONTEXT_SCHEMA_VERSION,
         status: "not_ready".to_string(),
         summary: format!("Change context not ready: {reason}"),
+        agent_summary: None,
         reason: Some(reason),
         head_hash: None,
         base_ref,
@@ -542,6 +686,85 @@ fn not_ready_packet(
         analysis_warnings: Vec::new(),
         next_actions: next_actions_for_class(class),
         impact_schema_version: None,
+    }
+}
+
+/// Build structured agentSummary from impact + optional changeHints (0173).
+fn build_agent_summary(
+    impact: &ImpactPacket,
+    change_hints: Option<&crate::impact::enrichment::change_hints::ChangeHintsReport>,
+    risk: &str,
+) -> AgentSummary {
+    use crate::impact::path_class::{PathClass, classify_path_buf};
+
+    let mut counts = ChangedClassCounts::default();
+    for c in &impact.changes {
+        counts.total += 1;
+        match classify_path_buf(&c.path) {
+            PathClass::Code => counts.code += 1,
+            PathClass::Governance => counts.governance += 1,
+            PathClass::Contract => counts.contract += 1,
+        }
+    }
+
+    let mut top_symbols: Vec<String> = Vec::new();
+    for c in &impact.changes {
+        if let Some(ref syms) = c.symbols {
+            for s in syms {
+                let name = s.qualified_name.clone().unwrap_or_else(|| s.name.clone());
+                if !name.is_empty() {
+                    top_symbols.push(name);
+                }
+            }
+        }
+    }
+    top_symbols.sort();
+    top_symbols.dedup();
+    top_symbols.truncate(5);
+
+    let mut must_touch_sample: Vec<String> = impact
+        .blast_radius
+        .as_ref()
+        .map(|b| {
+            b.must_touch_files
+                .iter()
+                .map(|p| p.replace('\\', "/"))
+                .collect()
+        })
+        .unwrap_or_default();
+    must_touch_sample.sort();
+    must_touch_sample.dedup();
+    must_touch_sample.truncate(5);
+
+    let mut suggested_tests_sample: Vec<String> = Vec::new();
+    if let Some(hints) = change_hints {
+        for t in &hints.suggested_tests {
+            suggested_tests_sample.push(t.path.replace('\\', "/"));
+        }
+    }
+    suggested_tests_sample.sort();
+    suggested_tests_sample.dedup();
+    suggested_tests_sample.truncate(3);
+
+    let demoted = impact.demoted_temporal_count;
+    let risk_one_liner = if demoted > 0 {
+        format!(
+            "{risk} — {} code file(s); {demoted} process temporal demoted",
+            counts.code
+        )
+    } else {
+        format!("{risk} — {} file(s) changed", counts.total)
+    };
+
+    AgentSummary {
+        risk_one_liner,
+        changed: counts,
+        top_symbols,
+        must_touch_sample,
+        suggested_tests_sample,
+        demoted_temporal_count: demoted,
+        path_mode: impact.path_mode.clone(),
+        analysis_mode: impact.analysis_mode.clone(),
     }
 }
 
@@ -705,10 +928,14 @@ pub(crate) fn open_storage_for_change_context(
 ///
 /// Within each priority band paths are sorted for determinism.
 /// Always sets total candidates; `capped=true` when truncated.
+///
+/// Under `path_mode=code`, demotable temporal pairs (either endpoint Governance,
+/// neither Contract) are skipped for priority-3 (0173).
 pub(crate) fn build_read_set(
     impact: &ImpactPacket,
     max_files: usize,
     coupling_threshold: f32,
+    path_mode: &str,
 ) -> (Vec<ReadSetEntry>, bool, usize) {
     let max_files = max_files.max(1);
     let mut seen: BTreeSet<String> = BTreeSet::new();
@@ -752,14 +979,19 @@ pub(crate) fn build_read_set(
         }
     }
 
-    // Priority 3: temporal coupling partners above threshold
+    // Priority 3: temporal coupling partners above threshold (code-mode demotion)
     let mut temporal: Vec<String> = Vec::new();
     for tc in &impact.temporal_couplings {
         if tc.score < coupling_threshold {
             continue;
         }
-        temporal.push(normalize_path(&tc.file_a));
-        temporal.push(normalize_path(&tc.file_b));
+        let a = normalize_path(&tc.file_a);
+        let b = normalize_path(&tc.file_b);
+        if crate::impact::path_class::should_demote_pair(&a, &b, path_mode) {
+            continue;
+        }
+        temporal.push(a);
+        temporal.push(b);
     }
     temporal.sort();
     temporal.dedup();
@@ -1280,7 +1512,7 @@ mod tests {
             score: 0.9,
         }];
 
-        let (set, capped, total) = build_read_set(&impact, 20, 0.75);
+        let (set, capped, total) = build_read_set(&impact, 20, 0.75, "code");
         assert!(!capped);
         assert_eq!(total, 3);
         assert_eq!(set.len(), 3);
@@ -1293,13 +1525,56 @@ mod tests {
     }
 
     #[test]
+    fn read_set_demotes_governance_temporal_under_code_mode() {
+        let mut impact = base_packet(vec![make_changed("src/a.rs")]);
+        impact.temporal_couplings = vec![
+            TemporalCoupling {
+                file_a: PathBuf::from("src/a.rs"),
+                file_b: PathBuf::from("src/code_partner.rs"),
+                score: 0.9,
+            },
+            TemporalCoupling {
+                file_a: PathBuf::from("src/a.rs"),
+                file_b: PathBuf::from("conductor/spec.md"),
+                score: 0.95,
+            },
+            TemporalCoupling {
+                file_a: PathBuf::from("deferred.md"),
+                file_b: PathBuf::from("conductor.md"),
+                score: 0.99,
+            },
+        ];
+        let (set, _, total) = build_read_set(&impact, 20, 0.75, "code");
+        let paths: Vec<&str> = set.iter().map(|e| e.path.as_str()).collect();
+        assert!(paths.contains(&"src/a.rs"));
+        assert!(paths.contains(&"src/code_partner.rs"));
+        assert!(
+            !paths.contains(&"conductor/spec.md"),
+            "code↔governance demoted from p3: {paths:?}"
+        );
+        assert!(
+            !paths.contains(&"deferred.md") && !paths.contains(&"conductor.md"),
+            "gov↔gov demoted: {paths:?}"
+        );
+        assert_eq!(total, 2); // changed + code partner only
+
+        let (set_all, _, total_all) = build_read_set(&impact, 20, 0.75, "all");
+        assert!(total_all > total);
+        assert!(
+            set_all
+                .iter()
+                .any(|e| e.path == "conductor/spec.md" || e.path == "deferred.md")
+        );
+    }
+
+    #[test]
     fn read_set_max_files_sets_capped_flags() {
         let impact = base_packet(vec![
             make_changed("src/a.rs"),
             make_changed("src/b.rs"),
             make_changed("src/c.rs"),
         ]);
-        let (set, capped, total) = build_read_set(&impact, 1, 0.75);
+        let (set, capped, total) = build_read_set(&impact, 1, 0.75, "code");
         assert!(capped);
         assert_eq!(total, 3);
         assert_eq!(set.len(), 1);
@@ -1768,6 +2043,15 @@ mod tests {
         if let Some(ref r) = packet.risk_level {
             assert_ne!(r, "high");
         }
+        // 0173: agentSummary present on empty (coexists with summary)
+        let agent = packet
+            .agent_summary
+            .as_ref()
+            .expect("agentSummary on empty status");
+        assert_eq!(agent.path_mode, "code");
+        assert_eq!(agent.analysis_mode, "working_tree");
+        assert_eq!(agent.changed.total, 0);
+        assert!(!packet.summary.is_empty());
         let _ = storage.shutdown();
     }
 
@@ -1884,6 +2168,76 @@ mod tests {
         );
         assert!(packet.risk_level.is_some());
         assert!(packet.doctor.status == "missing" || packet.doctor.status == "ok");
+        // 0173: agentSummary present on ready with class counts
+        let agent = packet
+            .agent_summary
+            .as_ref()
+            .expect("agentSummary on ready status");
+        assert_eq!(agent.path_mode, "code");
+        assert_eq!(agent.analysis_mode, "working_tree");
+        assert!(agent.changed.total >= 1);
+        assert!(!agent.risk_one_liner.is_empty());
+        let _ = storage.shutdown();
+    }
+
+    #[test]
+    fn prospective_paths_produce_non_empty_analysis_mode() {
+        let tmp = tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let dir = tmp.path();
+
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "T"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        fs::create_dir_all(dir.join("src")).unwrap();
+        fs::write(dir.join("src/exists.rs"), "pub fn x() {}\n").unwrap();
+        fs::write(dir.join("README.md"), "hi").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        let storage =
+            StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+        let config = Config::default();
+        let opts = ChangeContextOpts {
+            paths: vec!["src/exists.rs".into(), "src/missing.rs".into()],
+            ..ChangeContextOpts::default()
+        };
+        let packet = build_change_context(&opts, &layout, &storage, &config).unwrap();
+        assert_eq!(packet.status, "ready");
+        let agent = packet.agent_summary.as_ref().expect("agentSummary");
+        assert_eq!(agent.analysis_mode, "prospective");
+        assert_eq!(agent.path_mode, "code");
+        assert!(agent.changed.total >= 1);
+        assert!(
+            packet
+                .read_set
+                .iter()
+                .any(|e| e.path.contains("exists.rs") || e.path.contains("missing.rs")),
+            "prospective readSet: {:?}",
+            packet.read_set
+        );
         let _ = storage.shutdown();
     }
 
@@ -1946,6 +2300,76 @@ mod tests {
         assert_eq!(
             before, after,
             "change-context must not rewrite latest-impact.json"
+        );
+
+        // Prospective --paths must also leave the durable report untouched (0173-G).
+        let opts_paths = ChangeContextOpts {
+            paths: vec!["src/missing.rs".into()],
+            ..ChangeContextOpts::default()
+        };
+        let packet = build_change_context(&opts_paths, &layout, &storage, &config).unwrap();
+        assert_eq!(
+            packet
+                .agent_summary
+                .as_ref()
+                .map(|a| a.analysis_mode.as_str()),
+            Some("prospective")
+        );
+        let after_paths = fs::read_to_string(report_path.as_std_path()).unwrap();
+        assert_eq!(
+            before, after_paths,
+            "prospective change-context must not rewrite latest-impact.json"
+        );
+        let _ = storage.shutdown();
+    }
+
+    #[test]
+    fn paths_and_base_ref_are_mutually_exclusive() {
+        let tmp = tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let dir = tmp.path();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "T"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        fs::write(dir.join("README.md"), "hi").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        let storage =
+            StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+        let config = Config::default();
+        let opts = ChangeContextOpts {
+            paths: vec!["src/a.rs".into()],
+            base_ref: Some("HEAD".into()),
+            ..ChangeContextOpts::default()
+        };
+        let err = build_change_context(&opts, &layout, &storage, &config).unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("mutually exclusive"),
+            "expected mutual exclusion error, got: {msg}"
         );
         let _ = storage.shutdown();
     }
@@ -2300,6 +2724,7 @@ mod tests {
             schema_version: CHANGE_CONTEXT_SCHEMA_VERSION,
             status: "ready".into(),
             summary: "test".into(),
+            agent_summary: None,
             reason: None,
             head_hash: Some("abc".into()),
             base_ref: None,

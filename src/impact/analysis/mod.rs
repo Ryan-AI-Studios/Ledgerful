@@ -59,6 +59,14 @@ impl AnalysisRegistry {
             packet.apply_risk_impact(impact, &mut total_weight);
         }
 
+        // Honesty: recompute demoted temporal count from couplings + path_mode (0173).
+        // Matches TemporalImpactProvider demotion so weight and count stay aligned.
+        packet.demoted_temporal_count = crate::impact::path_class::count_demoted_temporal(
+            &packet.temporal_couplings,
+            &packet.path_mode,
+            temporal::TEMPORAL_RISK_THRESHOLD,
+        );
+
         packet.finalize_risk_level(total_weight, has_prior_risk_signal);
 
         Ok(())

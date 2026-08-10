@@ -28,13 +28,23 @@ pub const INVENTORY: &[ToolDescriptor] = &[
                 "blast_depth": {
                     "type": "integer",
                     "description": "Structural blast hop depth (default 1; max 2)"
+                },
+                "paths": {
+                    "type": "array",
+                    "items": { "type": "string" },
+                    "description": "Prospective paths (as if changed). Mutually exclusive with base_ref. Cap 50. In-memory only."
+                },
+                "include_governance": {
+                    "type": "boolean",
+                    "description": "Include process/governance temporal couplings in risk + readSet (pathMode=all). Default false (code mode).",
+                    "default": false
                 }
             }
         }"#,
     },
     ToolDescriptor {
         name: "scan",
-        description: "Assess the impact and risk of uncommitted changes in the repository.",
+        description: "Assess the impact and risk of uncommitted changes in the repository. MCP scan stays a full-impact dump without paths/include_governance in v1 — use CLI or change_context for prospective.",
         schema_json: r#"{"type": "object", "properties": {}}"#,
     },
     ToolDescriptor {
