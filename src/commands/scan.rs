@@ -489,8 +489,11 @@ pub fn execute_scan_with_opts(
         }
     }
 
-    // Prefer layout root so `--paths` resolve against the repo root (parity with
-    // change-context) even when scan is invoked from a subdirectory.
+    // open_repo first so no-repo errors keep the stable discover message
+    // (MCP test_scan_no_repo / CLI). Then layout.root for repo-root path
+    // resolution when invoked from a subdirectory.
+    let repo = open_repo(&current_dir)?;
+    let (head_hash, branch_name) = get_head_info(&repo)?;
     let layout = crate::commands::helpers::get_layout()?;
     let config = load_config(&layout).unwrap_or_default();
     let project_root = layout.root.as_std_path();
@@ -499,9 +502,6 @@ pub fn execute_scan_with_opts(
     } else {
         current_dir.as_path()
     };
-
-    let repo = open_repo(work_dir)?;
-    let (head_hash, branch_name) = get_head_info(&repo)?;
 
     let prospective = !paths.is_empty();
     let prospective_parsed = if prospective {
