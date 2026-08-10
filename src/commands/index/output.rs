@@ -303,6 +303,12 @@ pub(crate) fn format_scip_human_lines(scip: &crate::scip::ScipIndexJson) -> Vec<
                 scip.message.as_deref().unwrap_or("unknown")
             ));
         }
+        crate::scip::ScipRunStatus::Unavailable => {
+            lines.push(format!(
+                "  Status:         unavailable ({})",
+                scip.message.as_deref().unwrap_or("no capable SCIP indexer")
+            ));
+        }
         crate::scip::ScipRunStatus::SkippedStale => {
             lines.push("  Status:         skipped (index hash unchanged)".to_string());
         }
@@ -459,6 +465,26 @@ mod tests {
         let scip = ScipIndexJson::did_not_run();
         let text = format_scip_human_lines(&scip).join("\n");
         assert!(text.contains("did not run"), "got:\n{text}");
+        assert!(!text.contains("Skip disagree"), "got:\n{text}");
+    }
+
+    #[test]
+    fn scip_human_unavailable() {
+        let scip = ScipIndexJson::unavailable("no capable SCIP indexer");
+        assert!(matches!(scip.status, ScipRunStatus::Unavailable));
+        let text = format_scip_human_lines(&scip).join("\n");
+        assert!(
+            text.contains("unavailable"),
+            "expected unavailable status; got:\n{text}"
+        );
+        assert!(
+            text.contains("no capable SCIP indexer"),
+            "expected message; got:\n{text}"
+        );
+        assert!(
+            !text.contains("failed"),
+            "must not look like failed:\n{text}"
+        );
         assert!(!text.contains("Skip disagree"), "got:\n{text}");
     }
 }

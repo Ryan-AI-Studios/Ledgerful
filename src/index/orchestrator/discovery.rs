@@ -31,7 +31,7 @@ pub fn get_semantic_sample_files(
             "SELECT pf.file_path \
              FROM project_files pf \
              WHERE pf.parse_status = 'OK' \
-               AND pf.language IN ('Rust', 'TypeScript', 'Python', 'Go') \
+               AND pf.language IN ('Rust', 'TypeScript', 'Python', 'Go', 'Cpp') \
              ORDER BY (SELECT COUNT(*) FROM project_symbols ps WHERE ps.file_id = pf.id) DESC \
              LIMIT 10",
         )

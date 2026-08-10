@@ -131,14 +131,28 @@ completeness and does not drop the disagreement fence for non-nested cases.
 **What SCIP does not do here:** write `project_symbols` (that path was removed — external symbols,
 off-by-one lines, and last-occurrence ranges are gone with it); flip on by default; cover every
 language in one run (detection still picks one toolchain for generation by Rust → TS → Python
-priority); receiver-type inference for the ambiguous `METHOD_CALL` majority on machines without an
-indexer; claim stack-graph completeness; consume scip 0.9 typed ranges (classic empty ranges may
-yield one process-level WARN).
+priority; **scip-clang / scip-go are not auto-wired**); receiver-type inference for the ambiguous
+`METHOD_CALL` majority on machines without an indexer; claim stack-graph completeness; consume
+scip 0.9 typed ranges (classic empty ranges may yield one process-level WARN).
 
-**Honesty:** "SCIP did not run" (`scip.status = did_not_run` in `index --json`) is distinct from
-"SCIP ran and added zero edges" (`status = success` with `edges_added = 0`). SCIP only adds edges
+**Honesty:** SCIP statuses in `index --json` (`scip.status`, snake_case):
+
+| Status | Meaning |
+|--------|---------|
+| `did_not_run` | Neither `--auto-scip` nor `--scip` was requested |
+| `unavailable` | Capability probe found **no** capable indexer (honest, non-alarming; not a hard failure) |
+| `failed` | Generation or ingest failed (native index continues) |
+| `success` | Edges were (re)applied (may still be zero edges) |
+| `skipped_stale` | Legacy constructor only; production paths always re-apply |
+
+"SCIP did not run" is distinct from "no indexer available" (`unavailable`) and from
+"SCIP ran and added zero edges" (`success` with `edges_added = 0`). SCIP only adds edges
 where the native-span resolver hits; stdlib/external symbols must not appear as project
 `scip:ref` callees. Requested augment **always re-applies** edges (idempotent); hash is audit-only.
+
+**scip-clang:** not wired into `--auto-scip` (no Windows binary on official releases; needs
+`compile_commands.json`). Manual path: run scip-clang externally →
+`ledgerful index --scip path/to/index.scip`. Doctor reports `scip-clang-not-wired` (info).
 
 A prior native index is **no longer required** for `--auto-scip`: native indexing always runs first.
 

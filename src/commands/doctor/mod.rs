@@ -1012,6 +1012,12 @@ fn collect_scip_findings(config: &crate::config::model::Config) -> Vec<DoctorFin
         DoctorCategory::Optional,
         "SCIP Go: upstream scip-go exists, not wired here — native Go tree-sitter path only",
     ));
+    // C/C++: scip-clang exists upstream (Linux/macOS binaries; needs compile_commands) — not wired (D6)
+    findings.push(DoctorFinding::info(
+        "scip-clang-not-wired",
+        DoctorCategory::Optional,
+        "SCIP C/C++: upstream scip-clang exists (not wired; no Windows binary; needs compile_commands.json) — native C/C++ tree-sitter path only. Manual: run scip-clang externally then `ledgerful index --scip path/to/index.scip`",
+    ));
     findings.sort_by(|a, b| a.code.cmp(&b.code).then(a.message.cmp(&b.message)));
     findings
 }
@@ -1946,6 +1952,10 @@ mod tests {
                 .iter()
                 .any(|f| f.code == "scip-go-not-wired" || f.message.contains("not wired")),
             "must report Go as upstream/not wired: {findings:?}"
+        );
+        assert!(
+            findings.iter().any(|f| f.code == "scip-clang-not-wired"),
+            "must report scip-clang as not wired: {findings:?}"
         );
         for f in &findings {
             assert_eq!(f.severity, DoctorSeverity::Info);

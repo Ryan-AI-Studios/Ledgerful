@@ -39,7 +39,22 @@ pub fn analyze_file(relative_path: &Path, base_dir: &Path) -> AnalysisOutcome {
 
     let supported = matches!(
         extension,
-        "rs" | "ts" | "tsx" | "js" | "jsx" | "py" | "go" | "md"
+        "rs" | "ts"
+            | "tsx"
+            | "js"
+            | "jsx"
+            | "py"
+            | "go"
+            | "md"
+            | "c"
+            | "h"
+            | "cpp"
+            | "cc"
+            | "cxx"
+            | "hpp"
+            | "hh"
+            | "hxx"
+            | "h++"
     );
     if !supported {
         status.symbols = AnalysisStatus::Unsupported;

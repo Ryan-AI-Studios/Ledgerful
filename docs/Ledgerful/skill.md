@@ -160,7 +160,7 @@ ledgerful doctor --json
 ## Core Capabilities
 
 - **Search & Discovery**: High-performance regex (Tantivy), optional SCIP edge augment (`index --auto-scip`, off by default), and conceptual semantic search (local embeddings) with parallel HNSW retrieval.
-- **Code Symbol Index**: Tree-sitter parsing of Rust, TypeScript, and Python — extracts every public function, struct, enum, trait, module, and HTTP route into the Knowledge Graph.
+- **Code Symbol Index**: Tree-sitter parsing of Rust, TypeScript/JavaScript, Python, Go, and C/C++ — extracts functions, types, modules, and (where applicable) HTTP routes into the Knowledge Graph.
 - **Call Graph**: Tracks function call relationships (`Direct`, `MethodCall`, `TraitDispatch`, `Dynamic`, `External`) so you can answer "what calls this function?" and "what does this function depend on?".
 - **Knowledge Graph**: Durable, billion-edge relational and vector storage (CozoDB-redux/Sled) with native code-aware tokenization (Tree-Sitter).
 - **Impact Analysis**: Deep impact analysis across 20+ specialized providers (Infra, Contracts, Observability, Temporal). Structural **`blastRadius`** is depth-1 by default (`--blast-depth 2` only high-confidence + transitive); must-touch punchlist — not a complete call graph; ≠ deploy high-blast resources. Edges carry `confidenceClass` (`SCIP_BOUND`/`RESOLVED`/…); change-context and blast expose `confidenceSummary` counts (not full edges on change-context).

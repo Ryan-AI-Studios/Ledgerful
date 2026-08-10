@@ -63,7 +63,14 @@ Compiler-grade search and conceptual discovery.
     call graph and add precise cross-file **reference edges** onto native `project_symbols` ids
     (`structural_edges` with `evidence=scip:ref`). SCIP does **not** write symbols, does not replace
     the native index, and is off by default. Requires a capable per-language indexer (capability
-    probe, not PATH alone). See `docs/Call-Resolution.md`.
+    probe, not PATH alone). Empty probe → `scip.status = unavailable` (not failed). See
+    `docs/Call-Resolution.md`.
+*   **Native language matrix**: tree-sitter structural indexing for **Rust**, **TypeScript/JavaScript**,
+    **Python**, **Go**, and **C/C++** (single `Language::Cpp` via `tree-sitter-cpp` for `.c`/`.h`/
+    `.cpp`/`.cc`/`.cxx`/`.hpp`/`.hh`/`.hxx`/`.h++`). C/C++ floor: symbols (declarator-aware names),
+    `#include` with stripped delimiters, same-file call edges (callee unwrap for templates /
+    members), complexity/hotspots. **Not** stack-graph / clangd fidelity; scip-clang is manual
+    `--scip` only (not auto-generate).
 *   **Semantic Discovery**: AST-based chunking and local vector embeddings for conceptual/natural-language code search.
 
 ## 4. Predictable Verification
