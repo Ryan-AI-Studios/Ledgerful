@@ -1,7 +1,8 @@
 //! SCIP augment CLI contract (0095).
 //!
-//! Missing/failed SCIP must not replace the native index: exit 0, explicit
-//! `scip.status = failed` under `--json`, and a non-empty native floor when
+//! Missing/failed/unavailable SCIP must not replace the native index: exit 0,
+//! explicit `scip.status` under `--json` (`failed` for bad path, `unavailable`
+//! for empty capability probe), and a non-empty native floor when
 //! the temp repo has indexable sources.
 
 use std::process::Command;
@@ -169,8 +170,12 @@ fn auto_scip_on_fresh_state_still_builds_native_floor() {
         .pointer("/scip/status")
         .and_then(|s| s.as_str())
         .unwrap_or("");
+    // D7 (0165): empty capability probe reports `unavailable` (not `failed`).
     assert!(
-        matches!(scip_status, "success" | "failed" | "did_not_run"),
+        matches!(
+            scip_status,
+            "success" | "failed" | "unavailable" | "did_not_run" | "skipped_stale"
+        ),
         "unexpected scip status: {scip_status}"
     );
     // With --auto-scip requested, status must not be did_not_run.
