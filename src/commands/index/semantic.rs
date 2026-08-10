@@ -80,6 +80,22 @@ fn non_tty_progress_step(total: usize) -> usize {
     (total / 20).max(1)
 }
 
+/// Soft E (0167 D8): hide ProgressBar/spinner when machine JSON or non-interactive.
+/// Pure so interactive-TTY+`--json` is unit-testable without a real TTY.
+fn hide_semantic_progress_bars(json: bool, interactive: bool) -> bool {
+    json || !interactive
+}
+
+/// Soft C (0167 D6): "embedding done" progress line only after successful embed collect.
+/// Returns `None` on failure so callers cannot print a false done line.
+fn embedding_done_progress_line(chunks: usize, succeeded: bool) -> Option<String> {
+    if succeeded {
+        Some(format!("Semantic index: embedding done {chunks} chunks…"))
+    } else {
+        None
+    }
+}
+
 /// Non-TTY mid-phase counters: AtomicUsize + background poller (no println in Rayon).
 struct NonTtyPhaseProgress {
     counter: Arc<AtomicUsize>,
@@ -400,7 +416,7 @@ pub(crate) fn execute_semantic_index(
 
     emit_semantic_progress(json, &format!("Semantic index: parsing 0/{total} files…"));
 
-    let hide_bars = json || !crate::util::term::is_interactive();
+    let hide_bars = hide_semantic_progress_bars(json, crate::util::term::is_interactive());
     let pb_parse = ProgressBar::new(total as u64);
     if hide_bars {
         pb_parse.set_draw_target(indicatif::ProgressDrawTarget::hidden());
@@ -536,15 +552,16 @@ pub(crate) fn execute_semantic_index(
 
         match embedding_results {
             Ok(batches) => {
-                emit_semantic_progress(
-                    json,
-                    &format!("Semantic index: embedding done {chunks_to_embed} chunks…"),
-                );
+                if let Some(line) = embedding_done_progress_line(chunks_to_embed, true) {
+                    emit_semantic_progress(json, &line);
+                }
                 for batch in batches {
                     all_embeddings.extend(batch);
                 }
             }
             Err(e) => {
+                // Soft C: never emit "embedding done" on failure (None when succeeded=false).
+                debug_assert!(embedding_done_progress_line(chunks_to_embed, false).is_none());
                 return Err(miette::miette!("Embedding generation failed: {}", e));
             }
         }
@@ -870,6 +887,31 @@ mod tests {
         // Large totals must not clamp to 25 (0161 flood: ~522 mid-lines).
         assert_eq!(non_tty_progress_step(13_065), 653);
         assert_ne!(non_tty_progress_step(13_065), 25);
+    }
+
+    /// Soft E (0167 D8): bars/spinners hidden under `--json` even when TTY is interactive.
+    #[test]
+    fn hide_semantic_progress_bars_matrix() {
+        // json | interactive | hide
+        assert!(hide_semantic_progress_bars(true, true));
+        assert!(hide_semantic_progress_bars(true, false));
+        assert!(!hide_semantic_progress_bars(false, true));
+        assert!(hide_semantic_progress_bars(false, false));
+    }
+
+    /// Soft C (0167 D6): "embedding done" line only when embed collect succeeded.
+    #[test]
+    fn embedding_done_progress_line_only_on_success() {
+        let ok = embedding_done_progress_line(42, true).expect("Ok path must emit a line");
+        assert!(
+            ok.contains("embedding done") && ok.contains("42"),
+            "success line: {ok}"
+        );
+        assert!(
+            embedding_done_progress_line(42, false).is_none(),
+            "failure path must not produce an embedding-done line"
+        );
+        assert!(embedding_done_progress_line(0, false).is_none());
     }
 
     // ── 0161 mode resolution matrix ────────────────────────────────────────
