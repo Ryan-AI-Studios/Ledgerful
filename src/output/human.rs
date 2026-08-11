@@ -106,10 +106,13 @@ pub fn partition_doctor_findings_for_human(
         })
         .collect();
 
+    // Optional Accelerators under --full: hygiene optional only. Optional-category
+    // blocks (if any) are already action-critical and listed under Index Health —
+    // do not double-print (0174 review P3).
     let optional_findings: Vec<_> = if full {
         findings
             .iter()
-            .filter(|f| f.category == DoctorCategory::Optional)
+            .filter(|f| f.category == DoctorCategory::Optional && is_hygiene(f))
             .collect()
     } else {
         Vec::new()

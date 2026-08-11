@@ -573,8 +573,15 @@ pub fn execute_scan_with_opts(
         let scan_report = ScanReport::from_snapshot(&snapshot, diff_summaries);
         // Soft-degrade report writes under RO-class fail (0174-E) — no hard-fail.
         let scan_written = crate::state::reports::soft_write_scan_report(&layout, &scan_report)?;
+        // Honesty: human only — never prefix machine stdout for --json / --out
+        // (0174 review P1; impact puts honesty in analysis_warnings instead).
+        let human_scan = !json && out.is_none();
         if !scan_written {
-            println!("{}", crate::state::reports::SCAN_REPORT_RO_HONESTY);
+            if human_scan {
+                println!("{}", crate::state::reports::SCAN_REPORT_RO_HONESTY);
+            } else {
+                tracing::warn!("{}", crate::state::reports::SCAN_REPORT_RO_HONESTY);
+            }
         }
 
         if !run_impact && snapshot.is_clean {
@@ -585,7 +592,11 @@ pub fn execute_scan_with_opts(
             )?;
             if !tomb_ok && scan_written {
                 // Avoid duplicate honesty if scan report already printed it.
-                println!("{}", crate::state::reports::SCAN_REPORT_RO_HONESTY);
+                if human_scan {
+                    println!("{}", crate::state::reports::SCAN_REPORT_RO_HONESTY);
+                } else {
+                    tracing::warn!("{}", crate::state::reports::SCAN_REPORT_RO_HONESTY);
+                }
             }
         }
     }

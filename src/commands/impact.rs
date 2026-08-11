@@ -121,7 +121,7 @@ pub fn execute_impact_silent_with_snapshot_opts(
         packet.analysis_warnings.push(note);
     }
 
-    // Soft-open: prefer RO when ledger.db exists (0174).
+    // Write-first open with RO fallback when write open fails (0174 B7).
     let storage = open_storage_for_impact(&layout)?;
 
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
@@ -208,7 +208,7 @@ pub fn execute_impact_silent_with_depth_opts(
         packet.analysis_warnings.push(note);
     }
 
-    // Soft-open: prefer RO when ledger.db exists (0174).
+    // Write-first open with RO fallback when write open fails (0174 B7).
     let storage = open_storage_for_impact(&layout)?;
 
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
@@ -617,7 +617,7 @@ pub fn execute_impact_with_opts(
         )
     };
 
-    // Soft-open: prefer RO when ledger.db exists (0174); prospective included.
+    // Write-first open with RO fallback when write open fails (0174 B7).
     let storage = open_storage_for_impact(&layout)?;
 
     // Prospective: in-memory only — no save_packet / latest-impact.json clobber (0173-G).
