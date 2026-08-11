@@ -16,8 +16,10 @@ use std::env;
 /// Soft-open storage for impact analysis (0174).
 ///
 /// **Write-first** so durable reports still write on a normal writable tree
-/// (B7). When write-open fails and `ledger.db` already exists, fall back to
-/// RO / sqlite-only RO so pure RO reviewers can still analyze (stdout-only).
+/// (B7). When write-open fails with an **RO-class** error (PermissionDenied /
+/// read-only FS) and `ledger.db` already exists, fall back to RO / sqlite-only
+/// RO so pure RO reviewers can still analyze (stdout-only). Non-RO write-open
+/// failures (schema, disk full, corrupt DB) hard-fail — do not mislabel as RO.
 ///
 /// Differs from change-context (which prefers RO always) because impact has a
 /// durable report side effect that must succeed when the FS is writable.
@@ -26,10 +28,12 @@ pub(crate) fn open_storage_for_impact(layout: &Layout) -> Result<StorageManager>
         Ok(s) => Ok(s),
         Err(write_err) => {
             let db_path = layout.state_subdir().join("ledger.db");
-            if !db_path.exists() {
+            if !db_path.exists() || !crate::state::reports::is_report_ro_class_error(&write_err) {
                 return Err(write_err);
             }
-            tracing::debug!("impact write-open failed; trying RO for analysis: {write_err}");
+            tracing::debug!(
+                "impact write-open failed RO-class; trying RO for analysis: {write_err}"
+            );
             match StorageManager::open_read_only(layout) {
                 Ok(s) => Ok(s),
                 Err(ro_err) => {

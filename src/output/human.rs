@@ -220,6 +220,11 @@ pub fn print_doctor_report(
     }
 }
 
+/// Whether multi-line remediations print under the finding (suppressed when quiet).
+pub(crate) fn doctor_should_print_remediation(quiet: bool) -> bool {
+    !quiet
+}
+
 /// Print one finding line with optional remediation (suppressed when quiet).
 fn print_doctor_finding_line(
     f: &crate::commands::doctor::DoctorFinding,
@@ -238,7 +243,7 @@ fn print_doctor_finding_line(
             .to_string(),
     };
     println!("{bullet}{prefix} [{}] {}", f.code, f.message);
-    if !quiet {
+    if doctor_should_print_remediation(quiet) {
         let rem_indent = if bullet.is_empty() { "  " } else { "    " };
         print_doctor_remediation(f.remediation.as_deref(), f.message.as_str(), rem_indent);
     }
@@ -1123,6 +1128,24 @@ mod tests {
         let p = DoctorHumanProfile::default();
         assert!(!p.full);
         assert!(!p.quiet);
+    }
+
+    /// 0174 T6: quiet suppresses remediations; default prints them.
+    #[test]
+    fn doctor_quiet_suppresses_remediation_gate() {
+        assert!(doctor_should_print_remediation(false));
+        assert!(!doctor_should_print_remediation(true));
+        let quiet = DoctorHumanProfile {
+            full: false,
+            quiet: true,
+        };
+        assert!(!doctor_should_print_remediation(quiet.quiet));
+        // Full + quiet still suppress remediations (quiet orthogonal to full).
+        let full_quiet = DoctorHumanProfile {
+            full: true,
+            quiet: true,
+        };
+        assert!(!doctor_should_print_remediation(full_quiet.quiet));
     }
 
     #[test]

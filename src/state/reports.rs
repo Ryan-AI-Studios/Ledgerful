@@ -199,18 +199,21 @@ fn is_report_ro_class_error_dyn(err: &(dyn std::error::Error + 'static)) -> bool
     false
 }
 
+/// Message heuristics for RO-class errors only (narrow — Codex 0174 P2).
+/// Prefer `io::ErrorKind` matching in the chain walker; these strings cover
+/// SQLite/Windows paths where kind is Other but text is clearly RO.
 fn ro_class_message(s: &str) -> bool {
     s.contains("permission denied")
         || s.contains("access is denied")
         || s.contains("read-only file system")
         || s.contains("readonly database")
         || s.contains("attempt to write a readonly")
-        || s.contains("read-only")
-        || s.contains("readonly")
         || s.contains("os error 5")
         || s.contains("(os error 5)")
         || s.contains("os error 30")
-        || s.contains("disk i/o error")
+        // Windows ERROR_WRITE_PROTECT / media write-protected
+        || s.contains("os error 19")
+        || s.contains("the media is write protected")
 }
 
 /// Soft-write impact report: skip when storage is RO or write fails RO-class.
@@ -729,10 +732,20 @@ mod tests {
         let err = miette::miette!("Failed to write report: /x: Permission denied (os error 5)");
         assert!(is_report_ro_class_error(&err));
         let other = miette::miette!("disk full somehow unrelated");
-        // "disk i/o error" is RO-class; plain "disk full" is not necessarily
-        assert!(!is_report_ro_class_error(&other) || format!("{other}").contains("disk i/o"));
+        assert!(
+            !is_report_ro_class_error(&other),
+            "disk full must hard-fail, not soft-skip as RO"
+        );
+        let disk_io = miette::miette!("disk i/o error");
+        assert!(
+            !is_report_ro_class_error(&disk_io),
+            "generic disk i/o is not RO-class (Codex 0174 P2)"
+        );
         let read_only = miette::miette!("read-only file system");
         assert!(is_report_ro_class_error(&read_only));
+        // Bare "readonly" without RO context must not soft-classify.
+        let bare = miette::miette!("field marked readonly in schema");
+        assert!(!is_report_ro_class_error(&bare));
     }
 
     /// 0174 P1: real StateError Display omits source; chain must still classify.

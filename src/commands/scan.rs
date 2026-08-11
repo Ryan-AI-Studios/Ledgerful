@@ -21,6 +21,23 @@ use std::path::PathBuf;
 use std::process::Command;
 use tracing::info;
 
+/// Whether scan-report RO honesty may print on stdout (human only).
+///
+/// Machine paths (`--json` / `--out`) must not prefix stdout with honesty text
+/// that would break pure-JSON parse (0174 review P1 / Codex P2).
+pub(crate) fn should_print_scan_report_honesty(json: bool, has_out: bool) -> bool {
+    !json && !has_out
+}
+
+/// Emit greppable scan-report RO honesty for human mode; log-only for machine.
+fn emit_scan_report_ro_honesty(json: bool, has_out: bool) {
+    if should_print_scan_report_honesty(json, has_out) {
+        println!("{}", crate::state::reports::SCAN_REPORT_RO_HONESTY);
+    } else {
+        tracing::warn!("{}", crate::state::reports::SCAN_REPORT_RO_HONESTY);
+    }
+}
+
 /// Patterns that identify observability configuration files whose changes
 /// should trigger automatic graph analysis in `scan --impact`.
 const OBSERVABILITY_CONFIG_PATTERNS: &[&str] = &[
@@ -575,13 +592,8 @@ pub fn execute_scan_with_opts(
         let scan_written = crate::state::reports::soft_write_scan_report(&layout, &scan_report)?;
         // Honesty: human only — never prefix machine stdout for --json / --out
         // (0174 review P1; impact puts honesty in analysis_warnings instead).
-        let human_scan = !json && out.is_none();
         if !scan_written {
-            if human_scan {
-                println!("{}", crate::state::reports::SCAN_REPORT_RO_HONESTY);
-            } else {
-                tracing::warn!("{}", crate::state::reports::SCAN_REPORT_RO_HONESTY);
-            }
+            emit_scan_report_ro_honesty(json, out.is_some());
         }
 
         if !run_impact && snapshot.is_clean {
@@ -592,11 +604,7 @@ pub fn execute_scan_with_opts(
             )?;
             if !tomb_ok && scan_written {
                 // Avoid duplicate honesty if scan report already printed it.
-                if human_scan {
-                    println!("{}", crate::state::reports::SCAN_REPORT_RO_HONESTY);
-                } else {
-                    tracing::warn!("{}", crate::state::reports::SCAN_REPORT_RO_HONESTY);
-                }
+                emit_scan_report_ro_honesty(json, out.is_some());
             }
         }
     }
@@ -1014,6 +1022,15 @@ mod tests {
     use crate::state::migrations::get_migrations;
     use chrono::Utc;
     use rusqlite::Connection;
+
+    /// 0174: scan RO honesty must not prefix machine stdout.
+    #[test]
+    fn scan_report_honesty_human_only_gate() {
+        assert!(should_print_scan_report_honesty(false, false));
+        assert!(!should_print_scan_report_honesty(true, false));
+        assert!(!should_print_scan_report_honesty(false, true));
+        assert!(!should_print_scan_report_honesty(true, true));
+    }
 
     #[test]
     fn resolve_commit_oid_rejects_option_like_ref() {
