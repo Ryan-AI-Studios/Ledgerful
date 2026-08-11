@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-08-11
+
 ### Security
 
 - **Release signing cosign v3.1.3 + GHA pin hygiene (0169):** Bump
