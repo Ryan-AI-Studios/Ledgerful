@@ -35,7 +35,7 @@ serde_yaml = "0.9"
 # via serde 1.0.229). Used for unknown-key doctor warnings only — do NOT add
 # deny_unknown_fields (would hard-fail every user with a schema-era-stale config).
 serde_ignored = "0.1.14"
-toml = "1.1.2"
+toml = "1.1.4"
 toml_edit = "0.25.13"
 cozo = { git = "https://github.com/Ryan-AI-Studios/cozo-redux", rev = "14179d306d72079fac55d93562a84ee605087989", default-features = false, features = ["storage-sqlite", "graph-algo", "rayon"] }
 rayon = "=1.10"
