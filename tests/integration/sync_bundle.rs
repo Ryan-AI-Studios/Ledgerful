@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 #[test]
 fn test_bundle_serialize_round_trip() {
-    let mut csprng = rand::thread_rng();
+    let mut csprng = rand::rng();
     let signing_key = SigningKey::generate(&mut csprng);
     let public_key = signing_key.verifying_key();
 
@@ -95,7 +95,7 @@ fn test_bundle_filename_format() {
 
 #[test]
 fn test_bundle_rejects_wrong_signing_key() {
-    let mut csprng = rand::thread_rng();
+    let mut csprng = rand::rng();
     let signing_key_a = SigningKey::generate(&mut csprng);
     let signing_key_b = SigningKey::generate(&mut csprng);
     let public_key_b = signing_key_b.verifying_key();
@@ -133,7 +133,7 @@ fn test_bundle_rejects_wrong_signing_key() {
 
 #[test]
 fn test_bundle_rejects_tampered_manifest() {
-    let mut csprng = rand::thread_rng();
+    let mut csprng = rand::rng();
     let signing_key = SigningKey::generate(&mut csprng);
     let public_key = signing_key.verifying_key();
 
@@ -225,7 +225,7 @@ fn test_bundle_rejects_oversized_zip_input() {
 fn test_bundle_invalid_signature_is_rejected_before_full_deserialization() {
     use ed25519_dalek::SigningKey;
 
-    let mut csprng = rand::thread_rng();
+    let mut csprng = rand::rng();
     let signing_key_a = SigningKey::generate(&mut csprng);
     let signing_key_b = SigningKey::generate(&mut csprng);
 

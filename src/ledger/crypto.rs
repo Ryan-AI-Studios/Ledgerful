@@ -1,7 +1,7 @@
 use crate::ledger::types::{Category, ChangeType, EntryType, LedgerEntry};
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
 use miette::{IntoDiagnostic, Result};
-use rand::rngs::OsRng;
+
 use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -224,10 +224,9 @@ pub fn get_or_create_keys_in(keys_dir: &Path) -> Result<(SigningKey, VerifyingKe
     } else {
         // No private key exists at all — fresh install. Generate a new
         // keypair and write both files.
-        let mut csprng = OsRng;
         let mut bytes = [0u8; 32];
-        use rand::RngCore;
-        csprng.fill_bytes(&mut bytes);
+        use rand::Rng;
+        rand::rng().fill_bytes(&mut bytes);
         let signing_key = SigningKey::from_bytes(&bytes);
         let verifying_key = signing_key.verifying_key();
 

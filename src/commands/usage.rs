@@ -1003,7 +1003,7 @@ mod tests {
 
         let result = flush_to_endpoint(&conn, &mut config, &endpoint, &agent);
         assert!(result, "flush should succeed against 2xx mock");
-        assert!(mock.hits() >= 1, "mock should have been hit");
+        assert!(mock.calls() >= 1, "mock should have been hit");
 
         // H1: usage_days must be cleared on a 2xx flush.
         assert_eq!(
@@ -1077,7 +1077,7 @@ mod tests {
 
         let result = flush_to_endpoint(&conn, &mut config, &endpoint, &agent);
         assert!(!result, "flush should fail on 5xx");
-        assert!(mock.hits() >= 1);
+        assert!(mock.calls() >= 1);
 
         // On non-2xx, state must be untouched.
         assert_eq!(
@@ -1138,7 +1138,7 @@ mod tests {
     /// 0077: flush POST must include `X-Ledgerful-Telemetry-Token`
     /// with the default bar-raising token when no env override is set.
     /// httpmock matches on the header — a missing header fails the
-    /// mock match and `mock.hits()` stays 0.
+    /// mock match and `mock.calls()` stays 0.
     #[test]
     #[serial_test::serial(env)]
     fn test_flush_sends_default_ingest_token_header() {
@@ -1182,7 +1182,7 @@ mod tests {
             "flush should succeed when default token header matches"
         );
         assert_eq!(
-            mock.hits(),
+            mock.calls(),
             1,
             "mock must match only when X-Ledgerful-Telemetry-Token \
              equals DEFAULT_INGEST_TOKEN"
@@ -1243,9 +1243,9 @@ mod tests {
 
         let result = flush_to_endpoint(&conn, &mut config, &endpoint, &agent);
         assert!(result, "flush should succeed with env override token");
-        assert_eq!(mock.hits(), 1, "override token header must match mock");
+        assert_eq!(mock.calls(), 1, "override token header must match mock");
         assert_eq!(
-            default_mock.hits(),
+            default_mock.calls(),
             0,
             "default token must not be sent when LEDGERFUL_USAGE_TOKEN is set"
         );

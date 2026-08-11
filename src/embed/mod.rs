@@ -132,6 +132,6 @@ mod tests {
         let result2 = embed_and_store(&config, &conn, "FILE", "test.rs", text).unwrap();
         assert!(!result2);
 
-        mock.assert_hits(1); // Only one HTTP call
+        mock.assert_calls(1); // Only one HTTP call
     }
 }

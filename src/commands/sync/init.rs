@@ -4,7 +4,6 @@ use miette::{Result, miette};
 use std::fs;
 
 use ed25519_dalek::SigningKey;
-use rand::rngs::OsRng;
 #[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use zeroize::Zeroizing;
@@ -66,7 +65,7 @@ pub fn handle(force: bool, with_secret: Option<String>) -> Result<()> {
     drop(secret);
 
     // 2. Generate material in memory.
-    let signing_key = SigningKey::generate(&mut OsRng);
+    let signing_key = SigningKey::generate(&mut rand::rng());
     let key_bytes = signing_key.to_bytes();
     let pub_key = signing_key.verifying_key().to_bytes();
     let device_id = format!(

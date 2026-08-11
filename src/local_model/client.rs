@@ -1205,7 +1205,7 @@ mod tests {
         assert!(result.is_err());
         assert!(result.unwrap_err().contains("503"));
         // Verify retry happened: 2 calls total
-        assert_eq!(mock.hits(), 2);
+        assert_eq!(mock.calls(), 2);
     }
 
     #[test]
@@ -1487,7 +1487,7 @@ mod tests {
             when.method(httpmock::Method::POST)
                 .path("/v1/chat/completions")
                 .header("Authorization", "Bearer test-token")
-                .json_body_partial(r#"{"model":"minimax-m3:cloud"}"#);
+                .json_body_includes(r#"{"model":"minimax-m3:cloud"}"#);
             then.status(200)
                 .header("Content-Type", "application/json")
                 .json_body(serde_json::json!({
@@ -1517,7 +1517,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(result, "cloud response");
-        assert_eq!(mock.hits(), 1);
+        assert_eq!(mock.calls(), 1);
     }
 
     #[test]
@@ -1595,7 +1595,7 @@ mod tests {
         server.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/api/chat")
-                .json_body_partial(r#"{"model":"test-model"}"#);
+                .json_body_includes(r#"{"model":"test-model"}"#);
             then.status(200)
                 .header("Content-Type", "application/json")
                 .json_body(serde_json::json!({
@@ -1681,7 +1681,7 @@ mod tests {
             when.method(httpmock::Method::POST)
                 .path("/api/chat")
                 .header("Authorization", "Bearer test-token")
-                .json_body_partial(r#"{"model":"test-model"}"#);
+                .json_body_includes(r#"{"model":"test-model"}"#);
             then.status(200)
                 .header("Content-Type", "application/json")
                 .json_body(serde_json::json!({
@@ -1709,7 +1709,7 @@ mod tests {
         )
         .unwrap();
         assert_eq!(response, "api dot ollama native response");
-        assert_eq!(mock.hits(), 1);
+        assert_eq!(mock.calls(), 1);
     }
 
     #[test]
@@ -2083,7 +2083,7 @@ mod tests {
             err.contains(MCP_ALLOW_CLOUD_EGRESS_ENV),
             "error must name opt-in env, got: {err}"
         );
-        mock.assert_hits(0);
+        mock.assert_calls(0);
     }
 
     /// F-002: compose MCP spawn-env helper + complete under the inherited
@@ -2159,7 +2159,7 @@ mod tests {
             err.contains(MCP_ALLOW_CLOUD_EGRESS_ENV),
             "error must name opt-in env, got: {err}"
         );
-        mock.assert_hits(0);
+        mock.assert_calls(0);
         drop(env_guards);
     }
 
@@ -2195,7 +2195,7 @@ mod tests {
         .expect_err("Forbidden + local-down must error without OpenRouter");
         assert!(err.contains(CLOUD_POLICY_FORBIDDEN_CODE), "got: {err}");
         assert!(err.contains(MCP_ALLOW_CLOUD_EGRESS_ENV), "got: {err}");
-        mock.assert_hits(0);
+        mock.assert_calls(0);
     }
 
     #[test]
@@ -2230,7 +2230,7 @@ mod tests {
         )
         .expect_err("must fail closed");
         assert!(err.contains(CLOUD_POLICY_FORBIDDEN_CODE), "got: {err}");
-        mock.assert_hits(0);
+        mock.assert_calls(0);
     }
 
     /// 0073 Codex R1: priority chain listing cloud backends must resolve
@@ -2319,7 +2319,7 @@ mod tests {
             err.contains(MCP_ALLOW_CLOUD_EGRESS_ENV),
             "error must name opt-in env, got: {err}"
         );
-        mock.assert_hits(0);
+        mock.assert_calls(0);
     }
 
     #[test]
@@ -2340,14 +2340,14 @@ mod tests {
     #[serial_test::serial(env)]
     fn openrouter_sanitize_redacts_api_key_shaped_strings() {
         // Allowed policy: OpenRouter arm receives sanitized bodies.
-        // A body_contains(secret) mock must see zero hits; the general mock gets the call.
+        // A body_includes(secret) mock must see zero hits; the general mock gets the call.
         let server = MockServer::start();
         let secret = "AKIAIOSFODNN7EXAMPLE";
         // Register the leak detector first so it is evaluated when matching.
         let secret_leak_mock = server.mock(|when, then| {
             when.method(httpmock::Method::POST)
                 .path("/v1/chat/completions")
-                .body_contains(secret);
+                .body_includes(secret);
             then.status(500).body("secret leaked into request body");
         });
         let ok_mock = server.mock(|when, then| {
@@ -2385,12 +2385,12 @@ mod tests {
             "OpenRouter mock should succeed under Allowed with sanitized body; got: {result:?}"
         );
         assert_eq!(
-            secret_leak_mock.hits(),
+            secret_leak_mock.calls(),
             0,
             "OpenRouter request body must not contain the raw API-key-shaped secret"
         );
         assert!(
-            ok_mock.hits() >= 1,
+            ok_mock.calls() >= 1,
             "expected at least one sanitized OpenRouter call"
         );
     }
@@ -2669,7 +2669,7 @@ mod tests {
         .expect_err("CQ exhaust");
         assert!(err.contains("reasoning only") || err.contains("content-quality"));
         assert_eq!(
-            or_mock.hits(),
+            or_mock.calls(),
             0,
             "B4: OpenRouter must not be called after OC content-quality"
         );

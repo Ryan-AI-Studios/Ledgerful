@@ -68,8 +68,7 @@ fn test_extract_picks_up_new_committed_entries() {
     let repo_root = dir.path().to_path_buf();
     seed_signed_entries(&repo_root, 5);
 
-    let mut csprng = rand::rngs::OsRng;
-    let sign_key = ed25519_dalek::SigningKey::generate(&mut csprng);
+    let sign_key = ed25519_dalek::SigningKey::generate(&mut rand::rng());
     let device_id = "test-device";
 
     let result = extract(&repo_root.join(".ledgerful"), device_id, &sign_key, 100);
@@ -106,8 +105,7 @@ fn extract_preserves_last_apply_hlc() {
     )
     .unwrap();
 
-    let mut csprng = rand::rngs::OsRng;
-    let sign_key = ed25519_dalek::SigningKey::generate(&mut csprng);
+    let sign_key = ed25519_dalek::SigningKey::generate(&mut rand::rng());
 
     let state_path = repo_root.join(".ledgerful");
     let extracted =
@@ -160,8 +158,7 @@ fn empty_extract_does_not_advance_watermark() {
     )
     .unwrap();
 
-    let mut csprng = rand::rngs::OsRng;
-    let sign_key = ed25519_dalek::SigningKey::generate(&mut csprng);
+    let sign_key = ed25519_dalek::SigningKey::generate(&mut rand::rng());
 
     let err =
         extract(&repo_root.join(".ledgerful"), "dev", &sign_key, 100).expect_err("empty extract");
@@ -197,8 +194,7 @@ fn batch_size_drains_across_two_extracts() {
     let repo_root = dir.path().to_path_buf();
     seed_signed_entries(&repo_root, 5);
 
-    let mut csprng = rand::rngs::OsRng;
-    let sign_key = ed25519_dalek::SigningKey::generate(&mut csprng);
+    let sign_key = ed25519_dalek::SigningKey::generate(&mut rand::rng());
     let state = repo_root.join(".ledgerful");
 
     let first = extract(&state, "dev", &sign_key, 3).expect("first extract");
@@ -246,8 +242,7 @@ fn tombstone_delta_not_reexported() {
     )
     .unwrap();
 
-    let mut csprng = rand::rngs::OsRng;
-    let sign_key = ed25519_dalek::SigningKey::generate(&mut csprng);
+    let sign_key = ed25519_dalek::SigningKey::generate(&mut rand::rng());
     let state = repo_root.join(".ledgerful");
 
     let first = extract(&state, "dev", &sign_key, 100).expect("first");
@@ -305,8 +300,7 @@ fn extract_does_not_use_full_save_clobber() {
     .unwrap();
 
     // If commit used SyncState::save with last_apply_hlc=None, this would become NULL.
-    let mut csprng = rand::rngs::OsRng;
-    let sign_key = ed25519_dalek::SigningKey::generate(&mut csprng);
+    let sign_key = ed25519_dalek::SigningKey::generate(&mut rand::rng());
     let state = repo_root.join(".ledgerful");
     let extracted = extract(&state, "dev", &sign_key, 100).unwrap();
     commit_extract_export(&state, &extracted, "dev").unwrap();
@@ -337,8 +331,7 @@ fn failed_put_does_not_drop_pending_export_rows() {
     seed_signed_entries(&repo_root, 3);
     let state = repo_root.join(".ledgerful");
 
-    let mut csprng = rand::rngs::OsRng;
-    let sign_key = ed25519_dalek::SigningKey::generate(&mut csprng);
+    let sign_key = ed25519_dalek::SigningKey::generate(&mut rand::rng());
 
     let first = extract(&state, "dev", &sign_key, 100).expect("prepare extract");
     assert_eq!(first.bundle.manifest.entries.len(), 3);

@@ -76,10 +76,8 @@ fn test_aead_open_rejects_wrong_aad() {
 #[test]
 fn test_ed25519_sign_and_verify_round_trip() {
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
 
-    let mut csprng = OsRng;
-    let signing_key = SigningKey::generate(&mut csprng);
+    let signing_key = SigningKey::generate(&mut rand::rng());
     let public_key = signing_key.verifying_key();
 
     let message = b"Transaction: ABC-123";
@@ -92,10 +90,8 @@ fn test_ed25519_sign_and_verify_round_trip() {
 #[test]
 fn test_ed25519_verify_rejects_tampered_signature() {
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
 
-    let mut csprng = OsRng;
-    let signing_key = SigningKey::generate(&mut csprng);
+    let signing_key = SigningKey::generate(&mut rand::rng());
     let public_key = signing_key.verifying_key();
 
     let message = b"Transaction: ABC-123";

@@ -4,7 +4,7 @@ use crate::commands::web::error::WebError;
 use axum::http::header;
 use axum::http::request::Parts;
 use miette::{Result, miette};
-use rand::RngCore;
+use rand::Rng;
 use subtle::ConstantTimeEq;
 
 /// Minimum length for an operator-supplied session token (after trim).
@@ -122,7 +122,7 @@ pub fn extract_token_header(parts: &Parts) -> Option<String> {
 /// Generate a new 64-character hex session token.
 pub fn generate_token() -> String {
     let mut bytes = [0u8; 32];
-    rand::thread_rng().fill_bytes(&mut bytes);
+    rand::rng().fill_bytes(&mut bytes);
     hex::encode(bytes)
 }
 

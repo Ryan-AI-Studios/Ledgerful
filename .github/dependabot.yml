@@ -29,6 +29,9 @@ updates:
         # Exact pin =0.13.1 — do not rewrite
       - dependency-name: "url"
         # Exact pin =2.5.8 — do not rewrite
+      - dependency-name: "scip"
+        update-types: ["version-update:semver-major"]
+        # Classic-range consumer only; typed_range adapter = future track
 
   - package-ecosystem: github-actions
     directory: /

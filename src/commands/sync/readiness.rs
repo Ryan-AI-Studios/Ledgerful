@@ -555,7 +555,6 @@ mod tests {
     use crate::config::model::SyncConfig;
     use crate::sync::transport::SyncTarget;
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
     use std::fs;
     use std::time::Instant;
     use tempfile::tempdir;
@@ -574,7 +573,7 @@ mod tests {
     fn write_keys_and_sot(layout: &Layout, device_id: &str) {
         let sync_dir = layout.state_dir.join("sync");
         fs::create_dir_all(sync_dir.as_std_path()).unwrap();
-        let sk = SigningKey::generate(&mut OsRng);
+        let sk = SigningKey::generate(&mut rand::rng());
         fs::write(sync_dir.join("device.key").as_std_path(), sk.to_bytes()).unwrap();
         fs::write(
             sync_dir.join("device.pub").as_std_path(),
@@ -595,7 +594,7 @@ mod tests {
 
     fn add_peer(layout: &Layout, peer_id: &str) {
         let sync_dir = layout.state_dir.join("sync");
-        let sk = SigningKey::generate(&mut OsRng);
+        let sk = SigningKey::generate(&mut rand::rng());
         crate::sync::peers::trust_peer(
             sync_dir.as_std_path(),
             peer_id,

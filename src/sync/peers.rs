@@ -325,11 +325,10 @@ pub fn list_peers(sync_dir: &Path) -> Result<Vec<String>, String> {
 mod tests {
     use super::*;
     use ed25519_dalek::SigningKey;
-    use rand::rngs::OsRng;
     use tempfile::tempdir;
 
     fn sample_keypair() -> ([u8; 32], [u8; 32]) {
-        let signing = SigningKey::generate(&mut OsRng);
+        let signing = SigningKey::generate(&mut rand::rng());
         (signing.to_bytes(), signing.verifying_key().to_bytes())
     }
 
@@ -408,7 +407,7 @@ mod tests {
 
     /// 32-byte encoding whose Edwards y-coordinate is not on the curve.
     ///
-    /// All-zero is **accepted** by ed25519-dalek 2.x (ZIP-215); y=2 is not a
+    /// All-zero is **accepted** by ed25519-dalek 3.x (ZIP-215); y=2 is not a
     /// square residue and fails `CompressedEdwardsY::decompress`.
     fn invalid_curve_pub_fixture() -> [u8; 32] {
         let mut bad = [0u8; 32];
@@ -424,7 +423,7 @@ mod tests {
         let bad = invalid_curve_pub_fixture();
         assert!(
             VerifyingKey::from_bytes(&bad).is_err(),
-            "fixture must be invalid under ed25519-dalek 2.x"
+            "fixture must be invalid under ed25519-dalek 3.x"
         );
         let result = trust_peer(&sync_dir, "device-badcurve", &bad, false);
         assert!(

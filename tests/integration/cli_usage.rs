@@ -522,10 +522,10 @@ fn test_usage_enable_does_not_trigger_immediate_flush() {
 
     // No POST should have been attempted.
     assert_eq!(
-        mock.hits(),
+        mock.calls(),
         0,
         "expected no POSTs after enable (M2: last_sent_at seeded to now), got {}",
-        mock.hits()
+        mock.calls()
     );
 }
 
@@ -547,7 +547,7 @@ fn test_usage_flush_posts_expected_json_shape() {
     // seeded anonymous_id AND the 10 required field names. A
     // regression that POSTed `{}` or omitted any field would
     // fail to match this mock, the flush would get a non-2xx
-    // (mock server default 404 for unmatched), and `mock.hits()`
+    // (mock server default 404 for unmatched), and `mock.calls()`
     // would be 0. This makes the test falsifiable against the
     // actual wire payload, not just "a POST happened".
     //
@@ -563,18 +563,18 @@ fn test_usage_flush_posts_expected_json_shape() {
                 "lf-tel-v1-7c4e9b2a1f8d3e6a0c5b9d4e8f1a2b3c",
             )
             // Seeded anonymous_id — proves the right config is in use.
-            .body_contains("11111111-2222-3333-4444-555555555555")
+            .body_includes("11111111-2222-3333-4444-555555555555")
             // All 10 required fields from the spec schema.
-            .body_contains("\"schema_version\"")
-            .body_contains("\"anonymous_id\"")
-            .body_contains("\"client_version\"")
-            .body_contains("\"platform\"")
-            .body_contains("\"sent_at\"")
-            .body_contains("\"window_start\"")
-            .body_contains("\"window_end\"")
-            .body_contains("\"command_counts\"")
-            .body_contains("\"features_enabled\"")
-            .body_contains("\"active_days_in_window\"");
+            .body_includes("\"schema_version\"")
+            .body_includes("\"anonymous_id\"")
+            .body_includes("\"client_version\"")
+            .body_includes("\"platform\"")
+            .body_includes("\"sent_at\"")
+            .body_includes("\"window_start\"")
+            .body_includes("\"window_end\"")
+            .body_includes("\"command_counts\"")
+            .body_includes("\"features_enabled\"")
+            .body_includes("\"active_days_in_window\"");
         then.status(200)
             .header("content-type", "application/json")
             .body("{}");
@@ -615,13 +615,13 @@ last_sent_at = "2020-01-01T00:00:00Z"
     // `status` same story.
 
     // The mock must have been hit at least once with a body
-    // matching all 11 body_contains assertions (anonymous_id +
+    // matching all 11 body_includes assertions (anonymous_id +
     // 10 field names). If the flush sent `{}` or omitted any
     // field, the mock wouldn't match and `hits()` would be 0.
     assert!(
-        mock.hits() >= 1,
+        mock.calls() >= 1,
         "expected mock to be hit at least once with the required body shape, got {}",
-        mock.hits()
+        mock.calls()
     );
 
     // Independently inspect the payload shape via

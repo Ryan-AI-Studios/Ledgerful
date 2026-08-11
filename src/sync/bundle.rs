@@ -258,13 +258,14 @@ impl Bundle {
     }
 
     pub fn encrypt(zip_bytes: &[u8], secret: &[u8]) -> Result<Vec<u8>, String> {
+        use rand::Rng;
         let mut salt = [0u8; 16];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut salt);
+        rand::rng().fill_bytes(&mut salt);
 
         let bundle_key = crypto::derive_bundle_key(secret, &salt)?;
 
         let mut nonce = [0u8; 24];
-        rand::RngCore::fill_bytes(&mut rand::thread_rng(), &mut nonce);
+        rand::rng().fill_bytes(&mut nonce);
 
         let aad: Vec<u8> = salt.iter().copied().chain(nonce.iter().copied()).collect();
         let (ciphertext, tag) = crypto::seal(zip_bytes, &bundle_key, &nonce, &aad)?;
