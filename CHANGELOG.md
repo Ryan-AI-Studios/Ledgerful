@@ -31,6 +31,7 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **toml 1.1.4 (0176):** Bump direct `toml` to 1.1.4 (writer overflow fix in 1.1.3; serde `Value::Datetime` preserve in 1.1.4). Supersedes Dependabot #175.
 - **Engine cargo majors (0171):** httpmock 0.8.3 (test-only API renames:
   `hits`→`calls`, `assert_hits`→`assert_calls`, `body_contains`→`body_includes`,
   `json_body_partial`→`json_body_includes`). ed25519-dalek 3 + rand 0.10 co-bump
