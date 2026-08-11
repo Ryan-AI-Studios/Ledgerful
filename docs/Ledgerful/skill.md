@@ -41,8 +41,8 @@ On storage failure: report unavailable — do not invent impact.
 |---|---|---|
 | A Git | `git status` / `diff` / `log` | Always |
 | B Read-heavy | `ledger status`, `audit` | Prefer existing `ledger.db` |
-| C Write-open | `doctor` (always); `change-context` soft-opens when DB exists | Doctor: **skip** on pure RO |
-| D Write/exec | `index`, `scan`, `verify`, ledger start/commit | **Not** reviewer job |
+| C Write-open | `doctor` (always Class C); `change-context` soft-opens when DB exists | Doctor: **skip** on pure RO |
+| D Write/exec | `index`, `scan`/`impact` (soft-open + soft-skip report under RO — prefer change-context), `verify`, ledger start/commit | **Not** reviewer job |
 | E Network | ask/embed probes, caches | Separate from FS RO |
 
 **Hosts:** Codex `-s read-only` (native Windows OK) = pure RO. Codex
@@ -102,7 +102,7 @@ From the repository root, inspect whether Ledgerful is available:
 ```bash
 # Prefer --json when parsing; branch on readyForPublish (zero block findings).
 ledgerful doctor --json
-# Human: ledgerful doctor
+# Human: ledgerful doctor  (optional/info collapsed; doctor --full expands hygiene)
 ```
 
 **`readyForPublish == true`** means the publish-environment path is fit to enter

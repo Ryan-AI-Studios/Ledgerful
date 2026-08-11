@@ -16,7 +16,7 @@ fn doctor_reports_system_health() {
 
     let _guard = DirGuard::new(tmp.path());
 
-    let result = execute_doctor(false, false, false);
+    let result = execute_doctor(false, false, false, false, false);
 
     assert!(result.is_ok());
 }

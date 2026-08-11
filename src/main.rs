@@ -1,5 +1,5 @@
 use clap::Parser;
-use ledgerful::cli::{self, Cli};
+use ledgerful::cli::{self, Cli, resolve_quiet};
 use miette::Result;
 use tracing::Level;
 use tracing_subscriber::fmt::writer::MakeWriterExt;
@@ -64,16 +64,6 @@ fn summary_layer_max_level(machine: bool, quiet: bool, verbose: bool) -> Level {
         let _ = quiet;
         Level::INFO
     }
-}
-
-/// `true` when `--quiet`/`-q` or `LEDGERFUL_QUIET=1` (or `true`) is set.
-fn resolve_quiet(cli_quiet: bool) -> bool {
-    if cli_quiet {
-        return true;
-    }
-    std::env::var("LEDGERFUL_QUIET")
-        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-        .unwrap_or(false)
 }
 
 fn run() -> Result<()> {

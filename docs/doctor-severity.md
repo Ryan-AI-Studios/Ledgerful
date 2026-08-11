@@ -70,6 +70,37 @@ Pure stdout schema v1 (`schemaVersion` is integer `1`):
 
 Exit code `1` iff any `block`; else `0`. Human banners (sccache/SCIP/VRAM) are skipped under `--json`.
 
+## Human progressive disclosure (0174 3-tier)
+
+Human `doctor` (not `--json`) uses **3-tier** progressive disclosure, not a raw
+category split:
+
+| Tier | Rule | Default human |
+|---|---|---|
+| **Block** | `severity == block` | Always expanded under **Index Health** |
+| **ActionWarn** | `is_action_critical`: block always; **warn** when `category != optional`; info never | Always expanded under **Index Health** |
+| **Hygiene** | `!is_action_critical` ≡ Optional category **or** Info severity (any category) | **Collapsed** by default |
+
+Examples:
+
+- `sig-pin` / `binary-behind-tree` (non-optional **warn**) → expanded
+- `completion-unreachable` (optional **warn**) → hygiene (collapsed)
+- `hook-template-stale` (**info** / gate) → hygiene (collapsed) — leaves Index Health by default
+- Optional accelerators section still shows embedding/completion status lines always
+
+### Flags
+
+| Flag / env | Effect |
+|---|---|
+| **(default)** | Expand Block + ActionWarn only; greppable trailer `N hygiene finding(s) collapsed — run doctor --full` |
+| **`doctor --full`** | Expand hygiene too: non-optional **info** under Index Health; **optional** findings under Optional Accelerators. Orthogonal to global `-v` (logging). |
+| **`-q` / `--quiet` or `LEDGERFUL_QUIET=1\|true`** | Via shared `resolve_quiet`: suppress multi-line remediations + **VRAM** footer; keep finding one-liners + hygiene collapse. Does **not** select machine mode. |
+| **`doctor --json`** | Unchanged: schemaVersion **1**, **full** findings always. `full`/`quiet` ignored for JSON content. |
+
+VRAM section: shown under default and `--full`; **suppressed under quiet**.
+
+Agents should keep using **`doctor --json`** as SSOT; human disclosure is for interactive scans.
+
 ### `durationMs` (0143 B5)
 
 Optional top-level `u64` wall-clock milliseconds from after the `--json`/`--apply-hook-refresh`

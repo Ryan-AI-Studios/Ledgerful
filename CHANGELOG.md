@@ -8,6 +8,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Impact / scan(--impact) RO report write no longer hard-fails (0174):** Soft-open
+  when `ledger.db` exists; soft-skip `latest-impact.json` / scan report / tombstone
+  writes under RO or RO-class permission errors. Greppable honesty
+  `report write unavailable under RO` on human stdout and in `analysisWarnings`;
+  never claims “Wrote impact report” when skipped. Writable trees still write.
 - **Ledger `--category` aliases + case-insensitive canonical (0175):** CLI
   `--category` on `ledger start` / `atomic` / `adopt` (and filters on `search` /
   `stack`) accepts track-language and conventional-commit aliases (`feat`, `fix`,
@@ -19,6 +24,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Doctor human progressive disclosure (0174):** Default human expands Block +
+  action-critical warn only; Optional/Info hygiene collapses with greppable
+  `N hygiene finding(s) collapsed — run doctor --full`. `--full` expands hygiene;
+  `-q`/`LEDGERFUL_QUIET` (`resolve_quiet`) suppress remediations + VRAM.
+  `doctor --json` unchanged (schemaVersion 1, full findings).
 - **Non-interactive unknown category fails closed (0175):** Near-miss tokens no
   longer silently auto-select the closest fuzzy match outside an interactive
   Select; agents get an error with suggestions instead of wrong provenance labels.

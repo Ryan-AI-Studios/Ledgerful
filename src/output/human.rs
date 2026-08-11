@@ -57,14 +57,81 @@ pub struct DoctorSummaryCounts {
     pub info: u64,
 }
 
-/// Human doctor report from structured findings (0109).
+/// Human doctor progressive-disclosure profile (0174 3-tier).
+///
+/// - Default: expand Block + ActionWarn; collapse Hygiene (Optional or Info).
+/// - `full`: expand hygiene too (info non-optional under Index Health; optional
+///   under Optional Accelerators).
+/// - `quiet`: suppress multi-line remediations (VRAM suppressed by caller).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct DoctorHumanProfile {
+    pub full: bool,
+    pub quiet: bool,
+}
+
+/// Greppable trailer when hygiene findings are collapsed (default human).
+pub fn format_hygiene_collapse_trailer(count: usize) -> String {
+    format!("{count} hygiene finding(s) collapsed — run doctor --full")
+}
+
+/// Partition findings for human 3-tier display (0174).
+///
+/// Returns `(index_health_findings, optional_accelerator_findings, hygiene_count)`:
+/// - Index Health expand: always action-critical; plus non-optional Info when `full`.
+/// - Optional Accelerators findings: Optional-category only when `full`.
+/// - `hygiene_count`: total hygiene findings (for collapse trailer when `!full`).
+pub fn partition_doctor_findings_for_human(
+    findings: &[crate::commands::doctor::DoctorFinding],
+    full: bool,
+) -> (
+    Vec<&crate::commands::doctor::DoctorFinding>,
+    Vec<&crate::commands::doctor::DoctorFinding>,
+    usize,
+) {
+    use crate::commands::doctor::{DoctorCategory, DoctorSeverity, is_action_critical, is_hygiene};
+
+    let hygiene_count = findings.iter().filter(|f| is_hygiene(f)).count();
+
+    let index_health: Vec<_> = findings
+        .iter()
+        .filter(|f| {
+            if is_action_critical(f) {
+                true
+            } else if full {
+                // Non-optional info expands under Index Health when --full.
+                f.severity == DoctorSeverity::Info && f.category != DoctorCategory::Optional
+            } else {
+                false
+            }
+        })
+        .collect();
+
+    // Optional Accelerators under --full: hygiene optional only. Optional-category
+    // blocks (if any) are already action-critical and listed under Index Health —
+    // do not double-print (0174 review P3).
+    let optional_findings: Vec<_> = if full {
+        findings
+            .iter()
+            .filter(|f| f.category == DoctorCategory::Optional && is_hygiene(f))
+            .collect()
+    } else {
+        Vec::new()
+    };
+
+    (index_health, optional_findings, hygiene_count)
+}
+
+/// Human doctor report from structured findings (0109 + 0174 3-tier).
 ///
 /// `index_health` holds non-finding status lines (e.g. Search index OK).
 /// Severity-classified issues are in `findings` and printed with prefixes.
+/// Progressive disclosure: Block + ActionWarn always expanded; Hygiene
+/// (Optional or Info) collapsed unless `profile.full`.
 pub fn print_doctor_report(
     report: &DoctorReport,
     summary: &DoctorSummaryCounts,
     findings: &[crate::commands::doctor::DoctorFinding],
+    profile: DoctorHumanProfile,
 ) {
     // Aggregate-first: first meaningful line is the status (no leading blank).
     let summary_text = format_doctor_summary_text(summary.block, summary.warn, summary.info);
@@ -126,53 +193,59 @@ pub fn print_doctor_report(
     println!("\nActive Ask Backend:  {}", report.active_ask_backend);
     println!("Native Graph:        {}", report.native_graph_status);
 
-    let core_findings: Vec<_> = findings
-        .iter()
-        .filter(|f| f.category != crate::commands::doctor::DoctorCategory::Optional)
-        .collect();
-    if !report.index_health.is_empty() || !core_findings.is_empty() {
+    let (index_findings, optional_findings, hygiene_count) =
+        partition_doctor_findings_for_human(findings, profile.full);
+
+    if !report.index_health.is_empty() || !index_findings.is_empty() {
         println!("\nIndex Health:");
         for health in &report.index_health {
             println!("  • {}", health);
         }
-        for f in &core_findings {
-            let prefix = match f.severity {
-                crate::commands::doctor::DoctorSeverity::Block => "[block]"
-                    .if_supports_color(Stream::Stdout, |s| s.red())
-                    .to_string(),
-                crate::commands::doctor::DoctorSeverity::Warn => "[warn]"
-                    .if_supports_color(Stream::Stdout, |s| s.yellow())
-                    .to_string(),
-                crate::commands::doctor::DoctorSeverity::Info => "[info]"
-                    .if_supports_color(Stream::Stdout, |s| s.cyan())
-                    .to_string(),
-            };
-            println!("  • {} [{}] {}", prefix, f.code, f.message);
-            print_doctor_remediation(f.remediation.as_deref(), f.message.as_str(), "    ");
+        for f in &index_findings {
+            print_doctor_finding_line(f, "  • ", profile.quiet);
         }
     }
 
-    // Optional accelerators: embedding/completion display + optional findings.
+    // Optional accelerators: embedding/completion display always; findings when --full.
     println!("\n── Optional Accelerators ──────────────────────");
     println!("Embedding Model:     {}", report.embedding_model_status);
     println!("Completion Model:    {}", report.completion_model_status);
-    for f in findings
-        .iter()
-        .filter(|f| f.category == crate::commands::doctor::DoctorCategory::Optional)
-    {
-        let prefix = match f.severity {
-            crate::commands::doctor::DoctorSeverity::Block => "[block]"
-                .if_supports_color(Stream::Stdout, |s| s.red())
-                .to_string(),
-            crate::commands::doctor::DoctorSeverity::Warn => "[warn]"
-                .if_supports_color(Stream::Stdout, |s| s.yellow())
-                .to_string(),
-            crate::commands::doctor::DoctorSeverity::Info => "[info]"
-                .if_supports_color(Stream::Stdout, |s| s.cyan())
-                .to_string(),
-        };
-        println!("{} [{}] {}", prefix, f.code, f.message);
-        print_doctor_remediation(f.remediation.as_deref(), f.message.as_str(), "  ");
+    for f in &optional_findings {
+        print_doctor_finding_line(f, "", profile.quiet);
+    }
+
+    // Collapse trailer for hygiene (optional/info) when not --full.
+    if !profile.full && hygiene_count > 0 {
+        println!("\n{}", format_hygiene_collapse_trailer(hygiene_count));
+    }
+}
+
+/// Whether multi-line remediations print under the finding (suppressed when quiet).
+pub(crate) fn doctor_should_print_remediation(quiet: bool) -> bool {
+    !quiet
+}
+
+/// Print one finding line with optional remediation (suppressed when quiet).
+fn print_doctor_finding_line(
+    f: &crate::commands::doctor::DoctorFinding,
+    bullet: &str,
+    quiet: bool,
+) {
+    let prefix = match f.severity {
+        crate::commands::doctor::DoctorSeverity::Block => "[block]"
+            .if_supports_color(Stream::Stdout, |s| s.red())
+            .to_string(),
+        crate::commands::doctor::DoctorSeverity::Warn => "[warn]"
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
+            .to_string(),
+        crate::commands::doctor::DoctorSeverity::Info => "[info]"
+            .if_supports_color(Stream::Stdout, |s| s.cyan())
+            .to_string(),
+    };
+    println!("{bullet}{prefix} [{}] {}", f.code, f.message);
+    if doctor_should_print_remediation(quiet) {
+        let rem_indent = if bullet.is_empty() { "  " } else { "    " };
+        print_doctor_remediation(f.remediation.as_deref(), f.message.as_str(), rem_indent);
     }
 }
 
@@ -999,6 +1072,80 @@ mod tests {
         assert!(format_doctor_summary_text(1, 9, 9).contains("block issue"));
         // Warn uses ready shape — never red soft-fail wording.
         assert!(!format_doctor_summary_text(0, 2, 0).contains("issue(s) found"));
+    }
+
+    /// 0174 T1–T5: human 3-tier partition + --full expands hygiene.
+    #[test]
+    fn doctor_human_partition_three_tier() {
+        use crate::commands::doctor::{DoctorCategory, DoctorFinding};
+
+        let findings = vec![
+            DoctorFinding::warn(
+                "completion-unreachable",
+                DoctorCategory::Optional,
+                "completion down",
+            ),
+            DoctorFinding::info("hook-template-stale", DoctorCategory::Gate, "hooks stale"),
+            DoctorFinding::warn("sig-pin", DoctorCategory::Signing, "no keys")
+                .with_remediation("ledgerful config set 'intent.trusted_public_keys=[\"hex\"]'"),
+            DoctorFinding::block("tool-git", DoctorCategory::Tools, "git missing"),
+            DoctorFinding::info("sccache-hint", DoctorCategory::Optional, "install sccache"),
+        ];
+
+        let (index, optional, hygiene) = partition_doctor_findings_for_human(&findings, false);
+        // T1 optional warn + T2 info (gate + optional) collapsed → hygiene_count=3
+        assert_eq!(hygiene, 3);
+        // T3 sig-pin + T4 block expanded
+        let codes: Vec<&str> = index.iter().map(|f| f.code.as_str()).collect();
+        assert!(codes.contains(&"sig-pin"));
+        assert!(codes.contains(&"tool-git"));
+        assert!(!codes.contains(&"completion-unreachable"));
+        assert!(!codes.contains(&"hook-template-stale"));
+        assert!(
+            optional.is_empty(),
+            "optional findings collapsed by default"
+        );
+
+        // T5 --full expands hygiene
+        let (index_full, optional_full, hygiene_full) =
+            partition_doctor_findings_for_human(&findings, true);
+        assert_eq!(hygiene_full, 3);
+        let full_index_codes: Vec<&str> = index_full.iter().map(|f| f.code.as_str()).collect();
+        assert!(full_index_codes.contains(&"hook-template-stale"));
+        assert!(full_index_codes.contains(&"sig-pin"));
+        assert!(full_index_codes.contains(&"tool-git"));
+        let full_opt_codes: Vec<&str> = optional_full.iter().map(|f| f.code.as_str()).collect();
+        assert!(full_opt_codes.contains(&"completion-unreachable"));
+        assert!(full_opt_codes.contains(&"sccache-hint"));
+
+        let trailer = format_hygiene_collapse_trailer(3);
+        assert!(trailer.contains("3 hygiene finding(s) collapsed"));
+        assert!(trailer.contains("doctor --full"));
+    }
+
+    #[test]
+    fn doctor_human_profile_defaults() {
+        let p = DoctorHumanProfile::default();
+        assert!(!p.full);
+        assert!(!p.quiet);
+    }
+
+    /// 0174 T6: quiet suppresses remediations; default prints them.
+    #[test]
+    fn doctor_quiet_suppresses_remediation_gate() {
+        assert!(doctor_should_print_remediation(false));
+        assert!(!doctor_should_print_remediation(true));
+        let quiet = DoctorHumanProfile {
+            full: false,
+            quiet: true,
+        };
+        assert!(!doctor_should_print_remediation(quiet.quiet));
+        // Full + quiet still suppress remediations (quiet orthogonal to full).
+        let full_quiet = DoctorHumanProfile {
+            full: true,
+            quiet: true,
+        };
+        assert!(!doctor_should_print_remediation(full_quiet.quiet));
     }
 
     #[test]

@@ -123,7 +123,7 @@ pub fn execute_setup(yes: bool, skip_scan: bool) -> Result<()> {
         "\n{} Running system health check...",
         "→".if_supports_color(Stream::Stdout, |s| s.cyan())
     );
-    execute_doctor(false, false, false)?;
+    execute_doctor(false, false, false, false, false)?;
     println!(
         "{} Health check complete.",
         "✓".if_supports_color(Stream::Stdout, |s| s.green())

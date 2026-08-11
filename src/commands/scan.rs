@@ -8,9 +8,7 @@ use crate::git::status::get_repo_status;
 use crate::git::{ChangeType, FileChange};
 use crate::output::human::print_scan_summary;
 use crate::state::layout::Layout;
-use crate::state::reports::{
-    ScanDiffSummary, ScanReport, write_clean_tree_tombstone, write_scan_report,
-};
+use crate::state::reports::{ScanDiffSummary, ScanReport};
 use crate::state::storage::StorageManager;
 use camino::Utf8Path;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
@@ -22,6 +20,23 @@ use std::env;
 use std::path::PathBuf;
 use std::process::Command;
 use tracing::info;
+
+/// Whether scan-report RO honesty may print on stdout (human only).
+///
+/// Machine paths (`--json` / `--out`) must not prefix stdout with honesty text
+/// that would break pure-JSON parse (0174 review P1 / Codex P2).
+pub(crate) fn should_print_scan_report_honesty(json: bool, has_out: bool) -> bool {
+    !json && !has_out
+}
+
+/// Emit greppable scan-report RO honesty for human mode; log-only for machine.
+fn emit_scan_report_ro_honesty(json: bool, has_out: bool) {
+    if should_print_scan_report_honesty(json, has_out) {
+        println!("{}", crate::state::reports::SCAN_REPORT_RO_HONESTY);
+    } else {
+        tracing::warn!("{}", crate::state::reports::SCAN_REPORT_RO_HONESTY);
+    }
+}
 
 /// Patterns that identify observability configuration files whose changes
 /// should trigger automatic graph analysis in `scan --impact`.
@@ -573,14 +588,24 @@ pub fn execute_scan_with_opts(
         diff_summaries.sort_by(|a, b| a.path.cmp(&b.path));
 
         let scan_report = ScanReport::from_snapshot(&snapshot, diff_summaries);
-        write_scan_report(&layout, &scan_report)?;
+        // Soft-degrade report writes under RO-class fail (0174-E) — no hard-fail.
+        let scan_written = crate::state::reports::soft_write_scan_report(&layout, &scan_report)?;
+        // Honesty: human only — never prefix machine stdout for --json / --out
+        // (0174 review P1; impact puts honesty in analysis_warnings instead).
+        if !scan_written {
+            emit_scan_report_ro_honesty(json, out.is_some());
+        }
 
         if !run_impact && snapshot.is_clean {
-            write_clean_tree_tombstone(
+            let tomb_ok = crate::state::reports::soft_write_clean_tree_tombstone(
                 &layout,
                 snapshot.head_hash.clone(),
                 snapshot.branch_name.clone(),
             )?;
+            if !tomb_ok && scan_written {
+                // Avoid duplicate honesty if scan report already printed it.
+                emit_scan_report_ro_honesty(json, out.is_some());
+            }
         }
     }
 
@@ -689,7 +714,8 @@ pub fn execute_scan_with_opts(
                 config.impact.blast_depth_max,
                 blast_depth,
             );
-            let storage = crate::state::storage::StorageManager::init_with_layout(&layout)?;
+            // Soft-open when DB exists (0174-T13); prospective never writes report.
+            let storage = crate::commands::impact::open_storage_for_impact(&layout)?;
             let snap = crate::commands::impact::build_prospective_snapshot(work_dir, &parsed)?;
             let mut impact_packet =
                 crate::commands::impact::compute_impact_from_snapshot_in_memory_with_mode(
@@ -996,6 +1022,15 @@ mod tests {
     use crate::state::migrations::get_migrations;
     use chrono::Utc;
     use rusqlite::Connection;
+
+    /// 0174: scan RO honesty must not prefix machine stdout.
+    #[test]
+    fn scan_report_honesty_human_only_gate() {
+        assert!(should_print_scan_report_honesty(false, false));
+        assert!(!should_print_scan_report_honesty(true, false));
+        assert!(!should_print_scan_report_honesty(false, true));
+        assert!(!should_print_scan_report_honesty(true, true));
+    }
 
     #[test]
     fn resolve_commit_oid_rejects_option_like_ref() {

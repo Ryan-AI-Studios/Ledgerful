@@ -6,6 +6,46 @@ pub use args::*;
 pub use category_parser::{CATEGORY_LONG_HELP, CategoryValueParser};
 pub use dispatch::run_with;
 
+/// `true` when `--quiet`/`-q` or `LEDGERFUL_QUIET=1` (or `true`) is set.
+///
+/// Shared by logging (`main`) and doctor human progressive disclosure (0174-G)
+/// so the env var is not logging-only.
+pub fn resolve_quiet(cli_quiet: bool) -> bool {
+    if cli_quiet {
+        return true;
+    }
+    std::env::var("LEDGERFUL_QUIET")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
+#[cfg(test)]
+mod resolve_quiet_tests {
+    use super::resolve_quiet;
+
+    #[test]
+    fn resolve_quiet_cli_flag_wins() {
+        assert!(resolve_quiet(true));
+    }
+
+    #[test]
+    fn resolve_quiet_without_flag_respects_env_absence() {
+        // When LEDGERFUL_QUIET is unset, cli_quiet=false → false.
+        // Do not force-unset env (may be set by agent harness); only assert
+        // flag path and that false is returned when env is empty-ish.
+        let from_env = std::env::var("LEDGERFUL_QUIET").ok();
+        if from_env
+            .as_ref()
+            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+            .unwrap_or(false)
+        {
+            assert!(resolve_quiet(false));
+        } else {
+            assert!(!resolve_quiet(false));
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -473,6 +473,9 @@ Tips:
         /// With `--apply-hook-refresh`, report would-refresh without writing
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Expand collapsed hygiene findings (optional/info) in human output
+        #[arg(long)]
+        full: bool,
     },
     /// Ledger pending/drift status (same as `ledger status`)
     Status {
@@ -1250,6 +1253,38 @@ mod machine_output_tests {
         let cli_json = Cli::try_parse_from(["ledgerful", "--quiet", "verify", "--json"]).unwrap();
         assert!(cli_json.quiet);
         assert!(cli_json.command.is_machine_output());
+    }
+
+    /// 0174-B: doctor --full parses; argv_shape includes full.
+    #[test]
+    fn doctor_full_flag_parses_and_argv_shape() {
+        let cli = Cli::try_parse_from(["ledgerful", "doctor", "--full"]).expect("parse --full");
+        match cli.command {
+            Commands::Doctor {
+                json,
+                apply_hook_refresh,
+                dry_run,
+                full,
+            } => {
+                assert!(!json);
+                assert!(!apply_hook_refresh);
+                assert!(!dry_run);
+                assert!(full);
+            }
+            other => panic!("expected Doctor, got {other:?}"),
+        }
+        let shape = Cli::try_parse_from(["ledgerful", "doctor", "--full", "--json"])
+            .unwrap()
+            .command
+            .argv_shape();
+        assert!(
+            shape.contains("full"),
+            "argv_shape must include full: {shape}"
+        );
+        assert!(
+            shape.contains("json"),
+            "argv_shape must include json: {shape}"
+        );
     }
 
     #[test]
@@ -2290,6 +2325,7 @@ impl Commands {
                 json,
                 apply_hook_refresh,
                 dry_run,
+                full,
             } => {
                 if *json {
                     f.push("json");
@@ -2299,6 +2335,9 @@ impl Commands {
                 }
                 if *dry_run {
                     f.push("dry-run");
+                }
+                if *full {
+                    f.push("full");
                 }
             }
             Commands::Status { json } => {
