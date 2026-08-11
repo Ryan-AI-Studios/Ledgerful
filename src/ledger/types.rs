@@ -49,12 +49,73 @@ impl Category {
         Category::Chore,
     ];
 
-    pub fn parse_flexible(input: &str) -> Option<Self> {
-        <Self as ValueEnum>::from_str(input, true)
-            .ok()
-            .or_else(|| Self::suggestions_for(input).first().copied())
+    /// Canonical SCREAMING names for help / errors (stable order matching [`Self::ALL`]).
+    pub const CANONICAL_NAMES: [&'static str; 9] = [
+        "ARCHITECTURE",
+        "FEATURE",
+        "BUGFIX",
+        "REFACTOR",
+        "INFRA",
+        "SECURITY",
+        "TOOLING",
+        "DOCS",
+        "CHORE",
+    ];
+
+    /// Exact acceptance only: case-insensitive canonical name or frozen alias table.
+    ///
+    /// Fuzzy near-misses are **never** accepted here — use [`suggestions_for`] for
+    /// interactive Select and "did you mean" text only.
+    pub fn parse_input(input: &str) -> Result<Self, String> {
+        let normalized = normalize_category_input(input);
+        if normalized.is_empty() {
+            return Err(Self::format_parse_error(input));
+        }
+
+        // Canonical via clap ValueEnum (case-insensitive) on raw trimmed input.
+        if let Ok(category) = <Self as ValueEnum>::from_str(input.trim(), true) {
+            return Ok(category);
+        }
+        // After alnum-normalize + uppercase so "Bug-Fix" / "bug_fix" → BUGFIX.
+        let upper = normalized.to_ascii_uppercase();
+        if let Ok(category) = <Self as ValueEnum>::from_str(&upper, false) {
+            return Ok(category);
+        }
+
+        // Exact alias match only (score 0).
+        for category in Self::ALL {
+            if category_aliases(category).contains(&normalized.as_str()) {
+                return Ok(category);
+            }
+        }
+
+        Err(Self::format_parse_error(input))
     }
 
+    /// Exact-only flexible parse (canonical or alias). No fuzzy auto-accept.
+    pub fn parse_flexible(input: &str) -> Option<Self> {
+        Self::parse_input(input).ok()
+    }
+
+    /// Human-facing unknown-category message: full canonical list (incl. SECURITY),
+    /// short alias examples, and top-3 fuzzy suggestions when available.
+    pub fn format_parse_error(input: &str) -> String {
+        let mut msg = format!(
+            "Unknown ledger category '{input}'. Valid categories: {}. Common aliases: feat, fix, ux, doc, perf, test, ci, dx, …",
+            Self::CANONICAL_NAMES.join(", ")
+        );
+        let suggestions: Vec<String> = Self::suggestions_for(input)
+            .into_iter()
+            .take(3)
+            .map(|c| c.to_string())
+            .collect();
+        if !suggestions.is_empty() {
+            msg.push_str(&format!(" Did you mean: {}?", suggestions.join(", ")));
+        }
+        msg
+    }
+
+    /// Fuzzy rank (score ≤ 3) for interactive Select and error "did you mean" only.
     pub fn suggestions_for(input: &str) -> Vec<Self> {
         let normalized = normalize_category_input(input);
         if normalized.is_empty() {
@@ -91,13 +152,20 @@ fn normalize_category_input(input: &str) -> String {
 fn category_aliases(category: Category) -> &'static [&'static str] {
     match category {
         Category::Architecture => &["architecture", "arch", "design"],
-        Category::Feature => &["feature", "feat", "new"],
+        Category::Feature => &["feature", "feat", "new", "ux", "ui"],
         Category::Bugfix => &["bugfix", "bug", "fix"],
-        Category::Refactor => &["refactor", "cleanup", "rework"],
-        Category::Infra => &["infra", "infrastructure", "ops", "ci"],
-        Category::Tooling => &["tooling", "tool", "dev", "devex"],
+        Category::Refactor => &[
+            "refactor",
+            "cleanup",
+            "rework",
+            "perf",
+            "performance",
+            "style",
+        ],
+        Category::Infra => &["infra", "infrastructure", "ops", "ci", "build"],
+        Category::Tooling => &["tooling", "tool", "dev", "devex", "dx"],
         Category::Docs => &["docs", "doc", "documentation"],
-        Category::Chore => &["chore", "maintenance", "maint"],
+        Category::Chore => &["chore", "maintenance", "maint", "test", "tests"],
         Category::Security => &["security", "sec", "auth", "authz"],
     }
 }
@@ -396,12 +464,140 @@ mod tests {
 
     #[test]
     fn category_suggestions_rank_common_aliases() {
-        assert_eq!(Category::parse_flexible("doc").unwrap(), Category::Docs);
-        assert_eq!(Category::parse_flexible("bug").unwrap(), Category::Bugfix);
-        assert_eq!(Category::parse_flexible("dev").unwrap(), Category::Tooling);
+        // Exact aliases still Ok via parse_flexible (exact-only after 0175-B).
+        assert_eq!(Category::parse_flexible("doc"), Some(Category::Docs));
+        assert_eq!(Category::parse_flexible("bug"), Some(Category::Bugfix));
+        assert_eq!(Category::parse_flexible("dev"), Some(Category::Tooling));
 
+        // Near-miss fails closed on parse_input; fuzzy only in suggestions_for.
+        assert!(Category::parse_input("infr").is_err());
+        assert!(Category::parse_flexible("infr").is_none());
         let suggestions = Category::suggestions_for("infr");
         assert_eq!(suggestions.first().copied(), Some(Category::Infra));
+    }
+
+    /// Full frozen alias map from 0175 spec §3 + normalize variants.
+    #[test]
+    fn category_parse_input_full_alias_matrix() {
+        let cases: &[(&str, Category)] = &[
+            // Architecture
+            ("architecture", Category::Architecture),
+            ("arch", Category::Architecture),
+            ("design", Category::Architecture),
+            // Feature (+ track language)
+            ("feature", Category::Feature),
+            ("feat", Category::Feature),
+            ("new", Category::Feature),
+            ("ux", Category::Feature),
+            ("ui", Category::Feature),
+            // Bugfix
+            ("bugfix", Category::Bugfix),
+            ("bug", Category::Bugfix),
+            ("fix", Category::Bugfix),
+            // Refactor (+ conventional perf/style)
+            ("refactor", Category::Refactor),
+            ("cleanup", Category::Refactor),
+            ("rework", Category::Refactor),
+            ("perf", Category::Refactor),
+            ("performance", Category::Refactor),
+            ("style", Category::Refactor),
+            // Infra
+            ("infra", Category::Infra),
+            ("infrastructure", Category::Infra),
+            ("ops", Category::Infra),
+            ("ci", Category::Infra),
+            ("build", Category::Infra),
+            // Tooling
+            ("tooling", Category::Tooling),
+            ("tool", Category::Tooling),
+            ("dev", Category::Tooling),
+            ("devex", Category::Tooling),
+            ("dx", Category::Tooling),
+            // Docs
+            ("docs", Category::Docs),
+            ("doc", Category::Docs),
+            ("documentation", Category::Docs),
+            // Chore (+ test hygiene)
+            ("chore", Category::Chore),
+            ("maintenance", Category::Chore),
+            ("maint", Category::Chore),
+            ("test", Category::Chore),
+            ("tests", Category::Chore),
+            // Security
+            ("security", Category::Security),
+            ("sec", Category::Security),
+            ("auth", Category::Security),
+            ("authz", Category::Security),
+            // Normalize variants (trim, case, non-alnum strip)
+            ("  UX  ", Category::Feature),
+            ("feat", Category::Feature),
+            ("Bug-Fix", Category::Bugfix),
+            ("DOCS", Category::Docs),
+            ("feature", Category::Feature),
+            ("FEATURE", Category::Feature),
+            ("Feature", Category::Feature),
+            ("SECURITY", Category::Security),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(
+                Category::parse_input(input).ok(),
+                Some(*expected),
+                "parse_input({input:?}) should be {expected:?}"
+            );
+            assert_eq!(
+                Category::parse_flexible(input),
+                Some(*expected),
+                "parse_flexible({input:?}) should be {expected:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn category_parse_input_fail_closed_near_miss_and_garbage() {
+        assert!(Category::parse_input("infr").is_err());
+        assert_eq!(
+            Category::suggestions_for("infr").first().copied(),
+            Some(Category::Infra)
+        );
+
+        let err = Category::parse_input("NOT_A_CATEGORY").unwrap_err();
+        assert!(err.contains("SECURITY"), "error must list SECURITY: {err}");
+        assert!(
+            err.contains("feat") || err.contains("alias"),
+            "error must mention aliases: {err}"
+        );
+
+        let garbage = Category::parse_input("purple-unicorn-xyz");
+        assert!(garbage.is_err());
+
+        assert!(Category::parse_input("").is_err());
+        assert!(Category::parse_input("   ").is_err());
+        assert!(Category::parse_input("---").is_err());
+    }
+
+    #[test]
+    fn format_parse_error_caps_did_you_mean_at_three() {
+        let err = Category::format_parse_error("NOT_A_CATEGORY");
+        assert!(err.contains("SECURITY"), "must list SECURITY: {err}");
+        if let Some(idx) = err.find("Did you mean:") {
+            let tail = &err[idx..];
+            // Count commas inside the suggestion list (N suggestions → N-1 commas).
+            let list = tail
+                .trim_start_matches("Did you mean:")
+                .trim()
+                .trim_end_matches('?')
+                .trim();
+            let suggestion_count = if list.is_empty() {
+                0
+            } else {
+                list.split(',').count()
+            };
+            assert!(
+                suggestion_count <= 3,
+                "did-you-mean must be capped at 3, got {suggestion_count}: {err}"
+            );
+        }
     }
 
     #[test]

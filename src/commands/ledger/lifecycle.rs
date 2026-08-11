@@ -2,12 +2,16 @@ use crate::commands::helpers::{get_layout, load_ledger_config};
 use crate::git::commit::{DEFAULT_COMMIT_MESSAGE_TEMPLATE, format_commit_message, git_commit};
 use crate::ledger::*;
 use crate::state::storage::StorageManager;
-use clap::ValueEnum;
 use miette::Result;
 use owo_colors::{OwoColorize, Stream, Style};
 
-fn resolve_start_category(input: &str) -> Result<Category> {
-    if let Ok(category) = Category::from_str(input, true) {
+/// Resolve a free-form category token for ledger write paths (start/atomic/adopt).
+///
+/// Exact canonical (case-insensitive) or frozen alias → Ok. Interactive TTY may
+/// offer a Select over fuzzy suggestions. Non-interactive unknown input **fails
+/// closed** (no silent closest-match).
+pub(crate) fn resolve_start_category(input: &str) -> Result<Category> {
+    if let Ok(category) = Category::parse_input(input) {
         return Ok(category);
     }
 
@@ -22,18 +26,7 @@ fn resolve_start_category(input: &str) -> Result<Category> {
         return Ok(choice);
     }
 
-    if let Some(category) = suggestions.first().copied() {
-        eprintln!(
-            "{}",
-            format!("Unknown ledger category '{input}', using closest match: {category}")
-                .if_supports_color(Stream::Stderr, |s| s.yellow())
-        );
-        return Ok(category);
-    }
-
-    Err(miette::miette!(
-        "Unknown ledger category '{input}'. Valid categories: ARCHITECTURE, FEATURE, BUGFIX, REFACTOR, INFRA, TOOLING, DOCS, CHORE"
-    ))
+    Err(miette::miette!("{}", Category::format_parse_error(input)))
 }
 
 #[derive(Debug, Clone, Default)]
@@ -433,7 +426,7 @@ pub fn execute_ledger_atomic(
     reason: &str,
     force: bool,
 ) -> Result<()> {
-    let category = Category::from_str(category, true).map_err(|e| miette::miette!("{}", e))?;
+    let category = resolve_start_category(category)?;
     let layout = get_layout()?;
     let mut storage = StorageManager::init_with_layout(&layout)?;
     let config = load_ledger_config(&layout)?;
@@ -600,18 +593,45 @@ mod tests {
         let result = resolve_start_category("CHORE");
         assert!(result.is_ok());
         assert_eq!(result.unwrap(), Category::Chore);
+
+        let result = resolve_start_category("SECURITY");
+        assert!(result.is_ok());
+        assert_eq!(result.unwrap(), Category::Security);
+    }
+
+    #[test]
+    fn test_resolve_start_category_aliases() {
+        // 0175-C: track-language + conventional-commit aliases
+        assert_eq!(resolve_start_category("UX").unwrap(), Category::Feature);
+        assert_eq!(resolve_start_category("feat").unwrap(), Category::Feature);
+        assert_eq!(resolve_start_category("doc").unwrap(), Category::Docs);
+        assert_eq!(
+            resolve_start_category("feature").unwrap(),
+            Category::Feature
+        );
     }
 
     #[test]
     fn test_resolve_start_category_invalid() {
-        // When not interactive and no suggestions, should return an error
+        // Non-interactive: fail closed with full list (incl. SECURITY) + alias hint
         let result = resolve_start_category("NOT_A_CATEGORY");
         assert!(result.is_err());
+        let err = result.unwrap_err().to_string();
         assert!(
-            result
-                .unwrap_err()
-                .to_string()
-                .contains("Unknown ledger category")
+            err.contains("Unknown ledger category"),
+            "expected unknown-category phrasing: {err}"
+        );
+        assert!(err.contains("SECURITY"), "error must list SECURITY: {err}");
+        assert!(
+            err.contains("feat") || err.contains("alias"),
+            "error must mention aliases: {err}"
+        );
+
+        // Near-miss must not silently succeed non-interactively
+        let near = resolve_start_category("infr");
+        assert!(
+            near.is_err(),
+            "non-interactive near-miss must fail closed, got {near:?}"
         );
     }
 
