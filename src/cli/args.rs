@@ -93,6 +93,14 @@ pub enum Commands {
         /// (RESOLVED or scip:). Not a complete call graph.
         #[arg(long, value_name = "N")]
         blast_depth: Option<u32>,
+        /// Prospective paths for impact (as if changed). Mutually exclusive with
+        /// --base-ref. Comma-separated and/or repeated. Cap 50. Requires --impact.
+        /// Does not rewrite latest-impact.json.
+        #[arg(long, value_name = "PATH", value_delimiter = ',')]
+        paths: Vec<String>,
+        /// Include process/governance temporal couplings in risk + readSet (pathMode=all)
+        #[arg(long)]
+        include_governance: bool,
     },
     /// Analyze impact of current changes
     Impact {
@@ -119,6 +127,13 @@ pub enum Commands {
         /// (RESOLVED or scip:). Not a complete call graph.
         #[arg(long, value_name = "N")]
         blast_depth: Option<u32>,
+        /// Prospective paths (as if changed). Comma-separated and/or repeated.
+        /// Cap 50. In-memory only — does not rewrite latest-impact.json.
+        #[arg(long, value_name = "PATH", value_delimiter = ',')]
+        paths: Vec<String>,
+        /// Include process/governance temporal couplings in risk (pathMode=all)
+        #[arg(long)]
+        include_governance: bool,
     },
     /// Budgeted agent change packet (impact + doctor + ledger + readSet)
     ChangeContext {
@@ -137,6 +152,13 @@ pub enum Commands {
         /// Structural blast hop depth (default 1; max 2 on CLI)
         #[arg(long, value_name = "N")]
         blast_depth: Option<u32>,
+        /// Prospective paths (as if changed). Mutually exclusive with --base-ref.
+        /// Comma-separated and/or repeated. Cap 50.
+        #[arg(long, value_name = "PATH", value_delimiter = ',')]
+        paths: Vec<String>,
+        /// Include process/governance temporal couplings in risk + readSet (pathMode=all)
+        #[arg(long)]
+        include_governance: bool,
     },
     /// Index the project for search and discovery
     Index {
@@ -1165,6 +1187,60 @@ mod machine_output_tests {
     }
 
     #[test]
+    fn paths_comma_and_repeated_parse() {
+        // Comma form
+        let cli = Cli::try_parse_from([
+            "ledgerful",
+            "change-context",
+            "--paths",
+            "src/a.rs,src/b.rs",
+        ])
+        .expect("comma paths");
+        match cli.command {
+            Commands::ChangeContext { paths, .. } => {
+                assert_eq!(paths, vec!["src/a.rs", "src/b.rs"]);
+            }
+            other => panic!("expected ChangeContext, got {other:?}"),
+        }
+        // Repeated --paths
+        let cli = Cli::try_parse_from([
+            "ledgerful",
+            "change-context",
+            "--paths",
+            "src/a.rs",
+            "--paths",
+            "src/b.rs",
+        ])
+        .expect("repeated paths");
+        match cli.command {
+            Commands::ChangeContext { paths, .. } => {
+                assert_eq!(paths, vec!["src/a.rs", "src/b.rs"]);
+            }
+            other => panic!("expected ChangeContext, got {other:?}"),
+        }
+        // Impact flags
+        let cli = Cli::try_parse_from([
+            "ledgerful",
+            "impact",
+            "--paths",
+            "src/foo.rs",
+            "--include-governance",
+        ])
+        .expect("impact paths");
+        match cli.command {
+            Commands::Impact {
+                paths,
+                include_governance,
+                ..
+            } => {
+                assert_eq!(paths, vec!["src/foo.rs"]);
+                assert!(include_governance);
+            }
+            other => panic!("expected Impact, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn quiet_does_not_imply_machine() {
         // Quiet is a separate state; only --json selects machine mode.
         let cli = Cli::try_parse_from(["ledgerful", "--quiet", "verify"]).unwrap();
@@ -1259,6 +1335,8 @@ impl Commands {
                 max_files,
                 base_ref,
                 blast_depth,
+                paths,
+                include_governance,
             } => {
                 if *json {
                     f.push("json");
@@ -1275,6 +1353,12 @@ impl Commands {
                 if blast_depth.is_some() {
                     f.push("blast_depth");
                 }
+                if !paths.is_empty() {
+                    f.push("paths");
+                }
+                if *include_governance {
+                    f.push("include_governance");
+                }
             }
             Commands::Scan {
                 impact,
@@ -1285,6 +1369,8 @@ impl Commands {
                 pr,
                 format,
                 blast_depth,
+                paths,
+                include_governance,
             } => {
                 if *impact {
                     f.push("impact");
@@ -1310,6 +1396,12 @@ impl Commands {
                 if blast_depth.is_some() {
                     f.push("blast_depth");
                 }
+                if !paths.is_empty() {
+                    f.push("paths");
+                }
+                if *include_governance {
+                    f.push("include_governance");
+                }
             }
             Commands::Impact {
                 all_parents,
@@ -1319,6 +1411,8 @@ impl Commands {
                 json,
                 out,
                 blast_depth,
+                paths,
+                include_governance,
             } => {
                 if *all_parents {
                     f.push("all_parents");
@@ -1340,6 +1434,12 @@ impl Commands {
                 }
                 if blast_depth.is_some() {
                     f.push("blast_depth");
+                }
+                if !paths.is_empty() {
+                    f.push("paths");
+                }
+                if *include_governance {
+                    f.push("include_governance");
                 }
             }
             Commands::Index {

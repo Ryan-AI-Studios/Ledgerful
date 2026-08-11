@@ -61,7 +61,9 @@ pub fn run_with(cli: Cli) -> Result<()> {
             pr,
             format,
             blast_depth,
-        } => crate::commands::scan::execute_scan_with_blast_depth(
+            paths,
+            include_governance,
+        } => crate::commands::scan::execute_scan_with_opts(
             impact,
             summary,
             json,
@@ -70,6 +72,8 @@ pub fn run_with(cli: Cli) -> Result<()> {
             pr,
             format,
             blast_depth,
+            paths,
+            include_governance,
         ),
         Commands::Impact {
             all_parents,
@@ -79,7 +83,9 @@ pub fn run_with(cli: Cli) -> Result<()> {
             json,
             out,
             blast_depth,
-        } => crate::commands::impact::execute_impact_with_blast_depth(
+            paths,
+            include_governance,
+        } => crate::commands::impact::execute_impact_with_opts(
             all_parents,
             summary,
             telemetry,
@@ -87,6 +93,8 @@ pub fn run_with(cli: Cli) -> Result<()> {
             json,
             out,
             blast_depth,
+            paths,
+            include_governance,
         ),
         Commands::ChangeContext {
             json,
@@ -94,12 +102,16 @@ pub fn run_with(cli: Cli) -> Result<()> {
             max_files,
             base_ref,
             blast_depth,
+            paths,
+            include_governance,
         } => crate::commands::change_context::execute_change_context(
             json,
             Some(detail),
             Some(max_files),
             base_ref,
             blast_depth,
+            paths,
+            include_governance,
         ),
         Commands::Index {
             incremental,

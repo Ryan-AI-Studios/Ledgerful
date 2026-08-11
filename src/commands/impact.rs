@@ -32,12 +32,26 @@ pub fn execute_impact_silent_with_snapshot_and_depth(
     crate::impact::packet::ImpactPacket,
     ImpactReportWriteOutcome,
 )> {
+    execute_impact_silent_with_snapshot_opts(snapshot, blast_depth, false, "base_ref")
+}
+
+/// Snapshot silent path with 0173 pathMode / analysisMode.
+pub fn execute_impact_silent_with_snapshot_opts(
+    snapshot: crate::git::RepoSnapshot,
+    blast_depth: Option<u32>,
+    include_governance: bool,
+    analysis_mode: &str,
+) -> Result<(
+    crate::impact::packet::ImpactPacket,
+    ImpactReportWriteOutcome,
+)> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
 
     let layout = get_layout()?;
 
     let mut packet = crate::impact::orchestrator::map_snapshot_to_packet(snapshot, &current_dir)?;
+    apply_impact_honesty_fields(&mut packet, include_governance, analysis_mode, Vec::new());
 
     // Load main config for temporal analysis
     let mut config = load_config(&layout).unwrap_or_default();
@@ -86,6 +100,17 @@ pub fn execute_impact_silent_with_depth(
     crate::impact::packet::ImpactPacket,
     ImpactReportWriteOutcome,
 )> {
+    execute_impact_silent_with_depth_opts(blast_depth, false)
+}
+
+/// Working-tree silent path with 0173 `--include-governance`.
+pub fn execute_impact_silent_with_depth_opts(
+    blast_depth: Option<u32>,
+    include_governance: bool,
+) -> Result<(
+    crate::impact::packet::ImpactPacket,
+    ImpactReportWriteOutcome,
+)> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
 
@@ -112,6 +137,7 @@ pub fn execute_impact_silent_with_depth(
     };
 
     let mut packet = crate::impact::orchestrator::map_snapshot_to_packet(snapshot, &current_dir)?;
+    apply_impact_honesty_fields(&mut packet, include_governance, "working_tree", Vec::new());
 
     // Load main config for temporal analysis
     let mut config = load_config(&layout).unwrap_or_default();
@@ -229,13 +255,47 @@ pub fn compute_impact_in_memory_at(
 /// and **never** calls `save_packet` or `write_impact_report`. Used by
 /// `change-context` so base-ref structure can time-travel without clobbering
 /// `latest-impact.json`.
+///
+/// Defaults: `pathMode=code`, `analysisMode=working_tree`. Prefer
+/// [`compute_impact_from_snapshot_in_memory_with_mode`] when flags are known.
 pub fn compute_impact_from_snapshot_in_memory(
     storage: &crate::state::storage::StorageManager,
     config: &crate::config::model::Config,
     project_root: &std::path::Path,
     snapshot: RepoSnapshot,
 ) -> Result<crate::impact::packet::ImpactPacket> {
+    compute_impact_from_snapshot_in_memory_with_mode(
+        storage,
+        config,
+        project_root,
+        snapshot,
+        false,
+        "working_tree",
+        Vec::new(),
+    )
+}
+
+/// In-memory impact with explicit path/analysis mode (0173).
+///
+/// Sets `path_mode` / `analysis_mode` / `prospective_paths` **before** enrichment
+/// and risk analysis so temporal demotion matches the agent path mode.
+/// **Never** writes `latest-impact.json` or `save_packet`.
+pub fn compute_impact_from_snapshot_in_memory_with_mode(
+    storage: &crate::state::storage::StorageManager,
+    config: &crate::config::model::Config,
+    project_root: &std::path::Path,
+    snapshot: RepoSnapshot,
+    include_governance: bool,
+    analysis_mode: &str,
+    prospective_paths: Vec<String>,
+) -> Result<crate::impact::packet::ImpactPacket> {
     let mut packet = crate::impact::orchestrator::map_snapshot_to_packet(snapshot, project_root)?;
+    apply_impact_honesty_fields(
+        &mut packet,
+        include_governance,
+        analysis_mode,
+        prospective_paths,
+    );
 
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
     orchestrator.run(&mut packet, storage, config, project_root)?;
@@ -244,6 +304,89 @@ pub fn compute_impact_from_snapshot_in_memory(
     crate::impact::redact::redact_secrets(&mut packet);
 
     Ok(packet)
+}
+
+/// Apply 0173 honesty fields before analysis (pathMode / analysisMode / prospectivePaths).
+pub fn apply_impact_honesty_fields(
+    packet: &mut crate::impact::packet::ImpactPacket,
+    include_governance: bool,
+    analysis_mode: &str,
+    prospective_paths: Vec<String>,
+) {
+    packet.path_mode =
+        crate::impact::path_class::path_mode_from_include_governance(include_governance)
+            .to_string();
+    packet.analysis_mode = analysis_mode.to_string();
+    packet.prospective_paths = prospective_paths;
+}
+
+/// Max prospective `--paths` entries (hard cap).
+pub const MAX_PROSPECTIVE_PATHS: usize = 50;
+
+/// Normalize and validate prospective CLI/MCP paths.
+///
+/// Empty/whitespace-only input → error. Cap ≤ [`MAX_PROSPECTIVE_PATHS`].
+/// Paths are normalized to `/`, sorted, and deduped for determinism.
+pub fn parse_prospective_paths(raw: &[String]) -> Result<Vec<String>> {
+    let mut out: Vec<String> = raw
+        .iter()
+        .map(|p| crate::impact::path_class::normalize_path(p.trim()))
+        .filter(|p| !p.is_empty())
+        .collect();
+    if out.is_empty() {
+        return Err(miette::miette!(
+            "--paths requires at least one non-empty path (comma- or repeat-separated)"
+        ));
+    }
+    // Dedup before cap so duplicate inputs do not trip the unique-path limit.
+    out.sort();
+    out.dedup();
+    if out.len() > MAX_PROSPECTIVE_PATHS {
+        return Err(miette::miette!(
+            "--paths accepts at most {MAX_PROSPECTIVE_PATHS} unique paths (got {})",
+            out.len()
+        ));
+    }
+    Ok(out)
+}
+
+/// Build a synthetic [`RepoSnapshot`] for prospective `--paths` analysis (0173).
+///
+/// - Disk hit → `Modified`; missing → `Added` (greenfield; no hard-fail).
+/// - `is_clean = false` always (bypass 0147 empty-tree short-circuit).
+/// - Changes non-empty when paths non-empty.
+pub fn build_prospective_snapshot(
+    project_root: &std::path::Path,
+    paths: &[String],
+) -> Result<RepoSnapshot> {
+    use crate::git::{ChangeType, FileChange};
+
+    let repo = open_repo(project_root)?;
+    let (head_hash, branch_name) = get_head_info(&repo)?;
+
+    let mut changes: Vec<FileChange> = Vec::with_capacity(paths.len());
+    for p in paths {
+        let norm = crate::impact::path_class::normalize_path(p);
+        let full = project_root.join(&norm);
+        let change_type = if full.is_file() || full.is_dir() {
+            ChangeType::Modified
+        } else {
+            ChangeType::Added
+        };
+        changes.push(FileChange {
+            path: std::path::PathBuf::from(norm),
+            change_type,
+            is_staged: false,
+        });
+    }
+    changes.sort();
+
+    Ok(RepoSnapshot {
+        head_hash,
+        branch_name,
+        is_clean: false,
+        changes,
+    })
 }
 
 /// Render human-readable output for a pre-computed `ImpactPacket`.
@@ -306,7 +449,7 @@ pub fn execute_impact(
     json: bool,
     out: Option<std::path::PathBuf>,
 ) -> Result<()> {
-    execute_impact_with_blast_depth(
+    execute_impact_with_opts(
         all_parents,
         summary,
         telemetry_coverage,
@@ -314,6 +457,8 @@ pub fn execute_impact(
         json,
         out,
         None,
+        Vec::new(),
+        false,
     )
 }
 
@@ -321,48 +466,127 @@ pub fn execute_impact(
 pub fn execute_impact_with_blast_depth(
     all_parents: bool,
     summary: bool,
-    _telemetry_coverage: bool,
+    telemetry_coverage: bool,
     dead_code: bool,
     json: bool,
     out: Option<std::path::PathBuf>,
     blast_depth: Option<u32>,
 ) -> Result<()> {
+    execute_impact_with_opts(
+        all_parents,
+        summary,
+        telemetry_coverage,
+        dead_code,
+        json,
+        out,
+        blast_depth,
+        Vec::new(),
+        false,
+    )
+}
+
+/// Impact entrypoint with 0173 `--paths` / `--include-governance`.
+#[allow(clippy::too_many_arguments)]
+pub fn execute_impact_with_opts(
+    all_parents: bool,
+    summary: bool,
+    _telemetry_coverage: bool,
+    dead_code: bool,
+    json: bool,
+    out: Option<std::path::PathBuf>,
+    blast_depth: Option<u32>,
+    paths: Vec<String>,
+    include_governance: bool,
+) -> Result<()> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
 
-    let repo = open_repo(&current_dir)?;
-    let (head_hash, branch_name) = get_head_info(&repo)?;
     let layout = get_layout()?;
-
-    // Filter changes against config ignore_patterns
     let mut config =
         load_config(&layout).unwrap_or_else(|_| crate::config::model::Config::default());
-    let all_changes = get_repo_status(&repo)?;
-    let changes = crate::git::ignore::filter_ignored_changes(
-        all_changes,
-        &config.watch.ignore_patterns,
-        true,
-    )?;
 
-    let is_clean = changes.is_empty();
-
-    let snapshot = RepoSnapshot {
-        head_hash,
-        branch_name,
-        is_clean,
-        changes,
-    };
-
-    let mut packet = crate::impact::orchestrator::map_snapshot_to_packet(snapshot, &current_dir)?;
-
-    // CLI override
     if all_parents {
         config.temporal.all_parents = true;
     }
     if dead_code {
         config.dead_code.enabled = true;
     }
-    // Structural blast depth (CLI max 2; clamp with honesty note rather than hard-fail)
+
+    // Prefer layout root so `--paths` resolve against the repo root even when
+    // invoked from a subdirectory (parity with change-context).
+    let project_root = layout.root.as_std_path();
+    let work_dir = if project_root.exists() {
+        project_root
+    } else {
+        current_dir.as_path()
+    };
+
+    let prospective = !paths.is_empty();
+    let (snapshot, analysis_mode, prospective_paths) = if prospective {
+        let parsed = parse_prospective_paths(&paths)?;
+        let snap = build_prospective_snapshot(work_dir, &parsed)?;
+        (snap, "prospective", parsed)
+    } else {
+        let repo = open_repo(work_dir)?;
+        let (head_hash, branch_name) = get_head_info(&repo)?;
+        let all_changes = get_repo_status(&repo)?;
+        let changes = crate::git::ignore::filter_ignored_changes(
+            all_changes,
+            &config.watch.ignore_patterns,
+            true,
+        )?;
+        let is_clean = changes.is_empty();
+        (
+            RepoSnapshot {
+                head_hash,
+                branch_name,
+                is_clean,
+                changes,
+            },
+            "working_tree",
+            Vec::new(),
+        )
+    };
+
+    let storage = crate::state::storage::StorageManager::init_with_layout(&layout)?;
+
+    // Prospective: in-memory only — no save_packet / latest-impact.json clobber (0173-G).
+    if prospective {
+        // Apply blast depth on config before orchestrator runs.
+        let mut depth_note = None;
+        if let Some(note) = crate::impact::enrichment::blast::apply_cli_blast_depth(
+            &mut config.impact.blast_depth,
+            config.impact.blast_depth_max,
+            blast_depth,
+        ) {
+            depth_note = Some(note);
+        }
+        let mut packet = compute_impact_from_snapshot_in_memory_with_mode(
+            &storage,
+            &config,
+            work_dir,
+            snapshot,
+            include_governance,
+            analysis_mode,
+            prospective_paths,
+        )?;
+        if let Some(note) = depth_note {
+            packet.analysis_warnings.push(note);
+            packet.analysis_warnings.sort();
+            packet.analysis_warnings.dedup();
+        }
+        storage.shutdown()?;
+        return emit_impact_output(&packet, summary, json, out, false, None);
+    }
+
+    let mut packet = crate::impact::orchestrator::map_snapshot_to_packet(snapshot, work_dir)?;
+    apply_impact_honesty_fields(
+        &mut packet,
+        include_governance,
+        analysis_mode,
+        prospective_paths,
+    );
+
     if let Some(note) = crate::impact::enrichment::blast::apply_cli_blast_depth(
         &mut config.impact.blast_depth,
         config.impact.blast_depth_max,
@@ -371,33 +595,37 @@ pub fn execute_impact_with_blast_depth(
         packet.analysis_warnings.push(note);
     }
 
-    // Persist to SQLite and run Orchestrated Enrichment
-    let storage = crate::state::storage::StorageManager::init_with_layout(&layout)?;
-
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
-    orchestrator.run(&mut packet, &storage, &config, &current_dir)?;
+    orchestrator.run(&mut packet, &storage, &config, work_dir)?;
 
-    // Post-processing: Finalize and Redact
     packet.finalize();
     let redactions = crate::impact::redact::redact_secrets(&mut packet);
     if !redactions.is_empty() {
         tracing::info!("Redacted {} secret(s) from impact packet", redactions.len());
     }
 
-    // Save to ledger
     if let Err(e) = storage.save_packet(&packet) {
         tracing::warn!("SQLite save failed: {e}");
     }
 
-    // Write report (0147: may skip rewrite on stable CleanTree)
     let write_outcome = write_impact_report(&layout, &packet)?;
-
     storage.shutdown()?;
 
-    // Handle --json and --out: serialize to stdout or file.
-    // Pure JSON on --json (0093/0106): no human chatter on stdout when --json is set.
+    emit_impact_output(&packet, summary, json, out, true, Some(write_outcome))
+}
+
+/// Emit impact JSON or human output. When `wrote_report` is false (prospective),
+/// do not claim `latest-impact.json` was written.
+fn emit_impact_output(
+    packet: &crate::impact::packet::ImpactPacket,
+    summary: bool,
+    json: bool,
+    out: Option<std::path::PathBuf>,
+    wrote_report: bool,
+    write_outcome: Option<ImpactReportWriteOutcome>,
+) -> Result<()> {
     if json || out.is_some() {
-        let json_output = serde_json::to_string_pretty(&packet)
+        let json_output = serde_json::to_string_pretty(packet)
             .map_err(|e| miette::miette!("Failed to serialize impact report: {}", e))?;
 
         if let Some(path) = out {
@@ -408,7 +636,6 @@ pub fn execute_impact_with_blast_depth(
                     e
                 )
             })?;
-            // Human-only confirmation when not in machine/json mode.
             if !json {
                 println!(
                     "Wrote impact report to {}",
@@ -424,31 +651,201 @@ pub fn execute_impact_with_blast_depth(
     }
 
     if packet.tree_clean && packet.changes.is_empty() {
-        match write_outcome {
-            ImpactReportWriteOutcome::Written => {
-                println!(
-                    "\n{} Working tree is clean — impact report refreshed.",
-                    success_marker()
-                );
+        if wrote_report {
+            match write_outcome.unwrap_or(ImpactReportWriteOutcome::Unchanged) {
+                ImpactReportWriteOutcome::Written => {
+                    println!(
+                        "\n{} Working tree is clean — impact report refreshed.",
+                        success_marker()
+                    );
+                }
+                ImpactReportWriteOutcome::Unchanged => {
+                    println!("\n{} Working tree is clean.", success_marker());
+                }
             }
-            ImpactReportWriteOutcome::Unchanged => {
-                println!("\n{} Working tree is clean.", success_marker());
-            }
+        } else {
+            println!(
+                "\n{} No structural changes in prospective set.",
+                success_marker()
+            );
         }
         return Ok(());
     }
 
     if summary {
-        crate::output::human::print_impact_brief(&packet);
+        crate::output::human::print_impact_brief(packet);
     } else {
-        crate::output::human::print_impact_summary(&packet);
+        crate::output::human::print_impact_summary(packet);
     }
 
-    println!(
-        "\n{} Wrote impact report to {}",
-        success_marker(),
-        ".ledgerful/reports/latest-impact.json".if_supports_color(Stream::Stdout, |s| s.cyan())
-    );
+    if wrote_report {
+        println!(
+            "\n{} Wrote impact report to {}",
+            success_marker(),
+            ".ledgerful/reports/latest-impact.json".if_supports_color(Stream::Stdout, |s| s.cyan())
+        );
+    } else if packet.analysis_mode == "prospective" {
+        println!(
+            "\n{} Prospective analysis (in-memory only — did not rewrite latest-impact.json)",
+            success_marker()
+        );
+    }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod prospective_tests {
+    use super::*;
+    use std::fs;
+    use tempfile::tempdir;
+
+    #[test]
+    fn prospective_snapshot_is_clean_false_and_added_for_missing() {
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(root)
+            .output()
+            .expect("email");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "T"])
+            .current_dir(root)
+            .output()
+            .expect("name");
+        fs::create_dir_all(root.join("src")).expect("mkdir");
+        fs::write(root.join("src/exists.rs"), "fn x() {}").expect("write");
+        fs::write(root.join("README.md"), "hi").expect("readme");
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .output()
+            .expect("add");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(root)
+            .output()
+            .expect("commit");
+
+        let paths = parse_prospective_paths(&[
+            "src/exists.rs".into(),
+            "src/missing.rs".into(),
+            "  ".into(),
+        ])
+        .expect("parse");
+        assert_eq!(paths.len(), 2);
+
+        let snap = build_prospective_snapshot(root, &paths).expect("snapshot");
+        assert!(!snap.is_clean, "0147 bypass: is_clean must be false");
+        assert_eq!(snap.changes.len(), 2);
+        use crate::git::ChangeType;
+        let mut by_path: std::collections::BTreeMap<String, ChangeType> = snap
+            .changes
+            .into_iter()
+            .map(|c| (c.path.to_string_lossy().replace('\\', "/"), c.change_type))
+            .collect();
+        assert_eq!(by_path.remove("src/exists.rs"), Some(ChangeType::Modified));
+        assert_eq!(by_path.remove("src/missing.rs"), Some(ChangeType::Added));
+    }
+
+    #[test]
+    fn parse_prospective_paths_rejects_empty_and_cap() {
+        assert!(parse_prospective_paths(&[]).is_err());
+        assert!(parse_prospective_paths(&["".into(), "  ".into()]).is_err());
+        let many: Vec<String> = (0..51).map(|i| format!("src/f{i}.rs")).collect();
+        assert!(parse_prospective_paths(&many).is_err());
+        let ok: Vec<String> = (0..50).map(|i| format!("src/f{i}.rs")).collect();
+        assert_eq!(parse_prospective_paths(&ok).unwrap().len(), 50);
+    }
+
+    #[test]
+    fn parse_prospective_paths_dedups_before_cap() {
+        // 51 entries of the same path should collapse to 1 unique path.
+        let dups: Vec<String> = (0..51).map(|_| "src/a.rs".into()).collect();
+        let parsed = parse_prospective_paths(&dups).expect("dedup before cap");
+        assert_eq!(parsed, vec!["src/a.rs".to_string()]);
+    }
+
+    #[test]
+    fn prospective_impact_in_memory_does_not_clobber_latest_impact() {
+        use crate::state::layout::Layout;
+        use crate::state::reports::{LATEST_IMPACT_REPORT, write_impact_report};
+        use crate::state::storage::StorageManager;
+
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(root)
+            .output()
+            .expect("git init");
+        std::process::Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(root)
+            .output()
+            .expect("email");
+        std::process::Command::new("git")
+            .args(["config", "user.name", "T"])
+            .current_dir(root)
+            .output()
+            .expect("name");
+        fs::create_dir_all(root.join("src")).expect("mkdir");
+        fs::write(root.join("src/exists.rs"), "fn x() {}").expect("write");
+        fs::write(root.join("README.md"), "hi").expect("readme");
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(root)
+            .output()
+            .expect("add");
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(root)
+            .output()
+            .expect("commit");
+
+        let utf8 = camino::Utf8Path::from_path(root).expect("utf8");
+        let layout = Layout::new(utf8);
+        layout.ensure_state_dir().expect("state");
+        let seed = crate::impact::packet::ImpactPacket {
+            schema_version: "v1".to_string(),
+            head_hash: Some("SEED_MARKER_0173_PROSPECTIVE".to_string()),
+            risk_reasons: vec!["seed-reason-do-not-clobber".to_string()],
+            ..Default::default()
+        };
+        write_impact_report(&layout, &seed).expect("seed report");
+        let report_path = layout.reports_dir().join(LATEST_IMPACT_REPORT);
+        let before = fs::read_to_string(report_path.as_std_path()).expect("read before");
+        assert!(before.contains("SEED_MARKER_0173_PROSPECTIVE"));
+
+        let storage = StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())
+            .expect("db");
+        let config = crate::config::model::Config::default();
+        let paths = parse_prospective_paths(&["src/exists.rs".into()]).expect("paths");
+        let snapshot = build_prospective_snapshot(root, &paths).expect("snapshot");
+        let packet = compute_impact_from_snapshot_in_memory_with_mode(
+            &storage,
+            &config,
+            root,
+            snapshot,
+            false,
+            "prospective",
+            paths,
+        )
+        .expect("prospective impact");
+        assert_eq!(packet.analysis_mode, "prospective");
+        assert!(!packet.changes.is_empty());
+
+        let after = fs::read_to_string(report_path.as_std_path()).expect("read after");
+        assert_eq!(
+            before, after,
+            "prospective impact must not rewrite latest-impact.json"
+        );
+        let _ = storage.shutdown();
+    }
 }

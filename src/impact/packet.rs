@@ -363,6 +363,12 @@ mod schema_golden_tests {
                 line_start: None,
                 line_end: None,
             }],
+            // 0173 honesty fields (always serialized; append after deadCodeFindings)
+            path_mode: "code".to_string(),
+            demoted_temporal_count: 0,
+            analysis_mode: "working_tree".to_string(),
+            // Empty → skipped by serde; not in exact-key set when empty.
+            prospective_paths: Vec::new(),
         };
 
         let json = serde_json::to_string_pretty(&packet).unwrap();
@@ -476,6 +482,12 @@ mod schema_golden_tests {
             json.contains(r#""deadCodeFindings""#),
             "deadCodeFindings missing"
         );
+        assert!(json.contains(r#""pathMode""#), "pathMode missing");
+        assert!(
+            json.contains(r#""demotedTemporalCount""#),
+            "demotedTemporalCount missing"
+        );
+        assert!(json.contains(r#""analysisMode""#), "analysisMode missing");
 
         // Round-trip verification
         let parsed: ImpactPacket = serde_json::from_str(&json).unwrap();
@@ -485,11 +497,16 @@ mod schema_golden_tests {
         assert_eq!(parsed.risk_level, RiskLevel::High);
         assert_eq!(parsed.temporal_couplings.len(), 1);
         assert_eq!(parsed.hotspots.len(), 1);
+        assert_eq!(parsed.path_mode, "code");
+        assert_eq!(parsed.demoted_temporal_count, 0);
+        assert_eq!(parsed.analysis_mode, "working_tree");
 
         // Exact shape verification via serde_json::Value
         let value: serde_json::Value = serde_json::from_str(&json).unwrap();
 
-        // Top-level exact key set (36 keys with populated blastRadius — no more, no less)
+        // Top-level exact key set (39 keys with populated blastRadius — no more, no less)
+        // 0173 adds pathMode, demotedTemporalCount, analysisMode after deadCodeFindings.
+        // prospectivePaths omitted when empty (skip_serializing_if).
         assert_exact_keys(
             &value,
             &[
@@ -529,6 +546,9 @@ mod schema_golden_tests {
                 "knowledgeGraph",
                 "analysisWarnings",
                 "deadCodeFindings",
+                "pathMode",
+                "demotedTemporalCount",
+                "analysisMode",
             ],
         );
 
@@ -985,6 +1005,9 @@ mod schema_golden_tests {
                 "knowledgeGraph",
                 "analysisWarnings",
                 "deadCodeFindings",
+                "pathMode",
+                "demotedTemporalCount",
+                "analysisMode",
             ],
         );
 
@@ -1079,6 +1102,20 @@ mod schema_golden_tests {
             !json.contains("ciConfigChange"),
             "ciConfigChange should be omitted when None"
         );
+        assert!(
+            !json.contains("prospectivePaths"),
+            "prospectivePaths should be omitted when empty"
+        );
+        // 0173 honesty fields always serialize (no skip_serializing_if)
+        assert_eq!(value.get("pathMode").and_then(|v| v.as_str()), Some("code"));
+        assert_eq!(
+            value.get("demotedTemporalCount").and_then(|v| v.as_u64()),
+            Some(0)
+        );
+        assert_eq!(
+            value.get("analysisMode").and_then(|v| v.as_str()),
+            Some("working_tree")
+        );
 
         // Fields without skip_serializing_if serialize even when empty/null
         assert!(
@@ -1152,6 +1189,22 @@ mod schema_golden_tests {
         assert_eq!(parsed.timestamp_utc, "2023-10-27T10:00:00Z");
         assert_eq!(parsed.risk_level, RiskLevel::Low);
         assert!(!parsed.tree_clean, "tree_clean defaults to false");
+        assert_eq!(
+            parsed.path_mode, "code",
+            "path_mode defaults to code for legacy JSON"
+        );
+        assert_eq!(
+            parsed.demoted_temporal_count, 0,
+            "demoted_temporal_count defaults to 0 for legacy JSON"
+        );
+        assert_eq!(
+            parsed.analysis_mode, "working_tree",
+            "analysis_mode defaults to working_tree for legacy JSON"
+        );
+        assert!(
+            parsed.prospective_paths.is_empty(),
+            "prospective_paths defaults to empty for legacy JSON"
+        );
         assert!(
             parsed.logging_coverage_delta.is_empty(),
             "logging_coverage_delta defaults to empty"

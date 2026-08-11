@@ -333,6 +333,18 @@ pub fn print_impact_summary(packet: &ImpactPacket) {
         ]);
     println!("{risk_table}");
 
+    // 0173 honesty: demoted count + modes before deep temporal table.
+    println!(
+        "  pathMode={}  demotedTemporal={}  analysisMode={}",
+        packet.path_mode, packet.demoted_temporal_count, packet.analysis_mode
+    );
+    if packet.demoted_temporal_count > 0 {
+        println!(
+            "  {} process/governance temporal coupling(s) demoted from risk (full list below; --include-governance restores weight)",
+            packet.demoted_temporal_count
+        );
+    }
+
     if !packet.hotspots.is_empty() {
         print_hotspots(&packet.hotspots);
     }
@@ -419,6 +431,21 @@ pub fn print_impact_brief(packet: &ImpactPacket) {
             "Impact Analysis: Risk is {}",
             risk.if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
         ),
+    }
+    // 0173 honesty header: demoted temporal + modes before deep tables.
+    if packet.demoted_temporal_count > 0 || packet.path_mode != "code" {
+        println!(
+            "  pathMode={}  demotedTemporal={}  analysisMode={}",
+            packet.path_mode, packet.demoted_temporal_count, packet.analysis_mode
+        );
+    } else if packet.analysis_mode != "working_tree" {
+        println!("  analysisMode={}", packet.analysis_mode);
+    }
+    if packet.demoted_temporal_count > 0 {
+        println!(
+            "  {} process/governance temporal coupling(s) demoted from risk (use --include-governance to restore)",
+            packet.demoted_temporal_count
+        );
     }
     if let Some(ref blast) = packet.blast_radius
         && !blast.edges.is_empty()
