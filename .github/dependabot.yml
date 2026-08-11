@@ -20,6 +20,15 @@ updates:
         update-types:
           - minor
           - patch
+    # Exact pins must not be rewritten (Dependabot #143 rewrote rayon =1.10 → =1.11
+    # and broke graph_builder/cozo). Keep all three intentional `=` pins.
+    ignore:
+      - dependency-name: "rayon"
+        # Exact pin =1.10: graph_builder (cozo) fails on rayon 1.11+
+      - dependency-name: "fs4"
+        # Exact pin =0.13.1 — do not rewrite
+      - dependency-name: "url"
+        # Exact pin =2.5.8 — do not rewrite
 
   - package-ecosystem: github-actions
     directory: /

@@ -31,6 +31,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Cargo minor/patch hygiene (0170):** Refresh engine lock/floors for the
+  Dependabot minor-and-patch group (clap, serde, tokio, cedar-policy,
+  tree-sitter, zeroize, …). Keep `rayon = "=1.10"` (cozo/graph_builder).
+  Dependabot ignores exact pins rayon/fs4/url.
 - **Doctor human progressive disclosure (0174):** Default human expands Block +
   action-critical warn only; Optional/Info hygiene collapses with greppable
   `N hygiene finding(s) collapsed — run doctor --full`. `--full` expands hygiene;
