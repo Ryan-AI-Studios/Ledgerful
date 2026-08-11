@@ -208,11 +208,12 @@ fn ro_class_message(s: &str) -> bool {
         || s.contains("read-only file system")
         || s.contains("readonly database")
         || s.contains("attempt to write a readonly")
+        // Windows ERROR_ACCESS_DENIED / EROFS-class text (not bare errno numbers
+        // that mean different things per OS — e.g. Unix os error 19 is ENODEV).
         || s.contains("os error 5")
         || s.contains("(os error 5)")
         || s.contains("os error 30")
-        // Windows ERROR_WRITE_PROTECT / media write-protected
-        || s.contains("os error 19")
+        || s.contains("(os error 30)")
         || s.contains("the media is write protected")
 }
 
@@ -746,6 +747,14 @@ mod tests {
         // Bare "readonly" without RO context must not soft-classify.
         let bare = miette::miette!("field marked readonly in schema");
         assert!(!is_report_ro_class_error(&bare));
+        // Unix ENODEV is os error 19 — must NOT soft-classify as RO (Codex re-review P2).
+        let enodev = miette::miette!("No such device (os error 19)");
+        assert!(
+            !is_report_ro_class_error(&enodev),
+            "bare os error 19 is not portable RO"
+        );
+        let write_protect = miette::miette!("The media is write protected");
+        assert!(is_report_ro_class_error(&write_protect));
     }
 
     /// 0174 P1: real StateError Display omits source; chain must still classify.
