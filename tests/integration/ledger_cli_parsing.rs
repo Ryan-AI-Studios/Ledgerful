@@ -76,8 +76,8 @@ fn test_start_success_with_all_args() {
 }
 
 #[test]
-fn test_start_rejects_invalid_category() {
-    let err = parse_err(&[
+fn test_start_accepts_doc_alias() {
+    let cli = parse_ok(&[
         "ledgerful",
         "ledger",
         "start",
@@ -87,10 +87,142 @@ fn test_start_rejects_invalid_category() {
         "--message",
         "update docs",
     ]);
+    let Commands::Ledger { command, .. } = cli.command else {
+        panic!("expected Ledger");
+    };
+    let LedgerCommands::Start { category, .. } = command else {
+        panic!("expected Start");
+    };
+    assert_eq!(category, Category::Docs);
+}
+
+#[test]
+fn test_start_accepts_ux_alias() {
+    let cli = parse_ok(&[
+        "ledgerful",
+        "ledger",
+        "start",
+        "src/main.rs",
+        "--category",
+        "UX",
+        "--message",
+        "product UI work",
+    ]);
+    let Commands::Ledger { command, .. } = cli.command else {
+        panic!("expected Ledger");
+    };
+    let LedgerCommands::Start { category, .. } = command else {
+        panic!("expected Start");
+    };
+    assert_eq!(category, Category::Feature);
+}
+
+#[test]
+fn test_start_accepts_lowercase_canonical() {
+    let cli = parse_ok(&[
+        "ledgerful",
+        "ledger",
+        "start",
+        "src/main.rs",
+        "--category",
+        "feature",
+        "--message",
+        "lowercase canonical",
+    ]);
+    let Commands::Ledger { command, .. } = cli.command else {
+        panic!("expected Ledger");
+    };
+    let LedgerCommands::Start { category, .. } = command else {
+        panic!("expected Start");
+    };
+    assert_eq!(category, Category::Feature);
+}
+
+#[test]
+fn test_start_rejects_unknown_category() {
+    let err = parse_err(&[
+        "ledgerful",
+        "ledger",
+        "start",
+        "src/main.rs",
+        "--category",
+        "NOT_A_CATEGORY",
+        "--message",
+        "nope",
+    ]);
     assert!(
-        err.contains("doc") && (err.contains("invalid") || err.contains("error")),
-        "Expected invalid category error, got: {err}"
+        err.contains("NOT_A_CATEGORY")
+            && (err.contains("invalid") || err.contains("error") || err.contains("Unknown")),
+        "Expected unknown category error, got: {err}"
     );
+    assert!(
+        err.contains("SECURITY") || err.contains("possible values"),
+        "error should list canonical values incl. SECURITY: {err}"
+    );
+
+    let purple = parse_err(&[
+        "ledgerful",
+        "ledger",
+        "start",
+        "src/main.rs",
+        "--category",
+        "purple",
+        "--message",
+        "nope",
+    ]);
+    assert!(
+        purple.contains("purple")
+            && (purple.contains("invalid")
+                || purple.contains("error")
+                || purple.contains("Unknown")),
+        "Expected purple reject, got: {purple}"
+    );
+}
+
+#[test]
+fn test_atomic_accepts_ux_alias() {
+    let cli = parse_ok(&[
+        "ledgerful",
+        "ledger",
+        "atomic",
+        "src/lib.rs",
+        "--category",
+        "ux",
+        "--summary",
+        "s",
+        "--reason",
+        "r",
+    ]);
+    let Commands::Ledger { command, .. } = cli.command else {
+        panic!("expected Ledger");
+    };
+    let LedgerCommands::Atomic { category, .. } = command else {
+        panic!("expected Atomic");
+    };
+    assert_eq!(category, Category::Feature);
+}
+
+#[test]
+fn test_adopt_accepts_ux_alias() {
+    let cli = parse_ok(&[
+        "ledgerful",
+        "ledger",
+        "adopt",
+        "--all",
+        "--category",
+        "ux",
+        "--summary",
+        "s",
+        "--reason",
+        "r",
+    ]);
+    let Commands::Ledger { command, .. } = cli.command else {
+        panic!("expected Ledger");
+    };
+    let LedgerCommands::Adopt { category, .. } = command else {
+        panic!("expected Adopt");
+    };
+    assert_eq!(category, Category::Feature);
 }
 
 #[test]

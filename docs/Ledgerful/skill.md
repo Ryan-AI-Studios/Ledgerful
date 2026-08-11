@@ -526,6 +526,9 @@ ledgerful ledger start <entity> --category <CAT> --message "Intent"
 ledgerful ledger commit <tx-id> --summary "Done" --reason "Why"
 ```
 
+`--category` accepts canonical names (case-insensitive) or aliases (`feat`, `fix`,
+`ux`→FEATURE, `doc`→DOCS, …); stored value is always canonical SCREAMING.
+
 For surgical one-command provenance:
 
 ```bash

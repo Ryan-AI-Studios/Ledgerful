@@ -1,7 +1,9 @@
 pub mod args;
+pub mod category_parser;
 pub mod dispatch;
 
 pub use args::*;
+pub use category_parser::{CATEGORY_LONG_HELP, CategoryValueParser};
 pub use dispatch::run_with;
 
 #[cfg(test)]

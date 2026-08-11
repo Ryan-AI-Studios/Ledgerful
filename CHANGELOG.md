@@ -6,6 +6,23 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Ledger `--category` aliases + case-insensitive canonical (0175):** CLI
+  `--category` on `ledger start` / `atomic` / `adopt` (and filters on `search` /
+  `stack`) accepts track-language and conventional-commit aliases (`feat`, `fix`,
+  `ux`/`ui`→FEATURE, `doc`→DOCS, `perf`/`style`→REFACTOR, `test`→CHORE, `ci`/`build`→INFRA,
+  `dx`→TOOLING, …) and case-insensitive canonical names (`feature` as well as
+  `FEATURE`). Stored value is always canonical SCREAMING. Unknown-category errors
+  list all 9 variants **including SECURITY** plus short alias examples and up to
+  three “did you mean” suggestions.
+
+### Changed
+
+- **Non-interactive unknown category fails closed (0175):** Near-miss tokens no
+  longer silently auto-select the closest fuzzy match outside an interactive
+  Select; agents get an error with suggestions instead of wrong provenance labels.
+
 ### Added
 
 - **Prospective `--paths` on change-context / impact / scan --impact (0173):** Analyze

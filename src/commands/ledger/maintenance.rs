@@ -1,9 +1,10 @@
 use crate::commands::helpers::{get_layout, load_ledger_config};
 use crate::ledger::*;
 use crate::state::storage::StorageManager;
-use clap::ValueEnum;
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
+
+use super::lifecycle::resolve_start_category;
 
 pub fn execute_ledger_reconcile(
     tx_id: Option<String>,
@@ -34,7 +35,7 @@ pub fn execute_ledger_adopt(
     summary: &str,
     reason: &str,
 ) -> Result<()> {
-    let category = Category::from_str(category, true).map_err(|e| miette::miette!("{}", e))?;
+    let category = resolve_start_category(category)?;
     let layout = get_layout()?;
     let mut storage = StorageManager::init_with_layout(&layout)?;
     let config = load_ledger_config(&layout)?;

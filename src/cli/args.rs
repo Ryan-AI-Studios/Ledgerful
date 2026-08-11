@@ -3,6 +3,7 @@ use crate::commands::bridge::BridgeCommands;
 use crate::commands::data_models::DataModelSubcommands;
 use crate::commands::observability::ObservabilitySubcommands;
 
+use super::category_parser::{CATEGORY_LONG_HELP, CategoryValueParser};
 use crate::commands::security::SecuritySubcommands;
 use crate::ledger::types::Category;
 use clap::{Args, Parser, Subcommand};
@@ -3316,8 +3317,8 @@ pub enum LedgerCommands {
     Start {
         /// Entity path to track
         entity: String,
-        /// Category of change (ARCHITECTURE, FEATURE, BUGFIX, REFACTOR, INFRA, SECURITY, DOCS, CHORE, TOOLING)
-        #[arg(short, long)]
+        /// Category (ARCHITECTURE, FEATURE, BUGFIX, REFACTOR, INFRA, SECURITY, TOOLING, DOCS, CHORE)
+        #[arg(short, long, value_parser = CategoryValueParser, long_help = CATEGORY_LONG_HELP)]
         category: Category,
         /// Intent message for the change
         #[arg(short, long)]
@@ -3364,8 +3365,8 @@ pub enum LedgerCommands {
     Atomic {
         /// Entity path
         entity: String,
-        /// Category of change
-        #[arg(short, long)]
+        /// Category (ARCHITECTURE, FEATURE, BUGFIX, REFACTOR, INFRA, SECURITY, TOOLING, DOCS, CHORE)
+        #[arg(short, long, value_parser = CategoryValueParser, long_help = CATEGORY_LONG_HELP)]
         category: Category,
         /// Summary
         #[arg(short, long)]
@@ -3436,7 +3437,8 @@ pub enum LedgerCommands {
     },
     /// Show active tech stack enforcement rules
     Stack {
-        /// Filter by category (e.g. Database, Auth)
+        /// Optional ledger category filter (positional; same aliases as --category)
+        #[arg(value_parser = CategoryValueParser, long_help = CATEGORY_LONG_HELP)]
         category: Option<Category>,
     },
     /// Architectural Decision Records (MADR format)
@@ -3456,8 +3458,8 @@ pub enum LedgerCommands {
     Search {
         /// Search query
         query: String,
-        /// Filter by category
-        #[arg(short, long)]
+        /// Filter by category (canonical or alias; case-insensitive)
+        #[arg(short, long, value_parser = CategoryValueParser, long_help = CATEGORY_LONG_HELP)]
         category: Option<Category>,
         /// Number of days to look back
         #[arg(short, long)]
@@ -3498,8 +3500,8 @@ pub enum LedgerCommands {
         /// Adopt all current drift
         #[arg(long)]
         all: bool,
-        /// Category for the new transaction
-        #[arg(short, long)]
+        /// Category for the new transaction (ARCHITECTURE, FEATURE, BUGFIX, …)
+        #[arg(short, long, value_parser = CategoryValueParser, long_help = CATEGORY_LONG_HELP)]
         category: Category,
         /// Summary for the new transaction
         #[arg(short, long)]
@@ -3617,8 +3619,8 @@ pub enum RegisterCommands {
     Rule {
         /// Forbidden term or technology name
         term: String,
-        /// Category (e.g. Database, ORM)
-        #[arg(short, long)]
+        /// Ledger category for the rule (ARCHITECTURE, FEATURE, BUGFIX, REFACTOR, INFRA, SECURITY, TOOLING, DOCS, CHORE)
+        #[arg(short, long, value_parser = CategoryValueParser, long_help = CATEGORY_LONG_HELP)]
         category: Category,
         /// Reason for prohibition
         #[arg(short, long)]
