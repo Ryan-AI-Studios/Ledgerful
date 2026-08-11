@@ -203,17 +203,15 @@ fn is_report_ro_class_error_dyn(err: &(dyn std::error::Error + 'static)) -> bool
 /// Prefer `io::ErrorKind` matching in the chain walker; these strings cover
 /// SQLite/Windows paths where kind is Other but text is clearly RO.
 fn ro_class_message(s: &str) -> bool {
+    // Text-only RO signals. Do **not** match bare errno numbers (os error N) —
+    // the same number means different things per OS (e.g. Windows 5=ACCESS_DENIED
+    // vs Unix EIO; Unix 30=EROFS vs other platforms). Prefer ErrorKind matching
+    // in the chain walker; these phrases cover SQLite/Windows Display text.
     s.contains("permission denied")
         || s.contains("access is denied")
         || s.contains("read-only file system")
         || s.contains("readonly database")
         || s.contains("attempt to write a readonly")
-        // Windows ERROR_ACCESS_DENIED / EROFS-class text (not bare errno numbers
-        // that mean different things per OS — e.g. Unix os error 19 is ENODEV).
-        || s.contains("os error 5")
-        || s.contains("(os error 5)")
-        || s.contains("os error 30")
-        || s.contains("(os error 30)")
         || s.contains("the media is write protected")
 }
 
@@ -747,12 +745,27 @@ mod tests {
         // Bare "readonly" without RO context must not soft-classify.
         let bare = miette::miette!("field marked readonly in schema");
         assert!(!is_report_ro_class_error(&bare));
-        // Unix ENODEV is os error 19 — must NOT soft-classify as RO (Codex re-review P2).
-        let enodev = miette::miette!("No such device (os error 19)");
-        assert!(
-            !is_report_ro_class_error(&enodev),
-            "bare os error 19 is not portable RO"
-        );
+        // Bare errno numbers are not portable RO signals (Codex final gate).
+        for bare_errno in [
+            "os error 5",
+            "(os error 5)",
+            "os error 19",
+            "No such device (os error 19)",
+            "os error 30",
+            "(os error 30)",
+            "Input/output error (os error 5)",
+        ] {
+            let e = miette::miette!("{bare_errno}");
+            assert!(
+                !is_report_ro_class_error(&e),
+                "bare errno must not soft-classify as RO: {bare_errno}"
+            );
+        }
+        // Text phrases still classify (even when errno suffix is present).
+        let win_access = miette::miette!("Access is denied. (os error 5)");
+        assert!(is_report_ro_class_error(&win_access));
+        let erofs_text = miette::miette!("Read-only file system (os error 30)");
+        assert!(is_report_ro_class_error(&erofs_text));
         let write_protect = miette::miette!("The media is write protected");
         assert!(is_report_ro_class_error(&write_protect));
     }
