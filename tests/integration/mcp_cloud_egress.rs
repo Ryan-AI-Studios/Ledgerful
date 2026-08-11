@@ -114,7 +114,7 @@ fn mcp_spawn_env_ask_child_forbidden_cloud_only_zero_http() {
         combined.contains(MCP_ALLOW_CLOUD_EGRESS_ENV),
         "child output must name LEDGERFUL_MCP_ALLOW_CLOUD_EGRESS, got:\n{combined}"
     );
-    mock.assert_hits(0);
+    mock.assert_calls(0);
 }
 
 /// Priority-chain network assertion under Forbidden via real child process:
@@ -201,7 +201,7 @@ timeout_secs = 2
     // Zero cloud HTTP is the hard requirement. Child may fail with policy error
     // or degrade to context-only after Local-only exhaustion — either is fine
     // as long as the mock is never hit and no cloud completion path ran.
-    mock.assert_hits(0);
+    mock.assert_calls(0);
     assert!(
         combined.contains(CLOUD_POLICY_FORBIDDEN_CODE)
             || combined.contains("Retrieved context")

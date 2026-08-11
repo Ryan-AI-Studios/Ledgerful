@@ -228,7 +228,7 @@ fn path_unsafe_dotdot_invite_fails_parse() {
 
 /// 32-byte encoding whose Edwards y-coordinate is not on the curve.
 ///
-/// All-zero is accepted by ed25519-dalek 2.x (ZIP-215); y=2 fails decompress.
+/// All-zero is accepted by ed25519-dalek 3.x (ZIP-215); y=2 fails decompress.
 #[cfg(feature = "sync")]
 fn invalid_curve_pub_fixture() -> [u8; 32] {
     let mut bad = [0u8; 32];
@@ -242,7 +242,7 @@ fn invalid_curve_point_rejected_on_trust_path() {
     let bad = invalid_curve_pub_fixture();
     assert!(
         ed25519_dalek::VerifyingKey::from_bytes(&bad).is_err(),
-        "fixture must be invalid under ed25519-dalek 2.x"
+        "fixture must be invalid under ed25519-dalek 3.x"
     );
 
     let tmp = tempdir().unwrap();
@@ -260,7 +260,7 @@ fn invalid_curve_point_rejected_on_accept_path() {
     let bad = invalid_curve_pub_fixture();
     assert!(
         ed25519_dalek::VerifyingKey::from_bytes(&bad).is_err(),
-        "fixture must be invalid under ed25519-dalek 2.x"
+        "fixture must be invalid under ed25519-dalek 3.x"
     );
 
     let secret = TEST_SECRET.as_bytes();

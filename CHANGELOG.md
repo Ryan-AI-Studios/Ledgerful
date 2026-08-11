@@ -31,6 +31,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Engine cargo majors (0171):** httpmock 0.8.3 (test-only API renames:
+  `hits`→`calls`, `assert_hits`→`assert_calls`, `body_contains`→`body_includes`,
+  `json_body_partial`→`json_body_includes`). ed25519-dalek 3 + rand 0.10 co-bump
+  (API only; Ed25519 wire format unchanged). scip 0.9 Dependabot major ignored
+  (classic-only consumer; typed_range future track). Keep exact pins
+  rayon/fs4/url.
 - **Cargo minor/patch hygiene (0170):** Refresh engine lock/floors for the
   Dependabot minor-and-patch group (clap, serde, tokio, cedar-policy,
   tree-sitter, zeroize, …). Keep `rayon = "=1.10"` (cozo/graph_builder).

@@ -17,8 +17,6 @@ use ledgerful::state::storage::StorageManager;
 #[cfg(feature = "sync")]
 use ledgerful::sync::peers::trust_peer;
 #[cfg(feature = "sync")]
-use rand::rngs::OsRng;
-#[cfg(feature = "sync")]
 use std::fs;
 #[cfg(feature = "sync")]
 use tempfile::tempdir;
@@ -45,7 +43,7 @@ fn init_device(root: &Utf8Path) -> String {
 
 #[cfg(feature = "sync")]
 fn add_dummy_peer(root: &Utf8Path, peer_id: &str) {
-    let sk = SigningKey::generate(&mut OsRng);
+    let sk = SigningKey::generate(&mut rand::rng());
     trust_peer(
         root.join(".ledgerful/sync").as_std_path(),
         peer_id,

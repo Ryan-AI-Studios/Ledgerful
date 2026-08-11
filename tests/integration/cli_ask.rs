@@ -250,7 +250,11 @@ fn test_ask_respects_cli_timeout_override() {
         elapsed < std::time::Duration::from_secs(2),
         "expected <2s, got {elapsed:?}"
     );
-    assert_eq!(mock.hits(), 1, "the mock should have been hit exactly once");
+    assert_eq!(
+        mock.calls(),
+        1,
+        "the mock should have been hit exactly once"
+    );
 }
 
 /// Track DX2: when the configured local completion model is unreachable and no

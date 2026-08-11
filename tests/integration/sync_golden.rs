@@ -405,7 +405,6 @@ fn verify_uses_load_peer_keys_fail_closed() {
     use ledgerful::commands::sync::verify::handle as handle_verify;
     use ledgerful::sync::bundle::{Bundle, Manifest};
     use ledgerful::sync::hlc::HLC;
-    use rand::rngs::OsRng;
 
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
@@ -415,7 +414,7 @@ fn verify_uses_load_peer_keys_fail_closed() {
     init_device(root);
 
     // Bundle signed by a random untrusted key with a foreign device_id
-    let foreign = SigningKey::generate(&mut OsRng);
+    let foreign = SigningKey::generate(&mut rand::rng());
     let foreign_id = "device-foreign1";
     let mut manifest = Manifest {
         version: 1,

@@ -24,7 +24,7 @@ use ed25519_dalek::{Signer, SigningKey, VerifyingKey};
 use hmac::{Hmac, KeyInit, Mac};
 use miette::{IntoDiagnostic, Result, miette};
 use owo_colors::{OwoColorize, Stream, Style};
-use rand::rngs::OsRng;
+
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -307,10 +307,9 @@ fn get_or_create_bot_keys_in(keys_dir: &Path) -> Result<(SigningKey, VerifyingKe
 
         Ok((signing_key, verifying_key))
     } else {
-        let mut csprng = OsRng;
         let mut seed = [0u8; 32];
-        use rand::RngCore;
-        csprng.fill_bytes(&mut seed);
+        use rand::Rng;
+        rand::rng().fill_bytes(&mut seed);
         let signing_key = SigningKey::from_bytes(&seed);
         let verifying_key = signing_key.verifying_key();
 
@@ -330,10 +329,9 @@ fn get_or_create_pseudonym_secret(keys_dir: &Path) -> Result<Vec<u8>> {
     if secret_path.exists() {
         fs::read(&secret_path).into_diagnostic()
     } else {
-        let mut csprng = OsRng;
         let mut secret = [0u8; 32];
-        use rand::RngCore;
-        csprng.fill_bytes(&mut secret);
+        use rand::Rng;
+        rand::rng().fill_bytes(&mut secret);
         fs::write(&secret_path, secret.as_slice()).into_diagnostic()?;
         Ok(secret.to_vec())
     }
