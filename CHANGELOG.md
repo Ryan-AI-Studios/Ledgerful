@@ -6,6 +6,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- **Release signing cosign v3.1.3 + GHA pin hygiene (0169):** Bump
+  `cosign-release` to v3.1.3 (fixes GHSA-fx35-mq7g-6g98 verify bypass);
+  pin cosign-installer v4.1.2 (tagged), actions/attest v4.2.2, install-action
+  v2.85.11.
+
 ### Fixed
 
 - **Impact / scan(--impact) RO report write no longer hard-fails (0174):** Soft-open

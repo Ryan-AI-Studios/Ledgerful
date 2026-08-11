@@ -246,7 +246,7 @@ jobs:
         # Repo is public; keep the private-repo fallback below in case visibility changes.
         # Uses actions/attest in default SLSA build-provenance mode (no custom predicate-type/predicate needed).
         if: github.event.repository.visibility == 'public' || github.event.repository.visibility == 'internal'
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: dist/${{ matrix.asset }}.${{ matrix.archive == 'tar' && 'tar.gz' || 'zip' }}
       - name: Attest build provenance (private repo fallback)
@@ -315,7 +315,7 @@ jobs:
         # actions/attest requires a public repo or GitHub Enterprise Cloud.
         # Repo is public; keep the private-repo fallback below in case visibility changes.
         if: github.event.repository.visibility == 'public' || github.event.repository.visibility == 'internal'
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6
+        uses: actions/attest@1e69f48acb82d1966a394da916b4c1698aa569d6 # v4.2.2
         with:
           subject-path: mcp-server/dist/*.tgz
       - name: Attest MCP package provenance (private repo fallback)
@@ -440,13 +440,13 @@ jobs:
         # Note: GitHub Actions context does not expose enterprise status; a private Enterprise Cloud
         # repo will skip this step until the repo visibility is changed.
         if: github.event.repository.visibility == 'public' || github.event.repository.visibility == 'internal'
-        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-path: dist/*.tar.gz,dist/*.zip
           sbom-path: dist/ledgerful-${{ steps.version.outputs.value }}.cdx.json
       - name: Attest MCP SBOM
         if: github.event.repository.visibility == 'public' || github.event.repository.visibility == 'internal'
-        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e
+        uses: actions/attest-sbom@c604332985a26aa8cf1bdc465b92731239ec6b9e # v4.1.0
         with:
           subject-path: dist/*.tgz
           sbom-path: dist/ledgerful-mcp-server-${{ steps.version.outputs.value }}.cdx.json
@@ -458,9 +458,9 @@ jobs:
           echo "Skipping GitHub SBOM attestation: repository is not public and this is not GitHub Enterprise Cloud."
           echo "Attestation will be enabled automatically once the repo is public (when the repository becomes public)."
       - name: Install cosign
-        uses: sigstore/cosign-installer@3094a48ba06382e0e6cfa5a4af4fcc55fc6942b9
+        uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
         with:
-          cosign-release: v3.1.1
+          cosign-release: v3.1.3
       - name: Sign archives + SBOM
         shell: bash
         env:
