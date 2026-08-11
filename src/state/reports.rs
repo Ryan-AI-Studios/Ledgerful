@@ -138,12 +138,95 @@ impl From<&FileChange> for ScanChange {
     }
 }
 
-/// Whether [`write_impact_report`] rewrote `latest-impact.json` or left it
-/// unchanged (stable CleanTree skip when HEAD is unchanged — track 0147).
+/// Whether [`write_impact_report`] rewrote `latest-impact.json`, left it
+/// unchanged (stable CleanTree skip when HEAD is unchanged — track 0147), or
+/// skipped under RO / unavailable write (0174).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImpactReportWriteOutcome {
     Written,
     Unchanged,
+    /// Report not written: storage is read-only or write hit RO-class error.
+    Skipped,
+}
+
+/// Greppable honesty when durable impact report write is unavailable (0174).
+pub const IMPACT_REPORT_RO_HONESTY: &str = "report write unavailable under RO";
+
+/// Greppable honesty when durable scan report write is unavailable (0174-E).
+pub const SCAN_REPORT_RO_HONESTY: &str = "report write unavailable under RO";
+
+/// True when a report-write error is RO-class (PermissionDenied / read-only).
+pub fn is_report_ro_class_error(err: &miette::Report) -> bool {
+    let s = format!("{err}").to_ascii_lowercase();
+    s.contains("permission denied")
+        || s.contains("access is denied")
+        || s.contains("read-only file system")
+        || s.contains("readonly database")
+        || s.contains("attempt to write a readonly")
+        || s.contains("read-only")
+        || s.contains("readonly")
+        || s.contains("os error 5")
+        || s.contains("(os error 5)")
+        || s.contains("os error 30")
+        || s.contains("disk i/o error")
+}
+
+/// Soft-write impact report: skip when storage is RO or write fails RO-class.
+///
+/// Non-RO write failures still return `Err` (hard-fail).
+pub fn soft_write_impact_report(
+    layout: &Layout,
+    packet: &ImpactPacket,
+    storage_is_read_only: bool,
+) -> Result<ImpactReportWriteOutcome> {
+    if storage_is_read_only {
+        return Ok(ImpactReportWriteOutcome::Skipped);
+    }
+    match write_impact_report(layout, packet) {
+        Ok(outcome) => Ok(outcome),
+        Err(e) => {
+            if is_report_ro_class_error(&e) {
+                tracing::warn!("{IMPACT_REPORT_RO_HONESTY}: {e}");
+                Ok(ImpactReportWriteOutcome::Skipped)
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+/// Soft-write scan report: RO-class fail → skip (no hard-fail).
+pub fn soft_write_scan_report(layout: &Layout, report: &ScanReport) -> Result<bool> {
+    match write_scan_report(layout, report) {
+        Ok(()) => Ok(true),
+        Err(e) => {
+            if is_report_ro_class_error(&e) {
+                tracing::warn!("{SCAN_REPORT_RO_HONESTY}: {e}");
+                Ok(false)
+            } else {
+                Err(e)
+            }
+        }
+    }
+}
+
+/// Soft-write clean-tree tombstone: RO-class fail → skip (no hard-fail).
+pub fn soft_write_clean_tree_tombstone(
+    layout: &Layout,
+    head_hash: Option<String>,
+    branch_name: Option<String>,
+) -> Result<bool> {
+    match write_clean_tree_tombstone(layout, head_hash, branch_name) {
+        Ok(()) => Ok(true),
+        Err(e) => {
+            if is_report_ro_class_error(&e) {
+                tracing::warn!("{SCAN_REPORT_RO_HONESTY}: {e}");
+                Ok(false)
+            } else {
+                Err(e)
+            }
+        }
+    }
 }
 
 pub fn write_impact_report(
@@ -542,6 +625,92 @@ mod tests {
             !tmp_path.exists(),
             "atomic tombstone write should not leave a temporary file behind"
         );
+    }
+
+    /// 0174 T8/T9: RO soft-skip does not rewrite seeded latest-impact.json.
+    #[test]
+    fn soft_write_impact_report_skips_when_storage_ro() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+
+        let seed = ImpactPacket {
+            head_hash: Some("SEED_MARKER_0174_RO".to_string()),
+            risk_reasons: vec!["seed-do-not-clobber".to_string()],
+            ..ImpactPacket::default()
+        };
+        write_impact_report(&layout, &seed).unwrap();
+        let report_path = layout.reports_dir().join(LATEST_IMPACT_REPORT);
+        let before = std::fs::read_to_string(report_path.as_std_path()).unwrap();
+        assert!(before.contains("SEED_MARKER_0174_RO"));
+
+        let dirty = ImpactPacket {
+            head_hash: Some("would-overwrite".to_string()),
+            tree_clean: false,
+            risk_reasons: vec!["new".to_string()],
+            ..ImpactPacket::default()
+        };
+        let outcome = soft_write_impact_report(&layout, &dirty, true).unwrap();
+        assert_eq!(outcome, ImpactReportWriteOutcome::Skipped);
+
+        let after = std::fs::read_to_string(report_path.as_std_path()).unwrap();
+        assert_eq!(
+            before, after,
+            "RO soft-skip must not rewrite latest-impact.json"
+        );
+        assert!(IMPACT_REPORT_RO_HONESTY.contains("report write unavailable under RO"));
+    }
+
+    /// 0174 T10: writable soft-write still writes when content changes.
+    #[test]
+    fn soft_write_impact_report_writes_when_writable() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+
+        let packet = ImpactPacket {
+            head_hash: Some("writable-head".to_string()),
+            tree_clean: true,
+            changes: Vec::new(),
+            ..ImpactPacket::default()
+        };
+        let outcome = soft_write_impact_report(&layout, &packet, false).unwrap();
+        assert_eq!(outcome, ImpactReportWriteOutcome::Written);
+
+        let report_path = layout.reports_dir().join(LATEST_IMPACT_REPORT);
+        let body = std::fs::read_to_string(report_path.as_std_path()).unwrap();
+        assert!(body.contains("writable-head"));
+    }
+
+    #[test]
+    fn is_report_ro_class_error_matches_permission_strings() {
+        let err = miette::miette!("Failed to write report: /x: Permission denied (os error 5)");
+        assert!(is_report_ro_class_error(&err));
+        let other = miette::miette!("disk full somehow unrelated");
+        // "disk i/o error" is RO-class; plain "disk full" is not necessarily
+        assert!(!is_report_ro_class_error(&other) || format!("{other}").contains("disk i/o"));
+        let read_only = miette::miette!("read-only file system");
+        assert!(is_report_ro_class_error(&read_only));
+    }
+
+    /// 0174 T12: soft_write_scan_report returns false on RO-class (simulated via
+    /// storage_is_read_only-style skip is impact-only; here we assert writable success
+    /// and RO classifier used by soft path).
+    #[test]
+    fn soft_write_scan_report_writable_succeeds() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        let report = ScanReport {
+            head_hash: Some("scan-head".to_string()),
+            branch_name: Some("main".to_string()),
+            is_clean: true,
+            changes: Vec::new(),
+            diff_summaries: Vec::new(),
+        };
+        assert!(soft_write_scan_report(&layout, &report).unwrap());
+        let path = layout.reports_dir().join(LATEST_SCAN_REPORT);
+        assert!(path.exists());
     }
 }
 

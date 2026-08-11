@@ -26,6 +26,11 @@ impl StorageManager {
         &self.root_path
     }
 
+    /// Whether this instance was opened read-only (0174 soft report write).
+    pub fn is_read_only(&self) -> bool {
+        self.is_read_only
+    }
+
     /// Open write-mode storage for a path-shaped `ledger.db`.
     ///
     /// `root_path` is derived as parent of `.ledgerful` from the DB path

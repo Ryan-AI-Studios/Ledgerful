@@ -39,8 +39,8 @@ Agent-critical classes only (not every CLI surface):
 |---|---|---|
 | **A — Git-only** | `git status` / `diff` / `log` / `show` | Always available to reviewers |
 | **B — Read-heavy ledgerful** | `ledger status --json` / `--compact`, `audit` | Prefer existing `ledger.db`; RO open when DB present |
-| **C — Write-open today** | `doctor` (**always** write-mode), `change-context` (soft-open when DB exists) | Doctor: create/migrate/WAL + may write `doctor-results.json`. change-context: prefers RO open when `ledger.db` exists; degrades to `not_ready` on RO fail |
-| **D — Explicit write / exec** | `index`, `scan`, `verify`, `ledger start`/`commit`, `update`, hooks | **Out of RO reviewer path** — orchestrator / implementer |
+| **C — Write-open today** | `doctor` (**always** write-mode), `change-context` (soft-open when DB exists) | Doctor: create/migrate/WAL + may write `doctor-results.json` (still Class C — **skip on pure RO**). change-context: prefers RO open when `ledger.db` exists; degrades to `not_ready` on RO fail |
+| **D — Explicit write / exec** | `index`, `scan` / `scan --impact` / `impact`, `verify`, `ledger start`/`commit`, `update`, hooks | **Out of RO reviewer path** for durable gates — orchestrator / implementer. Residual (0174): impact / scan(--impact) **soft-open** when `ledger.db` exists and **soft-skip** durable report write under RO (stdout-only + greppable `report write unavailable under RO`); prefer **change-context** for grounding |
 | **E — Network** | embedding/completion probes, cloud ask, npm/uv caches | Sandbox network + cache dirs separate from FS RO |
 
 ### Sandbox host table (not a fifth command class)
@@ -130,6 +130,24 @@ Reasons remain greppable (`storage unavailable:` and, for RO class,
 
 ---
 
+## Impact / scan residual (0174)
+
+There is still **no product RO flag**. Class D commands remain non-default for pure RO
+review. When a writable implementer (or accidental Class D invoke) runs `impact` /
+`scan --impact` against existing state:
+
+- Storage is **write-first**; on write-open failure with existing `ledger.db`,
+  falls back to RO / sqlite-only RO for analysis (stdout-only residual).
+- `latest-impact.json` / scan report writes **soft-skip** when storage is RO or
+  write hits RO-class `PermissionDenied` — process does **not** hard-fail solely
+  on report write.
+- Human + `analysisWarnings` emit greppable: `report write unavailable under RO`.
+- Never claim “Wrote impact report” / “impact report refreshed” when skip.
+- Writable trees still write durable reports when write succeeds.
+
+**Reviewers:** prefer **`change-context --json`** for grounding; do not treat
+`scan --impact` as the RO path. Doctor remains Class C (write-open) — skip on pure RO.
+
 ## Related
 
 - Dual skill RO section (`.agents/skills/ledgerful/SKILL.md`,
@@ -137,3 +155,4 @@ Reasons remain greppable (`storage unavailable:` and, for RO class,
 - `codex-review` skill: orchestrator owns write-class gates
 - Worktree state sharing: [Engineering.md — Git worktrees](Engineering.md#git-worktrees-state-sharing)
 - Default implementer preflight: dual skill + `AGENTS.md` / `Claude.md`
+- Human doctor progressive disclosure: [doctor-severity.md](doctor-severity.md)

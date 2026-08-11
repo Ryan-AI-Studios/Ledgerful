@@ -146,7 +146,9 @@ pub fn summarize(findings: &[DoctorFinding]) -> DoctorSummary {
     summary
 }
 
-/// Action-critical findings for dashboard failures and sidecar top-N (0138).
+/// Action-critical findings for dashboard failures, sidecar top-N, and human
+/// progressive disclosure Index Health expand list (0138 / 0174).
+///
 /// Block always; warn when category != Optional; info never.
 pub(crate) fn is_action_critical(f: &DoctorFinding) -> bool {
     match f.severity {
@@ -154,6 +156,14 @@ pub(crate) fn is_action_critical(f: &DoctorFinding) -> bool {
         DoctorSeverity::Warn => f.category != DoctorCategory::Optional,
         DoctorSeverity::Info => false,
     }
+}
+
+/// Hygiene findings collapse by default in human doctor output (0174 3-tier).
+///
+/// Equivalent to `!is_action_critical`: Optional category (any severity) or
+/// Info severity (any category). Block is never hygiene.
+pub(crate) fn is_hygiene(f: &DoctorFinding) -> bool {
+    !is_action_critical(f)
 }
 
 /// Dashboard health `failures` field (§2.3b):
@@ -368,6 +378,52 @@ mod tests {
             DoctorSeverity::Info,
             DoctorCategory::Gate,
         )));
+    }
+
+    /// 0174 T1–T4: 3-tier classification (expand vs hygiene collapse).
+    #[test]
+    fn is_hygiene_three_tier_matrix() {
+        // T1: optional warn → hygiene (collapsed default).
+        let optional_warn = f(
+            "completion-unreachable",
+            DoctorSeverity::Warn,
+            DoctorCategory::Optional,
+        );
+        assert!(is_hygiene(&optional_warn));
+        assert!(!is_action_critical(&optional_warn));
+
+        // T2: info any category → hygiene (hook-template-stale pin).
+        let hook_stale = f(
+            "hook-template-stale",
+            DoctorSeverity::Info,
+            DoctorCategory::Gate,
+        );
+        assert!(is_hygiene(&hook_stale));
+        assert!(!is_action_critical(&hook_stale));
+        let info_optional = f(
+            "sccache-hint",
+            DoctorSeverity::Info,
+            DoctorCategory::Optional,
+        );
+        assert!(is_hygiene(&info_optional));
+
+        // T3: action-critical warn expanded (sig-pin).
+        let sig_pin = f("sig-pin", DoctorSeverity::Warn, DoctorCategory::Signing);
+        assert!(!is_hygiene(&sig_pin));
+        assert!(is_action_critical(&sig_pin));
+
+        // T4: block always expanded (never hygiene).
+        let block = f("tool-git", DoctorSeverity::Block, DoctorCategory::Tools);
+        assert!(!is_hygiene(&block));
+        assert!(is_action_critical(&block));
+        // Block remains action-critical even under Optional category.
+        let opt_block = f(
+            "optional-block",
+            DoctorSeverity::Block,
+            DoctorCategory::Optional,
+        );
+        assert!(!is_hygiene(&opt_block));
+        assert!(is_action_critical(&opt_block));
     }
 
     #[test]

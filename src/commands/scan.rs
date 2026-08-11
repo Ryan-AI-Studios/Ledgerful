@@ -8,9 +8,7 @@ use crate::git::status::get_repo_status;
 use crate::git::{ChangeType, FileChange};
 use crate::output::human::print_scan_summary;
 use crate::state::layout::Layout;
-use crate::state::reports::{
-    ScanDiffSummary, ScanReport, write_clean_tree_tombstone, write_scan_report,
-};
+use crate::state::reports::{ScanDiffSummary, ScanReport};
 use crate::state::storage::StorageManager;
 use camino::Utf8Path;
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
@@ -573,14 +571,22 @@ pub fn execute_scan_with_opts(
         diff_summaries.sort_by(|a, b| a.path.cmp(&b.path));
 
         let scan_report = ScanReport::from_snapshot(&snapshot, diff_summaries);
-        write_scan_report(&layout, &scan_report)?;
+        // Soft-degrade report writes under RO-class fail (0174-E) — no hard-fail.
+        let scan_written = crate::state::reports::soft_write_scan_report(&layout, &scan_report)?;
+        if !scan_written {
+            println!("{}", crate::state::reports::SCAN_REPORT_RO_HONESTY);
+        }
 
         if !run_impact && snapshot.is_clean {
-            write_clean_tree_tombstone(
+            let tomb_ok = crate::state::reports::soft_write_clean_tree_tombstone(
                 &layout,
                 snapshot.head_hash.clone(),
                 snapshot.branch_name.clone(),
             )?;
+            if !tomb_ok && scan_written {
+                // Avoid duplicate honesty if scan report already printed it.
+                println!("{}", crate::state::reports::SCAN_REPORT_RO_HONESTY);
+            }
         }
     }
 
@@ -689,7 +695,8 @@ pub fn execute_scan_with_opts(
                 config.impact.blast_depth_max,
                 blast_depth,
             );
-            let storage = crate::state::storage::StorageManager::init_with_layout(&layout)?;
+            // Soft-open when DB exists (0174-T13); prospective never writes report.
+            let storage = crate::commands::impact::open_storage_for_impact(&layout)?;
             let snap = crate::commands::impact::build_prospective_snapshot(work_dir, &parsed)?;
             let mut impact_packet =
                 crate::commands::impact::compute_impact_from_snapshot_in_memory_with_mode(

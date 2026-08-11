@@ -4,10 +4,68 @@ use crate::git::RepoSnapshot;
 use crate::git::repo::{get_head_info, open_repo};
 use crate::git::status::get_repo_status;
 use crate::output::diagnostics::success_marker;
-use crate::state::reports::{ImpactReportWriteOutcome, write_impact_report};
+use crate::state::layout::Layout;
+use crate::state::reports::{
+    IMPACT_REPORT_RO_HONESTY, ImpactReportWriteOutcome, soft_write_impact_report,
+};
+use crate::state::storage::StorageManager;
 use miette::Result;
 use owo_colors::{OwoColorize, Stream};
 use std::env;
+
+/// Soft-open storage for impact analysis (0174).
+///
+/// **Write-first** so durable reports still write on a normal writable tree
+/// (B7). When write-open fails and `ledger.db` already exists, fall back to
+/// RO / sqlite-only RO so pure RO reviewers can still analyze (stdout-only).
+///
+/// Differs from change-context (which prefers RO always) because impact has a
+/// durable report side effect that must succeed when the FS is writable.
+pub(crate) fn open_storage_for_impact(layout: &Layout) -> Result<StorageManager> {
+    match StorageManager::init_with_layout(layout) {
+        Ok(s) => Ok(s),
+        Err(write_err) => {
+            let db_path = layout.state_subdir().join("ledger.db");
+            if !db_path.exists() {
+                return Err(write_err);
+            }
+            tracing::debug!("impact write-open failed; trying RO for analysis: {write_err}");
+            match StorageManager::open_read_only(layout) {
+                Ok(s) => Ok(s),
+                Err(ro_err) => {
+                    tracing::debug!("impact full RO open failed; trying sqlite-only RO: {ro_err}");
+                    match StorageManager::open_read_only_sqlite_only(layout) {
+                        Ok(s) => Ok(s),
+                        Err(_sqlite_err) => Err(write_err),
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Append greppable RO report-write honesty to the packet when write was skipped.
+fn apply_report_skip_honesty(
+    packet: &mut crate::impact::packet::ImpactPacket,
+    outcome: ImpactReportWriteOutcome,
+) {
+    if outcome == ImpactReportWriteOutcome::Skipped {
+        packet
+            .analysis_warnings
+            .push(IMPACT_REPORT_RO_HONESTY.to_string());
+        packet.analysis_warnings.sort();
+        packet.analysis_warnings.dedup();
+    }
+}
+
+/// True when the durable report was successfully written or intentionally left
+/// unchanged (not RO-skipped).
+fn report_was_durable(outcome: ImpactReportWriteOutcome) -> bool {
+    matches!(
+        outcome,
+        ImpactReportWriteOutcome::Written | ImpactReportWriteOutcome::Unchanged
+    )
+}
 
 /// Run impact analysis using a pre-built `RepoSnapshot`.
 ///
@@ -63,8 +121,8 @@ pub fn execute_impact_silent_with_snapshot_opts(
         packet.analysis_warnings.push(note);
     }
 
-    // Persist to SQLite and run Orchestrated Enrichment
-    let storage = crate::state::storage::StorageManager::init_with_layout(&layout)?;
+    // Soft-open: prefer RO when ledger.db exists (0174).
+    let storage = open_storage_for_impact(&layout)?;
 
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
     orchestrator.run(&mut packet, &storage, &config, &current_dir)?;
@@ -73,13 +131,14 @@ pub fn execute_impact_silent_with_snapshot_opts(
     packet.finalize();
     crate::impact::redact::redact_secrets(&mut packet);
 
-    // Save to ledger
+    // Save to ledger (already soft on RO / failure)
     if let Err(e) = storage.save_packet(&packet) {
         tracing::warn!("SQLite save failed: {e}");
     }
 
-    // Write report (0147: may skip rewrite on stable CleanTree)
-    let write_outcome = write_impact_report(&layout, &packet)?;
+    // Soft-write report: RO / PermissionDenied → Skipped, not hard-fail (0174).
+    let write_outcome = soft_write_impact_report(&layout, &packet, storage.is_read_only())?;
+    apply_report_skip_honesty(&mut packet, write_outcome);
 
     storage.shutdown()?;
 
@@ -149,8 +208,8 @@ pub fn execute_impact_silent_with_depth_opts(
         packet.analysis_warnings.push(note);
     }
 
-    // Persist to SQLite and run Orchestrated Enrichment
-    let storage = crate::state::storage::StorageManager::init_with_layout(&layout)?;
+    // Soft-open: prefer RO when ledger.db exists (0174).
+    let storage = open_storage_for_impact(&layout)?;
 
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
     orchestrator.run(&mut packet, &storage, &config, &current_dir)?;
@@ -159,13 +218,14 @@ pub fn execute_impact_silent_with_depth_opts(
     packet.finalize();
     crate::impact::redact::redact_secrets(&mut packet);
 
-    // Save to ledger
+    // Save to ledger (already soft on RO / failure)
     if let Err(e) = storage.save_packet(&packet) {
         tracing::warn!("SQLite save failed: {e}");
     }
 
-    // Write report (0147: may skip rewrite on stable CleanTree)
-    let write_outcome = write_impact_report(&layout, &packet)?;
+    // Soft-write report: RO / PermissionDenied → Skipped, not hard-fail (0174).
+    let write_outcome = soft_write_impact_report(&layout, &packet, storage.is_read_only())?;
+    apply_report_skip_honesty(&mut packet, write_outcome);
 
     storage.shutdown()?;
 
@@ -395,7 +455,8 @@ pub fn build_prospective_snapshot(
 /// the human output path without re-deriving changes from working-tree status.
 ///
 /// `report_write_outcome` controls clean-tree wording honesty (0147): "refreshed"
-/// only when `latest-impact.json` was actually rewritten.
+/// only when `latest-impact.json` was actually rewritten. Skipped (0174 RO)
+/// never claims write/refresh and prints greppable honesty.
 pub fn execute_impact_human(
     packet: &crate::impact::packet::ImpactPacket,
     summary: bool,
@@ -420,6 +481,10 @@ pub fn execute_impact_human(
                 ImpactReportWriteOutcome::Unchanged => {
                     println!("\n{} Working tree is clean.", success_marker());
                 }
+                ImpactReportWriteOutcome::Skipped => {
+                    println!("\n{} Working tree is clean.", success_marker());
+                    println!("{IMPACT_REPORT_RO_HONESTY}");
+                }
             }
         }
         return Ok(());
@@ -431,11 +496,15 @@ pub fn execute_impact_human(
         crate::output::human::print_impact_summary(packet);
     }
 
-    println!(
-        "\n{} Wrote impact report to {}",
-        success_marker(),
-        ".ledgerful/reports/latest-impact.json".if_supports_color(Stream::Stdout, |s| s.cyan())
-    );
+    if report_was_durable(report_write_outcome) {
+        println!(
+            "\n{} Wrote impact report to {}",
+            success_marker(),
+            ".ledgerful/reports/latest-impact.json".if_supports_color(Stream::Stdout, |s| s.cyan())
+        );
+    } else {
+        println!("\n{IMPACT_REPORT_RO_HONESTY}");
+    }
 
     Ok(())
 }
@@ -548,7 +617,8 @@ pub fn execute_impact_with_opts(
         )
     };
 
-    let storage = crate::state::storage::StorageManager::init_with_layout(&layout)?;
+    // Soft-open: prefer RO when ledger.db exists (0174); prospective included.
+    let storage = open_storage_for_impact(&layout)?;
 
     // Prospective: in-memory only — no save_packet / latest-impact.json clobber (0173-G).
     if prospective {
@@ -608,14 +678,19 @@ pub fn execute_impact_with_opts(
         tracing::warn!("SQLite save failed: {e}");
     }
 
-    let write_outcome = write_impact_report(&layout, &packet)?;
+    let write_outcome = soft_write_impact_report(&layout, &packet, storage.is_read_only())?;
+    apply_report_skip_honesty(&mut packet, write_outcome);
     storage.shutdown()?;
 
-    emit_impact_output(&packet, summary, json, out, true, Some(write_outcome))
+    let wrote = report_was_durable(write_outcome);
+    emit_impact_output(&packet, summary, json, out, wrote, Some(write_outcome))
 }
 
-/// Emit impact JSON or human output. When `wrote_report` is false (prospective),
-/// do not claim `latest-impact.json` was written.
+/// Emit impact JSON or human output.
+///
+/// When `wrote_report` is false (prospective or RO skip), do not claim
+/// `latest-impact.json` was written. RO skip also prints greppable honesty
+/// (AI1 BS1 / 0174).
 fn emit_impact_output(
     packet: &crate::impact::packet::ImpactPacket,
     summary: bool,
@@ -650,24 +725,30 @@ fn emit_impact_output(
         return Ok(());
     }
 
+    let skipped_ro = matches!(write_outcome, Some(ImpactReportWriteOutcome::Skipped));
+
     if packet.tree_clean && packet.changes.is_empty() {
-        if wrote_report {
-            match write_outcome.unwrap_or(ImpactReportWriteOutcome::Unchanged) {
-                ImpactReportWriteOutcome::Written => {
+        if packet.analysis_mode == "prospective" && !wrote_report {
+            println!(
+                "\n{} No structural changes in prospective set.",
+                success_marker()
+            );
+        } else {
+            match write_outcome {
+                Some(ImpactReportWriteOutcome::Written) => {
                     println!(
                         "\n{} Working tree is clean — impact report refreshed.",
                         success_marker()
                     );
                 }
-                ImpactReportWriteOutcome::Unchanged => {
+                Some(ImpactReportWriteOutcome::Skipped) => {
+                    println!("\n{} Working tree is clean.", success_marker());
+                    println!("{IMPACT_REPORT_RO_HONESTY}");
+                }
+                Some(ImpactReportWriteOutcome::Unchanged) | None => {
                     println!("\n{} Working tree is clean.", success_marker());
                 }
             }
-        } else {
-            println!(
-                "\n{} No structural changes in prospective set.",
-                success_marker()
-            );
         }
         return Ok(());
     }
@@ -689,6 +770,8 @@ fn emit_impact_output(
             "\n{} Prospective analysis (in-memory only — did not rewrite latest-impact.json)",
             success_marker()
         );
+    } else if skipped_ro {
+        println!("\n{IMPACT_REPORT_RO_HONESTY}");
     }
 
     Ok(())
@@ -847,5 +930,84 @@ mod prospective_tests {
             "prospective impact must not rewrite latest-impact.json"
         );
         let _ = storage.shutdown();
+    }
+
+    /// 0174 T8/T9/T11: soft-write under RO storage skips report + honesty.
+    #[test]
+    fn soft_write_skips_under_ro_and_emits_honesty() {
+        use crate::state::layout::Layout;
+        use crate::state::reports::{
+            IMPACT_REPORT_RO_HONESTY, ImpactReportWriteOutcome, LATEST_IMPACT_REPORT,
+            soft_write_impact_report, write_impact_report,
+        };
+        use crate::state::storage::StorageManager;
+
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        let utf8 = camino::Utf8Path::from_path(root).expect("utf8");
+        let layout = Layout::new(utf8);
+        layout.ensure_state_dir().expect("state");
+        // Seed DB + report; open true RO (simulates pure-RO fallback path).
+        let w = StorageManager::init_with_layout(&layout).expect("write init");
+        let _ = w.shutdown();
+
+        let seed = crate::impact::packet::ImpactPacket {
+            head_hash: Some("SEED_MARKER_0174_SILENT_RO".to_string()),
+            risk_reasons: vec!["seed-silent-ro".to_string()],
+            ..Default::default()
+        };
+        write_impact_report(&layout, &seed).expect("seed");
+        let report_path = layout.reports_dir().join(LATEST_IMPACT_REPORT);
+        let before = fs::read_to_string(report_path.as_std_path()).expect("before");
+
+        let storage = StorageManager::open_read_only(&layout).expect("RO open");
+        assert!(storage.is_read_only());
+
+        let mut packet = crate::impact::packet::ImpactPacket {
+            head_hash: Some("new-head-would-clobber".to_string()),
+            tree_clean: false,
+            risk_reasons: vec!["new".to_string()],
+            ..Default::default()
+        };
+        let outcome =
+            soft_write_impact_report(&layout, &packet, storage.is_read_only()).expect("soft");
+        assert_eq!(outcome, ImpactReportWriteOutcome::Skipped);
+        apply_report_skip_honesty(&mut packet, outcome);
+        assert!(
+            packet
+                .analysis_warnings
+                .iter()
+                .any(|w| w.contains(IMPACT_REPORT_RO_HONESTY)),
+            "JSON path must carry greppable honesty: {:?}",
+            packet.analysis_warnings
+        );
+        assert!(!report_was_durable(outcome));
+
+        let after = fs::read_to_string(report_path.as_std_path()).expect("after");
+        assert_eq!(before, after, "RO soft-skip must not rewrite report");
+        let _ = storage.shutdown();
+    }
+
+    /// 0174 T13 / B7: writable open succeeds as write-mode (reports can still write).
+    #[test]
+    fn open_storage_for_impact_writable_is_write_mode() {
+        use crate::state::layout::Layout;
+        use crate::state::storage::StorageManager;
+
+        let dir = tempdir().expect("tempdir");
+        let root = dir.path();
+        let utf8 = camino::Utf8Path::from_path(root).expect("utf8");
+        let layout = Layout::new(utf8);
+        layout.ensure_state_dir().expect("state");
+        // Pre-create DB (typical after prior scan/impact).
+        let w = StorageManager::init_with_layout(&layout).expect("init");
+        let _ = w.shutdown();
+
+        let opened = open_storage_for_impact(&layout).expect("open");
+        assert!(
+            !opened.is_read_only(),
+            "T13/B7: writable tree must write-open so reports still persist"
+        );
+        let _ = opened.shutdown();
     }
 }

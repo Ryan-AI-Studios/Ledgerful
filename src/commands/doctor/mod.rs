@@ -8,11 +8,11 @@ pub use binary_currency::{
     is_ledgerful_engine_worktree, probe_binary_currency, sha_prefix_equal, shorten_sha_for_display,
     worktree_package_version,
 };
-use finding::is_action_critical;
 pub use finding::{
     DoctorCategory, DoctorFinding, DoctorSeverity, DoctorSummary, dashboard_failures,
     ready_for_publish, summarize,
 };
+pub(crate) use finding::{is_action_critical, is_hygiene};
 pub use remediation::{
     ContentHashDriftInputs, GraphAgeInputs, GraphIndexHealth, SearchDocsClassification,
     build_graph_content_stale_finding, build_graph_drift_check_failed_finding,
@@ -46,10 +46,20 @@ pub const SIG_PIN_WARNING: &str = "no intent.trusted_public_keys pinned; crypto-
 ///
 /// When `json` is true, stdout is pure schema-v1 JSON only (no human banners,
 /// sccache/SCIP/VRAM printers). Exit code is 1 iff any **block** finding.
+/// `full` / `quiet` are ignored for JSON content (schema v1 full findings).
 ///
 /// `--apply-hook-refresh` rewrites only known Ledgerful marker-bounded product
 /// templates (0121). Cannot be combined with `--json`.
-pub fn execute_doctor(json: bool, apply_hook_refresh: bool, dry_run: bool) -> Result<()> {
+///
+/// Human profile (0174): `full` expands hygiene (optional/info); `quiet`
+/// suppresses multi-line remediations and the VRAM footer.
+pub fn execute_doctor(
+    json: bool,
+    apply_hook_refresh: bool,
+    dry_run: bool,
+    full: bool,
+    quiet: bool,
+) -> Result<()> {
     if json && apply_hook_refresh {
         return Err(miette::miette!(
             "doctor --json cannot be combined with --apply-hook-refresh"
@@ -718,8 +728,17 @@ pub fn execute_doctor(json: bool, apply_hook_refresh: bool, dry_run: bool) -> Re
         let pretty = serde_json::to_string_pretty(&body).into_diagnostic()?;
         println!("{pretty}");
     } else {
-        print_doctor_report(&report, &summary, &findings);
-        print_vram_section();
+        use crate::output::human::DoctorHumanProfile;
+        print_doctor_report(
+            &report,
+            &summary,
+            &findings,
+            DoctorHumanProfile { full, quiet },
+        );
+        // VRAM: show default + --full; suppress under quiet (0174-I).
+        if !quiet {
+            print_vram_section();
+        }
     }
 
     // Complete side effects before process::exit on block (§3.9).
@@ -1669,7 +1688,7 @@ mod tests {
         use crate::cli::Cli;
         use clap::Parser;
         // Rejected at execute_doctor entry (also covered by clap path when wired).
-        let err = execute_doctor(true, true, false).unwrap_err();
+        let err = execute_doctor(true, true, false, false, false).unwrap_err();
         let msg = format!("{err:?}");
         assert!(
             msg.contains("doctor --json cannot be combined with --apply-hook-refresh"),

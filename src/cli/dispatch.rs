@@ -303,7 +303,14 @@ pub fn run_with(cli: Cli) -> Result<()> {
             json,
             apply_hook_refresh,
             dry_run,
-        } => crate::commands::doctor::execute_doctor(json, apply_hook_refresh, dry_run),
+            full,
+        } => crate::commands::doctor::execute_doctor(
+            json,
+            apply_hook_refresh,
+            dry_run,
+            full,
+            crate::cli::resolve_quiet(cli.quiet),
+        ),
         Commands::Status { json } => crate::commands::ledger::execute_ledger_status(
             None, false, false, false, json, false, false, None, false, false, false, false,
         ),
