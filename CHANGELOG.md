@@ -6,6 +6,27 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Bare parent CLI defaults (0179):** Six feedback parents no longer fail with
+  clap missing-subcommand usage when invoked alone. Each defaults to a safe
+  **read-only** subcommand (same path as the explicit form with default flags):
+
+  | Parent | Default |
+  |---|---|
+  | `dependencies` | `list` |
+  | `policy` | `check` |
+  | `gate` | `mode` (**show** only; does not set observe/enforce) |
+  | `ci` | `diff` |
+  | `deploy` | `impact` |
+  | `federate` | `status` (not `export`, which writes schema) |
+
+  Soft: bare `services` → `diff`. Parent help documents
+  `Default when omitted: …`. **Flags still require an explicit subcommand**
+  (e.g. `dependencies list --json` — bare `dependencies --json` remains a
+  clap error). Bare `federate` routes to `status` (known status display
+  hygiene → track **0184**, not a regression of this default).
+
 ## [0.2.8] - 2026-08-11
 
 ### Security

@@ -10,9 +10,20 @@ use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
 
 #[derive(Args, Debug)]
+#[command(after_help = "Default when omitted: impact.")]
 pub struct DeployArgs {
     #[command(subcommand)]
-    pub command: DeploySubcommands,
+    pub command: Option<DeploySubcommands>,
+}
+
+impl DeployArgs {
+    /// Resolve bare `deploy` to read-only impact with default flags.
+    pub fn command_or_default(self) -> DeploySubcommands {
+        self.command.unwrap_or(DeploySubcommands::Impact {
+            changed: false,
+            json: false,
+        })
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -70,7 +81,7 @@ pub fn execute_deploy(args: DeployArgs) -> Result<()> {
     };
 
     let result: Result<()> = (|| {
-        match args.command {
+        match args.command_or_default() {
             DeploySubcommands::Impact { changed: _, json } => {
                 // The deploy enrichment that populates `deploy_manifest_changes`
                 // on the impact packet is gated by `coverage.enabled` AND
@@ -241,9 +252,17 @@ pub fn deploy_empty_state_message(config: &crate::config::model::Config) -> (Emp
 }
 
 #[derive(Args, Debug)]
+#[command(after_help = "Default when omitted: diff.")]
 pub struct CiArgs {
     #[command(subcommand)]
-    pub command: CiSubcommands,
+    pub command: Option<CiSubcommands>,
+}
+
+impl CiArgs {
+    /// Resolve bare `ci` to read-only diff with default flags.
+    pub fn command_or_default(self) -> CiSubcommands {
+        self.command.unwrap_or(CiSubcommands::Diff { json: false })
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -261,7 +280,7 @@ pub fn execute_ci(args: CiArgs) -> Result<()> {
     let storage = StorageManager::open_read_only(&layout)?;
     let conn = storage.get_connection();
 
-    match args.command {
+    match args.command_or_default() {
         CiSubcommands::Diff { json } => {
             let mut stmt = conn
                 .prepare("SELECT platform, job_name, workflow_name, environment FROM ci_gates")

@@ -46,14 +46,16 @@ pub enum Commands {
     },
 
     /// Gate mode configuration
+    #[command(after_help = "Default when omitted: mode (show current; does not set).")]
     Gate {
         #[command(subcommand)]
-        command: GateCommands,
+        command: Option<GateCommands>,
     },
     /// Evaluate declared repository policy (CI merge gate)
+    #[command(after_help = "Default when omitted: check.")]
     Policy {
         #[command(subcommand)]
-        command: PolicyCommands,
+        command: Option<PolicyCommands>,
     },
     /// Guided onboarding wizard (welcome → init → doctor → first scan → success)
     Setup {
@@ -267,14 +269,18 @@ Class and Interface kinds are accepted but currently unpopulated by extractors (
     )]
     Symbols(crate::commands::symbols::SymbolsArgs),
     /// Manage cross-repo federation
+    #[command(
+        after_help = "Default when omitted: status (read-only; export/scan require explicit subcommand)."
+    )]
     Federate {
         #[command(subcommand)]
-        command: FederateCommands,
+        command: Option<FederateCommands>,
     },
     /// Service boundary and topology commands
+    #[command(after_help = "Default when omitted: diff.")]
     Services {
         #[command(subcommand)]
-        command: ServiceSubcommands,
+        command: Option<ServiceSubcommands>,
     },
     /// Manage data models and schema migrations
     #[command(name = "data-models")]
@@ -757,7 +763,9 @@ impl Commands {
             Commands::Gate { .. } => false,
             Commands::Policy { command } => match command {
                 // Policy uses `--format json` (not `--json`); treat as machine.
-                PolicyCommands::Check { format, .. } => format
+                // Bare parent defaults to check with format=None (text).
+                None => false,
+                Some(PolicyCommands::Check { format, .. }) => format
                     .as_deref()
                     .is_some_and(|f| f.eq_ignore_ascii_case("json")),
             },
@@ -788,21 +796,29 @@ impl Commands {
             Commands::Export { .. } => false,
             Commands::Federate { .. } => false,
             Commands::Services { command } => match command {
-                ServiceSubcommands::Diff(args) => args.json,
+                None => false,
+                Some(ServiceSubcommands::Diff(args)) => args.json,
             },
             Commands::DataModels(args) => match &args.command {
                 DataModelSubcommands::List { json, .. } => *json,
                 DataModelSubcommands::Impact { json, .. } => *json,
             },
             Commands::Ci(args) => match &args.command {
-                crate::commands::deploy::CiSubcommands::Diff { json } => *json,
+                None => false,
+                Some(crate::commands::deploy::CiSubcommands::Diff { json }) => *json,
             },
             Commands::Deploy(args) => match &args.command {
-                crate::commands::deploy::DeploySubcommands::Impact { json, .. } => *json,
+                None => false,
+                Some(crate::commands::deploy::DeploySubcommands::Impact { json, .. }) => *json,
             },
             Commands::Dependencies(args) => match &args.command {
-                crate::commands::dependencies::DependencySubcommands::List { json, .. } => *json,
-                crate::commands::dependencies::DependencySubcommands::Audit { json, .. } => *json,
+                None => false,
+                Some(crate::commands::dependencies::DependencySubcommands::List {
+                    json, ..
+                }) => *json,
+                Some(crate::commands::dependencies::DependencySubcommands::Audit {
+                    json, ..
+                }) => *json,
             },
             Commands::Observability(args) => match &args.command {
                 ObservabilitySubcommands::Coverage { json } => *json,
@@ -901,17 +917,13 @@ impl Commands {
     pub fn command_name(&self) -> &'static str {
         match self {
             Commands::Init { .. } => "init",
+            // Bare gate → show only (Mode { mode: None }); never invent a set path.
             Commands::Gate { command } => match command {
-                GateCommands::Mode { mode } => {
-                    if mode.is_some() {
-                        "gate_mode_set"
-                    } else {
-                        "gate_mode_show"
-                    }
-                }
+                None | Some(GateCommands::Mode { mode: None }) => "gate_mode_show",
+                Some(GateCommands::Mode { mode: Some(_) }) => "gate_mode_set",
             },
             Commands::Policy { command } => match command {
-                PolicyCommands::Check { .. } => "policy_check",
+                None | Some(PolicyCommands::Check { .. }) => "policy_check",
             },
 
             Commands::Setup { .. } => "setup",
@@ -933,12 +945,13 @@ impl Commands {
                 ExportCommands::Head { .. } => "export_head",
             },
             Commands::Federate { command } => match command {
-                FederateCommands::Export { .. } => "federate_export",
-                FederateCommands::Scan => "federate_scan",
-                FederateCommands::Status => "federate_status",
+                // Bare federate → status (read-only); never default to export (writes).
+                None | Some(FederateCommands::Status) => "federate_status",
+                Some(FederateCommands::Export { .. }) => "federate_export",
+                Some(FederateCommands::Scan) => "federate_scan",
             },
             Commands::Services { command } => match command {
-                ServiceSubcommands::Diff(_) => "services_diff",
+                None | Some(ServiceSubcommands::Diff(_)) => "services_diff",
             },
             Commands::DataModels(args) => match &args.command {
                 DataModelSubcommands::List { .. } => "data_models_list",
@@ -2277,12 +2290,13 @@ impl Commands {
                 }
             }
             Commands::Policy { command } => match command {
-                PolicyCommands::Check {
+                None => {}
+                Some(PolicyCommands::Check {
                     pr,
                     fail_on,
                     policy,
                     format,
-                } => {
+                }) => {
                     if pr.is_some() {
                         f.push("pr");
                     }
@@ -2347,7 +2361,7 @@ impl Commands {
             }
             Commands::Gate { command } => match command {
                 // `mode` is a positional optional value, not a long flag.
-                GateCommands::Mode { .. } => {}
+                None | Some(GateCommands::Mode { .. }) => {}
             },
             Commands::Viz {
                 output,
@@ -2474,7 +2488,8 @@ impl Commands {
                 }
             },
             Commands::Federate { command } => match command {
-                FederateCommands::Export { dry_run, out } => {
+                None | Some(FederateCommands::Scan) | Some(FederateCommands::Status) => {}
+                Some(FederateCommands::Export { dry_run, out }) => {
                     if *dry_run {
                         f.push("dry_run");
                     }
@@ -2482,10 +2497,10 @@ impl Commands {
                         f.push("out");
                     }
                 }
-                FederateCommands::Scan | FederateCommands::Status => {}
             },
             Commands::Services { command } => match command {
-                ServiceSubcommands::Diff(args) => {
+                None => {}
+                Some(ServiceSubcommands::Diff(args)) => {
                     if args.full {
                         f.push("full");
                     }
@@ -2520,14 +2535,15 @@ impl Commands {
                 }
             },
             Commands::Ci(args) => match &args.command {
-                crate::commands::deploy::CiSubcommands::Diff { json } => {
-                    if *json {
-                        f.push("json");
-                    }
+                None => {}
+                Some(crate::commands::deploy::CiSubcommands::Diff { json: true }) => {
+                    f.push("json");
                 }
+                Some(crate::commands::deploy::CiSubcommands::Diff { json: false }) => {}
             },
             Commands::Deploy(args) => match &args.command {
-                crate::commands::deploy::DeploySubcommands::Impact { changed, json } => {
+                None => {}
+                Some(crate::commands::deploy::DeploySubcommands::Impact { changed, json }) => {
                     if *changed {
                         f.push("changed");
                     }
@@ -2537,11 +2553,12 @@ impl Commands {
                 }
             },
             Commands::Dependencies(args) => match &args.command {
-                crate::commands::dependencies::DependencySubcommands::List {
+                None => {}
+                Some(crate::commands::dependencies::DependencySubcommands::List {
                     json,
                     verbose,
                     all,
-                } => {
+                }) => {
                     if *json {
                         f.push("json");
                     }
@@ -2552,7 +2569,9 @@ impl Commands {
                         f.push("all");
                     }
                 }
-                crate::commands::dependencies::DependencySubcommands::Audit { json, .. } => {
+                Some(crate::commands::dependencies::DependencySubcommands::Audit {
+                    json, ..
+                }) => {
                     // input path is a value — never hashed; only flag name.
                     f.push("input");
                     if *json {

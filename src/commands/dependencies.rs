@@ -18,9 +18,23 @@ use std::path::Path;
 const ECOSYSTEM: &str = "rust/cargo";
 
 #[derive(Args, Debug)]
+#[command(
+    after_help = "Default when omitted: list.\nFlags such as --json require an explicit subcommand (e.g. `dependencies list --json`)."
+)]
 pub struct DependenciesArgs {
     #[command(subcommand)]
-    pub command: DependencySubcommands,
+    pub command: Option<DependencySubcommands>,
+}
+
+impl DependenciesArgs {
+    /// Resolve bare `dependencies` to read-only list with default flags.
+    pub fn command_or_default(self) -> DependencySubcommands {
+        self.command.unwrap_or(DependencySubcommands::List {
+            json: false,
+            verbose: false,
+            all: false,
+        })
+    }
 }
 
 #[derive(Subcommand, Debug)]
@@ -472,7 +486,7 @@ fn source_display(s: &Option<String>) -> &str {
 // ---------------------------------------------------------------------------
 
 pub fn execute_dependencies(args: DependenciesArgs) -> Result<()> {
-    match args.command {
+    match args.command_or_default() {
         DependencySubcommands::List { json, verbose, all } => execute_list(json, verbose, all),
         DependencySubcommands::Audit { input, json } => execute_audit(input, json),
     }
