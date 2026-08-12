@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-08-12
+
 ### Added
 
 - **`scan --json` / `scan --out` gitScan envelope (0180):** Bare machine flags
