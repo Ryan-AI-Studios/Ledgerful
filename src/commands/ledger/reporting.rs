@@ -497,10 +497,7 @@ pub fn execute_ledger_status(
                     .num_hours()
                     >= stale_threshold;
                 let stale_indicator = if is_stale {
-                    format!(
-                        "{} STALE",
-                        "󰀦".if_supports_color(Stream::Stdout, |s| s.red())
-                    )
+                    format!("{} STALE", get_status_icon(LedgerStatus::Stale))
                 } else {
                     "".to_string()
                 };
@@ -509,7 +506,10 @@ pub fn execute_ledger_status(
                     tx.tx_id
                         .if_supports_color(Stream::Stdout, |s| s.yellow())
                         .to_string(),
-                    format!("{} {:?}", get_category_icon(&tx.category), tx.category),
+                    crate::ledger::ui::with_icon(
+                        &get_category_icon(&tx.category),
+                        format!("{:?}", tx.category),
+                    ),
                     tx.entity
                         .if_supports_color(Stream::Stdout, |s| s.cyan())
                         .to_string(),
@@ -525,7 +525,7 @@ pub fn execute_ledger_status(
 
         println!(
             "\n{} {}",
-            "󰀦".if_supports_color(Stream::Stdout, |s| s.red()),
+            get_status_icon(LedgerStatus::Stale),
             "UNAUDITED DRIFT"
                 .if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold()))
         );

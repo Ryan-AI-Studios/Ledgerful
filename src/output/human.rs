@@ -3,10 +3,9 @@ use crate::impact::packet::{
     BlastRadius, DeadCodeFinding, Hotspot, ImpactPacket, RiskLevel, TemporalCoupling,
 };
 use crate::observability::signal::{ObservabilitySignal, SignalSeverity};
+use crate::output::table::{apply_table_style, resolve_table_style};
 use crate::platform::env::ExecutableStatus;
 use crate::verify::plan::VerificationPlan;
-use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, Color, Table};
 use owo_colors::{OwoColorize, Stream, Style};
 
@@ -326,10 +325,8 @@ pub fn print_scan_summary(snapshot: &crate::git::RepoSnapshot) {
         };
 
         let mut table = Table::new();
-        table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec!["State", "Action", "File Path"]);
+        apply_table_style(&mut table, resolve_table_style());
+        table.set_header(vec!["State", "Action", "File Path"]);
 
         for change in &snapshot.changes {
             let state = if change.is_staged {
@@ -397,13 +394,11 @@ pub fn print_impact_summary(packet: &ImpactPacket) {
     };
 
     let mut risk_table = Table::new();
-    risk_table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .add_row(vec![
-            Cell::new("OVERALL RISK"),
-            Cell::new(format!("{:?}", packet.risk_level).to_uppercase()).fg(risk_color),
-        ]);
+    apply_table_style(&mut risk_table, resolve_table_style());
+    risk_table.add_row(vec![
+        Cell::new("OVERALL RISK"),
+        Cell::new(format!("{:?}", packet.risk_level).to_uppercase()).fg(risk_color),
+    ]);
     println!("{risk_table}");
 
     // 0173 honesty: demoted count + modes before deep temporal table.
@@ -635,10 +630,8 @@ pub fn print_hotspots(hotspots: &[Hotspot]) {
         "Codebase Hotspots (Risk Density)".if_supports_color(Stream::Stdout, |s| s.bold())
     );
     let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec!["Rank", "Score", "Freq", "Comp", "File Path"]);
+    apply_table_style(&mut table, resolve_table_style());
+    table.set_header(vec!["Rank", "Score", "Freq", "Comp", "File Path"]);
 
     for (i, h) in hotspots.iter().enumerate() {
         table.add_row(vec![
@@ -662,10 +655,8 @@ pub fn print_hotspots_table_with_centrality(hotspots: &[Hotspot]) {
         "Codebase Hotspots (with Centrality)".if_supports_color(Stream::Stdout, |s| s.bold())
     );
     let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec!["Rank", "Score", "Freq", "Comp", "Cent", "File Path"]);
+    apply_table_style(&mut table, resolve_table_style());
+    table.set_header(vec!["Rank", "Score", "Freq", "Comp", "Cent", "File Path"]);
 
     for (i, h) in hotspots.iter().enumerate() {
         let cent = h
@@ -690,10 +681,8 @@ pub fn print_semantic_hotspots(matches: &[crate::semantic::hotspots::SemanticMat
         "Semantic Hotspots (Duplicate Density)".if_supports_color(Stream::Stdout, |s| s.bold())
     );
     let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec!["Rank", "Similarity", "File 1", "File 2"]);
+    apply_table_style(&mut table, resolve_table_style());
+    table.set_header(vec!["Rank", "Similarity", "File 1", "File 2"]);
 
     for (i, m) in matches.iter().enumerate() {
         table.add_row(vec![
@@ -712,10 +701,8 @@ fn print_temporal_couplings(couplings: &[TemporalCoupling]) {
         "Temporal Couplings (>70% co-change)".if_supports_color(Stream::Stdout, |s| s.bold())
     );
     let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec!["Strength", "File A", "File B"]);
+    apply_table_style(&mut table, resolve_table_style());
+    table.set_header(vec!["Strength", "File A", "File B"]);
 
     for c in couplings {
         table.add_row(vec![
@@ -733,10 +720,8 @@ fn print_observability_signals(signals: &[ObservabilitySignal]) {
         "Observability Signals".if_supports_color(Stream::Stdout, |s| s.bold())
     );
     let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec!["Source", "Severity", "Signal"]);
+    apply_table_style(&mut table, resolve_table_style());
+    table.set_header(vec!["Source", "Severity", "Signal"]);
 
     for signal in signals {
         let sev = match signal.severity {
@@ -772,10 +757,8 @@ pub fn print_dead_code_summary(
         println!("  {DEAD_CODE_EMPTY_STATE}");
     } else {
         let mut table = Table::new();
-        table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec!["Symbol", "File", "Confidence", "Factors"]);
+        apply_table_style(&mut table, resolve_table_style());
+        table.set_header(vec!["Symbol", "File", "Confidence", "Factors"]);
 
         for f in findings {
             let factors_str = f
@@ -860,10 +843,8 @@ pub fn print_dead_code_grouped(findings: &[DeadCodeFinding]) {
     });
 
     let mut table = Table::new();
-    table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .set_header(vec!["File", "Symbols", "Avg Confidence", "Top Factor"]);
+    apply_table_style(&mut table, resolve_table_style());
+    table.set_header(vec!["File", "Symbols", "Avg Confidence", "Top Factor"]);
 
     for (file, count, avg, factor) in &rows {
         table.add_row(vec![

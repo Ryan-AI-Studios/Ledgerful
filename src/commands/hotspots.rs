@@ -1330,8 +1330,8 @@ mod tests {
         }];
         let rendered = render_hotspot_trend_table(&rows);
         assert!(
-            rendered.contains('╭'),
-            "expected rounded table border, got:\n{rendered}"
+            rendered.contains('╭') || rendered.contains('+'),
+            "expected premium table border (utf8 rounded or ascii +), got:\n{rendered}"
         );
         assert!(
             rendered.contains("Timestamp")

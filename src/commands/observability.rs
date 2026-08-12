@@ -380,8 +380,8 @@ mod tests {
         }
         let rendered = table.to_string();
         assert!(
-            rendered.contains('╭'),
-            "expected table border, got:\n{rendered}"
+            rendered.contains('╭') || rendered.contains('+'),
+            "expected premium table border (utf8 rounded or ascii +), got:\n{rendered}"
         );
         assert!(
             rendered.contains("Category") && rendered.contains("Label") && rendered.contains("ID"),

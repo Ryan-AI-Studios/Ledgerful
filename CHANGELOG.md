@@ -6,6 +6,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Windows-safe human tables (0181):** Auto-detect non-UTF-8 console output
+  code pages (e.g. CP437 under Windows Terminal) and render **ASCII** table
+  borders + non-PUA icons by default. UTF-8 capable consoles (OutputCP 65001)
+  and non-Windows keep premium rounded borders. Env overrides:
+  `LEDGERFUL_TABLE_STYLE=ascii|utf8|auto`, `LEDGERFUL_TABLE_ASCII=1`,
+  `LEDGERFUL_TABLE_UTF8=1` (ASCII wins if both simple flags set). `NO_COLOR`
+  remains color-only and does not force table ASCII. Ledger `search` human
+  output is width-aware (Dynamic arrangement, short committed timestamp,
+  column upper bounds, ASCII truncation `...`). JSON/machine paths unchanged.
+  Stays on comfy-table **7.x** (no 8.x migration).
+
 ### Added
 
 - **`scan --json` / `scan --out` gitScan envelope (0180):** Bare machine flags
