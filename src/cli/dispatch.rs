@@ -777,24 +777,42 @@ fn dispatch_export(command: ExportCommands) -> Result<()> {
             );
             Ok(())
         }
-        ExportCommands::Head { out, force } => {
-            use crate::export::head::{prepare_chain_head_export, serialize_chain_head};
+        ExportCommands::Head { out, force, stdout } => {
+            use crate::export::head::{
+                HeadExportDest, prepare_chain_head_export, resolve_head_export_dest,
+                serialize_chain_head,
+            };
+            use std::io::Write;
 
+            // Resolve before path validation: `-` is a legal file name but means stdout.
+            let dest = resolve_head_export_dest(out, stdout, force)?;
             let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git()?;
-            let path =
-                out.unwrap_or_else(|| std::path::PathBuf::from("./ledgerful-chain-head.json"));
-            let validated = validate_export_evidence_path(&path, force)?;
             let head = prepare_chain_head_export(&layout)?;
             let json = serialize_chain_head(&head)?;
-            std::fs::write(&validated, &json).into_diagnostic()?;
 
-            println!(
-                "{} Chain head exported to {}",
-                "SUCCESS:"
-                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold())),
-                validated.display()
-            );
-            Ok(())
+            match dest {
+                HeadExportDest::Stdout => {
+                    // Exact serialize_chain_head bytes — no SUCCESS, no extra trailing NL.
+                    std::io::stdout()
+                        .lock()
+                        .write_all(&json)
+                        .into_diagnostic()?;
+                    Ok(())
+                }
+                HeadExportDest::File { path, force } => {
+                    let validated = validate_export_evidence_path(&path, force)?;
+                    std::fs::write(&validated, &json).into_diagnostic()?;
+
+                    println!(
+                        "{} Chain head exported to {}",
+                        "SUCCESS:".if_supports_color(Stream::Stdout, |s| {
+                            s.style(Style::new().green().bold())
+                        }),
+                        validated.display()
+                    );
+                    Ok(())
+                }
+            }
         }
     }
 }

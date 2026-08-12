@@ -636,6 +636,7 @@ mod tests {
         let _: ExportCommands = ExportCommands::Head {
             out: None,
             force: false,
+            stdout: false,
         };
         let _: Commands = Commands::Demo {
             keep: false,

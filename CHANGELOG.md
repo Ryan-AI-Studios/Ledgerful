@@ -21,6 +21,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`export head --stdout` / `-o -` (0182):** Pure pretty `ChainHead` JSON on
+  stdout (same bytes as file path write; no SUCCESS banner; no file created).
+  Fixes the footgun where `-o -` wrote a file named `-`. Default file path and
+  `--force` unchanged. `--stdout` + non-dash `--out path` hard-errors
+  (stricter than bridge export). Machine mode on for stdout path. No product
+  version bump; chain/crypto shape unchanged.
+
 - **`scan --json` / `scan --out` gitScan envelope (0180):** Bare machine flags
   no longer require `--impact`. Emit a pure-stdout (or file-only for `--out`)
   summary with `schemaVersion: 1`, top-level `kind: "gitScan"`, and the same

@@ -18,6 +18,15 @@ This is **not** local immutability, Rekor/CT, or a public transparency log.
 
    (Or omit `--out` to write `./ledgerful-chain-head.json` in the current directory.)
 
+   For pure-stdout / pipe workflows (RO reviewers, shell redirect), use
+   `--stdout` or `-o -` — same pretty `ChainHead` JSON, no SUCCESS banner, no
+   file created. Still prefer a **file** retained off-machine for long-term
+   checkpoint hygiene:
+
+   ```powershell
+   ledgerful export head --stdout > .\checkpoints\head.json
+   ```
+
 2. **Copy the file off this machine** (USB, object store, another host, CI
    artifact). Do **not** keep the only copy under `.ledgerful/` on the same disk.
 
