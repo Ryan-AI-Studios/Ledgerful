@@ -567,7 +567,7 @@ pub fn execute_ledger_status(
         if all {
             println!(
                 "\n{} {}",
-                "󰋚".if_supports_color(Stream::Stdout, |s| s.blue()),
+                get_status_icon(LedgerStatus::Committed),
                 "RECENT HISTORY"
                     .if_supports_color(Stream::Stdout, |s| s.style(Style::new().blue().bold()))
             );

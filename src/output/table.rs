@@ -21,9 +21,9 @@ const UTF8_CONSOLE_CP: u32 = 65001;
 
 /// Pure style resolver for unit tests and production.
 ///
-/// Priority:
-/// 1. `force_ascii` wins over `force_utf8`
-/// 2. Explicit `LEDGERFUL_TABLE_STYLE` (`ascii` / `utf8` / `auto`)
+/// Priority (spec B1 first-match):
+/// 1. Explicit `LEDGERFUL_TABLE_STYLE` (`ascii` / `utf8`; `auto` falls through)
+/// 2. Simple flags: `LEDGERFUL_TABLE_ASCII` wins over `LEDGERFUL_TABLE_UTF8`
 /// 3. Auto: on Windows, non-TTY or OutputCP ≠ 65001 → Ascii; else Utf8
 ///
 /// `NO_COLOR` is intentionally ignored (color-only policy; 0181-D).
@@ -35,18 +35,18 @@ pub fn resolve_table_style_with(
     stdout_is_tty: bool,
     console_output_cp: Option<u32>,
 ) -> TableStyleKind {
+    match env_style.map(str::trim).map(|s| s.to_ascii_lowercase()) {
+        Some(ref s) if s == "ascii" => return TableStyleKind::Ascii,
+        Some(ref s) if s == "utf8" || s == "utf-8" => return TableStyleKind::Utf8,
+        // "auto" or unknown/missing → fall through to simple flags / auto
+        _ => {}
+    }
+
     if force_ascii {
         return TableStyleKind::Ascii;
     }
     if force_utf8 {
         return TableStyleKind::Utf8;
-    }
-
-    match env_style.map(str::trim).map(|s| s.to_ascii_lowercase()) {
-        Some(ref s) if s == "ascii" => return TableStyleKind::Ascii,
-        Some(ref s) if s == "utf8" || s == "utf-8" => return TableStyleKind::Utf8,
-        // "auto" or unknown/missing → fall through
-        _ => {}
     }
 
     if is_windows {
@@ -202,6 +202,23 @@ mod tests {
         assert_eq!(
             resolve_table_style_with(None, false, true, true, true, Some(437)),
             TableStyleKind::Utf8
+        );
+    }
+
+    #[test]
+    fn resolve__style_utf8__beats_force_ascii() {
+        // Spec B1: LEDGERFUL_TABLE_STYLE is first-match.
+        assert_eq!(
+            resolve_table_style_with(Some("utf8"), true, false, true, true, Some(437)),
+            TableStyleKind::Utf8
+        );
+    }
+
+    #[test]
+    fn resolve__style_ascii__beats_force_utf8() {
+        assert_eq!(
+            resolve_table_style_with(Some("ascii"), false, true, false, true, None),
+            TableStyleKind::Ascii
         );
     }
 
