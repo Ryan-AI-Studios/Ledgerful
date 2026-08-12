@@ -39,8 +39,8 @@ on stderr.
 | `symbols --json` | yes (0163) | yes | schemaVersion **1** inventory; path/changed/kind/pub filters; COUNT-backed `totalMatching`; optional `indexStatus`; see schema below |
 | `data-models list --json` | yes | yes | bare array; additive `file_path` (normalized `/`) per row (0155); one row per logical model identity |
 | `dependencies list --json` | yes (0153) | yes | schemaVersion **1** envelope; `mode`: `direct` (default) \| `all`; live Cargo.toml+lock — not Cozo; see schema below |
-| `scan --impact --json` | yes | yes | impact packet |
-| `scan --json` alone | incomplete | n/a | exit 1; requires `--impact` (or PR `--format json`) |
+| `scan --impact --json` | yes | yes | impact packet (`schemaVersion` string `"v1"`; no top-level `kind`) |
+| `scan --json` / `scan --out` (no `--impact`) | yes (0180) | yes | **gitScan** envelope: numeric `schemaVersion` **1** + top-level **`kind: "gitScan"`** + ScanReport fields; **not** auto-impact |
 | `scan --pr <range> --format json` | via `--format` | yes | PR-range machine output (not impact packet) |
 
 \* Non-essential progress INFO suppressed under machine mode; hard failures still
@@ -143,12 +143,44 @@ Apply is always a human path (rewrites `.git/hooks` under opt-in). Detect-only
 Interactive prune and human explain have no machine schema (explain types lack
 `Serialize`). Rejects run **before** storage/scan.
 
-### Incomplete flags (`scan`)
+### Scan machine flags (`scan`)
 
 | Combo | Behavior |
 |---|---|
-| `scan --json` / `--summary` / `--out` without `--impact` | exit **1**; message names `--impact (impact packet)` and tips `scan --pr <range> --format json` for PR-range machine output |
+| `scan --json` / `scan --out` without `--impact` | exit **0** (product OK): **gitScan** summary envelope (0180). Escalate with `scan --impact --json` for the full impact packet. |
+| `scan --summary` without `--impact` | exit **1**; `--summary requires --impact (impact brief summary)` — no PR `--format json` tip |
+| `scan --json` with `--pr` | exit **1**; use `--format json` with `--pr` |
+| `scan --json` with `--paths` | exit **1**; `--paths requires --impact` |
 | `scan --json` auto-implies `--impact` | **Not supported** — impact analysis is expensive; pass `--impact` explicitly |
+
+### `scan --json` gitScan schema (0180)
+
+Pure stdout (or file only when `--out` is set — no dual dump). **Does not**
+modify on-disk `latest-scan.json` schema (`ScanReport` remains without
+`schemaVersion`/`kind`). Top-level **`kind` is intentional and new** on this
+surface (other numeric-schema envelopes omit `kind`).
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "gitScan",
+  "headHash": "…",
+  "branchName": "main",
+  "isClean": true,
+  "changes": [],
+  "diffSummaries": []
+}
+```
+
+| Field | Rules |
+|---|---|
+| `schemaVersion` | number **1** (not the impact packet string `"v1"`) |
+| `kind` | always **`"gitScan"`** — primary discriminator vs impact / PR reports |
+| `headHash` / `branchName` / `isClean` / `changes` / `diffSummaries` | Same semantics as durable `ScanReport` (camelCase) |
+| `--base-ref` without impact | OK; `diffSummaries` often **`[]`** (working-tree diffs skipped) |
+
+**Escalate:** `scan --impact --json` → full impact packet (string
+`schemaVersion: "v1"`, risk/blast/agentSummary, …). Never emitted as gitScan-only.
 
 ---
 

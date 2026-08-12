@@ -341,8 +341,9 @@ pub(crate) fn parse_pr_range(range: &str) -> Result<(String, String, String)> {
 ///
 /// Enforces: `--pr` is mutually exclusive with `--impact` and `--base-ref`;
 /// `--format` requires `--pr`; `--summary`/`--json` are not valid with `--pr`;
-/// `--out` with `--pr` requires `--format json`; the legacy `--summary`/`--json`/
-/// `--out` flags require `--impact` when `--pr` is absent.
+/// `--out` with `--pr` requires `--format json`; `--summary` alone still requires
+/// `--impact` (impact brief). Bare `--json`/`--out` without `--impact` are allowed
+/// (0180 gitScan envelope) — they do **not** auto-run impact.
 fn validate_scan_args(
     pr: &Option<String>,
     base_ref: &Option<String>,
@@ -391,12 +392,26 @@ fn validate_scan_args(
         return Err(miette::miette!("--out with --pr requires --format json"));
     }
 
-    if pr.is_none() && !impact && (summary || json || out.is_some()) {
+    // 0180-E: --summary still means impact brief — no PR --format tip here.
+    if pr.is_none() && !impact && summary {
         return Err(miette::miette!(
-            "--summary, --json and --out require --impact (impact packet). For PR-range machine output: scan --pr <range> --format json"
+            "--summary requires --impact (impact brief summary)"
         ));
     }
 
+    Ok(())
+}
+
+/// Emit gitScan envelope (0180-D): `--out` → file only (no stdout); else pretty stdout.
+fn emit_git_scan_json(report: &ScanReport, out: Option<&PathBuf>) -> Result<()> {
+    use crate::state::reports::ScanGitJson;
+    let envelope = ScanGitJson::from_report(report);
+    let json_output = serde_json::to_string_pretty(&envelope).into_diagnostic()?;
+    if let Some(path) = out {
+        std::fs::write(path, json_output).into_diagnostic()?;
+    } else {
+        println!("{json_output}");
+    }
     Ok(())
 }
 
@@ -569,6 +584,7 @@ pub fn execute_scan_with_opts(
     // via write_scan_report / tombstone. Soft-open for testGaps is existence-check only.
     // Prospective (--paths): also skip durable scan report write (0173-G — no
     // hypothetical clobber of latest-scan.json).
+    let mut durable_scan_report: Option<ScanReport> = None;
     if pr.is_none() && !prospective {
         // Working-tree diffs are empty when --base-ref is used; skip get_diff_summary.
         let mut diff_summaries = if base_ref.is_some() {
@@ -607,8 +623,20 @@ pub fn execute_scan_with_opts(
                 emit_scan_report_ro_honesty(json, out.is_some());
             }
         }
+        durable_scan_report = Some(scan_report);
     }
 
+    // 0180: bare scan --json / --out → gitScan envelope (not auto-impact). Early
+    // return avoids human summary and all impact/storage work (AI1 P2-3).
+    if !run_impact && pr.is_none() && (json || out.is_some()) {
+        let report =
+            durable_scan_report.unwrap_or_else(|| ScanReport::from_snapshot(&snapshot, vec![]));
+        emit_git_scan_json(&report, out.as_ref())?;
+        return Ok(());
+    }
+
+    // write_impact_json is only impact/PR-reachable after the non-impact machine
+    // early return above (0180-C).
     let write_impact_json = json || out.is_some();
 
     // PR-mode output: either JSON report or human summary.
@@ -1229,20 +1257,59 @@ mod tests {
     }
 
     #[test]
-    fn incomplete_json_flags_name_impact_and_pr_format_tip() {
-        // 0149: scan --json without --impact should tip impact packet + PR format.
-        let err = validate_scan_args(&None, &None, &None, false, false, true, &None)
+    fn json_out_ok_without_impact_summary_still_requires_impact() {
+        // 0180: bare --json / --out allowed (gitScan); --summary still requires --impact.
+        assert!(
+            validate_scan_args(&None, &None, &None, false, false, true, &None).is_ok(),
+            "json without impact must be allowed (gitScan)"
+        );
+        assert!(
+            validate_scan_args(
+                &None,
+                &None,
+                &None,
+                false,
+                false,
+                false,
+                &Some(std::path::PathBuf::from("out.json"))
+            )
+            .is_ok(),
+            "out without impact must be allowed (gitScan file)"
+        );
+        let summary_err = validate_scan_args(&None, &None, &None, false, true, false, &None)
             .unwrap_err()
             .to_string();
-        assert!(err.contains("--impact"), "expected --impact tip, got {err}");
         assert!(
-            err.contains("--format json") || err.contains("scan --pr"),
-            "expected PR-range format tip, got {err}"
+            summary_err.contains("--summary") && summary_err.contains("--impact"),
+            "expected summary requires impact, got {summary_err}"
+        );
+        assert!(
+            !summary_err.contains("--format json") && !summary_err.contains("scan --pr"),
+            "summary reject must not tip PR format, got {summary_err}"
         );
         assert!(
             validate_scan_args(&None, &None, &None, true, false, true, &None).is_ok(),
             "json with impact must be allowed"
         );
+    }
+
+    #[test]
+    fn scan_git_json_envelope_keys() {
+        use crate::state::reports::{ScanGitJson, ScanReport};
+        let report = ScanReport {
+            head_hash: Some("abc".into()),
+            branch_name: Some("main".into()),
+            is_clean: true,
+            changes: vec![],
+            diff_summaries: vec![],
+        };
+        let env = ScanGitJson::from_report(&report);
+        let v = serde_json::to_value(&env).unwrap();
+        assert_eq!(v["schemaVersion"], 1);
+        assert_eq!(v["kind"], "gitScan");
+        assert_eq!(v["isClean"], true);
+        assert!(v["changes"].as_array().unwrap().is_empty());
+        assert!(v["diffSummaries"].as_array().unwrap().is_empty());
     }
 
     /// Mirrors scan --impact --paths prospective branch: in-memory only, no
