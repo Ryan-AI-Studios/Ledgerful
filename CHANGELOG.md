@@ -8,6 +8,19 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Federate status hygiene (0184):** Path is peer identity; display/store
+  name is the on-disk directory basename (not stale `schema.repo_name` or
+  case-variant leftovers). `federate status` is read-only: shows collapsed
+  **Live** peers only, omits self/husk/duplicate rows, and prints one honesty
+  line suggesting `federate scan` to prune. Scan/refresh upsert by path +
+  basename, prune Dead/Self only (not “absent from this scan”), clear deps
+  before link delete, and migrate SIBLING `ledger_entries.trace_id` on rename
+  (dedupe when the new name already has the `tx_id`). Impact walks the same
+  Live set using `layout.root` for self-class (not CWD). Web sibling
+  `ProjectResponse.name` uses basename; `id` stays `schema.repo_name`. No
+  schema migration, no forced dep bumps, no product version cut. Bare
+  `federate` → status (0179) unchanged.
+
 - **Entity path identity residual (0183):** Shared unique-only file resolve
   (`exact` → Rust `X.rs`↔`X/mod.rs` / extensionless alias → unique suffix) in
   `util::path_entity`. **`symbols --path`** applies it as a **zero-match

@@ -517,10 +517,10 @@ fn extract_ts_modifiers(node: Node<'_>, content: &str) -> Vec<String> {
                     && let Some(t) = node_text_owned(child, content)
                 {
                     match t.as_str() {
-                        "static" | "readonly" | "async" | "get" | "set" | "abstract" | "*" => {
-                            if !mods.iter().any(|m| m == &t) {
-                                mods.push(t);
-                            }
+                        "static" | "readonly" | "async" | "get" | "set" | "abstract" | "*"
+                            if !mods.iter().any(|m| m == &t) =>
+                        {
+                            mods.push(t);
                         }
                         "?" if !mods.iter().any(|m| m == "optional") => {
                             mods.push("optional".to_string());

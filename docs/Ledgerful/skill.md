@@ -465,7 +465,8 @@ ledgerful hotspots trend --all           # full timestamp×file matrix
 ledgerful hotspots trend --entity PATH
 ledgerful hotspots explain
 ledgerful federate export
-ledgerful federate scan
+ledgerful federate scan   # path+basename upsert; prunes Dead/Self cache
+# federate status = live peers only (path identity; name=folder basename)
 ledgerful endpoints --changed --json
 ledgerful services diff
 ledgerful data-models impact --changed

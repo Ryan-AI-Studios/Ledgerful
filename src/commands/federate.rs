@@ -1,8 +1,9 @@
+use crate::federated::links::{omitted_honesty_message, path_basename, present_federated_links};
 use crate::federated::scanner::FederatedScanner;
 use crate::federated::schema::{FederatedSchema, PublicInterface};
 use crate::federated::storage::{
-    clear_federated_dependencies, get_federated_links, save_federated_dependencies,
-    update_federated_link,
+    clear_federated_dependencies, get_federated_links, prune_dead_and_self_links,
+    save_federated_dependencies, upsert_federated_link_by_path,
 };
 use crate::git::repo::open_repo;
 use crate::index::storage::get_public_symbols;
@@ -170,7 +171,6 @@ pub fn execute_federate_scan() -> Result<()> {
 
     if siblings.is_empty() {
         println!("No siblings with Ledgerful schemas found.");
-        return Ok(());
     }
 
     let timestamp = Utc::now().to_rfc3339();
@@ -181,11 +181,11 @@ pub fn execute_federate_scan() -> Result<()> {
     // same WARN line 8 times.
     let mut cross_sibling_warnings: Vec<String> = Vec::new();
     for (path, schema, sibling_warnings) in &siblings {
+        // 0184: store name = folder basename (path identity), not schema.repo_name.
+        let store_name = path_basename(path.as_str());
         println!(
             "  Processing {}: {}",
-            schema
-                .repo_name
-                .if_supports_color(Stream::Stdout, |s| s.cyan()),
+            store_name.if_supports_color(Stream::Stdout, |s| s.cyan()),
             path.if_supports_color(Stream::Stdout, |s| s.dimmed())
         );
         // TA31 R1: a sibling can now be discovered with data-quality
@@ -197,26 +197,22 @@ pub fn execute_federate_scan() -> Result<()> {
             println!(
                 "{} {}: {}",
                 "WARN".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
-                schema.repo_name,
+                store_name,
                 warning
             );
         }
-        update_federated_link(
-            storage.get_connection(),
-            &schema.repo_name,
-            path.as_str(),
-            &timestamp,
-        )?;
+        let store_name =
+            upsert_federated_link_by_path(storage.get_connection(), path.as_str(), &timestamp)?;
 
-        // Task 2.2: Discover and save dependencies
-        clear_federated_dependencies(storage.get_connection(), &schema.repo_name)?;
+        // Task 2.2: Discover and save dependencies under the basename key
+        clear_federated_dependencies(storage.get_connection(), &store_name)?;
         let (dependencies, scan_warnings) =
-            scanner.discover_dependencies(&local_packet, &schema.repo_name, schema)?;
+            scanner.discover_dependencies(&local_packet, &store_name, schema)?;
 
         for (local_symbol, sibling_symbol) in dependencies {
             save_federated_dependencies(
                 storage.get_connection(),
-                &schema.repo_name,
+                &store_name,
                 &local_symbol,
                 &sibling_symbol,
             )?;
@@ -224,16 +220,28 @@ pub fn execute_federate_scan() -> Result<()> {
         // 0034: collect scan degradation warnings for cross-sibling dedup.
         cross_sibling_warnings.extend(scan_warnings);
 
-        // Import federated ledger entries if present
+        // Import federated ledger entries if present (trace_id = basename)
         if let Some(entries) = &schema.ledger {
             crate::ledger::federation::import_federated_entries(
                 storage.get_connection_mut(),
                 &repo_root,
-                &schema.repo_name,
+                &store_name,
                 entries,
             )
             .into_diagnostic()?;
         }
+    }
+
+    // 0184: prune Dead/Self only (not "absent from this scan").
+    // Always run — including when discovery found zero siblings — so a
+    // husk/self-only cache is cleaned when status honesty points here.
+    let pruned = prune_dead_and_self_links(storage.get_connection(), layout.root.as_str())?;
+    if pruned > 0 {
+        println!(
+            "{} Pruned {} dead or self-referential federated link(s).",
+            "INFO".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
+            pruned
+        );
     }
 
     // 0034: dedup cross-sibling degradation warnings (the walk re-runs per
@@ -248,11 +256,13 @@ pub fn execute_federate_scan() -> Result<()> {
         );
     }
 
-    println!(
-        "{} Processed {} sibling(s).",
-        "SUCCESS".if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold())),
-        siblings.len()
-    );
+    if !siblings.is_empty() {
+        println!(
+            "{} Processed {} sibling(s).",
+            "SUCCESS".if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold())),
+            siblings.len()
+        );
+    }
     Ok(())
 }
 
@@ -263,26 +273,47 @@ pub fn execute_federate_status() -> Result<()> {
     let layout = crate::commands::helpers::get_layout()?;
     let storage = StorageManager::init_with_layout(&layout)?;
 
-    let links = get_federated_links(storage.get_connection())?;
+    let raw = get_federated_links(storage.get_connection())?;
+    // 0184: path identity — present Live peers only (RO; no DELETE).
+    let presented = present_federated_links(&raw, layout.root.as_str());
 
-    if links.is_empty() {
+    if raw.is_empty() {
         println!("No federated links found. Run 'ledgerful federate scan' to discover siblings.");
+        return Ok(());
+    }
+
+    if presented.omitted_total() > 0 {
+        println!(
+            "{} {}",
+            "WARN".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
+            omitted_honesty_message(presented.omitted_total())
+        );
+    }
+
+    if presented.live.is_empty() {
+        println!(
+            "No live federated peers. Run 'ledgerful federate scan' to discover siblings and prune the cache."
+        );
         return Ok(());
     }
 
     println!(
         "{} known federated repositories:",
-        links.len().if_supports_color(Stream::Stdout, |s| s.bold())
+        presented
+            .live
+            .len()
+            .if_supports_color(Stream::Stdout, |s| s.bold())
     );
-    for (name, path, last_scan) in links {
+    for link in presented.live {
         println!(
             "- {} (at {})",
-            name.if_supports_color(Stream::Stdout, |s| s.cyan()),
-            path.if_supports_color(Stream::Stdout, |s| s.dimmed())
+            link.name.if_supports_color(Stream::Stdout, |s| s.cyan()),
+            link.path.if_supports_color(Stream::Stdout, |s| s.dimmed())
         );
         println!(
             "  Last scanned: {}",
-            last_scan.if_supports_color(Stream::Stdout, |s| s.dimmed())
+            link.last_scanned
+                .if_supports_color(Stream::Stdout, |s| s.dimmed())
         );
     }
 

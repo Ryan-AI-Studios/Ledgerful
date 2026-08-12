@@ -1,3 +1,4 @@
+use crate::federated::links::{present_federated_links, resolve_sibling_schema};
 use crate::federated::schema::FederatedSchema;
 use crate::federated::storage::{get_dependencies_for_sibling, get_federated_links};
 use crate::impact::packet::ImpactPacket;
@@ -6,21 +7,6 @@ use crate::state::storage::StorageManager;
 use miette::Result;
 use std::fs;
 use std::panic;
-
-fn resolve_sibling_schema(path: &str) -> Option<std::path::PathBuf> {
-    let base = std::path::Path::new(path);
-    // Try current path first
-    let current = base.join(".ledgerful").join("state").join("schema.json");
-    if current.exists() {
-        return Some(current);
-    }
-    // Fall back to legacy path
-    let legacy = base.join(".ledgerful").join("schema.json");
-    if legacy.exists() {
-        return Some(legacy);
-    }
-    None
-}
 
 /// Where a federation signal should land on the impact packet (0129).
 ///
@@ -68,8 +54,17 @@ fn push_federation_signal(
 }
 
 pub fn check_cross_repo_impact(packet: &mut ImpactPacket, storage: &StorageManager) -> Result<()> {
-    let links = get_federated_links(storage.get_connection())?;
-    if links.is_empty() {
+    let raw = get_federated_links(storage.get_connection())?;
+    if raw.is_empty() {
+        return Ok(());
+    }
+
+    // 0184: Live collapsed set only (path identity). Self/Dead omitted —
+    // husks must not emit 0129 schema-unavailable noise. Repo root is
+    // storage analysis root (layout.root), not process CWD.
+    let repo_root = storage.root().as_str();
+    let presented = present_federated_links(&raw, repo_root);
+    if presented.live.is_empty() {
         return Ok(());
     }
 
@@ -77,23 +72,15 @@ pub fn check_cross_repo_impact(packet: &mut ImpactPacket, storage: &StorageManag
     let mut analysis_warnings = Vec::new();
     let db = LedgerDb::new(storage.get_connection());
 
-    for (name, path, _) in links {
-        // Skip self: if the sibling path resolves to our own repo, skip it.
-        let self_path = std::env::current_dir().unwrap_or_default();
-        let sibling_canonical = std::path::Path::new(&path)
-            .canonicalize()
-            .unwrap_or_else(|_| std::path::Path::new(&path).to_path_buf());
-        let self_canonical = self_path
-            .canonicalize()
-            .unwrap_or_else(|_| self_path.clone());
-        if sibling_canonical == self_canonical {
-            continue;
-        }
+    for link in &presented.live {
+        let name = &link.name;
+        let path = &link.path;
 
-        let Some(schema_path) = resolve_sibling_schema(&path) else {
+        let Some(schema_path) = resolve_sibling_schema(path) else {
+            // Live classify requires schema on disk; race / unreadable → 0129.
             push_federation_signal(
                 FederationSignalKind::SchemaUnavailable,
-                schema_unavailable_message(&name),
+                schema_unavailable_message(name),
                 &mut impact_reasons,
                 &mut analysis_warnings,
             );
@@ -105,7 +92,7 @@ pub fn check_cross_repo_impact(packet: &mut ImpactPacket, storage: &StorageManag
             Err(_) => {
                 push_federation_signal(
                     FederationSignalKind::SchemaUnavailable,
-                    schema_unavailable_message(&name),
+                    schema_unavailable_message(name),
                     &mut impact_reasons,
                     &mut analysis_warnings,
                 );
@@ -122,7 +109,7 @@ pub fn check_cross_repo_impact(packet: &mut ImpactPacket, storage: &StorageManag
             _ => {
                 push_federation_signal(
                     FederationSignalKind::SchemaUnavailable,
-                    schema_unavailable_message(&name),
+                    schema_unavailable_message(name),
                     &mut impact_reasons,
                     &mut analysis_warnings,
                 );
@@ -133,14 +120,16 @@ pub fn check_cross_repo_impact(packet: &mut ImpactPacket, storage: &StorageManag
         if schema.validate().is_err() {
             push_federation_signal(
                 FederationSignalKind::SchemaUnavailable,
-                schema_unavailable_message(&name),
+                schema_unavailable_message(name),
                 &mut impact_reasons,
                 &mut analysis_warnings,
             );
             continue;
         }
 
-        let dependencies = get_dependencies_for_sibling(storage.get_connection(), &name)?;
+        // Deps may still be keyed under an older cached name until scan
+        // re-persists; look up by presented basename (post-migrate).
+        let dependencies = get_dependencies_for_sibling(storage.get_connection(), name)?;
 
         for (local_symbol, sibling_symbol) in dependencies {
             // Check for removal
@@ -152,7 +141,7 @@ pub fn check_cross_repo_impact(packet: &mut ImpactPacket, storage: &StorageManag
             if let Some(iface) = interface {
                 // If exists, check for recent imported ledger entries for this entity from this sibling
                 let federated_entries = db
-                    .get_federated_entries_by_entity(&iface.file, &name, 30)
+                    .get_federated_entries_by_entity(&iface.file, name, 30)
                     .map_err(|e| miette::miette!("{}", e))?;
 
                 for entry in federated_entries {
@@ -232,6 +221,111 @@ mod tests {
         // No .ledgerful directory at all
         let result = resolve_sibling_schema(dir.path().to_str().unwrap());
         assert!(result.is_none());
+    }
+
+    #[test]
+    fn husk_link_does_not_emit_schema_unavailable() {
+        use crate::federated::storage::update_federated_link;
+        use crate::state::migrations::get_migrations;
+        use rusqlite::Connection;
+
+        let root = tempdir().unwrap();
+        let husk = tempdir().unwrap();
+        std::fs::write(husk.path().join("only.md"), "x").unwrap();
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        update_federated_link(
+            &conn,
+            "husk",
+            husk.path().to_str().unwrap(),
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+
+        // Storage root = analysis repo root (layout.root), not CWD.
+        let db_path = root
+            .path()
+            .join(".ledgerful")
+            .join("state")
+            .join("ledger.db");
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        // Use in-memory storage with explicit root via init_from_conn shape:
+        // open real db under root so root() derives correctly.
+        drop(conn);
+        let storage = crate::state::storage::StorageManager::init(&db_path).unwrap();
+        // Re-seed husk into the on-disk db
+        update_federated_link(
+            storage.get_connection(),
+            "husk",
+            husk.path().to_str().unwrap(),
+            "2026-01-01T00:00:00Z",
+        )
+        .unwrap();
+
+        let mut packet = ImpactPacket::default();
+        check_cross_repo_impact(&mut packet, &storage).unwrap();
+        assert!(
+            !packet
+                .analysis_warnings
+                .iter()
+                .any(|w| w.contains("schema is unavailable")),
+            "husk must not emit schema-unavailable: {:?}",
+            packet.analysis_warnings
+        );
+        assert!(packet.risk_reasons.is_empty());
+        storage.shutdown().unwrap();
+    }
+
+    #[test]
+    fn same_path_dup_names_processed_once() {
+        use crate::federated::schema::{FederatedSchema, PublicInterface};
+        use crate::federated::storage::update_federated_link;
+        use crate::index::symbols::SymbolKind;
+
+        let root = tempdir().unwrap();
+        let peer = tempdir().unwrap();
+        let state = peer.path().join(".ledgerful").join("state");
+        std::fs::create_dir_all(&state).unwrap();
+        let schema = FederatedSchema::new(
+            "stale-export-name".into(),
+            vec![PublicInterface {
+                symbol: "iface".into(),
+                file: "src/lib.rs".into(),
+                kind: SymbolKind::Function,
+            }],
+        );
+        std::fs::write(
+            state.join("schema.json"),
+            serde_json::to_string_pretty(&schema).unwrap(),
+        )
+        .unwrap();
+
+        let db_path = root
+            .path()
+            .join(".ledgerful")
+            .join("state")
+            .join("ledger.db");
+        std::fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+        let storage = crate::state::storage::StorageManager::init(&db_path).unwrap();
+        let peer_s = peer.path().to_str().unwrap();
+        update_federated_link(storage.get_connection(), "AI-Brains", peer_s, "t1").unwrap();
+        update_federated_link(storage.get_connection(), "ai-brains", peer_s, "t2").unwrap();
+
+        let mut packet = ImpactPacket::default();
+        check_cross_repo_impact(&mut packet, &storage).unwrap();
+        // No deps → no signals; success means collapse did not double-error.
+        let unavailable: Vec<_> = packet
+            .analysis_warnings
+            .iter()
+            .filter(|w| w.contains("schema is unavailable"))
+            .collect();
+        assert!(
+            unavailable.is_empty(),
+            "live peer should parse once, not warn: {:?}",
+            unavailable
+        );
+        storage.shutdown().unwrap();
     }
 
     #[test]
