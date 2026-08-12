@@ -7,12 +7,11 @@ use crate::git::repo::{get_head_info, open_repo};
 use crate::git::status::get_repo_status;
 use crate::git::{ChangeType, FileChange};
 use crate::output::human::print_scan_summary;
+use crate::output::table::{apply_table_style, resolve_table_style};
 use crate::state::layout::Layout;
 use crate::state::reports::{ScanDiffSummary, ScanReport};
 use crate::state::storage::StorageManager;
 use camino::Utf8Path;
-use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, Color, Table};
 use globset::{Glob, GlobSetBuilder};
 use miette::{IntoDiagnostic, Result};
@@ -966,13 +965,11 @@ fn print_pr_scan_summary(report: &PrScanReport) {
         crate::commands::scan_pr::PrRiskLevel::High => Color::Red,
     };
     let mut risk_table = Table::new();
-    risk_table
-        .load_preset(UTF8_FULL)
-        .apply_modifier(UTF8_ROUND_CORNERS)
-        .add_row(vec![
-            Cell::new("PR RISK"),
-            Cell::new(format!("{:?}", report.risk_level).to_uppercase()).fg(risk_color),
-        ]);
+    apply_table_style(&mut risk_table, resolve_table_style());
+    risk_table.add_row(vec![
+        Cell::new("PR RISK"),
+        Cell::new(format!("{:?}", report.risk_level).to_uppercase()).fg(risk_color),
+    ]);
     println!("{risk_table}");
 
     if !report.risk_reasons.is_empty() {
@@ -1010,10 +1007,8 @@ fn print_pr_scan_summary(report: &PrScanReport) {
 
     if !report.changes.is_empty() {
         let mut table = Table::new();
-        table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec!["Action", "File Path"]);
+        apply_table_style(&mut table, resolve_table_style());
+        table.set_header(vec!["Action", "File Path"]);
         for change in &report.changes {
             let action = match change.change_type.as_str() {
                 "added" => "Added"

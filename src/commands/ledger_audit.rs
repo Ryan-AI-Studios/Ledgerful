@@ -1,5 +1,3 @@
-use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-use comfy_table::presets::UTF8_FULL;
 use comfy_table::{Cell, Color, Table};
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
@@ -12,7 +10,8 @@ use crate::impact::temporal::GixHistoryProvider;
 use crate::ledger::db::LedgerDb;
 use crate::ledger::transaction::TransactionManager;
 use crate::ledger::types::LedgerEntry;
-use crate::ledger::ui::{LedgerStatus, get_change_type_icon, get_status_icon};
+use crate::ledger::ui::{LedgerStatus, get_change_type_icon, get_status_icon, with_icon};
+use crate::output::table::{apply_table_style, resolve_table_style};
 use crate::state::storage::StorageManager;
 use crate::verify::results::VERIFY_HISTORY;
 
@@ -464,17 +463,15 @@ fn render_project_audit_human(
         println!("  None.");
     } else {
         let mut table = Table::new();
-        table
-            .load_preset(UTF8_FULL)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_header(vec![
-                Cell::new("ID").fg(Color::Cyan),
-                Cell::new("TX ID").fg(Color::Cyan),
-                Cell::new("Entity").fg(Color::Cyan),
-                Cell::new("Change").fg(Color::Cyan),
-                Cell::new("Summary").fg(Color::Cyan),
-                Cell::new("Committed").fg(Color::Cyan),
-            ]);
+        apply_table_style(&mut table, resolve_table_style());
+        table.set_header(vec![
+            Cell::new("ID").fg(Color::Cyan),
+            Cell::new("TX ID").fg(Color::Cyan),
+            Cell::new("Entity").fg(Color::Cyan),
+            Cell::new("Change").fg(Color::Cyan),
+            Cell::new("Summary").fg(Color::Cyan),
+            Cell::new("Committed").fg(Color::Cyan),
+        ]);
 
         for entry in &report.recent_entries {
             let entity_display = if entry.provenance.is_empty() {
@@ -487,10 +484,9 @@ fn render_project_audit_human(
                 Cell::new(entry.id.to_string()),
                 Cell::new(&entry.tx_id[..8]).fg(Color::Yellow),
                 Cell::new(&entity_display).fg(Color::Cyan),
-                Cell::new(format!(
-                    "{} {:?}",
-                    get_change_type_icon(&entry.change_type),
-                    entry.change_type
+                Cell::new(with_icon(
+                    &get_change_type_icon(&entry.change_type),
+                    format!("{:?}", entry.change_type),
                 )),
                 Cell::new(&entry.summary),
                 Cell::new(&entry.committed_at),
@@ -642,9 +638,11 @@ fn print_audit_entry_list(
                 .if_supports_color(Stream::Stdout, |s| s.bold())
         );
         println!(
-            "  Change:  {} {:?}",
-            get_change_type_icon(&entry.change_type),
-            entry.change_type
+            "  Change:  {}",
+            with_icon(
+                &get_change_type_icon(&entry.change_type),
+                format!("{:?}", entry.change_type),
+            )
         );
         println!("  Reason:  {}", entry.reason);
         if let Some(risk) = &entry.risk {

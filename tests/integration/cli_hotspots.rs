@@ -289,9 +289,10 @@ fn test_trend_bootstrap_on_empty_history_creates_one_snapshot_and_reports_availa
         String::from_utf8_lossy(&output_human.stderr)
     );
     let stdout_human = String::from_utf8_lossy(&output_human.stdout);
+    // 0181: Windows non-UTF8 / non-TTY auto-ASCII uses '+'; UTF8 premium uses box ┼ (U+253C).
     assert!(
-        stdout_human.contains('\u{253C}'),
-        "expected a premium table border in human output, got: {stdout_human}"
+        stdout_human.contains('\u{253C}') || stdout_human.contains('+'),
+        "expected a premium table border (utf8 ┼ or ascii +) in human output, got: {stdout_human}"
     );
     assert!(
         stdout_human.contains("Score"),
@@ -429,9 +430,10 @@ fn test_trend_bootstrap_succeeds_on_young_repo_with_insufficient_coupling_histor
         stdout_human.contains("Bootstrapped hotspot trend history from historical commits."),
         "expected bootstrap completion message, got: {stdout_human}"
     );
+    // 0181: style-aware borders (UTF8 ┼ vs ASCII +).
     assert!(
-        stdout_human.contains('\u{253C}'),
-        "expected a premium table border in human output, got: {stdout_human}"
+        stdout_human.contains('\u{253C}') || stdout_human.contains('+'),
+        "expected a premium table border (utf8 ┼ or ascii +) in human output, got: {stdout_human}"
     );
     assert!(
         stdout_human.contains("Score"),

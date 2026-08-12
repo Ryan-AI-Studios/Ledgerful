@@ -532,8 +532,8 @@ mod tests {
         }
         let rendered = table.to_string();
         assert!(
-            rendered.contains('╭'),
-            "expected rounded table border, got:\n{rendered}"
+            rendered.contains('╭') || rendered.contains('+'),
+            "expected premium table border (utf8 rounded or ascii +), got:\n{rendered}"
         );
         assert!(
             rendered.contains("Name") && rendered.contains("Changed?"),

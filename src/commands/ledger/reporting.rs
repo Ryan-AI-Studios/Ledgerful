@@ -246,7 +246,10 @@ pub fn execute_ledger_status(
                 pending
                     .tx_id
                     .if_supports_color(Stream::Stdout, |s| s.yellow()),
-                get_category_icon(&pending.category),
+                crate::ledger::ui::with_icon(
+                    &get_category_icon(&pending.category),
+                    format!("{:?}", pending.category),
+                ),
                 age_str.if_supports_color(Stream::Stdout, |s| s.dimmed())
             );
         } else {
@@ -424,14 +427,14 @@ pub fn execute_ledger_status(
                         if pending_sidecar.is_promote_failed() {
                             println!(
                                 "  {} [Sidecar] PROMOTE_FAILED orphan (tx {}) — do not GC; {}",
-                                "󰀦".if_supports_color(Stream::Stdout, |s| s.red()),
+                                get_status_icon(LedgerStatus::Stale),
                                 pending_sidecar.tx_id,
                                 RECOVER_HINT
                             );
                         } else if matches_head {
                             println!(
                                 "  {} [Sidecar] Pending commit sidecar message hash matches HEAD",
-                                "󰀦".if_supports_color(Stream::Stdout, |s| s.yellow())
+                                get_status_icon(LedgerStatus::Pending)
                             );
                         } else {
                             let mut matches_editmsg = false;
@@ -456,12 +459,12 @@ pub fn execute_ledger_status(
                             if matches_editmsg {
                                 println!(
                                     "  {} [Sidecar] Pending commit sidecar matches active COMMIT_EDITMSG",
-                                    "󰀦".if_supports_color(Stream::Stdout, |s| s.yellow())
+                                    get_status_icon(LedgerStatus::Pending)
                                 );
                             } else {
                                 println!(
                                     "  {} [Sidecar] Pending commit sidecar exists but does NOT match HEAD or active commit (stale)",
-                                    "󰀦".if_supports_color(Stream::Stdout, |s| s.yellow())
+                                    get_status_icon(LedgerStatus::Pending)
                                 );
                             }
                         }
@@ -470,7 +473,7 @@ pub fn execute_ledger_status(
                         tracing::warn!("Failed to parse pending hook sidecar: {}", e);
                         println!(
                             "  {} [Sidecar] Pending commit sidecar is broken/unparseable (stale)",
-                            "󰀦".if_supports_color(Stream::Stdout, |s| s.red())
+                            get_status_icon(LedgerStatus::Stale)
                         );
                     }
                 },
@@ -478,7 +481,7 @@ pub fn execute_ledger_status(
                     tracing::warn!("Failed to read pending hook sidecar: {}", e);
                     println!(
                         "  {} [Sidecar] Pending commit sidecar is unreadable (stale)",
-                        "󰀦".if_supports_color(Stream::Stdout, |s| s.red())
+                        get_status_icon(LedgerStatus::Stale)
                     );
                 }
             }
@@ -497,10 +500,7 @@ pub fn execute_ledger_status(
                     .num_hours()
                     >= stale_threshold;
                 let stale_indicator = if is_stale {
-                    format!(
-                        "{} STALE",
-                        "󰀦".if_supports_color(Stream::Stdout, |s| s.red())
-                    )
+                    format!("{} STALE", get_status_icon(LedgerStatus::Stale))
                 } else {
                     "".to_string()
                 };
@@ -509,7 +509,10 @@ pub fn execute_ledger_status(
                     tx.tx_id
                         .if_supports_color(Stream::Stdout, |s| s.yellow())
                         .to_string(),
-                    format!("{} {:?}", get_category_icon(&tx.category), tx.category),
+                    crate::ledger::ui::with_icon(
+                        &get_category_icon(&tx.category),
+                        format!("{:?}", tx.category),
+                    ),
                     tx.entity
                         .if_supports_color(Stream::Stdout, |s| s.cyan())
                         .to_string(),
@@ -525,7 +528,7 @@ pub fn execute_ledger_status(
 
         println!(
             "\n{} {}",
-            "󰀦".if_supports_color(Stream::Stdout, |s| s.red()),
+            get_status_icon(LedgerStatus::Stale),
             "UNAUDITED DRIFT"
                 .if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold()))
         );
@@ -564,7 +567,7 @@ pub fn execute_ledger_status(
         if all {
             println!(
                 "\n{} {}",
-                "󰋚".if_supports_color(Stream::Stdout, |s| s.blue()),
+                get_status_icon(LedgerStatus::Committed),
                 "RECENT HISTORY"
                     .if_supports_color(Stream::Stdout, |s| s.style(Style::new().blue().bold()))
             );

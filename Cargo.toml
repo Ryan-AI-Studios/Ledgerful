@@ -134,7 +134,7 @@ nix = { version = "0.31.3", features = ["signal", "process", "fs"] }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.62", features = ["Win32_Graphics_Dxgi", "Win32_Graphics_Dxgi_Common", "Win32_System_Com"] }
-windows-sys = { version = "0.61", features = ["Win32_System_Pipes", "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_JobObjects"] }
+windows-sys = { version = "0.61", features = ["Win32_System_Pipes", "Win32_Foundation", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Threading", "Win32_System_JobObjects", "Win32_System_Console"] }
 
 [features]
 default = ["viz-server", "mcp", "web", "export", "self-timing", "sync"]

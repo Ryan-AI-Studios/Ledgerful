@@ -341,13 +341,31 @@ fn render_hotspot_trend_table(rows: &[TrendRow]) -> String {
 
 /// Render default summary (top-N files) as a premium-styled table.
 fn render_trend_summary_table(summary: &TrendSummary) -> String {
-    let mut table =
-        build_premium_table(["File", "Score", "Prior", "Δ", "Samples", "Last recorded"]);
+    use crate::output::table::{TableStyleKind, resolve_table_style};
+    let style = resolve_table_style();
+    let delta_hdr = if style == TableStyleKind::Ascii {
+        "Delta"
+    } else {
+        "Δ"
+    };
+    let missing = if style == TableStyleKind::Ascii {
+        "-"
+    } else {
+        "—"
+    };
+    let mut table = build_premium_table([
+        "File",
+        "Score",
+        "Prior",
+        delta_hdr,
+        "Samples",
+        "Last recorded",
+    ]);
     for file in &summary.files {
         let prior = file
             .prior_display_score
             .map(|p| format!("{p:.3}"))
-            .unwrap_or_else(|| "—".to_string());
+            .unwrap_or_else(|| missing.to_string());
         let delta = file
             .delta
             .map(|d| {
@@ -357,7 +375,7 @@ fn render_trend_summary_table(summary: &TrendSummary) -> String {
                     format!("{d:.3}")
                 }
             })
-            .unwrap_or_else(|| "—".to_string());
+            .unwrap_or_else(|| missing.to_string());
         table.add_row(vec![
             file.file_path.clone(),
             format!("{:.3}", file.display_score),
@@ -1330,8 +1348,8 @@ mod tests {
         }];
         let rendered = render_hotspot_trend_table(&rows);
         assert!(
-            rendered.contains('╭'),
-            "expected rounded table border, got:\n{rendered}"
+            rendered.contains('╭') || rendered.contains('+'),
+            "expected premium table border (utf8 rounded or ascii +), got:\n{rendered}"
         );
         assert!(
             rendered.contains("Timestamp")
@@ -1515,12 +1533,14 @@ mod tests {
         );
         let rendered = render_trend_summary_table(&summary);
         assert!(
-            rendered.contains("Score") && rendered.contains("Prior") && rendered.contains("Δ"),
+            rendered.contains("Score") && rendered.contains("Prior"),
             "expected summary headers, got:\n{rendered}"
         );
+        // Style-aware: Utf8 uses Δ / —; Ascii uses Delta / -
         assert!(
-            rendered.contains('—'),
-            "single-sample prior/delta should be em dash, got:\n{rendered}"
+            (rendered.contains('Δ') && rendered.contains('—'))
+                || (rendered.contains("Delta") && rendered.contains('-')),
+            "expected delta header + missing prior marker, got:\n{rendered}"
         );
         assert!(
             rendered.contains("solo.rs"),
