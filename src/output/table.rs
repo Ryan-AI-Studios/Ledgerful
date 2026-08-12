@@ -75,6 +75,7 @@ fn env_truthy(key: &str) -> bool {
 #[cfg(windows)]
 pub fn console_output_cp() -> Option<u32> {
     // SAFETY: GetConsoleOutputCP is a simple kernel32 query; no pointers.
+    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
     Some(unsafe { windows_sys::Win32::System::Console::GetConsoleOutputCP() })
 }
 
