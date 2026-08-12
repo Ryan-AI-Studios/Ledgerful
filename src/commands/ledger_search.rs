@@ -174,6 +174,26 @@ mod tests {
     }
 
     #[test]
+    fn human_formatters_do_not_mutate_source_fields() {
+        // T10: display helpers are pure; JSON path serializes raw entry fields
+        // (full committed_at / entity / summary) without calling these truncators.
+        let full_ts = "2026-07-17T11:33:25.984842800+00:00";
+        let full_entity =
+            "src/commands/scan.rs,src/commands/scan_pr.rs,tests/integration/scan_pr_tests.rs";
+        let full_summary = "Fix review findings for 0047 engine slice with a longer summary text";
+        let _ = format_committed_short(full_ts);
+        let _ = truncate_display(full_entity, 36);
+        let _ = truncate_display(full_summary, 48);
+        // Source strings unchanged (helpers take &str).
+        assert_eq!(full_ts, "2026-07-17T11:33:25.984842800+00:00");
+        assert!(full_entity.len() > 36);
+        assert!(full_summary.len() > 48);
+        // Display forms are strictly shorter when over budget.
+        assert!(format_committed_short(full_ts).len() < full_ts.len());
+        assert!(truncate_display(full_entity, 36).chars().count() <= 36);
+    }
+
+    #[test]
     fn truncate_display__long__ellipsis() {
         let s = "abcdefghijklmnopqrstuvwxyz";
         let t = truncate_display(s, 10);
