@@ -49,8 +49,8 @@ pub fn run_with(cli: Cli) -> Result<()> {
 
     let result = match cli.command {
         Commands::Init { force, enforce } => crate::commands::init::execute_init(force, enforce),
-        Commands::Gate { command } => dispatch_gate(command),
-        Commands::Policy { command } => dispatch_policy(command),
+        Commands::Gate { command } => dispatch_gate(gate_or_default(command)),
+        Commands::Policy { command } => dispatch_policy(policy_or_default(command)),
         Commands::Setup { yes, skip_scan } => crate::commands::setup::execute_setup(yes, skip_scan),
         Commands::Scan {
             impact,
@@ -190,10 +190,10 @@ pub fn run_with(cli: Cli) -> Result<()> {
         Commands::Hotspots { args } => crate::commands::hotspots::execute_hotspots(args),
         Commands::Endpoints(args) => crate::commands::endpoints::execute_endpoints(args),
         Commands::Symbols(args) => crate::commands::symbols::execute_symbols(args),
-        Commands::Federate { command } => dispatch_federate(command),
+        Commands::Federate { command } => dispatch_federate(federate_or_default(command)),
         Commands::Bridge { subcommand } => crate::commands::bridge::execute(subcommand),
         Commands::Export { command } => dispatch_export(command),
-        Commands::Services { command } => dispatch_services(command, &config),
+        Commands::Services { command } => dispatch_services(services_or_default(command), &config),
         Commands::DataModels(args) => crate::commands::data_models::execute_data_models(args),
         Commands::Ci(args) => crate::commands::deploy::execute_ci(args),
         Commands::Deploy(args) => crate::commands::deploy::execute_deploy(args),
@@ -1791,6 +1791,33 @@ fn dispatch_usage(command: crate::cli::args::UsageCommands) -> Result<()> {
             crate::commands::usage::execute_usage_show_payload()
         }
     }
+}
+
+/// Bare `gate` → show current mode only (`Mode { mode: None }`); never invent set.
+fn gate_or_default(command: Option<GateCommands>) -> GateCommands {
+    command.unwrap_or(GateCommands::Mode { mode: None })
+}
+
+/// Bare `policy` → `check` with text defaults.
+fn policy_or_default(command: Option<PolicyCommands>) -> PolicyCommands {
+    command.unwrap_or(PolicyCommands::Check {
+        pr: None,
+        fail_on: None,
+        policy: None,
+        format: None,
+    })
+}
+
+/// Bare `federate` → `status` (read-only). Never default to Export (writes).
+fn federate_or_default(command: Option<FederateCommands>) -> FederateCommands {
+    command.unwrap_or(FederateCommands::Status)
+}
+
+/// Bare `services` → `diff` with default flags (soft optional 0179).
+fn services_or_default(command: Option<ServiceSubcommands>) -> ServiceSubcommands {
+    command.unwrap_or(ServiceSubcommands::Diff(
+        crate::commands::services_diff::ServicesDiffArgs::default(),
+    ))
 }
 
 fn dispatch_gate(command: GateCommands) -> Result<()> {

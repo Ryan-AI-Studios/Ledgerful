@@ -6,7 +6,7 @@ use clap::Args;
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Default)]
 pub struct ServicesDiffArgs {
     /// Show full topology
     #[arg(short, long)]

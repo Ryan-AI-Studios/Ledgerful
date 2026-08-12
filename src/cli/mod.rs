@@ -208,7 +208,9 @@ mod tests {
         let cli = Cli::try_parse_from(["ledgerful", "policy", "evaluate"]).unwrap();
         match cli.command {
             Commands::Policy { command } => {
-                let PolicyCommands::Check { .. } = command;
+                let Some(PolicyCommands::Check { .. }) = command else {
+                    panic!("expected Some(PolicyCommands::Check), got {command:?}");
+                };
             }
             _ => panic!("expected Policy command"),
         }
@@ -219,7 +221,9 @@ mod tests {
         let cli = Cli::try_parse_from(["ledgerful", "policy", "check"]).unwrap();
         match cli.command {
             Commands::Policy { command } => {
-                let PolicyCommands::Check { .. } = command;
+                let Some(PolicyCommands::Check { .. }) = command else {
+                    panic!("expected Some(PolicyCommands::Check), got {command:?}");
+                };
             }
             _ => panic!("expected Policy command"),
         }
@@ -230,7 +234,9 @@ mod tests {
         let cli = Cli::try_parse_from(["ledgerful", "gate", "status"]).unwrap();
         match cli.command {
             Commands::Gate { command } => {
-                let GateCommands::Mode { mode, .. } = command;
+                let Some(GateCommands::Mode { mode, .. }) = command else {
+                    panic!("expected Some(GateCommands::Mode), got {command:?}");
+                };
                 assert!(mode.is_none(), "bare gate status should not set mode");
             }
             Commands::Status { .. } => {
@@ -245,10 +251,133 @@ mod tests {
         let cli = Cli::try_parse_from(["ledgerful", "gate", "mode"]).unwrap();
         match cli.command {
             Commands::Gate { command } => {
-                let GateCommands::Mode { .. } = command;
+                let Some(GateCommands::Mode { .. }) = command else {
+                    panic!("expected Some(GateCommands::Mode), got {command:?}");
+                };
             }
             _ => panic!("expected Gate command"),
         }
+    }
+
+    // --- 0179: bare parent default subcommands (safe read-only) ---
+
+    #[test]
+    fn bare_parent_defaults_parse_ok() {
+        for parent in ["dependencies", "policy", "gate", "ci", "deploy", "federate"] {
+            let cli = Cli::try_parse_from(["ledgerful", parent]).unwrap_or_else(|e| {
+                panic!("bare `{parent}` must parse without missing-subcommand: {e}")
+            });
+            // Sanity: parsed command group matches parent name prefix.
+            let name = cli.command.command_name();
+            assert!(
+                name.starts_with(parent) || name == parent || name.contains(parent),
+                "bare `{parent}` command_name={name}"
+            );
+        }
+    }
+
+    #[test]
+    fn bare_gate_defaults_to_mode_show_never_set() {
+        let cli = Cli::try_parse_from(["ledgerful", "gate"]).expect("bare gate parses");
+        match cli.command {
+            Commands::Gate { command: None } => {
+                // Outer None is the bare default; resolve path uses Mode { mode: None }.
+            }
+            Commands::Gate {
+                command: Some(GateCommands::Mode { mode: Some(_) }),
+            } => panic!("bare gate must never parse as mode-set"),
+            other => panic!("expected Gate {{ command: None }}, got {other:?}"),
+        }
+        assert_eq!(
+            Cli::try_parse_from(["ledgerful", "gate"])
+                .expect("parse")
+                .command
+                .command_name(),
+            "gate_mode_show"
+        );
+        // Explicit set still works.
+        let set = Cli::try_parse_from(["ledgerful", "gate", "mode", "enforce"]).expect("set");
+        assert_eq!(set.command.command_name(), "gate_mode_set");
+    }
+
+    #[test]
+    fn bare_federate_defaults_to_status_not_export() {
+        let cli = Cli::try_parse_from(["ledgerful", "federate"]).expect("bare federate");
+        assert_eq!(cli.command.command_name(), "federate_status");
+        match &cli.command {
+            Commands::Federate { command: None } => {}
+            Commands::Federate {
+                command: Some(FederateCommands::Export { .. }),
+            } => panic!("bare federate must not default to Export (writes)"),
+            other => panic!("expected Federate {{ command: None }}, got {other:?}"),
+        }
+        // Explicit export still available.
+        let exp = Cli::try_parse_from(["ledgerful", "federate", "export"]).expect("export");
+        assert_eq!(exp.command.command_name(), "federate_export");
+    }
+
+    #[test]
+    fn bare_dependencies_defaults_to_list_flags() {
+        use crate::commands::dependencies::DependencySubcommands;
+        let cli = Cli::try_parse_from(["ledgerful", "dependencies"]).expect("bare deps");
+        match cli.command {
+            Commands::Dependencies(args) => {
+                assert!(args.command.is_none(), "bare dependencies is Option None");
+                match args.command_or_default() {
+                    DependencySubcommands::List {
+                        json: false,
+                        verbose: false,
+                        all: false,
+                    } => {}
+                    other => panic!("expected List defaults, got {other:?}"),
+                }
+            }
+            other => panic!("expected Dependencies, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn bare_policy_ci_deploy_command_names() {
+        assert_eq!(
+            Cli::try_parse_from(["ledgerful", "policy"])
+                .expect("policy")
+                .command
+                .command_name(),
+            "policy_check"
+        );
+        assert_eq!(
+            Cli::try_parse_from(["ledgerful", "ci"])
+                .expect("ci")
+                .command
+                .command_name(),
+            "ci"
+        );
+        assert_eq!(
+            Cli::try_parse_from(["ledgerful", "deploy"])
+                .expect("deploy")
+                .command
+                .command_name(),
+            "deploy"
+        );
+    }
+
+    #[test]
+    fn parent_flag_passthrough_still_fails_b5() {
+        // B5: no parent-level flag passthrough — agents use explicit subcommand.
+        assert!(
+            Cli::try_parse_from(["ledgerful", "dependencies", "--json"]).is_err(),
+            "dependencies --json must remain a clap error (use `dependencies list --json`)"
+        );
+    }
+
+    #[test]
+    fn bare_services_soft_default_to_diff() {
+        let cli = Cli::try_parse_from(["ledgerful", "services"]).expect("bare services");
+        match cli.command {
+            Commands::Services { command: None } => {}
+            other => panic!("expected Services {{ command: None }}, got {other:?}"),
+        }
+        assert_eq!(cli.command.command_name(), "services_diff");
     }
 
     #[test]
