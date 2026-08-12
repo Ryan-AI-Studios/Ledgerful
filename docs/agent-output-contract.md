@@ -10,7 +10,8 @@ payloads.
 
 **Track:** 0093-AgentCliOutputContract; extended by **0136** (search envelope),
 **0149** (uniform machine JSON: top-level `status`, `dead-code`, index-check
-purity, scan incomplete-flag tips).
+purity, scan incomplete-flag tips), **0180** (`scan --json`/`--out` gitScan
+envelope without mandatory `--impact`; escalate remains `--impact --json`).
 
 ---
 

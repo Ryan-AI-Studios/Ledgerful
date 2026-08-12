@@ -115,7 +115,20 @@ fn test_scan_impact_out_writes_json_without_json_flag() {
     let content = fs::read_to_string(out_path).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
     assert_eq!(parsed["schemaVersion"], "v1");
+    assert!(
+        parsed.get("kind").is_none(),
+        "impact packet must not set kind gitScan, got {parsed}"
+    );
     assert!(parsed["changes"].is_array());
+    // Impact-shaped: at least one of the escalate-only keys is present.
+    assert!(
+        parsed.get("riskLevel").is_some()
+            || parsed.get("agentSummary").is_some()
+            || parsed.get("blastRadius").is_some()
+            || parsed.get("testCoverage").is_some(),
+        "impact packet should include impact-only fields, got keys: {:?}",
+        parsed.as_object().map(|o| o.keys().collect::<Vec<_>>())
+    );
 }
 
 #[test]
@@ -189,6 +202,39 @@ fn test_scan_summary_requires_impact() {
     assert!(
         !msg.contains("--format json") && !msg.contains("scan --pr"),
         "summary reject must not tip PR format, got {msg}"
+    );
+}
+
+#[test]
+fn test_scan_json_dirty_tree_emits_changes() {
+    // Plan matrix: dirty tree → isClean false + non-empty changes.
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+
+    setup_git_repo(root);
+    fs::write(root.join("dirty.txt"), "v1").unwrap();
+    git_cmd(root, &["add", "dirty.txt"]);
+    git_cmd(root, &["commit", "-m", "seed"]);
+    fs::write(root.join("dirty.txt"), "v2").unwrap();
+
+    let out_path = root.join("dirty-scan.json");
+    let _guard = DirGuard::new(root);
+    execute_scan(false, false, true, Some(out_path.clone()), None, None, None)
+        .expect("dirty scan --json should emit gitScan");
+
+    let content = fs::read_to_string(&out_path).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(parsed["kind"], "gitScan");
+    assert_eq!(parsed["isClean"], false);
+    let changes = parsed["changes"].as_array().expect("changes array");
+    assert!(
+        !changes.is_empty(),
+        "dirty tree should list changes, got {parsed}"
+    );
+    let paths: Vec<&str> = changes.iter().filter_map(|c| c["path"].as_str()).collect();
+    assert!(
+        paths.iter().any(|p| p.contains("dirty.txt")),
+        "expected dirty.txt in changes, got {paths:?}"
     );
 }
 
