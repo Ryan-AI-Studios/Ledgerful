@@ -74,10 +74,10 @@ pub enum Commands {
         /// Output a high-level summary only
         #[arg(short, long)]
         summary: bool,
-        /// Output as JSON (requires --impact)
+        /// Git scan summary JSON (`kind: gitScan`). Full impact packet: `--impact --json`.
         #[arg(short, long)]
         json: bool,
-        /// Write JSON output to file
+        /// Write JSON output to file (gitScan without `--impact`; impact packet with `--impact`)
         #[arg(short, long)]
         out: Option<PathBuf>,
         /// Git ref to compare against instead of working-tree status. Used in CI.

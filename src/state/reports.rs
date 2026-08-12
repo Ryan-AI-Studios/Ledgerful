@@ -115,6 +115,41 @@ impl ScanReport {
     }
 }
 
+/// CLI stdout/`--out` envelope for bare `scan --json` (0180).
+///
+/// **Separate** from on-disk [`ScanReport`] / `latest-scan.json` (0180-F): do not
+/// add `schemaVersion`/`kind` to the durable report type. Agents discriminate this
+/// surface via top-level `kind: "gitScan"` (0180-A — intentional new pattern vs
+/// other numeric-schema envelopes that omit `kind`).
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ScanGitJson {
+    pub schema_version: u32,
+    pub kind: &'static str,
+    pub head_hash: Option<String>,
+    pub branch_name: Option<String>,
+    pub is_clean: bool,
+    pub changes: Vec<ScanChange>,
+    pub diff_summaries: Vec<ScanDiffSummary>,
+}
+
+impl ScanGitJson {
+    pub const KIND: &'static str = "gitScan";
+    pub const SCHEMA_VERSION: u32 = 1;
+
+    pub fn from_report(report: &ScanReport) -> Self {
+        Self {
+            schema_version: Self::SCHEMA_VERSION,
+            kind: Self::KIND,
+            head_hash: report.head_hash.clone(),
+            branch_name: report.branch_name.clone(),
+            is_clean: report.is_clean,
+            changes: report.changes.clone(),
+            diff_summaries: report.diff_summaries.clone(),
+        }
+    }
+}
+
 impl From<&FileChange> for ScanChange {
     fn from(change: &FileChange) -> Self {
         let change_type = match &change.change_type {

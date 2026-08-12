@@ -1,4 +1,4 @@
-use ledgerful::commands::scan::execute_scan;
+use ledgerful::commands::scan::{execute_scan, execute_scan_with_opts};
 use ledgerful::state::layout::Layout;
 use std::fs;
 use std::process::Command;
@@ -115,46 +115,70 @@ fn test_scan_impact_out_writes_json_without_json_flag() {
     let content = fs::read_to_string(out_path).unwrap();
     let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
     assert_eq!(parsed["schemaVersion"], "v1");
+    assert!(
+        parsed.get("kind").is_none(),
+        "impact packet must not set kind gitScan, got {parsed}"
+    );
     assert!(parsed["changes"].is_array());
+    // Impact-shaped: at least one of the escalate-only keys is present.
+    assert!(
+        parsed.get("riskLevel").is_some()
+            || parsed.get("agentSummary").is_some()
+            || parsed.get("blastRadius").is_some()
+            || parsed.get("testCoverage").is_some(),
+        "impact packet should include impact-only fields, got keys: {:?}",
+        parsed.as_object().map(|o| o.keys().collect::<Vec<_>>())
+    );
 }
 
 #[test]
-fn test_scan_out_requires_impact() {
+fn test_scan_out_emits_git_scan_without_impact() {
+    // 0180-B: --out without --impact writes gitScan file (not require-impact error).
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
     setup_git_repo(root);
 
+    let out_path = root.join("scan-out.json");
     let _guard = DirGuard::new(root);
-    let error = execute_scan(
+    execute_scan(
         false,
         false,
         false,
-        Some("out.json".into()),
+        Some(out_path.clone()),
         None,
         None,
         None,
     )
-    .unwrap_err();
-    assert!(
-        error.to_string().contains("--impact"),
-        "expected impact requirement error, got {error:?}"
-    );
+    .expect("scan --out without --impact should emit gitScan");
+
+    let content = fs::read_to_string(&out_path).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(parsed["schemaVersion"], 1);
+    assert_eq!(parsed["kind"], "gitScan");
+    assert!(parsed["isClean"].as_bool().unwrap());
 }
 
 #[test]
-fn test_scan_json_requires_impact() {
+fn test_scan_json_emits_git_scan_without_impact() {
+    // 0180-B: bare --json emits gitScan (not require-impact error).
     let tmp = tempdir().unwrap();
     let root = tmp.path();
 
     setup_git_repo(root);
 
     let _guard = DirGuard::new(root);
-    let error = execute_scan(false, false, true, None, None, None, None).unwrap_err();
-    assert!(
-        error.to_string().contains("--impact"),
-        "expected impact requirement error, got {error:?}"
-    );
+    // Capture via --out to avoid relying on process stdout from library call;
+    // execute_scan prints JSON to stdout when out is None — use out for assertion.
+    let out_path = root.join("scan-json.json");
+    execute_scan(false, false, true, Some(out_path.clone()), None, None, None)
+        .expect("scan --json without --impact should emit gitScan");
+
+    let content = fs::read_to_string(&out_path).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(parsed["schemaVersion"], 1);
+    assert_eq!(parsed["kind"], "gitScan");
+    assert!(parsed["changes"].is_array());
 }
 
 #[test]
@@ -166,9 +190,113 @@ fn test_scan_summary_requires_impact() {
 
     let _guard = DirGuard::new(root);
     let error = execute_scan(false, true, false, None, None, None, None).unwrap_err();
+    let msg = error.to_string();
+    assert!(
+        msg.contains("--impact"),
+        "expected impact requirement error, got {error:?}"
+    );
+    assert!(
+        msg.contains("--summary"),
+        "expected --summary in message, got {msg}"
+    );
+    assert!(
+        !msg.contains("--format json") && !msg.contains("scan --pr"),
+        "summary reject must not tip PR format, got {msg}"
+    );
+}
+
+#[test]
+fn test_scan_json_dirty_tree_emits_changes() {
+    // Plan matrix: dirty tree → isClean false + non-empty changes.
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+
+    setup_git_repo(root);
+    fs::write(root.join("dirty.txt"), "v1").unwrap();
+    git_cmd(root, &["add", "dirty.txt"]);
+    git_cmd(root, &["commit", "-m", "seed"]);
+    fs::write(root.join("dirty.txt"), "v2").unwrap();
+
+    let out_path = root.join("dirty-scan.json");
+    let _guard = DirGuard::new(root);
+    execute_scan(false, false, true, Some(out_path.clone()), None, None, None)
+        .expect("dirty scan --json should emit gitScan");
+
+    let content = fs::read_to_string(&out_path).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(parsed["kind"], "gitScan");
+    assert_eq!(parsed["isClean"], false);
+    let changes = parsed["changes"].as_array().expect("changes array");
+    assert!(
+        !changes.is_empty(),
+        "dirty tree should list changes, got {parsed}"
+    );
+    let paths: Vec<&str> = changes.iter().filter_map(|c| c["path"].as_str()).collect();
+    assert!(
+        paths.iter().any(|p| p.contains("dirty.txt")),
+        "expected dirty.txt in changes, got {paths:?}"
+    );
+}
+
+#[test]
+fn test_scan_json_base_ref_emits_git_scan() {
+    // 0180-G: --json --base-ref → gitScan; diffSummaries may be empty.
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+
+    setup_git_repo(root);
+    fs::write(root.join("tracked.txt"), "v1").unwrap();
+    git_cmd(root, &["add", "tracked.txt"]);
+    git_cmd(root, &["commit", "-m", "base"]);
+    fs::write(root.join("tracked.txt"), "v2").unwrap();
+    git_cmd(root, &["add", "tracked.txt"]);
+    git_cmd(root, &["commit", "-m", "tip"]);
+
+    let out_path = root.join("base-ref-scan.json");
+    let _guard = DirGuard::new(root);
+    execute_scan(
+        false,
+        false,
+        true,
+        Some(out_path.clone()),
+        Some("HEAD~1".into()),
+        None,
+        None,
+    )
+    .expect("scan --json --base-ref should emit gitScan");
+
+    let content = fs::read_to_string(&out_path).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&content).unwrap();
+    assert_eq!(parsed["kind"], "gitScan");
+    assert_eq!(parsed["schemaVersion"], 1);
+    assert!(parsed["diffSummaries"].is_array());
+}
+
+#[test]
+fn test_scan_json_paths_still_requires_impact() {
+    // AI1 P3-2: --json --paths still requires --impact.
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+
+    setup_git_repo(root);
+
+    let _guard = DirGuard::new(root);
+    let error = execute_scan_with_opts(
+        false,
+        false,
+        true,
+        None,
+        None,
+        None,
+        None,
+        None,
+        vec!["src/foo.rs".into()],
+        false,
+    )
+    .unwrap_err();
     assert!(
         error.to_string().contains("--impact"),
-        "expected impact requirement error, got {error:?}"
+        "expected --paths requires --impact, got {error:?}"
     );
 }
 

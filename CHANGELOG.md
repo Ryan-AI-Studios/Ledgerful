@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`scan --json` / `scan --out` gitScan envelope (0180):** Bare machine flags
+  no longer require `--impact`. Emit a pure-stdout (or file-only for `--out`)
+  summary with `schemaVersion: 1`, top-level `kind: "gitScan"`, and the same
+  change fields as the durable scan report. Full impact packet remains
+  **`scan --impact --json`** (no silent auto-impact). `--summary` still requires
+  `--impact` (impact brief). On-disk `latest-scan.json` schema unchanged.
+
 - **Bare parent CLI defaults (0179):** Six feedback parents no longer fail with
   clap missing-subcommand usage when invoked alone. Each defaults to a safe
   **read-only** subcommand (same path as the explicit form with default flags):
