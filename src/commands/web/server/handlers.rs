@@ -385,9 +385,11 @@ pub(crate) async fn projects_handler(
             .with_federation_config(&fed_config);
         if let Ok((siblings, _warnings)) = scanner.scan_siblings() {
             for (path, schema, validation_warnings) in siblings {
+                // 0184-B: display name = folder basename; id stays schema.repo_name.
+                let display_name = crate::federated::links::path_basename(path.as_str());
                 projects.push(ProjectResponse {
-                    id: schema.repo_name.clone(),
-                    name: schema.repo_name,
+                    id: schema.repo_name,
+                    name: display_name,
                     path: path.to_string(),
                     status: "unknown".to_string(),
                     last_scan_at: None,

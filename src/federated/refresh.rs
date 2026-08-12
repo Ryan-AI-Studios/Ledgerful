@@ -31,28 +31,28 @@ pub fn refresh_federated_dependencies(
 
     let timestamp = chrono::Utc::now().to_rfc3339();
     for (path, schema, sibling_warnings) in siblings {
+        // 0184: same path+basename writer as CLI scan (not schema.repo_name).
+        let store_name = crate::federated::links::path_basename(path.as_str());
         for warning in &sibling_warnings {
             warn!(
                 "Federated discovery warning for sibling '{}': {warning}",
-                schema.repo_name
+                store_name
             );
         }
-        crate::federated::storage::update_federated_link(
+        let store_name = crate::federated::storage::upsert_federated_link_by_path(
             storage.get_connection(),
-            &schema.repo_name,
             path.as_str(),
             &timestamp,
         )?;
         crate::federated::storage::clear_federated_dependencies(
             storage.get_connection(),
-            &schema.repo_name,
+            &store_name,
         )?;
-        let (edges, scan_warnings) =
-            scanner.discover_dependencies(packet, &schema.repo_name, &schema)?;
+        let (edges, scan_warnings) = scanner.discover_dependencies(packet, &store_name, &schema)?;
         for (local_symbol, sibling_symbol) in edges {
             crate::federated::storage::save_federated_dependencies(
                 storage.get_connection(),
-                &schema.repo_name,
+                &store_name,
                 &local_symbol,
                 &sibling_symbol,
             )?;
@@ -62,10 +62,20 @@ pub fn refresh_federated_dependencies(
         for warning in scan_warnings {
             warn!(
                 "Federated scan degradation for sibling '{}': {warning}",
-                schema.repo_name
+                store_name
             );
             degradation_warnings.push(warning);
         }
+    }
+
+    // 0184: prune Dead/Self only (not "absent from this scan").
+    // Use storage analysis root (layout.root), not process CWD / call-site
+    // path parameter alone — same self-identity SoT as impact (0184-C).
+    if let Err(e) = crate::federated::storage::prune_dead_and_self_links(
+        storage.get_connection(),
+        storage.root().as_str(),
+    ) {
+        warn!("Federated link prune failed: {e}");
     }
 
     // 0034: dedup cross-sibling degradation warnings. The local-repo walk

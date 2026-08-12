@@ -72,7 +72,7 @@ ledgerful ask "What should I verify next?"
 - `hotspots`: rank files by temporal change frequency multiplied by complexity.
 - `mcp`: run the Model Context Protocol stdio server for AI agent integration; also `mcp install|uninstall|status` for Top-N host config (claude-code, cursor, codex, copilot).
 - `viz`: export an interactive HTML Knowledge Graph visualization of codebase dependencies and risk heatmaps.
-- `federate`: export public interfaces, scan sibling repositories, and show known federated links.
+- `federate`: export public interfaces, scan sibling repositories, and show live federated peers (path identity; `federate scan` prunes stale cache).
 - `ledger`: transactional architectural memory (start, commit, rollback, audit, search, adr).
 - `daemon`: optional LSP server with diagnostics, Hover, CodeLens, stale-data handling, and lifecycle management.
 - `reset`: remove derived local state. Preserves `ledger.db` by default; use `--include-ledger` to remove provenance data.
@@ -168,6 +168,10 @@ ledgerful federate scan
 ledgerful federate status
 ledgerful impact
 ```
+
+`federate status` lists **live peers** (one row per path; name = folder
+basename). Run `federate scan` to refresh discovery and prune dead/self
+cache rows.
 
 Track changes with transactional provenance:
 

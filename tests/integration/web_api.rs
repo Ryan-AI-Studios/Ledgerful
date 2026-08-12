@@ -459,6 +459,13 @@ async fn test_api_projects_returns_sibling_with_warning() {
         .iter()
         .find(|n| n["id"] == "sibling-repo")
         .expect("sibling should be discovered");
+    // 0184-B: display name = folder basename; id stays schema.repo_name.
+    assert_eq!(
+        sibling_node["name"].as_str().unwrap(),
+        "sibling",
+        "sibling name must be path basename, not schema.repo_name"
+    );
+    assert_eq!(sibling_node["id"].as_str().unwrap(), "sibling-repo");
     let warnings = sibling_node["validation_warnings"]
         .as_array()
         .expect("should have validation_warnings");

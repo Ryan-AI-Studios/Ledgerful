@@ -1080,7 +1080,7 @@ mod tests {
     }
 
     fn path_looks_relative(p: &str) -> bool {
-        !p.starts_with('/') && !(p.len() >= 2 && p.as_bytes()[1] == b':')
+        !(p.starts_with('/') || (p.len() >= 2 && p.as_bytes()[1] == b':'))
     }
 
     #[test]
