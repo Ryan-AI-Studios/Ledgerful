@@ -793,7 +793,14 @@ impl Commands {
             }
             Commands::Endpoints(args) => args.wants_json(),
             Commands::Symbols(args) => args.wants_json(),
-            Commands::Export { .. } => false,
+            Commands::Export { command } => match command {
+                // 0182: pure stdout ChainHead JSON must stay free of SUCCESS banners.
+                ExportCommands::Head { out, stdout, .. } => {
+                    *stdout || out.as_ref().is_some_and(|p| p.as_os_str() == "-")
+                }
+                // Evidence remains file-only zip; never machine/stdout product body.
+                ExportCommands::Evidence { .. } => false,
+            },
             Commands::Federate { .. } => false,
             Commands::Services { command } => match command {
                 None => false,
@@ -1172,6 +1179,36 @@ mod machine_output_tests {
         assert!(!parse(&["verify", "--signatures"]).is_machine_output());
         assert!(!parse(&["ledger", "status"]).is_machine_output());
         assert!(!parse(&["scan", "--impact"]).is_machine_output());
+    }
+
+    #[test]
+    fn export_head_stdout_is_machine_output() {
+        assert!(parse(&["export", "head", "--stdout"]).is_machine_output());
+        assert!(parse(&["export", "head", "-o", "-"]).is_machine_output());
+        assert!(parse(&["export", "head", "--out", "-"]).is_machine_output());
+        assert!(!parse(&["export", "head"]).is_machine_output());
+        assert!(!parse(&["export", "head", "-o", "head.json"]).is_machine_output());
+        assert!(!parse(&["export", "evidence", "--profile", "soc2"]).is_machine_output());
+    }
+
+    #[test]
+    fn export_head_argv_shape_stdout_mode() {
+        // argv_shape is "export_head|flag1,flag2" with sorted flag names.
+        let stdout_shape = parse(&["export", "head", "--stdout"]).argv_shape();
+        assert_eq!(stdout_shape, "export_head|stdout");
+
+        let dash_shape = parse(&["export", "head", "-o", "-"]).argv_shape();
+        assert_eq!(dash_shape, "export_head|stdout");
+
+        // force is ignored in stdout mode (not recorded).
+        let force_stdout = parse(&["export", "head", "--stdout", "--force"]).argv_shape();
+        assert_eq!(force_stdout, "export_head|stdout");
+
+        let redundant = parse(&["export", "head", "--stdout", "-o", "-"]).argv_shape();
+        assert_eq!(redundant, "export_head|stdout");
+
+        let file_shape = parse(&["export", "head", "-o", "x.json", "--force"]).argv_shape();
+        assert_eq!(file_shape, "export_head|force,out");
     }
 
     #[test]
@@ -2478,11 +2515,17 @@ impl Commands {
                         f.push("control");
                     }
                 }
-                ExportCommands::Head { out, force } => {
-                    if out.is_some() {
+                ExportCommands::Head { out, force, stdout } => {
+                    let out_is_dash = out.as_ref().is_some_and(|p| p.as_os_str() == "-");
+                    let stdout_mode = *stdout || out_is_dash;
+                    if stdout_mode {
+                        f.push("stdout");
+                    }
+                    // Record real path outs only (not the `-` stdout sentinel).
+                    if out.is_some() && !out_is_dash {
                         f.push("out");
                     }
-                    if *force {
+                    if !stdout_mode && *force {
                         f.push("force");
                     }
                 }
@@ -3063,12 +3106,17 @@ pub enum ExportCommands {
     },
     /// Export the live chain head as a thin JSON checkpoint
     Head {
-        /// Output file path (default: ./ledgerful-chain-head.json)
+        /// Output file path (default: ./ledgerful-chain-head.json).
+        /// Use `-` (or `--stdout`) to write pretty JSON to stdout only.
         #[arg(short, long)]
         out: Option<std::path::PathBuf>,
-        /// Overwrite an existing file
+        /// Overwrite an existing file (file mode only; ignored with --stdout / -o -)
         #[arg(short, long)]
         force: bool,
+        /// Write pretty ChainHead JSON to stdout (no SUCCESS banner, no file).
+        /// Equivalent to `-o -`. Cannot be combined with a non-dash `--out` path.
+        #[arg(long)]
+        stdout: bool,
     },
 }
 

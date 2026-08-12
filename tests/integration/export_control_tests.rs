@@ -950,6 +950,171 @@ fn control_export__cli_supports_control_flag() {
     assert!(members.contains_key("control-lens/index.json"));
 }
 
+// ─── 0182: export head --stdout / -o - ───────────────────────────────────────
+
+#[test]
+#[serial(cwd, env)]
+fn export_head__stdout__pure_json_no_success_no_default_file() {
+    let _non_interactive = non_interactive();
+    let repo = setup_export_repo();
+    seed_export_ledger(&repo);
+    seed_chain_head(&repo);
+
+    let default_path = repo.root.join("ledgerful-chain-head.json");
+    let dash_path = repo.root.join("-");
+    assert!(!default_path.exists());
+    assert!(!dash_path.exists());
+
+    let binary = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(binary)
+        .args(["export", "head", "--stdout"])
+        .current_dir(repo.root.as_std_path())
+        .output()
+        .expect("export head --stdout should spawn");
+
+    assert!(
+        output.status.success(),
+        "export head --stdout should succeed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("SUCCESS"),
+        "stdout must not include SUCCESS banner: {stdout}"
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must be parseable ChainHead JSON");
+    assert!(
+        value.get("latest_entry_hash").is_some(),
+        "missing latest_entry_hash: {value}"
+    );
+    assert!(value.get("length").is_some(), "missing length: {value}");
+    assert!(
+        !default_path.exists(),
+        "stdout mode must not create default chain-head file"
+    );
+    assert!(
+        !dash_path.exists(),
+        "stdout mode must not create file named -"
+    );
+
+    // Pretty form ends with `}` — no stdout-only trailing newline appended.
+    assert!(
+        output.stdout.last() == Some(&b'}'),
+        "stdout must end with exact serialize_chain_head bytes (last byte '}}')"
+    );
+}
+
+#[test]
+#[serial(cwd, env)]
+fn export_head__out_dash__stdout_not_file_named_dash() {
+    let _non_interactive = non_interactive();
+    let repo = setup_export_repo();
+    seed_export_ledger(&repo);
+    seed_chain_head(&repo);
+
+    let dash_path = repo.root.join("-");
+    assert!(!dash_path.exists());
+
+    let binary = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(binary)
+        .args(["export", "head", "-o", "-"])
+        .current_dir(repo.root.as_std_path())
+        .output()
+        .expect("export head -o - should spawn");
+
+    assert!(
+        output.status.success(),
+        "export head -o - should succeed:\nstdout: {}\nstderr: {}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        !dash_path.exists(),
+        "-o - must not create a file named '-' under cwd"
+    );
+    let value: serde_json::Value =
+        serde_json::from_slice(&output.stdout).expect("stdout must parse as ChainHead");
+    assert!(value.get("latest_entry_hash").is_some());
+    assert!(!String::from_utf8_lossy(&output.stdout).contains("SUCCESS"));
+}
+
+#[test]
+#[serial(cwd, env)]
+fn export_head__stdout_plus_path__errors() {
+    let _non_interactive = non_interactive();
+    let repo = setup_export_repo();
+    seed_export_ledger(&repo);
+    seed_chain_head(&repo);
+
+    let binary = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(binary)
+        .args(["export", "head", "--stdout", "--out", "some.json"])
+        .current_dir(repo.root.as_std_path())
+        .output()
+        .expect("export head conflict should spawn");
+
+    assert!(
+        !output.status.success(),
+        "ambiguous dest must fail non-zero"
+    );
+    let combined = format!(
+        "{}{}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert!(
+        combined.contains("--stdout") && combined.contains("--out"),
+        "error should mention both flags: {combined}"
+    );
+    assert!(
+        !repo.root.join("some.json").exists(),
+        "conflict path must not write a file"
+    );
+}
+
+#[test]
+#[serial(cwd, env)]
+fn export_head__file_path_bytes_match_stdout() {
+    let _non_interactive = non_interactive();
+    let repo = setup_export_repo();
+    seed_export_ledger(&repo);
+    seed_chain_head(&repo);
+
+    let binary = env!("CARGO_BIN_EXE_ledgerful");
+    let file_path = repo.root.join("head-file.json");
+
+    let stdout_out = Command::new(binary)
+        .args(["export", "head", "--stdout"])
+        .current_dir(repo.root.as_std_path())
+        .output()
+        .expect("stdout spawn");
+    assert!(stdout_out.status.success());
+
+    let file_out = Command::new(binary)
+        .args(["export", "head", "--out", file_path.as_str()])
+        .current_dir(repo.root.as_std_path())
+        .output()
+        .expect("file spawn");
+    assert!(
+        file_out.status.success(),
+        "file export failed:\n{}",
+        String::from_utf8_lossy(&file_out.stderr)
+    );
+    assert!(
+        String::from_utf8_lossy(&file_out.stdout).contains("SUCCESS"),
+        "file mode should print SUCCESS"
+    );
+
+    let file_bytes = std::fs::read(file_path.as_std_path()).expect("read file");
+    assert_eq!(
+        file_bytes, stdout_out.stdout,
+        "file path bytes must equal stdout body for same head"
+    );
+}
+
 fn read_repo_file(path: &str) -> String {
     let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     std::fs::read_to_string(repo_root.join(path))

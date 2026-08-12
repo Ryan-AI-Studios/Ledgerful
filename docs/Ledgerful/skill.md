@@ -575,6 +575,9 @@ This performs an offline mathematical validation of every record against its sig
 ```bash
 mkdir -p ./checkpoints   # parent must exist (or use default ./ledgerful-chain-head.json)
 ledgerful export head --out ./checkpoints/head.json
+# pure stdout / pipe (same pretty ChainHead JSON; no SUCCESS banner):
+# ledgerful export head --stdout > ./checkpoints/head.json
+# or: ledgerful export head -o -
 # copy off-machine, then later:
 ledgerful verify --signatures --against-export ./checkpoints/head.json
 ```
