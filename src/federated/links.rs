@@ -328,7 +328,13 @@ mod tests {
 
     #[test]
     fn path_basename_trims_trailing_separators() {
-        assert_eq!(path_basename(r"C:\dev\ledgerful\"), "ledgerful");
+        // Forward slash is a path separator on all platforms.
+        assert_eq!(path_basename("/tmp/ledgerful/"), "ledgerful");
         assert_eq!(path_basename("C:/dev/ledgerful/"), "ledgerful");
+        #[cfg(windows)]
+        {
+            // Backslash is a separator only on Windows.
+            assert_eq!(path_basename(r"C:\dev\ledgerful\"), "ledgerful");
+        }
     }
 }
