@@ -8,6 +8,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Entity path identity residual (0183):** Shared unique-only file resolve
+  (`exact` → Rust `X.rs`↔`X/mod.rs` / extensionless alias → unique suffix) in
+  `util::path_entity`. **`symbols --path`** applies it as a **zero-match
+  fallback** only (successful dir prefixes unchanged; ambiguous refuses with
+  candidates). **`hotspots explain`** uses the same resolve for
+  **complexity** against `project_files` only — list/trend stay git-history
+  prefix / exact (no rename-frequency coalesce). `tests` / `verify --explain
+  --entity` already shipped the same rules via **0156** (regression-guarded).
+  Windows suffix equality uses `LOWER` to match exact lookup. No dep bumps.
+
 - **Windows-safe human tables (0181):** Auto-detect non-UTF-8 console output
   code pages (e.g. CP437 under Windows Terminal) and render **ASCII** table
   borders + non-PUA icons by default. UTF-8 capable consoles (OutputCP 65001)

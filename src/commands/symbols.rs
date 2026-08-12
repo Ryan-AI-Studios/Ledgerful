@@ -25,6 +25,8 @@ pub const MAX_LIMIT: u64 = 5000;
 Notes:
   --path is a path *prefix* match (file_path == prefix OR starts with prefix/),
   not a substring filter like `endpoints --path`.
+  When prefix yields zero matches, file-form resolve applies (unique only):
+  X.rs ↔ X/mod.rs, extensionless, unique suffix; ambiguous refuses.
   Class and Interface kinds are accepted but currently unpopulated by extractors
   (reserved vocabulary).
   --changed includes Deleted paths that are still in the index until re-index
@@ -35,6 +37,7 @@ Examples:
   ledgerful symbols --changed --json
   ledgerful symbols --kind fn --path src/cli --json
   ledgerful symbols --path src/commands/ --pub --limit 50 --json
+  ledgerful symbols --path src/commands/doctor.rs --limit 20
 ")]
 pub struct SymbolsArgs {
     /// Path prefix filter (not substring). Trailing slash is trimmed.
@@ -143,6 +146,27 @@ pub struct IndexStatus {
     pub remediation: Option<String>,
 }
 
+/// Additive path-identity note when `--path` zero-match fallback ran (0183).
+/// Omitted when no file resolve was needed or attempted.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PathResolveNote {
+    /// `resolved` | `ambiguous` | `notFound` after zero-match fallback.
+    pub status: String,
+    /// Stored `project_files` path when status is `resolved`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_path: Option<String>,
+    /// Query string for ambiguous refuse.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub query: Option<String>,
+    /// Sorted candidate paths when status is `ambiguous` (capped for wire).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidates: Option<Vec<String>>,
+    /// True total candidate count before wire cap (honest human/JSON totals).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub candidate_total: Option<usize>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct SymbolsJsonEnvelope {
@@ -155,6 +179,9 @@ pub struct SymbolsJsonEnvelope {
     pub symbols: Vec<SymbolInventoryRow>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub index_status: Option<IndexStatus>,
+    /// Present when `--path` zero-match file-identity fallback ran (0183).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub path_resolve: Option<PathResolveNote>,
 }
 
 // ---------------------------------------------------------------------------
@@ -450,15 +477,17 @@ fn empty_missing_envelope(
             state: "missing".to_string(),
             remediation: Some("ledgerful index --incremental".to_string()),
         }),
+        path_resolve: None,
     }
 }
 
-fn build_envelope(
+fn build_envelope_with_resolve(
     scope: SymbolsScopeWire,
     limit: u64,
     symbols: Vec<SymbolInventoryRow>,
     total_matching: usize,
     index_status: Option<IndexStatus>,
+    path_resolve: Option<PathResolveNote>,
 ) -> SymbolsJsonEnvelope {
     let result_count = symbols.len();
     let truncated = total_matching > limit as usize;
@@ -471,6 +500,7 @@ fn build_envelope(
         total_matching,
         symbols,
         index_status,
+        path_resolve,
     }
 }
 
@@ -480,12 +510,52 @@ fn print_json(envelope: &SymbolsJsonEnvelope) -> Result<()> {
     Ok(())
 }
 
+fn print_human_path_resolve(note: &PathResolveNote) {
+    match note.status.as_str() {
+        "ambiguous" => {
+            let query = note.query.as_deref().unwrap_or("");
+            let candidates = note.candidates.as_deref().unwrap_or(&[]);
+            let total = note
+                .candidate_total
+                .unwrap_or(candidates.len())
+                .max(candidates.len());
+            let show = candidates.len().min(10);
+            let listed = candidates[..show].join(", ");
+            let mut msg = format!("{total} indexed paths match '{query}': {listed}");
+            if total > show {
+                msg.push_str(&format!(", and {} more", total - show));
+            }
+            msg.push_str(". Provide a more specific path.");
+            println!(
+                "{}",
+                msg.if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow()))
+            );
+            println!();
+        }
+        "resolved" => {
+            if let Some(p) = note.resolved_path.as_deref() {
+                println!(
+                    "{}",
+                    format!("Path resolved to indexed file: {p}")
+                        .if_supports_color(Stream::Stdout, |s| s.dimmed())
+                );
+                println!();
+            }
+        }
+        _ => {}
+    }
+}
+
 fn print_human(
     symbols: &[SymbolInventoryRow],
     total_matching: usize,
     limit: u64,
     index_status: Option<&IndexStatus>,
+    path_resolve: Option<&PathResolveNote>,
 ) {
+    if let Some(note) = path_resolve {
+        print_human_path_resolve(note);
+    }
     if let Some(status) = index_status {
         let rem = status
             .remediation
@@ -568,7 +638,11 @@ pub fn execute_symbols(args: SymbolsArgs) -> Result<()> {
     // never return the empty indexStatus:missing success envelope for an
     // invalid --changed context.
     // Empty change set → empty inventory exit 0 (after DB open / H1).
-    let changed_keys: Option<HashSet<String>> = if args.changed {
+    //
+    // Collect the full WT key set first (no path filter). Path ∩ changed is
+    // applied after DB open so 0183 file-form resolve can widen `X.rs` →
+    // `X/mod.rs` when the raw prefix matches nothing in the change set.
+    let raw_changed_keys: Option<HashSet<String>> = if args.changed {
         let wt_changes = collect_changed_files_for_filter(&layout).map_err(|e| {
             miette::miette!(
                 "symbols --changed requires a git repository with a readable working tree: {e}"
@@ -577,12 +651,6 @@ pub fn execute_symbols(args: SymbolsArgs) -> Result<()> {
         let mut keys: HashSet<String> = HashSet::new();
         let mut insert_path = |path: &std::path::Path| {
             let normalized = normalize_filter_path(path);
-            // Optional path ∩ changed intersection (A1-BS2): keep only keys under prefix.
-            if let Some(ref prefix) = path_prefix
-                && !path_matches_prefix(&normalized, prefix)
-            {
-                return;
-            }
             keys.insert(path_membership_key(&normalized));
         };
         for c in &wt_changes {
@@ -636,7 +704,13 @@ pub fn execute_symbols(args: SymbolsArgs) -> Result<()> {
                     if args.json {
                         return print_json(&envelope);
                     }
-                    print_human(&[], 0, limit, envelope.index_status.as_ref());
+                    print_human(
+                        &[],
+                        0,
+                        limit,
+                        envelope.index_status.as_ref(),
+                        envelope.path_resolve.as_ref(),
+                    );
                     return Ok(());
                 }
                 return Err(e);
@@ -644,30 +718,125 @@ pub fn execute_symbols(args: SymbolsArgs) -> Result<()> {
         }
     };
 
-    // When both path and changed: path already applied to changed_keys above;
-    // still pass path_prefix for SQL so a non-changed path filter remains active
-    // when changed is off. When changed is on and we already intersected, we can
-    // rely on IN alone — but keeping path filter is harmless AND correct if a
-    // changed path somehow slips through.
+    let conn = storage.get_connection();
+
+    // Path ∩ changed (A1-BS2) + 0183 file-form zero-match resolve.
+    // When --changed: SQL uses membership IN only (path applied via keys).
+    // When path only: SQL uses path_prefix; resolve re-runs query on stored path.
+    use crate::util::path_entity::{IndexedFileResolve, resolve_indexed_file_path};
+
+    let mut path_resolve: Option<PathResolveNote> = None;
+    let query_path_prefix: Option<String> = if args.changed {
+        None
+    } else {
+        path_prefix.clone()
+    };
+
+    // --changed + --path: first-pass path ∩ changed (exact/prefix only).
+    // File-form resolve runs on **zero-match** after the first query so renames
+    // that leave a non-empty key set under the raw path (new name) still widen
+    // to the indexed alias (old name still in index until re-index).
+    let mut changed_keys = if let Some(ref prefix) = path_prefix
+        && let Some(ref all_keys) = raw_changed_keys
+    {
+        Some(
+            all_keys
+                .iter()
+                .filter(|k| path_matches_prefix(k, prefix))
+                .cloned()
+                .collect::<HashSet<_>>(),
+        )
+    } else {
+        raw_changed_keys.clone()
+    };
+
     let filters = QueryFilters {
-        path_prefix: if args.changed {
-            // Membership already path-intersected; avoid double-filter edge cases
-            // with LIKE vs set. IN keys are the intersection.
-            None
-        } else {
-            path_prefix
-        },
+        path_prefix: query_path_prefix.clone(),
         kind: kind_echo.clone(),
         pub_only: args.pub_only,
-        changed_keys,
+        changed_keys: changed_keys.clone(),
         limit: usize::try_from(limit).unwrap_or(usize::MAX),
     };
 
-    let conn = storage.get_connection();
     let (rows, total_matching) = query_symbols(conn, &filters)?;
+
+    // 0183 B2: zero-match file-identity fallback (path-only and --changed+path).
+    // Reuses existing query path after resolve (0183-D). Successful non-empty
+    // inventories stay as-is.
+    let (rows, total_matching) = if total_matching == 0
+        && let Some(ref raw_path) = path_prefix
+        && path_resolve.is_none()
+    {
+        match resolve_indexed_file_path(conn, raw_path) {
+            IndexedFileResolve::Unique { stored_path, .. } if stored_path != *raw_path => {
+                if args.changed {
+                    // Re-intersect full WT keys against resolved indexed path.
+                    let filtered = match &raw_changed_keys {
+                        Some(all_keys) => all_keys
+                            .iter()
+                            .filter(|k| path_matches_prefix(k, &stored_path))
+                            .cloned()
+                            .collect::<HashSet<_>>(),
+                        None => HashSet::new(),
+                    };
+                    changed_keys = Some(filtered);
+                    let resolved_filters = QueryFilters {
+                        path_prefix: None,
+                        kind: kind_echo.clone(),
+                        pub_only: args.pub_only,
+                        changed_keys: changed_keys.clone(),
+                        limit: usize::try_from(limit).unwrap_or(usize::MAX),
+                    };
+                    let (r2, t2) = query_symbols(conn, &resolved_filters)?;
+                    path_resolve = Some(PathResolveNote {
+                        status: "resolved".to_string(),
+                        resolved_path: Some(stored_path),
+                        query: None,
+                        candidates: None,
+                        candidate_total: None,
+                    });
+                    (r2, t2)
+                } else {
+                    let resolved_filters = QueryFilters {
+                        path_prefix: Some(stored_path.clone()),
+                        kind: kind_echo.clone(),
+                        pub_only: args.pub_only,
+                        changed_keys: changed_keys.clone(),
+                        limit: usize::try_from(limit).unwrap_or(usize::MAX),
+                    };
+                    let (r2, t2) = query_symbols(conn, &resolved_filters)?;
+                    path_resolve = Some(PathResolveNote {
+                        status: "resolved".to_string(),
+                        resolved_path: Some(stored_path),
+                        query: None,
+                        candidates: None,
+                        candidate_total: None,
+                    });
+                    (r2, t2)
+                }
+            }
+            IndexedFileResolve::Ambiguous { query, candidates } => {
+                let total = candidates.len();
+                let show = total.min(20);
+                path_resolve = Some(PathResolveNote {
+                    status: "ambiguous".to_string(),
+                    resolved_path: None,
+                    query: Some(query),
+                    candidates: Some(candidates[..show].to_vec()),
+                    candidate_total: Some(total),
+                });
+                // Keep zero-row inventory; refuse silent pick (do not re-query).
+                (rows, total_matching)
+            }
+            _ => (rows, total_matching),
+        }
+    } else {
+        (rows, total_matching)
+    };
+
     let symbols: Vec<SymbolInventoryRow> = rows.into_iter().map(QueriedSymbol::into_wire).collect();
 
-    let envelope = build_envelope(
+    let envelope = build_envelope_with_resolve(
         SymbolsScopeWire {
             path: path_echo,
             changed: args.changed,
@@ -678,6 +847,7 @@ pub fn execute_symbols(args: SymbolsArgs) -> Result<()> {
         symbols,
         total_matching,
         None,
+        path_resolve,
     );
 
     if args.json {
@@ -688,6 +858,7 @@ pub fn execute_symbols(args: SymbolsArgs) -> Result<()> {
             envelope.total_matching,
             envelope.limit,
             envelope.index_status.as_ref(),
+            envelope.path_resolve.as_ref(),
         );
         Ok(())
     }
@@ -880,7 +1051,7 @@ mod tests {
         assert_eq!(total, 7);
         assert_eq!(rows.len(), 2);
 
-        let envelope = build_envelope(
+        let envelope = build_envelope_with_resolve(
             SymbolsScopeWire {
                 path: Some("src/commands".into()),
                 changed: false,
@@ -890,6 +1061,7 @@ mod tests {
             2,
             rows.into_iter().map(QueriedSymbol::into_wire).collect(),
             total,
+            None,
             None,
         );
         assert!(envelope.truncated);
@@ -1110,5 +1282,86 @@ mod tests {
         );
         assert_eq!(rows[0].name, "under_f");
         assert!(rows[0].path.starts_with("src/foo_bar"));
+    }
+
+    /// 0183 B2: file-form `pkg.rs` with only `pkg/mod.rs` indexed → resolve then
+    /// re-query existing symbols path (non-empty).
+    #[test]
+    fn zero_match_file_form_resolves_to_mod_rs() {
+        use crate::util::path_entity::{IndexedFileResolve, resolve_indexed_file_path};
+
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+        seed_file(conn, 1, "src/pkg/mod.rs");
+        seed_symbol(conn, 1, 1, "mod_fn", "Function", Some(1), true, "mod_fn");
+
+        let filters = QueryFilters {
+            path_prefix: Some("src/pkg.rs".into()),
+            kind: None,
+            pub_only: false,
+            changed_keys: None,
+            limit: 200,
+        };
+        let (_rows, total) = query_symbols(conn, &filters).unwrap();
+        assert_eq!(total, 0, "prefix alone must miss file-form .rs vs mod.rs");
+
+        match resolve_indexed_file_path(conn, "src/pkg.rs") {
+            IndexedFileResolve::Unique { stored_path, .. } => {
+                assert_eq!(stored_path, "src/pkg/mod.rs");
+                let resolved = QueryFilters {
+                    path_prefix: Some(stored_path),
+                    kind: None,
+                    pub_only: false,
+                    changed_keys: None,
+                    limit: 200,
+                };
+                let (rows2, total2) = query_symbols(conn, &resolved).unwrap();
+                assert_eq!(total2, 1);
+                assert_eq!(rows2[0].name, "mod_fn");
+            }
+            other => panic!("expected Unique alias resolve, got {other:?}"),
+        }
+    }
+
+    /// 0183: successful dir prefix must not need file resolve (zero-match guard).
+    #[test]
+    fn dir_prefix_with_children_stays_non_empty_without_file_resolve() {
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+        seed_file(conn, 1, "src/pkg/mod.rs");
+        seed_file(conn, 2, "src/pkg/sub.rs");
+        seed_symbol(conn, 1, 1, "a", "Function", Some(1), true, "a");
+        seed_symbol(conn, 2, 2, "b", "Function", Some(1), true, "b");
+
+        let filters = QueryFilters {
+            path_prefix: Some("src/pkg".into()),
+            kind: None,
+            pub_only: false,
+            changed_keys: None,
+            limit: 200,
+        };
+        let (rows, total) = query_symbols(conn, &filters).unwrap();
+        assert_eq!(total, 2);
+        assert_eq!(rows.len(), 2);
+    }
+
+    /// 0183 DoD-2: ambiguous suffix refuses (multi mod.rs).
+    #[test]
+    fn zero_match_ambiguous_suffix_refuses() {
+        use crate::util::path_entity::{IndexedFileResolve, resolve_indexed_file_path};
+
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+        seed_file(conn, 1, "src/a/mod.rs");
+        seed_file(conn, 2, "src/b/mod.rs");
+        seed_symbol(conn, 1, 1, "a", "Function", Some(1), true, "a");
+        seed_symbol(conn, 2, 2, "b", "Function", Some(1), true, "b");
+
+        match resolve_indexed_file_path(conn, "mod.rs") {
+            IndexedFileResolve::Ambiguous { candidates, .. } => {
+                assert_eq!(candidates.len(), 2);
+            }
+            other => panic!("expected Ambiguous, got {other:?}"),
+        }
     }
 }

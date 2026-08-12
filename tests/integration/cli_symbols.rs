@@ -422,3 +422,244 @@ fn symbols_changed_non_git_no_db_errors_before_h1() {
         );
     }
 }
+
+/// 0183: file-form `pkg.rs` with only `pkg/mod.rs` indexed → non-empty symbols + pathResolve.
+#[test]
+fn symbols_path_file_form_resolves_to_mod_rs() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::create_dir_all(root.join("src/pkg")).unwrap();
+    fs::write(root.join("src/pkg/mod.rs"), "pub fn mod_fn() {}").unwrap();
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let root_utf8 = Utf8Path::from_path(root).expect("utf8 root");
+    let layout = Layout::new(root_utf8);
+    layout.ensure_state_dir().unwrap();
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    let conn = storage.get_connection();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path, last_indexed_at) \
+         VALUES (1, 'src/pkg/mod.rs', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_symbols \
+         (id, file_id, qualified_name, symbol_name, symbol_kind, is_public, \
+          line_start, last_indexed_at) \
+         VALUES (1, 1, 'mod_fn', 'mod_fn', 'Function', 1, 1, '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    storage.shutdown().unwrap();
+
+    let (stdout, stderr, code) = run_cli(
+        root,
+        &["symbols", "--path", "src/pkg.rs", "--json", "--limit", "20"],
+    );
+    assert_eq!(code, 0, "stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("JSON expected: {e}; stdout={stdout}");
+    });
+    assert!(
+        v["totalMatching"].as_u64().unwrap() >= 1,
+        "file-form path must resolve to mod.rs symbols; envelope={v}"
+    );
+    assert_eq!(v["pathResolve"]["status"], "resolved");
+    assert_eq!(v["pathResolve"]["resolvedPath"], "src/pkg/mod.rs");
+    let symbols = v["symbols"].as_array().unwrap();
+    assert!(
+        symbols
+            .iter()
+            .any(|s| s["path"].as_str() == Some("src/pkg/mod.rs")),
+        "symbols should list mod.rs path; envelope={v}"
+    );
+
+    // Dir prefix still inventories children without forcing file resolve.
+    let (stdout2, stderr2, code2) = run_cli(
+        root,
+        &["symbols", "--path", "src/pkg", "--json", "--limit", "20"],
+    );
+    assert_eq!(code2, 0, "stderr={stderr2}");
+    let v2: serde_json::Value = serde_json::from_str(stdout2.trim()).unwrap();
+    assert!(v2["totalMatching"].as_u64().unwrap() >= 1);
+    assert!(
+        v2.get("pathResolve").is_none(),
+        "successful dir prefix must not set pathResolve; envelope={v2}"
+    );
+}
+
+/// 0183: multi-match suffix on --path refuses with pathResolve ambiguous.
+#[test]
+fn symbols_path_ambiguous_suffix_refuses() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::create_dir_all(root.join("src/a")).unwrap();
+    fs::create_dir_all(root.join("src/b")).unwrap();
+    fs::write(root.join("src/a/mod.rs"), "pub fn a() {}").unwrap();
+    fs::write(root.join("src/b/mod.rs"), "pub fn b() {}").unwrap();
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let root_utf8 = Utf8Path::from_path(root).expect("utf8 root");
+    let layout = Layout::new(root_utf8);
+    layout.ensure_state_dir().unwrap();
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    let conn = storage.get_connection();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path, last_indexed_at) VALUES \
+         (1, 'src/a/mod.rs', '2026-01-01T00:00:00Z'), \
+         (2, 'src/b/mod.rs', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_symbols \
+         (id, file_id, qualified_name, symbol_name, symbol_kind, is_public, last_indexed_at) \
+         VALUES (1, 1, 'a', 'a', 'Function', 1, '2026-01-01T00:00:00Z'), \
+                (2, 2, 'b', 'b', 'Function', 1, '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    storage.shutdown().unwrap();
+
+    let (stdout, stderr, code) = run_cli(root, &["symbols", "--path", "mod.rs", "--json"]);
+    assert_eq!(
+        code, 0,
+        "ambiguous is honest empty, not hard fail; stderr={stderr}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["totalMatching"], 0);
+    assert_eq!(v["pathResolve"]["status"], "ambiguous");
+    let cands = v["pathResolve"]["candidates"].as_array().unwrap();
+    assert_eq!(cands.len(), 2);
+}
+
+/// 0183: --changed + file-form --path still intersects resolved mod.rs.
+#[test]
+fn symbols_changed_path_file_form_resolves() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::create_dir_all(root.join("src/pkg")).unwrap();
+    fs::write(root.join("src/pkg/mod.rs"), "pub fn mod_fn() {}").unwrap();
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let root_utf8 = Utf8Path::from_path(root).expect("utf8 root");
+    let layout = Layout::new(root_utf8);
+    layout.ensure_state_dir().unwrap();
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    let conn = storage.get_connection();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path, last_indexed_at) \
+         VALUES (1, 'src/pkg/mod.rs', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_symbols \
+         (id, file_id, qualified_name, symbol_name, symbol_kind, is_public, \
+          line_start, last_indexed_at) \
+         VALUES (1, 1, 'mod_fn', 'mod_fn', 'Function', 1, 1, '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    storage.shutdown().unwrap();
+
+    // Dirty the mod.rs path so it appears in --changed.
+    fs::write(
+        root.join("src/pkg/mod.rs"),
+        "pub fn mod_fn() { let _x = 1; }",
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = run_cli(
+        root,
+        &[
+            "symbols",
+            "--changed",
+            "--path",
+            "src/pkg.rs",
+            "--json",
+            "--limit",
+            "20",
+        ],
+    );
+    assert_eq!(code, 0, "stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("JSON expected: {e}; stdout={stdout}");
+    });
+    assert!(
+        v["totalMatching"].as_u64().unwrap() >= 1,
+        "changed+file-form path must resolve to dirty mod.rs; envelope={v}"
+    );
+    assert_eq!(v["pathResolve"]["status"], "resolved");
+    assert_eq!(v["pathResolve"]["resolvedPath"], "src/pkg/mod.rs");
+}
+
+/// 0183: rename mod.rs → pkg.rs on disk; index still has mod.rs; --changed --path pkg.rs resolves.
+#[test]
+fn symbols_changed_path_file_form_after_rename_to_rs() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::create_dir_all(root.join("src/pkg")).unwrap();
+    fs::write(root.join("src/pkg/mod.rs"), "pub fn mod_fn() {}").unwrap();
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let root_utf8 = Utf8Path::from_path(root).expect("utf8 root");
+    let layout = Layout::new(root_utf8);
+    layout.ensure_state_dir().unwrap();
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    let conn = storage.get_connection();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path, last_indexed_at) \
+         VALUES (1, 'src/pkg/mod.rs', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_symbols \
+         (id, file_id, qualified_name, symbol_name, symbol_kind, is_public, \
+          line_start, last_indexed_at) \
+         VALUES (1, 1, 'mod_fn', 'mod_fn', 'Function', 1, 1, '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    storage.shutdown().unwrap();
+
+    // Rename on disk: new path is file-form; index still knows mod.rs.
+    git_cmd(root, &["mv", "src/pkg/mod.rs", "src/pkg.rs"]);
+
+    let (stdout, stderr, code) = run_cli(
+        root,
+        &[
+            "symbols",
+            "--changed",
+            "--path",
+            "src/pkg.rs",
+            "--json",
+            "--limit",
+            "20",
+        ],
+    );
+    assert_eq!(code, 0, "stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("JSON expected: {e}; stdout={stdout}");
+    });
+    assert!(
+        v["totalMatching"].as_u64().unwrap() >= 1,
+        "rename+file-form must resolve via old indexed mod.rs; envelope={v}"
+    );
+    assert_eq!(v["pathResolve"]["status"], "resolved");
+    assert_eq!(v["pathResolve"]["resolvedPath"], "src/pkg/mod.rs");
+}
