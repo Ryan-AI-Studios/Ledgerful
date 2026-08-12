@@ -1103,14 +1103,11 @@ pub fn compute_hotspot_explanation(
     let normalized_entity = crate::util::path::normalize_relative_path(repo_root, entity)
         .unwrap_or_else(|_| entity.to_string());
 
-    // 1. Complexity factor
+    // 1. Complexity factor (project_files-backed). 0183-B3: unique file-identity
+    // resolve so `doctor.rs` finds `doctor/mod.rs` when that is the indexed path.
+    // Frequency / couplings stay on git-history keys (raw normalized_entity).
     let conn = storage.get_connection();
-    let complexity: i32 = conn.query_row(
-        "SELECT MAX(IFNULL(cognitive_complexity, 0), IFNULL(cyclomatic_complexity, 0)) \
-         FROM project_symbols ps JOIN project_files pf ON ps.file_id = pf.id WHERE pf.file_path = ?1",
-        [&normalized_entity],
-        |row| row.get(0)
-    ).unwrap_or(0);
+    let complexity = complexity_for_entity_path(conn, &normalized_entity)?;
 
     let config = load_config(&get_layout()?).unwrap_or_default();
     let history_provider = GixHistoryProvider::new(repo);
@@ -1151,6 +1148,35 @@ pub fn compute_hotspot_explanation(
         couplings: entity_couplings,
         score_breakdown,
     })
+}
+
+/// Complexity lookup against `project_files` with B1 file-identity resolve
+/// (0183-B3). Ambiguous → refuse. Frequency/couplings stay on the raw path.
+fn complexity_for_entity_path(conn: &rusqlite::Connection, normalized_entity: &str) -> Result<i32> {
+    let complexity_path =
+        match crate::util::path_entity::resolve_indexed_file_path(conn, normalized_entity) {
+            crate::util::path_entity::IndexedFileResolve::Unique { stored_path, .. } => stored_path,
+            crate::util::path_entity::IndexedFileResolve::Ambiguous { query, candidates } => {
+                let total = candidates.len();
+                let show = total.min(10);
+                let listed = candidates[..show].join(", ");
+                let mut msg = format!("{total} indexed paths match '{query}': {listed}");
+                if total > 10 {
+                    msg.push_str(&format!(", and {} more", total - show));
+                }
+                msg.push_str(". Provide a more specific path.");
+                return Err(miette::miette!("{msg}"));
+            }
+            crate::util::path_entity::IndexedFileResolve::NotFound => normalized_entity.to_string(),
+        };
+    Ok(conn
+        .query_row(
+            "SELECT MAX(IFNULL(cognitive_complexity, 0), IFNULL(cyclomatic_complexity, 0)) \
+             FROM project_symbols ps JOIN project_files pf ON ps.file_id = pf.id WHERE pf.file_path = ?1",
+            [&complexity_path],
+            |row| row.get(0),
+        )
+        .unwrap_or(0))
 }
 
 fn format_hotspot_interpretation(interpretation: HotspotInterpretation) -> &'static str {
@@ -1546,5 +1572,68 @@ mod tests {
             rendered.contains("solo.rs"),
             "expected file path, got:\n{rendered}"
         );
+    }
+
+    /// 0183-B3: explain complexity resolves `pkg.rs` → `pkg/mod.rs` when only
+    /// the latter is indexed (project_files SQL).
+    #[test]
+    fn complexity_resolves_file_form_to_mod_rs() {
+        use crate::state::migrations::get_migrations;
+        use rusqlite::Connection;
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO project_files (id, file_path, last_indexed_at) \
+             VALUES (1, 'src/pkg/mod.rs', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_symbols \
+             (id, file_id, qualified_name, symbol_name, symbol_kind, is_public, \
+              cognitive_complexity, cyclomatic_complexity, last_indexed_at) \
+             VALUES (1, 1, 'f', 'f', 'Function', 1, 12, 8, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        // Raw path would miss project_files without resolve.
+        let raw: i32 = conn
+            .query_row(
+                "SELECT MAX(IFNULL(cognitive_complexity, 0), IFNULL(cyclomatic_complexity, 0)) \
+                 FROM project_symbols ps JOIN project_files pf ON ps.file_id = pf.id \
+                 WHERE pf.file_path = ?1",
+                ["src/pkg.rs"],
+                |row| row.get(0),
+            )
+            .unwrap_or(0);
+        assert_eq!(raw, 0);
+
+        let resolved = complexity_for_entity_path(&conn, "src/pkg.rs").unwrap();
+        assert_eq!(resolved, 12);
+    }
+
+    #[test]
+    fn complexity_ambiguous_refuses() {
+        use crate::state::migrations::get_migrations;
+        use rusqlite::Connection;
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO project_files (id, file_path, last_indexed_at) VALUES (1, 'src/a/mod.rs', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_files (id, file_path, last_indexed_at) VALUES (2, 'src/b/mod.rs', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let err = complexity_for_entity_path(&conn, "mod.rs").unwrap_err();
+        let msg = format!("{err}");
+        assert!(msg.contains("more specific path"), "{msg}");
+        assert!(msg.contains("src/a/mod.rs"), "{msg}");
     }
 }
