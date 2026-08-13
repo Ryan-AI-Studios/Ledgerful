@@ -406,6 +406,13 @@ mod tests {
             DoctorCategory::Optional,
         );
         assert!(is_hygiene(&info_optional));
+        let surfaces_gated = f(
+            "surfaces-gated",
+            DoctorSeverity::Info,
+            DoctorCategory::Optional,
+        );
+        assert!(is_hygiene(&surfaces_gated));
+        assert!(!is_action_critical(&surfaces_gated));
 
         // T3: action-critical warn expanded (sig-pin).
         let sig_pin = f("sig-pin", DoctorSeverity::Warn, DoctorCategory::Signing);

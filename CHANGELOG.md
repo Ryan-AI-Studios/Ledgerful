@@ -44,6 +44,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **`surfaces` / `tour` inventory (0185):** Read-only map of six advanced
+  surfaces (services, deploy, security, observability, config schema,
+  data-models) as ready / empty / gated. `--json` envelope is
+  `schemaVersion` 1 / `kind: "surfaces"`. Ready is live-command index or
+  config data; repo-root files only choose empty `next`. Doctor emits
+  Info/Optional `surfaces-gated` when coverage gates are off (collapsed
+  unless `--full`; does not change `readyForPublish`). Does not enable
+  coverage or add dogfood content. No dep bumps.
+
 - **`export head --stdout` / `-o -` (0182):** Pure pretty `ChainHead` JSON on
   stdout (same bytes as file path write; no SUCCESS banner; no file created).
   Fixes the footgun where `-o -` wrote a file named `-`. Default file path and
