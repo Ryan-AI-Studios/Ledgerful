@@ -47,7 +47,8 @@ The goal is not novelty. The goal is to match the baseline operator expectations
 8. Optional subsystems should still be exercised
    - Repo-local optional surfaces such as observability and security should have at least one checked-in fixture or smokeable path so the repo continuously exercises them.
    - If the main repo intentionally does not enable a subsystem, the repo should still provide fixture-backed verification coverage.
-   - Dogfood fixtures must be isolated from default production-facing scans unless the operator explicitly opts into the fixture path.
+   - **Security (0186-E):** the committed pack at `policies/daemon-api.cedar` **is** default production-facing scan content. Policy 8’s older “isolated from default scans” clause is **superseded for security**. Hermetic fixtures under `tests/fixtures/policies/` remain test-only and are not ingested from that path.
+   - **Observability:** stays fixture-isolated. There is no product OpenSLO under `observability/` (declined). Copy the OpenSLO fixture only for an explicit smoke, then delete it.
 
 9. Provenance should show exactness
    - Provenance surfaces must distinguish exact links from derived or heuristic links.
@@ -68,7 +69,7 @@ The goal is not novelty. The goal is to match the baseline operator expectations
 ## Current Repo Policy Decisions
 
 - `services diff` remains config-aware and intentionally follows the repo's current `coverage.enabled` policy. This document does not require enabling service inference by default.
-- Dogfooding optional surfaces should use checked-in fixtures, focused tests, or explicit smoke recipes rather than silently changing repo policy for unrelated workflows.
+- Dogfooding optional surfaces should use the committed pack (env schema + Cedar) plus focused tests. Do not silently flip product `coverage.enabled` (or deploy) for unrelated workflows. `[services]` remains a local-only recipe (`.ledgerful/` is gitignored).
 
 ## Enforcement Direction
 
@@ -82,33 +83,54 @@ New development tasks should reference this policy when they touch:
 - CLI argument conventions
 - provenance and audit surfaces
 
-## Dogfood Fixture Smoke Recipes
+## Engine dogfood pack (0186)
 
-To manually smoke-test optional observability and security surfaces using the provided dogfood fixtures:
+Clone-durable content (Phase A) lives in git:
 
-**Run these commands from the repository root of this Ledgerful/Ledgerful checkout.** The fixture
-source paths below (`tests/fixtures/...`) are relative paths resolved against the current working
-directory, not the repo root — if you run them from any other directory (including a separate clean
-test repo used to validate this recipe), `Copy-Item` will throw a clear `PathNotFound`-style error for
-the missing source. Follow that error rather than ignoring it: a silently-skipped copy leaves
-`observability/`/`policies/` empty, which surfaces later only as a confusing "no coverage data" /
-`noIndexedData` result from steps 2-3, with no obvious link back to the real cause.
+- `.env.example` — operator-facing env schema. After `ledgerful index --incremental`,
+  `ledgerful config schema` is ready. Secrets stay empty. Copy to a gitignored `.env`
+  for real values.
+- `policies/daemon-api.cedar` — 8 core `/api` permits (not a live PDP; daemon auth is
+  still Bearer). After `ledgerful index --analyze-graph`, `ledgerful security boundaries`
+  is ready. This file is **default scan content**. Do not copy
+  `tests/fixtures/policies/dogfood_policy.cedar` into `policies/`.
 
-1. Copy the dogfood fixtures to the active scanning directories:
-   - For observability (OpenSLO):
-     `New-Item -ItemType Directory -Force -Path observability; Copy-Item -Path tests/fixtures/observability/dogfood_slo.yaml -Destination observability/dogfood_slo.yaml`
-   - For security policies (Cedar):
-     `New-Item -ItemType Directory -Force -Path policies; Copy-Item -Path tests/fixtures/policies/dogfood_policy.cedar -Destination policies/dogfood_policy.cedar`
+Expected `ledgerful surfaces` on this checkout after Phase A index, without flipping
+coverage: **2 gated · 1 empty · 3 ready** (services + deploy gated; observability empty;
+schema + security + data-models ready).
 
-2. Re-index and build the knowledge graph with graph analysis enabled:
-   `ledgerful index --analyze-graph`
+### Phase B — local `[services]` recipe (not clone-durable)
 
-3. Verify the surfaces are populated and print correct coverage/boundaries:
-   - Run observability coverage:
-     `ledgerful observability coverage`
-   - Run security boundaries:
-     `ledgerful security boundaries`
+`.ledgerful/` is gitignored, so declared services and coverage flags cannot ship with
+the repo without flipping product defaults (declined). On this machine only:
 
-4. Clean up the dogfood fixtures and re-index to restore the clean repository state:
-   `Remove-Item -Force -Path observability/dogfood_slo.yaml; Remove-Item -Force -Path policies/dogfood_policy.cedar; ledgerful index --analyze-graph`
+```text
+ledgerful config set coverage.enabled=true
+ledgerful config set coverage.services.enabled=true
+# then hand-edit .ledgerful/config.toml with the [[services.definitions]] block
+# from docs/examples/config.toml — config set cannot write array-of-tables
+ledgerful index --analyze-graph
+```
+
+`docs/examples/config.toml` is a fully-enabled **example** (coverage.global / services /
+deploy already true). Copying it to `.ledgerful/config.toml` can skip the `config set`
+steps. Do **not** treat `coverage.deploy.enabled=true` as an 0186 DoD. Product
+`CoverageConfig` defaults stay false.
+
+### Observability fixture smoke (still isolated)
+
+OpenSLO remains declined as product content. To smoke the parser path only:
+
+**Run from this repository root.** Fixture paths are relative to the current working
+directory — a missed copy looks like `noIndexedData`, not a missing file.
+
+1. Copy the OpenSLO fixture:
+   `New-Item -ItemType Directory -Force -Path observability; Copy-Item -Path tests/fixtures/observability/dogfood_slo.yaml -Destination observability/dogfood_slo.yaml`
+2. `ledgerful index --analyze-graph`
+3. `ledgerful observability coverage`
+4. Clean up:
+   `Remove-Item -Force -Path observability/dogfood_slo.yaml; ledgerful index --analyze-graph`
+
+Hermetic tests still parse `tests/fixtures/policies/dogfood_policy.cedar` and the
+OpenSLO fixture in-place. Those files are **not** default security scan content.
 

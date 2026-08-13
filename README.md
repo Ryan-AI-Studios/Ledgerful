@@ -70,7 +70,7 @@ ledgerful ask "What should I verify next?"
 - `ask`: send sanitized impact context to Gemini or a local LLM. Supports natural-language `--semantic` codebase search.
 - `search`: sub-millisecond regex search via Tantivy trigrams and ranked BM25 codebase queries.
 - `hotspots`: rank files by temporal change frequency multiplied by complexity.
-- `surfaces` (alias `tour`): read-only inventory of advanced surfaces (ready / empty / gated). Does not enable coverage.
+- `surfaces` (alias `tour`): read-only inventory of advanced surfaces (ready / empty / gated). Does not enable coverage. Engine dogfood uses committed `.env.example` + `policies/` so schema and security can show ready after index.
 - `mcp`: run the Model Context Protocol stdio server for AI agent integration; also `mcp install|uninstall|status` for Top-N host config (claude-code, cursor, codex, copilot).
 - `viz`: export an interactive HTML Knowledge Graph visualization of codebase dependencies and risk heatmaps.
 - `federate`: export public interfaces, scan sibling repositories, and show live federated peers (path identity; `federate scan` prunes stale cache).

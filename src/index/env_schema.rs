@@ -612,3 +612,117 @@ pub struct EnvSchemaStats {
     pub config_declarations: usize,
     pub files_processed: usize,
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn committed_env_example() -> String {
+        let path = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join(".env.example");
+        std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("committed .env.example must be readable at {path:?}: {e}"))
+    }
+
+    #[test]
+    fn committed_env_example_has_frozen_v1_keys() {
+        let decls = EnvSchemaExtractor::extract_from_dotenv(&committed_env_example());
+        let names: Vec<&str> = decls.iter().map(|d| d.var_name.as_str()).collect();
+        // Spec §3.2 listed block is 21 KEY= lines (4+2+3+3+2+7). Planning
+        // prose said "19" — that was a miscount of the same frozen set.
+        assert_eq!(
+            names,
+            [
+                "GEMINI_API_KEY",
+                "LEDGERFUL_ASK_MODEL_1",
+                "LEDGERFUL_ASK_PROVIDER_1",
+                "LEDGERFUL_BRIDGE",
+                "LEDGERFUL_CLOUD_POLICY",
+                "LEDGERFUL_CONFIG_HOME",
+                "LEDGERFUL_DEFAULT_CONFIG",
+                "LEDGERFUL_NON_INTERACTIVE",
+                "LEDGERFUL_NO_NETWORK",
+                "LEDGERFUL_NO_TUI",
+                "LEDGERFUL_PARENT_PID",
+                "LEDGERFUL_QUIET",
+                "LEDGERFUL_STATE_DIR",
+                "LEDGERFUL_STRICT_OBSERVE_SIGNAL",
+                "LEDGERFUL_SYNC_SECRET",
+                "LEDGERFUL_TABLE_STYLE",
+                "LEDGERFUL_WEB_PEER_ALLOWLIST",
+                "LEDGERFUL_WEB_TOKEN",
+                "OLLAMA_API_KEY",
+                "OLLAMA_CLOUD_API_KEY",
+                "OPENROUTER_API_KEY",
+            ]
+        );
+    }
+
+    #[test]
+    fn committed_env_example_secrets_match_all_eight_patterns_and_stay_empty() {
+        let content = committed_env_example();
+        let decls = EnvSchemaExtractor::extract_from_dotenv(&content);
+        assert_eq!(
+            SECRET_PATTERNS,
+            &[
+                "SECRET",
+                "KEY",
+                "PASSWORD",
+                "TOKEN",
+                "API_KEY",
+                "PRIVATE",
+                "CREDENTIAL",
+                "AUTH",
+            ]
+        );
+
+        for decl in &decls {
+            if is_secret_name(&decl.var_name) {
+                assert!(
+                    decl.is_secret,
+                    "{} matches is_secret_name but is_secret=false",
+                    decl.var_name
+                );
+                assert_eq!(
+                    decl.default_value_redacted.as_deref(),
+                    Some(EMPTY_DEFAULT),
+                    "secret {} must stay empty (not a live token)",
+                    decl.var_name
+                );
+                assert!(decl.required, "empty secret {} is required", decl.var_name);
+            }
+        }
+
+        // Every SECRET_PATTERNS entry is recognized by is_secret_name.
+        for pat in SECRET_PATTERNS {
+            let sample = format!("LEDGERFUL_{pat}_PROBE");
+            assert!(
+                is_secret_name(&sample),
+                "is_secret_name must match SECRET_PATTERNS entry {pat} via {sample}"
+            );
+        }
+
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() || trimmed.starts_with('#') {
+                continue;
+            }
+            if let Some((_, value)) = trimmed.split_once('=') {
+                let v = value.trim();
+                assert!(
+                    v.is_empty()
+                        || PLACEHOLDER_VALUES
+                            .iter()
+                            .any(|p| v.to_lowercase().contains(p)),
+                    "committed .env.example value must be empty or placeholder, got {trimmed}"
+                );
+                for needle in ["sk-", "AIza", "xox", "ghp_", "github_pat_"] {
+                    assert!(
+                        !v.contains(needle),
+                        "committed .env.example must not contain live-looking token {needle}: {trimmed}"
+                    );
+                }
+            }
+        }
+    }
+}

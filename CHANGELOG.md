@@ -44,6 +44,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Engine dogfood graph pack (0186):** Committed `.env.example` (operator-facing
+  env schema; secrets empty) and `policies/daemon-api.cedar` (8 core `/api`
+  permits, not a live PDP). After `index --incremental`, `config schema` is
+  ready; after `index --analyze-graph`, `security boundaries` is ready.
+  `surfaces` then shows 2 gated · 1 empty · 3 ready without flipping product
+  `coverage.enabled`. `[services]` stays a local-only recipe. No OpenSLO, no
+  deploy default, no crate bumps.
+
 - **`surfaces` / `tour` inventory (0185):** Read-only map of six advanced
   surfaces (services, deploy, security, observability, config schema,
   data-models) as ready / empty / gated. `--json` envelope is
