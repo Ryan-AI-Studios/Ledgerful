@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.9] - 2026-08-13
+
 ### Fixed
 
 - **Federate status hygiene (0184):** Path is peer identity; display/store
