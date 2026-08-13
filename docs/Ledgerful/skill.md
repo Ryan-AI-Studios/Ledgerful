@@ -237,8 +237,11 @@ ledgerful index --incremental
 # ledgerful index --scip path/to/index.scip --json
 
 # Find a function, struct, or type by name
-ledgerful search "handleGetUser"
+ledgerful search handleGetUser
 ledgerful search "AuthMiddleware"
+# Unquoted multi-word joins (same as quoted); flags anywhere; `--` for hyphen-leading (not quotes)
+ledgerful search foo bar --json
+ledgerful search -- --json
 
 # Find HTTP routes
 ledgerful search "POST /auth"

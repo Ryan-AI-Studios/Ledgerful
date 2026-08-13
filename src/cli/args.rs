@@ -224,9 +224,31 @@ pub enum Commands {
         yes: bool,
     },
     /// Search the codebase using high-performance regex or semantic search
+    ///
+    /// Unquoted multi-word queries are accepted. Flags may appear before or after
+    /// query words. Use `--` for hyphen-leading tokens.
+    #[command(
+        long_about = "Search the codebase using high-performance regex or semantic search.\n\n\
+Unquoted multi-word queries are accepted (e.g. `search foo bar` is the same as\n\
+`search \"foo bar\"`). Flags such as `--json` and `--limit` may appear before or\n\
+after query words. Hyphen-leading tokens need `--` so clap does not parse them\n\
+as flags. Shell quotes do not hide a leading hyphen from clap.",
+        after_help = "\
+Tips:
+  ledgerful search foo bar
+      Unquoted multi-word OK; same as search \"foo bar\"
+  ledgerful search --json foo bar
+  ledgerful search foo bar --json
+      Flags before or after query words
+  ledgerful search -- --json
+      Hyphen-leading token; without `--` clap parses flags
+      (quotes are stripped by the shell — `search \"--json\"` is still the flag)
+"
+    )]
     Search {
-        /// The query string
-        query: String,
+        /// Query words (unquoted multi-word OK). Flags may appear before or after.
+        #[arg(value_name = "QUERY", num_args = 1.., required = true)]
+        query: Vec<String>,
         /// Use regular expression search
         #[arg(short, long)]
         regex: bool,

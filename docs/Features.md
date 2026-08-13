@@ -52,6 +52,12 @@ Understand the "blast radius" of any change before it is committed.
 Compiler-grade search and conceptual discovery.
 
 *   **Trigram Regex Search**: Sub-millisecond regex discovery using Tantivy and custom Trigram pre-filters.
+*   **Unquoted multi-word `search` (0187):** `ledgerful search foo bar` joins tokens
+    (`"foo bar"`) the same as quoted argv. Flags (`--json`, `--limit`, …) may appear
+    before or after query words. Hyphen-leading tokens need `--`
+    (`search -- --json`); shell quotes do not hide a leading hyphen from clap.
+    Unknown flags stay clap errors. Not a query-language rewrite; `ask` still
+    swallows post-query flags.
 *   **Index freshness policy (three tiers)**: light continuous (`watch` + mega-batch safety), light
     on-demand (`--auto-index` on `search` / `ask` / `hotspots` / `dead-code` with time-stale
     **and** content-hash drift-stale, full bootstrap when never indexed), heavy scheduled/explicit
