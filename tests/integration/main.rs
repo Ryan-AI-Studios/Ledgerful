@@ -25,6 +25,7 @@ mod cli_dead_code;
 mod cli_dead_code_prune;
 mod cli_dependencies;
 mod cli_doctor;
+mod cli_dogfood_0186;
 mod cli_dx1_prompts;
 mod cli_dx7_config_hints;
 mod cli_federate;

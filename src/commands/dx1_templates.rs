@@ -117,7 +117,7 @@ pub(crate) fn generate_cedar_template(routes: &[(String, String)]) -> String {
 /// Sanitize `METHOD path` into a Cedar-id-safe identifier: keep `[A-Za-z0-9]`,
 /// replace every other character (including `/`, spaces, punctuation) with a
 /// single `_`, collapsing runs of underscores and trimming a trailing one.
-fn sanitize_cedar_id(method: &str, path: &str) -> String {
+pub(crate) fn sanitize_cedar_id(method: &str, path: &str) -> String {
     let raw = format!("{}_{}", method.to_lowercase(), path);
     let mut out = String::with_capacity(raw.len());
     let mut prev_under = false;

@@ -70,3 +70,21 @@ enabled = true
 [coverage.adr_staleness]
 enabled = true
 threshold_days = 365
+
+# Example only — this file is fully-enabled (0186-D). Product CoverageConfig
+# defaults stay false. Copying this file to .ledgerful/config.toml can skip
+# `config set coverage.enabled=true` / `coverage.services.enabled=true`.
+# Do not treat coverage.deploy.enabled as an 0186 DoD.
+# config set cannot write array-of-tables; hand-edit these rows.
+
+[[services.definitions]]
+name = "ledgerful"
+root = "src"
+owners = ["engine"]
+runtime_name = "ledgerful"
+
+[[services.definitions]]
+name = "ledgerful-mcp"
+root = "mcp-server"
+owners = ["engine"]
+runtime_name = "ledgerful-mcp"
