@@ -167,6 +167,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
             hybrid,
         } => {
             use crate::commands::search::SearchJsonMode;
+            let query = query.join(" ");
             let json_mode = if json {
                 SearchJsonMode::Envelope
             } else if json_lines {

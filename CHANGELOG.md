@@ -44,6 +44,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Unquoted multi-word `search` (0187):** `ledgerful search foo bar` joins
+  tokens to the same query as `search "foo bar"`. Flags (`--json`, `--limit`,
+  …) parse before or after query words. Empty `search` stays required
+  (`<QUERY>...`). Hyphen-leading tokens still need `--` (quotes do not hide
+  a leading hyphen); unknown flags stay clap errors. Envelope `query` remains
+  one string. MCP search
+  still passes one string after `--`. Not a query-language rewrite; `ask`
+  still swallows post-query flags. No crate or product bump.
+
 - **Engine dogfood graph pack (0186):** Committed `.env.example` (operator-facing
   env schema; secrets empty) and `policies/daemon-api.cedar` (8 core `/api`
   permits, not a live PDP). After `index --incremental`, `config schema` is

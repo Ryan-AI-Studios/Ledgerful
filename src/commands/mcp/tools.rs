@@ -776,6 +776,7 @@ mod tests {
 
     /// 0126 empty path remains via document_count==0; 0134 adds staleness refresh via MCP flag.
     /// 0136: MCP stays on `--json` (envelope), never `--json-lines`.
+    /// 0187: pin `--` + one string; CLI join is argv-only — do not rewrite MCP.
     #[test]
     fn build_search_args_includes_auto_index() {
         let args = build_search_args("symbol", "10");

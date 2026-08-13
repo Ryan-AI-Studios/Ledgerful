@@ -675,9 +675,16 @@ conflict (clap reject).
 ### Invocation
 
 ```powershell
+ledgerful search --json foo bar
 ledgerful search --json --limit 5 -- "change-context" | ConvertFrom-Json
 ledgerful search --json --semantic -- "blast radius"
 ```
+
+Unquoted multi-word argv (`search --json foo bar`) joins to the same `query`
+string as `search --json "foo bar"`. Flags may appear before or after words.
+Keep `--` for hyphen-leading tokens (`search -- --json`). Shell quotes do not
+hide a leading hyphen from clap. Envelope `query` remains one string
+(schemaVersion 1; no `queryTokens`).
 
 MCP tool `search` spawns `search --json` (envelope; never `--json-lines`).
 

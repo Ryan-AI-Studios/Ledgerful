@@ -433,6 +433,153 @@ mod tests {
     }
 
     #[test]
+    fn search_multi_token_unquoted_joins_query() {
+        let cli = Cli::try_parse_from(["ledgerful", "search", "foo", "bar"]).unwrap();
+        match cli.command {
+            Commands::Search { query, json, .. } => {
+                assert_eq!(query, vec!["foo", "bar"]);
+                assert_eq!(query.join(" "), "foo bar");
+                assert!(!json);
+            }
+            _ => panic!("expected Search command"),
+        }
+    }
+
+    #[test]
+    fn search_json_flag_before_tokens() {
+        let cli = Cli::try_parse_from(["ledgerful", "search", "--json", "foo", "bar"]).unwrap();
+        match cli.command {
+            Commands::Search { query, json, .. } => {
+                assert!(json);
+                assert_eq!(query, vec!["foo", "bar"]);
+                assert_eq!(query.join(" "), "foo bar");
+            }
+            _ => panic!("expected Search command"),
+        }
+    }
+
+    #[test]
+    fn search_json_flag_after_tokens() {
+        let cli = Cli::try_parse_from(["ledgerful", "search", "foo", "bar", "--json"]).unwrap();
+        match cli.command {
+            Commands::Search { query, json, .. } => {
+                assert!(json);
+                assert_eq!(query, vec!["foo", "bar"]);
+                assert_eq!(query.join(" "), "foo bar");
+            }
+            _ => panic!("expected Search command"),
+        }
+    }
+
+    #[test]
+    fn search_json_flag_between_tokens() {
+        let cli = Cli::try_parse_from(["ledgerful", "search", "foo", "--json", "bar"]).unwrap();
+        match cli.command {
+            Commands::Search { query, json, .. } => {
+                assert!(json);
+                assert_eq!(query, vec!["foo", "bar"]);
+                assert_eq!(query.join(" "), "foo bar");
+            }
+            _ => panic!("expected Search command"),
+        }
+    }
+
+    #[test]
+    fn search_limit_flag_between_tokens() {
+        let cli =
+            Cli::try_parse_from(["ledgerful", "search", "foo", "--limit", "5", "bar"]).unwrap();
+        match cli.command {
+            Commands::Search {
+                query, limit, json, ..
+            } => {
+                assert_eq!(query, vec!["foo", "bar"]);
+                assert_eq!(query.join(" "), "foo bar");
+                assert_eq!(limit, 5);
+                assert!(!json);
+            }
+            _ => panic!("expected Search command"),
+        }
+    }
+
+    #[test]
+    fn search_quoted_two_word_single_token() {
+        let cli = Cli::try_parse_from(["ledgerful", "search", "--json", "foo bar"]).unwrap();
+        match cli.command {
+            Commands::Search { query, json, .. } => {
+                assert!(json);
+                assert_eq!(query, vec!["foo bar"]);
+                assert_eq!(query.join(" "), "foo bar");
+            }
+            _ => panic!("expected Search command"),
+        }
+    }
+
+    #[test]
+    fn search_missing_query_is_required() {
+        let err = Cli::try_parse_from(["ledgerful", "search"]).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::MissingRequiredArgument,
+            "empty search must fail closed via required=true: {err}"
+        );
+        let rendered = err.to_string();
+        assert!(
+            rendered.contains("<QUERY>") || rendered.contains("QUERY"),
+            "missing query usage should name QUERY: {rendered}"
+        );
+    }
+
+    #[test]
+    fn search_unknown_flag_is_error() {
+        let err = Cli::try_parse_from(["ledgerful", "search", "foo", "--nope"]).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::UnknownArgument,
+            "unknown flag must stay fail-closed: {err}"
+        );
+    }
+
+    #[test]
+    fn search_hyphen_leading_without_separator_is_error() {
+        let err = Cli::try_parse_from(["ledgerful", "search", "--not-a-search-flag"]).unwrap_err();
+        assert_eq!(
+            err.kind(),
+            clap::error::ErrorKind::UnknownArgument,
+            "hyphen-leading token without -- must not become query text: {err}"
+        );
+    }
+
+    #[test]
+    fn search_end_of_options_keeps_hyphen_token() {
+        let cli = Cli::try_parse_from(["ledgerful", "search", "--", "--json"]).unwrap();
+        match cli.command {
+            Commands::Search { query, json, .. } => {
+                assert_eq!(query, vec!["--json"]);
+                assert_eq!(query.join(" "), "--json");
+                assert!(!json, "token after -- must not select json mode");
+            }
+            _ => panic!("expected Search command"),
+        }
+    }
+
+    #[test]
+    fn search_identifier_token_stays_out_of_argv_shape() {
+        let cli = Cli::try_parse_from(["ledgerful", "search", "verify_step_key"]).unwrap();
+        match &cli.command {
+            Commands::Search { query, .. } => {
+                assert_eq!(query, &vec!["verify_step_key".to_string()]);
+            }
+            _ => panic!("expected Search command"),
+        }
+        assert_eq!(
+            cli.command.argv_shape(),
+            "search",
+            "query text must not enter present_flag_names: {}",
+            cli.command.argv_shape()
+        );
+    }
+
+    #[test]
     fn ask_multi_word_unquoted_joins_query() {
         let cli =
             Cli::try_parse_from(["ledgerful", "ask", "what", "is", "change-context"]).unwrap();
