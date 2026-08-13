@@ -268,6 +268,19 @@ Class and Interface kinds are accepted but currently unpopulated by extractors (
 --changed includes Deleted paths still present in the index until re-index."
     )]
     Symbols(crate::commands::symbols::SymbolsArgs),
+    /// Inventory of advanced surfaces (ready / empty / gated)
+    #[command(
+        visible_alias = "tour",
+        long_about = "Read-only inventory of six advanced surfaces: services, deploy, \
+security, observability, config schema, and data-models.\n\n\
+Each row is ready, empty, or gated by coverage. Does not enable coverage \
+or add content. Alias: tour."
+    )]
+    Surfaces {
+        /// Pure machine JSON on stdout (schemaVersion 1)
+        #[arg(long)]
+        json: bool,
+    },
     /// Manage cross-repo federation
     #[command(
         after_help = "Default when omitted: status (read-only; export/scan require explicit subcommand)."
@@ -793,6 +806,7 @@ impl Commands {
             }
             Commands::Endpoints(args) => args.wants_json(),
             Commands::Symbols(args) => args.wants_json(),
+            Commands::Surfaces { json } => *json,
             Commands::Export { command } => match command {
                 // 0182: pure stdout ChainHead JSON must stay free of SUCCESS banners.
                 ExportCommands::Head { out, stdout, .. } => {
@@ -947,6 +961,7 @@ impl Commands {
             },
             Commands::Endpoints(_) => "endpoints",
             Commands::Symbols(_) => "symbols",
+            Commands::Surfaces { .. } => "surfaces",
             Commands::Export { command } => match command {
                 ExportCommands::Evidence { .. } => "export_evidence",
                 ExportCommands::Head { .. } => "export_head",
@@ -1126,6 +1141,12 @@ mod machine_output_tests {
         assert!(parse(&["symbols", "--json"]).is_machine_output());
         assert!(!parse(&["symbols"]).is_machine_output());
         assert_eq!(parse(&["symbols"]).command_name(), "symbols");
+        assert!(parse(&["surfaces", "--json"]).is_machine_output());
+        assert!(!parse(&["surfaces"]).is_machine_output());
+        assert_eq!(parse(&["surfaces"]).command_name(), "surfaces");
+        assert!(parse(&["tour", "--json"]).is_machine_output());
+        assert!(!parse(&["tour"]).is_machine_output());
+        assert_eq!(parse(&["tour"]).command_name(), "surfaces");
         assert!(
             Cli::try_parse_from(["ledgerful", "symbols", "--limit", "5001"]).is_err(),
             "symbols --limit > 5000 must be rejected"
@@ -1860,6 +1881,11 @@ impl Commands {
             }
             Commands::Symbols(args) => {
                 f.extend(args.present_flag_names());
+            }
+            Commands::Surfaces { json } => {
+                if *json {
+                    f.push("json");
+                }
             }
             Commands::Ask {
                 query: _,

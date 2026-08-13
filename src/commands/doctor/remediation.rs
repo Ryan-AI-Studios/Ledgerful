@@ -299,6 +299,29 @@ pub fn graph_drift_check_failed_index_health_line() -> &'static str {
     "Graph state: Drift check failed — run 'ledgerful index --check'"
 }
 
+/// Build `surfaces-gated` when the 0185 inventory has coverage-gated rows.
+///
+/// Info + Optional (0174 hygiene — collapsed unless `doctor --full`).
+/// IDs must already be in spec §3.2 table order. Empty ids → `None`.
+/// Remediation is `ledgerful surfaces`, not `config set` (does not push 0186).
+pub fn build_surfaces_gated_finding(ids: &[&str]) -> Option<DoctorFinding> {
+    if ids.is_empty() {
+        return None;
+    }
+    let n = ids.len();
+    let listed = ids.join(", ");
+    Some(
+        DoctorFinding::info(
+            "surfaces-gated",
+            DoctorCategory::Optional,
+            format!(
+                "{n} advanced surface(s) gated by coverage ({listed}). Run `ledgerful surfaces`."
+            ),
+        )
+        .with_remediation("ledgerful surfaces"),
+    )
+}
+
 /// Success Index Health when age-fresh, content-clean, and Cozo has nodes/edges.
 pub fn graph_current_populated_index_health_line() -> &'static str {
     "Graph state: Current"
@@ -710,5 +733,43 @@ mod tests {
         let line = graph_content_stale_index_health_line(1);
         assert!(!line.contains("Current"));
         assert!(!line.contains("analyze-graph"));
+    }
+
+    #[test]
+    fn surfaces_gated_none_when_empty_ids() {
+        assert!(build_surfaces_gated_finding(&[]).is_none());
+    }
+
+    #[test]
+    fn surfaces_gated_info_optional_preserves_id_order_and_ready_for_publish() {
+        let f = build_surfaces_gated_finding(&["services", "deploy"]).expect("finding");
+        assert_eq!(f.code, "surfaces-gated");
+        assert_eq!(f.severity, DoctorSeverity::Info);
+        assert_eq!(f.category, DoctorCategory::Optional);
+        assert_eq!(
+            f.message,
+            "2 advanced surface(s) gated by coverage (services, deploy). Run `ledgerful surfaces`."
+        );
+        assert_eq!(f.remediation.as_deref(), Some("ledgerful surfaces"));
+        assert!(
+            !f.remediation
+                .as_deref()
+                .expect("rem")
+                .contains("config set"),
+            "doctor must not push 0186 enable"
+        );
+        assert!(ready_for_publish(std::slice::from_ref(&f)));
+        assert_eq!(dashboard_failures(std::slice::from_ref(&f)), 0);
+        let v = serde_json::to_value(&f).expect("serialize");
+        assert_eq!(v["code"], "surfaces-gated");
+        assert_eq!(v["severity"], "info");
+        assert_eq!(v["category"], "optional");
+    }
+
+    #[test]
+    fn surfaces_gated_single_id_no_extra_sort() {
+        let f = build_surfaces_gated_finding(&["deploy"]).expect("finding");
+        assert!(f.message.contains("(deploy)"));
+        assert!(!f.message.contains("services"));
     }
 }

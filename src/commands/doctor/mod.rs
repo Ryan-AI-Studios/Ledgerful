@@ -17,7 +17,7 @@ pub use remediation::{
     ContentHashDriftInputs, GraphAgeInputs, GraphIndexHealth, SearchDocsClassification,
     build_graph_content_stale_finding, build_graph_drift_check_failed_finding,
     build_search_empty_finding, build_sig_pin_finding, build_sig_version_finding,
-    classify_graph_index_health, classify_search_document_count,
+    build_surfaces_gated_finding, classify_graph_index_health, classify_search_document_count,
     graph_content_stale_index_health_line, graph_current_empty_cozo_index_health_line,
     graph_current_populated_index_health_line, graph_drift_check_failed_index_health_line,
     search_empty_index_health_line, search_ok_index_health_line,
@@ -592,6 +592,19 @@ pub fn execute_doctor(
 
     // 0110: light team-sync findings (warn/info only). Disabled sync never blocks publish.
     findings.extend(sync_doctor_findings(&layout, &config));
+
+    // 0185: coverage-gated advanced surfaces (Info/Optional; collapsed unless --full).
+    match crate::commands::surfaces::classify_surfaces(&config, &layout, &storage) {
+        Ok(report) => {
+            let ids = crate::commands::surfaces::gated_ids(&report);
+            if let Some(finding) = build_surfaces_gated_finding(&ids) {
+                findings.push(finding);
+            }
+        }
+        Err(e) => {
+            tracing::debug!("doctor surfaces inventory probe failed: {e}");
+        }
+    }
 
     // Join network probes after heavy local work (0143 Fix B). Apply the same
     // finding codes/messages as before: embed fields/findings first, then

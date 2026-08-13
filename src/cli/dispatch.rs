@@ -190,6 +190,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
         Commands::Hotspots { args } => crate::commands::hotspots::execute_hotspots(args),
         Commands::Endpoints(args) => crate::commands::endpoints::execute_endpoints(args),
         Commands::Symbols(args) => crate::commands::symbols::execute_symbols(args),
+        Commands::Surfaces { json } => crate::commands::surfaces::execute_surfaces(json),
         Commands::Federate { command } => dispatch_federate(federate_or_default(command)),
         Commands::Bridge { subcommand } => crate::commands::bridge::execute(subcommand),
         Commands::Export { command } => dispatch_export(command),

@@ -51,6 +51,7 @@ pub mod search;
 pub mod security;
 pub mod services_diff;
 pub mod setup;
+pub mod surfaces;
 pub mod symbols;
 #[cfg(feature = "sync")]
 pub mod sync;
