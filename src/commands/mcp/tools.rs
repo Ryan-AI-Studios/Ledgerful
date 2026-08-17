@@ -11,13 +11,38 @@ const MCP_ASK_CHILD_TIMEOUT_SECS: u64 = 110;
 const MCP_ASK_CHILD_TIMEOUT_FLAG: &str = "110";
 const MCP_SUBPROCESS_OUTPUT_MAX: usize = 4 * 1024 * 1024;
 
+/// Internal classification of MCP tool failures. Rendered through
+/// [`error_response`] as the existing `{content, isError}` envelope — not a
+/// JSON-RPC error object or `structuredContent`.
+#[derive(Debug, thiserror::Error)]
+pub enum McpToolError {
+    #[error("Process policy denied ledgerful self-spawn: {0}")]
+    Policy(String),
+    #[error("Failed to spawn ledgerful tool: {0}")]
+    Spawn(String),
+    #[error("ledgerful tool timed out after {} seconds", MCP_TOOL_TIMEOUT_SECS)]
+    Timeout,
+    #[error("Error waiting for ledgerful tool: {0}")]
+    Wait(String),
+    #[error("Failed to get layout: {0}")]
+    Layout(String),
+    #[error("{0}")]
+    InvalidParams(String),
+    #[error("Tool {name} not implemented yet.")]
+    UnknownTool { name: String },
+    #[error("Failed to read ledgerful tool output: {stderr}")]
+    ChildFailed { stdout: String, stderr: String },
+    #[error("{0}")]
+    Other(String),
+}
+
 fn get_ledgerful_exe() -> std::path::PathBuf {
     // Legitimate: re-exec this binary for MCP tool subprocesses.
     // nosemgrep: rust.lang.security.current-exe.current-exe
     std::env::current_exe().unwrap_or_else(|_| std::path::PathBuf::from("ledgerful"))
 }
 
-fn run_ledgerful_tool<I, S>(args: I) -> Result<std::process::Output, String>
+fn run_ledgerful_tool<I, S>(args: I) -> Result<std::process::Output, McpToolError>
 where
     I: IntoIterator<Item = S>,
     S: AsRef<std::ffi::OsStr>,
@@ -34,7 +59,7 @@ where
             strict: true,
         },
     )
-    .map_err(|e| format!("Process policy denied ledgerful self-spawn: {}", e))?;
+    .map_err(|e| McpToolError::Policy(e.to_string()))?;
 
     // 0073: every MCP tool child inherits Forbidden cloud policy (unless host
     // LEDGERFUL_MCP_ALLOW_CLOUD_EGRESS) + NON_INTERACTIVE so cloud fallbacks
@@ -55,19 +80,16 @@ where
 
     let mut child = command
         .spawn()
-        .map_err(|e| format!("Failed to spawn ledgerful tool: {}", e))?;
+        .map_err(|e| McpToolError::Spawn(e.to_string()))?;
 
     let timeout = Duration::from_secs(MCP_TOOL_TIMEOUT_SECS);
     let status = match wait_timeout::ChildExt::wait_timeout(&mut child, timeout)
-        .map_err(|e| format!("Error waiting for ledgerful tool: {}", e))?
+        .map_err(|e| McpToolError::Wait(e.to_string()))?
     {
         Some(status) => status,
         None => {
             let _ = child.kill();
-            return Err(format!(
-                "ledgerful tool timed out after {} seconds",
-                MCP_TOOL_TIMEOUT_SECS
-            ));
+            return Err(McpToolError::Timeout);
         }
     };
 
@@ -93,23 +115,40 @@ where
             }
             output
         })
-        .map_err(|e| format!("Failed to read ledgerful tool output: {}", e))
+        .map_err(|e| McpToolError::Other(format!("Failed to read ledgerful tool output: {e}")))
+}
+
+type ToolHandler = fn(Value) -> Value;
+
+/// Name → handler table aligned with [`crate::commands::mcp::INVENTORY`].
+/// Sorted by name so a missing inventory entry is a table test failure, not a
+/// three-file merge conflict.
+static TOOL_HANDLERS: &[(&str, ToolHandler)] = &[
+    ("ask", handle_ask),
+    ("change_context", handle_change_context),
+    ("dead_code", handle_dead_code),
+    ("endpoints_changed", handle_endpoints_changed),
+    ("hotspots", handle_hotspots),
+    ("ledger_search", handle_ledger_search),
+    ("ledger_status", handle_ledger_status),
+    ("scan", handle_scan),
+    ("search", handle_search),
+    ("security_boundaries", handle_security_boundaries),
+    ("verify_plan", handle_verify_plan),
+];
+
+fn handler_for_tool(name: &str) -> Option<ToolHandler> {
+    TOOL_HANDLERS
+        .iter()
+        .find_map(|(n, handler)| (*n == name).then_some(*handler))
 }
 
 pub fn dispatch_tool(name: &str, params: Value) -> Value {
-    match name {
-        "change_context" => handle_change_context(params),
-        "ledger_status" => handle_ledger_status(params),
-        "hotspots" => handle_hotspots(params),
-        "scan" => handle_scan(params),
-        "search" => handle_search(params),
-        "ledger_search" => handle_ledger_search(params),
-        "ask" => handle_ask(params),
-        "endpoints_changed" => handle_endpoints_changed(params),
-        "security_boundaries" => handle_security_boundaries(params),
-        "dead_code" => handle_dead_code(params),
-        "verify_plan" => handle_verify_plan(params),
-        _ => error_response(&format!("Tool {} not implemented yet.", name)),
+    match handler_for_tool(name) {
+        Some(handler) => handler(params),
+        None => error_response(McpToolError::UnknownTool {
+            name: name.to_string(),
+        }),
     }
 }
 
@@ -122,7 +161,7 @@ fn handle_change_context(params: Value) -> Value {
     let detail = match params["detail"].as_str() {
         Some(s) => match ChangeContextDetail::parse(s) {
             Ok(d) => d,
-            Err(e) => return error_response(&format!("{e}")),
+            Err(e) => return error_response(format!("{e}")),
         },
         None => ChangeContextDetail::Minimal,
     };
@@ -158,14 +197,14 @@ fn handle_change_context(params: Value) -> Value {
 
     let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
         Ok(l) => l,
-        Err(e) => return error_response(&format!("Failed to get layout: {}", e)),
+        Err(e) => return error_response(format!("Failed to get layout: {}", e)),
     };
     let config = crate::config::load_config(&layout).unwrap_or_default();
     // Soft-open (B6): prefer true RO when ledger.db exists so pure-RO MCP works.
     let storage = match open_storage_for_change_context(&layout) {
         Ok(s) => s,
         Err((e, class)) => {
-            return error_response(&format!(
+            return error_response(format!(
                 "Failed to open storage ({class:?}): {}",
                 storage_unavailable_reason(&e, class)
             ));
@@ -176,7 +215,7 @@ fn handle_change_context(params: Value) -> Value {
         Ok(p) => p,
         Err(e) => {
             let _ = storage.shutdown();
-            return error_response(&format!("change_context failed: {e}"));
+            return error_response(format!("change_context failed: {e}"));
         }
     };
     let _ = storage.shutdown();
@@ -186,16 +225,16 @@ fn handle_change_context(params: Value) -> Value {
 fn handle_ledger_status(_params: Value) -> Value {
     let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
         Ok(l) => l,
-        Err(e) => return error_response(&format!("Failed to get layout: {}", e)),
+        Err(e) => return error_response(format!("Failed to get layout: {}", e)),
     };
     let mut storage =
         match crate::state::storage::StorageManager::open_read_only_sqlite_only(&layout) {
             Ok(s) => s,
-            Err(e) => return error_response(&format!("Failed to open storage: {}", e)),
+            Err(e) => return error_response(format!("Failed to open storage: {}", e)),
         };
     let config = match crate::commands::helpers::load_ledger_config(&layout) {
         Ok(c) => c,
-        Err(e) => return error_response(&format!("Failed to load ledger config: {}", e)),
+        Err(e) => return error_response(format!("Failed to load ledger config: {}", e)),
     };
 
     let tx_mgr = crate::ledger::TransactionManager::new(&mut storage, layout.root.into(), config);
@@ -223,20 +262,20 @@ fn handle_hotspots(params: Value) -> Value {
     let limit = params["limit"].as_u64().unwrap_or(10) as usize;
     let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
         Ok(l) => l,
-        Err(e) => return error_response(&format!("Failed to get layout: {}", e)),
+        Err(e) => return error_response(format!("Failed to get layout: {}", e)),
     };
     let config = crate::config::load_config(&layout).unwrap_or_default();
     let current_dir = match std::env::current_dir() {
         Ok(d) => d,
-        Err(e) => return error_response(&format!("Failed to get current dir: {}", e)),
+        Err(e) => return error_response(format!("Failed to get current dir: {}", e)),
     };
     let repo = match crate::git::repo::open_repo(&current_dir) {
         Ok(r) => r,
-        Err(e) => return error_response(&format!("Failed to open repo: {}", e)),
+        Err(e) => return error_response(format!("Failed to open repo: {}", e)),
     };
     let storage = match crate::state::storage::StorageManager::open_read_only_sqlite_only(&layout) {
         Ok(s) => s,
-        Err(e) => return error_response(&format!("Failed to open storage: {}", e)),
+        Err(e) => return error_response(format!("Failed to open storage: {}", e)),
     };
 
     let history_provider = crate::impact::temporal::GixHistoryProvider::new(&repo);
@@ -259,7 +298,7 @@ fn handle_scan(_params: Value) -> Value {
     };
 
     if !out.status.success() {
-        return error_response(&String::from_utf8_lossy(&out.stderr));
+        return error_response(String::from_utf8_lossy(&out.stderr));
     }
 
     let text = String::from_utf8_lossy(&out.stdout).into_owned();
@@ -295,7 +334,7 @@ fn handle_search(params: Value) -> Value {
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        return error_response(&format!("Search failed: {}\n{}", stdout, stderr));
+        return error_response(format!("Search failed: {}\n{}", stdout, stderr));
     }
     text_response(&stdout)
 }
@@ -303,19 +342,19 @@ fn handle_search(params: Value) -> Value {
 fn handle_ledger_search(params: Value) -> Value {
     let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
         Ok(l) => l,
-        Err(e) => return error_response(&format!("Failed to get layout: {}", e)),
+        Err(e) => return error_response(format!("Failed to get layout: {}", e)),
     };
     let query = params["query"].as_str().unwrap_or("");
     let days = params["days"].as_u64().unwrap_or(30) as u32;
     let mut storage =
         match crate::state::storage::StorageManager::open_read_only_sqlite_only(&layout) {
             Ok(s) => s,
-            Err(e) => return error_response(&format!("Failed to open storage: {}", e)),
+            Err(e) => return error_response(format!("Failed to open storage: {}", e)),
         };
     let db = crate::ledger::db::LedgerDb::new(storage.get_connection_mut());
     let results = match db.search_ledger(query, None, Some(days.into()), false, Some(50), 0) {
         Ok(r) => r,
-        Err(e) => return error_response(&format!("Ledger search failed: {}", e)),
+        Err(e) => return error_response(format!("Ledger search failed: {}", e)),
     };
     json_response(&results)
 }
@@ -344,7 +383,7 @@ fn handle_ask(params: Value) -> Value {
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        return error_response(&format!("Ask failed: {}\n{}", stdout, stderr));
+        return error_response(format!("Ask failed: {}\n{}", stdout, stderr));
     }
     // Remove ansi codes if present, but for now just return text
     text_response(&stdout)
@@ -385,7 +424,7 @@ fn handle_endpoints_changed(_params: Value) -> Value {
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        return error_response(&format!("Endpoints failed: {}\n{}", stdout, stderr));
+        return error_response(format!("Endpoints failed: {}\n{}", stdout, stderr));
     }
     text_response(&stdout)
 }
@@ -399,7 +438,7 @@ fn handle_security_boundaries(_params: Value) -> Value {
     let stdout = String::from_utf8_lossy(&out.stdout).to_string();
     if !out.status.success() {
         let stderr = String::from_utf8_lossy(&out.stderr).to_string();
-        return error_response(&format!(
+        return error_response(format!(
             "Security boundaries failed: {}\n{}",
             stdout, stderr
         ));
@@ -410,12 +449,12 @@ fn handle_security_boundaries(_params: Value) -> Value {
 fn handle_dead_code(params: Value) -> Value {
     let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
         Ok(l) => l,
-        Err(e) => return error_response(&format!("Failed to get layout: {}", e)),
+        Err(e) => return error_response(format!("Failed to get layout: {}", e)),
     };
     let config = crate::config::load_config(&layout).unwrap_or_default();
     let storage = match crate::state::storage::StorageManager::open_read_only(&layout) {
         Ok(s) => s,
-        Err(e) => return error_response(&format!("Failed to open storage: {}", e)),
+        Err(e) => return error_response(format!("Failed to open storage: {}", e)),
     };
     let cozo = storage.cozo.as_ref();
     let scorer = crate::impact::analysis::dead_code::ConfidenceScorer::new(
@@ -429,7 +468,7 @@ fn handle_dead_code(params: Value) -> Value {
     let limit = params["limit"].as_u64().unwrap_or(50) as usize;
     let findings = match scorer.scan_repo(limit) {
         Ok(f) => f,
-        Err(e) => return error_response(&format!("Dead code scan failed: {}", e)),
+        Err(e) => return error_response(format!("Dead code scan failed: {}", e)),
     };
     json_response(&findings)
 }
@@ -437,7 +476,7 @@ fn handle_dead_code(params: Value) -> Value {
 fn handle_verify_plan(_params: Value) -> Value {
     let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
         Ok(l) => l,
-        Err(e) => return error_response(&format!("Failed to get layout: {}", e)),
+        Err(e) => return error_response(format!("Failed to get layout: {}", e)),
     };
     let config = crate::config::load_config(&layout).unwrap_or_default();
     let rules = crate::policy::load::load_rules(&layout).unwrap_or_default();
@@ -448,7 +487,7 @@ fn handle_verify_plan(_params: Value) -> Value {
     };
 
     if !out.status.success() {
-        return error_response(&String::from_utf8_lossy(&out.stderr));
+        return error_response(String::from_utf8_lossy(&out.stderr));
     }
 
     let text = String::from_utf8_lossy(&out.stdout);
@@ -469,8 +508,8 @@ fn handle_verify_plan(_params: Value) -> Value {
     json_response(&plan)
 }
 
-fn error_response(msg: &str) -> Value {
-    let mut final_msg = sanitize_mcp_content(msg);
+fn error_response(msg: impl std::fmt::Display) -> Value {
+    let mut final_msg = sanitize_mcp_content(&msg.to_string());
     if final_msg.contains("Failed to get layout")
         || final_msg.contains("Failed to discover git repository")
     {
@@ -512,6 +551,52 @@ mod tests {
             .map(|t| t.name)
             .collect();
         assert!(names.contains(&"change_context"));
+    }
+
+    #[test]
+    fn unknown_tool_is_error_not_implemented() {
+        let unknown = dispatch_tool("not_a_real_tool", serde_json::json!({}));
+        assert_eq!(unknown["isError"], true);
+        let text = unknown["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("not implemented"),
+            "unknown tool must say not implemented: {text}"
+        );
+    }
+
+    #[test]
+    fn every_inventory_name_has_a_handler() {
+        for tool in crate::commands::mcp::INVENTORY {
+            assert!(
+                handler_for_tool(tool.name).is_some(),
+                "INVENTORY tool {} must have a dispatch handler",
+                tool.name
+            );
+        }
+    }
+
+    #[test]
+    fn error_response_layout_hint_suffix() {
+        let value = error_response("Failed to get layout: x");
+        assert_eq!(value["content"][0]["type"], "text");
+        assert_eq!(value["isError"], true);
+        let text = value["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("Hint: No .ledgerful directory found. Please run: ledgerful init"),
+            "layout error must append init hint: {text}"
+        );
+    }
+
+    #[test]
+    fn error_response_git_repo_hint_suffix() {
+        let value = error_response("Failed to discover git repository");
+        assert_eq!(value["content"][0]["type"], "text");
+        assert_eq!(value["isError"], true);
+        let text = value["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("Hint: No .ledgerful directory found. Please run: ledgerful init"),
+            "git-discover error must append init hint: {text}"
+        );
     }
 
     /// F-0114-03 / codex: full dispatch path (routing + handler + MCP serialize).

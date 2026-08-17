@@ -219,9 +219,15 @@ fn ledger_status_verify_signatures_rejects_corrupted_signature() {
         )
         .unwrap();
 
-    let err = execute_ledger_status(
-        None, true, true, true, false, false, false, None, false, false, false, false,
-    )
+    let err = execute_ledger_status(ledgerful::commands::ledger::LedgerStatusOpts {
+        entity_filter: None,
+        compact: true,
+        exit_code: true,
+        verify_signatures: true,
+        json: false,
+        all: false,
+        strict_observe_signal: false,
+    })
     .unwrap_err();
 
     assert!(format!("{err}").contains("Ledger signature verification failed"));
@@ -280,28 +286,29 @@ fn test_ledger_status_all_flag_succeeds_with_more_than_ten_entries() {
     // Entity-scoped: --all extends the per-entity history beyond the default
     // top-10 truncation.
     assert!(
-        execute_ledger_status(
-            Some("src/main.rs".to_string()),
-            false,
-            false,
-            false,
-            false,
-            true,
-            false,
-            None,
-            false,
-            false,
-            false,
-            false,
-        )
+        execute_ledger_status(ledgerful::commands::ledger::LedgerStatusOpts {
+            entity_filter: Some("src/main.rs".to_string()),
+            compact: false,
+            exit_code: false,
+            verify_signatures: false,
+            json: false,
+            all: true,
+            strict_observe_signal: false,
+        })
         .is_ok()
     );
 
     // Repo-wide (no --entity): --all adds the "RECENT HISTORY" section.
     assert!(
-        execute_ledger_status(
-            None, false, false, false, false, true, false, None, false, false, false, false,
-        )
+        execute_ledger_status(ledgerful::commands::ledger::LedgerStatusOpts {
+            entity_filter: None,
+            compact: false,
+            exit_code: false,
+            verify_signatures: false,
+            json: false,
+            all: true,
+            strict_observe_signal: false,
+        })
         .is_ok()
     );
 }

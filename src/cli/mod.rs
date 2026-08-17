@@ -133,7 +133,7 @@ mod tests {
     fn alias_out_for_viz_output() {
         let cli = Cli::try_parse_from(["ledgerful", "viz", "--out", "output.html"]).unwrap();
         match cli.command {
-            Commands::Viz { output, .. } => {
+            Commands::Viz(VizArgs { output, .. }) => {
                 assert_eq!(output.as_deref(), Some("output.html"));
             }
             _ => panic!("expected Viz command"),
@@ -169,7 +169,7 @@ mod tests {
     fn update_visible_alias_upgrade() {
         let cli = Cli::try_parse_from(["ledgerful", "upgrade", "--dry-run"]).unwrap();
         match cli.command {
-            Commands::Update { dry_run, .. } => {
+            Commands::Update(UpdateArgs { dry_run, .. }) => {
                 assert!(
                     dry_run,
                     "upgrade alias must map to Update with dry_run true"
@@ -239,7 +239,7 @@ mod tests {
                 };
                 assert!(mode.is_none(), "bare gate status should not set mode");
             }
-            Commands::Status { .. } => {
+            Commands::Status(StatusArgs { .. }) => {
                 panic!("gate status must not parse as top-level Status")
             }
             _ => panic!("expected Gate command"),
@@ -263,7 +263,15 @@ mod tests {
 
     #[test]
     fn bare_parent_defaults_parse_ok() {
-        for parent in ["dependencies", "policy", "gate", "ci", "deploy", "federate"] {
+        for parent in [
+            "dependencies",
+            "policy",
+            "gate",
+            "ci",
+            "deploy",
+            "federate",
+            "services",
+        ] {
             let cli = Cli::try_parse_from(["ledgerful", parent]).unwrap_or_else(|e| {
                 panic!("bare `{parent}` must parse without missing-subcommand: {e}")
             });
@@ -272,6 +280,17 @@ mod tests {
             assert!(
                 name.starts_with(parent) || name == parent || name.contains(parent),
                 "bare `{parent}` command_name={name}"
+            );
+        }
+        #[cfg(feature = "mcp")]
+        {
+            let cli = Cli::try_parse_from(["ledgerful", "mcp"]).unwrap_or_else(|e| {
+                panic!("bare `mcp` must parse without missing-subcommand: {e}")
+            });
+            let name = cli.command.command_name();
+            assert!(
+                name.starts_with("mcp") || name == "mcp" || name.contains("mcp"),
+                "bare `mcp` command_name={name}"
             );
         }
     }
@@ -436,7 +455,7 @@ mod tests {
     fn search_multi_token_unquoted_joins_query() {
         let cli = Cli::try_parse_from(["ledgerful", "search", "foo", "bar"]).unwrap();
         match cli.command {
-            Commands::Search { query, json, .. } => {
+            Commands::Search(SearchCliArgs { query, json, .. }) => {
                 assert_eq!(query, vec!["foo", "bar"]);
                 assert_eq!(query.join(" "), "foo bar");
                 assert!(!json);
@@ -449,7 +468,7 @@ mod tests {
     fn search_json_flag_before_tokens() {
         let cli = Cli::try_parse_from(["ledgerful", "search", "--json", "foo", "bar"]).unwrap();
         match cli.command {
-            Commands::Search { query, json, .. } => {
+            Commands::Search(SearchCliArgs { query, json, .. }) => {
                 assert!(json);
                 assert_eq!(query, vec!["foo", "bar"]);
                 assert_eq!(query.join(" "), "foo bar");
@@ -462,7 +481,7 @@ mod tests {
     fn search_json_flag_after_tokens() {
         let cli = Cli::try_parse_from(["ledgerful", "search", "foo", "bar", "--json"]).unwrap();
         match cli.command {
-            Commands::Search { query, json, .. } => {
+            Commands::Search(SearchCliArgs { query, json, .. }) => {
                 assert!(json);
                 assert_eq!(query, vec!["foo", "bar"]);
                 assert_eq!(query.join(" "), "foo bar");
@@ -475,7 +494,7 @@ mod tests {
     fn search_json_flag_between_tokens() {
         let cli = Cli::try_parse_from(["ledgerful", "search", "foo", "--json", "bar"]).unwrap();
         match cli.command {
-            Commands::Search { query, json, .. } => {
+            Commands::Search(SearchCliArgs { query, json, .. }) => {
                 assert!(json);
                 assert_eq!(query, vec!["foo", "bar"]);
                 assert_eq!(query.join(" "), "foo bar");
@@ -489,9 +508,9 @@ mod tests {
         let cli =
             Cli::try_parse_from(["ledgerful", "search", "foo", "--limit", "5", "bar"]).unwrap();
         match cli.command {
-            Commands::Search {
+            Commands::Search(SearchCliArgs {
                 query, limit, json, ..
-            } => {
+            }) => {
                 assert_eq!(query, vec!["foo", "bar"]);
                 assert_eq!(query.join(" "), "foo bar");
                 assert_eq!(limit, 5);
@@ -505,7 +524,7 @@ mod tests {
     fn search_quoted_two_word_single_token() {
         let cli = Cli::try_parse_from(["ledgerful", "search", "--json", "foo bar"]).unwrap();
         match cli.command {
-            Commands::Search { query, json, .. } => {
+            Commands::Search(SearchCliArgs { query, json, .. }) => {
                 assert!(json);
                 assert_eq!(query, vec!["foo bar"]);
                 assert_eq!(query.join(" "), "foo bar");
@@ -553,7 +572,7 @@ mod tests {
     fn search_end_of_options_keeps_hyphen_token() {
         let cli = Cli::try_parse_from(["ledgerful", "search", "--", "--json"]).unwrap();
         match cli.command {
-            Commands::Search { query, json, .. } => {
+            Commands::Search(SearchCliArgs { query, json, .. }) => {
                 assert_eq!(query, vec!["--json"]);
                 assert_eq!(query.join(" "), "--json");
                 assert!(!json, "token after -- must not select json mode");
@@ -566,7 +585,7 @@ mod tests {
     fn search_identifier_token_stays_out_of_argv_shape() {
         let cli = Cli::try_parse_from(["ledgerful", "search", "verify_step_key"]).unwrap();
         match &cli.command {
-            Commands::Search { query, .. } => {
+            Commands::Search(SearchCliArgs { query, .. }) => {
                 assert_eq!(query, &vec!["verify_step_key".to_string()]);
             }
             _ => panic!("expected Search command"),
@@ -584,9 +603,9 @@ mod tests {
         let cli =
             Cli::try_parse_from(["ledgerful", "ask", "what", "is", "change-context"]).unwrap();
         match cli.command {
-            Commands::Ask {
+            Commands::Ask(AskArgs {
                 query, semantic, ..
-            } => {
+            }) => {
                 assert_eq!(query, vec!["what", "is", "change-context"]);
                 assert_eq!(query.join(" "), "what is change-context");
                 assert!(!semantic);
@@ -599,7 +618,7 @@ mod tests {
     fn ask_empty_query_vec() {
         let cli = Cli::try_parse_from(["ledgerful", "ask"]).unwrap();
         match cli.command {
-            Commands::Ask { query, .. } => {
+            Commands::Ask(AskArgs { query, .. }) => {
                 assert!(query.is_empty(), "bare ask must leave query empty");
                 let joined = if query.is_empty() {
                     None
@@ -617,9 +636,9 @@ mod tests {
         let cli =
             Cli::try_parse_from(["ledgerful", "ask", "--semantic", "what", "is", "X"]).unwrap();
         match cli.command {
-            Commands::Ask {
+            Commands::Ask(AskArgs {
                 query, semantic, ..
-            } => {
+            }) => {
                 assert!(semantic, "flags-first must set semantic=true");
                 assert_eq!(query, vec!["what", "is", "X"]);
                 assert!(!query.iter().any(|w| w == "--semantic"));
@@ -633,9 +652,9 @@ mod tests {
         let cli =
             Cli::try_parse_from(["ledgerful", "ask", "what", "is", "X", "--semantic"]).unwrap();
         match cli.command {
-            Commands::Ask {
+            Commands::Ask(AskArgs {
                 query, semantic, ..
-            } => {
+            }) => {
                 assert!(
                     !semantic,
                     "post-query --semantic must be swallowed as query text"
@@ -652,7 +671,7 @@ mod tests {
     fn ask_timeout_fingerprint_only_when_flag_present() {
         let without = Cli::try_parse_from(["ledgerful", "ask", "hello"]).unwrap();
         match &without.command {
-            Commands::Ask { timeout, .. } => {
+            Commands::Ask(AskArgs { timeout, .. }) => {
                 assert_eq!(*timeout, None, "omitted --timeout must be None");
             }
             _ => panic!("expected Ask"),
@@ -665,7 +684,7 @@ mod tests {
 
         let with = Cli::try_parse_from(["ledgerful", "ask", "--timeout", "30", "hello"]).unwrap();
         match &with.command {
-            Commands::Ask { timeout, .. } => {
+            Commands::Ask(AskArgs { timeout, .. }) => {
                 assert_eq!(*timeout, Some(30));
             }
             _ => panic!("expected Ask"),
@@ -681,13 +700,13 @@ mod tests {
     fn update_check_alias_with_binary_sets_dry_run() {
         let cli = Cli::try_parse_from(["ledgerful", "update", "--check", "--binary"]).unwrap();
         match cli.command {
-            Commands::Update {
+            Commands::Update(UpdateArgs {
                 dry_run,
                 binary,
                 migrate,
                 repair_hooks,
                 ..
-            } => {
+            }) => {
                 assert!(dry_run, "--check must alias to dry_run");
                 assert!(binary);
                 assert!(!migrate);
@@ -701,13 +720,13 @@ mod tests {
     fn update_check_alone_sets_dry_run_no_action() {
         let cli = Cli::try_parse_from(["ledgerful", "update", "--check"]).unwrap();
         match cli.command {
-            Commands::Update {
+            Commands::Update(UpdateArgs {
                 dry_run,
                 binary,
                 migrate,
                 repair_hooks,
                 ..
-            } => {
+            }) => {
                 assert!(dry_run, "--check alone must set dry_run");
                 assert!(!binary);
                 assert!(!migrate);
@@ -721,7 +740,7 @@ mod tests {
     fn verify_alias_dry_run() {
         let cli = Cli::try_parse_from(["ledgerful", "verify", "--dry-run"]).unwrap();
         match cli.command {
-            Commands::Verify { dry_run, .. } => {
+            Commands::Verify(VerifyArgs { dry_run, .. }) => {
                 assert!(dry_run, "--dry-run must be parsed as dry_run = true");
             }
             _ => panic!("expected Verify command"),
@@ -747,10 +766,10 @@ mod tests {
     fn facade_exports_reachable() {
         // If this test compiles, the facade re-exports are intact.
         let _: Cli = Cli {
-            command: Commands::Init {
+            command: Commands::Init(InitArgs {
                 force: false,
                 enforce: false,
-            },
+            }),
             verbose: false,
             quiet: false,
         };
@@ -785,11 +804,11 @@ mod tests {
             force: false,
             stdout: false,
         };
-        let _: Commands = Commands::Demo {
+        let _: Commands = Commands::Demo(DemoArgs {
             keep: false,
             output: None,
             force: false,
-        };
+        });
         let _: IntentCommands = IntentCommands::Demo;
         let _: InternalCommands = InternalCommands::HookPostCommit;
         let _: ServiceSubcommands =
@@ -839,7 +858,7 @@ mod tests {
     fn force_unlock_flag_parses() {
         let cli = Cli::try_parse_from(["ledgerful", "update", "--force-unlock"]).unwrap();
         match cli.command {
-            Commands::Update { force_unlock, .. } => {
+            Commands::Update(UpdateArgs { force_unlock, .. }) => {
                 assert!(force_unlock, "--force-unlock must set force_unlock = true");
             }
             _ => panic!("expected Update command"),
@@ -850,7 +869,7 @@ mod tests {
     fn no_graph_sync_flag_parses() {
         let cli = Cli::try_parse_from(["ledgerful", "watch", "--no-graph-sync"]).unwrap();
         match cli.command {
-            Commands::Watch { no_graph_sync, .. } => {
+            Commands::Watch(WatchArgs { no_graph_sync, .. }) => {
                 assert!(
                     no_graph_sync,
                     "--no-graph-sync must set no_graph_sync = true"

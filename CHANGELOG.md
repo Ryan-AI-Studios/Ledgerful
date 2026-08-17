@@ -6,6 +6,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **CLI/MCP registration split (0190):** `src/cli/args` and `src/cli/dispatch`
+  are domain modules with thin `Commands` / `run_with` barrels. MCP tool
+  failures use an internal `thiserror` type, then the same
+  `{ content: [{ type: text, text }], isError: true }` tools/call result.
+  No new flags, aliases, 0179 parent defaults, MCP tool names, or
+  `schema_json` changes.
+
 ### Fixed
 
 - **Index pipeline native stacking (0189):** `--analyze-graph` no longer
