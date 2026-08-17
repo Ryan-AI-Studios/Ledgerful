@@ -53,4 +53,4 @@ pub use types::{ProjectFile, ProjectSymbol, symbol_to_project_symbol};
 
 /// Re-export the shared graph-analysis driver so commands like `scan --impact`
 /// can invoke the same `--analyze-graph` logic that the `index` CLI uses.
-pub use orchestrator::graph::run_graph_analysis;
+pub use orchestrator::graph::{SqliteExtractPolicy, run_graph_analysis};

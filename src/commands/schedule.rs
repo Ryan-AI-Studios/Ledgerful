@@ -82,8 +82,10 @@ fn get_log_path(layout: &Layout) -> Utf8PathBuf {
 
 /// Default nightly index argv (heavy tier). Must **not** include `--auto-scip`.
 ///
-/// Kept pure for unit tests (DoD-6). Honesty: `index --analyze-graph` destroys
-/// and rebuilds structural edges on its second pipeline pass (0095 residual).
+/// Kept pure for unit tests (DoD-6). Honesty: `index --analyze-graph` skips
+/// the second SQLite extract when main already extracted; native rebuild in
+/// `CallGraphBuilder::build` is idempotent (does not stack another native
+/// copy). SCIP remains default-off.
 pub fn nightly_index_args() -> &'static [&'static str] {
     &["index", "--analyze-graph"]
 }

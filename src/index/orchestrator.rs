@@ -224,10 +224,6 @@ impl ProjectIndexer {
         extraction::clear_routes(self, file_ids)
     }
 
-    pub fn clear_structural_edges(&self, file_ids: &[i64]) -> Result<()> {
-        extraction::clear_structural_edges(self, file_ids)
-    }
-
     pub fn extract_data_models(&self) -> Result<crate::index::data_models::DataModelStats> {
         extraction::extract_data_models(self)
     }

@@ -30,7 +30,7 @@ use tracing::{info, warn};
 ///    - SCIP augment (`--auto-scip` / `--scip PATH`) is **mutually exclusive**
 ///      per call site (spec §2.2b): without `--analyze-graph`, only after
 ///      `build_call_graph()`; with `--analyze-graph`, only inside
-///      `run_graph_analysis` after `infer_services` (never both). SCIP never
+///      `run_graph_analysis` after extract-or-skip (never both). SCIP never
 ///      replaces the native index.
 ///    - `--analyze-graph` inside main path → centrality + KG build.
 ///    - `--contracts` inside main path → contract indexing.
@@ -97,14 +97,7 @@ pub fn execute_index(args: IndexArgs) -> Result<()> {
     let mut indexer = ProjectIndexer::new(storage, repo_path.clone(), config.clone());
 
     // ── Main indexing pipeline (check / incremental / full / graph / export) ─
-    execute_main_mode(
-        &mut indexer,
-        &args,
-        &layout,
-        &config,
-        contracts_db_path,
-        &repo_path,
-    )
+    execute_main_mode(&mut indexer, &args, &layout, &config, contracts_db_path)
 }
 
 /// Main indexing pipeline: check, incremental/full index, all extraction phases,
@@ -115,7 +108,6 @@ fn execute_main_mode(
     layout: &Layout,
     config: &crate::config::model::Config,
     contracts_db_path: Option<Utf8PathBuf>,
-    repo_path: &camino::Utf8Path,
 ) -> Result<()> {
     // ── Sub-mode: check ────────────────────────────────────────────────────
     if args.check {
@@ -151,7 +143,8 @@ fn execute_main_mode(
     // ── SCIP augment (0095 §2.2b): mutually exclusive call sites ────────
     // - without --analyze-graph → only here, after build_call_graph
     // - with --analyze-graph → only inside run_graph_analysis after
-    //   infer_services (graph rebuild would discard any earlier edges)
+    //   extract-or-skip (one augment site per invocation; do not feed SCIP
+    //   into infer_services on the graph path)
     let scip_json = if args.analyze_graph {
         let mut deferred = crate::scip::ScipIndexJson::did_not_run();
         if args.auto_scip || args.scip.is_some() {
@@ -202,19 +195,9 @@ fn execute_main_mode(
 
     // Compute centrality if requested
     let (cent_stats, scip_json) = if args.analyze_graph {
-        // Move storage out of the indexer for the shared graph-analysis driver,
-        // then leave a fresh in-memory handle so the rest of the command can
-        // still read/write SQLite metadata (e.g. contracts, Tantivy) if needed.
-        let moved_storage = std::mem::replace(
-            indexer.storage_mut(),
-            StorageManager::init_from_conn(
-                rusqlite::Connection::open_in_memory().into_diagnostic()?,
-            ),
-        );
         let (cent, scip_from_graph) = crate::index::run_graph_analysis(
-            moved_storage,
-            repo_path.as_std_path(),
-            config,
+            indexer,
+            crate::index::SqliteExtractPolicy::AlreadyRan,
             args.semantic,
             args.fast,
             args.auto_scip,

@@ -13,6 +13,6 @@ pub use maintenance::{
 };
 pub use registration::{execute_ledger_register_rule, execute_ledger_register_validator};
 pub use reporting::{
-    detect_lifecycle_signals, execute_ledger_export_provenance, execute_ledger_export_public,
-    execute_ledger_status,
+    LedgerStatusOpts, detect_lifecycle_signals, execute_ledger_export_provenance,
+    execute_ledger_export_public, execute_ledger_status,
 };

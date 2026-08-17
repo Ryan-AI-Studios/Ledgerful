@@ -149,21 +149,31 @@ fn apply_exit_code(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
-pub fn execute_ledger_status(
-    entity_filter: Option<String>,
-    compact: bool,
-    exit_code: bool,
-    verify_signatures: bool,
-    json: bool,
-    all: bool,
-    #[allow(unused)] _global: bool,
-    #[allow(unused)] _repo_filter: Option<String>,
-    #[allow(unused)] _reindex: bool,
-    #[allow(unused)] _opt_out: bool,
-    #[allow(unused)] _opt_in: bool,
-    strict_observe_signal: bool,
-) -> Result<()> {
+/// Named options for [`execute_ledger_status`].
+///
+/// `LedgerCommands::Status.global` stays on the clap enum and is handled in
+/// dispatch (`execute_ledger_status_global`); it is not part of this execute
+/// signature.
+pub struct LedgerStatusOpts {
+    pub entity_filter: Option<String>,
+    pub compact: bool,
+    pub exit_code: bool,
+    pub verify_signatures: bool,
+    pub json: bool,
+    pub all: bool,
+    pub strict_observe_signal: bool,
+}
+
+pub fn execute_ledger_status(opts: LedgerStatusOpts) -> Result<()> {
+    let LedgerStatusOpts {
+        entity_filter,
+        compact,
+        exit_code,
+        verify_signatures,
+        json,
+        all,
+        strict_observe_signal,
+    } = opts;
     let layout = get_layout()?;
 
     if verify_signatures {

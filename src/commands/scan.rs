@@ -96,7 +96,8 @@ fn changes_include_observability_config(changes: &[FileChange]) -> bool {
 }
 
 /// Check whether the CozoDB knowledge graph is missing or stale for the current
-/// repository state. "Stale" means no index has ever been run in this storage.
+/// repository state. `check_index_staleness(...).is_some()` includes
+/// `NeverIndexed`, `StaleEmpty`, and `StalePopulated` — not only never-indexed.
 fn graph_is_missing_or_stale(storage: &StorageManager, threshold_days: u64) -> bool {
     crate::index::staleness::check_index_staleness(storage, threshold_days).is_some()
 }
@@ -127,11 +128,18 @@ fn maybe_auto_analyze_graph(
     // resolved layout (shared state_dir on linked worktrees) — never invent
     // Layout::new(project_root) here.
     let write_storage = StorageManager::init_with_layout(layout)?;
+    let utf8_repo_path = match camino::Utf8PathBuf::from_path_buf(project_root.to_path_buf()) {
+        Ok(p) => p,
+        Err(_) => {
+            return Err(miette::miette!("Repository root is not valid UTF-8"));
+        }
+    };
+    let mut indexer =
+        crate::index::ProjectIndexer::new(write_storage, utf8_repo_path, config.clone());
 
     crate::index::run_graph_analysis(
-        write_storage,
-        project_root,
-        config,
+        &mut indexer,
+        crate::index::SqliteExtractPolicy::Run,
         false,
         false,
         false,
@@ -1103,6 +1111,202 @@ mod tests {
         let storage = StorageManager::init_from_conn(conn);
 
         assert!(graph_is_missing_or_stale(&storage, u64::MAX));
+    }
+
+    /// 0034 / 0189 DoD-3: empty changes never reach write-mode graph analysis.
+    #[test]
+    fn maybe_auto_analyze_graph_empty_changes_is_noop() {
+        use crate::config::model::Config;
+        use tempfile::tempdir;
+
+        let tmp = tempdir().unwrap();
+        let root =
+            camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8 temp path");
+        let layout = Layout::new(&root);
+        let conn = Connection::open_in_memory().unwrap();
+        let mut conn = conn;
+        get_migrations().to_latest(&mut conn).unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        let config = Config::default();
+
+        maybe_auto_analyze_graph(&[], &storage, tmp.path(), &config, &layout)
+            .expect("empty changes must be a no-op");
+        assert!(
+            !layout.state_subdir().join("ledger.db").exists(),
+            "empty changes must not open write storage / create ledger.db"
+        );
+    }
+
+    /// 0189 DoD-3: obs + StalePopulated + non-empty changes still extract once (Run).
+    #[test]
+    fn maybe_auto_analyze_graph_stale_populated_obs_change_runs_once() {
+        use crate::commands::index::{IndexArgs, execute_index};
+        use crate::config::model::Config;
+        use crate::tests::DirGuard;
+        use tempfile::tempdir;
+
+        let tmp = tempdir().unwrap();
+        let root =
+            camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8 temp path");
+
+        let git_init = std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(tmp.path())
+            .output()
+            .expect("git init");
+        assert!(
+            git_init.status.success(),
+            "git init failed: {}",
+            String::from_utf8_lossy(&git_init.stderr)
+        );
+        for (key, value) in [("user.name", "Test"), ("user.email", "test@test.com")] {
+            let cfg = std::process::Command::new("git")
+                .args(["config", key, value])
+                .current_dir(tmp.path())
+                .output()
+                .unwrap_or_else(|_| panic!("git config {key}"));
+            assert!(cfg.status.success(), "git config {key} failed");
+        }
+
+        std::fs::create_dir_all(root.join("src")).unwrap();
+        std::fs::write(
+            root.join("src").join("lib.rs"),
+            "fn helper() {}\nfn caller() { helper(); }\n",
+        )
+        .unwrap();
+
+        let layout = Layout::new(&root);
+        layout.ensure_state_dir().unwrap();
+        let _guard = DirGuard::new(tmp.path());
+        execute_index(IndexArgs {
+            full: true,
+            ..Default::default()
+        })
+        .expect("index --full");
+
+        let db_path = layout.state_subdir().join("ledger.db");
+        let n = {
+            let conn = Connection::open(db_path.as_std_path()).unwrap();
+            let n: i64 = conn
+                .query_row("SELECT COUNT(*) FROM structural_edges", [], |r| r.get(0))
+                .unwrap();
+            assert!(n > 0, "fixture must produce native edges, got {n}");
+            let extra_before: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM project_symbols WHERE symbol_name = 'extra_0189'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            assert_eq!(
+                extra_before, 0,
+                "extra_0189 must be absent after the initial --full index"
+            );
+            let stale_at = (Utc::now() - chrono::Duration::days(10)).to_rfc3339();
+            conn.execute("UPDATE project_files SET last_indexed_at = ?1", [&stale_at])
+                .unwrap();
+            conn.execute(
+                "INSERT OR REPLACE INTO index_metadata (key, value) VALUES ('last_indexed_at', ?1)",
+                [&stale_at],
+            )
+            .unwrap();
+            n
+        };
+
+        // Mutate after --full so a no-op SqliteExtractPolicy::Run cannot pass.
+        std::fs::write(
+            root.join("src").join("lib.rs"),
+            "fn helper() {}\nfn caller() { helper(); }\nfn extra_0189() { helper(); }\n",
+        )
+        .unwrap();
+
+        std::fs::create_dir_all(root.join("observability")).unwrap();
+        std::fs::write(
+            root.join("observability").join("slo.yaml"),
+            "slo: fixture\n",
+        )
+        .unwrap();
+
+        let config = Config::default();
+        let storage = StorageManager::open_read_only(&layout).expect("open indexed storage");
+        assert!(
+            graph_is_missing_or_stale(&storage, config.index.stale_threshold_days),
+            "backdated index must be StalePopulated so scan takes the Run path"
+        );
+
+        let changes = vec![FileChange {
+            path: PathBuf::from("observability/slo.yaml"),
+            change_type: ChangeType::Modified,
+            is_staged: true,
+        }];
+
+        use std::sync::{Arc, Mutex};
+        use tracing_subscriber::fmt::MakeWriter;
+
+        #[derive(Clone)]
+        struct BufWriter(Arc<Mutex<Vec<u8>>>);
+        impl std::io::Write for BufWriter {
+            fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+                self.0.lock().unwrap().extend_from_slice(buf);
+                Ok(buf.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Ok(())
+            }
+        }
+        impl<'a> MakeWriter<'a> for BufWriter {
+            type Writer = Self;
+            fn make_writer(&'a self) -> Self::Writer {
+                self.clone()
+            }
+        }
+
+        let buf = Arc::new(Mutex::new(Vec::new()));
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::INFO)
+            .with_writer(BufWriter(buf.clone()))
+            .with_ansi(false)
+            .finish();
+
+        tracing::subscriber::with_default(subscriber, || {
+            maybe_auto_analyze_graph(&changes, &storage, tmp.path(), &config, &layout)
+                .expect("obs + stale populated must run graph analysis");
+        });
+        drop(storage);
+
+        let (n_after, extra_after) = {
+            let conn = Connection::open(db_path.as_std_path()).unwrap();
+            let n_after: i64 = conn
+                .query_row("SELECT COUNT(*) FROM structural_edges", [], |r| r.get(0))
+                .unwrap();
+            let extra_after: i64 = conn
+                .query_row(
+                    "SELECT COUNT(*) FROM project_symbols WHERE symbol_name = 'extra_0189'",
+                    [],
+                    |r| r.get(0),
+                )
+                .unwrap();
+            (n_after, extra_after)
+        };
+        assert!(
+            n_after > 0,
+            "scan Run must leave native edges, got {n_after}"
+        );
+        assert!(
+            n_after < 2 * n.max(2),
+            "scan Run must land one builder pass, not 2× (before={n} after={n_after})"
+        );
+        assert!(
+            extra_after > 0,
+            "scan Run must extract extra_0189; a no-op SqliteExtractPolicy::Run leaves this 0"
+        );
+
+        let logs = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+        let hits = logs.matches("Call graph build complete").count();
+        assert_eq!(
+            hits, 1,
+            "expected exactly one Call graph build complete during scan Run, got {hits}: {logs}"
+        );
     }
 
     #[test]

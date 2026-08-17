@@ -156,8 +156,10 @@ This is refuse-and-honest, not a silent full reindex inside watch.
 
 - Default nightly argv is `index --analyze-graph` (**no** `--auto-scip`).
 - Opt-in install: `schedule setup-nightly` (`--dry-run`, `--uninstall`).
-- **`analyze-graph` destroys and rebuilds structural edges** on its second pipeline
-  pass (not mere “duplicate work”). Full dedup is a separate track (0095 residual).
+- **`analyze-graph` skips the second SQLite extract** when main already
+  extracted. Native `structural_edges` rebuild in `CallGraphBuilder::build`
+  is idempotent (one native copy; SCIP evidence is left in place). Intra-pass
+  duplicate groups are unchanged (not UNIQUE).
 - Optional SCIP remains CLI-driven: `index --auto-scip` / `index --scip <path>`.
 
 ## Notify / platform limits (watch)

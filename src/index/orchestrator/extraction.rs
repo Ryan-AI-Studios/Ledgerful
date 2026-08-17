@@ -35,21 +35,6 @@ pub fn clear_routes(indexer: &ProjectIndexer, file_ids: &[i64]) -> Result<()> {
     .clear_routes(file_ids)
 }
 
-pub fn clear_structural_edges(indexer: &ProjectIndexer, file_ids: &[i64]) -> Result<()> {
-    if file_ids.is_empty() {
-        return Ok(());
-    }
-    let conn = indexer.storage.get_connection();
-    for &fid in file_ids {
-        conn.execute(
-            "DELETE FROM structural_edges WHERE caller_file_id = ?1",
-            [fid],
-        )
-        .into_diagnostic()?;
-    }
-    Ok(())
-}
-
 pub fn extract_data_models(
     indexer: &ProjectIndexer,
 ) -> Result<crate::index::data_models::DataModelStats> {
