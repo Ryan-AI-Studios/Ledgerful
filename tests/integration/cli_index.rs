@@ -369,3 +369,180 @@ fn test_index_auto_scip_graceful_fallback__slow() {
         "Auto-SCIP should fall back to native if binary is missing or generation fails"
     );
 }
+
+fn setup_call_fixture(root: &Utf8Path) {
+    setup_git_repo(root.as_std_path());
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("src").join("lib.rs"),
+        "fn helper() {}\nfn caller() { helper(); }\n",
+    )
+    .unwrap();
+    ledgerful::state::layout::Layout::new(root)
+        .ensure_state_dir()
+        .unwrap();
+}
+
+fn count_structural_edges(root: &Utf8Path) -> i64 {
+    let db = root.join(".ledgerful").join("state").join("ledger.db");
+    let conn = rusqlite::Connection::open(db.as_std_path()).expect("open ledger.db");
+    conn.query_row("SELECT COUNT(*) FROM structural_edges", [], |r| r.get(0))
+        .expect("COUNT(*) structural_edges")
+}
+
+/// DoD-2(a): `--full --analyze-graph` must store one builder pass, not 2×.
+#[test]
+fn analyze_graph_does_not_double_native_structural_edges() {
+    let tmp_plain = tempdir().unwrap();
+    let root_plain = Utf8Path::from_path(tmp_plain.path()).unwrap();
+    setup_call_fixture(root_plain);
+    {
+        let _guard = DirGuard::from_utf8(root_plain);
+        execute_index(IndexArgs {
+            full: true,
+            ..Default::default()
+        })
+        .expect("index --full");
+    }
+    let n = count_structural_edges(root_plain);
+    assert!(n > 0, "fixture must produce native edges, got {n}");
+
+    let tmp_analyze = tempdir().unwrap();
+    let root_analyze = Utf8Path::from_path(tmp_analyze.path()).unwrap();
+    setup_call_fixture(root_analyze);
+    {
+        let _guard = DirGuard::from_utf8(root_analyze);
+        execute_index(IndexArgs {
+            full: true,
+            analyze_graph: true,
+            ..Default::default()
+        })
+        .expect("index --full --analyze-graph");
+    }
+    let n_analyze = count_structural_edges(root_analyze);
+    assert_eq!(
+        n_analyze, n,
+        "analyze-graph must not insert another copy of the native pass"
+    );
+}
+
+/// DoD-2(b): `--full` then `--incremental` twice with no edits must not stack.
+#[test]
+fn repeat_incremental_does_not_stack_native_structural_edges() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_call_fixture(root);
+
+    let _guard = DirGuard::from_utf8(root);
+    execute_index(IndexArgs {
+        full: true,
+        ..Default::default()
+    })
+    .expect("index --full");
+    let n = count_structural_edges(root);
+    assert!(n > 0, "fixture must produce native edges, got {n}");
+
+    execute_index(IndexArgs {
+        incremental: true,
+        ..Default::default()
+    })
+    .expect("index --incremental #1");
+    assert_eq!(
+        count_structural_edges(root),
+        n,
+        "first no-change incremental must not stack native edges"
+    );
+
+    execute_index(IndexArgs {
+        incremental: true,
+        ..Default::default()
+    })
+    .expect("index --incremental #2");
+    assert_eq!(
+        count_structural_edges(root),
+        n,
+        "second no-change incremental must not stack native edges"
+    );
+}
+
+/// DoD-1: `index --full --analyze-graph` emits exactly one CG complete line.
+#[test]
+fn analyze_graph_emits_one_call_graph_build_complete() {
+    use std::sync::{Arc, Mutex};
+    use tracing_subscriber::fmt::MakeWriter;
+
+    #[derive(Clone)]
+    struct BufWriter(Arc<Mutex<Vec<u8>>>);
+
+    impl std::io::Write for BufWriter {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> MakeWriter<'a> for BufWriter {
+        type Writer = Self;
+        fn make_writer(&'a self) -> Self::Writer {
+            self.clone()
+        }
+    }
+
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_call_fixture(root);
+    let _guard = DirGuard::from_utf8(root);
+
+    let buf = Arc::new(Mutex::new(Vec::new()));
+    let subscriber = tracing_subscriber::fmt()
+        .with_max_level(tracing::Level::INFO)
+        .with_writer(BufWriter(buf.clone()))
+        .with_ansi(false)
+        .finish();
+
+    tracing::subscriber::with_default(subscriber, || {
+        execute_index(IndexArgs {
+            full: true,
+            analyze_graph: true,
+            ..Default::default()
+        })
+        .expect("index --full --analyze-graph");
+    });
+
+    let logs = String::from_utf8(buf.lock().unwrap().clone()).unwrap();
+    let hits = logs.matches("Call graph build complete").count();
+    assert_eq!(
+        hits, 1,
+        "expected exactly one Call graph build complete line, got {hits}: {logs}"
+    );
+}
+
+/// DoD-5: `--analyze-graph --export-docs` must not claim KG unavailable when Cozo is up.
+#[test]
+fn analyze_graph_export_docs_does_not_report_kg_unavailable() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_call_fixture(root);
+
+    let (stdout, stderr, code) = run_cli(
+        tmp.path(),
+        &["index", "--full", "--analyze-graph", "--export-docs"],
+    );
+    assert_eq!(
+        code, 0,
+        "export-docs must exit 0; stdout={stdout}; stderr={stderr}"
+    );
+    let combined = format!("{stdout}\n{stderr}");
+    assert!(
+        !combined.contains("Knowledge Graph unavailable"),
+        "Cozo is available on this fixture; dummy storage swap must not hide it: {combined}"
+    );
+    let docs_dir = root.join(".ledgerful").join("docs");
+    assert!(
+        combined.contains("Doc:") || docs_dir.exists(),
+        "export-docs must print a Doc: line or write docs from this CLI run; stdout={stdout}; stderr={stderr}"
+    );
+}

@@ -1,18 +1,31 @@
 use super::ProjectIndexer;
 use crate::state::layout::Layout;
-use crate::state::storage::StorageManager;
 use miette::Result;
 use std::path::PathBuf;
 use tracing::{info, warn};
 
-/// Run the full graph analysis pipeline used by `index --analyze-graph`.
+/// Whether `run_graph_analysis` should re-run SQLite extract stages.
+///
+/// `Run` (default) is fail-safe for standalone callers such as
+/// `scan --impact`. `AlreadyRan` skips `incremental_index` through
+/// `infer_services` when `execute_main_mode` already extracted.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SqliteExtractPolicy {
+    AlreadyRan,
+    #[default]
+    Run,
+}
+
+/// Run the graph analysis pipeline used by `index --analyze-graph`.
 ///
 /// This is decoupled from the CLI path so that `scan --impact` can trigger
 /// graph analysis internally when observability config files change and the
-/// graph is missing or stale. It rebuilds the SQLite index, extracts all
-/// enrichment phases, builds the native knowledge graph in CozoDB, computes
-/// centrality, and (if requested) runs semantic enrichment via the local
-/// model.
+/// graph is missing or stale. When `policy` is [`SqliteExtractPolicy::Run`],
+/// it incrementally extracts SQLite enrichment phases, then builds the native
+/// knowledge graph in CozoDB, computes centrality, and (if requested) runs
+/// semantic enrichment. When `policy` is [`SqliteExtractPolicy::AlreadyRan`],
+/// extract is skipped (caller already ran it); SCIP / KG / centrality still
+/// run.
 ///
 /// Returns the computed `CentralityStats` and optional SCIP augment result
 /// so callers (e.g. `index --analyze-graph`) can surface counts without
@@ -20,14 +33,13 @@ use tracing::{info, warn};
 /// degrade gracefully on platforms without graph storage.
 ///
 /// SCIP: when `auto_scip` / `scip_path` is set, runs edge augment **only**
-/// here after `infer_services` and **before** `build_kg_native` +
+/// here after extract-or-skip and **before** `build_kg_native` +
 /// `compute_centrality` (0095 §2.2b — exclusive with the main-mode site;
-/// `execute_main_mode` skips SCIP when `--analyze-graph` is set).
-#[allow(clippy::too_many_arguments)]
+/// one augment site per invocation so SCIP is not fed into `infer_services`
+/// on the graph path).
 pub fn run_graph_analysis(
-    storage: StorageManager,
-    repo_path: &std::path::Path,
-    config: &crate::config::model::Config,
+    indexer: &mut ProjectIndexer,
+    policy: SqliteExtractPolicy,
     enable_semantic: bool,
     fast: bool,
     auto_scip: bool,
@@ -38,39 +50,24 @@ pub fn run_graph_analysis(
     Option<crate::scip::ScipIndexJson>,
 )> {
     let scip_requested = auto_scip || scip_path.is_some();
-    if storage.cozo.is_none() {
+    if indexer.storage.cozo.is_none() {
         info!("CozoDB not available, skipping graph analysis (KG/centrality)");
         // SCIP edges live in SQLite only. When main mode deferred SCIP to this
         // path under --analyze-graph, still apply edges against the native floor
-        // already present in `storage` (built before the storage handle was moved).
+        // already present on the indexer.
         let scip_status = if scip_requested {
-            let repo_path_utf8 = match camino::Utf8PathBuf::from_path_buf(repo_path.to_path_buf()) {
-                Ok(p) => p,
-                Err(_) => {
-                    return Ok((
-                        crate::index::centrality::CentralityStats {
-                            entry_points_count: 0,
-                            symbols_computed: 0,
-                            max_reachable: 0,
-                        },
-                        Some(crate::scip::ScipIndexJson::failed(
-                            "repository root is not valid UTF-8; SCIP augment skipped",
-                        )),
-                    ));
-                }
-            };
-            let mut storage = storage;
             let owned_layout;
             let layout_ref = if let Some(l) = layout {
                 l
             } else {
-                owned_layout = Layout::new(&repo_path_utf8);
+                owned_layout = Layout::new(&indexer.repo_path);
                 &owned_layout
             };
+            let config = indexer.config.clone();
             Some(crate::scip::maybe_run_scip_augment(
                 layout_ref,
-                &mut storage,
-                config,
+                indexer.storage_mut(),
+                &config,
                 auto_scip,
                 scip_path,
             ))
@@ -87,49 +84,46 @@ pub fn run_graph_analysis(
         ));
     }
     // Light pre-flight: if the CozoDB store is reachable but empty, we still
-    // want to run the full pipeline because `observability diff` needs the
-    // OpenSLO nodes loaded from the `observability/` directory. The heavy work
-    // (incremental index, extraction, KG build) is shared with `index`.
-    if let Some(cozo) = storage.cozo.as_ref() {
+    // want to run the pipeline because `observability diff` needs the
+    // OpenSLO nodes loaded from the `observability/` directory.
+    if let Some(cozo) = indexer.storage.cozo.as_ref() {
         let _ = cozo.node_count();
     }
 
-    let repo_path = camino::Utf8PathBuf::from_path_buf(repo_path.to_path_buf())
-        .map_err(|_| miette::miette!("Repository root is not valid UTF-8"))?;
+    if policy == SqliteExtractPolicy::Run {
+        indexer.incremental_index()?;
+        indexer.index_docs()?;
+        indexer.index_topology()?;
+        indexer.classify_entrypoints()?;
+        indexer.build_call_graph()?;
+        indexer.extract_routes()?;
+        indexer.extract_data_models()?;
+        indexer.extract_observability()?;
+        indexer.extract_test_mappings()?;
+        indexer.extract_ci_gates()?;
+        indexer.extract_env_schema()?;
 
-    let mut indexer = ProjectIndexer::new(storage, repo_path.clone(), config.clone());
-
-    indexer.incremental_index()?;
-    indexer.index_docs()?;
-    indexer.index_topology()?;
-    indexer.classify_entrypoints()?;
-    indexer.build_call_graph()?;
-    indexer.extract_routes()?;
-    indexer.extract_data_models()?;
-    indexer.extract_observability()?;
-    indexer.extract_test_mappings()?;
-    indexer.extract_ci_gates()?;
-    indexer.extract_env_schema()?;
-
-    if config.coverage.service_inference_state()
-        == crate::config::model::ServiceInferenceState::Enabled
-    {
-        indexer.infer_services()?;
+        if indexer.config.coverage.service_inference_state()
+            == crate::config::model::ServiceInferenceState::Enabled
+        {
+            indexer.infer_services()?;
+        }
     }
 
-    // SCIP augment after services, before KG + centrality (0095 §2.2b)
+    // SCIP augment after extract-or-skip, before KG + centrality (0095 §2.2b)
     let scip_json = if auto_scip || scip_path.is_some() {
         let owned_layout;
         let layout_ref = if let Some(l) = layout {
             l
         } else {
-            owned_layout = Layout::new(&repo_path);
+            owned_layout = Layout::new(&indexer.repo_path);
             &owned_layout
         };
+        let config = indexer.config.clone();
         Some(crate::scip::maybe_run_scip_augment(
             layout_ref,
             indexer.storage_mut(),
-            config,
+            &config,
             auto_scip,
             scip_path,
         ))
@@ -137,7 +131,12 @@ pub fn run_graph_analysis(
         None
     };
 
-    indexer.build_kg_native(&config.local_model, &config.gemini, enable_semantic, fast)?;
+    indexer.build_kg_native(
+        &indexer.config.local_model,
+        &indexer.config.gemini,
+        enable_semantic,
+        fast,
+    )?;
     let cent_stats = indexer.compute_centrality()?;
 
     Ok((cent_stats, scip_json))
@@ -257,11 +256,11 @@ mod tests {
         );
         let config = Config::default();
         let missing = tmp.path().join("definitely-missing-0105.scip");
+        let mut indexer = ProjectIndexer::new(storage, root, config);
 
         let (cent, scip) = run_graph_analysis(
-            storage,
-            tmp.path(),
-            &config,
+            &mut indexer,
+            SqliteExtractPolicy::Run,
             false,
             true,
             false,
@@ -297,11 +296,11 @@ mod tests {
         let layout = Layout::new(&root);
         let storage = in_memory_storage();
         let config = Config::default();
+        let mut indexer = ProjectIndexer::new(storage, root, config);
 
         let (cent, scip) = run_graph_analysis(
-            storage,
-            tmp.path(),
-            &config,
+            &mut indexer,
+            SqliteExtractPolicy::Run,
             false,
             true,
             false,

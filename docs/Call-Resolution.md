@@ -100,7 +100,8 @@ duplicate rows and skip the upgrade.
 
 **Call sites (mutually exclusive, §2.2b):** without `--analyze-graph`, SCIP runs once after
 `build_call_graph` in the main index path; with `--analyze-graph`, SCIP runs only inside
-`run_graph_analysis` after `infer_services` (never both — avoids double rust-analyzer runs).
+`run_graph_analysis` after extract-or-skip (and never fed into `infer_services` on the graph
+path; never both — avoids double rust-analyzer runs).
 
 **Output:** `cg_*` fields in `index --json` are **native call-graph only**. SCIP deltas are
 additive under the top-level `scip` object (`edges_added` / `edges_updated` / status, plus skip

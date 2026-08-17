@@ -244,7 +244,8 @@ impl<'a> CallGraphBuilder<'a> {
     pub fn build(&self) -> Result<CallGraphStats> {
         let conn = self.storage.get_connection();
 
-        // 1. Query all project_symbols (include qualified_name for Part B reader)
+        // 1. Query all project_symbols first. Empty skip must not DELETE leftover
+        // natives — there is nothing to rebuild from.
         let mut stmt = conn
             .prepare(
                 "SELECT id, file_id, symbol_name, symbol_kind, is_public, qualified_name \
@@ -350,6 +351,11 @@ impl<'a> CallGraphBuilder<'a> {
             }
         }
         let bindings_by_file = crate::index::rows::load_all_file_bindings(conn)?;
+
+        // Native DELETE + all INSERTs share this transaction. Failure before
+        // commit rolls back the wipe so leftover natives remain.
+        let tx = conn.unchecked_transaction().into_diagnostic()?;
+        Self::clear_native_structural_edges(&tx)?;
 
         // 4. Iterate over source files
         let mut total_edges = 0usize;
@@ -482,9 +488,9 @@ impl<'a> CallGraphBuilder<'a> {
 
             edge_batch.extend(file_edges);
 
-            // 6. Batched inserts
+            // 6. Batched inserts on the rebuild transaction
             if edge_batch.len() >= EDGE_BATCH_SIZE {
-                self.insert_edge_batch(&edge_batch)?;
+                Self::insert_edge_batch(&tx, &edge_batch)?;
                 total_edges += edge_batch.len();
                 for edge in &edge_batch {
                     match edge.resolution_status.as_str() {
@@ -500,7 +506,7 @@ impl<'a> CallGraphBuilder<'a> {
 
         // Flush remaining edges
         if !edge_batch.is_empty() {
-            self.insert_edge_batch(&edge_batch)?;
+            Self::insert_edge_batch(&tx, &edge_batch)?;
             total_edges += edge_batch.len();
             for edge in &edge_batch {
                 match edge.resolution_status.as_str() {
@@ -511,6 +517,8 @@ impl<'a> CallGraphBuilder<'a> {
                 }
             }
         }
+
+        tx.commit().into_diagnostic()?;
 
         info!(
             "Call graph build complete: {} edges ({} resolved, {} ambiguous, {} unresolved) from {} files",
@@ -527,10 +535,7 @@ impl<'a> CallGraphBuilder<'a> {
         })
     }
 
-    fn insert_edge_batch(&self, edges: &[EdgeRow]) -> Result<()> {
-        let conn = self.storage.get_connection();
-        let tx = conn.unchecked_transaction().into_diagnostic()?;
-
+    fn insert_edge_batch(tx: &rusqlite::Transaction<'_>, edges: &[EdgeRow]) -> Result<()> {
         for edge in edges {
             tx.execute(
                 "INSERT INTO structural_edges \
@@ -551,8 +556,15 @@ impl<'a> CallGraphBuilder<'a> {
             )
             .into_diagnostic()?;
         }
+        Ok(())
+    }
 
-        tx.commit().into_diagnostic()?;
+    fn clear_native_structural_edges(tx: &rusqlite::Transaction<'_>) -> Result<()> {
+        tx.execute(
+            "DELETE FROM structural_edges WHERE evidence NOT LIKE 'scip:%'",
+            [],
+        )
+        .into_diagnostic()?;
         Ok(())
     }
 }
@@ -1524,6 +1536,277 @@ fn main() {
                 caller == "main" && callee.contains("fs") && status == "UNRESOLVED"
             }),
             "expected unresolved std::fs call from main, got {full_keys:?}"
+        );
+    }
+
+    /// 0189 B2: native wipe must keep SCIP evidence rows.
+    #[test]
+    fn build_wipes_native_edges_and_keeps_scip() {
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            ("src/lib.rs", "Rust", "h", 20, "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, is_public, confidence, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (file_id, "caller", "caller", "Function", 1, 1.0, "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        let caller_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, is_public, confidence, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (file_id, "helper", "helper", "Function", 1, 1.0, "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        let helper_id = conn.last_insert_rowid();
+
+        conn.execute(
+            "INSERT INTO structural_edges \
+             (caller_symbol_id, caller_file_id, callee_symbol_id, callee_file_id, \
+              call_kind, resolution_status, confidence, evidence) \
+             VALUES (?1, ?2, ?3, ?4, 'DIRECT', 'RESOLVED', 1.0, 'native-test')",
+            (caller_id, file_id, helper_id, file_id),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO structural_edges \
+             (caller_symbol_id, caller_file_id, callee_symbol_id, callee_file_id, \
+              call_kind, resolution_status, confidence, evidence) \
+             VALUES (?1, ?2, ?3, ?4, 'DIRECT', 'RESOLVED', 1.0, 'scip:ref')",
+            (caller_id, file_id, helper_id, file_id),
+        )
+        .unwrap();
+
+        let builder = CallGraphBuilder::new(&storage, PathBuf::from("/tmp/nonexistent_0189_scip"));
+        builder.build().expect("build");
+
+        let scip: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM structural_edges WHERE evidence LIKE 'scip:%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let native_fixture: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM structural_edges WHERE evidence = 'native-test'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(scip, 1, "SCIP evidence row must survive native rebuild");
+        assert_eq!(
+            native_fixture, 0,
+            "native-only rows must be wiped inside the rebuild transaction"
+        );
+    }
+
+    /// 0189 R1: empty `project_symbols` skips without DELETE (leftover natives stay).
+    #[test]
+    fn build_empty_symbols_skips_without_wiping_natives() {
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            ("src/lib.rs", "Rust", "h", 20, "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, is_public, confidence, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (file_id, "caller", "caller", "Function", 1, 1.0, "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        let caller_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, is_public, confidence, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (file_id, "helper", "helper", "Function", 1, 1.0, "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        let helper_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO structural_edges \
+             (caller_symbol_id, caller_file_id, callee_symbol_id, callee_file_id, \
+              call_kind, resolution_status, confidence, evidence) \
+             VALUES (?1, ?2, ?3, ?4, 'DIRECT', 'RESOLVED', 1.0, 'native-test')",
+            (caller_id, file_id, helper_id, file_id),
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO structural_edges \
+             (caller_symbol_id, caller_file_id, callee_symbol_id, callee_file_id, \
+              call_kind, resolution_status, confidence, evidence) \
+             VALUES (?1, ?2, ?3, ?4, 'DIRECT', 'RESOLVED', 1.0, 'scip:ref')",
+            (caller_id, file_id, helper_id, file_id),
+        )
+        .unwrap();
+        // FK requires symbols to insert edges; drop them so build() sees an empty table.
+        conn.execute_batch("PRAGMA foreign_keys = OFF; DELETE FROM project_symbols;")
+            .unwrap();
+
+        let symbol_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM project_symbols", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(symbol_count, 0, "fixture must have no project_symbols");
+
+        let builder = CallGraphBuilder::new(&storage, PathBuf::from("/tmp/nonexistent_0189_skip"));
+        let stats = builder.build().expect("build");
+        assert_eq!(stats.total_edges, 0);
+        assert_eq!(stats.files_processed, 0);
+        assert_eq!(stats.files_skipped, 0);
+
+        let scip: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM structural_edges WHERE evidence LIKE 'scip:%'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        let native_fixture: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM structural_edges WHERE evidence = 'native-test'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(scip, 1, "SCIP evidence row must survive empty-symbol skip");
+        assert_eq!(
+            native_fixture, 1,
+            "native rows must remain when build() skips for empty symbols"
+        );
+    }
+
+    fn count_edges_by_evidence_pred(storage: &StorageManager, sql: &str) -> i64 {
+        storage
+            .get_connection()
+            .query_row(sql, [], |r| r.get(0))
+            .unwrap()
+    }
+
+    fn seed_caller_helper_source(storage: &StorageManager) -> tempfile::TempDir {
+        use std::fs;
+
+        let dir = tempfile::tempdir().expect("temp dir");
+        let src_dir = dir.path().join("src");
+        fs::create_dir_all(&src_dir).expect("src dir");
+        fs::write(
+            src_dir.join("lib.rs"),
+            "fn helper() {}\nfn caller() { helper(); }\n",
+        )
+        .expect("write lib.rs");
+
+        let conn = storage.get_connection();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            ("src/lib.rs", "Rust", "h", 40, "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, is_public, confidence, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (file_id, "caller", "caller", "Function", 1, 1.0, "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        let caller_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, is_public, confidence, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (file_id, "helper", "helper", "Function", 1, 1.0, "2026-05-01T00:00:00Z"),
+        )
+        .unwrap();
+        let helper_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO structural_edges \
+             (caller_symbol_id, caller_file_id, callee_symbol_id, callee_file_id, \
+              call_kind, resolution_status, confidence, evidence) \
+             VALUES (?1, ?2, ?3, ?4, 'DIRECT', 'RESOLVED', 1.0, 'scip:ref')",
+            (caller_id, file_id, helper_id, file_id),
+        )
+        .unwrap();
+        dir
+    }
+
+    /// 0189 R1: two successful rebuilds must not stack native rows.
+    #[test]
+    fn build_twice_keeps_native_edge_count_stable() {
+        let storage = in_memory_storage();
+        let dir = seed_caller_helper_source(&storage);
+        let builder = CallGraphBuilder::new(&storage, dir.path().to_path_buf());
+        builder.build().expect("first build");
+        let n = count_edges_by_evidence_pred(
+            &storage,
+            "SELECT COUNT(*) FROM structural_edges WHERE evidence NOT LIKE 'scip:%'",
+        );
+        assert!(n > 0, "fixture must produce native edges, got {n}");
+        builder.build().expect("second build");
+        let n2 = count_edges_by_evidence_pred(
+            &storage,
+            "SELECT COUNT(*) FROM structural_edges WHERE evidence NOT LIKE 'scip:%'",
+        );
+        assert_eq!(n2, n, "second build must replace natives, not stack them");
+        let scip = count_edges_by_evidence_pred(
+            &storage,
+            "SELECT COUNT(*) FROM structural_edges WHERE evidence LIKE 'scip:%'",
+        );
+        assert_eq!(scip, 1, "SCIP row must survive both rebuilds");
+    }
+
+    /// 0189 R1: INSERT abort after wipe-in-tx must restore pre-build natives.
+    #[test]
+    fn build_wipe_rolls_back_when_insert_aborts() {
+        let storage = in_memory_storage();
+        let dir = seed_caller_helper_source(&storage);
+        let builder = CallGraphBuilder::new(&storage, dir.path().to_path_buf());
+        builder.build().expect("first build");
+        let n = count_edges_by_evidence_pred(
+            &storage,
+            "SELECT COUNT(*) FROM structural_edges WHERE evidence NOT LIKE 'scip:%'",
+        );
+        assert!(n > 0, "fixture must produce native edges, got {n}");
+        let scip_before = count_edges_by_evidence_pred(
+            &storage,
+            "SELECT COUNT(*) FROM structural_edges WHERE evidence LIKE 'scip:%'",
+        );
+
+        storage
+            .get_connection()
+            .execute(
+                "CREATE TRIGGER fail_native_insert BEFORE INSERT ON structural_edges
+                 BEGIN
+                   SELECT RAISE(ABORT, 'injected rebuild failure');
+                 END;",
+                [],
+            )
+            .unwrap();
+        let err = builder.build();
+        assert!(
+            err.is_err(),
+            "injected insert abort must fail build: {err:?}"
+        );
+
+        let n_after = count_edges_by_evidence_pred(
+            &storage,
+            "SELECT COUNT(*) FROM structural_edges WHERE evidence NOT LIKE 'scip:%'",
+        );
+        assert_eq!(n_after, n, "failed build must roll back the native wipe");
+        let scip_after = count_edges_by_evidence_pred(
+            &storage,
+            "SELECT COUNT(*) FROM structural_edges WHERE evidence LIKE 'scip:%'",
+        );
+        assert_eq!(
+            scip_after, scip_before,
+            "SCIP row must survive aborted rebuild"
         );
     }
 }

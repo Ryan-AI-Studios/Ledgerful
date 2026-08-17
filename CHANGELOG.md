@@ -6,6 +6,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Index pipeline native stacking (0189):** `--analyze-graph` no longer
+  re-extracts after main already extracted. `--incremental` no longer stacks
+  native `structural_edges`. Stored count on `--full --analyze-graph` is one
+  builder pass, not 2×. Stopped inserting another copy of the native pass
+  (not a UNIQUE / de-dupe of intra-pass groups). SCIP rows (`evidence` like
+  `scip:%`) are left in place. No CLI flag change; SCIP still default-off.
+
 ## [0.2.9] - 2026-08-13
 
 ### Fixed
