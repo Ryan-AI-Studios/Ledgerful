@@ -1,5 +1,5 @@
 use camino::Utf8Path;
-use ledgerful::commands::verify::execute_verify;
+use ledgerful::commands::verify::{ExecuteVerifyOpts, execute_verify};
 use ledgerful::state::layout::Layout;
 use ledgerful::verify::plan::VerifyScope;
 use std::fs;
@@ -21,21 +21,21 @@ fn test_verify_invalid_rules_fail_visibly() {
     )
     .unwrap();
 
-    let err = execute_verify(
-        None,
-        None,
-        5,
-        false,
-        false,
-        None,
-        false,
-        false,
-        VerifyScope::Full,
-        false,
-        false, // allow_full_fallback
-        false,
-        false,
-    )
+    let err = execute_verify(ExecuteVerifyOpts {
+        command: None,
+        tx_id: None,
+        timeout_secs: 5,
+        no_predict: false,
+        explain: false,
+        entity: None,
+        health: false,
+        dry_run: false,
+        scope: VerifyScope::Full,
+        auto_index: false,
+        allow_full_fallback: false,
+        json: false,
+        verbose: false,
+    })
     .unwrap_err();
     assert!(format!("{err:?}").contains("Invalid glob pattern"));
 }

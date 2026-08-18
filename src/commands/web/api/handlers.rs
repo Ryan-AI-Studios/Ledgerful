@@ -249,7 +249,7 @@ fn fetch_verify_steps(layout: &Layout) -> Result<Vec<VerificationStepResponse>> 
 /// Derive a short, dashboard-friendly step `name` from a verification plan
 /// step `description`.
 ///
-/// The plan builder (`src/verify/plan.rs`) stuffs `description` with a
+/// The plan builder (`src/verify/plan`) stuffs `description` with a
 /// traceability blob: it starts as a friendly label (`"From rules: <cmd>"` or
 /// `"Default: run project tests"`) and then ` | `-concatenates one
 /// `"Predicted impact (<reason>) on <file>"` segment per predicted affected
@@ -882,7 +882,7 @@ fn fetch_compliance_summary(layout: &Layout) -> Result<ComplianceSummaryResponse
     let conn = storage.get_connection();
 
     // Load config to determine whether signing is required and pin list
-    // (mirrors `verify_ledger_signatures` in `src/commands/verify.rs`).
+    // (mirrors `verify_ledger_signatures` in `src/commands/verify`).
     let intent = load_config(layout).unwrap_or_default().intent;
     let require_signing = intent.require_signing;
     let trusted_keys = intent.trusted_public_keys.as_slice();
@@ -1008,7 +1008,7 @@ fn fetch_compliance_signatures(layout: &Layout) -> Result<Vec<ComplianceSignatur
 }
 
 /// Classification of a ledger entry's signature status, mirroring
-/// `verify_ledger_signatures` in `src/commands/verify.rs`.
+/// `verify_ledger_signatures` in `src/commands/verify`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SignatureStatus {
     Valid,

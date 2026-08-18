@@ -1,4 +1,5 @@
 use crate::cli::args::VerifyArgs;
+use crate::commands::verify::ExecuteVerifyOpts;
 use miette::Result;
 
 pub(super) fn dispatch_verify(
@@ -45,10 +46,10 @@ pub(super) fn dispatch_verify(
             exact,
         )
     } else {
-        crate::commands::verify::execute_verify(
+        crate::commands::verify::execute_verify(ExecuteVerifyOpts {
             command,
             tx_id,
-            timeout,
+            timeout_secs: timeout,
             no_predict,
             explain,
             entity,
@@ -59,6 +60,6 @@ pub(super) fn dispatch_verify(
             allow_full_fallback,
             json,
             verbose,
-        )
+        })
     }
 }

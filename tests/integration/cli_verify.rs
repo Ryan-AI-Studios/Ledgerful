@@ -1,6 +1,6 @@
 use crate::common::{DirGuard, setup_git_repo};
 use camino::Utf8Path;
-use ledgerful::commands::verify::execute_verify;
+use ledgerful::commands::verify::{ExecuteVerifyOpts, execute_verify};
 use ledgerful::verify::plan::VerifyScope;
 use std::process::Command;
 use tempfile::tempdir;
@@ -62,21 +62,21 @@ fn test_verify_command_pass() {
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     let _guard = DirGuard::from_utf8(root);
     let cmd = "echo hello";
-    let result = execute_verify(
-        Some(cmd.into()),
-        None,
-        5,
-        false,
-        false,
-        None,
-        false,
-        false,
-        VerifyScope::Full,
-        false,
-        false, // allow_full_fallback
-        false,
-        false,
-    );
+    let result = execute_verify(ExecuteVerifyOpts {
+        command: Some(cmd.into()),
+        tx_id: None,
+        timeout_secs: 5,
+        no_predict: false,
+        explain: false,
+        entity: None,
+        health: false,
+        dry_run: false,
+        scope: VerifyScope::Full,
+        auto_index: false,
+        allow_full_fallback: false,
+        json: false,
+        verbose: false,
+    });
     assert!(result.is_ok());
 }
 
@@ -86,21 +86,21 @@ fn test_verify_command_fail() {
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     let _guard = DirGuard::from_utf8(root);
     let cmd = "exit 1";
-    let result = execute_verify(
-        Some(cmd.into()),
-        None,
-        5,
-        false,
-        false,
-        None,
-        false,
-        false,
-        VerifyScope::Full,
-        false,
-        false, // allow_full_fallback
-        false,
-        false,
-    );
+    let result = execute_verify(ExecuteVerifyOpts {
+        command: Some(cmd.into()),
+        tx_id: None,
+        timeout_secs: 5,
+        no_predict: false,
+        explain: false,
+        entity: None,
+        health: false,
+        dry_run: false,
+        scope: VerifyScope::Full,
+        auto_index: false,
+        allow_full_fallback: false,
+        json: false,
+        verbose: false,
+    });
     assert!(result.is_err());
 }
 
@@ -114,21 +114,21 @@ fn test_verify_command_timeout() {
     } else {
         "sleep 10"
     };
-    let result = execute_verify(
-        Some(cmd.into()),
-        None,
-        1,
-        false,
-        false,
-        None,
-        false,
-        false,
-        VerifyScope::Full,
-        false,
-        false, // allow_full_fallback
-        false,
-        false,
-    );
+    let result = execute_verify(ExecuteVerifyOpts {
+        command: Some(cmd.into()),
+        tx_id: None,
+        timeout_secs: 1,
+        no_predict: false,
+        explain: false,
+        entity: None,
+        health: false,
+        dry_run: false,
+        scope: VerifyScope::Full,
+        auto_index: false,
+        allow_full_fallback: false,
+        json: false,
+        verbose: false,
+    });
     assert!(result.is_err());
     let err_msg = format!("{:?}", result.err().unwrap());
     assert!(
@@ -142,21 +142,21 @@ fn test_verify_command_not_found() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     let _guard = DirGuard::from_utf8(root);
-    let result = execute_verify(
-        Some("nonexistent_command_9999".into()),
-        None,
-        5,
-        false,
-        false,
-        None,
-        false,
-        false,
-        VerifyScope::Full,
-        false,
-        false, // allow_full_fallback
-        false,
-        false,
-    );
+    let result = execute_verify(ExecuteVerifyOpts {
+        command: Some("nonexistent_command_9999".into()),
+        tx_id: None,
+        timeout_secs: 5,
+        no_predict: false,
+        explain: false,
+        entity: None,
+        health: false,
+        dry_run: false,
+        scope: VerifyScope::Full,
+        auto_index: false,
+        allow_full_fallback: false,
+        json: false,
+        verbose: false,
+    });
     assert!(result.is_err());
     let err_msg = format!("{:?}", result.err().unwrap());
     assert!(err_msg.contains("Command not found"));
@@ -169,21 +169,21 @@ fn test_verify_dry_run_does_not_execute() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     let _guard = DirGuard::from_utf8(root);
-    let result = execute_verify(
-        Some("nonexistent_command_that_would_fail_if_run".into()),
-        None,
-        5,
-        false,
-        false,
-        None,
-        false,
-        true, // dry_run = true
-        VerifyScope::Full,
-        false,
-        false, // allow_full_fallback
-        false,
-        false,
-    );
+    let result = execute_verify(ExecuteVerifyOpts {
+        command: Some("nonexistent_command_that_would_fail_if_run".into()),
+        tx_id: None,
+        timeout_secs: 5,
+        no_predict: false,
+        explain: false,
+        entity: None,
+        health: false,
+        dry_run: true,
+        scope: VerifyScope::Full,
+        auto_index: false,
+        allow_full_fallback: false,
+        json: false,
+        verbose: false,
+    });
     assert!(
         result.is_ok(),
         "dry-run should succeed even with a bad command: {:?}",
@@ -230,21 +230,21 @@ fn test_verify_fast_live_clean_empty_changes_despite_stale_packet() {
     // Commit so the working tree is clean while the saved packet still has changes.
     crate::common::git_add_and_commit(dir, "clean tree after impact");
 
-    let result = execute_verify(
-        None,
-        None,
-        5,
-        false,
-        false,
-        None,
-        false,
-        true, // dry_run
-        VerifyScope::Fast,
-        false, // auto_index
-        false, // allow_full_fallback
-        false,
-        false,
-    );
+    let result = execute_verify(ExecuteVerifyOpts {
+        command: None,
+        tx_id: None,
+        timeout_secs: 5,
+        no_predict: false,
+        explain: false,
+        entity: None,
+        health: false,
+        dry_run: true,
+        scope: VerifyScope::Fast,
+        auto_index: false,
+        allow_full_fallback: false,
+        json: false,
+        verbose: false,
+    });
     assert!(
         result.is_ok(),
         "live-clean + phantom packet must EmptyChanges (Ok), not MappingRefuse: {:?}",
@@ -305,21 +305,21 @@ fn test_verify_dry_run_mapping_refuse_is_err() {
         .expect("execute_impact should produce a loadable packet");
 
     // No index → empty test_mapping → MappingRefuse under --scope fast.
-    let result = execute_verify(
-        None,
-        None,
-        5,
-        false,
-        false,
-        None,
-        false,
-        true, // dry_run
-        VerifyScope::Fast,
-        false, // auto_index
-        false, // allow_full_fallback
-        false,
-        false,
-    );
+    let result = execute_verify(ExecuteVerifyOpts {
+        command: None,
+        tx_id: None,
+        timeout_secs: 5,
+        no_predict: false,
+        explain: false,
+        entity: None,
+        health: false,
+        dry_run: true,
+        scope: VerifyScope::Fast,
+        auto_index: false,
+        allow_full_fallback: false,
+        json: false,
+        verbose: false,
+    });
     assert!(
         result.is_err(),
         "dry-run MappingRefuse must be Err / exit 1, got Ok"
@@ -353,21 +353,21 @@ fn test_verify_fast_missing_packet_dirty_tree_refuses() {
     let layout = Layout::new(dir.to_string_lossy().as_ref());
     layout.ensure_state_dir().unwrap();
 
-    let result = execute_verify(
-        None,
-        None,
-        5,
-        true, // no_predict — still builds plan from packet path
-        false,
-        None,
-        false,
-        true, // dry_run
-        VerifyScope::Fast,
-        false,
-        false, // allow_full_fallback
-        false,
-        false,
-    );
+    let result = execute_verify(ExecuteVerifyOpts {
+        command: None,
+        tx_id: None,
+        timeout_secs: 5,
+        no_predict: true,
+        explain: false,
+        entity: None,
+        health: false,
+        dry_run: true,
+        scope: VerifyScope::Fast,
+        auto_index: false,
+        allow_full_fallback: false,
+        json: false,
+        verbose: false,
+    });
     assert!(
         result.is_err(),
         "missing packet + dirty tree must refuse, got Ok"
@@ -385,21 +385,21 @@ fn test_verify_health_check_known_executable() {
     let tmp = tempdir().unwrap();
     let root = Utf8Path::from_path(tmp.path()).unwrap();
     let _guard = DirGuard::from_utf8(root);
-    let result = execute_verify(
-        Some("cargo --version".into()),
-        None,
-        10,
-        false,
-        false,
-        None,
-        true, // health = true
-        false,
-        VerifyScope::Full,
-        false,
-        false, // allow_full_fallback
-        false,
-        false,
-    );
+    let result = execute_verify(ExecuteVerifyOpts {
+        command: Some("cargo --version".into()),
+        tx_id: None,
+        timeout_secs: 10,
+        no_predict: false,
+        explain: false,
+        entity: None,
+        health: true,
+        dry_run: false,
+        scope: VerifyScope::Full,
+        auto_index: false,
+        allow_full_fallback: false,
+        json: false,
+        verbose: false,
+    });
     assert!(
         result.is_ok(),
         "health check for 'cargo' should pass: {:?}",
@@ -415,21 +415,21 @@ fn test_verify_health_check_missing_executable() {
     let _guard = DirGuard::from_utf8(root);
     // Health mode checks config steps and auto-detected tools. We test that
     // health mode completes without panicking/hanging on a normal dev machine.
-    let result = execute_verify(
-        None,
-        None,
-        5,
-        false,
-        false,
-        None,
-        true, // health = true
-        false,
-        VerifyScope::Full,
-        false,
-        false, // allow_full_fallback
-        false,
-        false,
-    );
+    let result = execute_verify(ExecuteVerifyOpts {
+        command: None,
+        tx_id: None,
+        timeout_secs: 5,
+        no_predict: false,
+        explain: false,
+        entity: None,
+        health: true,
+        dry_run: false,
+        scope: VerifyScope::Full,
+        auto_index: false,
+        allow_full_fallback: false,
+        json: false,
+        verbose: false,
+    });
     // On a dev machine with cargo available, health check should succeed.
     assert!(
         result.is_ok(),
@@ -446,21 +446,21 @@ fn test_verify_health_check_env_prefix_command() {
     let _guard = DirGuard::from_utf8(root);
     // Health check passes None manual command so it uses auto-detection.
     // The key test is that it doesn't crash or hang.
-    let result = execute_verify(
-        None,
-        None,
-        10,
-        false,
-        false,
-        None,
-        true, // health = true
-        false,
-        VerifyScope::Full,
-        false,
-        false, // allow_full_fallback
-        false,
-        false,
-    );
+    let result = execute_verify(ExecuteVerifyOpts {
+        command: None,
+        tx_id: None,
+        timeout_secs: 10,
+        no_predict: false,
+        explain: false,
+        entity: None,
+        health: true,
+        dry_run: false,
+        scope: VerifyScope::Full,
+        auto_index: false,
+        allow_full_fallback: false,
+        json: false,
+        verbose: false,
+    });
     assert!(
         result.is_ok(),
         "health check on dev machine should not error: {:?}",
@@ -1304,21 +1304,21 @@ timeout_secs = 5
     .unwrap();
 
     // No manual `-c`: exercises config-declared steps only.
-    let err = execute_verify(
-        None,
-        None,
-        5,
-        true, // no_predict
-        false,
-        None,
-        false,
-        false,
-        VerifyScope::Full,
-        false,
-        false, // allow_full_fallback
-        false,
-        false,
-    )
+    let err = execute_verify(ExecuteVerifyOpts {
+        command: None,
+        tx_id: None,
+        timeout_secs: 5,
+        no_predict: true,
+        explain: false,
+        entity: None,
+        health: false,
+        dry_run: false,
+        scope: VerifyScope::Full,
+        auto_index: false,
+        allow_full_fallback: false,
+        json: false,
+        verbose: false,
+    })
     .expect_err("hostile shell:true config step must be refused");
 
     let msg = format!("{err:?}");
@@ -1359,21 +1359,21 @@ timeout_secs = 5
     )
     .unwrap();
 
-    let err = execute_verify(
-        None,
-        None,
-        5,
-        true,
-        false,
-        None,
-        false,
-        false,
-        VerifyScope::Full,
-        false,
-        false, // allow_full_fallback
-        false,
-        false,
-    )
+    let err = execute_verify(ExecuteVerifyOpts {
+        command: None,
+        tx_id: None,
+        timeout_secs: 5,
+        no_predict: true,
+        explain: false,
+        entity: None,
+        health: false,
+        dry_run: false,
+        scope: VerifyScope::Full,
+        auto_index: false,
+        allow_full_fallback: false,
+        json: false,
+        verbose: false,
+    })
     .expect_err("hostile shell chain second command must be refused");
 
     let msg = format!("{err:?}");
@@ -1414,21 +1414,21 @@ timeout_secs = 5
     )
     .unwrap();
 
-    let err = execute_verify(
-        None,
-        None,
-        5,
-        true,
-        false,
-        None,
-        false,
-        false,
-        VerifyScope::Full,
-        false,
-        false, // allow_full_fallback
-        false,
-        false,
-    )
+    let err = execute_verify(ExecuteVerifyOpts {
+        command: None,
+        tx_id: None,
+        timeout_secs: 5,
+        no_predict: true,
+        explain: false,
+        entity: None,
+        health: false,
+        dry_run: false,
+        scope: VerifyScope::Full,
+        auto_index: false,
+        allow_full_fallback: false,
+        json: false,
+        verbose: false,
+    })
     .expect_err("un-allowlisted direct config step must be refused");
 
     let msg = format!("{err:?}");
@@ -1469,21 +1469,21 @@ timeout_secs = 30
     )
     .unwrap();
 
-    let result = execute_verify(
-        None,
-        None,
-        30,
-        true,
-        false,
-        None,
-        false,
-        false,
-        VerifyScope::Full,
-        false,
-        false, // allow_full_fallback
-        false,
-        false,
-    );
+    let result = execute_verify(ExecuteVerifyOpts {
+        command: None,
+        tx_id: None,
+        timeout_secs: 30,
+        no_predict: true,
+        explain: false,
+        entity: None,
+        health: false,
+        dry_run: false,
+        scope: VerifyScope::Full,
+        auto_index: false,
+        allow_full_fallback: false,
+        json: false,
+        verbose: false,
+    });
     assert!(
         result.is_ok(),
         "cargo --version under config steps should pass: {:?}",

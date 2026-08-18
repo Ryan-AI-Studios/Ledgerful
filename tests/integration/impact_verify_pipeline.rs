@@ -1,5 +1,5 @@
 use ledgerful::commands::impact::execute_impact;
-use ledgerful::commands::verify::execute_verify;
+use ledgerful::commands::verify::{ExecuteVerifyOpts, execute_verify};
 use ledgerful::impact::packet::ImpactPacket;
 use ledgerful::state::layout::Layout;
 use ledgerful::state::storage::StorageManager;
@@ -41,21 +41,21 @@ fn test_impact_packet_is_loadable_by_verify_after_scan() {
 
     // Step 2: verify should be able to load and deserialize that packet
     // (using prediction mode, no manual command override)
-    let result = execute_verify(
-        Some("echo ok".into()),
-        None,
-        10,
-        false,
-        false,
-        None,
-        false,
-        false,
-        VerifyScope::Full,
-        false,
-        false, // allow_full_fallback
-        false,
-        false,
-    );
+    let result = execute_verify(ExecuteVerifyOpts {
+        command: Some("echo ok".into()),
+        tx_id: None,
+        timeout_secs: 10,
+        no_predict: false,
+        explain: false,
+        entity: None,
+        health: false,
+        dry_run: false,
+        scope: VerifyScope::Full,
+        auto_index: false,
+        allow_full_fallback: false,
+        json: false,
+        verbose: false,
+    });
     assert!(
         result.is_ok(),
         "verify should succeed after impact: {:?}",

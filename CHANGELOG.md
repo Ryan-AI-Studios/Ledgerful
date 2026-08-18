@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Verify / doctor / plan module split (0191):** `commands/verify`,
+  `commands/doctor` check families, and `verify/plan` are domain barrels.
+  Restores the 0137 engine fingerprint (`src/cli/args/mod.rs`) and
+  SharedInfra globs (`src/cli/args/**`, `src/cli/dispatch/**`) after the
+  0190 CLI move. No new doctor finding, no verify JSON/`--scope fast`
+  policy change, no clap flag change.
+
 - **CLI/MCP registration split (0190):** `src/cli/args` and `src/cli/dispatch`
   are domain modules with thin `Commands` / `run_with` barrels. MCP tool
   failures use an internal `thiserror` type, then the same

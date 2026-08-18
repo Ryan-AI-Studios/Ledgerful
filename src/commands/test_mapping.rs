@@ -247,7 +247,7 @@ fn show_tests_empty_state() -> Result<()> {
     println!("Examples:");
     println!("  ledgerful tests src/index/languages/rust/symbols.rs");
     println!("  ledgerful tests --entity src/commands/doctor/mod.rs");
-    println!("  ledgerful tests --entity src/commands/verify.rs --json");
+    println!("  ledgerful tests --entity src/commands/verify/mod.rs --json");
     println!();
     println!("Available entities (top 10 by symbol count):");
     for (file_path, count) in &rows {
