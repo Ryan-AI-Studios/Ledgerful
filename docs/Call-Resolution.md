@@ -31,7 +31,7 @@ correctly external by design (see honesty ceiling below).
 
 ## Algorithm (shared: `src/index/resolve.rs`)
 
-Used by both `call_graph.rs` (full index) and `incremental.rs`.
+Used by both `call_graph/` (full index) and `incremental.rs`.
 
 1. **Normalize** the callee for QN lookup: replace `::` with `.` (`Foo::new` → `Foo.new`).
 2. **Module + binding arm (0092, ahead of QN)** for multi-segment names:
@@ -58,7 +58,7 @@ Used by both `call_graph.rs` (full index) and `incremental.rs`.
 
 Callable kinds (locked): **`Function`**, **`Method`**.
 
-Full-index (`call_graph.rs`) and incremental (`incremental.rs`) both convert DB rows via
+Full-index (`call_graph/builder.rs`) and incremental (`incremental.rs`) both convert DB rows via
 `resolve_candidate_from_row` + `build_resolve_maps`, then call `resolve_callee` with the
 caller's module path and bindings.
 

@@ -3,7 +3,7 @@ use crate::state::storage::StorageManager;
 use crate::state::storage_cozo::{CozoStorage, GraphEdge, GraphNode};
 use miette::{IntoDiagnostic, Result};
 use serde_json::json;
-use tracing::info;
+use tracing::{debug, info};
 
 #[derive(Debug, Clone)]
 pub struct GraphStats {
@@ -1284,7 +1284,10 @@ fn phase_security(ctx: &mut GraphLoadContext) -> Result<()> {
                 .filter_map(|row| {
                     let child_id = match row.into_iter().next() {
                         Some(cozo::DataValue::Str(s)) => s.to_string(),
-                        _ => return None,
+                        other => {
+                            debug!(?other, "security prune skipped non-Str child_id");
+                            return None;
+                        }
                     };
                     let mut edge_params = std::collections::BTreeMap::new();
                     edge_params.insert("tgt".into(), cozo::DataValue::Str(child_id.clone().into()));
@@ -1306,7 +1309,10 @@ fn phase_security(ctx: &mut GraphLoadContext) -> Result<()> {
                                             .iter()
                                             .any(|stem| src_lower.contains(stem.as_str()))
                                     }
-                                    _ => false,
+                                    other => {
+                                        debug!(?other, "security prune skipped non-Str live-edge src");
+                                        false
+                                    }
                                 }
                             })
                         })
@@ -1665,7 +1671,10 @@ fn phase_cargo_dependencies(ctx: &mut GraphLoadContext) -> Result<()> {
                 let mut iter = row.into_iter();
                 let id = match iter.next() {
                     Some(cozo::DataValue::Str(s)) => s.to_string(),
-                    _ => return None,
+                    other => {
+                        debug!(?other, "cargo prune skipped non-Str package id");
+                        return None;
+                    }
                 };
                 let is_cargo_lock_sourced = match iter.next() {
                     Some(cozo::DataValue::Json(meta)) => meta
@@ -1673,7 +1682,10 @@ fn phase_cargo_dependencies(ctx: &mut GraphLoadContext) -> Result<()> {
                         .and_then(|m| m.as_str())
                         .map(|m| m == "Cargo.lock")
                         .unwrap_or(false),
-                    _ => false,
+                    other => {
+                        debug!(?other, "cargo prune skipped non-Json package metadata");
+                        false
+                    }
                 };
                 if !is_cargo_lock_sourced {
                     // Not created by this phase (e.g. an OSV-imported advisory

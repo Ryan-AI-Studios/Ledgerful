@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Call graph / semantic-index module split (0193):**
+  `index/call_graph` is a types/builder/persist barrel.
+  `commands/index/semantic` stages parse/embed/persist with
+  typed errors and a ProgressStyle `default_bar()` fallback.
+  No persist-contract, UNIQUE, or `--semantic --json` change.
+
 - **Ask / change-context / search command-body split (0192):**
   `execute_ask` takes named `ExecuteAskOpts`; gather + legacy complete
   live beside the orchestrator. `change_context` is a directory barrel.
