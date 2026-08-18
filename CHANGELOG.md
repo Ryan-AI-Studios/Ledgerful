@@ -6,6 +6,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Security
+
+- **Transitive `h2` 0.4.15 → 0.4.16 (RUSTSEC-2026-0258):** lockfile-only
+  bump so required `audit`/`deny` checks pass. Unbounded empty DATA
+  frames in the HTTP/2 stack used by hyper/axum. Not an 0193 behavior
+  change.
+
 ### Changed
 
 - **Call graph / semantic-index module split (0193):**
