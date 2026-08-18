@@ -37,7 +37,7 @@ Examples:
   ledgerful symbols --changed --json
   ledgerful symbols --kind fn --path src/cli --json
   ledgerful symbols --path src/commands/ --pub --limit 50 --json
-  ledgerful symbols --path src/commands/doctor.rs --limit 20
+  ledgerful symbols --path src/commands/doctor/mod.rs --limit 20
 ")]
 pub struct SymbolsArgs {
     /// Path prefix filter (not substring). Trailing slash is trimmed.

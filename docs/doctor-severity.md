@@ -114,7 +114,7 @@ Agents may use it to spot session-start regressions; not a SLI contract.
 | `code` | `binary-behind-tree` |
 | `severity` | `warn` |
 | `category` | `tools` |
-| When | **Engine worktree only** (`Cargo.toml` package name exactly `ledgerful` **and** `src/cli/args.rs` exists). Version string lag and/or embedded build short-SHA ≠ worktree HEAD (gix). |
+| When | **Engine worktree only** (`Cargo.toml` package name exactly `ledgerful` **and** `src/cli/args/mod.rs` exists). Version string lag and/or embedded build short-SHA ≠ worktree HEAD (gix). |
 | Not | Consumer repos; matching version+SHA; embed `unknown` + equal version (no commit false positive). |
 | `readyForPublish` | **Not** blocked (warn only). Counts in `dashboard_failures` (category ≠ optional). |
 | `remediation` | Always: `cargo install --path . --force` then `ledgerful update --binary` then `ledgerful --version`. **No** auto-install from doctor. |

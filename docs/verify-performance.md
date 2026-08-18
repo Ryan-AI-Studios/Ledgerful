@@ -14,7 +14,7 @@ hook uses this scope.
 ### What `--scope fast` actually runs (when ScopedOk)
 
 When scoped selection succeeds, the plan includes three steps
-(`src/verify/plan.rs` → `build_fast_scoped_plan`):
+(`src/verify/plan/scoped.rs` → `build_fast_scoped_plan`):
 
 1. `cargo fmt --all -- --check` — always
 2. `cargo clippy --all-targets --all-features -- -D warnings` — always
@@ -27,7 +27,7 @@ intentional: fmt and clippy are cheap and catch issues the test suite does not.
 ### Fast-or-refuse class table (never surprise full hang)
 
 Classifier order is load-bearing. **LiveEmpty** is decided in
-`commands/verify.rs` (before `build_plan_scoped_with_options`) so plan units stay
+`commands/verify/mod.rs` (before `build_plan_scoped_with_options`) so plan units stay
 hermetic; the rest lives in `build_plan_scoped_with_options`:
 
 | Class | Detection | Default under `--scope fast` |

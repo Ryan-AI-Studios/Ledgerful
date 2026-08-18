@@ -437,7 +437,7 @@ pub struct VerificationTrendPoint {
 /// passRatePercent, recentFailures }` sorted ascending by step command.
 ///
 /// `id` is the step's stable identifier (its `command` — the verify plan step
-/// `src/verify/plan.rs::VerificationStep` has no separate id field, and
+/// `src/verify/plan/mod.rs::VerificationStep` has no separate id field, and
 /// `verification_results` only stores `command`). `name` is the friendly
 /// label: the step's `description` from the most recent `verification_runs.
 /// plan_json` that contains a step with that command, falling back to

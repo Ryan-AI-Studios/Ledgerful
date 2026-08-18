@@ -31,13 +31,19 @@ pub struct BinaryCurrencyLag {
 }
 
 /// Engine layout fingerprint: package name is exactly `ledgerful` **and**
-/// `src/cli/args.rs` exists under that root.
+/// `src/cli/args/mod.rs` exists under that root.
 ///
 /// Layout fingerprint only — if CLI layout moves, update this marker.
 /// Do **not** path-string match `"ledgerful"` in the directory name.
 pub fn is_ledgerful_engine_worktree(root: &Path) -> bool {
     // Layout fingerprint: if CLI layout moves, update this marker.
-    if !root.join("src").join("cli").join("args.rs").is_file() {
+    if !root
+        .join("src")
+        .join("cli")
+        .join("args")
+        .join("mod.rs")
+        .is_file()
+    {
         return false;
     }
     let Ok(content) = std::fs::read_to_string(root.join("Cargo.toml")) else {
@@ -434,7 +440,7 @@ version = "1.0.0"
         assert!(!is_ledgerful_engine_worktree(root));
 
         // Even with ledgerful-ish dir name marker alone must not suffice —
-        // missing args.rs.
+        // missing args/mod.rs.
         fs::write(
             root.join("Cargo.toml"),
             r#"[package]
@@ -447,7 +453,12 @@ version = "0.2.5"
 
         // Name + fingerprint → engine.
         fs::create_dir_all(root.join("src").join("cli")).expect("dirs");
-        fs::write(root.join("src").join("cli").join("args.rs"), "// stub").expect("args");
+        fs::create_dir_all(root.join("src").join("cli").join("args")).expect("args dir");
+        fs::write(
+            root.join("src").join("cli").join("args").join("mod.rs"),
+            "// stub",
+        )
+        .expect("args");
         assert!(is_ledgerful_engine_worktree(root));
         assert_eq!(worktree_package_version(root).as_deref(), Some("0.2.5"));
     }

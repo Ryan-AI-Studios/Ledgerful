@@ -1,4 +1,4 @@
-use ledgerful::commands::ask::execute_ask;
+use ledgerful::commands::ask::{ExecuteAskOpts, execute_ask};
 use ledgerful::gemini::modes::GeminiMode;
 use ledgerful::state::layout::Layout;
 use ledgerful::state::storage::StorageManager;
@@ -68,18 +68,18 @@ fn test_ask_what_calls_run_with() {
     let storage = seeded_storage(&layout);
     storage.shutdown().unwrap();
 
-    let result = execute_ask(
-        Some("what calls run_with".into()),
-        false,
-        10,
-        GeminiMode::Analyze,
-        false,
-        None,
-        false,
-        Some(15),
-        false, // no_kg_fallback
-        false, // auto_scan
-    );
+    let result = execute_ask(ExecuteAskOpts {
+        query: Some("what calls run_with".into()),
+        semantic: false,
+        limit: 10,
+        mode: GeminiMode::Analyze,
+        narrative: false,
+        backend: None,
+        auto_index: false,
+        timeout_secs: Some(15),
+        no_kg_fallback: false,
+        auto_scan: false,
+    });
     assert!(
         result.is_ok(),
         "query must resolve without an LLM backend: {:?}",
@@ -107,18 +107,18 @@ fn test_ask_show_callers_of_run_with() {
     let storage = seeded_storage(&layout);
     storage.shutdown().unwrap();
 
-    let result = execute_ask(
-        Some("show callers of run_with".into()),
-        false,
-        10,
-        GeminiMode::Analyze,
-        false,
-        None,
-        false,
-        Some(15),
-        false, // no_kg_fallback
-        false, // auto_scan
-    );
+    let result = execute_ask(ExecuteAskOpts {
+        query: Some("show callers of run_with".into()),
+        semantic: false,
+        limit: 10,
+        mode: GeminiMode::Analyze,
+        narrative: false,
+        backend: None,
+        auto_index: false,
+        timeout_secs: Some(15),
+        no_kg_fallback: false,
+        auto_scan: false,
+    });
     assert!(
         result.is_ok(),
         "query must resolve without an LLM backend: {:?}",
@@ -146,18 +146,18 @@ fn test_ask_find_all_axum_route_handlers() {
     let storage = seeded_storage(&layout);
     storage.shutdown().unwrap();
 
-    let result = execute_ask(
-        Some("find all Axum route handlers".into()),
-        false,
-        10,
-        GeminiMode::Analyze,
-        false,
-        None,
-        false,
-        Some(15),
-        false, // no_kg_fallback
-        false, // auto_scan
-    );
+    let result = execute_ask(ExecuteAskOpts {
+        query: Some("find all Axum route handlers".into()),
+        semantic: false,
+        limit: 10,
+        mode: GeminiMode::Analyze,
+        narrative: false,
+        backend: None,
+        auto_index: false,
+        timeout_secs: Some(15),
+        no_kg_fallback: false,
+        auto_scan: false,
+    });
     assert!(
         result.is_ok(),
         "query must resolve without an LLM backend: {:?}",
@@ -188,18 +188,18 @@ fn test_ask_find_the_function_run_with_primary_hit() {
     let storage = seeded_storage(&layout);
     storage.shutdown().unwrap();
 
-    let result = execute_ask(
-        Some("find the function run_with".into()),
-        false,
-        10,
-        GeminiMode::Analyze,
-        false,
-        None,
-        false,
-        Some(15),
-        false,
-        false,
-    );
+    let result = execute_ask(ExecuteAskOpts {
+        query: Some("find the function run_with".into()),
+        semantic: false,
+        limit: 10,
+        mode: GeminiMode::Analyze,
+        narrative: false,
+        backend: None,
+        auto_index: false,
+        timeout_secs: Some(15),
+        no_kg_fallback: false,
+        auto_scan: false,
+    });
     assert!(
         result.is_ok(),
         "find-the-function must resolve via symbols without LLM: {:?}",
@@ -228,18 +228,18 @@ fn test_ask_find_totally_absent_symbol_local_grounding_miss() {
     let storage = seeded_storage(&layout);
     storage.shutdown().unwrap();
 
-    let result = execute_ask(
-        Some("find the function totally_absent_symbol_xyz_0142".into()),
-        false,
-        10,
-        GeminiMode::Analyze,
-        false,
-        None,
-        false,
-        Some(15),
-        false,
-        false,
-    );
+    let result = execute_ask(ExecuteAskOpts {
+        query: Some("find the function totally_absent_symbol_xyz_0142".into()),
+        semantic: false,
+        limit: 10,
+        mode: GeminiMode::Analyze,
+        narrative: false,
+        backend: None,
+        auto_index: false,
+        timeout_secs: Some(15),
+        no_kg_fallback: false,
+        auto_scan: false,
+    });
     assert!(
         result.is_ok(),
         "absent locate symbol must honest-miss early-exit without LLM: {:?}",

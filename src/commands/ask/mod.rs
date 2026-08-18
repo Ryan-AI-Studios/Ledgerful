@@ -1,6 +1,8 @@
 pub(crate) mod backend;
 pub(crate) mod context;
 pub(crate) mod execute;
+pub(crate) mod gather;
+pub(crate) mod legacy_complete;
 pub(crate) mod render;
 
 // Re-export the public API surface so existing `crate::commands::ask::*`
@@ -11,7 +13,7 @@ pub use backend::{
     resolve_provider_entries, resolve_provider_priority, sanitize_error_for_logging,
 };
 pub use context::{build_ask_user_prompt, escape_cozo_string, should_prune_impact};
-pub use execute::execute_ask;
+pub use execute::{ExecuteAskOpts, execute_ask};
 
 // `Backend` is referenced by `cli::args` and `config_verify`, so it must stay
 // at the crate-visible `pub` level.

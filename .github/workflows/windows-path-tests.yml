@@ -5,7 +5,7 @@ on:
   pull_request:
     paths:
       - .github/workflows/windows-path-tests.yml
-      - src/cli/dispatch.rs
+      - src/cli/dispatch/**
       - src/util/path.rs
       - tests/integration/path_security.rs
 

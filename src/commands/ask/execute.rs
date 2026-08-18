@@ -1,18 +1,34 @@
-use crate::commands::ask::context::SemanticGather;
+use crate::commands::ask::gather::{gather_impact_and_bridge, gather_semantic_and_kg};
+use crate::commands::ask::legacy_complete::{LegacyCompleteInputs, execute_legacy_complete};
 use crate::commands::ask::{
-    Backend, build_ask_user_prompt, degrade_to_context, fetch_kg_bm25, fetch_kg_neighborhood,
-    gather_semantic_chunks, resolve_backend, resolve_provider_entries, run_gemini_synthesis,
+    Backend, build_ask_user_prompt, resolve_backend, resolve_provider_entries,
 };
 use crate::commands::helpers::{get_layout, load_ledger_config};
+use crate::config::model::Config;
 use crate::gemini::modes::GeminiMode;
 use crate::index::warn_if_stale;
-use crate::local_model::pruner;
+use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use miette::Result;
-use owo_colors::{OwoColorize, Stream, Style};
+use owo_colors::{OwoColorize, Stream};
 use std::env;
 
 const MIN_CONTEXT_CHARS: usize = 32_768;
+
+/// Named inputs for [`execute_ask`] (not clap `AskArgs`).
+#[derive(Debug, Clone)]
+pub struct ExecuteAskOpts {
+    pub query: Option<String>,
+    pub semantic: bool,
+    pub limit: usize,
+    pub mode: GeminiMode,
+    pub narrative: bool,
+    pub backend: Option<Backend>,
+    pub auto_index: bool,
+    pub timeout_secs: Option<u64>,
+    pub no_kg_fallback: bool,
+    pub auto_scan: bool,
+}
 
 /// Entry point for the `ledgerful ask` CLI subcommand.
 ///
@@ -20,55 +36,172 @@ const MIN_CONTEXT_CHARS: usize = 32_768;
 /// When `None`, backends resolve their own defaults (Local →
 /// `local_model.timeout_secs` 300-class, Gemini → 120-class, other cloud 15).
 /// Explicit `Some(n)` always wins for all backends.
-#[allow(clippy::too_many_arguments)]
-pub fn execute_ask(
-    query: Option<String>,
-    semantic: bool,
-    limit: usize,
-    mode: GeminiMode,
-    narrative: bool,
-    backend: Option<Backend>,
-    auto_index: bool,
-    timeout_secs: Option<u64>,
-    no_kg_fallback: bool,
-    auto_scan: bool,
-) -> Result<()> {
+pub fn execute_ask(opts: ExecuteAskOpts) -> Result<()> {
+    let ExecuteAskOpts {
+        query,
+        semantic,
+        limit,
+        mode,
+        narrative,
+        backend,
+        auto_index,
+        timeout_secs,
+        no_kg_fallback,
+        auto_scan,
+    } = opts;
+
     let layout = get_layout()?;
     let config = load_ledger_config(&layout)?;
 
     layout.ensure_state_dir()?;
     let storage = StorageManager::init_with_layout(&layout)?;
+    let storage = prepare_ask_storage(storage, &layout, &config, auto_index)?;
 
-    // --- Staleness check ---
-    let threshold = config.index.stale_threshold_days;
-    let non_interactive = crate::index::staleness::is_non_interactive();
-    let storage = if auto_index {
-        let (storage, _) = crate::index::staleness::try_auto_index(storage, threshold, &layout)?;
-        storage
-    } else if non_interactive {
-        // Non-interactive mode: skip auto-index prompt, just warn
-        warn_if_stale(&storage, threshold);
-        storage
+    if try_early_ask_routes(&query, &storage, &layout)? {
+        return Ok(());
+    }
+
+    let mut gathered = gather_impact_and_bridge(&storage, &layout, &config, &query, auto_scan)?;
+
+    let resolved_backend = resolve_backend(&config, backend);
+    validate_backend_configured(&config, backend, resolved_backend)?;
+
+    let semantic = semantic || gathered.is_global;
+    gather_semantic_and_kg(
+        &mut gathered,
+        &storage,
+        &layout,
+        &config,
+        semantic,
+        auto_index,
+        limit,
+        no_kg_fallback,
+    );
+
+    let adaptive_mode = if semantic {
+        crate::local_model::context::AdaptiveMode::CodebaseFocus
     } else {
-        let is_stale = warn_if_stale(&storage, threshold);
-        if is_stale && crate::util::term::is_interactive() {
-            use inquire::Confirm;
-            if let Ok(true) = Confirm::new("Index is stale. Would you like to run auto-index now?")
-                .with_default(true)
-                .prompt()
-            {
-                eprintln!("Running auto-indexing...");
-                let (storage, _) =
-                    crate::index::staleness::try_auto_index(storage, threshold, &layout)?;
-                storage
-            } else {
-                storage
-            }
-        } else {
-            storage
-        }
+        crate::local_model::context::AdaptiveMode::ChangesFocus
     };
 
+    // Token budget consistency
+    let budget_tokens = match resolved_backend {
+        Backend::Gemini => config.gemini.context_window,
+        Backend::Local | Backend::OllamaCloud | Backend::OpenRouter => {
+            config.local_model.context_window
+        }
+    };
+    let char_limit = (budget_tokens as u64 * 4 * 80 / 100).max(MIN_CONTEXT_CHARS as u64) as usize;
+    let truncated = gathered.latest_packet.truncate_for_context(char_limit);
+
+    let user_prompt = build_ask_user_prompt(
+        &gathered.query_string,
+        gathered.is_global,
+        narrative,
+        &gathered.latest_packet,
+    );
+
+    let base_system_prompt = if gathered.is_global {
+        let mut base = "You are Ledgerful, an expert software engineering assistant. You act as a codebase oracle answering architectural and implementation questions based on retrieved knowledge graph and semantic context snippets. Provide direct, technical, and accurate answers citing the retrieved snippets where relevant.".to_string();
+        if gathered.relevant_chunks.is_empty() {
+            base.push_str("\n\nNote: no retrieved snippets for this query.");
+        }
+        base
+    } else {
+        crate::local_model::context::get_system_prompt(&mode.to_string())
+    };
+
+    // 0158: backend-aware timeout. Prefer explicit CLI --backend for kind
+    // (M6: collapsed OllamaCloud→Local must not get 300s local load budget).
+    let timeout_kind =
+        crate::commands::ask::AskTimeoutKind::from_backends(backend, resolved_backend);
+    let effective_timeout =
+        crate::commands::ask::resolve_ask_timeout(timeout_secs, timeout_kind, &config);
+    let complete_override =
+        crate::commands::ask::complete_timeout_override(timeout_secs, timeout_kind, &config);
+    // Gemini primary always resolves via Gemini kind (120-class when omitted).
+    let gemini_timeout = crate::commands::ask::resolve_ask_timeout(
+        timeout_secs,
+        crate::commands::ask::AskTimeoutKind::Gemini,
+        &config,
+    );
+
+    // TA14: If a provider priority list is configured, try each provider
+    // in order, falling back to the next on degradable errors. If all
+    // providers fail, degrade to context-only output (R4).
+    if !config.ask.providers.priority.is_empty() {
+        let entries =
+            resolve_provider_entries(&config, backend).map_err(|e| miette::miette!("{e}"))?;
+        return crate::commands::ask::execute_ask_with_providers(
+            &config,
+            &base_system_prompt,
+            &user_prompt,
+            &gathered.relevant_chunks,
+            timeout_secs,
+            mode,
+            &gathered.latest_packet,
+            adaptive_mode,
+            truncated,
+            &entries,
+        );
+    }
+
+    execute_legacy_complete(LegacyCompleteInputs {
+        config: &config,
+        resolved_backend,
+        timeout_kind,
+        effective_timeout,
+        complete_override,
+        gemini_timeout,
+        base_system_prompt: &base_system_prompt,
+        user_prompt: &user_prompt,
+        relevant_chunks: &gathered.relevant_chunks,
+        latest_packet: &gathered.latest_packet,
+        adaptive_mode,
+        truncated,
+        mode,
+    })
+}
+
+fn prepare_ask_storage(
+    storage: StorageManager,
+    layout: &Layout,
+    config: &Config,
+    auto_index: bool,
+) -> Result<StorageManager> {
+    let threshold = config.index.stale_threshold_days;
+    let non_interactive = crate::index::staleness::is_non_interactive();
+    if auto_index {
+        let (storage, _) = crate::index::staleness::try_auto_index(storage, threshold, layout)?;
+        return Ok(storage);
+    }
+    if non_interactive {
+        // Non-interactive mode: skip auto-index prompt, just warn
+        warn_if_stale(&storage, threshold);
+        return Ok(storage);
+    }
+    let is_stale = warn_if_stale(&storage, threshold);
+    if is_stale && crate::util::term::is_interactive() {
+        use inquire::Confirm;
+        if let Ok(true) = Confirm::new("Index is stale. Would you like to run auto-index now?")
+            .with_default(true)
+            .prompt()
+        {
+            eprintln!("Running auto-indexing...");
+            let (storage, _) = crate::index::staleness::try_auto_index(storage, threshold, layout)?;
+            return Ok(storage);
+        }
+    }
+    Ok(storage)
+}
+
+/// CG-F20 → ProductDocs (0139) → CG-F31. Returns `true` when the query was
+/// answered without an LLM backend.
+fn try_early_ask_routes(
+    query: &Option<String>,
+    storage: &StorageManager,
+    layout: &Layout,
+) -> Result<bool> {
     // Graph-first routing (CG-F20): exact structural questions (callers,
     // callees, route ownership, symbol definitions) are answered directly
     // from the index/graph, with file+line citations, instead of being
@@ -77,7 +210,7 @@ pub fn execute_ask(
     // require a configured LLM backend. The LLM is only consulted as a
     // fallback when the intent isn't recognized or the structured resolver
     // finds nothing.
-    if let Some(ref q) = query
+    if let Some(q) = query
         && let Some(intent) = crate::commands::ask_routing::parse_intent(q)
     {
         match crate::commands::ask_routing::resolve_intent(&intent, storage.get_connection()) {
@@ -88,7 +221,7 @@ pub fn execute_ask(
                         .if_supports_color(Stream::Stdout, |s| s.cyan())
                 );
                 println!("\n{resolved}");
-                return Ok(());
+                return Ok(true);
             }
             Ok(None) => {
                 // 0142: SymbolDefinition → secondary FTS + honest local miss
@@ -96,8 +229,7 @@ pub fn execute_ask(
                 // CallersOf / CalleesOf / ListRoutes / RouteOwner keep fall-through.
                 let explanation = match intent {
                     crate::commands::ask_routing::ExactIntent::SymbolDefinition(ref t) => {
-                        let hits =
-                            crate::commands::ask_routing::search_symbol_secondary(&layout, t);
+                        let hits = crate::commands::ask_routing::search_symbol_secondary(layout, t);
                         if !hits.is_empty() {
                             println!(
                                 "{}",
@@ -108,7 +240,7 @@ pub fn execute_ask(
                                 "\n{}",
                                 crate::commands::ask_routing::format_search_evidence(t, &hits)
                             );
-                            return Ok(());
+                            return Ok(true);
                         }
                         println!(
                             "{}",
@@ -119,7 +251,7 @@ pub fn execute_ask(
                             "\n{}",
                             crate::commands::ask_routing::format_local_grounding_miss(t)
                         );
-                        return Ok(());
+                        return Ok(true);
                     }
                     crate::commands::ask_routing::ExactIntent::CallersOf(ref t) => {
                         format!("searched for callers of `{}`", t)
@@ -155,7 +287,7 @@ pub fn execute_ask(
     // about text before any LLM backend. Wire order is load-bearing:
     // CG-F20 → ProductDocs → CG-F31 → LLM, so "session start commands"
     // is not swallowed by GenericDiscovery (operator-surface-policy.md §2).
-    if let Some(ref q) = query
+    if let Some(q) = query
         && crate::commands::ask_routing::parse_product_docs_intent(q).is_some()
     {
         let corpus = crate::commands::ask_routing::build_command_corpus();
@@ -166,7 +298,7 @@ pub fn execute_ask(
                 .if_supports_color(Stream::Stdout, |s| s.cyan())
         );
         println!("\n{answer}");
-        return Ok(());
+        return Ok(true);
     }
 
     // Command-discovery / repo-health routing (CG-F31): operator-intent
@@ -180,7 +312,7 @@ pub fn execute_ask(
     // anything that isn't clearly a command-discovery question (including
     // CG-F20 structural questions and narrative/implementation questions),
     // so this falls through to existing behavior unchanged in that case.
-    if let Some(ref q) = query
+    if let Some(q) = query
         && let Some(discovery_intent) =
             crate::commands::ask_routing::parse_command_discovery_intent(q)
     {
@@ -196,149 +328,20 @@ pub fn execute_ask(
                     .if_supports_color(Stream::Stdout, |s| s.cyan())
             );
             println!("\n{answer}");
-            return Ok(());
+            return Ok(true);
         }
         // Low confidence: no corpus entry scored above zero. Fall through to
         // semantic/LLM routing rather than answering with nothing useful.
     }
 
-    let auto_scan_effective = auto_scan || config.ask.auto_scan_default;
-    let (mut latest_packet, mut is_global, had_real_packet, fresh_packet) = if auto_scan_effective {
-        eprintln!(
-            "{}",
-            "Auto-scanning for fresh impact context…"
-                .if_supports_color(Stream::Stderr, |s| s.cyan())
-        );
-        match crate::commands::impact::compute_impact_in_memory(&storage, &config) {
-            Ok(packet) => {
-                let has_changes = !packet.changes.is_empty();
-                if has_changes {
-                    tracing::debug!(
-                        "ask: auto-scan produced fresh impact packet with {} changed files",
-                        packet.changes.len()
-                    );
-                } else {
-                    tracing::debug!("ask: auto-scan found clean tree — defaulting to global mode");
-                }
-                (packet, !has_changes, has_changes, true)
-            }
-            Err(e) => {
-                tracing::warn!(
-                    "auto-scan failed ({e}); falling back to latest stored impact packet"
-                );
-                match storage.get_latest_packet()? {
-                    Some(pkt) => (pkt, false, true, false),
-                    None => {
-                        tracing::info!(
-                            "No impact report found — falling back to global knowledge retrieval mode."
-                        );
-                        (
-                            crate::impact::packet::ImpactPacket::default(),
-                            true,
-                            false,
-                            false,
-                        )
-                    }
-                }
-            }
-        }
-    } else {
-        match storage.get_latest_packet()? {
-            Some(pkt) => (pkt, false, true, false),
-            None => {
-                tracing::info!(
-                    "No impact report found — falling back to global knowledge retrieval mode."
-                );
-                (
-                    crate::impact::packet::ImpactPacket::default(),
-                    true,
-                    false,
-                    false,
-                )
-            }
-        }
-    };
+    Ok(false)
+}
 
-    if !is_global && latest_packet.changes.is_empty() {
-        tracing::debug!("Latest impact packet is clean (no changes) — defaulting to global mode.");
-        is_global = true;
-    }
-
-    let query_string = match &query {
-        Some(q) => q.clone(),
-        None => {
-            if is_global {
-                "Give me an overview of this codebase and its key components.".to_string()
-            } else {
-                "Analyze the current impact and risk.".to_string()
-            }
-        }
-    };
-
-    let mut pruned_for_intent = false;
-    if crate::commands::ask::should_prune_impact(&query_string) {
-        if had_real_packet && !latest_packet.changes.is_empty() {
-            is_global = true;
-            latest_packet = crate::impact::packet::ImpactPacket::default();
-            pruned_for_intent = true;
-        }
-        tracing::debug!("ask: impact context pruned — query classified as GlobalConceptual");
-    } else {
-        match crate::retrieval::query::classify_query(&query_string) {
-            crate::retrieval::query::QueryIntent::DiffTask => {
-                tracing::debug!("ask: impact context included — query classified as DiffTask");
-            }
-            crate::retrieval::query::QueryIntent::Unknown => {
-                tracing::debug!(
-                    "ask: intent unknown — preserving existing impact context behavior"
-                );
-            }
-            _ => {}
-        }
-    }
-
-    if had_real_packet
-        && !pruned_for_intent
-        && !fresh_packet
-        && let Some(reason) = crate::state::reports::warn_if_impact_stale(&layout, &config)
-    {
-        eprintln!(
-            "{}",
-            format!(
-                "Warning: {reason} — using it as ask context anyway; results may not reflect the current working tree."
-            ).if_supports_color(Stream::Stderr, |s| s.yellow())
-
-        );
-    }
-
-    // Integrate external context
-    if let Some(ref q) = query
-        && let Ok(bridge_records) = crate::bridge::client::query_unified(q)
-    {
-        for record in bridge_records {
-            if let crate::bridge::model::BridgePayload::Insight {
-                memory_id,
-                relevance,
-                content,
-            } = record.payload
-            {
-                // 0073 / RT-A2+A3: fence + size-cap bridge insights as data
-                // (they re-enter ask context via the impact packet user prompt).
-                let fenced = crate::ai::fence_bridge_insight(&content);
-                latest_packet
-                    .ai_insights
-                    .push(crate::impact::packet::AiInsight {
-                        memory_id,
-                        relevance,
-                        content: fenced,
-                    });
-            }
-        }
-    }
-
-    let resolved_backend = resolve_backend(&config, backend);
-
-    // Check if the chosen/resolved backend is actually configured
+fn validate_backend_configured(
+    config: &Config,
+    backend: Option<Backend>,
+    resolved_backend: Backend,
+) -> Result<()> {
     match resolved_backend {
         Backend::Gemini => {
             let has_gemini_key = config.gemini.api_key.is_some()
@@ -384,315 +387,7 @@ pub fn execute_ask(
             }
         }
     }
-
-    let semantic = semantic || is_global;
-
-    // 0096 DoD-5: removed interactive `index --semantic` prompt (same defect as
-    // search — named semantic index, ran non-semantic incremental; re-prompted
-    // forever on empty repos). State-driven warnings replace it.
-    if semantic
-        && !auto_index
-        && let Some(ref cozo) = storage.cozo
-        && let Ok(semantic_engine) =
-            crate::semantic::SemanticDiscovery::new(config.local_model.clone(), cozo)
-        && let Ok(readiness) = semantic_engine.check_readiness()
-    {
-        for msg in crate::semantic::semantic_readiness_messages(&readiness) {
-            eprintln!(
-                "{} {}",
-                "WARN".if_supports_color(Stream::Stderr, |s| s.style(Style::new().yellow().bold())),
-                msg
-            );
-        }
-    }
-
-    if pruned_for_intent {
-        eprintln!(
-            "{}",
-            "[Global Mode] Conceptual query — querying the full Knowledge Graph (active diff context pruned for intent).".if_supports_color(Stream::Stderr, |s| s.cyan())
-
-        );
-    } else if is_global {
-        eprintln!(
-            "{}",
-            "[Global Mode] No pending changes found — querying the full Knowledge Graph for context.".if_supports_color(Stream::Stderr, |s| s.cyan())
-
-        );
-    }
-
-    // DoD-4/8: never treat embed/query Err as "no semantic matches".
-    // Track gather kind (without holding chunks) for honest KG-fallback notes.
-    #[derive(Clone, Copy)]
-    enum SemanticGatherKind {
-        Succeeded,
-        Skipped,
-        Failed,
-    }
-    let (mut relevant_chunks, semantic_gather_kind) = match gather_semantic_chunks(
-        &storage,
-        layout.root.as_std_path(),
-        &query_string,
-        limit,
-        &config.local_model,
-        is_global,
-    ) {
-        SemanticGather::Chunks(chunks) => (chunks, SemanticGatherKind::Succeeded),
-        SemanticGather::Skipped { reason } => {
-            tracing::warn!("Semantic context skipped: {reason}");
-            // Readiness messages already cover NotConfigured; keep a debug trail only.
-            (Vec::new(), SemanticGatherKind::Skipped)
-        }
-        SemanticGather::Failed { reason } => {
-            tracing::warn!("Semantic context failed: {reason}");
-            eprintln!(
-                "{} Semantic search failed (continuing with non-semantic context): {}",
-                "WARN".if_supports_color(Stream::Stderr, |s| s.style(Style::new().yellow().bold())),
-                reason
-            );
-            (Vec::new(), SemanticGatherKind::Failed)
-        }
-    };
-
-    if relevant_chunks.is_empty() {
-        relevant_chunks = pruner::query_relevant_chunks(
-            &query_string,
-            &config.local_model,
-            storage.get_connection(),
-            limit,
-            config.local_model.chunk_min_similarity,
-            config.local_model.chunk_dedup_threshold,
-        )
-        .unwrap_or_else(|e| {
-            tracing::warn!("Chunk retrieval failed: {e}, proceeding without chunks");
-            Vec::new()
-        });
-
-        // KG Fallback logic — wording must not claim "index empty" on failure/skip.
-        if is_global
-            && relevant_chunks.is_empty()
-            && !no_kg_fallback
-            && let Some(cozo) = &storage.cozo
-            && let Some(kg_bm25_context) = fetch_kg_bm25(cozo, &query_string, limit)
-        {
-            let note = match semantic_gather_kind {
-                SemanticGatherKind::Failed => {
-                    "Note: semantic search failed — using KG text search for context"
-                }
-                SemanticGatherKind::Skipped => {
-                    "Note: semantic search did not run — using KG text search for context"
-                }
-                SemanticGatherKind::Succeeded => {
-                    "Note: semantic index empty — using KG text search for context"
-                }
-            };
-            eprintln!("{}", note.if_supports_color(Stream::Stderr, |s| s.yellow()));
-            relevant_chunks.push(pruner::RankedChunk {
-                source: "Knowledge Graph (BM25)".to_string(),
-                content: kg_bm25_context,
-                score: 1.0,
-            });
-        }
-
-        // CR7: Apply KG neighborhood to pruner fallback chunks as well.
-        if is_global
-            && !relevant_chunks.is_empty()
-            && let Some(cozo) = &storage.cozo
-        {
-            let syms = relevant_chunks.iter().filter_map(|c| {
-                let path = std::path::Path::new(&c.source);
-                path.file_stem()?.to_str()
-            });
-            if let Some(kg_ctx) = fetch_kg_neighborhood(cozo, syms) {
-                relevant_chunks.push(pruner::RankedChunk {
-                    source: "Knowledge Graph".to_string(),
-                    content: kg_ctx,
-                    score: 1.0,
-                });
-            }
-        }
-    }
-
-    let adaptive_mode = if semantic {
-        crate::local_model::context::AdaptiveMode::CodebaseFocus
-    } else {
-        crate::local_model::context::AdaptiveMode::ChangesFocus
-    };
-
-    // Token budget consistency
-    let budget_tokens = match resolved_backend {
-        Backend::Gemini => config.gemini.context_window,
-        Backend::Local | Backend::OllamaCloud | Backend::OpenRouter => {
-            config.local_model.context_window
-        }
-    };
-    let char_limit = (budget_tokens as u64 * 4 * 80 / 100).max(MIN_CONTEXT_CHARS as u64) as usize;
-    let truncated = latest_packet.truncate_for_context(char_limit);
-
-    let user_prompt = build_ask_user_prompt(&query_string, is_global, narrative, &latest_packet);
-
-    let base_system_prompt = if is_global {
-        let mut base = "You are Ledgerful, an expert software engineering assistant. You act as a codebase oracle answering architectural and implementation questions based on retrieved knowledge graph and semantic context snippets. Provide direct, technical, and accurate answers citing the retrieved snippets where relevant.".to_string();
-        if relevant_chunks.is_empty() {
-            base.push_str("\n\nNote: no retrieved snippets for this query.");
-        }
-        base
-    } else {
-        crate::local_model::context::get_system_prompt(&mode.to_string())
-    };
-
-    // 0158: backend-aware timeout. Prefer explicit CLI --backend for kind
-    // (M6: collapsed OllamaCloud→Local must not get 300s local load budget).
-    let timeout_kind =
-        crate::commands::ask::AskTimeoutKind::from_backends(backend, resolved_backend);
-    let effective_timeout =
-        crate::commands::ask::resolve_ask_timeout(timeout_secs, timeout_kind, &config);
-    let complete_override =
-        crate::commands::ask::complete_timeout_override(timeout_secs, timeout_kind, &config);
-    // Gemini primary always resolves via Gemini kind (120-class when omitted).
-    let gemini_timeout = crate::commands::ask::resolve_ask_timeout(
-        timeout_secs,
-        crate::commands::ask::AskTimeoutKind::Gemini,
-        &config,
-    );
-
-    // TA14: If a provider priority list is configured, try each provider
-    // in order, falling back to the next on degradable errors. If all
-    // providers fail, degrade to context-only output (R4).
-    if !config.ask.providers.priority.is_empty() {
-        let entries =
-            resolve_provider_entries(&config, backend).map_err(|e| miette::miette!("{e}"))?;
-        return crate::commands::ask::execute_ask_with_providers(
-            &config,
-            &base_system_prompt,
-            &user_prompt,
-            &relevant_chunks,
-            timeout_secs,
-            mode,
-            &latest_packet,
-            adaptive_mode,
-            truncated,
-            &entries,
-        );
-    }
-
-    // Legacy path: single backend, no provider fallback chain
-    match resolved_backend {
-        Backend::Local | Backend::OllamaCloud | Backend::OpenRouter => {
-            let max_tokens = config.local_model.context_window;
-
-            // B2: skip fixed 5s Local HTTP probe — status classification
-            // (401/429/503) happens on the complete path (L1). Reachability
-            // and connect budgets live in complete (B2b/B3).
-
-            let messages = crate::local_model::context::assemble_context(
-                &base_system_prompt,
-                &user_prompt,
-                &relevant_chunks,
-                max_tokens,
-                adaptive_mode,
-            );
-
-            // Show progress indicator before LLM call with backend selection
-            eprintln!("Using local/cloud model...");
-            // B4: wait honesty when Local effective budget is large enough
-            // that cold load may consume most of it.
-            if matches!(timeout_kind, crate::commands::ask::AskTimeoutKind::Local)
-                && effective_timeout >= 60
-            {
-                eprintln!(
-                    "Waiting for local model (up to {effective_timeout}s; cold load may use most of this)…"
-                );
-            }
-            eprintln!("Contacting LLM...");
-
-            match crate::local_model::client::complete_with_hard_deadline(
-                &config.local_model,
-                &messages,
-                &crate::commands::ask::ask_completion_options(),
-                complete_override,
-            ) {
-                Ok(response) => {
-                    println!(
-                        "\n{}",
-                        "Local Model Response:".if_supports_color(Stream::Stdout, |s| s
-                            .style(Style::new().bold().green()))
-                    );
-                    println!("{response}");
-                    Ok(())
-                }
-                Err(e) => {
-                    let raw = e.to_string();
-                    let err_str = crate::commands::ask::sanitize_error_for_logging(&raw);
-                    // M6/M7: compact for degrade path and miette; full multi-line once on stderr.
-                    let compact = crate::local_model::client::compact_completion_error(&err_str);
-                    if crate::commands::ask::render::is_degradable_error(&raw) {
-                        // Transport-level failure during synthesis — degrade
-                        // to context render instead of hard-failing.
-                        return degrade_to_context(&config, &relevant_chunks, &compact, || {
-                            run_gemini_synthesis(
-                                &config,
-                                &base_system_prompt,
-                                &user_prompt,
-                                &relevant_chunks,
-                                gemini_timeout,
-                                mode,
-                                &latest_packet,
-                                adaptive_mode,
-                                truncated,
-                            )
-                        });
-                    }
-                    // Full multi-cause report once on terminal (M6/M7).
-                    eprintln!("{}", err_str.if_supports_color(Stream::Stderr, |s| s.red()));
-                    // Timeout remediations when **local** cause is timeout even if
-                    // primary is cloud content-quality (0160). For multi-cause reports,
-                    // only inspect the Local: section (Next: may mention --timeout generically).
-                    let local_timeout =
-                        if crate::local_model::client::is_multi_cause_fallback_error(&raw) {
-                            crate::local_model::client::local_cause_is_timeout(&raw)
-                        } else {
-                            crate::commands::ask::render::is_timeout_error(&raw)
-                        };
-                    if local_timeout {
-                        eprintln!(
-                            "{}",
-                            format!(
-                                "Hint: Local model timed out after ~{effective_timeout}s. Raise --timeout or local_model.timeout_secs; warm/preload the model; or try --backend gemini."
-                            )
-                            .if_supports_color(Stream::Stderr, |s| s.yellow())
-                        );
-                    }
-                    if raw.contains("401") {
-                        eprintln!(
-                            "{}",
-                            "Hint: Check your OLLAMA_CLOUD_API_KEY or ollama_key in config.toml"
-                                .if_supports_color(Stream::Stderr, |s| s.yellow())
-                        );
-                    }
-                    if raw.contains("api.ollama.com") {
-                        eprintln!(
-                            "{}",
-                            "Hint: Use ollama_cloud_url = \"https://ollama.com/api\" (native) or \"https://ollama.com\" (OpenAI-compatible)"
-                                .if_supports_color(Stream::Stderr, |s| s.yellow())
-                        );
-                    }
-                    // M7: miette compact single-line — never dump full multi-line body twice.
-                    Err(miette::miette!("Local model failed: {compact}"))
-                }
-            }
-        }
-        Backend::Gemini => run_gemini_synthesis(
-            &config,
-            &base_system_prompt,
-            &user_prompt,
-            &relevant_chunks,
-            gemini_timeout,
-            mode,
-            &latest_packet,
-            adaptive_mode,
-            truncated,
-        ),
-    }
+    Ok(())
 }
 
 #[cfg(test)]

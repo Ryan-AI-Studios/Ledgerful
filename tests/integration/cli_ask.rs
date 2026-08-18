@@ -1,4 +1,4 @@
-use ledgerful::commands::ask::execute_ask;
+use ledgerful::commands::ask::{ExecuteAskOpts, execute_ask};
 use ledgerful::gemini::modes::GeminiMode;
 use ledgerful::impact::packet::ImpactPacket;
 use ledgerful::state::layout::Layout;
@@ -39,18 +39,18 @@ fn test_ask_command_no_packet() {
 
     fs::write(layout.config_file(), "[gemini]\nfast_model = \"dummy\"\n").unwrap();
 
-    let result = execute_ask(
-        Some("What's up?".into()),
-        false, // semantic
-        10,    // limit
-        GeminiMode::Analyze,
-        false,    // narrative
-        None,     // backend
-        false,    // auto_index
-        Some(15), // timeout_secs
-        false,    // no_kg_fallback
-        false,    // auto_scan
-    );
+    let result = execute_ask(ExecuteAskOpts {
+        query: Some("What's up?".into()),
+        semantic: false,
+        limit: 10,
+        mode: GeminiMode::Analyze,
+        narrative: false,
+        backend: None,
+        auto_index: false,
+        timeout_secs: Some(15),
+        no_kg_fallback: false,
+        auto_scan: false,
+    });
 
     // It should NOT fail with "No impact report found" anymore.
     // Depending on the test environment, it might fail to reach Gemini or the local model.
@@ -116,18 +116,18 @@ fn test_ask_resolves_exact_caller_query_without_llm_backend() {
     }
     storage.shutdown().unwrap();
 
-    let result = execute_ask(
-        Some("what calls remove_snippets_for_files".into()),
-        false, // semantic
-        10,    // limit
-        GeminiMode::Analyze,
-        false,    // narrative
-        None,     // backend
-        false,    // auto_index
-        Some(15), // timeout_secs
-        false,    // no_kg_fallback
-        false,    // auto_scan
-    );
+    let result = execute_ask(ExecuteAskOpts {
+        query: Some("what calls remove_snippets_for_files".into()),
+        semantic: false,
+        limit: 10,
+        mode: GeminiMode::Analyze,
+        narrative: false,
+        backend: None,
+        auto_index: false,
+        timeout_secs: Some(15),
+        no_kg_fallback: false,
+        auto_scan: false,
+    });
 
     assert!(
         result.is_ok(),
@@ -160,18 +160,18 @@ fn test_ask_invalid_config_fails_before_query_execution() {
         // storage is dropped here, releasing the CozoDB lock
     }
 
-    let err = execute_ask(
-        Some("What's up?".into()),
-        false, // semantic
-        10,    // limit
-        GeminiMode::Analyze,
-        false,    // narrative
-        None,     // backend
-        false,    // auto_index
-        Some(15), // timeout_secs
-        false,    // no_kg_fallback
-        false,    // auto_scan
-    )
+    let err = execute_ask(ExecuteAskOpts {
+        query: Some("What's up?".into()),
+        semantic: false,
+        limit: 10,
+        mode: GeminiMode::Analyze,
+        narrative: false,
+        backend: None,
+        auto_index: false,
+        timeout_secs: Some(15),
+        no_kg_fallback: false,
+        auto_scan: false,
+    })
     .unwrap_err();
     assert!(format!("{err:?}").contains("debounce_ms"));
 }
@@ -371,18 +371,18 @@ fn test_ask_does_not_degrade_on_rate_limit() {
     )
     .unwrap();
 
-    let result = execute_ask(
-        Some("What does this codebase do?".into()),
-        false, // semantic
-        10,    // limit
-        GeminiMode::Analyze,
-        false,   // narrative
-        None,    // backend
-        false,   // auto_index
-        Some(5), // timeout_secs
-        false,   // no_kg_fallback
-        false,   // auto_scan
-    );
+    let result = execute_ask(ExecuteAskOpts {
+        query: Some("What does this codebase do?".into()),
+        semantic: false,
+        limit: 10,
+        mode: GeminiMode::Analyze,
+        narrative: false,
+        backend: None,
+        auto_index: false,
+        timeout_secs: Some(5),
+        no_kg_fallback: false,
+        auto_scan: false,
+    });
 
     assert!(
         result.is_err(),
@@ -438,18 +438,18 @@ fn test_ask_degrades_on_503_service_unavailable() {
     )
     .unwrap();
 
-    let result = execute_ask(
-        Some("What does this codebase do?".into()),
-        false, // semantic
-        10,    // limit
-        GeminiMode::Analyze,
-        false,   // narrative
-        None,    // backend
-        false,   // auto_index
-        Some(5), // timeout_secs
-        false,   // no_kg_fallback
-        false,   // auto_scan
-    );
+    let result = execute_ask(ExecuteAskOpts {
+        query: Some("What does this codebase do?".into()),
+        semantic: false,
+        limit: 10,
+        mode: GeminiMode::Analyze,
+        narrative: false,
+        backend: None,
+        auto_index: false,
+        timeout_secs: Some(5),
+        no_kg_fallback: false,
+        auto_scan: false,
+    });
 
     assert!(
         result.is_ok(),
@@ -497,18 +497,18 @@ fn test_ask_does_not_degrade_on_401_unauthorized() {
     )
     .unwrap();
 
-    let result = execute_ask(
-        Some("What does this codebase do?".into()),
-        false, // semantic
-        10,    // limit
-        GeminiMode::Analyze,
-        false,   // narrative
-        None,    // backend
-        false,   // auto_index
-        Some(5), // timeout_secs
-        false,   // no_kg_fallback
-        false,   // auto_scan
-    );
+    let result = execute_ask(ExecuteAskOpts {
+        query: Some("What does this codebase do?".into()),
+        semantic: false,
+        limit: 10,
+        mode: GeminiMode::Analyze,
+        narrative: false,
+        backend: None,
+        auto_index: false,
+        timeout_secs: Some(5),
+        no_kg_fallback: false,
+        auto_scan: false,
+    });
 
     assert!(
         result.is_err(),
