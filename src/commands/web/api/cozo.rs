@@ -29,7 +29,7 @@ pub(crate) fn fetch_security_boundaries(layout: &Layout) -> Result<SecurityBound
         }
     };
 
-    let cozo = match storage.cozo {
+    let cozo = match storage.cozo() {
         Some(c) => c,
         None => {
             tracing::warn!("CozoDB not available for /api/security/boundaries");
@@ -135,7 +135,7 @@ pub(crate) fn fetch_knowledge_graph(
         }
     };
 
-    let cozo = match storage.cozo {
+    let cozo = match storage.cozo() {
         Some(c) => c,
         None => {
             tracing::warn!("CozoDB not available for /api/knowledge-graph");
@@ -169,7 +169,7 @@ pub(crate) fn fetch_knowledge_graph(
 
             if !seed_ids.is_empty() {
                 let mut ids_within_two_hops =
-                    expand_two_hops(&cozo, &seed_ids, limit.saturating_mul(2))?;
+                    expand_two_hops(cozo, &seed_ids, limit.saturating_mul(2))?;
                 if ids_within_two_hops.len() > limit {
                     truncated = true;
                     ids_within_two_hops.truncate(limit);
@@ -181,15 +181,15 @@ pub(crate) fn fetch_knowledge_graph(
 
     if node_ids.is_empty() {
         // Fallback: highest-risk nodes when there are no recent changes or focus is off.
-        node_ids = fetch_top_risk_nodes(&cozo, limit)?;
+        node_ids = fetch_top_risk_nodes(cozo, limit)?;
     }
 
     if node_ids.is_empty() {
         return Ok(empty_kg_response());
     }
 
-    let mut nodes = fetch_node_details(&cozo, &node_ids)?;
-    let edges = fetch_edges_among(&cozo, &node_ids)?;
+    let mut nodes = fetch_node_details(cozo, &node_ids)?;
+    let edges = fetch_edges_among(cozo, &node_ids)?;
 
     enrich_kg_nodes(layout, &mut nodes);
 

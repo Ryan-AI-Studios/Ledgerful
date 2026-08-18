@@ -1445,7 +1445,7 @@ fn main() {
         get_migrations().to_latest(&mut conn).unwrap();
         let mut storage = StorageManager::init_from_conn(conn);
         let cozo = CozoStorage::new(&std::path::PathBuf::from("")).unwrap();
-        storage.cozo = Some(cozo);
+        storage.set_cozo(Some(cozo));
 
         let indexer = ProjectIndexer::new(storage, repo_path.clone(), Config::default());
         let mut engine = IncrementalSyncEngine::new(indexer, repo_path.clone());

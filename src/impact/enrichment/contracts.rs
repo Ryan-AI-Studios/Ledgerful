@@ -39,7 +39,7 @@ impl EnrichmentProvider for ContractProvider {
 
         match match_changed_files(&config.contracts, conn, &config.local_model, &file_paths) {
             Ok(matches) => {
-                packet.affected_contracts = matches;
+                packet.set_affected_contracts(matches);
             }
             Err(e) => {
                 warn!("Contract matching failed: {e}");

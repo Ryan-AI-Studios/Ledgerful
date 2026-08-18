@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Storage / impact encapsulation (0194):** `StorageManager.cozo` is
+  reached through `cozo()` / `cozo_mut()` / `set_cozo()`. Impact packet
+  schema goldens live in `packet/tests.rs`. Enrichment assignment sites
+  use named `set_*` methods. Fields stay pub. `get_connection` stays
+  pub. Impact JSON `schemaVersion` remains `"v1"`.
+
 - **Ask / change-context / search command-body split (0192):**
   `execute_ask` takes named `ExecuteAskOpts`; gather + legacy complete
   live beside the orchestrator. `change_context` is a directory barrel.

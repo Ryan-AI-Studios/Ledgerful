@@ -72,7 +72,7 @@ impl EnrichmentProvider for RuntimeUsageProvider {
             }
         }
 
-        packet.runtime_usage_delta = deltas;
+        packet.set_runtime_usage_delta(deltas);
         Ok(())
     }
 }

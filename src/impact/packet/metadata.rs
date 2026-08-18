@@ -206,6 +206,97 @@ impl ImpactPacket {
         }
     }
 
+    pub fn set_affected_contracts(&mut self, affected_contracts: Vec<AffectedContract>) {
+        self.affected_contracts = affected_contracts;
+    }
+
+    pub fn set_trace_config_drift(&mut self, trace_config_drift: Vec<super::TraceConfigChange>) {
+        self.trace_config_drift = trace_config_drift;
+    }
+
+    pub fn set_trace_env_vars(&mut self, trace_env_vars: Vec<super::TraceEnvVarChange>) {
+        self.trace_env_vars = trace_env_vars;
+    }
+
+    pub fn set_sdk_dependencies_delta(
+        &mut self,
+        sdk_dependencies_delta: Option<super::SdkDependencyDelta>,
+    ) {
+        self.sdk_dependencies_delta = sdk_dependencies_delta;
+    }
+
+    pub fn set_data_flow_matches(&mut self, data_flow_matches: Vec<super::DataFlowMatch>) {
+        self.data_flow_matches = data_flow_matches;
+    }
+
+    pub fn set_ci_config_change(&mut self, ci_config_change: Option<super::CiConfigChange>) {
+        self.ci_config_change = ci_config_change;
+    }
+
+    pub fn set_deploy_manifest_changes(
+        &mut self,
+        deploy_manifest_changes: Vec<super::DeployManifestChange>,
+    ) {
+        self.deploy_manifest_changes = deploy_manifest_changes;
+    }
+
+    pub fn set_hotspots(&mut self, hotspots: Vec<super::Hotspot>) {
+        self.hotspots = hotspots;
+    }
+
+    pub fn set_test_coverage(&mut self, test_coverage: Vec<super::TestCoverage>) {
+        self.test_coverage = test_coverage;
+    }
+
+    pub fn set_test_gaps(
+        &mut self,
+        test_gaps: Option<crate::impact::enrichment::test_gaps::TestGapsReport>,
+    ) {
+        self.test_gaps = test_gaps;
+    }
+
+    pub fn set_blast_radius(&mut self, blast_radius: Option<super::BlastRadius>) {
+        self.blast_radius = blast_radius;
+    }
+
+    pub fn set_structural_couplings(
+        &mut self,
+        structural_couplings: Vec<super::StructuralCoupling>,
+    ) {
+        self.structural_couplings = structural_couplings;
+    }
+
+    pub fn set_affected_flows(
+        &mut self,
+        affected_flows: Option<crate::impact::enrichment::affected_flows::AffectedFlowsReport>,
+    ) {
+        self.affected_flows = affected_flows;
+    }
+
+    pub fn set_temporal_couplings(&mut self, temporal_couplings: Vec<super::TemporalCoupling>) {
+        self.temporal_couplings = temporal_couplings;
+    }
+
+    pub fn set_relevant_decisions(&mut self, relevant_decisions: Vec<super::RelevantDecision>) {
+        self.relevant_decisions = relevant_decisions;
+    }
+
+    pub fn set_runtime_usage_delta(&mut self, runtime_usage_delta: Vec<super::RuntimeUsageDelta>) {
+        self.runtime_usage_delta = runtime_usage_delta;
+    }
+
+    pub fn set_risk_level(&mut self, risk_level: super::RiskLevel) {
+        self.risk_level = risk_level;
+    }
+
+    pub fn set_service_map_delta(&mut self, service_map_delta: Option<super::ServiceMapDelta>) {
+        self.service_map_delta = service_map_delta;
+    }
+
+    pub fn set_signature_deltas(&mut self, signature_deltas: Vec<super::SignatureDelta>) {
+        self.signature_deltas = signature_deltas;
+    }
+
     /// Finalizes the packet by sorting all internal collections deterministically.
     pub fn finalize(&mut self) {
         self.risk_reasons.sort_unstable();

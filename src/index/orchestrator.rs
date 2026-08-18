@@ -75,7 +75,7 @@ impl ProjectIndexer {
     }
 
     pub fn cozo(&self) -> Option<&crate::state::storage_cozo::CozoStorage> {
-        self.storage.cozo.as_ref()
+        self.storage.cozo()
     }
 
     pub fn storage(&self) -> &StorageManager {

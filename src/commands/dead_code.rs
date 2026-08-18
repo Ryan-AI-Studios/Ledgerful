@@ -152,7 +152,7 @@ pub fn execute_dead_code_with_prompt(
     config.dead_code.enabled = true;
     config.dead_code.confidence_threshold = threshold;
 
-    let cozo = storage.cozo.as_ref();
+    let cozo = storage.cozo();
     let repo_path = layout.root.as_std_path();
 
     let mut scorer =

@@ -12,7 +12,7 @@ impl EnrichmentProvider for AdrProvider {
     }
 
     fn enrich(&self, context: &EnrichmentContext, packet: &mut ImpactPacket) -> Result<()> {
-        let Some(cozo) = &context.storage.cozo else {
+        let Some(cozo) = context.storage.cozo() else {
             return Ok(());
         };
 

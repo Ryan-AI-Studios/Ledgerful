@@ -15,7 +15,9 @@ impl EnrichmentProvider for CISelfAwarenessProvider {
             return Ok(());
         }
 
-        packet.ci_config_change = crate::index::ci_gates::is_ci_config_changed(&packet.changes);
+        packet.set_ci_config_change(crate::index::ci_gates::is_ci_config_changed(
+            &packet.changes,
+        ));
 
         Ok(())
     }

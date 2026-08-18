@@ -37,8 +37,7 @@ pub fn execute_viz(
     let storage = StorageManager::init_with_layout(&layout)?;
 
     let cozo = storage
-        .cozo
-        .as_ref()
+        .cozo()
         .ok_or_else(|| miette::miette!("CozoDB not initialized. Run 'index' first."))?;
 
     // 1. Fetch scoped nodes and edges
@@ -439,8 +438,7 @@ fn execute_viz_services(output_path: Option<PathBuf>, layout: Layout) -> Result<
     let storage = StorageManager::init_with_layout(&layout)?;
 
     let cozo = storage
-        .cozo
-        .as_ref()
+        .cozo()
         .ok_or_else(|| miette::miette!("CozoDB not initialized. Run 'ledgerful index' first."))?;
 
     // Query service roots

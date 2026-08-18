@@ -151,7 +151,7 @@ async fn run_polling(
         }
     };
 
-    let cozo = match storage.cozo.as_ref() {
+    let cozo = match storage.cozo() {
         Some(c) => c,
         None => {
             tracing::error!("CozoDB not initialized. Run 'index' first.");

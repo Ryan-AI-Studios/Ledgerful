@@ -33,8 +33,7 @@ pub fn execute_observability(args: ObservabilityArgs) -> Result<()> {
     let layout = get_layout()?;
     let storage = StorageManager::open_read_only(&layout)?;
     let cozo = storage
-        .cozo
-        .as_ref()
+        .cozo()
         .ok_or_else(|| miette::miette!("CozoDB not available"))?;
     match args.command {
         ObservabilitySubcommands::Coverage { json } => {
@@ -181,8 +180,7 @@ pub fn execute_observability(args: ObservabilityArgs) -> Result<()> {
                     .collect();
 
             let cozo = storage
-                .cozo
-                .as_ref()
+                .cozo()
                 .ok_or_else(|| miette::miette!("CozoDB not available"))?;
 
             // Query all observability graph nodes including metadata for source_file lookup

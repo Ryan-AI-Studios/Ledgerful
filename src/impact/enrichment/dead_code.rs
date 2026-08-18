@@ -19,7 +19,7 @@ impl EnrichmentProvider for DeadCodeProvider {
 
         debug!("Enriching impact packet with dead code findings...");
 
-        let cozo = context.storage.cozo.as_ref();
+        let cozo = context.storage.cozo();
         let scorer = ConfidenceScorer::new(
             cozo,
             context.storage,

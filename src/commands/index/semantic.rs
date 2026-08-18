@@ -263,8 +263,7 @@ pub(crate) fn execute_semantic_index(
     }
 
     let cozo = storage
-        .cozo
-        .as_ref()
+        .cozo()
         .ok_or_else(|| miette::miette!("CozoDB storage not initialized"))?;
 
     let semantic = SemanticDiscovery::new_with_semantic_config(

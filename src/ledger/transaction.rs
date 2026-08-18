@@ -424,7 +424,7 @@ impl<'a> TransactionManager<'a> {
         self.observe_warned = false;
 
         // 3. Update Knowledge Graph (CozoDB)
-        if let Some(ref cozo) = self.storage.cozo {
+        if let Some(cozo) = self.storage.cozo() {
             let changed_files = if let Some(files) = req.changed_files {
                 files
             } else {
