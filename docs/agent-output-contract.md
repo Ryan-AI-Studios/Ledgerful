@@ -629,7 +629,7 @@ multi-hit output.
   "results": [
     {
       "kind": "bm25_match",
-      "path": "src/commands/change_context.rs",
+      "path": "src/commands/change_context/mod.rs",
       "score": 16.9,
       "content": "plain snippet (no ANSI, no HTML entities)"
     }

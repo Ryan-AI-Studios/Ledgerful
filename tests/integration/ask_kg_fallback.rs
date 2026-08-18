@@ -1,4 +1,4 @@
-use ledgerful::commands::ask::execute_ask;
+use ledgerful::commands::ask::{ExecuteAskOpts, execute_ask};
 use ledgerful::gemini::modes::GeminiMode;
 use ledgerful::state::layout::Layout;
 use ledgerful::state::storage::StorageManager;
@@ -51,18 +51,18 @@ fn test_ask_kg_fallback_logic() {
     // We expect it to get past the "No codebase context" error because KG fallback provides context.
     // It might fail later when trying to call the LLM, which is fine for this test.
 
-    let result = execute_ask(
-        Some("SpecialNodeLabel".into()),
-        false, // semantic
-        10,    // limit
-        GeminiMode::Analyze,
-        false,   // narrative
-        None,    // backend
-        false,   // auto_index
-        Some(1), // timeout_secs (short)
-        false,   // no_kg_fallback
-        false,   // auto_scan
-    );
+    let result = execute_ask(ExecuteAskOpts {
+        query: Some("SpecialNodeLabel".into()),
+        semantic: false,
+        limit: 10,
+        mode: GeminiMode::Analyze,
+        narrative: false,
+        backend: None,
+        auto_index: false,
+        timeout_secs: Some(1),
+        no_kg_fallback: false,
+        auto_scan: false,
+    });
 
     if let Err(e) = result {
         let err_str = e.to_string();
@@ -109,18 +109,18 @@ fn test_ask_no_kg_fallback_suppression() {
     }
 
     // Run with no_kg_fallback = true
-    let result = execute_ask(
-        Some("SpecialNodeLabel".into()),
-        false, // semantic
-        10,    // limit
-        GeminiMode::Analyze,
-        false,   // narrative
-        None,    // backend
-        false,   // auto_index
-        Some(1), // timeout_secs
-        true,    // no_kg_fallback = TRUE
-        false,   // auto_scan
-    );
+    let result = execute_ask(ExecuteAskOpts {
+        query: Some("SpecialNodeLabel".into()),
+        semantic: false,
+        limit: 10,
+        mode: GeminiMode::Analyze,
+        narrative: false,
+        backend: None,
+        auto_index: false,
+        timeout_secs: Some(1),
+        no_kg_fallback: true,
+        auto_scan: false,
+    });
 
     // With no_kg_fallback = true, ask must NOT surface the "Global Ask requires
     // codebase context" guard error. Two acceptable outcomes:

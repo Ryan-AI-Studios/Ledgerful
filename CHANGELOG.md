@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Ask / change-context / search command-body split (0192):**
+  `execute_ask` takes named `ExecuteAskOpts`; gather + legacy complete
+  live beside the orchestrator. `change_context` is a directory barrel.
+  `search` retrieve/present helpers sit outside the 0128
+  FTS-before-semantic orchestrator. No flag, packet, or search-envelope
+  change.
+
 - **Verify / doctor / plan module split (0191):** `commands/verify`,
   `commands/doctor` check families, and `verify/plan` are domain barrels.
   Restores the 0137 engine fingerprint (`src/cli/args/mod.rs`) and

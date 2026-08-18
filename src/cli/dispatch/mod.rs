@@ -133,15 +133,17 @@ pub fn run_with(cli: Cli) -> Result<()> {
             blast_depth,
             paths,
             include_governance,
-        }) => crate::commands::change_context::execute_change_context(
-            json,
-            Some(detail),
-            Some(max_files),
-            base_ref,
-            blast_depth,
-            paths,
-            include_governance,
-        ),
+        }) => {
+            let opts = crate::commands::change_context::ChangeContextOpts::from_cli(
+                Some(detail),
+                Some(max_files),
+                base_ref,
+                blast_depth,
+                paths,
+                include_governance,
+            )?;
+            crate::commands::change_context::execute_change_context(opts, json)
+        }
         Commands::Index(args) => dispatch_index(args).or_else(handle_schema_error),
         Commands::Search(args) => dispatch_search(current_dir, args).or_else(handle_schema_error),
         Commands::Hotspots { args } => crate::commands::hotspots::execute_hotspots(args),
@@ -191,7 +193,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
             } else {
                 Some(query.join(" "))
             };
-            crate::commands::ask::execute_ask(
+            crate::commands::ask::execute_ask(crate::commands::ask::ExecuteAskOpts {
                 query,
                 semantic,
                 limit,
@@ -199,10 +201,10 @@ pub fn run_with(cli: Cli) -> Result<()> {
                 narrative,
                 backend,
                 auto_index,
-                timeout,
+                timeout_secs: timeout,
                 no_kg_fallback,
                 auto_scan,
-            )
+            })
             .or_else(handle_schema_error)
         }
         Commands::Intent { command } => dispatch_intent(command),
