@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-08-18
+
 ### Changed
 
 - **Ask / change-context / search command-body split (0192):**
