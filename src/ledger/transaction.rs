@@ -167,6 +167,30 @@ impl<'a> TransactionManager<'a> {
             return Err(LedgerError::InvalidState(tx_id, tx.status));
         }
 
+        self.validate_commit_request(&tx, &tx_id, &mut req, force)?;
+
+        let now = req
+            .committed_at
+            .clone()
+            .unwrap_or_else(|| Utc::now().to_rfc3339());
+        let summary = req.summary.clone();
+        let reason = req.reason.clone();
+        let changed_files = req.changed_files.take();
+        let category = tx.category;
+
+        self.persist_commit(&tx_id, &tx, req, now)?;
+        self.write_commit_kg(&tx_id, category, &summary, &reason, changed_files);
+
+        Ok(())
+    }
+
+    fn validate_commit_request(
+        &mut self,
+        tx: &Transaction,
+        tx_id: &str,
+        req: &mut CommitRequest,
+        force: bool,
+    ) -> Result<(), LedgerError> {
         // Verification gate: require verification status for high-risk categories
         if self.config.ledger.verify_to_commit {
             let requires_verification = matches!(
@@ -276,8 +300,16 @@ impl<'a> TransactionManager<'a> {
             }
         }
 
-        let now = req.committed_at.unwrap_or_else(|| Utc::now().to_rfc3339());
+        Ok(())
+    }
 
+    fn persist_commit(
+        &mut self,
+        tx_id: &str,
+        tx: &Transaction,
+        req: CommitRequest,
+        now: String,
+    ) -> Result<(), LedgerError> {
         // Use a database transaction to ensure atomicity
         let sqlite_tx = self
             .storage
@@ -289,10 +321,10 @@ impl<'a> TransactionManager<'a> {
 
             // 1. Update transaction status to COMMITTED and link the staged
             // snapshot (if any) captured by the commit-msg hook.
-            let count = db.commit_transaction(&tx_id, "COMMITTED", Some(&now), req.snapshot_id)?;
+            let count = db.commit_transaction(tx_id, "COMMITTED", Some(&now), req.snapshot_id)?;
             if count == 0 {
                 return Err(LedgerError::InvalidState(
-                    tx_id,
+                    tx_id.to_string(),
                     "already resolved".to_string(),
                 ));
             }
@@ -311,78 +343,38 @@ impl<'a> TransactionManager<'a> {
             let related_tickets = req.related_tickets.clone().or(req.issue_ref.clone());
             let origin = "LOCAL".to_string();
 
-            let mut outcome_notes = req.outcome_notes;
-            let (signature, pub_key) = if req.signature.is_some() {
-                // RT-C3: verify supplied signatures against the v2 basis before insert.
-                let sig = req.signature.clone().unwrap_or_default();
-                let pk = req.public_key.clone().unwrap_or_default();
-                let input = crate::ledger::crypto::LedgerSignInput::for_new_commit(
-                    &tx_id,
-                    tx.category,
-                    &req.summary,
-                    &req.reason,
-                    &now,
-                    &tx.entity,
-                    &tx.entity_normalized,
-                    req.change_type,
-                    entry_type,
-                    &author,
-                    req.risk.as_deref(),
-                    req.is_breaking,
-                    related_tickets.as_deref(),
-                    &origin,
-                );
-                if !crate::ledger::crypto::verify_entry_signature(&input, &sig, &pk) {
-                    return Err(LedgerError::Validation(
-                        "Supplied signature does not verify against the v2 provenance basis"
-                            .to_string(),
-                    ));
-                }
-                (req.signature, req.public_key)
-            } else {
-                let input = crate::ledger::crypto::LedgerSignInput::for_new_commit(
-                    &tx_id,
-                    tx.category,
-                    &req.summary,
-                    &req.reason,
-                    &now,
-                    &tx.entity,
-                    &tx.entity_normalized,
-                    req.change_type,
-                    entry_type,
-                    &author,
-                    req.risk.as_deref(),
-                    req.is_breaking,
-                    related_tickets.as_deref(),
-                    &origin,
-                );
-                match crate::ledger::crypto::sign_ledger_entry_v2(&input) {
-                    Ok(res) => res,
-                    Err(e) => {
-                        let err_msg = format!("Cryptographic signing failed: {}", e);
-                        if self.config.intent.require_signing {
-                            return Err(LedgerError::Validation(err_msg));
-                        } else {
-                            tracing::warn!("{} (non-blocking)", err_msg);
-                            let notes = outcome_notes.take().unwrap_or_default();
-                            outcome_notes = Some(
-                                format!("{}\n[Warning] {}", notes, err_msg)
-                                    .trim()
-                                    .to_string(),
-                            );
-                            (None, None)
-                        }
-                    }
-                }
-            };
+            let input = crate::ledger::crypto::LedgerSignInput::for_new_commit(
+                tx_id,
+                tx.category,
+                &req.summary,
+                &req.reason,
+                &now,
+                &tx.entity,
+                &tx.entity_normalized,
+                req.change_type,
+                entry_type,
+                &author,
+                req.risk.as_deref(),
+                req.is_breaking,
+                related_tickets.as_deref(),
+                &origin,
+            );
+            let signed = sign_entry_or_warn(
+                &input,
+                req.signature,
+                req.public_key,
+                self.config.intent.require_signing,
+                SignWarnNotesPolicy::CarryAndTrim,
+                req.outcome_notes,
+            )?;
 
             let mut entry = LedgerEntry {
                 id: 0, // DB will assign
-                tx_id: tx_id.clone(),
+                tx_id: tx_id.to_string(),
                 category: tx.category,
                 entry_type,
-                entity: tx.entity,
-                entity_normalized: tx.entity_normalized,
+                entity: tx.entity.clone(),
+                entity_normalized: tx.entity_normalized.clone(),
                 change_type: req.change_type,
                 summary: req.summary.clone(),
                 reason: req.reason.clone(),
@@ -390,11 +382,11 @@ impl<'a> TransactionManager<'a> {
                 committed_at: now,
                 verification_status: req.verification_status,
                 verification_basis: req.verification_basis,
-                outcome_notes,
+                outcome_notes: signed.outcome_notes,
                 origin,
                 trace_id: None,
-                signature,
-                public_key: pub_key,
+                signature: signed.signature,
+                public_key: signed.public_key,
                 risk: req.risk,
                 related_tickets,
                 author,
@@ -407,6 +399,7 @@ impl<'a> TransactionManager<'a> {
                 sig_version: crate::ledger::crypto::CURRENT_LEDGER_SIG_VERSION,
             };
 
+            // keys_dir is resolved inside the sqlite tx (do not move this seam).
             let keys_dir = crate::ledger::crypto::get_keys_dir().map_err(|e| {
                 LedgerError::Validation(format!("Failed to locate keys directory: {e}"))
             })?;
@@ -422,76 +415,82 @@ impl<'a> TransactionManager<'a> {
         }
         sqlite_tx.commit().map_err(LedgerError::from)?;
         self.observe_warned = false;
+        Ok(())
+    }
 
-        // 3. Update Knowledge Graph (CozoDB)
-        if let Some(cozo) = self.storage.cozo() {
-            let changed_files = if let Some(files) = req.changed_files {
-                files
-            } else {
-                match self.get_transaction_files(&tx_id) {
-                    Ok(files) => files,
-                    Err(e) => {
-                        tracing::warn!(
-                            "ledger commit: could not discover changed files for KG edges (tx={tx_id}): {e}"
-                        );
-                        vec![]
-                    }
+    fn write_commit_kg(
+        &self,
+        tx_id: &str,
+        category: Category,
+        summary: &str,
+        reason: &str,
+        changed_files: Option<Vec<String>>,
+    ) {
+        let Some(cozo) = self.storage.cozo() else {
+            return;
+        };
+
+        let changed_files = if let Some(files) = changed_files {
+            files
+        } else {
+            match self.get_transaction_files(tx_id) {
+                Ok(files) => files,
+                Err(e) => {
+                    tracing::warn!(
+                        "ledger commit: could not discover changed files for KG edges (tx={tx_id}): {e}"
+                    );
+                    vec![]
                 }
-            };
+            }
+        };
 
-            let tx_urn = crate::platform::urn::build_urn(
-                crate::state::graph_kinds::NodeKind::LedgerTransaction,
-                &tx_id,
-            );
-            let mut nodes = Vec::new();
-            let mut edges = Vec::new();
+        let tx_urn = crate::platform::urn::build_urn(
+            crate::state::graph_kinds::NodeKind::LedgerTransaction,
+            tx_id,
+        );
+        let mut nodes = Vec::new();
+        let mut edges = Vec::new();
 
-            nodes.push(crate::state::storage_cozo::GraphNode {
-                id: tx_urn.clone(),
-                label: tx_id.to_string(),
-                category: crate::state::graph_kinds::NodeKind::LedgerTransaction,
-                risk_score: 0.0,
-                metadata: Some(serde_json::json!({
-                    "summary": req.summary,
-                    "reason": req.reason,
-                    "category": tx.category.to_string(),
-                })),
+        nodes.push(crate::state::storage_cozo::GraphNode {
+            id: tx_urn.clone(),
+            label: tx_id.to_string(),
+            category: crate::state::graph_kinds::NodeKind::LedgerTransaction,
+            risk_score: 0.0,
+            metadata: Some(serde_json::json!({
+                "summary": summary,
+                "reason": reason,
+                "category": category.to_string(),
+            })),
+        });
+
+        for file in changed_files {
+            if !is_real_file_path(&file) {
+                continue;
+            }
+
+            let file_urn =
+                crate::platform::urn::build_urn(crate::state::graph_kinds::NodeKind::File, &file);
+            edges.push(crate::state::storage_cozo::GraphEdge {
+                source: tx_urn.clone(),
+                target: file_urn,
+                relation: crate::state::graph_kinds::EdgeKind::Affects,
+                confidence: 1.0,
+                provenance_id: tx_id.to_string(),
             });
-
-            for file in changed_files {
-                // Filter out synthetic entities and non-file paths
-                if !is_real_file_path(&file) {
-                    continue;
-                }
-
-                let file_urn = crate::platform::urn::build_urn(
-                    crate::state::graph_kinds::NodeKind::File,
-                    &file,
-                );
-                edges.push(crate::state::storage_cozo::GraphEdge {
-                    source: tx_urn.clone(),
-                    target: file_urn,
-                    relation: crate::state::graph_kinds::EdgeKind::Affects,
-                    confidence: 1.0,
-                    provenance_id: tx_id.to_string(),
-                });
-            }
-
-            if let Err(e) = cozo.insert_nodes(&nodes) {
-                tracing::warn!(
-                    "ledger commit: failed to write transaction node to CozoDB (tx={tx_id}): {e}"
-                );
-            }
-            if !edges.is_empty()
-                && let Err(e) = cozo.insert_edges(&edges)
-            {
-                tracing::warn!(
-                    "ledger commit: failed to write affects edges to CozoDB (tx={tx_id}): {e}"
-                );
-            }
         }
 
-        Ok(())
+        if let Err(e) = cozo.insert_nodes(&nodes) {
+            tracing::warn!(
+                "ledger commit: failed to write transaction node to CozoDB (tx={tx_id}): {e}"
+            );
+        }
+        if !edges.is_empty()
+            && let Err(e) = cozo.insert_edges(&edges)
+        {
+            tracing::warn!(
+                "ledger commit: failed to write affects edges to CozoDB (tx={tx_id}): {e}"
+            );
+        }
     }
 
     pub fn rollback_change(&mut self, tx_id: String, reason: String) -> Result<(), LedgerError> {
@@ -550,18 +549,15 @@ impl<'a> TransactionManager<'a> {
                 tx.issue_ref.as_deref(),
                 &origin,
             );
-            let (signature, pub_key) = match crate::ledger::crypto::sign_ledger_entry_v2(&input) {
-                Ok(res) => res,
-                Err(e) => {
-                    let err_msg = format!("Cryptographic signing failed: {}", e);
-                    if self.config.intent.require_signing {
-                        return Err(LedgerError::Validation(err_msg));
-                    } else {
-                        tracing::warn!("{} (non-blocking)", err_msg);
-                        (None, None)
-                    }
-                }
-            };
+            let signed = sign_entry_or_warn(
+                &input,
+                None,
+                None,
+                self.config.intent.require_signing,
+                SignWarnNotesPolicy::None,
+                None,
+            )?;
+            let (signature, pub_key) = (signed.signature, signed.public_key);
 
             let mut entry = LedgerEntry {
                 id: 0,
@@ -678,7 +674,6 @@ impl<'a> TransactionManager<'a> {
 
             for tx in to_reconcile {
                 let summary_text = format!("Reconciled drift ({} changes)", tx.drift_count);
-                let mut outcome_notes = None;
                 let author = capture_git_author(&self.repo_root);
                 let origin = "LOCAL".to_string();
                 let risk = Some("TRIVIAL".to_string());
@@ -698,20 +693,16 @@ impl<'a> TransactionManager<'a> {
                     None,
                     &origin,
                 );
-                let (signature, pub_key) = match crate::ledger::crypto::sign_ledger_entry_v2(&input)
-                {
-                    Ok(res) => res,
-                    Err(e) => {
-                        let err_msg = format!("Cryptographic signing failed: {}", e);
-                        if self.config.intent.require_signing {
-                            return Err(LedgerError::Validation(err_msg));
-                        } else {
-                            tracing::warn!("{} (non-blocking)", err_msg);
-                            outcome_notes = Some(format!("[Warning] {}", err_msg));
-                            (None, None)
-                        }
-                    }
-                };
+                let signed = sign_entry_or_warn(
+                    &input,
+                    None,
+                    None,
+                    self.config.intent.require_signing,
+                    SignWarnNotesPolicy::Fresh,
+                    None,
+                )?;
+                let (signature, pub_key) = (signed.signature, signed.public_key);
+                let outcome_notes = signed.outcome_notes;
 
                 let mut entry = LedgerEntry {
                     id: 0,
@@ -1076,6 +1067,90 @@ fn is_real_file_path(s: &str) -> bool {
     true
 }
 
+/// How to write `outcome_notes` when signing fails and `require_signing` is false.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SignWarnNotesPolicy {
+    /// Commit: carry existing notes, then `"{notes}\n[Warning] {err}"` trimmed.
+    CarryAndTrim,
+    /// Rollback: no `outcome_notes` field on the warn path.
+    None,
+    /// Reconcile: fresh `Some("[Warning] {err}")`.
+    Fresh,
+}
+
+fn apply_sign_warn_notes(
+    policy: SignWarnNotesPolicy,
+    existing: Option<String>,
+    err_msg: &str,
+) -> Option<String> {
+    match policy {
+        SignWarnNotesPolicy::CarryAndTrim => {
+            let notes = existing.unwrap_or_default();
+            Some(
+                format!("{}\n[Warning] {}", notes, err_msg)
+                    .trim()
+                    .to_string(),
+            )
+        }
+        SignWarnNotesPolicy::None => None,
+        SignWarnNotesPolicy::Fresh => Some(format!("[Warning] {}", err_msg)),
+    }
+}
+
+struct SignedEntryFields {
+    signature: Option<String>,
+    public_key: Option<String>,
+    outcome_notes: Option<String>,
+}
+
+/// Shared sign-or-warn used by commit, rollback, and reconcile.
+///
+/// RT-C3 supplied-sig is commit-only (`supplied_signature.is_some()`).
+/// Warn-notes policy is parameterized (F3). Does not resolve `keys_dir`.
+fn sign_entry_or_warn(
+    input: &crate::ledger::crypto::LedgerSignInput,
+    supplied_signature: Option<String>,
+    supplied_public_key: Option<String>,
+    require_signing: bool,
+    notes_policy: SignWarnNotesPolicy,
+    existing_notes: Option<String>,
+) -> Result<SignedEntryFields, LedgerError> {
+    if supplied_signature.is_some() {
+        let sig = supplied_signature.clone().unwrap_or_default();
+        let pk = supplied_public_key.clone().unwrap_or_default();
+        if !crate::ledger::crypto::verify_entry_signature(input, &sig, &pk) {
+            return Err(LedgerError::Validation(
+                "Supplied signature does not verify against the v2 provenance basis".to_string(),
+            ));
+        }
+        return Ok(SignedEntryFields {
+            signature: supplied_signature,
+            public_key: supplied_public_key,
+            outcome_notes: existing_notes,
+        });
+    }
+
+    match crate::ledger::crypto::sign_ledger_entry_v2(input) {
+        Ok((signature, public_key)) => Ok(SignedEntryFields {
+            signature,
+            public_key,
+            outcome_notes: existing_notes,
+        }),
+        Err(e) => {
+            let err_msg = format!("Cryptographic signing failed: {}", e);
+            if require_signing {
+                return Err(LedgerError::Validation(err_msg));
+            }
+            tracing::warn!("{} (non-blocking)", err_msg);
+            Ok(SignedEntryFields {
+                signature: None,
+                public_key: None,
+                outcome_notes: apply_sign_warn_notes(notes_policy, existing_notes, &err_msg),
+            })
+        }
+    }
+}
+
 /// Capture the author of the current operation from `git config`.
 ///
 /// Resolution order (per the M8 spec
@@ -1132,20 +1207,34 @@ fn capture_git_author(repo_root: &Path) -> String {
 /// assert it did not move, then write). On contention, retries up to
 /// `MAX_RETRIES` against the new head. This keeps the chain strictly linear
 /// even if two writers read the same head simultaneously.
+#[derive(Debug, thiserror::Error)]
+enum ChainAppendError {
+    #[error("DB error reading chain head: {0}")]
+    ReadHead(#[source] LedgerError),
+    #[error("Failed to compute entry hash for chain append: {0}")]
+    Hash(#[source] crate::ledger::crypto::SignatureVerifyError),
+    #[error("DB error re-reading chain head: {0}")]
+    ReReadHead(#[source] LedgerError),
+    #[error("Chain head moved {0} times during append; aborting to prevent a fork")]
+    Contention(usize),
+    #[error("Failed to sign chain head: {0}")]
+    SignHead(#[source] crate::ledger::crypto::CryptoError),
+    #[error("DB error updating chain head: {0}")]
+    UpdateHead(#[source] LedgerError),
+}
+
 fn append_to_chain_with_cas(
     db: &LedgerDb,
     keys_dir: &std::path::Path,
     signing_required: bool,
     entry: &mut LedgerEntry,
-) -> Result<(), miette::Error> {
+) -> Result<(), ChainAppendError> {
     const MAX_RETRIES: usize = 3;
 
     let mut attempt = 0usize;
 
     loop {
-        let head_before = db
-            .get_chain_head()
-            .map_err(|e| miette::miette!("DB error reading chain head: {e}"))?;
+        let head_before = db.get_chain_head().map_err(ChainAppendError::ReadHead)?;
         let prev_chain_hash = head_before
             .as_ref()
             .map(|h| h.latest_entry_hash.as_str())
@@ -1157,11 +1246,9 @@ fn append_to_chain_with_cas(
             Some(prev_chain_hash.to_string())
         };
         let entry_hash = crate::ledger::crypto::compute_entry_hash_for_entry(entry)
-            .map_err(|e| miette::miette!("Failed to compute entry hash for chain append: {e}"))?;
+            .map_err(ChainAppendError::Hash)?;
 
-        let head_after = db
-            .get_chain_head()
-            .map_err(|e| miette::miette!("DB error re-reading chain head: {e}"))?;
+        let head_after = db.get_chain_head().map_err(ChainAppendError::ReReadHead)?;
         // CAS compares only the guard fields, not the signature, so a re-signed
         // head with the same latest_entry_hash/genesis/length does not spuriously
         // fail the compare.
@@ -1177,9 +1264,7 @@ fn append_to_chain_with_cas(
         if !guard_eq {
             attempt += 1;
             if attempt >= MAX_RETRIES {
-                return Err(miette::miette!(
-                    "Chain head moved {MAX_RETRIES} times during append; aborting to prevent a fork"
-                ));
+                return Err(ChainAppendError::Contention(MAX_RETRIES));
             }
             continue;
         }
@@ -1215,7 +1300,7 @@ fn append_to_chain_with_cas(
             Ok(res) => res,
             Err(e) => {
                 if signing_required {
-                    return Err(miette::miette!("Failed to sign chain head: {e}"));
+                    return Err(ChainAppendError::SignHead(e));
                 }
                 tracing::warn!(
                     "Chain head signing failed (signing not required, storing unsigned head): {e}"
@@ -1234,13 +1319,11 @@ fn append_to_chain_with_cas(
         };
         let updated = db
             .update_chain_head(&new_head, head_before.as_ref())
-            .map_err(|e| miette::miette!("DB error updating chain head: {e}"))?;
+            .map_err(ChainAppendError::UpdateHead)?;
         if !updated {
             attempt += 1;
             if attempt >= MAX_RETRIES {
-                return Err(miette::miette!(
-                    "Chain head moved {MAX_RETRIES} times during append; aborting to prevent a fork"
-                ));
+                return Err(ChainAppendError::Contention(MAX_RETRIES));
             }
             continue;
         }
@@ -1303,5 +1386,53 @@ mod capture_git_author_tests {
 
         let author = capture_git_author(tmp.path());
         assert_eq!(author, "Helper Test User");
+    }
+}
+
+#[cfg(test)]
+mod sign_warn_notes_tests {
+    use super::{SignWarnNotesPolicy, apply_sign_warn_notes};
+
+    #[test]
+    fn commit_carry_and_trim_keeps_prior_notes() {
+        let notes = apply_sign_warn_notes(
+            SignWarnNotesPolicy::CarryAndTrim,
+            Some("prior".to_string()),
+            "signing failed",
+        );
+        assert_eq!(notes.as_deref(), Some("prior\n[Warning] signing failed"));
+    }
+
+    #[test]
+    fn commit_carry_and_trim_empty_existing_is_warning_only() {
+        let from_none =
+            apply_sign_warn_notes(SignWarnNotesPolicy::CarryAndTrim, None, "signing failed");
+        let from_empty = apply_sign_warn_notes(
+            SignWarnNotesPolicy::CarryAndTrim,
+            Some(String::new()),
+            "signing failed",
+        );
+        assert_eq!(from_none.as_deref(), Some("[Warning] signing failed"));
+        assert_eq!(from_empty.as_deref(), Some("[Warning] signing failed"));
+    }
+
+    #[test]
+    fn rollback_none_drops_notes() {
+        let notes = apply_sign_warn_notes(
+            SignWarnNotesPolicy::None,
+            Some("prior".to_string()),
+            "signing failed",
+        );
+        assert_eq!(notes, None);
+    }
+
+    #[test]
+    fn reconcile_fresh_does_not_carry() {
+        let notes = apply_sign_warn_notes(
+            SignWarnNotesPolicy::Fresh,
+            Some("prior".to_string()),
+            "signing failed",
+        );
+        assert_eq!(notes.as_deref(), Some("[Warning] signing failed"));
     }
 }
