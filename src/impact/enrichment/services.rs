@@ -51,7 +51,7 @@ impl EnrichmentProvider for ServiceProvider {
         }
 
         // K4: Check CozoDB for downstream breakage
-        if let Some(cozo) = context.storage.cozo.as_ref() {
+        if let Some(cozo) = context.storage.cozo() {
             // Fetch all service_roots for prefix matching
             let mut service_roots = Vec::new();
             if let Ok(res) = cozo.run_script("?[name, dir_path] := *service_roots{name, dir_path}")
@@ -65,6 +65,7 @@ impl EnrichmentProvider for ServiceProvider {
                 }
             }
 
+            let mut escalate_risk = false;
             for change in &mut packet.changes {
                 let path_to_check = change.old_path.as_ref().unwrap_or(&change.path);
                 let path_str = path_to_check.to_string_lossy().replace('\\', "/");
@@ -104,10 +105,13 @@ impl EnrichmentProvider for ServiceProvider {
 
                         if !broken_consumers.is_empty() {
                             change.analysis_warnings.push(format!("Downstream Breakage: Service '{}' has {} consumer(s) that may be affected by changes to its public contracts.", svc_name, broken_consumers.len()));
-                            packet.risk_level = crate::impact::packet::RiskLevel::High;
+                            escalate_risk = true;
                         }
                     }
                 }
+            }
+            if escalate_risk {
+                packet.set_risk_level(crate::impact::packet::RiskLevel::High);
             }
         }
 
@@ -220,12 +224,12 @@ impl EnrichmentProvider for ServiceProvider {
         let mut affected_services: Vec<String> = affected_services_set.into_iter().collect();
         affected_services.sort();
 
-        packet.service_map_delta = Some(ServiceMapDelta {
+        packet.set_service_map_delta(Some(ServiceMapDelta {
             services,
             affected_services,
             cross_service_edges,
             total_services,
-        });
+        }));
 
         Ok(())
     }

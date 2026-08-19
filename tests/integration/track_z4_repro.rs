@@ -41,7 +41,7 @@ checksum = "bb132488d2348f7a79a296f187a7412ee291e0a24f0a0d9223011400e955f134"
 
     // Check CozoDB
     let storage = StorageManager::open_read_only(&Layout::new(root_utf8)).unwrap();
-    let cozo = storage.cozo.as_ref().expect("CozoDB should be initialized");
+    let cozo = storage.cozo().expect("CozoDB should be initialized");
 
     let res = cozo
         .run_script("?[id, label] := *node{id, label, category: 'package'}")
@@ -103,7 +103,7 @@ dependencies = [
         .unwrap();
 
     let storage = StorageManager::open_read_only(&Layout::new(root_utf8)).unwrap();
-    let cozo = storage.cozo.as_ref().expect("CozoDB should be initialized");
+    let cozo = storage.cozo().expect("CozoDB should be initialized");
 
     let edge_res = cozo
         .run_script("?[src, tgt] := *edge{source: src, target: tgt, relation: 'depends_on'}")
@@ -168,7 +168,7 @@ dependencies = [
         .unwrap();
 
     let storage = StorageManager::open_read_only(&Layout::new(root_utf8)).unwrap();
-    let cozo = storage.cozo.as_ref().expect("CozoDB should be initialized");
+    let cozo = storage.cozo().expect("CozoDB should be initialized");
 
     // Query for DependsOn edges from consumer. Join with node table on stable label.
     let res = cozo
@@ -232,7 +232,7 @@ dependencies = [
         .unwrap();
 
     let storage = StorageManager::open_read_only(&Layout::new(root_utf8)).unwrap();
-    let cozo = storage.cozo.as_ref().expect("CozoDB should be initialized");
+    let cozo = storage.cozo().expect("CozoDB should be initialized");
 
     let res = cozo
         .run_script(
@@ -310,7 +310,7 @@ dependencies = [
         .unwrap();
 
     let storage = StorageManager::open_read_only(&Layout::new(root_utf8)).unwrap();
-    let cozo = storage.cozo.as_ref().expect("CozoDB should be initialized");
+    let cozo = storage.cozo().expect("CozoDB should be initialized");
 
     let res = cozo
         .run_script("?[id] := *node{id: id, category: 'package'}")

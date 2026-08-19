@@ -622,7 +622,7 @@ fn execute_audit(input: String, json: bool) -> Result<()> {
 
     // Open writeable storage to populate KG
     let storage = StorageManager::init_with_layout(&layout)?;
-    if let Some(cozo) = &storage.cozo {
+    if let Some(cozo) = storage.cozo() {
         crate::index::advisories::OsvImporter::populate_kg(cozo, &result, "audit-tx")?;
     }
 

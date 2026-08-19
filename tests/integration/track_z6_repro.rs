@@ -56,7 +56,7 @@ fn test_ledger_graph_edges_ingestion() {
 
     // Check CozoDB
     let storage = StorageManager::open_read_only(&Layout::new(root_utf8)).unwrap();
-    let cozo = storage.cozo.as_ref().expect("CozoDB should be initialized");
+    let cozo = storage.cozo().expect("CozoDB should be initialized");
 
     // 1. Verify transaction node
     let node_res = cozo.query_nodes_by_category("ledger_transaction").unwrap();

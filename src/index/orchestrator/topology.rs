@@ -72,7 +72,7 @@ pub fn index_service_boundaries(indexer: &mut ProjectIndexer) -> Result<()> {
     use cozo::{DataValue, ScriptMutability};
     use std::collections::BTreeMap;
 
-    let cozo = match indexer.storage.cozo.as_ref() {
+    let cozo = match indexer.cozo() {
         Some(c) => c,
         None => return Ok(()), // CozoDB not available — skip silently
     };
@@ -143,7 +143,7 @@ pub fn index_service_boundaries(indexer: &mut ProjectIndexer) -> Result<()> {
         })
         .collect();
 
-    let cozo = match indexer.storage.cozo.as_ref() {
+    let cozo = match indexer.cozo() {
         Some(c) => c,
         None => return Ok(()),
     };

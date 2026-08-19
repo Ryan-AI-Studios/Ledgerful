@@ -32,10 +32,7 @@ fn test_commit_writes_kg_edges() {
     fs::create_dir_all(db_path.parent().unwrap()).unwrap();
 
     let mut storage = StorageManager::init(&db_path).unwrap();
-    let cozo = storage
-        .cozo
-        .as_ref()
-        .expect("Cozo storage should be available");
+    let cozo = storage.cozo().expect("Cozo storage should be available");
 
     // Pre-create node for the file in CozoDB (simulating indexer output)
     let file_urn = build_urn(NodeKind::File, file_path);
@@ -76,8 +73,7 @@ fn test_commit_writes_kg_edges() {
         StorageManager::open_read_only(&Layout::new(camino::Utf8Path::from_path(&root).unwrap()))
             .unwrap();
     let cozo_read = storage_read
-        .cozo
-        .as_ref()
+        .cozo()
         .expect("Cozo storage should be available");
 
     let tx_urn = build_urn(NodeKind::LedgerTransaction, &tx_id);
@@ -198,8 +194,7 @@ fn test_adopt_writes_kg_edges_with_real_files() {
         StorageManager::open_read_only(&Layout::new(camino::Utf8Path::from_path(&root).unwrap()))
             .unwrap();
     let cozo_read = storage_read
-        .cozo
-        .as_ref()
+        .cozo()
         .expect("Cozo storage should be available");
 
     // There must be at least one LedgerTransaction node

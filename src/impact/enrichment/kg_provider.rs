@@ -16,7 +16,7 @@ impl EnrichmentProvider for KGProvider {
     }
 
     fn enrich(&self, context: &EnrichmentContext, packet: &mut ImpactPacket) -> Result<()> {
-        let Some(cozo) = &context.storage.cozo else {
+        let Some(cozo) = context.storage.cozo() else {
             debug!("CozoStorage not available, skipping KG enrichment");
             return Ok(());
         };
@@ -240,7 +240,7 @@ mod tests {
 
         let mut storage =
             StorageManager::init_from_conn(rusqlite::Connection::open_in_memory().unwrap());
-        storage.cozo = Some(cozo);
+        storage.set_cozo(Some(cozo));
         storage.is_read_only = true;
 
         let context = EnrichmentContext {
@@ -335,7 +335,7 @@ mod tests {
 
         let mut storage =
             StorageManager::init_from_conn(rusqlite::Connection::open_in_memory().unwrap());
-        storage.cozo = Some(cozo);
+        storage.set_cozo(Some(cozo));
 
         let context = EnrichmentContext {
             storage: &storage,
@@ -442,7 +442,7 @@ mod tests {
 
         let mut storage =
             StorageManager::init_from_conn(rusqlite::Connection::open_in_memory().unwrap());
-        storage.cozo = Some(cozo);
+        storage.set_cozo(Some(cozo));
 
         // Test with max_reachability_depth = 2 (should find file_2 and file_3, but NOT file_4)
         {

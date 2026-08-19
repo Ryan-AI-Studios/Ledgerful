@@ -145,7 +145,7 @@ impl<'a> CentralityComputer<'a> {
 
         // 5. Run PageRank algorithm query on CozoDB if present
         let mut pagerank_scores: HashMap<i64, f64> = HashMap::new();
-        if let Some(cozo) = &self.storage.cozo {
+        if let Some(cozo) = self.storage.cozo() {
             let script = "
                 edges[src, dst] := *edge{source: src, target: dst, relation: 'calls'}
                 ?[node, rank] <~ PageRank(edges[src, dst])
@@ -528,7 +528,7 @@ mod tests {
         // Centrality tests don't use bridge tables; default Options (include_bridge_tables=false) is fine.
         cozo.setup_schema().unwrap();
         let mut storage = StorageManager::init_from_conn(conn);
-        storage.cozo = Some(cozo);
+        storage.set_cozo(Some(cozo));
         storage
     }
 
@@ -561,7 +561,7 @@ mod tests {
         );
 
         // Insert edges into Cozo
-        let cozo = storage.cozo.as_ref().unwrap();
+        let cozo = storage.cozo().unwrap();
         cozo.put_edge_batch(&[
             crate::state::storage_cozo::GraphEdge {
                 source: ep_urn.clone(),

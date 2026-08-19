@@ -62,7 +62,7 @@ fn test_test_mapping_ingestion() {
 
     // Check CozoDB
     let storage = StorageManager::open_read_only(&Layout::new(root_utf8)).unwrap();
-    let cozo = storage.cozo.as_ref().expect("CozoDB should be initialized");
+    let cozo = storage.cozo().expect("CozoDB should be initialized");
 
     // 1. Verify test node exists and carries metadata
     let res = cozo.query_nodes_by_category("test").unwrap();

@@ -22,22 +22,24 @@ impl EnrichmentProvider for CoverageProvider {
 
         // 1. Trace Config Drift
         if config.traces.enabled {
-            packet.trace_config_drift =
-                detect_trace_config_changes(&packet.changes, &config.traces.config_patterns);
-            packet.trace_env_vars = detect_trace_env_vars(
+            packet.set_trace_config_drift(detect_trace_config_changes(
+                &packet.changes,
+                &config.traces.config_patterns,
+            ));
+            packet.set_trace_env_vars(detect_trace_env_vars(
                 &packet.env_var_deps,
                 &config.traces.env_var_patterns,
                 &config.traces.exclude_env_patterns,
-            );
+            ));
         }
 
         // 2. SDK Dependencies Delta
         if config.sdk.enabled {
-            packet.sdk_dependencies_delta = Some(detect_sdk_changes(
+            packet.set_sdk_dependencies_delta(Some(detect_sdk_changes(
                 &packet.changes,
                 &config.sdk.patterns,
                 &context.project_root,
-            ));
+            )));
         }
 
         // 3. Data Flow Enrichment
@@ -157,13 +159,13 @@ impl CoverageProvider {
         );
 
         // 5. Compute Coupling
-        packet.data_flow_matches = compute_data_flow_coupling(
+        packet.set_data_flow_matches(compute_data_flow_coupling(
             &chains,
             &packet.changes,
             &data_models,
             0.2,
             &context.project_root,
-        );
+        ));
 
         Ok(())
     }

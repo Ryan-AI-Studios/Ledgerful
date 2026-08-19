@@ -104,8 +104,7 @@ pub fn execute_hotspots(args: HotspotArgs) -> Result<()> {
 
     if args.semantic {
         let cozo = storage
-            .cozo
-            .as_ref()
+            .cozo()
             .ok_or_else(|| miette::miette!("CozoDB storage not initialized"))?;
 
         if !args.json {

@@ -53,7 +53,7 @@ impl EnrichmentProvider for SignatureDeltaProvider {
         }
 
         deltas.sort_unstable();
-        packet.signature_deltas = deltas;
+        packet.set_signature_deltas(deltas);
         Ok(())
     }
 }

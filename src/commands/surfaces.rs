@@ -488,7 +488,7 @@ fn count_declared_assigned(conn: &rusqlite::Connection, config: &Config) -> Resu
 }
 
 fn count_cozo_auth_nodes(storage: &StorageManager) -> Result<usize> {
-    let Some(cozo) = storage.cozo.as_ref() else {
+    let Some(cozo) = storage.cozo() else {
         return Ok(0);
     };
     let res = cozo.run_script(
@@ -498,7 +498,7 @@ fn count_cozo_auth_nodes(storage: &StorageManager) -> Result<usize> {
 }
 
 fn count_cozo_slo_nodes(storage: &StorageManager) -> Result<usize> {
-    let Some(cozo) = storage.cozo.as_ref() else {
+    let Some(cozo) = storage.cozo() else {
         return Ok(0);
     };
     let res = cozo.run_script("?[id] := *node{id, category: 'slo'}")?;

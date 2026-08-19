@@ -50,8 +50,8 @@ impl CouplingProvider {
         };
         match populate_test_coverage_and_gaps(conn, &seeds, &gap_opts) {
             Ok((coverage, hints, gaps)) => {
-                packet.test_coverage = coverage;
-                packet.test_gaps = Some(gaps);
+                packet.set_test_coverage(coverage);
+                packet.set_test_gaps(Some(gaps));
                 test_hints = hints;
             }
             Err(e) => {
@@ -80,7 +80,7 @@ impl CouplingProvider {
                     ..Default::default()
                 };
                 if !blast.is_empty_for_serde() {
-                    packet.blast_radius = Some(blast);
+                    packet.set_blast_radius(Some(blast));
                 }
             }
             // 0118: kinds 1–3 still run without blast edges.
@@ -104,11 +104,11 @@ impl CouplingProvider {
                 blast.test_hints = test_hints;
 
                 // Derive structural_couplings from hop-1 (single writer — DoD-10)
-                packet.structural_couplings = derive_structural_couplings(&blast);
+                packet.set_structural_couplings(derive_structural_couplings(&blast));
 
                 // Emit blast whenever there is content or honesty (never hide unbound/thin).
                 if !blast.is_empty_for_serde() {
-                    packet.blast_radius = Some(blast);
+                    packet.set_blast_radius(Some(blast));
                 }
             }
             Err(e) => {
@@ -130,11 +130,11 @@ impl CouplingProvider {
         };
         match compute_affected_flows(conn, &packet.changes, packet.blast_radius.as_ref(), &opts) {
             Ok(report) => {
-                packet.affected_flows = Some(report);
+                packet.set_affected_flows(Some(report));
             }
             Err(e) => {
                 warn!("affected_flows compute failed: {e}");
-                packet.affected_flows = Some(AffectedFlowsReport::unavailable());
+                packet.set_affected_flows(Some(AffectedFlowsReport::unavailable()));
             }
         }
     }
@@ -176,7 +176,7 @@ impl CouplingProvider {
                     couplings.truncate(limit);
                 }
 
-                packet.temporal_couplings = couplings;
+                packet.set_temporal_couplings(couplings);
             }
             Err(e) => {
                 warn!("Temporal analysis failed: {e}");
