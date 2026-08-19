@@ -171,7 +171,7 @@ fn call_with_retry(
 
 /// Hard-deadline wrapper for Gemini calls (Track TA15).
 ///
-/// Same pattern as `complete_with_hard_deadline` in `local_model/client.rs`:
+/// Same pattern as `complete_with_hard_deadline` in `local_model/client/complete.rs`:
 /// spawns the HTTP call in a thread and uses `recv_timeout` to enforce a hard
 /// deadline covering DNS, connect, TLS, and read.
 pub fn call_with_hard_deadline(

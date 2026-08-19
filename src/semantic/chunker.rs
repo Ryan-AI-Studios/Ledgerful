@@ -3,6 +3,22 @@ use miette::{IntoDiagnostic, Result, miette};
 use std::path::Path;
 use tree_sitter::{Parser, Query, QueryCursor, StreamingIterator};
 
+fn is_standalone_chunk_kind(kind: &SymbolKind) -> bool {
+    match kind {
+        SymbolKind::Function
+        | SymbolKind::Struct
+        | SymbolKind::Enum
+        | SymbolKind::Trait
+        | SymbolKind::Module
+        | SymbolKind::Type => true,
+        SymbolKind::Method
+        | SymbolKind::Class
+        | SymbolKind::Interface
+        | SymbolKind::Variable
+        | SymbolKind::Constant => false,
+    }
+}
+
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct AstChunk {
     pub file_path: String,
@@ -116,14 +132,8 @@ impl AstChunker {
 
         for symbol in extracted_symbols {
             // Skip symbols that are not meaningful standalone chunks
-            match symbol.kind {
-                SymbolKind::Function
-                | SymbolKind::Struct
-                | SymbolKind::Enum
-                | SymbolKind::Trait
-                | SymbolKind::Module
-                | SymbolKind::Type => {}
-                _ => continue,
+            if !is_standalone_chunk_kind(&symbol.kind) {
+                continue;
             }
 
             let Some(byte_start) = symbol.byte_start else {
@@ -380,5 +390,89 @@ impl AstChunker {
         }
 
         Ok(chunks)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::symbols::SymbolKind;
+    use std::path::Path;
+
+    #[test]
+    fn is_standalone_chunk_kind_classifies_every_variant() {
+        let variants = [
+            SymbolKind::Function,
+            SymbolKind::Method,
+            SymbolKind::Class,
+            SymbolKind::Struct,
+            SymbolKind::Enum,
+            SymbolKind::Trait,
+            SymbolKind::Interface,
+            SymbolKind::Type,
+            SymbolKind::Variable,
+            SymbolKind::Constant,
+            SymbolKind::Module,
+        ];
+        for kind in &variants {
+            let keep = match kind {
+                SymbolKind::Function
+                | SymbolKind::Struct
+                | SymbolKind::Enum
+                | SymbolKind::Trait
+                | SymbolKind::Module
+                | SymbolKind::Type => true,
+                SymbolKind::Method
+                | SymbolKind::Class
+                | SymbolKind::Interface
+                | SymbolKind::Variable
+                | SymbolKind::Constant => false,
+            };
+            assert_eq!(
+                is_standalone_chunk_kind(kind),
+                keep,
+                "{kind:?} keep/skip mismatch"
+            );
+        }
+    }
+
+    #[test]
+    fn chunk_rust_keeps_four_standalone_and_skips_trait_method_signature() {
+        let src = r#"
+fn free_fn() {}
+
+impl Foo {
+    fn impl_method(&self) {}
+}
+
+trait Bar {
+    fn trait_sig(&self);
+}
+"#;
+        let chunks =
+            AstChunker::chunk_file(Path::new("fixture.rs"), src).expect("chunk rust fixture");
+        assert!(
+            chunks.iter().all(|c| !matches!(c.kind, SymbolKind::Method)),
+            "trait_sig Method must be skipped"
+        );
+        assert!(
+            chunks.iter().all(|c| c.name != "trait_sig"),
+            "trait_sig must not appear as a chunk"
+        );
+
+        let mut names_kinds: Vec<(String, SymbolKind)> =
+            chunks.into_iter().map(|c| (c.name, c.kind)).collect();
+        names_kinds.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.as_str().cmp(b.1.as_str())));
+
+        assert_eq!(
+            names_kinds,
+            vec![
+                ("Bar".to_string(), SymbolKind::Trait),
+                ("Foo".to_string(), SymbolKind::Type),
+                ("free_fn".to_string(), SymbolKind::Function),
+                ("impl_method".to_string(), SymbolKind::Function),
+            ],
+            "4 kept (free_fn Function, impl_method Function, impl Foo Type, Bar Trait) + 1 skip"
+        );
     }
 }
