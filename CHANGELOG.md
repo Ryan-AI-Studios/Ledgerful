@@ -15,6 +15,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Ask routing module split + compile-once regex (0197):**
+  `commands/ask_routing.rs` is now a barrel (`parse.rs` + `answers.rs` + tests out).
+  Remaining per-call parse regexes compile once via `OnceLock`. Ask early-exit
+  banners, parse order, wire order, and SQL are unchanged.
+
 - **LLM client module split + named Rust chunker keep/skip (0196):**
   `local_model/client.rs` is now a barrel (`complete.rs` cascade + tests out).
   The Rust semantic chunker uses exhaustive `is_standalone_chunk_kind`
