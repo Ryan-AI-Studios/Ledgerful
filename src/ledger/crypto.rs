@@ -1,6 +1,5 @@
 use crate::ledger::types::{Category, ChangeType, EntryType, LedgerEntry};
-use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
-use miette::{IntoDiagnostic, Result};
+use ed25519_dalek::{Signature, SignatureError, Signer, SigningKey, Verifier, VerifyingKey};
 
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -44,6 +43,52 @@ impl SignatureTrustStatus {
             SignatureTrustStatus::ValidTrusted | SignatureTrustStatus::ValidUnknownKey
         )
     }
+}
+
+/// Validation failure for `intent.trusted_public_keys` entries.
+///
+/// Display strings are locked: `config/validate.rs` embeds `{reason}`.
+#[derive(Debug, thiserror::Error)]
+pub enum TrustedKeyError {
+    #[error("trusted public key is empty")]
+    Empty,
+    #[error("trusted public key must be hex, not PEM")]
+    Pem,
+    #[error("trusted public key must be 64 hex chars, got {0}")]
+    Length(usize),
+    #[error("trusted public key contains non-hex characters")]
+    NonHex,
+}
+
+/// Key I/O and signing failures. `Diagnostic` so `?` into `miette::Result` still works.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+pub enum CryptoError {
+    #[error("Failed to locate home directory")]
+    HomeDirectory(#[source] std::env::VarError),
+    #[error("Invalid private key size")]
+    InvalidPrivateKeySize(#[source] std::array::TryFromSliceError),
+    #[error("Invalid public key size")]
+    InvalidPublicKeySize(#[source] std::array::TryFromSliceError),
+    #[error(
+        "Keypair consistency check failed: public key does not match private seed. Refusing to sign."
+    )]
+    KeypairMismatch,
+    #[error(
+        "Keypair consistency check failed: public key does not match private seed. Refusing to sign chain head."
+    )]
+    KeypairMismatchChainHead,
+    #[error("Refusing to write key file {path:?} outside state root {root:?}")]
+    PathEscape { path: PathBuf, root: PathBuf },
+    #[error(transparent)]
+    Io(#[from] std::io::Error),
+    #[error(transparent)]
+    Utf8(#[from] std::string::FromUtf8Error),
+    #[error("{0}")]
+    Hex(#[from] hex::FromHexError),
+    #[error("Failed to encode v2 signing payload: {0}")]
+    Encode(#[source] SignatureVerifyError),
+    #[error(transparent)]
+    InvalidVerifyingKey(SignatureError),
 }
 
 /// All fields required to encode/sign/verify a v2 (or v1) ledger entry payload.
@@ -130,31 +175,31 @@ impl LedgerSignInput {
 ///
 /// Prefer this for read-only probes (doctor pin remediation). Callers that
 /// need a writable key store should use [`get_keys_dir`].
-pub fn keys_dir_path() -> Result<PathBuf> {
+pub fn keys_dir_path() -> Result<PathBuf, CryptoError> {
     let home = std::env::var("USERPROFILE")
         .or_else(|_| std::env::var("HOME"))
         .map(PathBuf::from)
-        .map_err(|_| miette::miette!("Failed to locate home directory"))?;
+        .map_err(CryptoError::HomeDirectory)?;
     Ok(home.join(".ledgerful").join("keys"))
 }
 
 /// Resolve and ensure `~/.ledgerful/keys` exists (creates when missing).
-pub fn get_keys_dir() -> Result<PathBuf> {
+pub fn get_keys_dir() -> Result<PathBuf, CryptoError> {
     let keys_dir = keys_dir_path()?;
     if !keys_dir.exists() {
-        fs::create_dir_all(&keys_dir).into_diagnostic()?;
+        fs::create_dir_all(&keys_dir)?;
     }
     Ok(keys_dir)
 }
 
-pub fn get_or_create_keys() -> Result<(SigningKey, VerifyingKey)> {
+pub fn get_or_create_keys() -> Result<(SigningKey, VerifyingKey), CryptoError> {
     let keys_dir = get_keys_dir()?;
     get_or_create_keys_in(&keys_dir)
 }
 
-pub fn get_or_create_keys_in(keys_dir: &Path) -> Result<(SigningKey, VerifyingKey)> {
+pub fn get_or_create_keys_in(keys_dir: &Path) -> Result<(SigningKey, VerifyingKey), CryptoError> {
     if !keys_dir.exists() {
-        fs::create_dir_all(keys_dir).into_diagnostic()?;
+        fs::create_dir_all(keys_dir)?;
     }
 
     let priv_path = keys_dir.join("private.key");
@@ -210,13 +255,13 @@ pub fn get_or_create_keys_in(keys_dir: &Path) -> Result<(SigningKey, VerifyingKe
                 );
                 let vk = signing_key.verifying_key();
                 assert_within_state_root(&pub_path, keys_dir)?;
-                fs::write(&pub_path, hex::encode(vk.to_bytes())).into_diagnostic()?;
+                fs::write(&pub_path, hex::encode(vk.to_bytes()))?;
                 vk
             }
         } else {
             let vk = signing_key.verifying_key();
             assert_within_state_root(&pub_path, keys_dir)?;
-            fs::write(&pub_path, hex::encode(vk.to_bytes())).into_diagnostic()?;
+            fs::write(&pub_path, hex::encode(vk.to_bytes()))?;
             vk
         };
 
@@ -234,33 +279,33 @@ pub fn get_or_create_keys_in(keys_dir: &Path) -> Result<(SigningKey, VerifyingKe
         let pub_hex = hex::encode(verifying_key.to_bytes());
 
         assert_within_state_root(&priv_path, keys_dir)?;
-        fs::write(&priv_path, priv_hex).into_diagnostic()?;
+        fs::write(&priv_path, priv_hex)?;
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
             let perms = std::fs::Permissions::from_mode(0o600);
-            fs::set_permissions(&priv_path, perms).into_diagnostic()?;
+            fs::set_permissions(&priv_path, perms)?;
         }
         assert_within_state_root(&pub_path, keys_dir)?;
-        fs::write(&pub_path, pub_hex).into_diagnostic()?;
+        fs::write(&pub_path, pub_hex)?;
 
         Ok((signing_key, verifying_key))
     }
 }
 
 /// Read the hex public key from `public.pem` under `keys_dir`, if present.
-pub fn read_public_key_hex(keys_dir: &Path) -> Result<Option<String>> {
+pub fn read_public_key_hex(keys_dir: &Path) -> Result<Option<String>, CryptoError> {
     let pub_path = keys_dir.join("public.pem");
     if !pub_path.exists() {
         return Ok(None);
     }
-    let pub_bytes = fs::read(&pub_path).into_diagnostic()?;
-    let pub_str = String::from_utf8(pub_bytes).into_diagnostic()?;
+    let pub_bytes = fs::read(&pub_path)?;
+    let pub_str = String::from_utf8(pub_bytes)?;
     let hex = pub_str.trim().to_ascii_lowercase();
     Ok(Some(hex))
 }
 
-pub(crate) fn assert_within_state_root(path: &Path, root: &Path) -> Result<()> {
+pub(crate) fn assert_within_state_root(path: &Path, root: &Path) -> Result<(), CryptoError> {
     let canonical_root = root.canonicalize().unwrap_or_else(|_| root.to_path_buf());
     // If the target already exists, canonicalize the full path to resolve
     // any symlink. A symlink pointing outside the root would canonicalize
@@ -272,11 +317,10 @@ pub(crate) fn assert_within_state_root(path: &Path, root: &Path) -> Result<()> {
         parent_plus_name(path)
     };
     if !canonical_path.starts_with(&canonical_root) {
-        return Err(miette::miette!(
-            "Refusing to write key file {:?} outside state root {:?}",
-            path,
-            root
-        ));
+        return Err(CryptoError::PathEscape {
+            path: path.to_path_buf(),
+            root: root.to_path_buf(),
+        });
     }
     Ok(())
 }
@@ -295,24 +339,26 @@ fn parent_plus_name(path: &Path) -> PathBuf {
     }
 }
 
-fn read_private_key(path: &Path) -> Result<SigningKey> {
-    let priv_bytes = fs::read(path).into_diagnostic()?;
-    let priv_str = String::from_utf8(priv_bytes).into_diagnostic()?;
-    let priv_decoded = hex::decode(priv_str.trim()).into_diagnostic()?;
+fn read_private_key(path: &Path) -> Result<SigningKey, CryptoError> {
+    let priv_bytes = fs::read(path)?;
+    let priv_str = String::from_utf8(priv_bytes)?;
+    let priv_decoded = hex::decode(priv_str.trim())?;
     let priv_array: [u8; 32] = priv_decoded
+        .as_slice()
         .try_into()
-        .map_err(|_| miette::miette!("Invalid private key size"))?;
+        .map_err(CryptoError::InvalidPrivateKeySize)?;
     Ok(SigningKey::from_bytes(&priv_array))
 }
 
-fn read_public_key(path: &Path) -> Result<VerifyingKey> {
-    let pub_bytes = fs::read(path).into_diagnostic()?;
-    let pub_str = String::from_utf8(pub_bytes).into_diagnostic()?;
-    let pub_decoded = hex::decode(pub_str.trim()).into_diagnostic()?;
+fn read_public_key(path: &Path) -> Result<VerifyingKey, CryptoError> {
+    let pub_bytes = fs::read(path)?;
+    let pub_str = String::from_utf8(pub_bytes)?;
+    let pub_decoded = hex::decode(pub_str.trim())?;
     let pub_array: [u8; 32] = pub_decoded
+        .as_slice()
         .try_into()
-        .map_err(|_| miette::miette!("Invalid public key size"))?;
-    VerifyingKey::from_bytes(&pub_array).into_diagnostic()
+        .map_err(CryptoError::InvalidPublicKeySize)?;
+    VerifyingKey::from_bytes(&pub_array).map_err(CryptoError::InvalidVerifyingKey)
 }
 
 pub fn verify_keypair_consistency(signing_key: &SigningKey, verifying_key: &VerifyingKey) -> bool {
@@ -423,7 +469,9 @@ pub fn entity_normalized_consistent(entity: &str, entity_normalized: &str) -> bo
 }
 
 /// Sign a new production ledger entry as v2.
-pub fn sign_ledger_entry_v2(input: &LedgerSignInput) -> Result<(Option<String>, Option<String>)> {
+pub fn sign_ledger_entry_v2(
+    input: &LedgerSignInput,
+) -> Result<(Option<String>, Option<String>), CryptoError> {
     let keys_dir = get_keys_dir()?;
     sign_ledger_entry_in_v2(&keys_dir, input)
 }
@@ -432,19 +480,16 @@ pub fn sign_ledger_entry_v2(input: &LedgerSignInput) -> Result<(Option<String>, 
 pub fn sign_ledger_entry_in_v2(
     keys_dir: &Path,
     input: &LedgerSignInput,
-) -> Result<(Option<String>, Option<String>)> {
+) -> Result<(Option<String>, Option<String>), CryptoError> {
     let mut v2_input = input.clone();
     v2_input.sig_version = CURRENT_LEDGER_SIG_VERSION;
     let (signing_key, verifying_key) = get_or_create_keys_in(keys_dir)?;
 
     if !verify_keypair_consistency(&signing_key, &verifying_key) {
-        return Err(miette::miette!(
-            "Keypair consistency check failed: public key does not match private seed. Refusing to sign."
-        ));
+        return Err(CryptoError::KeypairMismatch);
     }
 
-    let payload = encode_v2_payload(&v2_input)
-        .map_err(|e| miette::miette!("Failed to encode v2 signing payload: {e}"))?;
+    let payload = encode_v2_payload(&v2_input).map_err(CryptoError::Encode)?;
     let signature = signing_key.sign(payload.as_bytes());
     let sig_hex = hex::encode(signature.to_bytes());
     let pub_hex = hex::encode(verifying_key.to_bytes());
@@ -459,7 +504,7 @@ pub fn sign_ledger_entry(
     summary: &str,
     reason: &str,
     committed_at: &str,
-) -> Result<(Option<String>, Option<String>)> {
+) -> Result<(Option<String>, Option<String>), CryptoError> {
     let keys_dir = get_keys_dir()?;
     sign_ledger_entry_in(&keys_dir, tx_id, category, summary, reason, committed_at)
 }
@@ -472,13 +517,11 @@ pub fn sign_ledger_entry_in(
     summary: &str,
     reason: &str,
     committed_at: &str,
-) -> Result<(Option<String>, Option<String>)> {
+) -> Result<(Option<String>, Option<String>), CryptoError> {
     let (signing_key, verifying_key) = get_or_create_keys_in(keys_dir)?;
 
     if !verify_keypair_consistency(&signing_key, &verifying_key) {
-        return Err(miette::miette!(
-            "Keypair consistency check failed: public key does not match private seed. Refusing to sign."
-        ));
+        return Err(CryptoError::KeypairMismatch);
     }
 
     let payload = encode_v1_payload(tx_id, category, summary, reason, committed_at);
@@ -561,13 +604,11 @@ pub fn sign_chain_head(
     latest_entry_hash: &str,
     genesis: &str,
     length: i64,
-) -> Result<(Option<String>, Option<String>)> {
+) -> Result<(Option<String>, Option<String>), CryptoError> {
     let (signing_key, verifying_key) = get_or_create_keys_in(keys_dir)?;
 
     if !verify_keypair_consistency(&signing_key, &verifying_key) {
-        return Err(miette::miette!(
-            "Keypair consistency check failed: public key does not match private seed. Refusing to sign chain head."
-        ));
+        return Err(CryptoError::KeypairMismatchChainHead);
     }
 
     let payload = chain_head_payload(latest_entry_hash, genesis, length);
@@ -605,24 +646,26 @@ fn verify_chain_head_with_result(
 ) -> Result<(), ChainHeadVerifyError> {
     let payload = chain_head_payload(latest_entry_hash, genesis, length);
 
-    let pub_decoded =
-        hex::decode(public_key_hex).map_err(|_| ChainHeadVerifyError::InvalidPublicKey)?;
+    let pub_decoded = hex::decode(public_key_hex)
+        .map_err(|e| ChainHeadVerifyError::InvalidPublicKey(ChainHeadVerifySource::Hex(e)))?;
     let pub_array: [u8; 32] = pub_decoded
+        .as_slice()
         .try_into()
-        .map_err(|_| ChainHeadVerifyError::InvalidPublicKey)?;
-    let verifying_key =
-        VerifyingKey::from_bytes(&pub_array).map_err(|_| ChainHeadVerifyError::InvalidPublicKey)?;
+        .map_err(|e| ChainHeadVerifyError::InvalidPublicKey(ChainHeadVerifySource::Length(e)))?;
+    let verifying_key = VerifyingKey::from_bytes(&pub_array)
+        .map_err(|e| ChainHeadVerifyError::InvalidPublicKey(ChainHeadVerifySource::Dalek(e)))?;
 
-    let sig_decoded =
-        hex::decode(signature_hex).map_err(|_| ChainHeadVerifyError::InvalidSignature)?;
+    let sig_decoded = hex::decode(signature_hex)
+        .map_err(|e| ChainHeadVerifyError::InvalidSignature(ChainHeadVerifySource::Hex(e)))?;
     let sig_array: [u8; 64] = sig_decoded
+        .as_slice()
         .try_into()
-        .map_err(|_| ChainHeadVerifyError::InvalidSignature)?;
+        .map_err(|e| ChainHeadVerifyError::InvalidSignature(ChainHeadVerifySource::Length(e)))?;
     let signature = Signature::from_bytes(&sig_array);
 
     verifying_key
         .verify(payload.as_bytes(), &signature)
-        .map_err(|_| ChainHeadVerifyError::VerificationFailed)?;
+        .map_err(|e| ChainHeadVerifyError::VerificationFailed(ChainHeadVerifySource::Dalek(e)))?;
     Ok(())
 }
 
@@ -667,23 +710,25 @@ fn verify_payload_bytes(
     public_key_hex: &str,
 ) -> Result<(), SignatureVerifyError> {
     let pub_bytes =
-        hex::decode(public_key_hex).map_err(|_| SignatureVerifyError::InvalidPublicKeyEncoding)?;
+        hex::decode(public_key_hex).map_err(SignatureVerifyError::InvalidPublicKeyEncoding)?;
     let pub_array: [u8; 32] = pub_bytes
+        .as_slice()
         .try_into()
-        .map_err(|_| SignatureVerifyError::InvalidPublicKeyLength)?;
+        .map_err(SignatureVerifyError::InvalidPublicKeyLength)?;
     let verifying_key = VerifyingKey::from_bytes(&pub_array)
-        .map_err(|_| SignatureVerifyError::InvalidPublicKeyMaterial)?;
+        .map_err(SignatureVerifyError::InvalidPublicKeyMaterial)?;
 
     let sig_bytes =
-        hex::decode(signature_hex).map_err(|_| SignatureVerifyError::InvalidSignatureEncoding)?;
+        hex::decode(signature_hex).map_err(SignatureVerifyError::InvalidSignatureEncoding)?;
     let sig_array: [u8; 64] = sig_bytes
+        .as_slice()
         .try_into()
-        .map_err(|_| SignatureVerifyError::InvalidSignatureLength)?;
+        .map_err(SignatureVerifyError::InvalidSignatureLength)?;
     let signature = Signature::from_bytes(&sig_array);
 
     verifying_key
         .verify(payload, &signature)
-        .map_err(|_| SignatureVerifyError::SignatureMismatch)?;
+        .map_err(SignatureVerifyError::SignatureMismatch)?;
     Ok(())
 }
 
@@ -758,60 +803,69 @@ pub fn classify_entry_signature(
                 SignatureTrustStatus::ValidUnknownKey
             }
         }
-        _ => SignatureTrustStatus::Unsigned,
+        (Some(_), None) => SignatureTrustStatus::Unsigned,
+        (None, Some(_)) => SignatureTrustStatus::Unsigned,
+        (None, None) => SignatureTrustStatus::Unsigned,
     }
 }
 
 /// Validate a trusted public key hex string (64 hex chars). Returns lowercase.
-pub fn normalize_trusted_public_key(raw: &str) -> Result<String, String> {
+pub fn normalize_trusted_public_key(raw: &str) -> Result<String, TrustedKeyError> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
-        return Err("trusted public key is empty".to_string());
+        return Err(TrustedKeyError::Empty);
     }
     if trimmed.contains("BEGIN") || trimmed.contains('-') {
-        return Err("trusted public key must be hex, not PEM".to_string());
+        return Err(TrustedKeyError::Pem);
     }
     let lower = trimmed.to_ascii_lowercase();
     if lower.len() != 64 {
-        return Err(format!(
-            "trusted public key must be 64 hex chars, got {}",
-            lower.len()
-        ));
+        return Err(TrustedKeyError::Length(lower.len()));
     }
     if !lower.chars().all(|c| c.is_ascii_hexdigit()) {
-        return Err("trusted public key contains non-hex characters".to_string());
+        return Err(TrustedKeyError::NonHex);
     }
     Ok(lower)
 }
 
-#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
 pub enum SignatureVerifyError {
     #[error("public key is not valid hex")]
-    InvalidPublicKeyEncoding,
+    InvalidPublicKeyEncoding(#[source] hex::FromHexError),
     #[error("public key has unexpected length")]
-    InvalidPublicKeyLength,
+    InvalidPublicKeyLength(#[source] std::array::TryFromSliceError),
     #[error("public key bytes are not a valid Ed25519 verifying key")]
-    InvalidPublicKeyMaterial,
+    InvalidPublicKeyMaterial(#[source] SignatureError),
     #[error("signature is not valid hex")]
-    InvalidSignatureEncoding,
+    InvalidSignatureEncoding(#[source] hex::FromHexError),
     #[error("signature has unexpected length")]
-    InvalidSignatureLength,
+    InvalidSignatureLength(#[source] std::array::TryFromSliceError),
     #[error("signature does not verify against stored payload")]
-    SignatureMismatch,
+    SignatureMismatch(#[source] SignatureError),
     #[error("free-text field contains forbidden control characters")]
     ForbiddenControlChar,
     #[error("entity_normalized is inconsistent with entity")]
     EntityNormalizedMismatch,
 }
 
-#[derive(Debug, Clone, PartialEq, thiserror::Error)]
+#[derive(Debug, thiserror::Error)]
+enum ChainHeadVerifySource {
+    #[error(transparent)]
+    Hex(hex::FromHexError),
+    #[error(transparent)]
+    Length(std::array::TryFromSliceError),
+    #[error(transparent)]
+    Dalek(SignatureError),
+}
+
+#[derive(Debug, thiserror::Error)]
 enum ChainHeadVerifyError {
     #[error("chain head public key is not valid")]
-    InvalidPublicKey,
+    InvalidPublicKey(#[source] ChainHeadVerifySource),
     #[error("chain head signature is not valid")]
-    InvalidSignature,
+    InvalidSignature(#[source] ChainHeadVerifySource),
     #[error("chain head signature does not verify")]
-    VerificationFailed,
+    VerificationFailed(#[source] ChainHeadVerifySource),
 }
 
 #[cfg(test)]
@@ -853,6 +907,39 @@ mod tests {
             related_tickets: "TICKET-1".to_string(),
             origin: "LOCAL".to_string(),
             entity_normalized: "src/main.rs".to_string(),
+        }
+    }
+
+    fn entry_from_v2_pairs(
+        input: &LedgerSignInput,
+        signature: Option<String>,
+        public_key: Option<String>,
+    ) -> LedgerEntry {
+        LedgerEntry {
+            id: 1,
+            tx_id: input.tx_id.clone(),
+            category: Category::Feature,
+            entry_type: EntryType::Implementation,
+            entity: input.entity.clone(),
+            entity_normalized: input.entity_normalized.clone(),
+            change_type: ChangeType::Modify,
+            summary: input.summary.clone(),
+            reason: input.reason.clone(),
+            is_breaking: false,
+            committed_at: input.committed_at.clone(),
+            verification_status: None,
+            verification_basis: None,
+            outcome_notes: None,
+            origin: input.origin.clone(),
+            trace_id: None,
+            signature,
+            public_key,
+            risk: Some(input.risk.clone()),
+            related_tickets: Some(input.related_tickets.clone()),
+            author: input.author.clone(),
+            observed: None,
+            prev_hash: None,
+            sig_version: input.sig_version,
         }
     }
 
@@ -1359,6 +1446,78 @@ mod tests {
             sig_version: 2,
         };
         let err = compute_entry_hash_for_entry(&entry).unwrap_err();
-        assert_eq!(err, SignatureVerifyError::ForbiddenControlChar);
+        assert!(matches!(err, SignatureVerifyError::ForbiddenControlChar));
+    }
+
+    #[test]
+    fn classify_incomplete_pairs_are_unsigned() {
+        let input = sample_v2_input();
+        let sig = Some("ab".repeat(32));
+        let pk = Some("cd".repeat(32));
+
+        let sig_only = entry_from_v2_pairs(&input, sig.clone(), None);
+        assert_eq!(
+            classify_entry_signature(&sig_only, &[], 1),
+            SignatureTrustStatus::Unsigned
+        );
+
+        let pk_only = entry_from_v2_pairs(&input, None, pk);
+        assert_eq!(
+            classify_entry_signature(&pk_only, &[], 1),
+            SignatureTrustStatus::Unsigned
+        );
+
+        let neither = entry_from_v2_pairs(&input, None, None);
+        assert_eq!(
+            classify_entry_signature(&neither, &[], 1),
+            SignatureTrustStatus::Unsigned
+        );
+    }
+
+    #[test]
+    fn trusted_key_error_display_is_locked() {
+        assert_eq!(
+            normalize_trusted_public_key("").unwrap_err().to_string(),
+            "trusted public key is empty"
+        );
+        assert_eq!(
+            normalize_trusted_public_key("-----BEGIN PUBLIC KEY-----")
+                .unwrap_err()
+                .to_string(),
+            "trusted public key must be hex, not PEM"
+        );
+        assert_eq!(
+            normalize_trusted_public_key("deadbeef")
+                .unwrap_err()
+                .to_string(),
+            "trusted public key must be 64 hex chars, got 8"
+        );
+        let non_hex = format!("g{}", "a".repeat(63));
+        assert_eq!(
+            normalize_trusted_public_key(&non_hex)
+                .unwrap_err()
+                .to_string(),
+            "trusted public key contains non-hex characters"
+        );
+    }
+
+    #[test]
+    fn signature_verify_error_hex_decode_has_source() {
+        let err = verify_payload_bytes(b"payload", "not-hex", "zz").unwrap_err();
+        assert!(matches!(
+            err,
+            SignatureVerifyError::InvalidPublicKeyEncoding(_)
+        ));
+        assert!(std::error::Error::source(&err).is_some());
+    }
+
+    #[test]
+    fn crypto_error_hex_decode_has_source() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("private.key");
+        fs::write(&path, "zzzz").unwrap();
+        let err = read_private_key(&path).unwrap_err();
+        assert!(matches!(err, CryptoError::Hex(_)));
+        assert!(std::error::Error::source(&err).is_some());
     }
 }

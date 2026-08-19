@@ -15,6 +15,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Ledger crypto errors + staged commit (0195):** key I/O and sign
+  helpers return `CryptoError` (`thiserror` + miette `Diagnostic`) with
+  `#[source]`. `normalize_trusted_public_key` returns `TrustedKeyError`.
+  `SignatureVerifyError` / `ChainHeadVerifyError` keep their Display
+  text and attach hex / slice / dalek sources. `classify_entry_signature`
+  names every option-pair arm; mixed pairs stay `Unsigned`.
+  `commit_change` is validate → sign → persist; rollback and reconcile
+  share a parameterized sign-or-warn helper. Ed25519 / chain-hash bytes,
+  `CURRENT_LEDGER_SIG_VERSION`, and `SignatureTrustStatus::as_str` are
+  unchanged. `get_connection` stays pub.
+
 - **Storage / impact encapsulation (0194):** `StorageManager.cozo` is
   reached through `cozo()` / `cozo_mut()` / `set_cozo()`. Impact packet
   schema goldens live in `packet/tests.rs`. Enrichment assignment sites
