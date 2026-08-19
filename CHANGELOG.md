@@ -10,8 +10,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **Transitive `h2` 0.4.15 → 0.4.16 (RUSTSEC-2026-0258):** lockfile-only
   bump so required `audit`/`deny` checks pass. Unbounded empty DATA
-  frames in the HTTP/2 stack used by hyper/axum. Not an 0194 behavior
-  change.
+  frames in the HTTP/2 stack used by hyper/axum. Not an 0193 or 0194
+  behavior change.
 
 ### Changed
 
@@ -20,6 +20,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   schema goldens live in `packet/tests.rs`. Enrichment assignment sites
   use named `set_*` methods. Fields stay pub. `get_connection` stays
   pub. Impact JSON `schemaVersion` remains `"v1"`.
+
+- **Call graph / semantic-index module split (0193):**
+  `index/call_graph` is a types/builder/persist barrel.
+  `commands/index/semantic` stages parse/embed/persist with
+  typed errors and a ProgressStyle `default_bar()` fallback.
+  No persist-contract, UNIQUE, or `--semantic --json` change.
 
 - **Ask / change-context / search command-body split (0192):**
   `execute_ask` takes named `ExecuteAskOpts`; gather + legacy complete

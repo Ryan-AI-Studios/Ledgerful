@@ -1,7 +1,7 @@
 //! Shared call-graph callee resolution (0089 Parts A+B, 0092 Part 1).
 //!
 //! One pure decision function used by both the full-index path
-//! (`call_graph.rs`) and the incremental path (`incremental.rs`) so the two
+//! (`call_graph/builder.rs`) and the incremental path (`incremental.rs`) so the two
 //! cannot diverge (DoD-6).
 //!
 //! Resolution is a **unique-local-candidate heuristic**, not a name-binding
@@ -69,7 +69,7 @@ pub fn bare_segment(normalized: &str) -> &str {
 
 /// Build a [`ResolveCandidate`] from a DB row / index row.
 ///
-/// Shared by full-index (`call_graph.rs`) and incremental (`incremental.rs`) so
+/// Shared by full-index (`call_graph/builder.rs`) and incremental (`incremental.rs`) so
 /// candidate construction cannot diverge between the two paths.
 pub fn resolve_candidate_from_row(
     symbol_id: i64,
@@ -659,7 +659,7 @@ mod tests {
             (8, 50, "enrich", "B.enrich", "Method"),
         ];
 
-        // Full path: rows → ResolveCandidate → maps (call_graph.rs).
+        // Full path: rows → ResolveCandidate → maps (call_graph/builder.rs).
         let full_candidates: Vec<ResolveCandidate> = rows
             .iter()
             .map(|(id, fid, name, qn, kind)| {
