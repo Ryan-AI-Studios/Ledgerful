@@ -200,7 +200,7 @@ scripts/bump-manifests.sh \
 
 - Identifier: `Ledgerful.Ledgerful` (accepted 2026-07-30; live on winget)
 - Install: `winget install Ledgerful.Ledgerful`
-- Note: community package version can lag GitHub engine releases (v0.2.4 area)
+- Note: community package version can lag GitHub engine releases (community index last merged 0.2.7; later version PRs may still be open)
 - Action: `vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e` (tag v2, SHA-pinned)
 - Installer regex: portable `ledgerful-x86_64-pc-windows-msvc.zip`
 - Secret: `WINGET_TOKEN` (PAT that can open PRs against `microsoft/winget-pkgs` via fork)

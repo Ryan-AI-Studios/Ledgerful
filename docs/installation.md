@@ -60,7 +60,7 @@ Package accepted on winget (2026-07-30):
 winget install Ledgerful.Ledgerful
 ```
 
-Community package metadata may lag engine releases by hours to days (live engine is in the v0.2.4 area). Prefer the one-line installer, Scoop, Homebrew, or `cargo binstall` when you need the absolute latest release immediately. Architecture and secrets: [package-distribution.md](package-distribution.md).
+Community package metadata may lag engine releases by hours to days (community index last merged **0.2.7**; later version PRs may still be open). Prefer the one-line installer, Scoop, Homebrew, or `cargo binstall` when you need the absolute latest release immediately. Architecture and secrets: [package-distribution.md](package-distribution.md).
 
 ### macOS Gatekeeper / quarantine (interim)
 
