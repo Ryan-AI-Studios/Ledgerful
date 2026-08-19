@@ -15,6 +15,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **LLM client module split + named Rust chunker keep/skip (0196):**
+  `local_model/client.rs` is now a barrel (`complete.rs` cascade + tests out).
+  The Rust semantic chunker uses exhaustive `is_standalone_chunk_kind`
+  (Method stays skip). Timeout numbers, ureq, and completion error
+  strings are unchanged.
+
 - **Ledger crypto errors + staged commit (0195):** key I/O and sign
   helpers return `CryptoError` (`thiserror` + miette `Diagnostic`) with
   `#[source]`. `normalize_trusted_public_key` returns `TrustedKeyError`.
