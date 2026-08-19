@@ -443,8 +443,9 @@ mod tests {
         // Old inner
         let mut old_inner = sample_inner("old", "scan", "walk", 10);
         old_inner.ts_utc = "2020-01-01T00:00:00.000Z".to_string();
-        // Recent outer
-        let recent = sample_outer("new", "scan", 40);
+        // Recent outer must stay inside the 30-day prune window vs SQLite `now`.
+        let mut recent = sample_outer("new", "scan", 40);
+        recent.ts_utc = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
 
         insert_timing_batch(&mut conn, &[old_outer, old_inner, recent]).unwrap();
 

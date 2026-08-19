@@ -147,8 +147,7 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         let config = load_config(&layout)?;
         let storage = StorageManager::open_read_only(&layout)?;
         let cozo = storage
-            .cozo
-            .as_ref()
+            .cozo()
             .ok_or_else(|| miette::miette!("CozoDB storage not initialized"))?;
 
         let semantic_engine =

@@ -582,7 +582,7 @@ mod tests {
         get_migrations().to_latest(&mut conn).unwrap();
         let mut storage = StorageManager::init_from_conn(conn);
         let cozo = CozoStorage::new(&std::path::PathBuf::from("")).unwrap();
-        storage.cozo = Some(cozo);
+        storage.set_cozo(Some(cozo));
         storage
     }
 

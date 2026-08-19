@@ -45,17 +45,6 @@ fn collect_changed_files(layout: &Layout) -> Result<HashSet<String>> {
     Ok(changed)
 }
 
-/// Open CozoDB storage in read-only mode and return the Cozo engine.
-///
-/// Uses the caller's resolved [`Layout`] so linked worktrees open the shared
-/// main-tree state_dir (never `Layout::new(work_root)` alone).
-fn open_cozo(layout: &Layout) -> Result<crate::state::storage_cozo::CozoStorage> {
-    let storage = StorageManager::open_read_only(layout)?;
-    storage
-        .cozo
-        .ok_or_else(|| miette::miette!("CozoDB not available"))
-}
-
 /// Truncate a string to `max_len` characters, appending "…" if it was cut.
 fn truncate(s: &str, max_len: usize) -> String {
     if s.len() <= max_len {
@@ -117,7 +106,10 @@ fn collect_detected_routes(conn: &rusqlite::Connection) -> Result<Vec<(String, S
 
 fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layout) -> Result<()> {
     let changed_files = collect_changed_files(layout)?;
-    let cozo = open_cozo(layout)?;
+    let storage = StorageManager::open_read_only(layout)?;
+    let cozo = storage
+        .cozo()
+        .ok_or_else(|| miette::miette!("CozoDB not available"))?;
 
     // Query all policy nodes and determine impact in-memory
     let query = "?[id, label, raw, effect, source_file] := *node{id, label, category: 'policy', metadata: meta}, \
@@ -250,8 +242,7 @@ fn execute_boundaries(json: bool, layout: &crate::state::layout::Layout) -> Resu
     // template bootstrap offer).
     let storage = StorageManager::open_read_only(layout)?;
     let cozo = storage
-        .cozo
-        .as_ref()
+        .cozo()
         .ok_or_else(|| miette::miette!("CozoDB not available"))?;
 
     // Query 1: policy + principal/action/resource authorisation nodes

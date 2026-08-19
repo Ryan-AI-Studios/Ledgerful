@@ -456,7 +456,7 @@ fn handle_dead_code(params: Value) -> Value {
         Ok(s) => s,
         Err(e) => return error_response(format!("Failed to open storage: {}", e)),
     };
-    let cozo = storage.cozo.as_ref();
+    let cozo = storage.cozo();
     let scorer = crate::impact::analysis::dead_code::ConfidenceScorer::new(
         cozo,
         &storage,

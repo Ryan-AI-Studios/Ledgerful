@@ -68,7 +68,7 @@ pub(crate) fn gather_semantic_chunks(
 ) -> SemanticGather {
     use crate::util::path::resolve_under_work_root;
 
-    let Some(cozo) = &storage.cozo else {
+    let Some(cozo) = storage.cozo() else {
         return SemanticGather::Skipped {
             reason: "CozoDB storage not available".to_string(),
         };

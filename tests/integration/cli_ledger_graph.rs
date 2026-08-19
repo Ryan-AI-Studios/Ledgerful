@@ -160,7 +160,7 @@ fn ledger_graph_rich_returns_populated_graph() {
     ).unwrap();
 
     // 3. CozoDB
-    let cozo = storage.cozo.as_ref().unwrap();
+    let cozo = storage.cozo().unwrap();
 
     // project_symbol columns: id, file_path, qualified_name, symbol_name, symbol_kind, is_public, line_start, line_end
     cozo.run_script(
@@ -370,7 +370,7 @@ fn test_ledger_graph_max_nodes_cap_is_deterministic() {
         rusqlite::params![tx_id, "src/api.rs", "src/api.rs", "dummy_fn", "Function", "MODIFIED"],
     ).unwrap();
 
-    let cozo = storage.cozo.as_ref().unwrap();
+    let cozo = storage.cozo().unwrap();
 
     cozo.run_script(
         "?[id, file_path, qualified_name, symbol_name, symbol_kind, is_public, line_start, line_end] <- [ \

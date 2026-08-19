@@ -33,7 +33,7 @@ impl EnrichmentProvider for HotspotProvider {
             },
         ) {
             Ok(hotspots) => {
-                packet.hotspots = hotspots;
+                packet.set_hotspots(hotspots);
             }
             Err(e) => {
                 warn!("Hotspot analysis failed: {e}");

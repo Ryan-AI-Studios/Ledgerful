@@ -28,7 +28,7 @@ pub(crate) fn collect_index_findings(
     let mut total_edges = 0;
 
     // --- Graph Probe ---
-    if let Some(cozo) = &storage.cozo {
+    if let Some(cozo) = storage.cozo() {
         match cozo.run_script("?[count(n)] := *node{id: n}") {
             Ok(res) => {
                 let node_count = res

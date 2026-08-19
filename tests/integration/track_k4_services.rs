@@ -92,7 +92,7 @@ fn test_monorepo_service_impact() {
         root.join(".ledgerful/state/ledger.db").as_path(),
     )
     .unwrap();
-    if let Some(cozo) = storage.cozo.as_ref() {
+    if let Some(cozo) = storage.cozo() {
         println!(
             "service_roots: {:?}",
             cozo.run_script("?[name, dir_path] := *service_roots{name, dir_path}")

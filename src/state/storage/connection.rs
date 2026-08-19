@@ -16,7 +16,7 @@ pub struct StoredSymbol {
 
 pub struct StorageManager {
     pub(crate) conn: Connection,
-    pub cozo: Option<crate::state::storage_cozo::CozoStorage>,
+    cozo: Option<crate::state::storage_cozo::CozoStorage>,
     pub(crate) is_read_only: bool,
     root_path: Utf8PathBuf,
 }
@@ -107,6 +107,18 @@ impl StorageManager {
 
     pub fn get_connection_mut(&mut self) -> &mut Connection {
         &mut self.conn
+    }
+
+    pub fn cozo(&self) -> Option<&crate::state::storage_cozo::CozoStorage> {
+        self.cozo.as_ref()
+    }
+
+    pub fn cozo_mut(&mut self) -> Option<&mut crate::state::storage_cozo::CozoStorage> {
+        self.cozo.as_mut()
+    }
+
+    pub fn set_cozo(&mut self, cozo: Option<crate::state::storage_cozo::CozoStorage>) {
+        self.cozo = cozo;
     }
 
     /// Explicitly shutdown the storage manager, releasing all file locks.

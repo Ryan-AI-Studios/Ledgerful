@@ -10,10 +10,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **Transitive `h2` 0.4.15 → 0.4.16 (RUSTSEC-2026-0258):** lockfile-only
   bump so required `audit`/`deny` checks pass. Unbounded empty DATA
-  frames in the HTTP/2 stack used by hyper/axum. Not an 0193 behavior
-  change.
+  frames in the HTTP/2 stack used by hyper/axum. Not an 0193 or 0194
+  behavior change.
 
 ### Changed
+
+- **Storage / impact encapsulation (0194):** `StorageManager.cozo` is
+  reached through `cozo()` / `cozo_mut()` / `set_cozo()`. Impact packet
+  schema goldens live in `packet/tests.rs`. Enrichment assignment sites
+  use named `set_*` methods. Fields stay pub. `get_connection` stays
+  pub. Impact JSON `schemaVersion` remains `"v1"`.
 
 - **Call graph / semantic-index module split (0193):**
   `index/call_graph` is a types/builder/persist barrel.

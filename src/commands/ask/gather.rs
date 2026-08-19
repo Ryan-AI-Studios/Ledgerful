@@ -203,7 +203,7 @@ pub(crate) fn gather_semantic_and_kg(
     // forever on empty repos). State-driven warnings replace it.
     if semantic
         && !auto_index
-        && let Some(ref cozo) = storage.cozo
+        && let Some(cozo) = storage.cozo()
         && let Ok(semantic_engine) =
             crate::semantic::SemanticDiscovery::new(config.local_model.clone(), cozo)
         && let Ok(readiness) = semantic_engine.check_readiness()
@@ -276,7 +276,7 @@ pub(crate) fn gather_semantic_and_kg(
         if gathered.is_global
             && relevant_chunks.is_empty()
             && !no_kg_fallback
-            && let Some(cozo) = &storage.cozo
+            && let Some(cozo) = storage.cozo()
             && let Some(kg_bm25_context) = fetch_kg_bm25(cozo, &gathered.query_string, limit)
         {
             let note = match semantic_gather_kind {
@@ -301,7 +301,7 @@ pub(crate) fn gather_semantic_and_kg(
         // CR7: Apply KG neighborhood to pruner fallback chunks as well.
         if gathered.is_global
             && !relevant_chunks.is_empty()
-            && let Some(cozo) = &storage.cozo
+            && let Some(cozo) = storage.cozo()
         {
             let syms = relevant_chunks.iter().filter_map(|c| {
                 let path = std::path::Path::new(&c.source);

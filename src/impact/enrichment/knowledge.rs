@@ -115,7 +115,7 @@ impl EnrichmentProvider for KnowledgeProvider {
             })
             .collect();
 
-        packet.relevant_decisions = decisions;
+        packet.set_relevant_decisions(decisions);
 
         Ok(())
     }

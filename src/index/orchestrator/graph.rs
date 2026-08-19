@@ -50,7 +50,7 @@ pub fn run_graph_analysis(
     Option<crate::scip::ScipIndexJson>,
 )> {
     let scip_requested = auto_scip || scip_path.is_some();
-    if indexer.storage.cozo.is_none() {
+    if indexer.cozo().is_none() {
         info!("CozoDB not available, skipping graph analysis (KG/centrality)");
         // SCIP edges live in SQLite only. When main mode deferred SCIP to this
         // path under --analyze-graph, still apply edges against the native floor
@@ -86,7 +86,7 @@ pub fn run_graph_analysis(
     // Light pre-flight: if the CozoDB store is reachable but empty, we still
     // want to run the pipeline because `observability diff` needs the
     // OpenSLO nodes loaded from the `observability/` directory.
-    if let Some(cozo) = indexer.storage.cozo.as_ref() {
+    if let Some(cozo) = indexer.cozo() {
         let _ = cozo.node_count();
     }
 
@@ -149,7 +149,7 @@ pub fn build_kg_native(
     enable_semantic: bool,
     fast: bool,
 ) -> Result<()> {
-    let Some(cozo) = &indexer.storage.cozo else {
+    let Some(cozo) = indexer.cozo() else {
         info!("CozoDB not available, skipping native KG build");
         return Ok(());
     };
@@ -251,7 +251,7 @@ mod tests {
         let layout = Layout::new(&root);
         let storage = in_memory_storage();
         assert!(
-            storage.cozo.is_none(),
+            storage.cozo().is_none(),
             "in_memory_storage must have cozo=None for this branch"
         );
         let config = Config::default();

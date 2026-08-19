@@ -178,7 +178,7 @@ fn new_indexer_for_obs_test(
 
 fn build_obs_graph(obs: ObsIndexer, config: &Config) -> StorageManager {
     let storage = obs.indexer.storage();
-    let cozo = storage.cozo.as_ref().expect("CozoDB should be available");
+    let cozo = storage.cozo().expect("CozoDB should be available");
     build_native_graph(storage, cozo, "full", config).unwrap();
     obs.indexer.into_storage()
 }
@@ -187,7 +187,7 @@ fn build_obs_graph(obs: ObsIndexer, config: &Config) -> StorageManager {
 fn test_observability_and_cedar_graph_wiring() {
     let (storage, _root, _config) = clone_storage_from_shared();
 
-    let cozo = storage.cozo.as_ref().expect("CozoDB should be available");
+    let cozo = storage.cozo().expect("CozoDB should be available");
 
     // 5. Query and verify OpenSLO nodes and edges
     // Verify Slo node exists
@@ -389,7 +389,7 @@ spec:
         root.clone(),
     );
     let storage = build_obs_graph(obs, &config);
-    let cozo = storage.cozo.as_ref().expect("CozoDB should be available");
+    let cozo = storage.cozo().expect("CozoDB should be available");
 
     // The SLO node metadata must include source_file so observability diff can match it
     let res = cozo
@@ -471,7 +471,7 @@ permit(
     }
 
     let storage = build_obs_graph(obs, &config);
-    let cozo = storage.cozo.as_ref().expect("CozoDB should be available");
+    let cozo = storage.cozo().expect("CozoDB should be available");
 
     // ADR node should exist with label containing "security"
     let adr_res = cozo
@@ -559,7 +559,7 @@ permit(
     }
 
     let storage = build_obs_graph(obs, &config);
-    let cozo = storage.cozo.as_ref().expect("CozoDB should be available");
+    let cozo = storage.cozo().expect("CozoDB should be available");
 
     // Policy â†’ endpoint ProtectedBy edge must exist
     let protected_res = cozo

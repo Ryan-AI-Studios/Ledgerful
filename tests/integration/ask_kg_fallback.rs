@@ -34,10 +34,7 @@ fn test_ask_kg_fallback_logic() {
     {
         let storage_path = layout.state_subdir().join("ledger.db");
         let storage = StorageManager::init(storage_path.as_std_path()).unwrap();
-        let cozo = storage
-            .cozo
-            .as_ref()
-            .expect("Cozo storage should be available");
+        let cozo = storage.cozo().expect("Cozo storage should be available");
 
         // Create the node table and insert a dummy node
         // In a real scenario, this is done by 'index'
@@ -98,10 +95,7 @@ fn test_ask_no_kg_fallback_suppression() {
     {
         let storage_path = layout.state_subdir().join("ledger.db");
         let storage = StorageManager::init(storage_path.as_std_path()).unwrap();
-        let cozo = storage
-            .cozo
-            .as_ref()
-            .expect("Cozo storage should be available");
+        let cozo = storage.cozo().expect("Cozo storage should be available");
         cozo.run_script("
             ?[id, label, category, risk_score, metadata] <- [['test_id', 'SpecialNodeLabel', 'TEST_CATEGORY', 0.0, {}]]
             :insert node {id, label, category, risk_score, metadata}
