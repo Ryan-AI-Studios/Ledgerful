@@ -3,9 +3,9 @@
 # Untrusted PR code only runs here (scan). Workflow B posts the comment/check-run
 # and never checks out or executes PR code.
 #
-# Pin: Ryan-AI-Studios/ledgerful-action@76e3ee8 (0086 Action PR #7 — null-tolerant
-# validator, size guards, schema v1|v2). Engine binary: v0.2.1 + published Linux
-# archive checksum (schema v2 emission). Never reintroduce inline `./action`. DoD-8 deploy proof (0086) after pin merge.
+# Pin: Ryan-AI-Studios/ledgerful-action@bacf400797142884c46e97c6ce755b7ef7433a53
+# (0198 / 0086 consumer pin after Action PR #11 merge SHA). Engine binary:
+# v0.2.10 + published Linux gnu sidecar. Never reintroduce inline `./action`.
 
 name: Ledgerful PR Scan
 
@@ -27,11 +27,11 @@ jobs:
       - name: Run Ledgerful PR risk scan
         id: ledgerful-scan
         # Pin ledgerful-action to a full commit SHA (no mutable tag yet).
-        uses: Ryan-AI-Studios/ledgerful-action@76e3ee8ffaa7f52c5c7bfa23d415f3a97bd8ec8f
+        uses: Ryan-AI-Studios/ledgerful-action@bacf400797142884c46e97c6ce755b7ef7433a53
         with:
-          ledgerful-version: v0.2.1
-          # ledgerful-x86_64-unknown-linux-gnu.tar.gz from v0.2.1 published .sha256 sidecar
-          ledgerful-checksum: db8a26f4ffa44e46dd1094b8c028caf0966782c43c7d1e504acb55ca5238deda
+          ledgerful-version: v0.2.10
+          # ledgerful-x86_64-unknown-linux-gnu.tar.gz from v0.2.10 published .sha256 sidecar
+          ledgerful-checksum: 817debe3fa56db93aeb1273b1648a2b6370a50f3c69150caf8cdc423d9c1930d
         env:
           LEDGERFUL_NO_NETWORK: "1"
 
