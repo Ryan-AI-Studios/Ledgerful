@@ -14,6 +14,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   checksum. Workflow B uses the same action SHA, report-only (no version /
   checksum). No Cargo bump.
 
+- **Packaging templates + winget pin language (0199):** Homebrew
+  formula and Scoop manifest templates pin published **v0.2.10** with
+  sidecar sha256 hashes. Installation and package-distribution
+  present-tense language floors winget at community-index **0.2.10**
+  matching GitHub Latest (PR #421115). Leftover open 0.2.8/#415913 and
+  0.2.9/#416853 PRs are skipped/WDSI, not current lag of Latest. 0164
+  dual-glob install path unchanged. No Cargo bump.
+
 ## [0.2.10] - 2026-08-20
 
 ### Security

@@ -60,7 +60,7 @@ Package accepted on winget (2026-07-30):
 winget install Ledgerful.Ledgerful
 ```
 
-Community package metadata may lag engine releases by hours to days (community index last merged **0.2.7**; later version PRs may still be open). Prefer the one-line installer, Scoop, Homebrew, or `cargo binstall` when you need the absolute latest release immediately. Architecture and secrets: [package-distribution.md](package-distribution.md).
+Community index **includes 0.2.10**, matching GitHub Latest (`winget search Ledgerful` → 0.2.10; PR [#421115](https://github.com/microsoft/winget-pkgs/pull/421115) merged, Publish-Pipeline-Succeeded). Leftover open PRs [#415913](https://github.com/microsoft/winget-pkgs/pull/415913) (0.2.8) and [#416853](https://github.com/microsoft/winget-pkgs/pull/416853) (0.2.9) are skipped/WDSI and are not current lag of Latest. Architecture and secrets: [package-distribution.md](package-distribution.md).
 
 ### macOS Gatekeeper / quarantine (interim)
 
