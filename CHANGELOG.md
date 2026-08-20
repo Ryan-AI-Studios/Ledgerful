@@ -6,6 +6,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Engine dogfood Action+engine pin (0198):** Workflow A pins
+  `ledgerful-action@bacf400797142884c46e97c6ce755b7ef7433a53` (Action PR #11
+  merge SHA) with engine **v0.2.10** and the published Linux gnu sidecar
+  checksum. Workflow B uses the same action SHA, report-only (no version /
+  checksum). No Cargo bump.
+
 ## [0.2.10] - 2026-08-20
 
 ### Security
