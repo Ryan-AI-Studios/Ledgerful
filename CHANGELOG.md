@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-08-20
+
 ### Changed
 
 - **Engine dogfood Action+engine pin (0198):** Workflow A pins
