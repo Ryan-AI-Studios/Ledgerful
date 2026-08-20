@@ -15,6 +15,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Packaging templates + install pin language (0188):** Homebrew
+  formula and Scoop manifest templates pin published **v0.2.9** with
+  sidecar sha256 hashes. Installation and package-distribution
+  present-tense language no longer floors the live engine at v0.2.4;
+  winget community-index lag stays honest (last merged 0.2.7; 0.2.9
+  is not claimed live). 0164 dual-glob install path unchanged. No
+  Cargo bump.
+
 - **Ask routing module split + compile-once regex (0197):**
   `commands/ask_routing.rs` is now a barrel (`parse.rs` + `answers.rs` + tests out).
   Remaining per-call parse regexes compile once via `OnceLock`. Ask early-exit
