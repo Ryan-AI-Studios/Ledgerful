@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.10] - 2026-08-20
+
 ### Security
 
 - **Transitive `h2` 0.4.15 → 0.4.16 (RUSTSEC-2026-0258):** lockfile-only
