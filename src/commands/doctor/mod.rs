@@ -25,7 +25,7 @@ pub use remediation::{
 };
 
 use crate::output::human::print_doctor_report;
-use crate::platform::{check_tools, classify_path, current_platform, detect_shell};
+use crate::platform::{PathKind, check_tools, classify_path, current_platform, detect_shell};
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use chrono::Utc;
@@ -100,7 +100,8 @@ pub fn execute_doctor(
 
     let platform_str = format!("{:?}", platform);
     let shell_str = format!("{:?}", shell);
-    let path_kind_str = format!("{:?}", classify_path(&current_dir));
+    let path_kind = classify_path(&current_dir);
+    let path_kind_str = format!("{:?}", path_kind);
     let work_root_str = layout.root.to_string();
     let state_dir_str = layout.state_dir.to_string();
     let path_display = current_dir.to_string_lossy().into_owned();
@@ -124,7 +125,7 @@ pub fn execute_doctor(
         path_kind: &path_kind_str,
         work_root: &work_root_str,
         state_dir: &state_dir_str,
-        is_wsl_mounted: false,
+        is_wsl_mounted: path_kind == PathKind::WslMounted,
         embedding_model_status: "checking...".to_string(),
         embedding_model_failed: false,
         completion_model_status: "checking...".to_string(),

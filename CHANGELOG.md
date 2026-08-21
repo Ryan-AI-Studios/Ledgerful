@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Doctor `Environment: Wsl` inside Docker Desktop containers (0204):**
+  `ledgerful doctor` no longer labels a Linux container as `Wsl` when the
+  kernel string is `*-microsoft-standard-WSL2`. Container markers
+  (`/.dockerenv`, `/run/.containerenv`, named cgroup) make
+  `environment.platform` / human `Environment:` **Linux**. A real WSL
+  distro (no container markers) stays **Wsl**. No new OS enum, JSON
+  field, exhibit recapture, or crate.
+
 - **Security impact `--changed` CleanDiff (0208):** Count indexed Cedar
   policy nodes before the git-status filter. A clean tree with indexed
   policies now reports CleanDiff (`0 of N policies match changed files`)

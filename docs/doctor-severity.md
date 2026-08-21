@@ -68,6 +68,12 @@ Pure stdout schema v1 (`schemaVersion` is integer `1`):
 }
 ```
 
+`environment.platform` is Debug of `PlatformType` (`Windows` / `Linux` /
+`Wsl` / `Unknown`), not serde lowercase. `Linux` includes Linux containers
+(Docker/Podman guests that inherit a Docker Desktop `*-microsoft-standard-WSL2`
+kernel string). `Wsl` is WSL distro userspace, not a container sharing that
+kernel.
+
 Exit code `1` iff any `block`; else `0`. Human banners (sccache/SCIP/VRAM) are skipped under `--json`.
 
 ## Human progressive disclosure (0174 3-tier)
