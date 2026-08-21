@@ -14,6 +14,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   max-across-symbols (`MAX(MAX(cognitive, cyclomatic))`), not the first
   `project_symbols` row. Ranking / `query_file_complexities` unchanged.
 
+- **Clippy 1.98 `chunks_exact_to_as_chunks` (CI):** six blob/UTF-16
+  decode sites use `as_chunks` instead of `chunks_exact`. Unrelated to
+  0210 scoring; required for ubuntu `-D warnings` on rustc 1.98.
+
 ### Changed
 
 - **Engine dogfood Action+engine pin (0198):** Workflow A pins
