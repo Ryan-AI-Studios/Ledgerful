@@ -88,8 +88,10 @@ pub fn load_embedding(
                 return Err("Corrupt vector blob: length not a multiple of 4".to_string());
             }
             let floats: Vec<f32> = blob
-                .chunks_exact(4)
-                .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+                .as_chunks::<4>()
+                .0
+                .iter()
+                .map(|chunk| f32::from_le_bytes(*chunk))
                 .collect();
             Ok(Some(floats))
         }
@@ -130,8 +132,10 @@ pub fn load_candidates(
             return Err("Corrupt vector blob: length not a multiple of 4".to_string());
         }
         let floats: Vec<f32> = blob
-            .chunks_exact(4)
-            .map(|chunk| f32::from_le_bytes([chunk[0], chunk[1], chunk[2], chunk[3]]))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .map(|chunk| f32::from_le_bytes(*chunk))
             .collect();
         candidates.push((entity_id, floats));
     }

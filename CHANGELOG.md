@@ -6,6 +6,18 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Hotspots explain complexity (0210):** Metrics `Complexity` now copies
+  the list/JSON scoring complexity when a git-history hotspot row exists
+  (including zero). When no hotspot row exists, complexity is
+  max-across-symbols (`MAX(MAX(cognitive, cyclomatic))`), not the first
+  `project_symbols` row. Ranking / `query_file_complexities` unchanged.
+
+- **Clippy 1.98 `chunks_exact_to_as_chunks` (CI):** six blob/UTF-16
+  decode sites use `as_chunks` instead of `chunks_exact`. Unrelated to
+  0210 scoring; required for ubuntu `-D warnings` on rustc 1.98.
+
 ### Changed
 
 - **Engine dogfood Action+engine pin (0198):** Workflow A pins

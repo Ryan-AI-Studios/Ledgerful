@@ -62,6 +62,14 @@ fn test_hotspots_explain_reports_nonzero_metrics_for_known_hotspot() {
         explanation.frequency > 0.0,
         "expected non-zero change frequency after 4 commits touching the file"
     );
+    let breakdown = explanation
+        .score_breakdown
+        .as_ref()
+        .expect("known hotspot must have a score breakdown");
+    assert_eq!(
+        explanation.complexity, breakdown.complexity as i32,
+        "Metrics complexity must equal score-breakdown numerator when a hotspot row exists"
+    );
 
     // Relative and absolute invocation forms must resolve identically.
     let absolute_entity = root.join("src").join("lib.rs");
