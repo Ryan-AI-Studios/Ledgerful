@@ -1102,11 +1102,11 @@ pub fn compute_hotspot_explanation(
     let normalized_entity = crate::util::path::normalize_relative_path(repo_root, entity)
         .unwrap_or_else(|_| entity.to_string());
 
-    // 1. Complexity factor (project_files-backed). 0183-B3: unique file-identity
-    // resolve so `doctor.rs` finds `doctor/mod.rs` when that is the indexed path.
-    // Frequency / couplings stay on git-history keys (raw normalized_entity).
+    // Indexed complexity is the no-row fallback (0183 unique resolve / Ambiguous
+    // refuse). When a git-history hotspot row exists, copy its scoring complexity
+    // including zero (same matcher as score breakdown).
     let conn = storage.get_connection();
-    let complexity = complexity_for_entity_path(conn, &normalized_entity)?;
+    let indexed = complexity_for_entity_path(conn, &normalized_entity)?;
 
     let config = load_config(&get_layout()?).unwrap_or_default();
     let history_provider = GixHistoryProvider::new(repo);
@@ -1118,11 +1118,13 @@ pub fn compute_hotspot_explanation(
         ..Default::default()
     };
     let hotspots = calculate_hotspots(storage, &history_provider, &query)?;
-    let frequency = hotspots
-        .iter()
-        .find(|h| h.path.to_string_lossy() == normalized_entity)
-        .map(|h| h.frequency)
-        .unwrap_or(0.0);
+    let entity_normalized = normalized_entity.replace('\\', "/");
+    let matching = hotspots.iter().find(|h| {
+        let lossy = h.path.to_string_lossy();
+        lossy == normalized_entity || lossy.replace('\\', "/") == entity_normalized
+    });
+    let frequency = matching.map(|h| h.frequency).unwrap_or(0.0);
+    let complexity = matching.map(|h| h.complexity).unwrap_or(indexed);
 
     let engine = TemporalEngine::new(history_provider, config.temporal.clone());
     let couplings = engine.calculate_couplings().unwrap_or_default();
@@ -1149,8 +1151,9 @@ pub fn compute_hotspot_explanation(
     })
 }
 
-/// Complexity lookup against `project_files` with B1 file-identity resolve
-/// (0183-B3). Ambiguous → refuse. Frequency/couplings stay on the raw path.
+/// File-level complexity from `project_files` with 0183 unique-path resolve
+/// (Ambiguous refuses; NotFound uses the raw path). Nested
+/// `MAX(MAX(cognitive, cyclomatic))` across symbols; NULL/no-symbols → 0.
 fn complexity_for_entity_path(conn: &rusqlite::Connection, normalized_entity: &str) -> Result<i32> {
     let complexity_path =
         match crate::util::path_entity::resolve_indexed_file_path(conn, normalized_entity) {
@@ -1170,7 +1173,7 @@ fn complexity_for_entity_path(conn: &rusqlite::Connection, normalized_entity: &s
         };
     Ok(conn
         .query_row(
-            "SELECT MAX(IFNULL(cognitive_complexity, 0), IFNULL(cyclomatic_complexity, 0)) \
+            "SELECT MAX(MAX(IFNULL(cognitive_complexity, 0), IFNULL(cyclomatic_complexity, 0))) \
              FROM project_symbols ps JOIN project_files pf ON ps.file_id = pf.id WHERE pf.file_path = ?1",
             [&complexity_path],
             |row| row.get(0),
@@ -1634,5 +1637,42 @@ mod tests {
         let msg = format!("{err}");
         assert!(msg.contains("more specific path"), "{msg}");
         assert!(msg.contains("src/a/mod.rs"), "{msg}");
+    }
+
+    /// 0210-C: nested MAX across symbols, not the first `project_symbols` row.
+    /// Seed order is load-bearing: cog/cyc 3 first would win on the old 2-arg
+    /// scalar `MAX` + `query_row`.
+    #[test]
+    fn complexity_two_symbols_uses_max() {
+        use crate::state::migrations::get_migrations;
+        use rusqlite::Connection;
+
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO project_files (id, file_path, last_indexed_at) \
+             VALUES (1, 'src/file.rs', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_symbols \
+             (id, file_id, qualified_name, symbol_name, symbol_kind, is_public, \
+              cognitive_complexity, cyclomatic_complexity, last_indexed_at) \
+             VALUES (1, 1, 'first', 'first', 'Function', 1, 3, 3, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_symbols \
+             (id, file_id, qualified_name, symbol_name, symbol_kind, is_public, \
+              cognitive_complexity, cyclomatic_complexity, last_indexed_at) \
+             VALUES (2, 1, 'second', 'second', 'Function', 1, 12, 8, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+        let resolved = complexity_for_entity_path(&conn, "src/file.rs").unwrap();
+        assert_eq!(resolved, 12);
     }
 }

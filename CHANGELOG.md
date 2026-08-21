@@ -6,6 +6,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Hotspots explain complexity (0210):** Metrics `Complexity` now copies
+  the list/JSON scoring complexity when a git-history hotspot row exists
+  (including zero). When no hotspot row exists, complexity is
+  max-across-symbols (`MAX(MAX(cognitive, cyclomatic))`), not the first
+  `project_symbols` row. Ranking / `query_file_complexities` unchanged.
+
 ### Changed
 
 - **Engine dogfood Action+engine pin (0198):** Workflow A pins
