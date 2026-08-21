@@ -37,7 +37,7 @@ Pure stdout schema v1 (`schemaVersion` is integer `1`):
 {
   "schemaVersion": 1,
   "readyForPublish": true,
-  "summary": { "block": 0, "warn": 2, "info": 5 },
+  "summary": { "block": 0, "warn": 4, "warnAction": 3, "warnOptional": 1, "info": 5 },
   "findings": [
     {
       "code": "sig-pin",
@@ -52,6 +52,18 @@ Pure stdout schema v1 (`schemaVersion` is integer `1`):
       "category": "signing",
       "message": "intent.min_sig_version=1 still accepts legacy v1 signatures. N LOCAL row(s) have sig_version < 2. Upgrade with `ledger re-sign --all`, then set min_sig_version=2 to close the downgrade path.",
       "remediation": "ledgerful ledger re-sign --all --dry-run\nledgerful ledger re-sign --all --yes\nledgerful config set intent.min_sig_version=2\nledgerful verify --signatures"
+    },
+    {
+      "code": "PHANTOM_PROMOTED_WITHOUT_VERIFY",
+      "severity": "warn",
+      "category": "signing",
+      "message": "2 committed row(s) have verification_status=Verified with no bound verification_results row (legacy promote phantoms; forward-only)."
+    },
+    {
+      "code": "completion-unreachable",
+      "severity": "warn",
+      "category": "optional",
+      "message": "Completion model unreachable (connection refused)"
     }
   ],
   "environment": {
@@ -68,6 +80,8 @@ Pure stdout schema v1 (`schemaVersion` is integer `1`):
 }
 ```
 
+The sample omits info findings; shown warns match `summary.warn` / `warnAction` / `warnOptional`.
+
 `environment.platform` is Debug of `PlatformType` (`Windows` / `Linux` /
 `Wsl` / `Unknown`), not serde lowercase. `Linux` includes Linux containers
 (Docker/Podman guests that inherit a Docker Desktop `*-microsoft-standard-WSL2`
@@ -75,6 +89,18 @@ kernel string). `Wsl` is WSL distro userspace, not a container sharing that
 kernel.
 
 Exit code `1` iff any `block`; else `0`. Human banners (sccache/SCIP/VRAM) are skipped under `--json`.
+
+### Header vs JSON `summary` (0209)
+
+| Surface | Meaning |
+|---|---|
+| Human header “warning(s)” | `summary.warnAction` — action-critical warns (what Index Health expands) |
+| JSON `summary.warn` | All `severity=warn` including optional |
+| JSON `summary.warnAction` | Warn when `category != optional` |
+| JSON `summary.warnOptional` | Warn when `category == optional` |
+| Tools `gemini CLI` | PATH CLI (`gemini` / `gemini-cli`); **not** Cloud Ask (`Active Ask Backend: Gemini (Cloud)`) |
+
+Invariant: `summary.warn == summary.warnAction + summary.warnOptional`. Additive keys follow the 0143 `durationMs` pattern; **schemaVersion stays 1**. Sidecar `doctor-results.json` `warn` remains the all-severity total.
 
 ## Human progressive disclosure (0174 3-tier)
 
@@ -98,7 +124,7 @@ Examples:
 
 | Flag / env | Effect |
 |---|---|
-| **(default)** | Expand Block + ActionWarn only; greppable trailer `N hygiene finding(s) collapsed — run doctor --full` |
+| **(default)** | Expand Block + ActionWarn only; greppable trailer `N hygiene finding(s) collapsed — run doctor --full`. When optional warns exist, the trailer adds `(1 optional warning)` / `(N optional warnings)`; with none, the default string is unchanged. |
 | **`doctor --full`** | Expand hygiene too: non-optional **info** under Index Health; **optional** findings under Optional Accelerators. Orthogonal to global `-v` (logging). |
 | **`-q` / `--quiet` or `LEDGERFUL_QUIET=1\|true`** | Via shared `resolve_quiet`: suppress multi-line remediations + **VRAM** footer; keep finding one-liners + hygiene collapse. Does **not** select machine mode. |
 | **`doctor --json`** | Unchanged: schemaVersion **1**, **full** findings always. `full`/`quiet` ignored for JSON content. |

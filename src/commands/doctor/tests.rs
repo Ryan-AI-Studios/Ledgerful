@@ -45,24 +45,69 @@ fn doctor_json_plus_apply_hook_refresh_rejected() {
 fn doctor_summary_four_way_priority() {
     use crate::output::human::format_doctor_summary_text;
     assert_eq!(
-        format_doctor_summary_text(2, 5, 3),
+        format_doctor_summary_text(2, 5, 0, 3),
         "✗ Doctor: 2 block issue(s)"
     );
     assert_eq!(
-        format_doctor_summary_text(0, 3, 2),
+        format_doctor_summary_text(0, 3, 0, 2),
         "✓ Doctor: ready for publish env · 3 warning(s)"
     );
     assert_eq!(
-        format_doctor_summary_text(0, 0, 4),
+        format_doctor_summary_text(0, 0, 0, 4),
         "✓ Doctor: ready for publish env · 4 hint(s)"
     );
     assert_eq!(
-        format_doctor_summary_text(0, 0, 0),
+        format_doctor_summary_text(0, 0, 0, 0),
         "✓ Doctor: all checks passed"
     );
     // Block wins; warn never uses red soft-fail "issue(s) found".
-    assert!(!format_doctor_summary_text(0, 1, 9).contains("issue(s) found"));
-    assert!(format_doctor_summary_text(0, 1, 9).contains("ready for publish"));
+    assert!(!format_doctor_summary_text(0, 1, 0, 9).contains("issue(s) found"));
+    assert!(format_doctor_summary_text(0, 1, 0, 9).contains("ready for publish"));
+}
+
+/// 0209 DoD-1 row 1 JSON object: additive warnAction/warnOptional, schemaVersion 1.
+#[test]
+fn doctor_json_summary_warn_split_row1() {
+    let findings = vec![
+        DoctorFinding::warn("sig-pin", DoctorCategory::Signing, "pin"),
+        DoctorFinding::warn("sig-version", DoctorCategory::Signing, "version"),
+        DoctorFinding::warn("sig-pin-extra", DoctorCategory::Signing, "extra"),
+        DoctorFinding::warn(
+            "completion-unreachable",
+            DoctorCategory::Optional,
+            "completion down",
+        ),
+    ];
+    let counts = summarize(&findings);
+    let split = split_doctor_warns(&findings);
+    assert_eq!(counts.warn, 4);
+    assert_eq!(split.action, 3);
+    assert_eq!(split.optional, 1);
+    assert_eq!(counts.warn, split.action + split.optional);
+    assert!(ready_for_publish(&findings));
+
+    let body = serde_json::json!({
+        "schemaVersion": 1u32,
+        "readyForPublish": ready_for_publish(&findings),
+        "summary": {
+            "block": counts.block,
+            "warn": counts.warn,
+            "warnAction": split.action,
+            "warnOptional": split.optional,
+            "info": counts.info,
+        },
+    });
+    assert_eq!(body["schemaVersion"], 1);
+    assert!(body["schemaVersion"].is_number());
+    assert_eq!(body["readyForPublish"], true);
+    assert_eq!(body["summary"]["warn"], 4);
+    assert_eq!(body["summary"]["warnAction"], 3);
+    assert_eq!(body["summary"]["warnOptional"], 1);
+    assert_eq!(
+        body["summary"]["warn"].as_u64().unwrap(),
+        body["summary"]["warnAction"].as_u64().unwrap()
+            + body["summary"]["warnOptional"].as_u64().unwrap()
+    );
 }
 
 #[test]
@@ -979,6 +1024,39 @@ fn git_missing_is_block_gemini_missing_is_info() {
     assert!(!ready_for_publish(std::slice::from_ref(&git)));
     assert!(ready_for_publish(std::slice::from_ref(&gemini)));
     assert_eq!(dashboard_failures(&[git, gemini]), 1);
+}
+
+/// 0209-B2: collect_tool_findings gemini message matches Tools phrasing.
+#[test]
+fn collect_tool_findings_gemini_message_is_optional_cli_not_cloud_ask() {
+    let tools = vec![("gemini".to_string(), ExecutableStatus::NotFound)];
+    let findings = super::checks::tools::collect_tool_findings(&tools);
+    assert_eq!(findings.len(), 1);
+    let f = &findings[0];
+    assert_eq!(f.code, "tool-gemini");
+    assert_eq!(f.severity, DoctorSeverity::Info);
+    assert_eq!(f.category, DoctorCategory::Optional);
+    assert_eq!(
+        f.message,
+        "gemini NOT FOUND (optional CLI; not the Cloud Ask backend)"
+    );
+    assert!(f.remediation.is_none());
+    let lower = f.message.to_ascii_lowercase();
+    assert!(!lower.contains("install"));
+    assert!(!lower.contains("npm"));
+    assert!(!lower.contains("antigravity"));
+    assert!(ready_for_publish(std::slice::from_ref(f)));
+
+    let cli_tools = vec![("gemini-cli".to_string(), ExecutableStatus::NotFound)];
+    let cli_findings = super::checks::tools::collect_tool_findings(&cli_tools);
+    assert_eq!(cli_findings.len(), 1);
+    assert_eq!(cli_findings[0].severity, DoctorSeverity::Info);
+    assert_eq!(cli_findings[0].category, DoctorCategory::Optional);
+    assert_eq!(
+        cli_findings[0].message,
+        "gemini-cli NOT FOUND (optional CLI; not the Cloud Ask backend)"
+    );
+    assert!(cli_findings[0].remediation.is_none());
 }
 
 /// DoD-6: Design-shaped residue produces expected finding categories.

@@ -16,7 +16,7 @@ pub(crate) fn collect_tool_findings(tools: &[(String, ExecutableStatus)]) -> Vec
                 findings.push(DoctorFinding::info(
                     "tool-gemini",
                     DoctorCategory::Optional,
-                    format!("{name} NOT FOUND (optional ask backend CLI)"),
+                    format!("{name} NOT FOUND (optional CLI; not the Cloud Ask backend)"),
                 ));
             } else {
                 findings.push(DoctorFinding::warn(

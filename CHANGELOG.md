@@ -8,6 +8,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Doctor header vs Index Health + gemini CLI vs Cloud Ask (0209):** Human
+  header “warning(s)” now counts action-critical warns (what Index Health
+  expands), with ` · {n} optional` when optional warns exist. JSON
+  `summary.warn` stays the all-severity total; additive `warnAction` /
+  `warnOptional` (schemaVersion stays 1). Tools table labels `gemini` /
+  `gemini-cli` as `gemini CLI` and qualifies NotFound as optional CLI, not
+  the Cloud Ask backend. Hygiene trailer names optional warns when present.
+  Does not require Gemini CLI install.
+
 - **Doctor `Environment: Wsl` inside Docker Desktop containers (0204):**
   `ledgerful doctor` no longer labels a Linux container as `Wsl` when the
   kernel string is `*-microsoft-standard-WSL2`. Container markers
