@@ -146,6 +146,38 @@ pub fn summarize(findings: &[DoctorFinding]) -> DoctorSummary {
     summary
 }
 
+/// Warn counts split into action-critical vs optional (0209).
+///
+/// `total` equals [`summarize`].warn (all severity=warn). Info, including
+/// `tool-gemini`, does not increment `optional`.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct DoctorWarnSplit {
+    pub total: u64,
+    pub action: u64,
+    pub optional: u64,
+}
+
+/// Split severity=warn findings into action-critical vs optional category.
+pub(crate) fn split_doctor_warns(findings: &[DoctorFinding]) -> DoctorWarnSplit {
+    let mut action = 0;
+    let mut optional = 0;
+    for f in findings {
+        if f.severity != DoctorSeverity::Warn {
+            continue;
+        }
+        if f.category == DoctorCategory::Optional {
+            optional += 1;
+        } else {
+            action += 1;
+        }
+    }
+    DoctorWarnSplit {
+        total: action + optional,
+        action,
+        optional,
+    }
+}
+
 /// Action-critical findings for dashboard failures, sidecar top-N, and human
 /// progressive disclosure Index Health expand list (0138 / 0174).
 ///
@@ -339,6 +371,109 @@ mod tests {
                 info: 1
             }
         );
+    }
+
+    fn assert_warn_split(
+        findings: &[DoctorFinding],
+        expect_total: u64,
+        expect_action: u64,
+        expect_optional: u64,
+    ) {
+        let split = split_doctor_warns(findings);
+        let summary = summarize(findings);
+        assert_eq!(split.total, expect_total);
+        assert_eq!(split.action, expect_action);
+        assert_eq!(split.optional, expect_optional);
+        assert_eq!(split.total, split.action + split.optional);
+        assert_eq!(split.total, summary.warn);
+        assert_eq!(summary.warn, split.action + split.optional);
+    }
+
+    /// 0209 DoD-1 six-row fixture: warn == warnAction + warnOptional == summarize().warn.
+    #[test]
+    fn split_doctor_warns_six_row_matrix() {
+        let signing = [
+            f("sig-pin", DoctorSeverity::Warn, DoctorCategory::Signing),
+            f("sig-version", DoctorSeverity::Warn, DoctorCategory::Signing),
+            f(
+                "sig-pin-extra",
+                DoctorSeverity::Warn,
+                DoctorCategory::Signing,
+            ),
+        ];
+        let optional_warn = f(
+            "completion-unreachable",
+            DoctorSeverity::Warn,
+            DoctorCategory::Optional,
+        );
+
+        // Row 1: 3 signing warns + 1 optional warn → 4 / 3 / 1
+        let mut row1 = signing.to_vec();
+        row1.push(optional_warn.clone());
+        assert_warn_split(&row1, 4, 3, 1);
+
+        // Row 2: 3 signing warns only → 3 / 3 / 0
+        assert_warn_split(&signing, 3, 3, 0);
+
+        // Row 3: 1 optional warn only → 1 / 0 / 1
+        assert_warn_split(std::slice::from_ref(&optional_warn), 1, 0, 1);
+
+        // Row 4: 1 block + 2 signing warns + 1 optional → split 2 / 1 (block ignored)
+        let row4 = vec![
+            f("tool-git", DoctorSeverity::Block, DoctorCategory::Tools),
+            signing[0].clone(),
+            signing[1].clone(),
+            optional_warn.clone(),
+        ];
+        assert_warn_split(&row4, 3, 2, 1);
+
+        // Row 5: empty → 0 / 0 / 0
+        assert_warn_split(&[], 0, 0, 0);
+
+        // Row 6: info only (3) → 0 / 0 / 0
+        let row6 = vec![
+            f(
+                "tool-gemini",
+                DoctorSeverity::Info,
+                DoctorCategory::Optional,
+            ),
+            f(
+                "sccache-hint",
+                DoctorSeverity::Info,
+                DoctorCategory::Optional,
+            ),
+            f(
+                "hook-template-stale",
+                DoctorSeverity::Info,
+                DoctorCategory::Gate,
+            ),
+        ];
+        assert_warn_split(&row6, 0, 0, 0);
+        assert_eq!(summarize(&row6).info, 3);
+    }
+
+    /// 0209-D: tool-gemini info/optional must not increment warnOptional.
+    #[test]
+    fn split_doctor_warns_info_tool_gemini_does_not_increment_optional() {
+        let findings = vec![
+            f(
+                "tool-gemini",
+                DoctorSeverity::Info,
+                DoctorCategory::Optional,
+            ),
+            f(
+                "completion-unreachable",
+                DoctorSeverity::Warn,
+                DoctorCategory::Optional,
+            ),
+            f(
+                "sccache-hint",
+                DoctorSeverity::Info,
+                DoctorCategory::Optional,
+            ),
+        ];
+        assert_warn_split(&findings, 1, 0, 1);
+        assert_eq!(summarize(&findings).info, 2);
     }
 
     #[test]

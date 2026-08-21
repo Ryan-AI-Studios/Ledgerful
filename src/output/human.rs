@@ -31,16 +31,28 @@ pub struct DoctorReport<'a> {
     pub target_triple: &'a str,
 }
 
-/// Pure summary text for doctor aggregate-first header (0109).
+/// Pure summary text for doctor aggregate-first header (0109 / 0209).
 ///
-/// Priority: block → warn → info → all-pass.
-/// Red “issue(s)” wording is reserved for **block** only; warnings use the
-/// yellow ready-for-publish shape. Exit code tracks block only.
-pub fn format_doctor_summary_text(block: u64, warn: u64, info: u64) -> String {
+/// Priority: block → action-critical warn → optional warn → info → all-pass.
+/// Header “warning(s)” is `warn_action` (what Index Health expands). Optional
+/// clause is always ` · {n} optional` (never `optional warning(s)` here).
+/// Red “issue(s)” wording is reserved for **block** only.
+pub fn format_doctor_summary_text(
+    block: u64,
+    warn_action: u64,
+    warn_optional: u64,
+    info: u64,
+) -> String {
     if block > 0 {
         format!("✗ Doctor: {block} block issue(s)")
-    } else if warn > 0 {
-        format!("✓ Doctor: ready for publish env · {warn} warning(s)")
+    } else if warn_action > 0 && warn_optional > 0 {
+        format!(
+            "✓ Doctor: ready for publish env · {warn_action} warning(s) · {warn_optional} optional"
+        )
+    } else if warn_action > 0 {
+        format!("✓ Doctor: ready for publish env · {warn_action} warning(s)")
+    } else if warn_optional > 0 {
+        format!("✓ Doctor: ready for publish env · {warn_optional} optional")
     } else if info > 0 {
         format!("✓ Doctor: ready for publish env · {info} hint(s)")
     } else {
@@ -69,8 +81,43 @@ pub struct DoctorHumanProfile {
 }
 
 /// Greppable trailer when hygiene findings are collapsed (default human).
-pub fn format_hygiene_collapse_trailer(count: usize) -> String {
-    format!("{count} hygiene finding(s) collapsed — run doctor --full")
+///
+/// When `warn_optional == 0`, byte-stable with the 0174 string. Optional
+/// warns add `(1 optional warning)` / `(N optional warnings)` (0209-C).
+pub fn format_hygiene_collapse_trailer(hygiene_count: usize, warn_optional: u64) -> String {
+    if warn_optional == 0 {
+        format!("{hygiene_count} hygiene finding(s) collapsed — run doctor --full")
+    } else {
+        let warning_word = if warn_optional == 1 {
+            "warning"
+        } else {
+            "warnings"
+        };
+        format!(
+            "{hygiene_count} hygiene finding(s) collapsed ({warn_optional} optional {warning_word}) — run doctor --full"
+        )
+    }
+}
+
+/// Tools-table label + uncoloured status text (0209-B).
+///
+/// `gemini` / `gemini-cli` are the optional PATH CLI, not Cloud Ask.
+/// Printer applies NotFound colour; this helper returns plain strings.
+pub fn format_doctor_tool_line(name: &str, status: &ExecutableStatus) -> (String, String) {
+    let is_gemini_cli = name == "gemini" || name == "gemini-cli";
+    let label = if is_gemini_cli {
+        "gemini CLI".to_string()
+    } else {
+        name.to_string()
+    };
+    let status_text = match status {
+        ExecutableStatus::Found(p) => format!("Found ({})", p.display()),
+        ExecutableStatus::NotFound if is_gemini_cli => {
+            "NOT FOUND (optional CLI; not the Cloud Ask backend)".to_string()
+        }
+        ExecutableStatus::NotFound => "NOT FOUND".to_string(),
+    };
+    (label, status_text)
 }
 
 /// Human `WSL Support:` line when the workdir is a WSL-mounted Windows drive.
@@ -142,7 +189,11 @@ pub fn print_doctor_report(
     profile: DoctorHumanProfile,
 ) {
     // Aggregate-first: first meaningful line is the status (no leading blank).
-    let summary_text = format_doctor_summary_text(summary.block, summary.warn, summary.info);
+    // Copy uses action/optional split; colour stays on total summary.warn.
+    let split = crate::commands::doctor::split_doctor_warns(findings);
+    debug_assert_eq!(split.total, summary.warn);
+    let summary_text =
+        format_doctor_summary_text(summary.block, split.action, split.optional, summary.info);
     if summary.block > 0 {
         println!(
             "{}",
@@ -179,13 +230,15 @@ pub fn print_doctor_report(
 
     println!("\nTools:");
     for (name, status) in report.tools {
-        let status_str = match status {
-            ExecutableStatus::Found(p) => format!("Found ({})", p.display()),
-            ExecutableStatus::NotFound => "NOT FOUND"
+        let (label, status_text) = format_doctor_tool_line(name, status);
+        let status_str = if matches!(status, ExecutableStatus::NotFound) {
+            status_text
                 .if_supports_color(Stream::Stdout, |s| s.red())
-                .to_string(),
+                .to_string()
+        } else {
+            status_text
         };
-        println!("  {:<18} {}", name, status_str);
+        println!("  {:<18} {}", label, status_str);
     }
 
     println!("\nCurrent Path:        {}", report.path_display);
@@ -224,7 +277,10 @@ pub fn print_doctor_report(
 
     // Collapse trailer for hygiene (optional/info) when not --full.
     if !profile.full && hygiene_count > 0 {
-        println!("\n{}", format_hygiene_collapse_trailer(hygiene_count));
+        println!(
+            "\n{}",
+            format_hygiene_collapse_trailer(hygiene_count, split.optional)
+        );
     }
 }
 
@@ -1043,25 +1099,126 @@ mod tests {
     #[test]
     fn doctor_summary_text_four_way() {
         assert_eq!(
-            format_doctor_summary_text(1, 0, 0),
+            format_doctor_summary_text(1, 0, 0, 0),
             "✗ Doctor: 1 block issue(s)"
         );
         assert_eq!(
-            format_doctor_summary_text(0, 2, 0),
+            format_doctor_summary_text(0, 2, 0, 0),
             "✓ Doctor: ready for publish env · 2 warning(s)"
         );
         assert_eq!(
-            format_doctor_summary_text(0, 0, 3),
+            format_doctor_summary_text(0, 0, 0, 3),
             "✓ Doctor: ready for publish env · 3 hint(s)"
         );
         assert_eq!(
-            format_doctor_summary_text(0, 0, 0),
+            format_doctor_summary_text(0, 0, 0, 0),
             "✓ Doctor: all checks passed"
         );
         // Block wins over warn/info when present.
-        assert!(format_doctor_summary_text(1, 9, 9).contains("block issue"));
+        assert!(format_doctor_summary_text(1, 9, 0, 9).contains("block issue"));
         // Warn uses ready shape — never red soft-fail wording.
-        assert!(!format_doctor_summary_text(0, 2, 0).contains("issue(s) found"));
+        assert!(!format_doctor_summary_text(0, 2, 0, 0).contains("issue(s) found"));
+    }
+
+    /// 0209 DoD-1 six-row header copy (unit fixtures, not live dogfood).
+    #[test]
+    fn doctor_summary_text_warn_split_six_row() {
+        // Row 1: 3 action + 1 optional
+        let row1 = format_doctor_summary_text(0, 3, 1, 0);
+        assert!(row1.contains("3 warning(s) · 1 optional"), "{row1}");
+        assert!(!row1.contains("optional warning(s)"), "{row1}");
+
+        // Row 2: 3 action only
+        let row2 = format_doctor_summary_text(0, 3, 0, 0);
+        assert!(row2.contains("3 warning(s)"), "{row2}");
+        assert!(!row2.contains("optional"), "{row2}");
+
+        // Row 3: 1 optional only — no "0 warning", no "optional warning(s)"
+        let row3 = format_doctor_summary_text(0, 0, 1, 0);
+        assert!(row3.contains("· 1 optional"), "{row3}");
+        assert!(!row3.contains("0 warning"), "{row3}");
+        assert!(!row3.contains("optional warning(s)"), "{row3}");
+        assert!(!row3.contains("warning(s)"), "{row3}");
+
+        // Row 4: block wins; no ready-shape
+        let row4 = format_doctor_summary_text(1, 2, 1, 0);
+        assert!(row4.contains("block issue(s)"), "{row4}");
+        assert!(!row4.contains("ready for publish"), "{row4}");
+
+        // Row 5: empty
+        let row5 = format_doctor_summary_text(0, 0, 0, 0);
+        assert!(row5.contains("all checks passed"), "{row5}");
+
+        // Row 6: info only
+        let row6 = format_doctor_summary_text(0, 0, 0, 3);
+        assert!(row6.contains("3 hint(s)"), "{row6}");
+    }
+
+    #[test]
+    fn format_doctor_tool_line_gemini_cli_vs_cloud_ask() {
+        use std::path::PathBuf;
+
+        let not_found = ExecutableStatus::NotFound;
+        let gemini_found = ExecutableStatus::Found(PathBuf::from(r"C:\Users\bin\gemini.exe"));
+        let gemini_cli_found =
+            ExecutableStatus::Found(PathBuf::from(r"C:\Users\bin\gemini-cli.exe"));
+
+        let banned = |text: &str| {
+            let lower = text.to_ascii_lowercase();
+            assert!(!lower.contains("install"), "{text}");
+            assert!(!lower.contains("npm"), "{text}");
+            assert!(!lower.contains("antigravity"), "{text}");
+        };
+
+        // Row 1: gemini NotFound
+        let (label, text) = format_doctor_tool_line("gemini", &not_found);
+        assert_eq!(label, "gemini CLI");
+        assert!(text.contains("NOT FOUND"), "{text}");
+        assert!(text.contains("optional CLI"), "{text}");
+        assert!(text.contains("not the Cloud Ask backend"), "{text}");
+        banned(&text);
+
+        // Row 2: gemini-cli NotFound
+        let (label, text) = format_doctor_tool_line("gemini-cli", &not_found);
+        assert_eq!(label, "gemini CLI");
+        assert!(text.contains("NOT FOUND"), "{text}");
+        assert!(text.contains("optional CLI"), "{text}");
+        assert!(text.contains("not the Cloud Ask backend"), "{text}");
+        banned(&text);
+
+        // Row 3: gemini Found
+        let (label, text) = format_doctor_tool_line("gemini", &gemini_found);
+        assert_eq!(label, "gemini CLI");
+        assert!(text.contains("Found ("), "{text}");
+        assert!(!text.contains("NOT FOUND"), "{text}");
+
+        // Row 4: git NotFound — unchanged, no CLI/Ask clause
+        let (label, text) = format_doctor_tool_line("git", &not_found);
+        assert_eq!(label, "git");
+        assert_eq!(text, "NOT FOUND");
+        assert!(!text.contains("Cloud Ask"), "{text}");
+        assert!(!text.contains("optional CLI"), "{text}");
+
+        // Row 5: gemini-cli Found
+        let (label, text) = format_doctor_tool_line("gemini-cli", &gemini_cli_found);
+        assert_eq!(label, "gemini CLI");
+        assert!(text.contains("Found ("), "{text}");
+        assert!(!text.contains("NOT FOUND"), "{text}");
+    }
+
+    #[test]
+    fn format_hygiene_collapse_trailer_optional_clause() {
+        let t11 = format_hygiene_collapse_trailer(11, 1);
+        assert!(t11.contains("11 hygiene finding(s) collapsed"), "{t11}");
+        assert!(t11.contains("1 optional warning"), "{t11}");
+        assert!(t11.contains("doctor --full"), "{t11}");
+
+        let t12 = format_hygiene_collapse_trailer(12, 2);
+        assert!(t12.contains("2 optional warnings"), "{t12}");
+
+        let t10 = format_hygiene_collapse_trailer(10, 0);
+        assert_eq!(t10, "10 hygiene finding(s) collapsed — run doctor --full");
+        assert!(!t10.contains("optional"), "{t10}");
     }
 
     /// 0174 T1–T5: human 3-tier partition + --full expands hygiene.
@@ -1108,9 +1265,38 @@ mod tests {
         assert!(full_opt_codes.contains(&"completion-unreachable"));
         assert!(full_opt_codes.contains(&"sccache-hint"));
 
-        let trailer = format_hygiene_collapse_trailer(3);
+        let trailer = format_hygiene_collapse_trailer(3, 1);
         assert!(trailer.contains("3 hygiene finding(s) collapsed"));
         assert!(trailer.contains("doctor --full"));
+    }
+
+    /// 0209-D: mixed info tool-gemini + optional warn; trailer uses warnOptional.
+    #[test]
+    fn doctor_mixed_info_tool_gemini_trailer_uses_warn_optional() {
+        use crate::commands::doctor::{DoctorCategory, DoctorFinding, split_doctor_warns};
+
+        let findings = vec![
+            DoctorFinding::info(
+                "tool-gemini",
+                DoctorCategory::Optional,
+                "gemini NOT FOUND (optional CLI; not the Cloud Ask backend)",
+            ),
+            DoctorFinding::warn(
+                "completion-unreachable",
+                DoctorCategory::Optional,
+                "completion down",
+            ),
+            DoctorFinding::info("sccache-hint", DoctorCategory::Optional, "sccache hint"),
+        ];
+        let split = split_doctor_warns(&findings);
+        assert_eq!(split.optional, 1, "info must not increment warnOptional");
+        assert_eq!(split.action, 0);
+        assert_eq!(split.total, 1);
+        let hygiene = findings.len();
+        let trailer = format_hygiene_collapse_trailer(hygiene, split.optional);
+        assert!(trailer.contains("1 optional warning"), "{trailer}");
+        assert!(!trailer.contains("3 optional"), "{trailer}");
+        assert!(trailer.contains("doctor --full"), "{trailer}");
     }
 
     #[test]

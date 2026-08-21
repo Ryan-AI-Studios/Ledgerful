@@ -13,7 +13,7 @@ pub use finding::{
     DoctorCategory, DoctorFinding, DoctorSeverity, DoctorSummary, dashboard_failures,
     ready_for_publish, summarize,
 };
-pub(crate) use finding::{is_action_critical, is_hygiene};
+pub(crate) use finding::{is_action_critical, is_hygiene, split_doctor_warns};
 pub use remediation::{
     ContentHashDriftInputs, GraphAgeInputs, GraphIndexHealth, SearchDocsClassification,
     build_graph_content_stale_finding, build_graph_drift_check_failed_finding,
@@ -204,6 +204,8 @@ pub fn execute_doctor(
     });
 
     let counts = summarize(&findings);
+    let split = split_doctor_warns(&findings);
+    debug_assert_eq!(split.total, counts.warn);
     let summary = crate::output::human::DoctorSummaryCounts {
         block: counts.block,
         warn: counts.warn,
@@ -223,6 +225,8 @@ pub fn execute_doctor(
             "summary": {
                 "block": counts.block,
                 "warn": counts.warn,
+                "warnAction": split.action,
+                "warnOptional": split.optional,
                 "info": counts.info,
             },
             "findings": findings,
