@@ -214,3 +214,152 @@ fn fixture_only_under_tests_fixtures_leaves_security_empty() {
         "fixture-only security stays empty: {surfaces}"
     );
 }
+
+fn init_cedar_indexed_clean_repo() -> tempfile::TempDir {
+    let tmp = init_temp_repo();
+    let root = tmp.path();
+    let src = cargo_root().join("policies").join("daemon-api.cedar");
+    fs::create_dir_all(root.join("policies")).unwrap();
+    fs::copy(&src, root.join("policies").join("daemon-api.cedar")).unwrap();
+    git_add_and_commit(root, "add cedar pack");
+
+    let (stdout, stderr, code) = run_cli(root, &["index", "--analyze-graph"]);
+    assert_eq!(
+        code, 0,
+        "index --analyze-graph failed; stdout={stdout} stderr={stderr}"
+    );
+    tmp
+}
+
+/// 0208-A/D: indexed Cedar + clean tree → `--changed` is CleanDiff, not add-Cedar.
+#[test]
+fn security_impact_changed_clean_tree_is_clean_diff() {
+    let tmp = init_cedar_indexed_clean_repo();
+    let root = tmp.path();
+
+    let (stdout, stderr, code) = run_cli(root, &["security", "impact", "--changed", "--json"]);
+    assert_eq!(code, 0, "security impact --changed --json; stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("expected empty-state JSON object: {e}\n{stdout}"));
+    assert_eq!(
+        v["emptyReason"].as_str(),
+        Some("cleanDiff"),
+        "clean tree with indexed Cedar must be cleanDiff, got: {stdout}"
+    );
+    assert_eq!(
+        v["indexedCount"].as_u64(),
+        Some(8),
+        "indexedCount must be the unfiltered policy count, got: {stdout}"
+    );
+    assert!(
+        v.as_object().is_some(),
+        "empty --changed JSON must stay an object envelope, got: {stdout}"
+    );
+
+    let (human, stderr, code) = run_cli(root, &["security", "impact", "--changed"]);
+    assert_eq!(code, 0, "security impact --changed; stderr={stderr}");
+    assert!(
+        !human.contains("Add Cedar policy files"),
+        "CleanDiff must not lie about missing Cedar files, got: {human}"
+    );
+    assert!(
+        human.contains("0 of 8 policies match changed files"),
+        "CleanDiff human summary must use the unfiltered denominator, got: {human}"
+    );
+
+    let (bare_json, stderr, code) = run_cli(root, &["security", "impact", "--json"]);
+    assert_eq!(code, 0, "security impact --json; stderr={stderr}");
+    let bare: serde_json::Value = serde_json::from_str(bare_json.trim())
+        .unwrap_or_else(|e| panic!("expected populated impact JSON: {e}\n{bare_json}"));
+    let rows = bare.as_array().unwrap_or_else(|| {
+        panic!("bare security impact --json must stay a raw array, got: {bare_json}")
+    });
+    assert_eq!(
+        rows.len(),
+        8,
+        "bare impact must still list all indexed policies, got: {bare_json}"
+    );
+}
+
+/// 0208-E: dirty `policies/daemon-api.cedar` → `--changed --json` is a raw array of 8.
+#[test]
+fn security_impact_changed_dirty_cedar_returns_source_file_array() {
+    let tmp = init_cedar_indexed_clean_repo();
+    let root = tmp.path();
+    let cedar = root.join("policies").join("daemon-api.cedar");
+    let mut content = fs::read(&cedar).unwrap();
+    content.push(b'\n');
+    fs::write(&cedar, content).unwrap();
+
+    let (stdout, stderr, code) = run_cli(root, &["security", "impact", "--changed", "--json"]);
+    assert_eq!(code, 0, "security impact --changed --json; stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("expected impact JSON: {e}\n{stdout}"));
+    let rows = v.as_array().unwrap_or_else(|| {
+        panic!("dirty --changed JSON must be a raw array, not an object envelope: {stdout}")
+    });
+    assert_eq!(rows.len(), 8, "expected 8 changed policies: {stdout}");
+    assert!(
+        rows.iter().all(|row| {
+            row["source_file"] == "policies/daemon-api.cedar" && row["is_changed"] == true
+        }),
+        "every changed item must expose slash-folded source_file and is_changed, got: {stdout}"
+    );
+    assert!(
+        v.get("indexedCount").is_none(),
+        "non-empty JSON must not grow indexedCount, got: {stdout}"
+    );
+}
+
+/// 0146 keep: `security impact --changed` must not create or rewrite latest-impact.json.
+#[test]
+fn test_security_impact_changed_does_not_rewrite_latest_impact() {
+    let tmp = init_temp_repo();
+    let root = tmp.path();
+    let report_path = root
+        .join(".ledgerful")
+        .join("reports")
+        .join("latest-impact.json");
+    fs::create_dir_all(report_path.parent().expect("reports parent")).expect("mkdir reports");
+    let seed = r#"{"schemaVersion":"v1","headHash":"SEED_MARKER_0146_B4","riskReasons":["seed-do-not-clobber"]}"#;
+    fs::write(&report_path, seed).expect("seed latest-impact.json");
+    let before = fs::read(&report_path).expect("read seeded report");
+    assert!(
+        std::str::from_utf8(&before)
+            .expect("utf8 seed")
+            .contains("SEED_MARKER_0146_B4"),
+        "precondition: seed marker present"
+    );
+
+    git_add_and_commit(root, "post-init clean");
+
+    let (stdout, stderr, code) = run_cli(root, &["security", "impact", "--changed", "--json"]);
+    assert_eq!(
+        code, 0,
+        "security impact --changed --json must succeed; stdout={stdout} stderr={stderr}"
+    );
+
+    assert!(
+        report_path.is_file(),
+        "seeded latest-impact.json must still exist after filter CLI"
+    );
+    let after = fs::read(&report_path).expect("read report after filter CLI");
+    assert_eq!(
+        before, after,
+        "security impact --changed must not rewrite latest-impact.json \
+         (filter path must not call execute_impact_silent / write_impact_report)"
+    );
+
+    fs::remove_file(&report_path).expect("remove seeded report");
+    assert!(!report_path.exists(), "precondition: report absent");
+
+    let (stdout, stderr, code) = run_cli(root, &["security", "impact", "--changed", "--json"]);
+    assert_eq!(
+        code, 0,
+        "second clean-tree run must succeed; stdout={stdout} stderr={stderr}"
+    );
+    assert!(
+        !report_path.exists(),
+        "security impact --changed must not create latest-impact.json when absent"
+    );
+}

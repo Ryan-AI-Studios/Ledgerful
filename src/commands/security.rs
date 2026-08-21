@@ -118,7 +118,7 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
                  source_file = get(meta, 'source_file')";
     let res = cozo.run_script(query)?;
 
-    let mut impacted = Vec::new();
+    let mut indexed_rows = Vec::new();
     for row in res.rows {
         if let (
             Some(cozo::DataValue::Str(id)),
@@ -128,44 +128,100 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
             Some(cozo::DataValue::Str(source_file)),
         ) = (row.first(), row.get(1), row.get(2), row.get(3), row.get(4))
         {
-            let is_impacted = changed_files.contains(source_file.as_str());
-
-            if !changed || is_impacted {
-                impacted.push(serde_json::json!({
+            let source_norm = source_file.as_str().replace('\\', "/");
+            let is_changed = changed_files.contains(source_norm.as_str());
+            indexed_rows.push((
+                serde_json::json!({
                     "id": id,
                     "label": label,
                     "raw": raw,
                     "effect": effect,
-                    "is_changed": is_impacted,
-                }));
-            }
+                    "is_changed": is_changed,
+                    "source_file": source_norm,
+                }),
+                is_changed,
+            ));
         }
     }
+    // 0208-C: indexed = rows with complete policy metadata (matches display
+    // loop), not raw query row count.
+    let indexed = indexed_rows.len();
+    let displayed: Vec<_> = indexed_rows
+        .into_iter()
+        .filter(|(_, is_changed)| !changed || *is_changed)
+        .map(|(item, _)| item)
+        .collect();
 
-    let total = impacted.len();
-    let changed_count = impacted
-        .iter()
-        .filter(|i| i["is_changed"].as_bool().unwrap_or(false))
-        .count();
-
-    if json {
-        let output = crate::output::empty::format_json_empty_state(
-            impacted.clone(),
-            "impacted",
-            || {
-                if total == 0 {
-                    (
-                    crate::output::empty::EmptyReason::NoIndexedData,
-                    "No security policy data found. Add Cedar policy files to 'policies/' and run `ledgerful index --analyze-graph`.".to_string(),
-                )
-                } else {
-                    (
-                        crate::output::empty::EmptyReason::CleanDiff,
-                        "No changed policies found in the current diff.".to_string(),
-                    )
-                }
-            },
-        );
+    if displayed.is_empty() {
+        let on_disk = crate::commands::surfaces::repo_root_cedar_present(&layout.root);
+        let (reason, message) = if indexed > 0 && changed {
+            (
+                crate::output::empty::EmptyReason::CleanDiff,
+                "No changed policies found in the current diff.".to_string(),
+            )
+        } else if on_disk {
+            // 0208-B: disk first — never "Add Cedar" when files exist.
+            (
+                crate::output::empty::EmptyReason::NoIndexedData,
+                "Cedar files on disk but not in the graph. Run `ledgerful index --analyze-graph`."
+                    .to_string(),
+            )
+        } else if !graph_has_any_nodes(cozo) {
+            (
+                crate::output::empty::EmptyReason::NoIndexedData,
+                "Knowledge graph has not been built yet. Run `ledgerful index --analyze-graph` first, \
+                 then add Cedar policy files to 'policies/' if this repo uses Cedar."
+                    .to_string(),
+            )
+        } else {
+            (
+                crate::output::empty::EmptyReason::NoMatches,
+                "Knowledge graph is populated, but no Cedar policy/principal/action/resource nodes exist. \
+                 This repo has no Cedar policy files configured — add them under 'policies/' and run \
+                 `ledgerful index --analyze-graph` to populate this surface."
+                    .to_string(),
+            )
+        };
+        if json {
+            let mut output =
+                crate::output::empty::format_json_empty_state(displayed, "impacted", || {
+                    (reason, message)
+                });
+            if let Some(map) = output.as_object_mut() {
+                map.insert("indexedCount".to_string(), serde_json::json!(indexed));
+            }
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&output).into_diagnostic()?
+            );
+        } else {
+            println!(
+                "{}",
+                "Security Policy Impact Analysis"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().red()))
+            );
+            println!(
+                "{}",
+                format!("  {message}").if_supports_color(Stream::Stdout, |s| s.dimmed())
+            );
+            if indexed > 0 && changed {
+                println!(
+                    "  {} of {} policies match changed files",
+                    displayed
+                        .len()
+                        .to_string()
+                        .if_supports_color(Stream::Stdout, |s| s
+                            .style(Style::new().yellow().bold())),
+                    indexed
+                        .to_string()
+                        .if_supports_color(Stream::Stdout, |s| s.bold()),
+                );
+            }
+        }
+    } else if json {
+        let output = crate::output::empty::format_json_empty_state(displayed, "impacted", || {
+            (crate::output::empty::EmptyReason::NoMatches, String::new())
+        });
         println!(
             "{}",
             serde_json::to_string_pretty(&output).into_diagnostic()?
@@ -176,59 +232,52 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
             "Security Policy Impact Analysis"
                 .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().red()))
         );
-        if total == 0 {
-            println!("{}", "  No security policy data found. Add Cedar policy files to 'policies/' and run `ledgerful index --analyze-graph`.".if_supports_color(Stream::Stdout, |s| s.dimmed()));
-        } else if changed_count == 0 && changed {
+        let mut table = Table::new();
+        table.set_header(vec!["Policy ID", "Effect", "Changed?"]);
+
+        let mut changed_count = 0usize;
+        for item in &displayed {
+            let is_changed = item["is_changed"].as_bool().unwrap_or(false);
+            if is_changed {
+                changed_count += 1;
+            }
+            table.add_row(vec![
+                item["id"].as_str().unwrap_or("").to_string(),
+                item["effect"].as_str().unwrap_or_default().to_string(),
+                if is_changed {
+                    "YES"
+                        .if_supports_color(Stream::Stdout, |s| {
+                            s.style(Style::new().yellow().bold())
+                        })
+                        .to_string()
+                } else {
+                    "NO".to_string()
+                },
+            ]);
+        }
+
+        println!("{}", table);
+        if changed {
             println!(
-                "{}",
-                "  No changed policies found in the current diff."
-                    .if_supports_color(Stream::Stdout, |s| s.dimmed())
+                "  {} of {} policies match changed files",
+                displayed
+                    .len()
+                    .to_string()
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
+                indexed
+                    .to_string()
+                    .if_supports_color(Stream::Stdout, |s| s.bold()),
             );
         } else {
-            let mut table = Table::new();
-            table.set_header(vec!["Policy ID", "Effect", "Changed?"]);
-
-            for item in &impacted {
-                table.add_row(vec![
-                    item["id"].as_str().unwrap_or("").to_string(),
-                    item["effect"].as_str().unwrap_or_default().to_string(),
-                    if item["is_changed"].as_bool().unwrap_or(false) {
-                        "YES"
-                            .if_supports_color(Stream::Stdout, |s| {
-                                s.style(Style::new().yellow().bold())
-                            })
-                            .to_string()
-                    } else {
-                        "NO".to_string()
-                    },
-                ]);
-            }
-
-            println!("{}", table);
-            // Summary counts
-            if changed {
-                println!(
-                    "  {} of {} policies match changed files",
-                    changed_count
-                        .to_string()
-                        .if_supports_color(Stream::Stdout, |s| s
-                            .style(Style::new().yellow().bold())),
-                    total
-                        .to_string()
-                        .if_supports_color(Stream::Stdout, |s| s.bold()),
-                );
-            } else {
-                println!(
-                    "  {} policies evaluated, {} changed by this diff",
-                    total
-                        .to_string()
-                        .if_supports_color(Stream::Stdout, |s| s.bold()),
-                    changed_count
-                        .to_string()
-                        .if_supports_color(Stream::Stdout, |s| s
-                            .style(Style::new().yellow().bold())),
-                );
-            }
+            println!(
+                "  {} policies evaluated, {} changed by this diff",
+                indexed
+                    .to_string()
+                    .if_supports_color(Stream::Stdout, |s| s.bold()),
+                changed_count
+                    .to_string()
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
+            );
         }
     }
 
