@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Security impact `--changed` CleanDiff (0208):** Count indexed Cedar
+  policy nodes before the git-status filter. A clean tree with indexed
+  policies now reports CleanDiff (`0 of N policies match changed files`)
+  instead of NoIndexedData / “Add Cedar policy files … `index
+  --analyze-graph`”. Disk-present uningested Cedar still points at
+  `index --analyze-graph` without the add-Cedar lie. Filter-only (0146);
+  no JSON array wrap.
+
 - **Hotspots explain complexity (0210):** Metrics `Complexity` now copies
   the list/JSON scoring complexity when a git-history hotspot row exists
   (including zero). When no hotspot row exists, complexity is

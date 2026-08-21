@@ -170,3 +170,97 @@ fn test_security_boundaries_distinguishes_unbuilt_graph_from_unconfigured_polici
         "expected a populated-graph message distinguishing this from the unbuilt-graph case, got: {message_after}"
     );
 }
+
+/// 0208 sparse: after `init` with no `policies/`, `--changed --json` is
+/// `noMatches` (parity with boundaries), not `noIndexedData`.
+#[test]
+fn test_security_impact_changed_sparse_init_is_no_matches() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    setup_git_repo(root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/main.rs"), "fn main() { println!(\"hi\"); }").unwrap();
+    git_cmd(root, &["add", "-A"]);
+    git_cmd(root, &["commit", "--no-verify", "-m", "initial"]);
+
+    let _guard = DirGuard::new(root);
+    ledgerful::commands::init::execute_init(false, false).unwrap();
+
+    let exe = env!("CARGO_BIN_EXE_ledgerful");
+    let out = Command::new(exe)
+        .args(["security", "impact", "--changed", "--json"])
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "security impact --changed --json failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        v["emptyReason"].as_str().unwrap(),
+        "noMatches",
+        "sparse init must match boundaries noMatches, got: {v}"
+    );
+    assert_eq!(
+        v["indexedCount"].as_u64(),
+        Some(0),
+        "sparse init has no indexed policies, got: {v}"
+    );
+}
+
+/// 0208-B: Cedar on disk, `init`, skip `--analyze-graph` → NoIndexedData,
+/// never “Add Cedar policy files”.
+#[test]
+fn test_security_impact_changed_disk_without_ingest_is_no_indexed_data() {
+    let temp = tempfile::tempdir().unwrap();
+    let root = temp.path();
+
+    setup_git_repo(root);
+    std::fs::create_dir_all(root.join("src")).unwrap();
+    std::fs::write(root.join("src/main.rs"), "fn main() { println!(\"hi\"); }").unwrap();
+    let src = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("policies")
+        .join("daemon-api.cedar");
+    std::fs::create_dir_all(root.join("policies")).unwrap();
+    std::fs::copy(&src, root.join("policies").join("daemon-api.cedar")).unwrap();
+    git_cmd(root, &["add", "-A"]);
+    git_cmd(root, &["commit", "--no-verify", "-m", "initial"]);
+
+    let _guard = DirGuard::new(root);
+    ledgerful::commands::init::execute_init(false, false).unwrap();
+
+    let exe = env!("CARGO_BIN_EXE_ledgerful");
+    let out = Command::new(exe)
+        .args(["security", "impact", "--changed", "--json"])
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "security impact --changed --json failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: Value = serde_json::from_slice(&out.stdout).unwrap();
+    assert_eq!(
+        v["emptyReason"].as_str().unwrap(),
+        "noIndexedData",
+        "disk-present uningested Cedar must be noIndexedData, got: {v}"
+    );
+    assert_eq!(
+        v["indexedCount"].as_u64(),
+        Some(0),
+        "uningested Cedar is not in the graph, got: {v}"
+    );
+    let message = v["message"].as_str().unwrap_or_default();
+    assert!(
+        message.contains("index --analyze-graph"),
+        "disk-without-ingest message must name index --analyze-graph, got: {message}"
+    );
+    assert!(
+        !message.contains("Add Cedar policy files"),
+        "disk-present Cedar must not say Add Cedar policy files, got: {message}"
+    );
+}
