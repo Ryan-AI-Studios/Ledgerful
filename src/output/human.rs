@@ -73,6 +73,15 @@ pub fn format_hygiene_collapse_trailer(count: usize) -> String {
     format!("{count} hygiene finding(s) collapsed — run doctor --full")
 }
 
+/// Human `WSL Support:` line when the workdir is a WSL-mounted Windows drive.
+pub fn wsl_support_line(is_wsl_mounted: bool) -> Option<&'static str> {
+    if is_wsl_mounted {
+        Some("WSL Support:         Active (Mounted)")
+    } else {
+        None
+    }
+}
+
 /// Partition findings for human 3-tier display (0174).
 ///
 /// Returns `(index_health_findings, optional_accelerator_findings, hygiene_count)`:
@@ -183,8 +192,8 @@ pub fn print_doctor_report(
     println!("Path Type:           {}", report.path_kind);
     println!("Work root:           {}", report.work_root);
     println!("State dir:           {}", report.state_dir);
-    if report.is_wsl_mounted {
-        println!("WSL Support:         Active (Mounted)");
+    if let Some(line) = wsl_support_line(report.is_wsl_mounted) {
+        println!("{line}");
     }
 
     // Core health: ask backend + native graph stay here; optional model /
@@ -1135,5 +1144,14 @@ mod tests {
         assert!(DEAD_CODE_HONESTY_FOOTER.contains("not proof of dead code"));
         assert!(DEAD_CODE_EMPTY_STATE.contains("heuristic analysis"));
         assert!(!DEAD_CODE_EMPTY_STATE.contains("No dead code found"));
+    }
+
+    #[test]
+    fn wsl_support_line_mounted_and_unmounted() {
+        assert_eq!(
+            wsl_support_line(true),
+            Some("WSL Support:         Active (Mounted)")
+        );
+        assert_eq!(wsl_support_line(false), None);
     }
 }
