@@ -22,6 +22,9 @@ use std::process::Command;
 /// Stable schema version for `PolicyCheckReport`. Breaking changes bump this.
 pub const POLICY_CHECK_SCHEMA_VERSION: u32 = 1;
 
+/// Idle `verification_must_pass` note (no bound run; not a current-change fail).
+pub const VERIFICATION_MUST_PASS_IDLE_NOTE: &str = "verification_must_pass: idle evaluation target; no bound verification run (unbound verifies do not satisfy). Not a current-change fail.";
+
 const DEFAULT_POLICY_REL: &str = ".ledgerful/policy.toml";
 
 // ---------------------------------------------------------------------------
@@ -668,12 +671,12 @@ impl EvalContext {
     /// A "bound" run has a non-null non-empty `tx_id` (from `verify --tx-id` or
     /// commit hooks). Unbound global verifies never satisfy this rule.
     ///
-    /// - **Local:** latest bound run; fail if none.
+    /// - **Local:** latest bound run; idle + no bound → note, not violation.
     /// - **`--pr`:** every changed path must be covered by at least one
     ///   **passing** (`overall_pass=true`) bound run whose ledger entity covers
     ///   that path (`entity_covers_path`). Failed bound runs never contribute
     ///   coverage. Partial overlap (one of N paths covered) → violation. Empty
-    ///   change set → fall back to latest bound overall_pass.
+    ///   change set + no bound → idle note; empty + bound → latest overall_pass.
     fn eval_verification_must_pass(&mut self) -> Result<()> {
         let Some(storage) = self.open_storage()? else {
             self.push_violation(
@@ -692,6 +695,54 @@ impl EvalContext {
         Ok(())
     }
 
+    /// Idle evaluation target for `verification_must_pass` only.
+    ///
+    /// Fail-closed: git errors propagate (`open_repo?` / `get_repo_status?`).
+    /// Do not reuse `resolve_risk`'s local `unwrap_or_default` / `Ok(None)`.
+    fn evaluation_target_is_idle(&self) -> Result<bool> {
+        if self.is_pr_mode {
+            // Pending is workspace; `--pr` idle iff the committed change set is empty.
+            if self.pr_range.is_none() {
+                return Ok(false);
+            }
+            let changed_paths = match self.resolve_risk()? {
+                Some(r) => r.changed_paths,
+                None => return Ok(false),
+            };
+            return Ok(changed_paths.is_empty());
+        }
+
+        let root = self.layout.root.as_std_path();
+        let repo = open_repo(root)?;
+        let changes = get_repo_status(&repo)?;
+        if !changes.is_empty() {
+            return Ok(false);
+        }
+
+        // Same DB + sidecar facts as `eval_no_pending_tx`.
+        if let Some(mut storage) = self.open_storage()? {
+            let config = load_ledger_config(&self.layout).unwrap_or_default();
+            let tx_mgr = crate::ledger::TransactionManager::new(
+                &mut storage,
+                self.layout.root.clone().into(),
+                config,
+            );
+            let pending = tx_mgr
+                .get_all_pending()
+                .map_err(|e| miette::miette!("{}", e))?;
+            if !pending.is_empty() {
+                return Ok(false);
+            }
+        }
+
+        let sidecar = self.layout.state_subdir().join("pending_hook_tx");
+        if sidecar.exists() {
+            return Ok(false);
+        }
+
+        Ok(true)
+    }
+
     fn eval_verification_must_pass_local(&mut self, storage: &StorageManager) -> Result<()> {
         match storage.get_latest_bound_verification_run()? {
             Some((_id, _ts, overall_pass, _tx_id)) => {
@@ -704,11 +755,16 @@ impl EvalContext {
                 }
             }
             None => {
-                self.push_violation(
-                    "verification_must_pass",
-                    ".ledgerful/state/ledger.db",
-                    "no verification run bound to a transaction (run verify with --tx-id or during commit hooks)".to_string(),
-                );
+                if self.evaluation_target_is_idle()? {
+                    self.notes
+                        .push(VERIFICATION_MUST_PASS_IDLE_NOTE.to_string());
+                } else {
+                    self.push_violation(
+                        "verification_must_pass",
+                        ".ledgerful/state/ledger.db",
+                        "no verification run bound to a transaction (run verify with --tx-id or during commit hooks)".to_string(),
+                    );
+                }
             }
         }
         Ok(())
@@ -718,19 +774,27 @@ impl EvalContext {
         // Cap scan; bound runs are newest-first (ORDER BY id DESC).
         const BOUND_SCAN_LIMIT: usize = 256;
         let bound = storage.list_bound_verification_runs(BOUND_SCAN_LIMIT)?;
-        if bound.is_empty() {
-            self.push_violation(
-                "verification_must_pass",
-                ".ledgerful/state/ledger.db",
-                "no verification run bound to a transaction (run verify with --tx-id or during commit hooks)".to_string(),
-            );
-            return Ok(());
-        }
 
+        // 0214-A2: resolve changed_paths before bound.is_empty() so an empty
+        // --pr range with no bound run is an idle note, not a violation.
         let changed_paths = match self.resolve_risk()? {
             Some(r) => r.changed_paths,
             None => Vec::new(),
         };
+
+        if bound.is_empty() {
+            if self.evaluation_target_is_idle()? {
+                self.notes
+                    .push(VERIFICATION_MUST_PASS_IDLE_NOTE.to_string());
+            } else {
+                self.push_violation(
+                    "verification_must_pass",
+                    ".ledgerful/state/ledger.db",
+                    "no verification run bound to a transaction (run verify with --tx-id or during commit hooks)".to_string(),
+                );
+            }
+            return Ok(());
+        }
 
         // Empty change set → fall back to latest bound overall_pass.
         if changed_paths.is_empty() {
