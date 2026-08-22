@@ -267,12 +267,21 @@ impl CiArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum CiSubcommands {
-    /// Show differences in CI configuration and gates
+    /// List indexed CI gates (inventory; not a working-tree diff)
+    #[command(visible_alias = "list")]
     Diff {
         /// Output as JSON
         #[arg(long)]
         json: bool,
     },
+}
+
+pub(crate) fn format_ci_inventory_preamble(tree_clean: bool) -> &'static str {
+    if tree_clean {
+        "No CI configuration changes in the working tree. Showing indexed gates (not a diff of this change)."
+    } else {
+        "Indexed CI gates (catalog; this command does not diff workflow files)."
+    }
 }
 
 pub fn execute_ci(args: CiArgs) -> Result<()> {
@@ -313,9 +322,15 @@ pub fn execute_ci(args: CiArgs) -> Result<()> {
                     serde_json::to_string_pretty(&results).into_diagnostic()?
                 );
             } else {
+                // Same empty-tree class as scan / policy idle. Git or filter
+                // failure is treated as dirty so this SQLite inventory still prints.
+                let tree_clean = crate::git::status::collect_changed_files_for_filter(&layout)
+                    .map(|changes| changes.is_empty())
+                    .unwrap_or(false);
+                println!("{}", format_ci_inventory_preamble(tree_clean));
                 println!(
                     "{}",
-                    "CI Gate Summary"
+                    "CI Gate Inventory"
                         .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
                 );
                 let mut table = Table::new();
@@ -336,4 +351,21 @@ pub fn execute_ci(args: CiArgs) -> Result<()> {
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::format_ci_inventory_preamble;
+
+    #[test]
+    fn format_ci_inventory_preamble_clean_vs_dirty() {
+        assert_eq!(
+            format_ci_inventory_preamble(true),
+            "No CI configuration changes in the working tree. Showing indexed gates (not a diff of this change)."
+        );
+        assert_eq!(
+            format_ci_inventory_preamble(false),
+            "Indexed CI gates (catalog; this command does not diff workflow files)."
+        );
+    }
 }

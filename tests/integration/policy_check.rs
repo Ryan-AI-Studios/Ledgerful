@@ -5,8 +5,8 @@
 
 use ledgerful::commands::init::execute_init;
 use ledgerful::commands::policy_check::{
-    POLICY_CHECK_SCHEMA_VERSION, PolicyCheckReport, evaluate_policy_check, execute_policy_check,
-    parse_policy_toml,
+    POLICY_CHECK_SCHEMA_VERSION, PolicyCheckReport, VERIFICATION_MUST_PASS_IDLE_NOTE,
+    evaluate_policy_check, execute_policy_check, parse_policy_toml,
 };
 use ledgerful::config::model::Config;
 
@@ -495,6 +495,9 @@ fn verification_must_pass_fails_when_no_runs() {
     let _ni = non_interactive();
     let _guard = DirGuard::new(root);
     execute_init(false, false).unwrap();
+    // 0214: retarget CX2-P1 onto an explicit dirty file so the assertion
+    // does not depend on untracked init leftovers.
+    fs::write(root.join("dirty.txt"), "uncommitted\n").unwrap();
 
     write_policy(
         root,
@@ -534,6 +537,9 @@ fn verification_must_pass_rejects_unbound_only_runs() {
     let _ni = non_interactive();
     let _guard = DirGuard::new(root);
     execute_init(false, false).unwrap();
+    // 0214: retarget CX2-P1 onto an explicit dirty file so the assertion
+    // does not depend on untracked init leftovers.
+    fs::write(root.join("dirty.txt"), "uncommitted\n").unwrap();
 
     // Passing unbound run must not satisfy the rule.
     {
@@ -567,6 +573,175 @@ fail_on = "off"
                 && v.message.contains("bound to a transaction")),
         "unbound-only must not satisfy: {:?}",
         report.violations
+    );
+}
+
+/// 0214-A: idle local target + no bound run is a note, not a violation.
+#[test]
+#[serial(env, cwd)]
+fn verification_must_pass_idle_no_runs_is_note() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "base\n").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let _ni = non_interactive();
+    let _guard = DirGuard::new(root);
+    execute_init(false, false).unwrap();
+    git_add_and_commit_if_dirty(root, "commit init artifacts");
+    // Watch-ignored build artifacts must not defeat idle (live engine `target/`).
+    fs::create_dir_all(root.join("target")).unwrap();
+    fs::write(root.join("target/junk"), "build artifact\n").unwrap();
+
+    write_policy(
+        root,
+        r#"
+preset = "enforce"
+[rules]
+require_signed_entries = false
+no_pending_tx = false
+verification_must_pass = true
+max_risk_without_adr = "off"
+fail_on = "off"
+"#,
+    );
+
+    let report = evaluate_policy_check(None, None, None).unwrap();
+    assert!(
+        report.passed,
+        "idle + no bound must pass: {:?}",
+        report.violations
+    );
+    assert!(
+        !report
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "verification_must_pass"),
+        "idle must not emit verification_must_pass violation: {:?}",
+        report.violations
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n == VERIFICATION_MUST_PASS_IDLE_NOTE),
+        "expected idle note, got {:?}",
+        report.notes
+    );
+}
+
+/// 0214-A: idle local target + unbound-only passing run is still a note.
+#[test]
+#[serial(env, cwd)]
+fn verification_must_pass_idle_unbound_only_is_note() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "base\n").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let _ni = non_interactive();
+    let _guard = DirGuard::new(root);
+    execute_init(false, false).unwrap();
+
+    {
+        let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
+        let db_path = layout.state_subdir().join("ledger.db");
+        let storage = StorageManager::init(db_path.as_std_path()).unwrap();
+        storage
+            .save_verification_run(&chrono::Utc::now().to_rfc3339(), Some("[]"), true, None)
+            .unwrap();
+    }
+    git_add_and_commit_if_dirty(root, "commit init artifacts");
+
+    write_policy(
+        root,
+        r#"
+preset = "enforce"
+[rules]
+require_signed_entries = false
+no_pending_tx = false
+verification_must_pass = true
+max_risk_without_adr = "off"
+fail_on = "off"
+"#,
+    );
+
+    let report = evaluate_policy_check(None, None, None).unwrap();
+    assert!(
+        report.passed,
+        "idle + unbound-only must pass: {:?}",
+        report.violations
+    );
+    assert!(
+        !report
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "verification_must_pass"),
+        "idle unbound-only must not emit verification_must_pass violation: {:?}",
+        report.violations
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n == VERIFICATION_MUST_PASS_IDLE_NOTE),
+        "expected idle note, got {:?}",
+        report.notes
+    );
+}
+
+/// 0214-A2: `--pr` empty change set + no bound + rule on is the same idle note.
+#[test]
+#[serial(env, cwd)]
+fn verification_must_pass_pr_empty_range_no_bound_is_note() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "base\n").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let _ni = non_interactive();
+    let _guard = DirGuard::new(root);
+    execute_init(false, false).unwrap();
+    git_add_and_commit_if_dirty(root, "commit init artifacts");
+
+    write_policy(
+        root,
+        r#"
+preset = "enforce"
+[rules]
+require_signed_entries = false
+no_pending_tx = false
+verification_must_pass = true
+max_risk_without_adr = "off"
+fail_on = "off"
+"#,
+    );
+    commit_policy(root, "base with verification_must_pass on");
+
+    let report = evaluate_policy_check(Some("HEAD...HEAD"), None, None).unwrap();
+    assert!(
+        report.passed,
+        "idle --pr empty range must pass: {:?}",
+        report.violations
+    );
+    assert!(
+        !report
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "verification_must_pass"),
+        "empty --pr + no bound must not emit verification_must_pass: {:?}",
+        report.violations
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n == VERIFICATION_MUST_PASS_IDLE_NOTE),
+        "expected idle note, got {:?}",
+        report.notes
     );
 }
 

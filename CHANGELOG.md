@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Empty-tree `policy check` scare + `ci diff` inventory (0214):** On a
+  clean working tree with no pending transactions (or `--pr` with an empty
+  change set), `verification_must_pass` with no bound verification run is a
+  note, not a violation. Unbound runs still never satisfy the rule; a bound
+  fail still violates even when idle. `ci diff` (alias `ci list`) is an
+  indexed CI-gate inventory, not a working-tree workflow diff. JSON array
+  shape unchanged. No Cargo bump.
+
 - **Doctor header vs Index Health + gemini CLI vs Cloud Ask (0209):** Human
   header “warning(s)” now counts action-critical warns (what Index Health
   expands), with ` · {n} optional` when optional warns exist. JSON
