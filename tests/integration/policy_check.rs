@@ -590,6 +590,9 @@ fn verification_must_pass_idle_no_runs_is_note() {
     let _guard = DirGuard::new(root);
     execute_init(false, false).unwrap();
     git_add_and_commit_if_dirty(root, "commit init artifacts");
+    // Watch-ignored build artifacts must not defeat idle (live engine `target/`).
+    fs::create_dir_all(root.join("target")).unwrap();
+    fs::write(root.join("target/junk"), "build artifact\n").unwrap();
 
     write_policy(
         root,

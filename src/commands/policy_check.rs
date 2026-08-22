@@ -697,8 +697,9 @@ impl EvalContext {
 
     /// Idle evaluation target for `verification_must_pass` only.
     ///
-    /// Fail-closed: git errors propagate (`open_repo?` / `get_repo_status?`).
-    /// Do not reuse `resolve_risk`'s local `unwrap_or_default` / `Ok(None)`.
+    /// Fail-closed: git errors propagate via `collect_changed_files_for_filter`
+    /// (`open_repo?` / `get_repo_status?`). Do not reuse `resolve_risk`'s local
+    /// `unwrap_or_default` / `Ok(None)`.
     fn evaluation_target_is_idle(&self) -> Result<bool> {
         if self.is_pr_mode {
             // Pending is workspace; `--pr` idle iff the committed change set is empty.
@@ -712,9 +713,11 @@ impl EvalContext {
             return Ok(changed_paths.is_empty());
         }
 
-        let root = self.layout.root.as_std_path();
-        let repo = open_repo(root)?;
-        let changes = get_repo_status(&repo)?;
+        // Same empty-tree definition as scan / change-context: gix status
+        // plus watch.ignore_patterns (target/**, .ledgerful/**, …). Raw
+        // get_repo_status can list those paths on a porcelain-clean engine
+        // checkout and would turn idle into a merge scare.
+        let changes = crate::git::status::collect_changed_files_for_filter(&self.layout)?;
         if !changes.is_empty() {
             return Ok(false);
         }

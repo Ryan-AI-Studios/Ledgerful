@@ -1,7 +1,5 @@
 use crate::commands::helpers::get_layout;
 use crate::config::load::load_config;
-use crate::git::repo::open_repo;
-use crate::git::status::get_repo_status;
 use crate::impact::packet::{DeployManifestChange, ManifestType};
 use crate::output::empty::{EmptyReason, config_enable_hint, format_json_empty_state};
 use crate::output::table::Table;
@@ -324,13 +322,11 @@ pub fn execute_ci(args: CiArgs) -> Result<()> {
                     serde_json::to_string_pretty(&results).into_diagnostic()?
                 );
             } else {
-                // Git failure is treated as dirty so this SQLite inventory still prints.
-                let tree_clean = match open_repo(layout.root.as_std_path()) {
-                    Ok(repo) => get_repo_status(&repo)
-                        .map(|changes| changes.is_empty())
-                        .unwrap_or(false),
-                    Err(_) => false,
-                };
+                // Same empty-tree class as scan / policy idle. Git or filter
+                // failure is treated as dirty so this SQLite inventory still prints.
+                let tree_clean = crate::git::status::collect_changed_files_for_filter(&layout)
+                    .map(|changes| changes.is_empty())
+                    .unwrap_or(false);
                 println!("{}", format_ci_inventory_preamble(tree_clean));
                 println!(
                     "{}",
