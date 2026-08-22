@@ -112,6 +112,40 @@ fn env_example_incremental_index_makes_config_schema_ready() {
             .any(|r| r["varName"] == "GEMINI_API_KEY" && r["isSecret"] == true),
         "GEMINI_API_KEY must be declared secret: {stdout}"
     );
+    let quiet = rows
+        .iter()
+        .find(|r| r["varName"] == "LEDGERFUL_QUIET")
+        .unwrap_or_else(|| panic!("LEDGERFUL_QUIET row missing: {stdout}"));
+    assert_eq!(
+        quiet["required"], false,
+        "empty .env.example KEY= is not required: {stdout}"
+    );
+    assert_eq!(
+        quiet["sourceKind"], "dotenvExample",
+        "schema sourceKind must round-trip DOTENV_EXAMPLE: {stdout}"
+    );
+
+    let (human_schema, stderr, code) = run_cli(root, &["config", "schema"]);
+    assert_eq!(code, 0, "config schema; stderr={stderr}");
+    assert!(
+        human_schema.contains("LEDGERFUL_QUIET"),
+        "human schema must list LEDGERFUL_QUIET, got: {human_schema}"
+    );
+    assert!(
+        human_schema.contains("DOTENV_EXAMPLE"),
+        "human schema Source must print DOTENV_EXAMPLE, got: {human_schema}"
+    );
+    assert!(
+        !human_schema.contains("YES"),
+        "human schema must not print Req YES for dotenv rows, got: {human_schema}"
+    );
+    // Source-column token, not substring of LEDGERFUL_CONFIG_HOME / LEDGERFUL_DEFAULT_CONFIG.
+    assert!(
+        !human_schema
+            .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .any(|tok| tok == "CONFIG"),
+        "human schema must not print Source CONFIG, got: {human_schema}"
+    );
 
     let (surfaces, stderr, code) = run_cli(root, &["surfaces", "--json"]);
     assert_eq!(code, 0, "surfaces --json; stderr={stderr}");
