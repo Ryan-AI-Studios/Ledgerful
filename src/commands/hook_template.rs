@@ -13,8 +13,8 @@ use miette::{IntoDiagnostic, Result};
 use std::fs;
 
 use crate::commands::hook_repair::{
-    HooksDirResolution, detect_third_party_at_hooks_dir, detect_third_party_hook_manager,
-    resolve_hooks_dir,
+    HooksDirResolution, contains_legacy_gate_marker, detect_third_party_at_hooks_dir,
+    detect_third_party_hook_manager, repair_content, resolve_hooks_dir,
 };
 
 /// Product template version stamped into marker comments (`:vN`).
@@ -323,7 +323,7 @@ pub fn extract_marker_block(content: &str, kind: GateKind) -> MarkerExtract {
 }
 
 /// Byte length of the line ending at `pos` in `s` (`\r\n` → 2, `\n`/`\r` → 1, else 0).
-fn line_ending_len(s: &str, pos: usize) -> usize {
+pub(crate) fn line_ending_len(s: &str, pos: usize) -> usize {
     if pos >= s.len() {
         return 0;
     }
@@ -754,7 +754,19 @@ pub fn ensure_gate_on_hook_file(
     if !hook_path.exists() {
         return Ok(false);
     }
-    let existing = fs::read_to_string(hook_path.as_std_path()).into_diagnostic()?;
+    let mut existing = fs::read_to_string(hook_path.as_std_path()).into_diagnostic()?;
+    let mut wrote = false;
+    // 0206-A1: a living `# <legacy>-*-gate` is an alias of the current marker.
+    // Must rewrite (not merely search) before `kind.marker()`; otherwise
+    // `append_if_absent=false` is a silent no-op (`EnsureAction::MarkerAbsent`).
+    if contains_legacy_gate_marker(&existing) {
+        let (rewritten, changed, _near_misses) = repair_content(&existing);
+        if changed {
+            fs::write(hook_path.as_std_path(), &rewritten).into_diagnostic()?;
+            existing = rewritten;
+            wrote = true;
+        }
+    }
     if existing.contains(kind.marker()) {
         let (updated, action) = ensure_block_in_content(&existing, kind, bypass_command);
         match action {
@@ -781,7 +793,7 @@ pub fn ensure_gate_on_hook_file(
                 );
                 return Ok(false);
             }
-            EnsureAction::AlreadyCurrent | EnsureAction::MarkerAbsent => return Ok(false),
+            EnsureAction::AlreadyCurrent | EnsureAction::MarkerAbsent => return Ok(wrote),
         }
     }
     if append_if_absent {
@@ -795,7 +807,7 @@ pub fn ensure_gate_on_hook_file(
         file.write_all(block.as_bytes()).into_diagnostic()?;
         return Ok(true);
     }
-    Ok(false)
+    Ok(wrote)
 }
 
 #[cfg(test)]
@@ -1094,5 +1106,58 @@ if command -v ledgerful &>/dev/null; then
         assert!(!r.refreshed.is_empty());
         let after = fs::read_to_string(&hook).unwrap();
         assert_eq!(after, before);
+    }
+
+    /// 0206-A1: ensure rewrites a living legacy marker before the current
+    /// `kind.marker()` check so append-if-absent does not add a second pair.
+    #[test]
+    fn ensure_rewrites_legacy_verify_before_marker_check() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = Utf8PathBuf::from_path_buf(tmp.path().join("pre-push")).unwrap();
+        let brand = crate::commands::hook_repair::LEGACY_BINARY;
+        let content = format!(
+            r#"#!/usr/bin/env bash
+
+# ledgerful-ledger-gate: auto-installed by `ledgerful init`
+if command -v ledgerful &>/dev/null; then
+    if ! ledgerful ledger status --compact --exit-code --verify-signatures; then
+        echo "[Ledgerful] Blocked by ledger state."
+        echo "[Ledgerful] Fix the issues or bypass with: git push --no-verify"
+        exit 1
+    fi
+fi
+
+# {brand}-verify-gate: fast scoped verification (pre-push only)
+if command -v ledgerful &>/dev/null; then
+    if ! ledgerful verify --scope fast 2>/dev/null; then
+        echo ""
+        echo "  Pre-push quality gate FAILED (ledgerful verify --scope fast)."
+        echo "  Fix the above errors before pushing."
+        echo ""
+        echo "  Bypass (not recommended): git push --no-verify"
+        exit 1
+    fi
+fi
+"#
+        );
+        fs::write(&path, content).unwrap();
+
+        let _ = ensure_gate_on_hook_file(&path, GateKind::Verify, "git push --no-verify", true)
+            .unwrap();
+        let after = fs::read_to_string(path.as_std_path()).unwrap();
+        assert_eq!(
+            after.matches("# ledgerful-ledger-gate").count(),
+            1,
+            "ledger must not be duplicated:\n{after}"
+        );
+        assert_eq!(
+            after.matches("# ledgerful-verify-gate").count(),
+            1,
+            "verify must be rewritten not appended:\n{after}"
+        );
+        assert!(
+            !after.contains(&format!("# {brand}-")),
+            "legacy markers must be gone:\n{after}"
+        );
     }
 }

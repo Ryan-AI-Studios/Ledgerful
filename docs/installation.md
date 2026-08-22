@@ -133,6 +133,9 @@ Notes:
   active ledger is correct.
 - Hook discovery honours `core.hooksPath` and linked worktrees; hooks outside the repository are
   reported and never rewritten. Husky / lefthook / pre-commit managed hooks are refused.
+- `update --repair-hooks` de-duplicates dual-brand gates (legacy ChangeGuard markers beside
+  current `ledgerful-*` blocks), including commit-msg intent and post-commit. `init` treats a
+  living legacy gate marker as already installed and does not append a second pair.
 - Stale or unknown config keys load with defaults and surface as doctor WARNINGs — they are never
   a hard parse failure and are never auto-rewritten (`deny_unknown_fields` is intentionally not
   used). Edit `.ledgerful/config.toml` (or re-init carefully) to clear them.

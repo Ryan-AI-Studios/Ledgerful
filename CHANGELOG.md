@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Dual-brand hook de-dup / init alias (0206):** `update --repair-hooks`
+  removes leftover `# changeguard-*-gate` blocks when a current sibling
+  exists, including intent and post-commit. `init` treats those legacy
+  markers as already installed and does not append a second pair.
+  Same-brand duplicate current markers collapse (keep later). Doctor
+  `legacy-hooks` also fires on N>1 current same-suffix markers. Does not
+  rewrite husky/lefthook; `--no-verify` is not the fix.
+
 - **Config schema required/source_kind + diff OS/git noise (0216):**
   Empty `.env.example` `KEY=` is not required. `config schema` Source /
   `sourceKind` round-trips `DOTENV_EXAMPLE` / `dotenvExample` (unknown

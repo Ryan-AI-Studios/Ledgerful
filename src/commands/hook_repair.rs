@@ -30,7 +30,7 @@ use std::path::{Path, PathBuf};
 
 /// Retired product binary name, built via `concat!` so the brand is not a
 /// greppable literal in the binary (R6 / DoD-14).
-const LEGACY_BINARY: &str = concat!("change", "guard");
+pub(crate) const LEGACY_BINARY: &str = concat!("change", "guard");
 
 /// Current product binary name.
 const CURRENT_BINARY: &str = "ledgerful";
@@ -551,6 +551,18 @@ fn contains_legacy_invocation(content: &str) -> bool {
     patterns.iter().any(|p| content.contains(p.as_str()))
 }
 
+/// True when `content` contains any `# {LEGACY_BINARY}-<suffix>` gate marker.
+pub(crate) fn contains_legacy_gate_marker(content: &str) -> bool {
+    GATE_SUFFIXES
+        .iter()
+        .any(|suffix| contains_legacy_gate_suffix(content, suffix))
+}
+
+/// True when `content` contains `# {LEGACY_BINARY}-{suffix}` (same-suffix alias).
+pub(crate) fn contains_legacy_gate_suffix(content: &str, suffix: &str) -> bool {
+    content.contains(&format!("# {LEGACY_BINARY}-{suffix}"))
+}
+
 /// Whether `content` contains any retired or current Ledgerful invocations we
 /// know how to repair.
 fn contains_ledger_invocation(content: &str) -> bool {
@@ -643,12 +655,42 @@ if command -v ledgerful &>/dev/null; then
 fi"#
     ));
 
+    // Live web half-migrated intent (verbatim; no 2>/dev/null on the hook call).
+    blocks.push(format!(
+        r#"# {brand}-intent-gate: auto-installed by `ledgerful init`
+if command -v ledgerful &>/dev/null; then
+    ledgerful internal hook-commit-msg "$1"
+fi"#
+    ));
+
+    // Live web half-migrated post-commit (verbatim; no 2>/dev/null on the hook call).
+    blocks.push(format!(
+        r#"# {brand}-post-commit-gate: auto-installed by `ledgerful init`
+if command -v ledgerful &>/dev/null; then
+    ledgerful internal hook-post-commit "$@"
+fi"#
+    ));
+
+    // Original-brand twins (`{brand} init` + `command -v {brand}`).
+    blocks.push(format!(
+        r#"# {brand}-intent-gate: auto-installed by `{brand} init`
+if command -v {brand} &>/dev/null; then
+    {brand} internal hook-commit-msg "$1"
+fi"#
+    ));
+    blocks.push(format!(
+        r#"# {brand}-post-commit-gate: auto-installed by `{brand} init`
+if command -v {brand} &>/dev/null; then
+    {brand} internal hook-post-commit "$@"
+fi"#
+    ));
+
     blocks
 }
 
 /// Extract a gate block starting at `start` (index of `# …-gate`). The block
 /// runs through the closing `fi` lines that match nested `if`s of a standard
-/// gate (or a single `fi` for intent/post-commit).
+/// gate (or a single `fi` for intent/post-commit). Offsets are CRLF-safe.
 fn extract_gate_block(content: &str, start: usize) -> Option<&str> {
     let rest = &content[start..];
     let mut depth = 0i32;
@@ -656,12 +698,9 @@ fn extract_gate_block(content: &str, start: usize) -> Option<&str> {
     let mut consumed = 0usize;
     for line in rest.lines() {
         let line_len = line.len();
-        // Account for the newline that follows (except possibly last line).
-        let step = if consumed + line_len < rest.len() {
-            line_len + 1
-        } else {
-            line_len
-        };
+        // CRLF-safe: str::lines() strips endings; advance by the real ending length.
+        let ending_len = crate::commands::hook_template::line_ending_len(rest, consumed + line_len);
+        let step = line_len + ending_len;
         let trimmed = line.trim();
         if trimmed.starts_with("if ") || trimmed == "if" || trimmed.starts_with("if\t") {
             depth += 1;
@@ -777,21 +816,7 @@ fn dedup_legacy_blocks(content: &str) -> (String, bool, Vec<String>) {
         if is_exact {
             // Tier 1: remove the exact known generated block (and surrounding
             // blank lines).
-            if let Some(idx) = result.find(&block) {
-                let mut start = idx;
-                let mut end = idx + block.len();
-                // Swallow leading newlines.
-                while start > 0 && result.as_bytes()[start - 1] == b'\n' {
-                    start -= 1;
-                    if start > 0 && result.as_bytes()[start - 1] == b'\n' {
-                        break;
-                    }
-                }
-                // Swallow one trailing newline.
-                if end < result.len() && result.as_bytes()[end] == b'\n' {
-                    end += 1;
-                }
-                result.replace_range(start..end, "\n");
+            if remove_extracted_block(&mut result, &block) {
                 changed = true;
             }
         } else if block_only_recognised_invocations(&block) {
@@ -806,11 +831,147 @@ fn dedup_legacy_blocks(content: &str) -> (String, bool, Vec<String>) {
 }
 
 /// Full repair transform for one hook file's contents.
-fn repair_content(content: &str) -> (String, bool, Vec<String>) {
+///
+/// Order: de-dup legacy-marker blocks while they are still present, rewrite
+/// brand/invocations, then collapse N>1 current-brand same-suffix extras
+/// (0206-C). `pub(crate)` so init/ensure can alias-repair before append.
+pub(crate) fn repair_content(content: &str) -> (String, bool, Vec<String>) {
     // De-dup first while legacy markers are still present.
     let (after_dedup, dedup_changed, near_misses) = dedup_legacy_blocks(content);
     let (after_repl, repl_changed) = apply_replacements(&after_dedup);
-    (after_repl, dedup_changed || repl_changed, near_misses)
+    let (after_collapse, collapse_changed) = collapse_same_brand_current_blocks(&after_repl);
+    (
+        after_collapse,
+        dedup_changed || repl_changed || collapse_changed,
+        near_misses,
+    )
+}
+
+fn gate_kind_for_suffix(suffix: &str) -> Option<crate::commands::hook_template::GateKind> {
+    use crate::commands::hook_template::GateKind;
+    match suffix {
+        "ledger-gate" => Some(GateKind::Ledger),
+        "verify-gate" => Some(GateKind::Verify),
+        "intent-gate" => Some(GateKind::Intent),
+        "post-commit-gate" => Some(GateKind::PostCommit),
+        _ => None,
+    }
+}
+
+fn find_marker_blocks(content: &str, marker: &str) -> Vec<(usize, String)> {
+    let mut out = Vec::new();
+    let mut search_from = 0;
+    while let Some(rel) = content[search_from..].find(marker) {
+        let abs = search_from + rel;
+        if let Some(block) = extract_gate_block(content, abs) {
+            out.push((abs, block.to_string()));
+            search_from = abs + block.len().max(1);
+        } else {
+            break;
+        }
+    }
+    out
+}
+
+fn current_extra_is_droppable(suffix: &str, block: &str, known_rewritten: &[String]) -> bool {
+    use crate::commands::hook_template::TemplateClass;
+    if let Some(kind) = gate_kind_for_suffix(suffix) {
+        // Pre-commit vs pre-push historical bodies differ only in bypass string.
+        for bypass in ["git commit --no-verify", "git push --no-verify"] {
+            match crate::commands::hook_template::classify_block(kind, block, bypass) {
+                TemplateClass::Current | TemplateClass::Stale => return true,
+                TemplateClass::Unknown => {}
+            }
+        }
+    }
+    let normalized = block.replace("\r\n", "\n").trim().to_string();
+    known_rewritten.iter().any(|k| k == &normalized)
+}
+
+fn remove_extracted_block(result: &mut String, block: &str) -> bool {
+    let Some(idx) = result.find(block) else {
+        return false;
+    };
+    let mut start = idx;
+    let mut end = idx + block.len();
+    // Swallow one leading line ending (LF / CR / CRLF). Keep at most one
+    // blank separator; replace_range below writes a single `\n`.
+    if start > 0 {
+        let bytes = result.as_bytes();
+        if bytes[start - 1] == b'\n' {
+            start -= 1;
+            if start > 0 && bytes[start - 1] == b'\r' {
+                start -= 1;
+            }
+        } else if bytes[start - 1] == b'\r' {
+            start -= 1;
+        }
+    }
+    end += crate::commands::hook_template::line_ending_len(result, end);
+    result.replace_range(start..end, "\n");
+    true
+}
+
+/// Collapse N>1 `# ledgerful-<suffix>` blocks after marker rewrite.
+///
+/// `dedup_legacy_blocks` cannot see current-brand markers, so this must run
+/// **after** `apply_replacements`.
+///
+/// Keep-later is positional: among extras whose bodies classify as Current or
+/// Stale via `hook_template::classify_block`, or that match a known-generated
+/// block after brand rewrite (`apply_replacements` on known blocks), drop
+/// earlier droppable extras and keep the later (last) occurrence. Unknown
+/// stays. After a near-miss rewrite, intent/post-commit extras are often
+/// byte-identical unstamped Stale — drop the first (legacy-origin), keep the
+/// later product body; **0121** refresh then Stale→v2.
+fn collapse_same_brand_current_blocks(content: &str) -> (String, bool) {
+    let known_rewritten: Vec<String> = known_generated_legacy_blocks()
+        .iter()
+        .map(|k| {
+            apply_replacements(k)
+                .0
+                .replace("\r\n", "\n")
+                .trim()
+                .to_string()
+        })
+        .collect();
+
+    let mut result = content.to_string();
+    let mut changed = false;
+
+    for suffix in GATE_SUFFIXES {
+        let marker = format!("# {CURRENT_BINARY}-{suffix}");
+        let blocks = find_marker_blocks(&result, &marker);
+        if blocks.len() <= 1 {
+            continue;
+        }
+
+        let droppable: Vec<usize> = blocks
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, block))| current_extra_is_droppable(suffix, block, &known_rewritten))
+            .map(|(i, _)| i)
+            .collect();
+        if droppable.len() <= 1 {
+            continue;
+        }
+        let Some(&keep) = droppable.last() else {
+            continue;
+        };
+        let to_drop: Vec<String> = droppable
+            .iter()
+            .copied()
+            .filter(|&i| i != keep)
+            .map(|i| blocks[i].1.clone())
+            .collect();
+        for block in to_drop {
+            if remove_extracted_block(&mut result, &block) {
+                changed = true;
+            }
+        }
+    }
+
+    (result, changed)
 }
 
 // ---------------------------------------------------------------------------
@@ -1155,6 +1316,10 @@ pub fn doctor_legacy_hook_findings(
                     duplicate_gates = true;
                 }
             }
+            // 0206-D: N>1 current same-suffix is a duplicate even with no legacy.
+            if content.matches(&current_m).count() > 1 {
+                duplicate_gates = true;
+            }
         }
 
         if contains_legacy_invocation(&content) {
@@ -1189,7 +1354,7 @@ pub fn doctor_legacy_hook_findings(
         findings.push(DoctorFinding::warn(
             "legacy-hooks",
             DoctorCategory::Migration,
-            "duplicate gate blocks (legacy + current markers); run `ledgerful update --repair-hooks`",
+            "duplicate gate blocks (legacy + current, or more than one current marker of the same type); run `ledgerful update --repair-hooks`",
         ));
     }
     if inert_gate {
@@ -2025,5 +2190,355 @@ fi
             assert!(changed);
             assert_eq!(out, format!("# ledgerful-{suffix}: hello"));
         }
+    }
+
+    fn live_web_pre_push() -> String {
+        format!(
+            r#"#!/usr/bin/env bash
+
+# {brand}-ledger-gate: auto-installed by `ledgerful init`
+if command -v ledgerful &>/dev/null; then
+    if ! ledgerful ledger status --compact --exit-code --verify-signatures 2>/dev/null; then
+        echo ""
+        echo "  Resolve with:"
+        echo "    Pending tx:  ledgerful ledger commit <tx-id> --summary '...' --reason '...'"
+        echo "    Drift:       ledgerful ledger reconcile --all --reason '...'"
+        echo ""
+        echo "  Bypass (not recommended): git push --no-verify"
+        exit 1
+    fi
+fi
+
+
+# {brand}-verify-gate: fast scoped verification (pre-push only)
+if command -v ledgerful &>/dev/null; then
+    if ! ledgerful verify --scope fast 2>/dev/null; then
+        echo ""
+        echo "  Pre-push quality gate FAILED (ledgerful verify --scope fast)."
+        echo "  Fix the above errors before pushing."
+        echo ""
+        echo "  Bypass (not recommended): git push --no-verify"
+        exit 1
+    fi
+fi
+
+
+# ledgerful-ledger-gate: auto-installed by `ledgerful init`
+if command -v ledgerful &>/dev/null; then
+    if ! ledgerful ledger status --compact --exit-code --verify-signatures; then
+        echo "[Ledgerful] Blocked by ledger state."
+        echo "[Ledgerful] Resolve with:"
+        echo "[Ledgerful]   Pending tx:  ledgerful ledger commit <tx-id> --summary '...' --reason '...'"
+        echo "[Ledgerful]   Drift:       ledgerful ledger reconcile --all --reason '...'"
+        echo "[Ledgerful] Fix the issues or bypass with: git push --no-verify"
+        exit 1
+    fi
+fi
+
+
+# ledgerful-verify-gate: fast scoped verification (pre-push only)
+if command -v ledgerful &>/dev/null; then
+    if ! ledgerful verify --scope fast; then
+        echo "[Ledgerful] Push blocked by verification failure."
+        echo "[Ledgerful] Fix the issues or bypass with: git push --no-verify"
+        exit 1
+    fi
+fi
+"#,
+            brand = LEGACY_BINARY
+        )
+    }
+
+    fn live_web_pre_commit() -> String {
+        format!(
+            r#"#!/usr/bin/env bash
+
+# {brand}-ledger-gate: auto-installed by `ledgerful init`
+if command -v ledgerful &>/dev/null; then
+    if ! ledgerful ledger status --compact --exit-code --verify-signatures 2>/dev/null; then
+        echo ""
+        echo "  Resolve with:"
+        echo "    Pending tx:  ledgerful ledger commit <tx-id> --summary '...' --reason '...'"
+        echo "    Drift:       ledgerful ledger reconcile --all --reason '...'"
+        echo ""
+        echo "  Bypass (not recommended): git commit --no-verify"
+        exit 1
+    fi
+fi
+
+
+# ledgerful-ledger-gate: auto-installed by `ledgerful init`
+if command -v ledgerful &>/dev/null; then
+    if ! ledgerful ledger status --compact --exit-code --verify-signatures; then
+        echo "[Ledgerful] Blocked by ledger state."
+        echo "[Ledgerful] Resolve with:"
+        echo "[Ledgerful]   Pending tx:  ledgerful ledger commit <tx-id> --summary '...' --reason '...'"
+        echo "[Ledgerful]   Drift:       ledgerful ledger reconcile --all --reason '...'"
+        echo "[Ledgerful] Fix the issues or bypass with: git commit --no-verify"
+        exit 1
+    fi
+fi
+"#,
+            brand = LEGACY_BINARY
+        )
+    }
+
+    fn live_web_commit_msg() -> String {
+        format!(
+            r#"#!/usr/bin/env bash
+
+# {brand}-intent-gate: auto-installed by `ledgerful init`
+if command -v ledgerful &>/dev/null; then
+    ledgerful internal hook-commit-msg "$1"
+fi
+
+
+# ledgerful-intent-gate: auto-installed by `ledgerful init`
+if command -v ledgerful &>/dev/null; then
+    ledgerful internal hook-commit-msg "$1"
+fi
+"#,
+            brand = LEGACY_BINARY
+        )
+    }
+
+    fn live_web_post_commit() -> String {
+        format!(
+            r#"#!/usr/bin/env bash
+
+# {brand}-post-commit-gate: auto-installed by `ledgerful init`
+if command -v ledgerful &>/dev/null; then
+    ledgerful internal hook-post-commit "$@"
+fi
+
+
+# ledgerful-post-commit-gate: auto-installed by `ledgerful init`
+if command -v ledgerful &>/dev/null; then
+    ledgerful internal hook-post-commit "$@"
+fi
+"#,
+            brand = LEGACY_BINARY
+        )
+    }
+
+    fn unstamped_verify_gate() -> &'static str {
+        "\
+# ledgerful-verify-gate: fast scoped verification (pre-push only)
+if command -v ledgerful &>/dev/null; then
+    if ! ledgerful verify --scope fast; then
+        echo \"[Ledgerful] Push blocked by verification failure.\"
+        echo \"[Ledgerful] Fix the issues or bypass with: git push --no-verify\"
+        exit 1
+    fi
+fi
+"
+    }
+
+    /// 0206-B: dual-brand commit-msg intent is tier-1, not a near-miss.
+    #[test]
+    fn repair_dedups_dual_marker_intent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = make_repo(tmp.path());
+        let hook_path = root.join(".git").join("hooks").join("commit-msg");
+        fs::write(&hook_path, live_web_commit_msg()).unwrap();
+
+        let report = repair_hooks_at(&root, false).unwrap();
+        assert!(
+            report.near_miss_blocks.is_empty(),
+            "intent must be known-generated, not near-miss: {:?}",
+            report.near_miss_blocks
+        );
+        let after = fs::read_to_string(&hook_path).unwrap();
+        assert_eq!(
+            after.matches("# ledgerful-intent-gate").count(),
+            1,
+            "expected one intent-gate after dedup; got:\n{after}"
+        );
+        assert!(!after.contains(&format!("# {LEGACY_BINARY}-")));
+    }
+
+    /// Dual-brand live-web intent on CRLF must still be tier-1: extract must
+    /// advance by `\r\n` (2), not `+ 1`, or the block truncates before `fi`.
+    #[test]
+    fn repair_dedups_dual_marker_intent_crlf() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = make_repo(tmp.path());
+        let hook_path = root.join(".git").join("hooks").join("commit-msg");
+        let crlf = live_web_commit_msg().replace('\n', "\r\n");
+        fs::write(&hook_path, crlf).unwrap();
+
+        let report = repair_hooks_at(&root, false).unwrap();
+        assert!(
+            report.near_miss_blocks.is_empty(),
+            "CRLF intent must be known-generated, not near-miss: {:?}",
+            report.near_miss_blocks
+        );
+        let after = fs::read_to_string(&hook_path).unwrap();
+        assert_eq!(
+            after.matches("# ledgerful-intent-gate").count(),
+            1,
+            "expected one intent-gate after CRLF dedup; got:\n{after}"
+        );
+        assert!(!after.contains(&format!("# {LEGACY_BINARY}-")));
+    }
+
+    /// 0206-B: dual-brand post-commit is tier-1, not a near-miss.
+    #[test]
+    fn repair_dedups_dual_marker_post_commit() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = make_repo(tmp.path());
+        let hook_path = root.join(".git").join("hooks").join("post-commit");
+        fs::write(&hook_path, live_web_post_commit()).unwrap();
+
+        let report = repair_hooks_at(&root, false).unwrap();
+        assert!(
+            report.near_miss_blocks.is_empty(),
+            "post-commit must be known-generated, not near-miss: {:?}",
+            report.near_miss_blocks
+        );
+        let after = fs::read_to_string(&hook_path).unwrap();
+        assert_eq!(
+            after.matches("# ledgerful-post-commit-gate").count(),
+            1,
+            "expected one post-commit-gate after dedup; got:\n{after}"
+        );
+        assert!(!after.contains(&format!("# {LEGACY_BINARY}-")));
+    }
+
+    /// DoD-1: live web four-hook dual-brand corpus repairs to one current
+    /// marker per gate type, zero legacy markers, empty near-miss.
+    #[test]
+    fn repair_four_hook_live_web_corpus() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = make_repo(tmp.path());
+        let hooks = root.join(".git").join("hooks");
+        fs::write(hooks.join("pre-push"), live_web_pre_push()).unwrap();
+        fs::write(hooks.join("pre-commit"), live_web_pre_commit()).unwrap();
+        fs::write(hooks.join("commit-msg"), live_web_commit_msg()).unwrap();
+        fs::write(hooks.join("post-commit"), live_web_post_commit()).unwrap();
+
+        let report = repair_hooks_at(&root, false).unwrap();
+        assert!(
+            report.near_miss_blocks.is_empty(),
+            "near-miss must be empty after 0206-B: {:?}",
+            report.near_miss_blocks
+        );
+        assert!(report.residual_invocations.is_empty());
+
+        let pre_push = fs::read_to_string(hooks.join("pre-push")).unwrap();
+        let pre_commit = fs::read_to_string(hooks.join("pre-commit")).unwrap();
+        let commit_msg = fs::read_to_string(hooks.join("commit-msg")).unwrap();
+        let post_commit = fs::read_to_string(hooks.join("post-commit")).unwrap();
+
+        assert_eq!(pre_push.matches("# ledgerful-ledger-gate").count(), 1);
+        assert_eq!(pre_push.matches("# ledgerful-verify-gate").count(), 1);
+        assert_eq!(pre_commit.matches("# ledgerful-ledger-gate").count(), 1);
+        assert_eq!(commit_msg.matches("# ledgerful-intent-gate").count(), 1);
+        assert_eq!(
+            post_commit.matches("# ledgerful-post-commit-gate").count(),
+            1
+        );
+
+        for (name, body) in [
+            ("pre-push", &pre_push),
+            ("pre-commit", &pre_commit),
+            ("commit-msg", &commit_msg),
+            ("post-commit", &post_commit),
+        ] {
+            assert!(
+                !body.contains(&format!("# {LEGACY_BINARY}-")),
+                "{name} still has legacy markers:\n{body}"
+            );
+        }
+    }
+
+    /// Original-brand intent twin is known-generated (0206-B1).
+    #[test]
+    fn repair_dedups_original_brand_intent() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = make_repo(tmp.path());
+        let hook_path = root.join(".git").join("hooks").join("commit-msg");
+        let dual = format!(
+            r#"#!/usr/bin/env bash
+
+# {brand}-intent-gate: auto-installed by `{brand} init`
+if command -v {brand} &>/dev/null; then
+    {brand} internal hook-commit-msg "$1"
+fi
+
+
+# ledgerful-intent-gate: auto-installed by `ledgerful init`
+if command -v ledgerful &>/dev/null; then
+    ledgerful internal hook-commit-msg "$1"
+fi
+"#,
+            brand = LEGACY_BINARY
+        );
+        fs::write(&hook_path, dual).unwrap();
+
+        let report = repair_hooks_at(&root, false).unwrap();
+        assert!(
+            report.near_miss_blocks.is_empty(),
+            "original-brand intent must be tier-1: {:?}",
+            report.near_miss_blocks
+        );
+        let after = fs::read_to_string(&hook_path).unwrap();
+        assert_eq!(after.matches("# ledgerful-intent-gate").count(), 1);
+        assert!(!after.contains(&format!("# {LEGACY_BINARY}-")));
+    }
+
+    /// DoD-3: two current-brand same-suffix markers (no legacy) fire
+    /// `legacy-hooks`; repair leaves one.
+    #[test]
+    fn doctor_and_repair_same_brand_duplicate_verify() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = make_repo(tmp.path());
+        let hook_path = root.join(".git").join("hooks").join("pre-push");
+        let body = unstamped_verify_gate();
+        let dual = format!("#!/usr/bin/env bash\n\n{body}\n{body}");
+        fs::write(&hook_path, dual).unwrap();
+
+        let findings = doctor_legacy_hook_findings(&root);
+        assert!(
+            findings.iter().any(|f| f.code == "legacy-hooks"),
+            "expected legacy-hooks finding on N>1 current verify; got {findings:?}"
+        );
+        assert!(
+            findings.iter().any(|f| f.code == "legacy-hooks"
+                && (f.message.contains("duplicate") || f.message.contains("repair-hooks"))),
+            "expected duplicate/repair-hooks message; got {findings:?}"
+        );
+
+        let report = repair_hooks_at(&root, false).unwrap();
+        assert!(report.near_miss_blocks.is_empty(), "{:?}", report);
+        let after = fs::read_to_string(&hook_path).unwrap();
+        assert_eq!(
+            after.matches("# ledgerful-verify-gate").count(),
+            1,
+            "same-brand collapse must leave one verify; got:\n{after}"
+        );
+        assert!(!after.contains(&format!("# {LEGACY_BINARY}-")));
+    }
+
+    /// Same-brand unstamped verify duplicates on CRLF must collapse to one.
+    #[test]
+    fn repair_same_brand_duplicate_verify_crlf() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = make_repo(tmp.path());
+        let hook_path = root.join(".git").join("hooks").join("pre-push");
+        let body = unstamped_verify_gate();
+        let dual = format!("#!/usr/bin/env bash\n\n{body}\n{body}");
+        let crlf = dual.replace('\n', "\r\n");
+        fs::write(&hook_path, crlf).unwrap();
+
+        let report = repair_hooks_at(&root, false).unwrap();
+        assert!(report.near_miss_blocks.is_empty(), "{:?}", report);
+        let after = fs::read_to_string(&hook_path).unwrap();
+        assert_eq!(
+            after.matches("# ledgerful-verify-gate").count(),
+            1,
+            "same-brand CRLF collapse must leave one verify; got:\n{after}"
+        );
+        assert!(!after.contains(&format!("# {LEGACY_BINARY}-")));
     }
 }
