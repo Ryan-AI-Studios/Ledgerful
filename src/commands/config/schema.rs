@@ -7,6 +7,7 @@ use crate::output::table::Table;
 use crate::state::storage::StorageManager;
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream};
+use std::str::FromStr;
 
 pub fn execute_config_schema(json: bool) -> Result<()> {
     let layout = get_layout()?;
@@ -22,24 +23,43 @@ pub fn execute_config_schema(json: bool) -> Result<()> {
 
     let rows = stmt
         .query_map([], |row| {
-            Ok(EnvDeclaration {
-                var_name: row.get(0)?,
-                source_kind: serde_json::from_str(&format!("\"{}\"", row.get::<_, String>(1)?))
-                    .unwrap_or(EnvSourceKind::Config),
-                required: row.get::<_, i32>(2)? != 0,
-                is_secret: row.get::<_, i32>(3)? != 0,
-                default_value_redacted: row.get(4)?,
-                description: row.get(5)?,
-                owner: row.get(6)?,
-                environment: row.get(7)?,
-                confidence: 1.0,
-            })
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, i32>(2)?,
+                row.get::<_, i32>(3)?,
+                row.get::<_, Option<String>>(4)?,
+                row.get::<_, Option<String>>(5)?,
+                row.get::<_, Option<String>>(6)?,
+                row.get::<_, Option<String>>(7)?,
+            ))
         })
         .into_diagnostic()?;
 
     let mut results = Vec::new();
     for row in rows {
-        results.push(row.into_diagnostic()?);
+        let (
+            var_name,
+            source_kind_raw,
+            required,
+            is_secret,
+            default_value_redacted,
+            description,
+            owner,
+            environment,
+        ) = row.into_diagnostic()?;
+        let source_kind = EnvSourceKind::from_str(&source_kind_raw)?;
+        results.push(EnvDeclaration {
+            var_name,
+            source_kind,
+            required: required != 0,
+            is_secret: is_secret != 0,
+            default_value_redacted,
+            description,
+            owner,
+            environment,
+            confidence: 1.0,
+        });
     }
 
     if json {

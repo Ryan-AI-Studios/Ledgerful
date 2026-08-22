@@ -8,6 +8,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Config schema required/source_kind + diff OS/git noise (0216):**
+  Empty `.env.example` `KEY=` is not required. `config schema` Source /
+  `sourceKind` round-trips `DOTENV_EXAMPLE` / `dotenvExample` (unknown
+  source_kind fails closed). `config diff` ignores OS/git process env
+  (`APPDATA`, `COLUMNS`, `GIT_BINARY` / `GIT_EXEC_PATH` /
+  `GIT_SSH_COMMAND`, `XDG_CONFIG_HOME`). Inline
+  `#[cfg(test)]` module env literals are not production missing
+  declarations. Real undeclared product keys (`GEMINI_FAST_MODEL`) stay
+  missing. No JSON wrap; 21-key `.env.example` set frozen.
+
 - **Observability empty taxonomy vs analyze-graph lie (0215):** On a
   populated graph with no repo-root OpenSLO YAML, `observability diff`
   and `observability coverage --json` report `noMatches` (add

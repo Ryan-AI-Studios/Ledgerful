@@ -59,6 +59,7 @@ mod cli_viz;
 mod cli_watch;
 mod common;
 mod complexity_scoring;
+mod config_schema_diff_honesty;
 mod cozo_schema_migration;
 mod cozo_vector_ops;
 mod cozodb_integrity;

@@ -61,6 +61,31 @@ impl std::fmt::Display for EnvSourceKind {
     }
 }
 
+/// Unknown `source_kind` from SQLite / CLI input. Fail closed (0216-B2): do
+/// not skip the row and do not silently relabel as `Config`.
+#[derive(Debug, thiserror::Error, miette::Diagnostic)]
+#[error(
+    "unknown env source_kind {found:?}; expected DOTENV_EXAMPLE, CONFIG, or DOCS (or camelCase dotenvExample/config/docs)"
+)]
+pub struct UnknownEnvSourceKind {
+    pub found: String,
+}
+
+impl std::str::FromStr for EnvSourceKind {
+    type Err = UnknownEnvSourceKind;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "DOTENV_EXAMPLE" | "dotenvExample" => Ok(EnvSourceKind::DotenvExample),
+            "CONFIG" | "config" => Ok(EnvSourceKind::Config),
+            "DOCS" | "docs" => Ok(EnvSourceKind::Docs),
+            _ => Err(UnknownEnvSourceKind {
+                found: s.to_string(),
+            }),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord, Hash)]
 #[serde(rename_all = "camelCase")]
 pub enum EnvReferenceKind {
@@ -184,6 +209,334 @@ fn collect_env_captures(
     }
 }
 
+/// Strip inline `#[cfg(test)] mod ident { ... }` bodies from Rust source
+/// before env-ref regex (0216-D). Brace matching is lexical (strings,
+/// comments, raw strings); a naive `{`/`}` counter is not used.
+fn strip_inline_cfg_test_modules(content: &str) -> String {
+    cfg_test_modules::strip(content)
+}
+
+mod cfg_test_modules {
+    const ATTR: &str = "#[cfg(test)]";
+
+    pub(super) fn strip(content: &str) -> String {
+        let mut ranges = Vec::new();
+        let mut i = 0;
+        while i < content.len() {
+            if content[i..].starts_with(ATTR)
+                && let Some(end) = try_inline_cfg_test_module(content, i)
+            {
+                ranges.push((i, end));
+                i = end;
+                continue;
+            }
+            if let Some(end) = skip_non_code(content, i) {
+                i = end;
+                continue;
+            }
+            i = next_char_end(content, i);
+        }
+        if ranges.is_empty() {
+            return content.to_string();
+        }
+        let mut out = String::with_capacity(content.len());
+        let mut last = 0;
+        for (start, end) in ranges {
+            out.push_str(&content[last..start]);
+            out.push(' ');
+            last = end;
+        }
+        out.push_str(&content[last..]);
+        out
+    }
+
+    fn try_inline_cfg_test_module(s: &str, i: usize) -> Option<usize> {
+        if !s[i..].starts_with(ATTR) {
+            return None;
+        }
+        let mut j = i + ATTR.len();
+        j = skip_ws(s, j);
+        if keyword_at(s, j, "pub") {
+            j += 3;
+            j = skip_ws(s, j);
+        }
+        if !keyword_at(s, j, "mod") {
+            return None;
+        }
+        j += 3;
+        j = skip_ws(s, j);
+        if j >= s.len() || !is_ident_start_at(s, j) {
+            return None;
+        }
+        j = skip_ident(s, j);
+        j = skip_ws(s, j);
+        if j >= s.len() || s.as_bytes()[j] != b'{' {
+            return None;
+        }
+        let close = matching_brace_end(s, j)?;
+        Some(close + 1)
+    }
+
+    fn matching_brace_end(s: &str, open: usize) -> Option<usize> {
+        let mut i = open;
+        let mut depth = 0;
+        while i < s.len() {
+            if let Some(end) = skip_non_code(s, i) {
+                i = end;
+                continue;
+            }
+            match s.as_bytes()[i] {
+                b'{' => {
+                    depth += 1;
+                    i += 1;
+                }
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        return Some(i);
+                    }
+                    i += 1;
+                }
+                _ => i = next_char_end(s, i),
+            }
+        }
+        None
+    }
+
+    fn skip_non_code(s: &str, i: usize) -> Option<usize> {
+        let bytes = s.as_bytes();
+        if i + 1 < s.len() && bytes[i] == b'/' {
+            if bytes[i + 1] == b'/' {
+                return Some(skip_line_comment(s, i));
+            }
+            if bytes[i + 1] == b'*' {
+                return Some(skip_block_comment(s, i));
+            }
+        }
+        if let Some(end) = try_skip_raw_string(s, i) {
+            return Some(end);
+        }
+        if let Some(q) = string_start_quote(s, i) {
+            return Some(skip_quoted_string(s, q));
+        }
+        if let Some(q) = char_start_quote(s, i) {
+            return Some(skip_char_or_lifetime(s, q));
+        }
+        None
+    }
+
+    fn skip_line_comment(s: &str, mut i: usize) -> usize {
+        i += 2;
+        let bytes = s.as_bytes();
+        while i < s.len() && bytes[i] != b'\n' {
+            i += 1;
+        }
+        i
+    }
+
+    fn skip_block_comment(s: &str, mut i: usize) -> usize {
+        i += 2;
+        let bytes = s.as_bytes();
+        let mut depth = 1;
+        while i + 1 < s.len() && depth > 0 {
+            if bytes[i] == b'/' && bytes[i + 1] == b'*' {
+                depth += 1;
+                i += 2;
+            } else if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                depth -= 1;
+                i += 2;
+            } else {
+                i = next_char_end(s, i);
+            }
+        }
+        if depth > 0 { s.len() } else { i }
+    }
+
+    fn try_skip_raw_string(s: &str, i: usize) -> Option<usize> {
+        let bytes = s.as_bytes();
+        if i >= s.len() || !is_token_start(s, i) {
+            return None;
+        }
+        let mut j = i;
+        if bytes[j] == b'b' || bytes[j] == b'c' {
+            j += 1;
+            if j >= s.len() {
+                return None;
+            }
+        }
+        if bytes[j] != b'r' {
+            return None;
+        }
+        j += 1;
+        let hash_start = j;
+        while j < s.len() && bytes[j] == b'#' {
+            j += 1;
+        }
+        let n_hashes = j - hash_start;
+        if j >= s.len() || bytes[j] != b'"' {
+            return None;
+        }
+        j += 1;
+        while j < s.len() {
+            if bytes[j] == b'"' {
+                let after = j + 1;
+                if after + n_hashes <= s.len()
+                    && bytes[after..after + n_hashes].iter().all(|&b| b == b'#')
+                {
+                    return Some(after + n_hashes);
+                }
+            }
+            j += 1;
+        }
+        Some(s.len())
+    }
+
+    fn string_start_quote(s: &str, i: usize) -> Option<usize> {
+        let bytes = s.as_bytes();
+        if i >= s.len() {
+            return None;
+        }
+        if bytes[i] == b'"' {
+            return Some(i);
+        }
+        if is_token_start(s, i)
+            && i + 1 < s.len()
+            && (bytes[i] == b'b' || bytes[i] == b'c')
+            && bytes[i + 1] == b'"'
+        {
+            return Some(i + 1);
+        }
+        None
+    }
+
+    fn skip_quoted_string(s: &str, mut i: usize) -> usize {
+        i += 1;
+        let bytes = s.as_bytes();
+        while i < s.len() {
+            match bytes[i] {
+                b'\\' => {
+                    i += 1;
+                    if i < s.len() {
+                        i = next_char_end(s, i);
+                    }
+                }
+                b'"' => return i + 1,
+                _ => i = next_char_end(s, i),
+            }
+        }
+        s.len()
+    }
+
+    fn char_start_quote(s: &str, i: usize) -> Option<usize> {
+        let bytes = s.as_bytes();
+        if i >= s.len() {
+            return None;
+        }
+        if bytes[i] == b'\'' {
+            return Some(i);
+        }
+        if is_token_start(s, i) && i + 1 < s.len() && bytes[i] == b'b' && bytes[i + 1] == b'\'' {
+            return Some(i + 1);
+        }
+        None
+    }
+
+    fn skip_char_or_lifetime(s: &str, mut i: usize) -> usize {
+        i += 1;
+        if i >= s.len() {
+            return i;
+        }
+        let bytes = s.as_bytes();
+        if bytes[i] == b'\\' {
+            i += 1;
+            if i < s.len() && bytes[i] == b'u' && i + 1 < s.len() && bytes[i + 1] == b'{' {
+                i += 2;
+                while i < s.len() && bytes[i] != b'}' {
+                    i += 1;
+                }
+                if i < s.len() {
+                    i += 1;
+                }
+            } else if i < s.len() {
+                i = next_char_end(s, i);
+            }
+            if i < s.len() && bytes[i] == b'\'' {
+                i += 1;
+            }
+            return i;
+        }
+        if is_ident_start_at(s, i) {
+            let after_ident = skip_ident(s, i);
+            if after_ident < s.len() && s.as_bytes()[after_ident] == b'\'' {
+                return after_ident + 1;
+            }
+            return after_ident;
+        }
+        i = next_char_end(s, i);
+        if i < s.len() && s.as_bytes()[i] == b'\'' {
+            i += 1;
+        }
+        i
+    }
+
+    fn keyword_at(s: &str, i: usize, kw: &str) -> bool {
+        if !s[i..].starts_with(kw) {
+            return false;
+        }
+        let after = i + kw.len();
+        after == s.len() || !is_ident_continue_at(s, after)
+    }
+
+    fn skip_ws(s: &str, mut i: usize) -> usize {
+        let bytes = s.as_bytes();
+        while i < s.len() && matches!(bytes[i], b' ' | b'\t' | b'\n' | b'\r') {
+            i += 1;
+        }
+        i
+    }
+
+    fn skip_ident(s: &str, mut i: usize) -> usize {
+        if i >= s.len() || !is_ident_start_at(s, i) {
+            return i;
+        }
+        i = next_char_end(s, i);
+        while i < s.len() && is_ident_continue_at(s, i) {
+            i = next_char_end(s, i);
+        }
+        i
+    }
+
+    fn is_token_start(s: &str, i: usize) -> bool {
+        match s[..i].chars().next_back() {
+            None => true,
+            Some(c) => !is_ident_continue(c),
+        }
+    }
+
+    fn is_ident_start_at(s: &str, i: usize) -> bool {
+        s[i..].chars().next().is_some_and(is_ident_start)
+    }
+
+    fn is_ident_continue_at(s: &str, i: usize) -> bool {
+        s[i..].chars().next().is_some_and(is_ident_continue)
+    }
+
+    fn is_ident_start(c: char) -> bool {
+        c.is_ascii_alphabetic() || c == '_'
+    }
+
+    fn is_ident_continue(c: char) -> bool {
+        c.is_ascii_alphanumeric() || c == '_'
+    }
+
+    fn next_char_end(s: &str, i: usize) -> usize {
+        match s[i..].chars().next() {
+            Some(c) => i + c.len_utf8(),
+            None => s.len(),
+        }
+    }
+}
+
 pub struct EnvSchemaExtractor;
 
 impl EnvSchemaExtractor {
@@ -217,7 +570,7 @@ impl EnvSchemaExtractor {
                 declarations.push(EnvDeclaration {
                     var_name: key.clone(),
                     source_kind: EnvSourceKind::DotenvExample,
-                    required: value.is_empty(),
+                    required: false,
                     is_secret: is_secret_name(&key),
                     default_value_redacted,
                     description: None,
@@ -300,32 +653,38 @@ impl EnvSchemaExtractor {
             .unwrap_or_default();
         match extension {
             "rs" => {
-                collect_env_captures(&RUST_ENV_VAR, content, EnvReferenceKind::Read, &mut result);
+                let content = strip_inline_cfg_test_modules(content);
+                collect_env_captures(&RUST_ENV_VAR, &content, EnvReferenceKind::Read, &mut result);
                 collect_env_captures(
                     &RUST_ENV_VAR_OS,
-                    content,
+                    &content,
                     EnvReferenceKind::Read,
                     &mut result,
                 );
                 collect_env_captures(
                     &RUST_ENV_MACRO,
-                    content,
+                    &content,
                     EnvReferenceKind::Read,
                     &mut result,
                 );
                 collect_env_captures(
                     &RUST_OPTION_ENV,
-                    content,
+                    &content,
                     EnvReferenceKind::Read,
                     &mut result,
                 );
                 collect_env_captures(
                     &RUST_ENV_VAR_DEFAULT,
-                    content,
+                    &content,
                     EnvReferenceKind::ReadWithDefault,
                     &mut result,
                 );
-                collect_env_captures(&RUST_SET_ENV, content, EnvReferenceKind::Write, &mut result);
+                collect_env_captures(
+                    &RUST_SET_ENV,
+                    &content,
+                    EnvReferenceKind::Write,
+                    &mut result,
+                );
             }
             "ts" | "js" | "tsx" | "jsx" => {
                 collect_env_captures(&TS_ENV_DOT, content, EnvReferenceKind::Read, &mut result);
@@ -624,6 +983,10 @@ mod tests {
             .unwrap_or_else(|e| panic!("committed .env.example must be readable at {path:?}: {e}"))
     }
 
+    fn ref_names(refs: &[EnvReference]) -> Vec<&str> {
+        refs.iter().map(|r| r.var_name.as_str()).collect()
+    }
+
     #[test]
     fn committed_env_example_has_frozen_v1_keys() {
         let decls = EnvSchemaExtractor::extract_from_dotenv(&committed_env_example());
@@ -689,7 +1052,11 @@ mod tests {
                     "secret {} must stay empty (not a live token)",
                     decl.var_name
                 );
-                assert!(decl.required, "empty secret {} is required", decl.var_name);
+                assert!(
+                    !decl.required,
+                    "empty secret {} is not required",
+                    decl.var_name
+                );
             }
         }
 
@@ -724,5 +1091,140 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn extract_from_dotenv_empty_value_is_not_required() {
+        let decls = EnvSchemaExtractor::extract_from_dotenv("FOO=\nAPI_TOKEN=\n");
+        let foo = decls
+            .iter()
+            .find(|d| d.var_name == "FOO")
+            .expect("FOO declaration");
+        assert!(!foo.required);
+        assert_eq!(foo.default_value_redacted.as_deref(), Some(EMPTY_DEFAULT));
+        assert!(!foo.is_secret);
+
+        let token = decls
+            .iter()
+            .find(|d| d.var_name == "API_TOKEN")
+            .expect("API_TOKEN declaration");
+        assert!(token.is_secret);
+        assert!(!token.required);
+        assert_eq!(token.default_value_redacted.as_deref(), Some(EMPTY_DEFAULT));
+    }
+
+    #[test]
+    fn env_source_kind_from_str_accepts_display_and_camel_case() {
+        assert_eq!(
+            "DOTENV_EXAMPLE".parse::<EnvSourceKind>().unwrap(),
+            EnvSourceKind::DotenvExample
+        );
+        assert_eq!(
+            "dotenvExample".parse::<EnvSourceKind>().unwrap(),
+            EnvSourceKind::DotenvExample
+        );
+        assert_eq!(
+            "CONFIG".parse::<EnvSourceKind>().unwrap(),
+            EnvSourceKind::Config
+        );
+        assert_eq!(
+            "config".parse::<EnvSourceKind>().unwrap(),
+            EnvSourceKind::Config
+        );
+        assert_eq!(
+            "DOCS".parse::<EnvSourceKind>().unwrap(),
+            EnvSourceKind::Docs
+        );
+        assert_eq!(
+            "docs".parse::<EnvSourceKind>().unwrap(),
+            EnvSourceKind::Docs
+        );
+    }
+
+    #[test]
+    fn env_source_kind_from_str_unknown_is_err_not_config() {
+        let err = "NOT_A_KIND"
+            .parse::<EnvSourceKind>()
+            .expect_err("unknown source_kind must fail closed");
+        assert_eq!(err.found, "NOT_A_KIND");
+        assert!(
+            "Config".parse::<EnvSourceKind>().is_err(),
+            "PascalCase Config must not silently map to Config"
+        );
+        assert!(
+            "dotenv_example".parse::<EnvSourceKind>().is_err(),
+            "snake_case must not map to DotenvExample"
+        );
+    }
+
+    #[test]
+    fn env_source_kind_serde_serializes_camel_case() {
+        let json = serde_json::to_string(&EnvSourceKind::DotenvExample).unwrap();
+        assert_eq!(json, "\"dotenvExample\"");
+    }
+
+    #[test]
+    fn extract_references_from_source_skips_cfg_test_module_env_literals() {
+        let content = r#"
+use std::env;
+
+pub fn load() {
+    let _ = env::var("GEMINI_FAST_MODEL");
+}
+
+#[cfg(test)]
+mod tests {
+    let _ = std::env::var("DATABASE_URL");
+    let _ = env!("API_TOKEN");
+}
+"#;
+        let refs = EnvSchemaExtractor::extract_references_from_source(
+            std::path::Path::new("src/index/runtime_usage.rs"),
+            content,
+        );
+        let names = ref_names(&refs);
+        assert!(
+            names.contains(&"GEMINI_FAST_MODEL"),
+            "production env::var must still extract, got {names:?}"
+        );
+        assert!(
+            !names.contains(&"DATABASE_URL"),
+            "cfg(test) module DATABASE_URL must not be a production ref, got {names:?}"
+        );
+        assert!(
+            !names.contains(&"API_TOKEN"),
+            "cfg(test) module API_TOKEN must not be a production ref, got {names:?}"
+        );
+    }
+
+    #[test]
+    fn extract_references_from_source_cfg_test_raw_string_brace_does_not_eat_production() {
+        let content = r##"
+use std::env;
+
+#[cfg(test)]
+mod tests {
+    let _ = r#"{ not a rust brace }"#;
+    let _ = r#"{"#;
+    let _ = std::env::var("DATABASE_URL");
+}
+
+pub fn load() {
+    let _ = env::var("GEMINI_FAST_MODEL");
+}
+"##;
+        let refs = EnvSchemaExtractor::extract_references_from_source(
+            std::path::Path::new("src/index/runtime_usage.rs"),
+            content,
+        );
+        let names = ref_names(&refs);
+        assert!(
+            names.contains(&"GEMINI_FAST_MODEL"),
+            "production env::var after cfg(test) module must still extract (naive brace count would eat it), got {names:?}"
+        );
+        assert!(
+            !names.contains(&"DATABASE_URL"),
+            "cfg(test) module DATABASE_URL must not appear, got {names:?}"
+        );
     }
 }

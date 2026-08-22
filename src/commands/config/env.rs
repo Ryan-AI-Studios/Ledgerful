@@ -63,13 +63,22 @@ pub(crate) fn is_ignored_env_var(var: &str) -> bool {
         "USER",
         "SHELL",
         "TERM",
+        "COLUMNS",
         "CI",
         "PSModulePath",
         "XDG_CACHE_HOME",
+        "XDG_CONFIG_HOME",
         "LOCALAPPDATA",
+        "APPDATA",
         "TARGET",
         "USERNAME",
         "USERPROFILE",
+        // Git process override / PATH-class — not product schema. GIT_BINARY is
+        // a production env::var; GIT_EXEC_PATH / GIT_SSH_COMMAND are denylisted
+        // as the same git-process class.
+        "GIT_BINARY",
+        "GIT_EXEC_PATH",
+        "GIT_SSH_COMMAND",
         // Standard Rust/Cargo ecosystem variables — convention-based, not user-facing
         // configuration for ledgerful. CARGO_* is already covered by the starts_with
         // check below; these are the non-CARGO-prefixed ones.
@@ -212,5 +221,34 @@ mod tests {
             is_ignored_env_var("CLICOLOR_FORCE"),
             "CLICOLOR_FORCE must be ignored as a standard terminal color convention var"
         );
+    }
+
+    #[test]
+    fn is_ignored_env_var_os_git_process() {
+        for name in [
+            "APPDATA",
+            "COLUMNS",
+            "GIT_BINARY",
+            "GIT_EXEC_PATH",
+            "GIT_SSH_COMMAND",
+            "XDG_CONFIG_HOME",
+        ] {
+            assert!(
+                is_ignored_env_var(name),
+                "{name} must be ignored as OS/git-process env"
+            );
+        }
+        for name in [
+            "GEMINI_FAST_MODEL",
+            "GEMINI_DEEP_MODEL",
+            "ANTIGRAVITY_AGENT",
+            "DATABASE_URL",
+            "API_TOKEN",
+        ] {
+            assert!(
+                !is_ignored_env_var(name),
+                "{name} must not be ignored by name"
+            );
+        }
     }
 }
