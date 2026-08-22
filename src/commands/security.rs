@@ -62,13 +62,16 @@ fn truncate(s: &str, max_len: usize) -> String {
 /// re-indexing would be a no-op). Mirrors the exact `?[count(n)] := *node{id:
 /// n}` probe `doctor.rs`'s graph-state check already uses, so the two
 /// surfaces agree on what "graph populated" means.
-fn graph_has_any_nodes(cozo: &crate::state::storage_cozo::CozoStorage) -> bool {
-    cozo.run_script("?[count(n)] := *node{id: n}")
-        .ok()
-        .and_then(|res| res.rows.first().cloned())
-        .and_then(|r| r.first().cloned())
-        .map(|v| matches!(v, cozo::DataValue::Num(cozo::Num::Int(i)) if i > 0))
-        .unwrap_or(false)
+///
+/// 0215-A3: Cozo probe failure is a hard error, not a silent “unbuilt.”
+pub(crate) fn graph_has_any_nodes(cozo: &crate::state::storage_cozo::CozoStorage) -> Result<bool> {
+    let res = cozo.run_script("?[count(n)] := *node{id: n}")?;
+    let populated = res
+        .rows
+        .first()
+        .and_then(|r| r.first())
+        .is_some_and(|v| matches!(v, cozo::DataValue::Num(cozo::Num::Int(i)) if *i > 0));
+    Ok(populated)
 }
 
 /// Collect `(method, path_pattern)` routes from the SQLite `api_routes` table
@@ -166,7 +169,7 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
                 "Cedar files on disk but not in the graph. Run `ledgerful index --analyze-graph`."
                     .to_string(),
             )
-        } else if !graph_has_any_nodes(cozo) {
+        } else if !graph_has_any_nodes(cozo)? {
             (
                 crate::output::empty::EmptyReason::NoIndexedData,
                 "Knowledge graph has not been built yet. Run `ledgerful index --analyze-graph` first, \
@@ -357,7 +360,7 @@ fn execute_boundaries(json: bool, layout: &crate::state::layout::Layout) -> Resu
             }
         }
         let json_out = if auth_res.rows.is_empty() {
-            let (reason, message) = if graph_has_any_nodes(cozo) {
+            let (reason, message) = if graph_has_any_nodes(cozo)? {
                 (
                     crate::output::empty::EmptyReason::NoMatches,
                     "Knowledge graph is populated, but no Cedar policy/principal/action/resource nodes exist. \
@@ -402,7 +405,7 @@ fn execute_boundaries(json: bool, layout: &crate::state::layout::Layout) -> Resu
             // prerequisite gap), each with its own one-step next action,
             // matching the established taxonomy in `hotspots trend` and
             // `doctor`'s graph-state check.
-            if graph_has_any_nodes(cozo) {
+            if graph_has_any_nodes(cozo)? {
                 // DX1: when the graph is populated but no Cedar policy data
                 // exists, check whether any HTTP routes were detected. If so,
                 // offer to generate a permissive Cedar template from them

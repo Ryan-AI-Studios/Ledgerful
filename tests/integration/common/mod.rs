@@ -49,6 +49,20 @@ pub fn git_add_and_commit(dir: &Path, msg: &str) {
     git_cmd(dir, &["commit", "-m", msg]);
 }
 
+/// `git add -A` + commit only when the worktree is dirty (no-op if clean).
+#[allow(dead_code)]
+pub fn git_add_and_commit_if_dirty(dir: &Path, msg: &str) {
+    let status = Command::new("git")
+        .args(["status", "--porcelain"])
+        .current_dir(dir)
+        .output()
+        .expect("git status");
+    assert!(status.status.success(), "git status failed");
+    if !status.stdout.is_empty() {
+        git_add_and_commit(dir, msg);
+    }
+}
+
 #[allow(dead_code)]
 pub fn git_add_and_commit_no_verify(dir: &Path, msg: &str) {
     git_cmd(dir, &["add", "-A"]);

@@ -45,12 +45,14 @@ fn test_sparse_empty_states_json__slow() {
     assert_eq!(v["emptyReason"].as_str().unwrap(), "noIndexedData");
 
     // 3. Observability coverage
+    // After `init` the ledger seeds a mode transaction node in the graph, so the
+    // empty reason is the populated-graph-but-no-OpenSLO variant (0215).
     let out = Command::new(exe)
         .args(["observability", "coverage", "--json"])
         .output()
         .unwrap();
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["emptyReason"].as_str().unwrap(), "noIndexedData");
+    assert_eq!(v["emptyReason"].as_str().unwrap(), "noMatches");
 
     // 4. Security boundaries
     // After `init` the ledger seeds a mode transaction node in the graph, so the
@@ -84,13 +86,14 @@ fn test_sparse_empty_states_json__slow() {
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
     assert_eq!(v["emptyReason"].as_str().unwrap(), "noIndexedData");
 
-    // Clean diff for Observability Diff
+    // Observability Diff: populated graph + no OpenSLO YAML is NoMatches (0215),
+    // not NoIndexedData (`init` already seeds a mode-tx node).
     let out = Command::new(exe)
         .args(["observability", "diff", "--json"])
         .output()
         .unwrap();
     let v: Value = serde_json::from_slice(&out.stdout).unwrap();
-    assert_eq!(v["emptyReason"].as_str().unwrap(), "noIndexedData");
+    assert_eq!(v["emptyReason"].as_str().unwrap(), "noMatches");
 
     // 6. Test mapping EntityNotIndexed AFTER index
     let out = Command::new(exe)
