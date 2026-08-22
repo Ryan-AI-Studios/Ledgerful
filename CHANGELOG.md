@@ -8,6 +8,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Observability empty taxonomy vs analyze-graph lie (0215):** On a
+  populated graph with no repo-root OpenSLO YAML, `observability diff`
+  and `observability coverage --json` report `noMatches` (add
+  `observability/` then `index --analyze-graph`) instead of
+  `noIndexedData` / “No observability data found. Run `index
+  --analyze-graph` to populate.” Disk-present uningested YAML still
+  points at analyze-graph without an add-YAML lie. Indexed + clean
+  tree stays CleanDiff. Filter-only (0146); no JSON wrap; no product
+  OpenSLO pack.
+
 - **Empty-tree `policy check` scare + `ci diff` inventory (0214):** On a
   clean working tree with no pending transactions (or `--pr` with an empty
   change set), `verification_must_pass` with no bound verification run is a

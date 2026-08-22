@@ -1,11 +1,42 @@
 use crate::commands::dx1_templates::write_openslo_template;
 use crate::commands::helpers::get_layout;
+use crate::output::empty::EmptyReason;
 use crate::output::table::build_premium_table;
 use crate::state::storage::StorageManager;
 use crate::util::term::prompt_yes_no;
 use clap::{Args, Subcommand};
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
+
+/// 0215-A5: indexed==0 three-arm empty taxonomy (disk / unbuilt / NoMatches).
+/// CleanDiff is diff-only and stays in `execute_observability`.
+pub(crate) fn observability_indexed_zero_empty_state(
+    on_disk: bool,
+    graph_populated: bool,
+) -> (EmptyReason, String) {
+    if on_disk {
+        (
+            EmptyReason::NoIndexedData,
+            "OpenSLO files on disk but not in the graph. Run `ledgerful index --analyze-graph`."
+                .to_string(),
+        )
+    } else if !graph_populated {
+        (
+            EmptyReason::NoIndexedData,
+            "Knowledge graph has not been built yet. Run `ledgerful index --analyze-graph` first, \
+             then add OpenSLO files to 'observability/' if this repo uses OpenSLO."
+                .to_string(),
+        )
+    } else {
+        (
+            EmptyReason::NoMatches,
+            "Knowledge graph is populated, but no SLO/metric/alert/observability_signal nodes exist. \
+             This repo has no OpenSLO YAML configured — add them under 'observability/' and run \
+             `ledgerful index --analyze-graph` to populate this surface."
+                .to_string(),
+        )
+    }
+}
 
 #[derive(Args, Debug)]
 pub struct ObservabilityArgs {
@@ -103,7 +134,7 @@ pub fn execute_observability(args: ObservabilityArgs) -> Result<()> {
                         .if_supports_color(Stream::Stdout, |s| s.yellow())
                 );
                 println!(
-                    "  Note: The patterns extracted from your source code are stored in SQLite and shown in 'observability diff'."
+                    "  Note: 'observability diff' lists OpenSLO SLO, metric, alert, and signal nodes from the knowledge graph, not source-code LOG patterns."
                 );
                 println!(
                     "  Coverage specifically requires OpenSLO YAML definitions in the 'observability/' directory."
@@ -125,18 +156,21 @@ pub fn execute_observability(args: ObservabilityArgs) -> Result<()> {
                         "metric_count": mc,
                     }));
                 }
-                let output = crate::output::empty::format_json_empty_state(
-                    results,
-                    "results",
-                    || {
-                        (
-                        crate::output::empty::EmptyReason::NoIndexedData,
-                        "No OpenSLO coverage data found. Coverage specifically requires OpenSLO YAML \
-                         definitions in the 'observability/' directory. Once added, run \
-                         `ledgerful index --analyze-graph` to populate.".to_string(),
-                    )
-                    },
-                );
+                let output = if results.is_empty() {
+                    // Probe before the empty-state closure — graph_has_any_nodes is Result.
+                    let on_disk =
+                        crate::commands::surfaces::repo_root_openslo_present(&layout.root);
+                    let graph_populated = crate::commands::security::graph_has_any_nodes(cozo)?;
+                    let (reason, message) =
+                        observability_indexed_zero_empty_state(on_disk, graph_populated);
+                    crate::output::empty::format_json_empty_state(results, "results", || {
+                        (reason, message)
+                    })
+                } else {
+                    crate::output::empty::format_json_empty_state(results, "results", || {
+                        (EmptyReason::NoMatches, String::new())
+                    })
+                };
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&output).into_diagnostic()?
@@ -259,25 +293,35 @@ pub fn execute_observability(args: ObservabilityArgs) -> Result<()> {
                     ))
             });
 
+            // indexed is collected 3-required-field rows, not obs_res.rows.len().
+            let indexed = changed.len() + unchanged.len();
+            let indexed_zero_empty = if changed.is_empty() && indexed == 0 {
+                let on_disk = crate::commands::surfaces::repo_root_openslo_present(&layout.root);
+                let graph_populated = crate::commands::security::graph_has_any_nodes(cozo)?;
+                Some(observability_indexed_zero_empty_state(
+                    on_disk,
+                    graph_populated,
+                ))
+            } else {
+                None
+            };
+
             if json {
                 let json_out = if changed.is_empty() {
-                    let total_obs = unchanged.len();
-                    let (reason, msg) = if total_obs > 0 {
-                        (
-                            crate::output::empty::EmptyReason::CleanDiff,
-                            "No observability signals impacted by current diff.",
-                        )
+                    let (reason, msg) = if let Some(empty) = indexed_zero_empty {
+                        empty
                     } else {
                         (
-                            crate::output::empty::EmptyReason::NoIndexedData,
-                            "No observability data found. Run `ledgerful index --analyze-graph` to populate.",
+                            EmptyReason::CleanDiff,
+                            "No observability signals impacted by current diff.".to_string(),
                         )
                     };
                     serde_json::json!({
                         "changed": changed,
                         "unchanged_count": unchanged.len(),
                         "emptyReason": reason,
-                        "message": msg
+                        "message": msg,
+                        "indexedCount": indexed,
                     })
                 } else {
                     serde_json::json!({
@@ -298,17 +342,13 @@ pub fn execute_observability(args: ObservabilityArgs) -> Result<()> {
                 println!("Changed files in diff: {}", changed_files.len());
 
                 if changed.is_empty() {
-                    let total_obs = unchanged.len();
-                    if total_obs > 0 {
+                    if let Some((_, msg)) = indexed_zero_empty {
+                        println!("{}", msg.if_supports_color(Stream::Stdout, |s| s.dimmed()));
+                    } else if indexed > 0 {
                         println!(
                             "{}",
                             "No observability signals impacted by current diff."
                                 .if_supports_color(Stream::Stdout, |s| s.dimmed())
-                        );
-                    } else {
-                        println!(
-                            "{}",
-                            "No observability data found. Run `ledgerful index --analyze-graph` to populate.".if_supports_color(Stream::Stdout, |s| s.dimmed())
                         );
                     }
                 } else {
@@ -331,10 +371,12 @@ pub fn execute_observability(args: ObservabilityArgs) -> Result<()> {
                     }
                     println!("{}", table);
                 }
-                println!(
-                    "\n{} other observability signal(s) not impacted.",
-                    unchanged.len()
-                );
+                if indexed > 0 {
+                    println!(
+                        "\n{} other observability signal(s) not impacted.",
+                        unchanged.len()
+                    );
+                }
             }
         }
     }
@@ -392,6 +434,53 @@ mod tests {
         assert!(
             alert_pos < metric_alpha_pos && metric_alpha_pos < beta_pos,
             "expected deterministic order, got:\n{rendered}"
+        );
+    }
+
+    #[test]
+    fn observability_indexed_zero_empty_state_three_arms() {
+        let (reason, msg) = observability_indexed_zero_empty_state(true, true);
+        assert_eq!(reason, EmptyReason::NoIndexedData);
+        assert!(
+            msg.contains("index --analyze-graph"),
+            "disk-present arm must name analyze-graph, got: {msg}"
+        );
+        assert!(
+            !msg.to_lowercase().contains("add observability"),
+            "disk-present arm must not say add observability/, got: {msg}"
+        );
+
+        let (reason, msg) = observability_indexed_zero_empty_state(true, false);
+        assert_eq!(
+            reason,
+            EmptyReason::NoIndexedData,
+            "disk-first wins even when the graph is unpopulated"
+        );
+        assert!(
+            !msg.to_lowercase().contains("add observability"),
+            "disk-present unbuilt graph must not say add observability/, got: {msg}"
+        );
+
+        let (reason, msg) = observability_indexed_zero_empty_state(false, false);
+        assert_eq!(reason, EmptyReason::NoIndexedData);
+        assert!(
+            msg.contains("index --analyze-graph"),
+            "unbuilt-graph arm must name analyze-graph, got: {msg}"
+        );
+        assert!(
+            msg.contains("observability/"),
+            "unbuilt-graph arm still mentions observability/ after analyze-graph, got: {msg}"
+        );
+
+        let (reason, msg) = observability_indexed_zero_empty_state(false, true);
+        assert_eq!(reason, EmptyReason::NoMatches);
+        assert!(
+            msg.contains("observability/"),
+            "populated no-YAML arm must name observability/, got: {msg}"
+        );
+        assert!(
+            msg.contains("index --analyze-graph"),
+            "populated no-YAML arm still names ingest after add, got: {msg}"
         );
     }
 }
