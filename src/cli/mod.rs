@@ -761,6 +761,62 @@ mod tests {
         );
     }
 
+    #[test]
+    fn directory_flag_last_wins() {
+        let cli = Cli::try_parse_from(["ledgerful", "-C", "first", "-C", "second", "status"])
+            .expect("repeated -C should parse");
+        assert_eq!(
+            cli.directory.as_deref(),
+            Some("second"),
+            "clap Option last-wins; do not stack relative -C like git"
+        );
+    }
+
+    #[test]
+    fn directory_long_form_parses() {
+        let cli = Cli::try_parse_from(["ledgerful", "--directory", "C:\\dev\\web", "status"])
+            .expect("--directory should parse");
+        assert_eq!(cli.directory.as_deref(), Some("C:\\dev\\web"));
+    }
+
+    #[test]
+    fn top_level_status_compact_parses() {
+        let cli = Cli::try_parse_from(["ledgerful", "status", "--compact"]).unwrap();
+        match cli.command {
+            Commands::Status(StatusArgs { json, compact }) => {
+                assert!(compact);
+                assert!(!json);
+            }
+            other => panic!("expected Status, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn top_level_status_help_lists_compact_not_global() {
+        let result = Cli::try_parse_from(["ledgerful", "status", "--help"]);
+        assert!(
+            result.is_err(),
+            "--help should trigger clap's special error"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("--compact"),
+            "status help must mention --compact; got {err}"
+        );
+        assert!(
+            err.contains("--json"),
+            "status help must mention --json; got {err}"
+        );
+        assert!(
+            !err.contains("--global"),
+            "top-level status is not --global; got {err}"
+        );
+        assert!(
+            !err.contains("--all"),
+            "top-level status is not --all; got {err}"
+        );
+    }
+
     /// Compile-time/API contract test: prove all key facade exports remain public.
     #[test]
     fn facade_exports_reachable() {
@@ -772,6 +828,7 @@ mod tests {
             }),
             verbose: false,
             quiet: false,
+            directory: None,
         };
         let _: LedgerCommands = LedgerCommands::Status {
             entity: None,

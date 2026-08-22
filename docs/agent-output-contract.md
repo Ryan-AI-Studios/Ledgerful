@@ -309,11 +309,16 @@ ledgerful verify --json --quiet   # quiet is redundant for agents; machine mode 
 
 Top-level `status --json` (track **0149**) routes into the **same**
 `execute_ledger_status` path as `ledger status --json` — identical field set,
-no second DTO. Help text: ledger pending/drift status (same as `ledger status`).
+no second DTO. Top-level `status` accepts `--json` and `--compact` (not a full
+alias of `ledger status`; no `--global` / `--all`). Track **0200** adds
+`workRoot` and `stateDir` (schemaVersion stays **1**). Linked worktree
+(**0108**): `workRoot` is this worktree; `stateDir` is the main `.ledgerful`.
 
 ```json
 {
   "schemaVersion": 1,
+  "workRoot": "C:\\dev\\ledgerful",
+  "stateDir": "C:\\dev\\ledgerful\\.ledgerful",
   "pendingCount": 1,
   "unauditedCount": 0,
   "pendingTxIds": ["aaaaaaaa-....", "bbbbbbbb-...."],
@@ -325,7 +330,9 @@ no second DTO. Help text: ledger pending/drift status (same as `ledger status`).
 
 | Field | Notes |
 |---|---|
-| `schemaVersion` | `1` (added in 0093) |
+| `schemaVersion` | `1` (added in 0093; **0200** additive, not a v2 bump) |
+| `workRoot` | Absolute git worktree this command bound (same string as doctor `environment.workRoot`) |
+| `stateDir` | Absolute `.ledgerful` directory (same string as doctor `environment.stateDir`; linked worktree shares main) |
 | `pendingTxIds` | **Sorted** lexicographically for determinism |
 | `promoteOrphanTxId` / `promoteError` | Omitted when absent |
 

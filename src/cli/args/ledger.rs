@@ -200,7 +200,7 @@ pub enum LedgerCommands {
         #[arg(long)]
         force: bool,
     },
-    /// Show status of active transactions and uncommitted drift
+    /// Show pending/drift status; names workRoot (cwd or -C)
     #[command(visible_alias = "list")]
     Status {
         /// Show all historical transactions

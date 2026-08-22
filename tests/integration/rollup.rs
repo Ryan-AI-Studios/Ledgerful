@@ -2126,15 +2126,63 @@ fn canonicalize_failure_on_nonexistent_root_warns_and_skips() {
         parsed.total_repos, 1,
         "only the valid root should produce a repo"
     );
-    // The non-existent root is skipped by `resolve_roots` canonicalize failure.
-    // The tracing warning is not captured here; the behavioral invariant is that
-    // the bogus root contributes no repos and the run completes without error.
+    // The non-existent root is skipped by `resolve_roots` canonicalize failure
+    // and the skip reason must land in JSON `warnings[]` (0200-E1).
+    assert!(
+        !parsed.warnings.is_empty(),
+        "unresolved root must appear in warnings; warnings={:?}",
+        parsed.warnings
+    );
+    assert!(
+        parsed
+            .warnings
+            .iter()
+            .any(|w| w.contains("nonexistent_subdir")),
+        "skip reason must name the unresolved path; warnings={:?}",
+        parsed.warnings
+    );
     assert!(
         !parsed
             .repos
             .iter()
             .any(|p| p.repo_path.contains("nonexistent_subdir")),
         "nonexistent root must not appear in output repos"
+    );
+}
+
+#[test]
+#[serial(env, cwd)]
+fn canonicalize_failure_on_nonexistent_root_warns_timings_collector() {
+    let _env_non_interactive = non_interactive();
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+
+    make_fixture_repo(root, "repo_a", 1, 0, 0);
+
+    let missing_root = tmp.path().join("nonexistent_subdir");
+
+    let config = GlobalRollupConfig {
+        roots: vec![root.to_path_buf(), missing_root],
+        timeout_secs: 30,
+        staleness_secs: 3600,
+        max_depth: None,
+        enabled: true,
+    };
+
+    let _guard = DirGuard::new(root);
+    let summary = build_global_timings_summary(&config, &GlobalTimingsArgs::default()).unwrap();
+    assert!(
+        !summary.warnings.is_empty(),
+        "timings collector must surface unresolved-root skip reasons; warnings={:?}",
+        summary.warnings
+    );
+    assert!(
+        summary
+            .warnings
+            .iter()
+            .any(|w| w.contains("nonexistent_subdir")),
+        "skip reason must name the unresolved path; warnings={:?}",
+        summary.warnings
     );
 }
 

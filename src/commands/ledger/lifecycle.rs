@@ -42,6 +42,7 @@ pub fn execute_ledger_start(entity: String, category: &str, message: &str) -> Re
     let layout = get_layout()?;
     let mut storage = StorageManager::init_with_layout(&layout)?;
     let config = load_ledger_config(&layout)?;
+    let work_root = layout.root.clone();
     let mut tx_mgr = TransactionManager::new(&mut storage, layout.root.into(), config);
 
     let tx_id = tx_mgr
@@ -54,8 +55,9 @@ pub fn execute_ledger_start(entity: String, category: &str, message: &str) -> Re
         .map_err(|e| miette::miette!("{}", e))?;
 
     println!(
-        "Transaction started: {}",
-        tx_id.if_supports_color(Stream::Stdout, |s| s.cyan())
+        "Transaction started: {} @ {}",
+        tx_id.if_supports_color(Stream::Stdout, |s| s.cyan()),
+        work_root
     );
     Ok(())
 }
@@ -128,9 +130,10 @@ pub fn execute_ledger_commit(
     }
 
     println!(
-        "{}",
-        "Transaction committed."
-            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
+        "{} @ {}",
+        "Transaction committed"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold())),
+        layout.root
     );
 
     if git_options.with_git {
@@ -430,6 +433,7 @@ pub fn execute_ledger_atomic(
     let layout = get_layout()?;
     let mut storage = StorageManager::init_with_layout(&layout)?;
     let config = load_ledger_config(&layout)?;
+    let work_root = layout.root.clone();
     let mut tx_mgr = TransactionManager::new(&mut storage, layout.root.into(), config);
 
     tx_mgr
@@ -450,9 +454,10 @@ pub fn execute_ledger_atomic(
         .map_err(|e| miette::miette!("{}", e))?;
 
     println!(
-        "{}",
-        "Atomic change committed."
-            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
+        "{} @ {}",
+        "Atomic change committed"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold())),
+        work_root
     );
     Ok(())
 }

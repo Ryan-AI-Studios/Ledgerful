@@ -8,6 +8,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Ledger cwd/root honesty + `~` warnings (0200):** `ledger status --json`
+  names `workRoot` and `stateDir` (schemaVersion stays 1). Compact is
+  `Ledger [<workRoot>]: N pending, M unaudited drift.` Top-level
+  `status --compact` works. Global `-C` / `--directory` binds another
+  worktree (last-wins; empty no-op; missing/non-dir fail-closed). Start /
+  atomic / commit print `@ {workRoot}`. Default rollup root `~` expands
+  (`~/` and `~\` too); unresolved roots land in `warnings[]` on posture
+  **and** timings collectors. Does not retarget default roots, wrap status
+  JSON, or alias `LEDGERFUL_STATE_DIR`.
+
 - **Dual-brand hook de-dup / init alias (0206):** `update --repair-hooks`
   removes leftover `# changeguard-*-gate` blocks when a current sibling
   exists, including intent and post-commit. `init` treats those legacy

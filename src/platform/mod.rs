@@ -13,3 +13,5 @@ pub use paths::*;
 pub use process_policy::*;
 pub use repository::*;
 pub use shell::*;
+
+pub(crate) use paths::expand_leading_tilde;

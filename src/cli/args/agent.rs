@@ -270,10 +270,14 @@ pub struct VerifyArgs {
     pub json: bool,
 }
 
-/// Ledger pending/drift status (same as `ledger status`).
+/// Ledger pending/drift JSON (`--json`) and compact (`--compact`).
+/// Not a full alias of `ledger status`.
 #[derive(Args, Debug)]
 pub struct StatusArgs {
     /// Output as JSON (same payload as `ledger status --json`)
     #[arg(long)]
     pub json: bool,
+    /// One-line pending/drift summary (same as `ledger status --compact`)
+    #[arg(long)]
+    pub compact: bool,
 }

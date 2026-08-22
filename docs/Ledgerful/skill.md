@@ -286,7 +286,7 @@ Agent command sheet (local pack path): `.agents/skills/ledgerful/references/comm
 |---|---|---|
 | 1 | `ledgerful doctor --json` | Session/env readiness (`readyForPublish`); if `binary-behind-tree`, reinstall (`cargo install --path . --force`) before trusting `--help` / new flags |
 | 2 | `ledgerful change-context --json` | Default pre-edit packet (**pathMode=code**; process temporal demoted; `agentSummary`). Plan: `--paths src/foo.rs`. Restore: `--include-governance`. Mid-loop change-context; ship gate `verify --scope fast` |
-| 3 | `ledgerful ledger status --compact` or `--json` | Provenance / pending / drift |
+| 3 | `ledgerful ledger status --compact` or `--json` | Provenance / pending / drift; names `workRoot`. Multi-repo tracks: `cd` or `-C` / `--directory` before `ledger start` |
 | 4 | `ledgerful search …` (prefer `--auto-index` when stale) | Discovery (not full impact) |
 | 5 | `ledgerful verify --scope fast` | Local gate (pre-push style); **≠** full CI; self-repairs **head lag**; empty mapping still needs index / `--auto-index` |
 

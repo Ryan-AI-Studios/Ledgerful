@@ -1370,9 +1370,12 @@ impl Commands {
                     f.push("full");
                 }
             }
-            Commands::Status(StatusArgs { json }) => {
+            Commands::Status(StatusArgs { json, compact }) => {
                 if *json {
                     f.push("json");
+                }
+                if *compact {
+                    f.push("compact");
                 }
             }
             Commands::Gate { command } => match command {

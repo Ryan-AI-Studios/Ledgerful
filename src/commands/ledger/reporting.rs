@@ -31,6 +31,8 @@ const STATUS_JSON_SCHEMA_VERSION: u32 = 1;
 #[serde(rename_all = "camelCase")]
 pub struct StatusJson {
     pub schema_version: u32,
+    pub work_root: String,
+    pub state_dir: String,
     pub pending_count: usize,
     pub unaudited_count: usize,
     pub pending_tx_ids: Vec<String>,
@@ -45,15 +47,22 @@ pub struct StatusJson {
 
 /// Build the status JSON payload with lexicographically sorted `pendingTxIds`
 /// (determinism; 0093 DoD-8). Shared by the live path and unit tests.
+///
+/// `work_root` / `state_dir` are the same absolute strings doctor
+/// `environment` uses (`layout.root` / `layout.state_dir`). Always present.
 pub fn build_status_json(
     mut pending_tx_ids: Vec<String>,
     unaudited_count: usize,
     unaudited_file_count: usize,
     signals: &LifecycleSignals,
+    work_root: &str,
+    state_dir: &str,
 ) -> StatusJson {
     pending_tx_ids.sort();
     StatusJson {
         schema_version: STATUS_JSON_SCHEMA_VERSION,
+        work_root: work_root.to_string(),
+        state_dir: state_dir.to_string(),
         pending_count: pending_tx_ids.len(),
         unaudited_count,
         pending_tx_ids,
@@ -210,6 +219,8 @@ pub fn execute_ledger_status(opts: LedgerStatusOpts) -> Result<()> {
             unaudited.len(),
             unaudited_file_count,
             &signals,
+            layout.root.as_str(),
+            layout.state_dir.as_str(),
         );
 
         println!(
@@ -307,7 +318,8 @@ pub fn execute_ledger_status(opts: LedgerStatusOpts) -> Result<()> {
 
         if compact {
             let mut line = format!(
-                "Ledger: {} pending, {} unaudited drift.",
+                "Ledger [{}]: {} pending, {} unaudited drift.",
+                layout.root,
                 pending_count
                     .to_string()
                     .if_supports_color(Stream::Stdout, |s| s.yellow()),
@@ -350,6 +362,13 @@ pub fn execute_ledger_status(opts: LedgerStatusOpts) -> Result<()> {
             "{}",
             "Ledgerful Ledger Status"
                 .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
+        );
+        println!(
+            "Work root: {}",
+            layout
+                .root
+                .as_str()
+                .if_supports_color(Stream::Stdout, |s| s.cyan())
         );
 
         if let Ok(repo) = crate::git::repo::open_repo(layout.root.as_std_path())
@@ -675,16 +694,22 @@ mod status_json_tests {
             0,
             0,
             &signals,
+            "/repo",
+            "/repo/.ledgerful",
         );
         let b = build_status_json(
             vec!["m-tx".into(), "z-tx".into(), "a-tx".into()],
             0,
             0,
             &signals,
+            "/repo",
+            "/repo/.ledgerful",
         );
         assert_eq!(a.pending_tx_ids, vec!["a-tx", "m-tx", "z-tx"]);
         assert_eq!(a.pending_count, 3);
         assert_eq!(a.schema_version, STATUS_JSON_SCHEMA_VERSION);
+        assert_eq!(a.work_root, "/repo");
+        assert_eq!(a.state_dir, "/repo/.ledgerful");
         assert_eq!(a, b);
         let ja = serde_json::to_string(&a).unwrap();
         let jb = serde_json::to_string(&b).unwrap();
@@ -692,6 +717,8 @@ mod status_json_tests {
         let pretty = serde_json::to_string_pretty(&a).unwrap();
         assert!(pretty.contains("schemaVersion"));
         assert!(pretty.contains("pendingTxIds"));
+        assert!(pretty.contains("workRoot"));
+        assert!(pretty.contains("stateDir"));
     }
 
     #[test]
