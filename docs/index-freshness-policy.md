@@ -45,7 +45,7 @@ the age path is non-stale (not never-indexed / not time-stale):
 
 **Still not the readiness JSON SoT.** `ledgerful index --check --json` remains the
 authoritative content-aware readiness assessment (`ContentStalePopulated`,
-`stale_files`, etc.). Doctor Graph honesty closes the false-`Current` gap; it does
+`staleFiles`, etc.). Doctor Graph honesty closes the false-`Current` gap; it does
 **not** replace check JSON. Forbidden above still applies: doctor green ≠ index
 fresh.
 
@@ -83,13 +83,13 @@ serialize:
 
 | Field | Meaning on `--check` |
 |---|---|
-| `assessment.state` | Age + content: `FreshPopulated` only when age-fresh **and** content-clean |
+| `assessment.state` | Age + content: `FreshPopulated` only when age-fresh **and** content-clean. Enum **values** are PascalCase |
 | `ContentStalePopulated` | Age-fresh metadata + content-hash drift (never “fresh” with dirty tree) |
-| `assessment.stale_files` | Same content-drift count as top-level `stale_files` |
-| `assessment.indexed_files` | Active non-deleted row count (not drift) |
-| Top-level `stale_files` | `changed_or_unindexed` from content-hash drift |
+| `assessment.staleFiles` | Same content-drift count as top-level `staleFiles` |
+| `assessment.indexedFiles` | Active non-deleted row count (not drift) |
+| Top-level `staleFiles` | `changed_or_unindexed` from content-hash drift |
 
-**Ban:** `FreshPopulated` with top-level `stale_files > 0`. Human and JSON agree.
+**Ban:** `FreshPopulated` with top-level `staleFiles > 0`. Human and JSON agree.
 
 ## Search `--auto-index` and Tantivy (full-text)
 

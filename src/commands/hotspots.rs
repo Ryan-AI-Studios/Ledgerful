@@ -15,7 +15,19 @@ use crate::util::term::prompt_yes_no;
 use chrono::Utc;
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
+use serde::Serialize;
 use std::env;
+
+/// Truncate to `limit`, wrap as the hotspots list envelope, and echo `limit`.
+/// Shared by list and `--semantic` JSON printers so the two arms cannot drift.
+fn wrap_hotspots_list_json<T: Serialize>(mut items: Vec<T>, limit: usize) -> serde_json::Value {
+    items.truncate(limit);
+    let mut output = crate::output::empty::format_json_list_envelope(items, "files");
+    if let Some(map) = output.as_object_mut() {
+        map.insert("limit".to_string(), serde_json::json!(limit));
+    }
+    output
+}
 
 pub fn execute_hotspots(args: HotspotArgs) -> Result<()> {
     let current_dir = env::current_dir()
@@ -118,9 +130,14 @@ pub fn execute_hotspots(args: HotspotArgs) -> Result<()> {
         )?;
 
         if args.json {
+            let limit = args.limit.unwrap_or(config.hotspots.limit);
+            // find_semantic_hotspots ignores --limit; wrap_hotspots_list_json
+            // truncates the already-computed Vec so echoing `limit` matches
+            // the serialized `files` (no extra scan).
+            let output = wrap_hotspots_list_json(matches, limit);
             println!(
                 "{}",
-                serde_json::to_string_pretty(&matches)
+                serde_json::to_string_pretty(&output)
                     .map_err(|e| miette::miette!("Failed to serialize semantic hotspots: {}", e))?
             );
         } else {
@@ -157,9 +174,10 @@ pub fn execute_hotspots(args: HotspotArgs) -> Result<()> {
     }
 
     if args.json {
+        let output = wrap_hotspots_list_json(hotspots, query.limit);
         println!(
             "{}",
-            serde_json::to_string_pretty(&hotspots).map_err(|e| miette::miette!("{}", e))?
+            serde_json::to_string_pretty(&output).map_err(|e| miette::miette!("{}", e))?
         );
     } else if args.centrality {
         crate::output::human::print_hotspots_table_with_centrality(&hotspots);
@@ -1351,6 +1369,19 @@ mod tests {
             score,
             commit_hash: Some(hash.to_string()),
         }
+    }
+
+    #[test]
+    fn wrap_hotspots_list_json_truncates_and_echoes_limit() {
+        let items: Vec<serde_json::Value> = (0..5).map(|i| serde_json::json!({ "i": i })).collect();
+        let output = wrap_hotspots_list_json(items, 3);
+        assert_eq!(output["schemaVersion"], 1);
+        assert_eq!(output["limit"], 3);
+        assert_eq!(output["files"].as_array().map(Vec::len), Some(3));
+        assert!(
+            output.get("emptyReason").is_none(),
+            "envelope must not invent emptyReason: {output}"
+        );
     }
 
     #[test]

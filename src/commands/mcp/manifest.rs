@@ -106,7 +106,7 @@ pub const INVENTORY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         name: "hotspots",
-        description: "Identify brittle files with high change frequency or complexity.",
+        description: "Identify brittle files with high change frequency or complexity. Returns an in-process hotspot array (not the CLI files[] envelope).",
         schema_json: r#"{
             "type": "object",
             "properties": {
@@ -120,7 +120,7 @@ pub const INVENTORY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         name: "endpoints_changed",
-        description: "List API endpoints affected by current changes.",
+        description: "List API endpoints affected by current changes. Tool text is the CLI endpoints --changed --json envelope (schemaVersion 1, results[]).",
         schema_json: r#"{"type": "object", "properties": {}}"#,
     },
     ToolDescriptor {

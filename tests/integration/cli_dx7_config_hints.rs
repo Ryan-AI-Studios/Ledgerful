@@ -251,7 +251,7 @@ fn deploy_impact_binary_detects_dockerfile_when_enabled() {
 
     let (ok, stdout, stderr) = run_deploy_impact(root, true);
     assert!(ok, "deploy impact --json should succeed; stderr: {stderr}");
-    // The populated path returns a bare JSON array of manifest objects.
+    // The populated path returns a schemaVersion-1 object with a results collection.
     assert!(
         stdout.contains("Dockerfile"),
         "JSON should contain the changed Dockerfile; got: {stdout}"

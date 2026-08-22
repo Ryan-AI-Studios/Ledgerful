@@ -358,14 +358,15 @@ fn data_models_list_json_dedupes_stacked_rows() {
     );
 
     let stdout = String::from_utf8_lossy(&output.stdout);
-    // Bare JSON array (agent-output-contract).
-    let json_start = stdout.find('[').unwrap_or(0);
-    let json_str = &stdout[json_start..];
-    let parsed: serde_json::Value = serde_json::from_str(json_str)
-        .unwrap_or_else(|e| panic!("list --json must be valid JSON ({e}): {json_str}"));
-    let arr = parsed
+    let parsed: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("list --json must be valid JSON ({e}): {stdout}"));
+    assert!(
+        parsed.is_object(),
+        "list --json must be an object envelope, got: {stdout}"
+    );
+    let arr = parsed["models"]
         .as_array()
-        .unwrap_or_else(|| panic!("list --json must be a bare array, got: {json_str}"));
+        .unwrap_or_else(|| panic!("list --json must expose models[], got: {stdout}"));
 
     assert_eq!(
         arr.len(),

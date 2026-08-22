@@ -6,6 +6,40 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **JSON list envelope (0207):** Populated `--json` lists are a schemaVersion-1
+  object with a command-specific collection (`results` / `impacted` /
+  `files` / `models` / `gates` / `mappings`) and `resultCount`. Empty helper
+  arms keep `emptyReason`/`message`; populated omits those keys. `hotspots
+  --json` (list and `--semantic`) echoes `limit`. `index --check --json` is a
+  camelCase CLI DTO (`kind: "indexCheck"`, `totalFiles` / `staleFiles`); enum
+  **values** stay PascalCase (`FreshPopulated`). MCP `endpoints_changed` rides
+  the CLI envelope; MCP `hotspots` stays an in-process array. No `--json-raw`.
+  No Cargo bump.
+
+- **Engine dogfood Action+engine pin (0198):** Workflow A pins
+  `ledgerful-action@bacf400797142884c46e97c6ce755b7ef7433a53` (Action PR #11
+  merge SHA) with engine **v0.2.10** and the published Linux gnu sidecar
+  checksum. Workflow B uses the same action SHA, report-only (no version /
+  checksum). No Cargo bump.
+
+- **Packaging templates + winget pin language (0199):** Homebrew
+  formula and Scoop manifest templates pin published **v0.2.10** with
+  sidecar sha256 hashes. Installation and package-distribution
+  present-tense language floors winget at community-index **0.2.10**
+  matching GitHub Latest (PR #421115). Leftover open 0.2.8/#415913 and
+  0.2.9/#416853 PRs are skipped/WDSI, not current lag of Latest. 0164
+  dual-glob install path unchanged. No Cargo bump.
+
+### Breaking
+
+- **List `--json` is no longer a top-level array.** Whole-stdout parsers
+  that `JSON.parse` / `ConvertFrom-Json` a bare array must read the
+  collection field instead (`results`, `files`, `models`, `gates`,
+  `impacted`). `index --check --json` field names are camelCase
+  (`totalFiles`, not `total_files`).
+
 ### Fixed
 
 - **Ledger cwd/root honesty + `~` warnings (0200):** `ledger status --json`
@@ -88,22 +122,6 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Clippy 1.98 `chunks_exact_to_as_chunks` (CI):** six blob/UTF-16
   decode sites use `as_chunks` instead of `chunks_exact`. Unrelated to
   0210 scoring; required for ubuntu `-D warnings` on rustc 1.98.
-
-### Changed
-
-- **Engine dogfood Action+engine pin (0198):** Workflow A pins
-  `ledgerful-action@bacf400797142884c46e97c6ce755b7ef7433a53` (Action PR #11
-  merge SHA) with engine **v0.2.10** and the published Linux gnu sidecar
-  checksum. Workflow B uses the same action SHA, report-only (no version /
-  checksum). No Cargo bump.
-
-- **Packaging templates + winget pin language (0199):** Homebrew
-  formula and Scoop manifest templates pin published **v0.2.10** with
-  sidecar sha256 hashes. Installation and package-distribution
-  present-tense language floors winget at community-index **0.2.10**
-  matching GitHub Latest (PR #421115). Leftover open 0.2.8/#415913 and
-  0.2.9/#416853 PRs are skipped/WDSI, not current lag of Latest. 0164
-  dual-glob install path unchanged. No Cargo bump.
 
 ## [0.2.10] - 2026-08-20
 

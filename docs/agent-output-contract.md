@@ -11,7 +11,9 @@ payloads.
 **Track:** 0093-AgentCliOutputContract; extended by **0136** (search envelope),
 **0149** (uniform machine JSON: top-level `status`, `dead-code`, index-check
 purity, scan incomplete-flag tips), **0180** (`scan --json`/`--out` gitScan
-envelope without mandatory `--impact`; escalate remains `--impact --json`).
+envelope without mandatory `--impact`; escalate remains `--impact --json`),
+**0207** (populated list `--json` is a schemaVersion-1 object; `index --check --json`
+camelCase CLI DTO).
 
 ---
 
@@ -30,15 +32,17 @@ on stderr.
 | `status --json` | yes (0149) | yes | **same payload** as `ledger status --json` |
 | `search --json` | yes | yes | 0136 envelope; empty results OK |
 | `verify --json` | yes | yes* | plan-execution payload; see rejected combos |
-| `index --check --json` | yes | yes (0149) | Info suppressed under json; Error still on stderr |
+| `index --check --json` | yes | yes (0149) | schemaVersion 1 + `kind: "indexCheck"` camelCase DTO (0207); Info suppressed under json; Error still on stderr |
 | `index --semantic --json` | yes (0161) | yes | One final JSON object (`schemaVersion`, `mode`, `reason`, counts, `upToDate`); zero human mid-run lines on stdout |
 | `index --json` (main / `--auto-scip` / `--scip`) | yes | yes* | Merged index stats object; top-level **`scip`** (0157/0166): `status`, `edges_added`/`edges_updated`, `definitions_mapped`/`definitions_seen`, `files_skipped`, skip/recovery tallies (`edges_skipped_enclosing_disagreement`, `edges_recovered_nest_prefer`, `edges_skipped_unmapped`, `edges_skipped_invalid_occ_range`, `edges_skipped_duplicate`, `definitions_skipped_invalid_range`, `invalid_enclosing_fallback`), `references_seen`, optional `message`. On Success skip/recovery fields are always present (incl. 0). WARN summary for disagreement/invalid-range is **stderr** only (O(1)); not part of the JSON payload |
 | `dead-code --json` | yes (0149) | yes | schemaVersion 1 envelope; see rejected combos |
-| `hotspots --json` | yes | yes | |
+| `hotspots --json` | yes | yes | schemaVersion 1 object; collection `files`; list and `--semantic` echo `limit` (0207). **MCP `hotspots` stays an in-process array** |
 | `hotspots trend --json` | yes (0151) | yes | schemaVersion 1; modes summary/full/entity; see schema below |
-| `endpoints --json` | yes | yes | |
+| `endpoints --json` | yes | yes | schemaVersion 1 object; collection `results` (0207). MCP `endpoints_changed` re-execs CLI and rides this envelope |
 | `symbols --json` | yes (0163) | yes | schemaVersion **1** inventory; path/changed/kind/pub filters; COUNT-backed `totalMatching`; optional `indexStatus`; see schema below |
-| `data-models list --json` | yes | yes | bare array; additive `file_path` (normalized `/`) per row (0155); one row per logical model identity |
+| `data-models list --json` | yes | yes | schemaVersion 1 object; collection `models` (0207); item `file_path` stays snake (0155); one row per logical model identity |
+| `ci diff --json` / `ci list --json` | yes | yes | schemaVersion 1 object; collection `gates` (0207). Empty catalog is `gates: []`, `resultCount: 0`, no fake `emptyReason` |
+| `config schema --json` | yes | yes | schemaVersion 1 object; collection `results` (0207). Empty keeps `emptyReason`/`message` |
 | `dependencies list --json` | yes (0153) | yes | schemaVersion **1** envelope; `mode`: `direct` (default) \| `all`; live Cargo.toml+lock — not Cozo; see schema below |
 | `scan --impact --json` | yes | yes | impact packet (`schemaVersion` string `"v1"`; no top-level `kind`) |
 | `scan --json` / `scan --out` (no `--impact`) | yes (0180) | yes | **gitScan** envelope: numeric `schemaVersion` **1** + top-level **`kind: "gitScan"`** + ScanReport fields; **not** auto-impact |
@@ -604,17 +608,78 @@ ledgerful dead-code --json --threshold 0.75 --limit 50
 
 ---
 
-## `index --check --json` purity (0149)
+## List `--json` envelope (0207)
 
-Stdout is pretty-printed `IndexStatus` JSON. On **success**, human Info lines
+Populated and empty **list** commands share one object family. Collection
+field names stay command-specific (`results` / `impacted` / `files` /
+`models` / `gates` / `mappings`). No `--json-raw`. Nested item keys such as
+`file_path` / `slo_count` stay as-is.
+
+```json
+{
+  "schemaVersion": 1,
+  "results": [ { "method": "GET", "path": "/health" } ],
+  "resultCount": 1
+}
+```
+
+| Command | Collection key | Extra |
+|---|---|---|
+| `endpoints --json` | `results` | Empty keeps `emptyReason`/`message` |
+| `config schema --json` | `results` | Empty keeps `emptyReason`/`message` |
+| `security impact --json` | `impacted` | `indexedCount` (unfiltered denominator); empty and populated |
+| `observability coverage --json` | `results` | Item `slo_count` / `metric_count` stay snake |
+| `data-models list --json` | `models` | Item `file_path` stays snake |
+| `data-models impact --json` | `impacted` | |
+| `hotspots --json` (list + `--semantic`) | `files` | List and `--semantic` echo `limit`. No `truncated` (no extra overfetch) |
+| `ci diff --json` / `ci list --json` | `gates` | Empty catalog: `gates: []`, `resultCount: 0`, **no** `emptyReason` |
+| `tests --json` (mapped) | `mappings` | Additive `resolvedPath` (omit when none); empty arms use the helper |
+
+Empty helper arm: `emptyReason` + `message` present. Populated helper arm:
+those keys **omitted** (never JSON `null`). `schemaVersion` stays **1**.
+No top-level `kind` on this helper (0180 `kind` is gitScan-only).
+
+**MCP honesty:** `endpoints_changed` text is the CLI envelope (re-exec
+`endpoints --changed --json`). MCP `hotspots` is in-process and **remains a
+hotspot array** — do not parse it as `{files:[…]}`.
+
+---
+
+## `index --check --json` schema (0149 purity + 0207 camelCase)
+
+CLI DTO at the print site. Domain `IndexStatus` / `IndexFreshnessAssessment`
+stay snake internally (no `rename_all`). On **success**, human Info lines
 (e.g. `Index is up to date.`) are **not** emitted on stderr (0149; previously
 Info was routed to stderr under json, which broke `2>&1 | ConvertFrom-Json`).
 On **failure**, Error diagnostics still go to **stderr** (including under
 `--json`) so CI gates keep a human reason; JSON is printed first when the
 check path still emits status before `process::exit`.
 
-`assessment.state` in the JSON payload already carries Fresh/Stale — do not
-require stderr Info for machine consumers.
+```json
+{
+  "schemaVersion": 1,
+  "kind": "indexCheck",
+  "totalFiles": 760,
+  "totalSymbols": 19134,
+  "staleFiles": 0,
+  "lastIndexedAt": "2026-08-22T12:00:00Z",
+  "assessment": {
+    "state": "FreshPopulated",
+    "staleFiles": 0
+  }
+}
+```
+
+| Field | Rules |
+|---|---|
+| `schemaVersion` | number **1** |
+| `kind` | always **`"indexCheck"`** |
+| `totalFiles` / `totalSymbols` / `staleFiles` / `lastIndexedAt` | camelCase; `lastIndexedAt` omitted when absent |
+| `assessment.state` | Enum **values** stay **PascalCase**: `FreshPopulated`, `ContentStalePopulated`, `NeverIndexed`, `StaleEmpty`, `StalePopulated`, `FreshEmpty`, `Indeterminate`. Nested `emptyReason` / `source` values also PascalCase (`AllIndexableCandidatesIgnored`, `RepositoryMetadata`, …) |
+| Nested assessment fields | camelCase (`emptyReason`, `staleFiles`, `emptyDiagnostics`, `indexedFiles`, …). Absent optionals **omitted** (never JSON `null`) |
+
+`assessment.state` already carries Fresh/Stale — do not require stderr Info
+for machine consumers. **Ban:** `FreshPopulated` with top-level `staleFiles > 0`.
 
 ---
 

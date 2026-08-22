@@ -36,6 +36,7 @@ mod cli_hotspots_explain;
 mod cli_impact;
 mod cli_index;
 mod cli_init;
+mod cli_json_list_envelope;
 mod cli_ledger_graph;
 mod cli_migration_prompt;
 mod cli_reset;

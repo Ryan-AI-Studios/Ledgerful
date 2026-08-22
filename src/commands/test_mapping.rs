@@ -112,8 +112,15 @@ pub fn execute_tests_for_entity(args: TestsForEntityArgs) -> Result<()> {
                 tests,
                 resolved_path,
             } => {
+                let mappings: Vec<_> = tests
+                    .into_iter()
+                    .map(|t| serde_json::json!({"test": t}))
+                    .collect();
+                let result_count = mappings.len();
                 let mut obj = serde_json::json!({
-                    "mappings": tests.into_iter().map(|t| serde_json::json!({"test": t})).collect::<Vec<_>>()
+                    "schemaVersion": 1,
+                    "mappings": mappings,
+                    "resultCount": result_count,
                 });
                 if let Some(path) = resolved_path
                     && let Some(map) = obj.as_object_mut()

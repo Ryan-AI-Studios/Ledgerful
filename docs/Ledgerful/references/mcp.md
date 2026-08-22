@@ -68,8 +68,8 @@ still writes concrete command/args and never writes secrets or embedding URLs.
 4. `ask`: Semantic Q&A with context assembly (MCP children default to zero cloud egress).
 5. `ledger_status`: Current pending/unaudited state.
 6. `ledger_search`: Full-text search transactions.
-7. `hotspots`: Current hotspot rankings.
-8. `endpoints_changed`: API endpoints affected by current diff.
+7. `hotspots`: Current hotspot rankings. **In-process array** (not the CLI `{files:[…]}` envelope).
+8. `endpoints_changed`: API endpoints affected by current diff. Tool text is the CLI `endpoints --changed --json` envelope (`schemaVersion` 1, `results[]`).
 9. `security_boundaries`: Security policy graph summary.
 10. `dead_code`: Confidence-ranked dead code candidates in the repo.
 11. `verify_plan`: Predicted test list for the current diff, without running tests.

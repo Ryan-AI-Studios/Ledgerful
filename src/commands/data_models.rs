@@ -169,9 +169,10 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
                         })
                     })
                     .collect();
+                let output = crate::output::empty::format_json_list_envelope(results, "models");
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&results).into_diagnostic()?
+                    serde_json::to_string_pretty(&output).into_diagnostic()?
                 );
             } else {
                 println!(
@@ -264,7 +265,7 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
                 .collect();
 
             if json {
-                let mut output = crate::output::empty::format_json_empty_state(
+                let output = crate::output::empty::format_json_empty_state(
                     impacted,
                     "impacted",
                     || {
@@ -287,9 +288,6 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
                         }
                     },
                 );
-                if output.is_array() {
-                    output = serde_json::json!({ "impacted": output });
-                }
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&output).into_diagnostic()?

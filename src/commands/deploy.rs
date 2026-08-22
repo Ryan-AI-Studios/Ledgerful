@@ -317,9 +317,10 @@ pub fn execute_ci(args: CiArgs) -> Result<()> {
                         "environment": env,
                     }));
                 }
+                let output = crate::output::empty::format_json_list_envelope(results, "gates");
                 println!(
                     "{}",
-                    serde_json::to_string_pretty(&results).into_diagnostic()?
+                    serde_json::to_string_pretty(&output).into_diagnostic()?
                 );
             } else {
                 // Same empty-tree class as scan / policy idle. Git or filter

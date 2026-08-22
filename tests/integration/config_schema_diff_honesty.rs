@@ -73,10 +73,10 @@ mod tests {
     let (stdout, stderr, code) = run_cli(root, &["config", "schema", "--json"]);
     assert_eq!(code, 0, "config schema --json; stderr={stderr}");
     let schema: Value = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|e| panic!("expected populated schema JSON array: {e}\n{stdout}"));
-    let rows = schema.as_array().unwrap_or_else(|| {
-        panic!("populated schema must be a bare array, got empty envelope: {stdout}")
-    });
+        .unwrap_or_else(|e| panic!("expected populated schema JSON object: {e}\n{stdout}"));
+    let rows = schema["results"]
+        .as_array()
+        .unwrap_or_else(|| panic!("populated schema must expose results[], got: {stdout}"));
     let quiet = rows
         .iter()
         .find(|r| r["varName"] == "LEDGERFUL_QUIET")
