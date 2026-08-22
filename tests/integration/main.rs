@@ -21,6 +21,7 @@ mod cli_binary;
 mod cli_change_context;
 mod cli_config;
 mod cli_config_set;
+mod cli_cwd_honesty;
 mod cli_dead_code;
 mod cli_dead_code_prune;
 mod cli_dependencies;

@@ -15,7 +15,7 @@ The optional `[global_rollup]` table in `~/.ledgerful/config.toml` controls the 
 
 | Field | Type | Default | Description |
 |---|---|---|---|
-| `roots` | `[PathBuf]` | `["~"]` | Directories to walk looking for `.ledgerful/state/ledger.db`. |
+| `roots` | `[PathBuf]` | `["~"]` | Directories to walk looking for `.ledgerful/state/ledger.db`. Bare `~` expands to the home directory (also `~/…` and Windows `~\…`); `~user` is not expanded. |
 | `timeout_secs` | `u64` | `30` | Hard backstop deadline for the discovery walk (seconds). |
 | `staleness_secs` | `u64` | `3600` | Cache entries older than this trigger a re-walk. |
 | `max_depth` | `Option<usize>` | `None` | Optional maximum directory depth (`None` = unlimited). |
@@ -32,7 +32,7 @@ The optional `[global_rollup]` table in `~/.ledgerful/config.toml` controls the 
 | `totalRepos` | `number` | Number of repos successfully queried. |
 | `skippedRepos` | `number` | Number of repos skipped due to per-repo errors. |
 | `repos` | `[RepoPosture]` | Per-repo posture summaries, sorted worst-first. |
-| `warnings` | `[string]` | One-line warnings for skipped roots or per-repo failures. |
+| `warnings` | `[string]` | One-line warnings for skipped roots (unresolved / canonicalize failure) or per-repo failures. Unresolved configured roots are skipped with a tracing WARN **and** a `warnings[]` entry (path + error); they are not a silent empty walk. |
 
 ### `RepoPosture`
 
@@ -135,7 +135,7 @@ to match the local timings schema (`command`, `runs`, `p50_ms`, … / `repo_path
 | `reposWithTimings` | `number` | Repos whose DB has `command_timings`. |
 | `skippedRepos` | `number` | Repos skipped due to open/query errors. |
 | `timingsAbsent` | `number` | Repos opened successfully but missing the table. |
-| `warnings` | `[string]` | Per-repo / walk warnings. |
+| `warnings` | `[string]` | Per-repo / walk warnings, including unresolved configured roots (same skip reasons as posture `warnings[]`). |
 | `message` | `string \| omitted` | Honest empty-state text when `data` is empty. |
 | `data` | `[CommandTimingSummary]` | Pooled outer summaries (top-N). |
 | `repos` | `[RepoCommandTiming]` | Per-repo breakdown for honesty. |

@@ -32,6 +32,7 @@ use search::dispatch_search;
 use verify::dispatch_verify;
 
 pub fn run_with(cli: Cli) -> Result<()> {
+    apply_cli_directory(cli.directory.as_deref())?;
     let current_dir = env::current_dir().into_diagnostic()?;
 
     // Global commands must not mutate the current repository before dispatch.
@@ -235,17 +236,19 @@ pub fn run_with(cli: Cli) -> Result<()> {
             full,
             crate::cli::resolve_quiet(cli.quiet),
         ),
-        Commands::Status(StatusArgs { json }) => crate::commands::ledger::execute_ledger_status(
-            crate::commands::ledger::LedgerStatusOpts {
-                entity_filter: None,
-                compact: false,
-                exit_code: false,
-                verify_signatures: false,
-                json,
-                all: false,
-                strict_observe_signal: false,
-            },
-        ),
+        Commands::Status(StatusArgs { json, compact }) => {
+            crate::commands::ledger::execute_ledger_status(
+                crate::commands::ledger::LedgerStatusOpts {
+                    entity_filter: None,
+                    compact,
+                    exit_code: false,
+                    verify_signatures: false,
+                    json,
+                    all: false,
+                    strict_observe_signal: false,
+                },
+            )
+        }
         Commands::Config { command } => dispatch_config(command, cli.verbose),
         Commands::DeadCode(DeadCodeArgs {
             threshold,
@@ -433,6 +436,40 @@ pub fn run_with(cli: Cli) -> Result<()> {
     }
 
     result
+}
+
+/// Apply global `-C` / `--directory` after parse and before layout/dispatch.
+///
+/// - `None` / `Some("")` → no-op (git `-C ""` leaves cwd)
+/// - whitespace-only → fail-closed (not a directory)
+/// - leading `~` / `~/` / `~\` expanded; missing / non-dir → miette
+/// - last-wins is clap `Option<String>` (this function sees one path)
+pub(crate) fn apply_cli_directory(directory: Option<&str>) -> Result<()> {
+    let Some(raw) = directory else {
+        return Ok(());
+    };
+    if raw.is_empty() {
+        return Ok(());
+    }
+    if raw.trim().is_empty() {
+        return Err(miette::miette!("directory {raw:?} is not a directory"));
+    }
+    let path = crate::platform::expand_leading_tilde(raw)?;
+    if !path.exists() {
+        return Err(miette::miette!(
+            "directory '{}' does not exist",
+            path.display()
+        ));
+    }
+    if !path.is_dir() {
+        return Err(miette::miette!(
+            "path '{}' is not a directory",
+            path.display()
+        ));
+    }
+    env::set_current_dir(&path)
+        .map_err(|e| miette::miette!("failed to change directory to '{}': {e}", path.display()))?;
+    Ok(())
 }
 
 /// Return true for commands that operate across discovered repos and must not
@@ -682,6 +719,7 @@ mod rename_tests {
         let cli = Cli {
             verbose: false,
             quiet: false,
+            directory: None,
             command: Commands::Timings(TimingsCliArgs {
                 global: true,
                 json: true,
@@ -716,6 +754,73 @@ mod rename_tests {
         assert_eq!(
             std::fs::read_to_string(legacy.join("marker")).unwrap(),
             "preserve"
+        );
+    }
+}
+
+#[cfg(test)]
+mod apply_cli_directory_tests {
+    use super::apply_cli_directory;
+    use std::fs;
+
+    #[test]
+    fn none_and_empty_are_ok_noops() {
+        apply_cli_directory(None).expect("None is a no-op");
+        apply_cli_directory(Some("")).expect("empty is a no-op");
+    }
+
+    #[test]
+    fn whitespace_only_fails_closed() {
+        let space = apply_cli_directory(Some(" ")).expect_err("space is not empty");
+        assert!(
+            space.to_string().contains("not a directory"),
+            "whitespace-only must fail closed; got {space}"
+        );
+        let tab = apply_cli_directory(Some("\t")).expect_err("tab is not empty");
+        assert!(
+            tab.to_string().contains("not a directory"),
+            "tab-only must fail closed; got {tab}"
+        );
+    }
+
+    #[test]
+    fn missing_path_fails_closed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let missing = tmp.path().join("does-not-exist-0200");
+        let missing_str = missing.to_str().expect("utf-8 temp path");
+        let err = apply_cli_directory(Some(missing_str)).expect_err("missing path");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("does not exist") || msg.contains("not a directory"),
+            "missing -C path must fail closed; got {msg}"
+        );
+    }
+
+    #[test]
+    fn file_path_is_not_a_directory() {
+        let tmp = tempfile::tempdir().unwrap();
+        let file = tmp.path().join("not-a-dir.txt");
+        fs::write(&file, "x").unwrap();
+        let err = apply_cli_directory(Some(file.to_str().unwrap())).expect_err("file");
+        assert!(
+            err.to_string().contains("not a directory"),
+            "file -C path must fail closed; got {err}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(cwd)]
+    fn sets_process_cwd() {
+        let original = std::env::current_dir().unwrap();
+        let _guard = crate::tests::DirGuard::new(&original);
+        let tmp = tempfile::tempdir().unwrap();
+        apply_cli_directory(Some(tmp.path().to_str().unwrap())).expect("chdir");
+        let after = std::env::current_dir().unwrap();
+        let after_canon = fs::canonicalize(&after).unwrap();
+        let tmp_canon = fs::canonicalize(tmp.path()).unwrap();
+        assert_eq!(
+            after_canon, tmp_canon,
+            "apply_cli_directory must set cwd; after={after:?}"
         );
     }
 }

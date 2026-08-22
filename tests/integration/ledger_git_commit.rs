@@ -119,7 +119,7 @@ fn ledger_commit_with_git_creates_git_commit() {
             "--no-signoff",
         ],
     );
-    assert!(output.contains("Transaction committed."));
+    assert!(output.contains("Transaction committed @"));
     assert!(output.contains("Git commit created."));
 
     let log = run_git(root, &["log", "-1", "--pretty=%B"]);
@@ -166,7 +166,7 @@ fn ledger_commit_with_git_dry_run_skips_git_commit() {
             "custom dry run message",
         ],
     );
-    assert!(output.contains("Transaction committed."));
+    assert!(output.contains("Transaction committed @"));
     assert!(output.contains("Dry run: git commit -m"));
     assert!(output.contains("custom dry run message"));
 
@@ -213,7 +213,7 @@ fn ledger_commit_with_git_without_staged_files_keeps_ledger_commit() {
             "--with-git",
         ],
     );
-    assert!(stdout.contains("Transaction committed."));
+    assert!(stdout.contains("Transaction committed @"));
     assert!(stderr.contains("Git commit skipped because no files are staged"));
 
     let status = run_ok(root, &["ledger", "status", "--compact"]);

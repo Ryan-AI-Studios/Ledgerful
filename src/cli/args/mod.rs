@@ -40,6 +40,17 @@ pub struct Cli {
     /// use `--json` (or `mcp` / `scan --format json`) for agent-safe stdout.
     #[arg(long, short = 'q', global = true)]
     pub quiet: bool,
+
+    /// Run as if started in PATH (git-shaped; last `-C` wins; empty leaves cwd).
+    /// Does not set `LEDGERFUL_STATE_DIR`.
+    #[arg(
+        short = 'C',
+        long = "directory",
+        global = true,
+        value_name = "PATH",
+        overrides_with = "directory"
+    )]
+    pub directory: Option<String>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -193,7 +204,7 @@ Tips:
     Reset(ResetArgs),
     /// Health check for Ledgerful and local model stack
     Doctor(DoctorArgs),
-    /// Ledger pending/drift status (same as `ledger status`)
+    /// Ledger pending/drift status (`--json` / `--compact`; not a full alias of `ledger status`)
     Status(StatusArgs),
     /// Configuration management
     // after_help only on Config (0100 DoD-8): clap auto-help is insufficient for

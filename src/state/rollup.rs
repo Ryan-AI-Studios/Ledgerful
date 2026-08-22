@@ -85,11 +85,12 @@ pub fn build_global_posture(
     repo_filter: Option<&str>,
     reindex: bool,
 ) -> Result<GlobalPostureOutput> {
-    let roots = resolve_roots(config)?;
+    let (roots, skip_warnings) = resolve_roots(config)?;
     let cache_path = global_rollup_cache_path()?;
     ensure_parent(&cache_path)?;
 
     let mut warnings = Vec::new();
+    warnings.extend(skip_warnings);
     let (repo_map, cached_postures, walk_warnings) =
         discover_repos(&roots, config.timeout_secs, &cache_path, reindex, config)?;
     warnings.extend(walk_warnings);
@@ -554,11 +555,12 @@ fn collect_global_timings(
     days: Option<u32>,
     command: Option<&str>,
 ) -> Result<CollectedGlobalTimings> {
-    let roots = resolve_roots(config)?;
+    let (roots, skip_warnings) = resolve_roots(config)?;
     let cache_path = global_rollup_cache_path()?;
     ensure_parent(&cache_path)?;
 
     let mut warnings = Vec::new();
+    warnings.extend(skip_warnings);
     let (repo_map, _cached_postures, walk_warnings) =
         discover_repos(&roots, config.timeout_secs, &cache_path, false, config)?;
     warnings.extend(walk_warnings);
@@ -1016,33 +1018,34 @@ fn normalize_filter(filter: &str) -> String {
     }
 }
 
-/// Resolve configured roots, expanding leading `~` to the user's home dir.
-fn resolve_roots(config: &GlobalRollupConfig) -> Result<Vec<PathBuf>> {
-    let home =
-        dirs::home_dir().ok_or_else(|| miette::miette!("could not determine home directory"))?;
+/// Resolve configured roots, expanding leading `~` / `~/` / `~\` to the user's
+/// home dir. Canonicalize failures are skipped (tracing WARN) and returned as
+/// one-line skip reasons for `warnings[]` — they must not be dropped.
+fn resolve_roots(config: &GlobalRollupConfig) -> Result<(Vec<PathBuf>, Vec<String>)> {
     let mut resolved = Vec::new();
+    let mut skips = Vec::new();
     for root in &config.roots {
-        let path = if let Some(s) = root.to_str()
-            && s.starts_with("~/")
-        {
-            home.join(&s[2..])
+        let path = if let Some(s) = root.to_str() {
+            crate::platform::expand_leading_tilde(s)?
         } else {
             root.clone()
         };
         let canonical = match std::fs::canonicalize(&path) {
             Ok(c) => c,
             Err(e) => {
-                warn!(
+                let msg = format!(
                     "global rollup: root '{}' could not be resolved, skipping: {}",
                     path.display(),
                     e
                 );
+                warn!("{}", msg);
+                skips.push(msg);
                 continue;
             }
         };
         resolved.push(canonical);
     }
-    Ok(resolved)
+    Ok((resolved, skips))
 }
 
 /// Path to the derived rollup cache: `~/.ledgerful/rollup/cache.sqlite`.

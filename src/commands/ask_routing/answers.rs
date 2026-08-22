@@ -313,7 +313,7 @@ const DAILY5_STEPS: &[(&str, &str, &str)] = &[
     (
         "ledger status",
         "`ledgerful ledger status` (`--compact` or `--json`)",
-        "Provenance / pending / drift",
+        "Provenance / pending / drift; names workRoot (cd or -C before ledger start)",
     ),
     (
         "search",

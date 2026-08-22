@@ -1286,6 +1286,14 @@ mod tests {
     }
 
     #[test]
+    fn extract_ledger_tx_ref_rejects_compact_status_with_work_root() {
+        // 0200-A2: new compact form `Ledger [<workRoot>]: …` must not parse as a TX.
+        // Raw string so `\d` is not a Rust escape.
+        let msg = r"Ledger [C:\dev\ledgerful]: 2 pending, 0 unaudited drift.";
+        assert_eq!(extract_ledger_tx_ref(msg), None);
+    }
+
+    #[test]
     fn extract_ledger_tx_ref_rejects_verify_style_unaudited() {
         let msg = "Ledger: 3 unaudited…";
         assert_eq!(extract_ledger_tx_ref(msg), None);
