@@ -1,5 +1,6 @@
 mod adr_lifecycle;
 mod ask_auto_scan;
+mod ask_empty_tree;
 mod ask_kg_fallback;
 mod ask_structural_queries;
 mod binstall_metadata;

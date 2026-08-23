@@ -268,6 +268,8 @@ ledgerful dead-code --include-traits  # include standard traits (Eq, Clone, Debu
 - Prefer `--auto-index` on **search / ask / hotspots / dead-code** when stale.
 - **`verify --auto-index` only fixes `test_mapping` for `--scope fast`** — not general bootstrap.
 - **`scan` / `scan --impact` have no `--auto-index`** — refresh first if freshness matters.
+- Cached SQLite impact snapshots are **not** current on a clean working tree.
+  Live git wins: `ask` does not inject last week's packet as "your current changes".
 - Doctor green ≠ index fresh (Graph Index Health is age + content when age-fresh; `index --check` remains readiness JSON SoT).
 - Light continuous: `ledgerful watch`. Heavy: `schedule setup-nightly` / `index --full` / explicit `--auto-scip`.
 - Never idle SCIP. `init` installs no watcher/schedule.

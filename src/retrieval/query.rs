@@ -1139,4 +1139,17 @@ mod tests {
         let result = classify_query(query);
         assert_eq!(result, expected, "query: {query}");
     }
+
+    /// 0211-C: hyphen split makes `change` a change-noun → DiffTask. Live-clean
+    /// is the wall; do not widen GlobalConceptual so this query prunes.
+    #[test]
+    fn classify_query_what_is_change_context_is_diff_task() {
+        assert_eq!(
+            classify_query("what is change-context"),
+            QueryIntent::DiffTask
+        );
+        assert!(!crate::commands::ask::should_prune_impact(
+            "what is change-context"
+        ));
+    }
 }

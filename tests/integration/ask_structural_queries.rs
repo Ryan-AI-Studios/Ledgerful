@@ -402,15 +402,18 @@ fn test_ask_implementation_question_with_command_name_does_not_use_command_disco
     );
 }
 
-// --- CG-F35: cache freshness warning on `ask` ---
+// --- CG-F35 / 0211: cache freshness vs live-clean wall ---
+//
+// Dirty-tree stale-warn (packet still used) stays in `ask_auto_scan.rs`.
+// After commit, porcelain is empty: 0211 live-clean git skips the snapshot,
+// so there is no stale-cache warn and Global Mode prints no-pending.
 
-/// CG-F35 (requirement #1, #6): when the cached impact packet `ask` is about
-// to use as LLM context is stale relative to current HEAD, `ask` must warn
-// rather than silently feeding stale context. The warning is diagnostic
-// chatter, not answer content, so it must land on stderr, never stdout.
+/// 0211: scan a dirty tree, then commit so porcelain is empty. Default `ask`
+/// must not inject the stale cached packet or print the CG-F35 stale-cache
+/// warn. Honesty is the shared no-pending stderr line.
 #[test]
 #[serial(env, cwd)]
-fn test_ask_warns_on_stale_cached_impact_packet() {
+fn test_ask_live_clean_skips_stale_cached_impact_packet() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -461,14 +464,9 @@ fn test_ask_warns_on_stale_cached_impact_packet() {
         .output()
         .unwrap();
 
-    // A query that is not claimed by CG-F20/CG-F31 deterministic routing,
-    // so execution reaches the packet-freshness check. No LLM backend is
-    // configured in this environment, so the command is expected to fail
-    // further down -- the warning must still have been printed to stderr
-    // before that failure, since the freshness check runs ahead of backend
-    // validation.
+    // DiffTask so DX5 does not prune; live-clean wall still applies.
     let output = Command::new(ledgerful_bin)
-        .args(["ask", "explain my recent changes"])
+        .args(["ask", "--timeout", "1", "explain my recent changes"])
         .current_dir(root)
         .env("LEDGERFUL_NON_INTERACTIVE", "1")
         .env_remove("GEMINI_API_KEY")
@@ -479,8 +477,12 @@ fn test_ask_warns_on_stale_cached_impact_packet() {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
-        stderr.to_lowercase().contains("stale"),
-        "expected a staleness warning on stderr, got stderr: {stderr}"
+        stderr.contains("No pending changes found"),
+        "live-clean wall must print the no-pending constant, got stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("using it as ask context anyway"),
+        "live-clean wall must not use the cached packet as ask context, got stderr: {stderr}"
     );
     assert!(
         !stdout.to_lowercase().contains("stale cached impact"),
@@ -488,23 +490,13 @@ fn test_ask_warns_on_stale_cached_impact_packet() {
     );
 }
 
-/// CG-F35 review fix: a stale *clean-tree tombstone* must also warn, not just
-// a stale non-empty packet. `ask` flips into global-mode whenever the
-// latest packet has empty `changes` (a clean-tree tombstone is exactly
-// that), and the original freshness-warning gate (`!is_global`) skipped the
-// check entirely once that flip happened -- regardless of whether the
-// tombstone itself was stale. `check_impact_freshness` (src/state/reports.rs)
-// classifies a clean-tree tombstone as `Stale` when `HEAD` has moved since
-// the clean scan, which is exactly what this test constructs: `scan
-// --impact` runs against a clean tree (writing a `CleanTreeTombstone` with
-// the HEAD hash at that point), then a further commit advances HEAD past
-// it, so by the time `ask` reads the cached packet, `tombstone.head_hash !=
-// current HEAD` and `check_impact_freshness` returns `Stale`. This is
-// exactly the "clean scan, then make changes, then run `ask`" workflow the
-// track exists to fix.
+/// 0211: a stale clean-tree tombstone is not live-clean SoT. After HEAD
+/// advances with a clean working tree, `ask` skips the snapshot (live git
+/// empty) instead of warning that a tombstone is stale. Dirty-tree stale
+/// warn remains in `ask_auto_scan.rs`.
 #[test]
 #[serial(env, cwd)]
-fn test_ask_warns_on_stale_clean_tree_tombstone() {
+fn test_ask_live_clean_skips_stale_clean_tree_tombstone() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     setup_git_repo(root);
@@ -557,13 +549,8 @@ fn test_ask_warns_on_stale_clean_tree_tombstone() {
         .output()
         .unwrap();
 
-    // A query that is not claimed by CG-F20/CG-F31 deterministic routing, so
-    // execution reaches the packet-freshness check. No LLM backend is
-    // configured in this environment, so the command is expected to fail
-    // further down -- the warning must still have been printed to stderr
-    // before that failure.
     let output = Command::new(ledgerful_bin)
-        .args(["ask", "explain my recent changes"])
+        .args(["ask", "--timeout", "1", "explain my recent changes"])
         .current_dir(root)
         .env("LEDGERFUL_NON_INTERACTIVE", "1")
         .env_remove("GEMINI_API_KEY")
@@ -574,8 +561,12 @@ fn test_ask_warns_on_stale_clean_tree_tombstone() {
     let stderr = String::from_utf8_lossy(&output.stderr);
 
     assert!(
-        stderr.to_lowercase().contains("stale"),
-        "expected a staleness warning on stderr for a stale clean-tree tombstone, got stderr: {stderr}"
+        stderr.contains("No pending changes found"),
+        "live-clean wall must print the no-pending constant, got stderr: {stderr}"
+    );
+    assert!(
+        !stderr.contains("using it as ask context anyway"),
+        "live-clean wall must not warn on a stale tombstone it did not use, got stderr: {stderr}"
     );
     assert!(
         !stdout.to_lowercase().contains("stale cached impact"),

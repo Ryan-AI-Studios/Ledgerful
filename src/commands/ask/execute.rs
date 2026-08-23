@@ -99,6 +99,7 @@ pub fn execute_ask(opts: ExecuteAskOpts) -> Result<()> {
         gathered.is_global,
         narrative,
         &gathered.latest_packet,
+        gathered.live_tree_clean,
     );
 
     let base_system_prompt = if gathered.is_global {
