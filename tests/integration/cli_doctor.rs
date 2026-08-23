@@ -167,6 +167,81 @@ version = "1.0.0"
     );
 }
 
+/// 0205 T0+T12: consumer repos skip GitHub Latest (zero HTTP, no 0205 codes).
+#[test]
+fn doctor_non_engine_repo_has_no_binary_latest_codes() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+    fs::write(
+        root.join("Cargo.toml"),
+        r#"[package]
+name = "consumer-app"
+version = "1.0.0"
+"#,
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = run_cli(root, &["doctor", "--json"]);
+    assert_eq!(
+        code, 0,
+        "non-engine doctor --json should exit 0; stderr={stderr}"
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be pure JSON");
+    let findings = v["findings"].as_array().expect("findings array");
+    assert!(
+        !findings.iter().any(|f| f["code"] == "binary-behind-latest"),
+        "consumer layout must not emit binary-behind-latest: {v}"
+    );
+    assert!(
+        !findings
+            .iter()
+            .any(|f| f["code"] == "binary-ahead-of-latest"),
+        "consumer layout must not emit binary-ahead-of-latest: {v}"
+    );
+    let gl = &v["environment"]["githubLatest"];
+    assert!(gl.is_object(), "githubLatest always present: {v}");
+    assert_eq!(gl["status"], "skipped");
+    assert!(gl.get("tag").is_none(), "skipped omits tag: {gl}");
+    assert!(gl.get("sha").is_none(), "skipped omits sha: {gl}");
+    assert!(gl.get("running").is_none(), "skipped omits running: {gl}");
+    assert!(gl.get("worktree").is_none(), "skipped omits worktree: {gl}");
+}
+
+/// 0205 F5: `environment.githubLatest` is always an object with string `status`.
+#[test]
+fn doctor_json_environment_github_latest_always_object() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+    fs::write(
+        root.join("Cargo.toml"),
+        r#"[package]
+name = "consumer-app"
+version = "1.0.0"
+"#,
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = run_cli(root, &["doctor", "--json"]);
+    assert_eq!(code, 0, "doctor --json should exit 0; stderr={stderr}");
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("stdout must be pure JSON");
+    assert_eq!(v["schemaVersion"], 1);
+    let gl = &v["environment"]["githubLatest"];
+    assert!(
+        gl.is_object(),
+        "environment.githubLatest must be an object: {v}"
+    );
+    assert!(
+        gl["status"].is_string(),
+        "githubLatest.status must be a string: {gl}"
+    );
+}
+
 /// 0109: malformed config is a structured warn, not a hard abort (JSON still pure).
 #[test]
 fn doctor_malformed_config_emits_legacy_config_warn_json() {

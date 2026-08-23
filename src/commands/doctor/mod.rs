@@ -1,4 +1,5 @@
 mod binary_currency;
+mod binary_latest;
 mod checks;
 mod finding;
 mod remediation;
@@ -173,6 +174,31 @@ pub fn execute_doctor(
         None
     };
 
+    // 0205: GitHub Latest. Engine-only; consumer / NO_NETWORK must not spawn.
+    let layout_root_std = layout.root.as_std_path();
+    let engine_root: Option<&std::path::Path> = if is_ledgerful_engine_worktree(layout_root_std) {
+        Some(layout_root_std)
+    } else if is_ledgerful_engine_worktree(&current_dir) {
+        Some(&current_dir)
+    } else {
+        None
+    };
+    let is_engine = engine_root.is_some();
+    let worktree_version = engine_root.and_then(worktree_package_version);
+    let worktree_head = engine_root.and_then(|root| {
+        crate::git::repo::open_repo(root)
+            .ok()
+            .and_then(|repo| crate::git::repo::get_head_info(&repo).ok())
+            .and_then(|(hash, _)| hash)
+    });
+    let latest_handle = if !is_engine || crate::util::network::network_disabled_from_env() {
+        None
+    } else {
+        Some(std::thread::spawn(|| {
+            binary_latest::fetch_github_latest(binary_latest::GITHUB_API_BASE)
+        }))
+    };
+
     findings.extend(checks::index::collect_index_findings(
         &storage,
         &layout,
@@ -196,6 +222,62 @@ pub fn execute_doctor(
         &mut findings,
     );
 
+    let running_ver = env!("CARGO_PKG_VERSION");
+    let running_sha = env!("LEDGERFUL_GIT_SHA");
+    let latest_class = if !is_engine {
+        binary_latest::classify_github_latest(binary_latest::ClassifyLatestInput {
+            is_engine: false,
+            running_ver,
+            running_sha,
+            worktree_ver: None,
+            worktree_head: None,
+            latest: None,
+            fetch_error: false,
+        })
+    } else if let Some(handle) = latest_handle {
+        match handle.join() {
+            Ok(Ok(published)) => {
+                binary_latest::classify_github_latest(binary_latest::ClassifyLatestInput {
+                    is_engine: true,
+                    running_ver,
+                    running_sha,
+                    worktree_ver: worktree_version.as_deref(),
+                    worktree_head: worktree_head.as_deref(),
+                    latest: Some(&published),
+                    fetch_error: false,
+                })
+            }
+            Ok(Err(e)) => {
+                tracing::debug!("GitHub Latest fetch failed (unverified): {e}");
+                binary_latest::classify_github_latest(binary_latest::ClassifyLatestInput {
+                    is_engine: true,
+                    running_ver,
+                    running_sha,
+                    worktree_ver: worktree_version.as_deref(),
+                    worktree_head: worktree_head.as_deref(),
+                    latest: None,
+                    fetch_error: true,
+                })
+            }
+            Err(payload) => std::panic::resume_unwind(payload),
+        }
+    } else {
+        binary_latest::classify_github_latest(binary_latest::ClassifyLatestInput {
+            is_engine: true,
+            running_ver,
+            running_sha,
+            worktree_ver: worktree_version.as_deref(),
+            worktree_head: worktree_head.as_deref(),
+            latest: None,
+            fetch_error: true,
+        })
+    };
+    let binary_latest::LatestClassification {
+        env: github_latest_env,
+        findings: latest_findings,
+    } = latest_class;
+    findings.extend(latest_findings);
+
     findings.sort_by(|a, b| {
         a.code
             .cmp(&b.code)
@@ -218,6 +300,10 @@ pub fn execute_doctor(
     }
 
     if json {
+        let github_latest_json = serde_json::to_value(&github_latest_env).unwrap_or_else(|e| {
+            tracing::debug!("githubLatest serialize failed: {e}");
+            json!({"status": "unverified", "running": "unknown", "worktree": "unknown"})
+        });
         let duration_ms = doctor_started.elapsed().as_millis() as u64;
         let body = json!({
             "schemaVersion": 1u32,
@@ -239,6 +325,7 @@ pub fn execute_doctor(
                 "targetTriple": env!("TARGET"),
                 "binaryVersion": env!("CARGO_PKG_VERSION"),
                 "buildSha": env!("LEDGERFUL_GIT_SHA"),
+                "githubLatest": github_latest_json,
             },
             "durationMs": duration_ms,
         });

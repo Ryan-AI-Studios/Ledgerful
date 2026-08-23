@@ -649,6 +649,36 @@ fn write_doctor_results_findings_cap_five() {
 }
 
 #[test]
+fn write_doctor_results_has_no_github_latest_key() {
+    let tmp = tempfile::tempdir().expect("tempdir");
+    let root = Utf8Path::from_path(tmp.path()).expect("utf8 path");
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().expect("ensure_state_dir");
+
+    let findings = vec![
+        DoctorFinding::warn(
+            "binary-behind-latest",
+            DoctorCategory::Tools,
+            "behind latest",
+        ),
+        DoctorFinding::info(
+            "binary-ahead-of-latest",
+            DoctorCategory::Tools,
+            "ahead of latest",
+        ),
+    ];
+    write_doctor_results(&layout, &findings).expect("write");
+    let path = layout.state_subdir().join("doctor-results.json");
+    let json: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(path.as_std_path()).expect("read sidecar"))
+            .expect("parse sidecar");
+    assert!(
+        json.get("githubLatest").is_none(),
+        "sidecar must not grow githubLatest (0109/0129 frozen): {json}"
+    );
+}
+
+#[test]
 fn select_sidecar_top_findings_excludes_info() {
     let findings = vec![
         DoctorFinding::info("i1", DoctorCategory::Optional, "info"),

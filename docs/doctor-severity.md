@@ -74,7 +74,14 @@ Pure stdout schema v1 (`schemaVersion` is integer `1`):
     "pathDisplay": "…",
     "targetTriple": "…",
     "binaryVersion": "0.2.5",
-    "buildSha": "b57f4472efb3"
+    "buildSha": "b57f4472efb3",
+    "githubLatest": {
+      "status": "ahead",
+      "tag": "v0.2.10",
+      "sha": "c4a2308fe985",
+      "running": "ahead",
+      "worktree": "unknown"
+    }
   },
   "durationMs": 842
 }
@@ -115,7 +122,7 @@ category split:
 
 Examples:
 
-- `sig-pin` / `binary-behind-tree` (non-optional **warn**) → expanded
+- `sig-pin` / `binary-behind-tree` / `binary-behind-latest` (non-optional **warn**) → expanded
 - `completion-unreachable` (optional **warn**) → hygiene (collapsed)
 - `hook-template-stale` (**info** / gate) → hygiene (collapsed) — leaves Index Health by default
 - Optional accelerators section still shows embedding/completion status lines always
@@ -152,6 +159,58 @@ Agents may use it to spot session-start regressions; not a SLI contract.
 | `remediation` | Always: `cargo install --path . --force` then `ledgerful update --binary` then `ledgerful --version`. **No** auto-install from doctor. |
 
 Agents may also read currency from `environment.binaryVersion` + `environment.buildSha` (schemaVersion stays **1**).
+
+### `binary-behind-latest` (0205)
+
+| Field | Value |
+|---|---|
+| `code` | `binary-behind-latest` |
+| `severity` | `warn` |
+| `category` | `tools` |
+| When | **Engine worktree only.** GitHub Latest is known and the **running** binary version is older than Latest (`X.Y.Z`, tag may have a leading `v`) — including when running SHA is `unknown`/`empty`. |
+| Not | Consumer repos (`githubLatest.status=skipped`, zero HTTP); `LEDGERFUL_NO_NETWORK` / fetch failure (`status=unverified`, **no finding**); cargo tip at the same version as Latest (that is `binary-ahead-of-latest`). |
+| `readyForPublish` | **Not** blocked (warn only). Counts in `dashboard_failures` / Index Health (category ≠ optional). |
+| `remediation` | Published tag URL `https://github.com/Ryan-AI-Studios/Ledgerful/releases/tag/{tag}` then `ledgerful --version`. **Must not** say `cargo install --path .` / `--force` (that installs cargo tip). |
+
+0137 `binary-behind-tree` is PATH vs **this worktree** (reinstall from `.` if you want this tree). `binary-behind-latest` is running version older than **published** Latest. When both fire (T7: old PATH + cargo-tip tree), remediations **coexist unmerged** — do not concatenate into one “install `.` and the tag” sentence.
+
+### `binary-ahead-of-latest` (0205)
+
+| Field | Value |
+|---|---|
+| `code` | `binary-ahead-of-latest` |
+| `severity` | `info` |
+| `category` | `tools` |
+| When | **Engine worktree only.** Latest known, running is **not** behind Latest, and the **running** binary is not the published tag: usable running SHA ≠ Latest SHA (equal-version cargo-tip heuristic — 0199 exhibit class) **or** running version > Latest. **Worktree-only** same-version SHA mismatch does **not** emit this (T8/T13). F8 dual-code case is running-behind **and** worktree version **> Latest** (`status=mixed`, both codes). T7 remains behind-only (equal-version worktree SHA mismatch is `unknown`, not ahead). |
+| Not | Consumer; unverified; equal-version running SHA `unknown`/`empty` (T11); PATH that already matches Latest. |
+| `readyForPublish` | Unchanged (info never blocks). **Not** action-critical — hygiene / `--full` / `--json`. |
+| `remediation` | Names Latest `{tag}` + 12-char SHA: “not GitHub Latest {tag} ({sha}) — do not recapture public exhibits from this binary.” Links the tag URL. **Must not** tell the operator to install from `.` as a fix. |
+
+**Honesty:** absence of a `binary-*-latest` finding + `githubLatest.status=unverified` is **not** a match (not current). Agents must read `status`, not infer from a missing code.
+
+**Sidecar:** `doctor-results.json` has **no** `githubLatest` key (0109/0129 shape frozen). Sidecar top-N is action-critical only, so `ahead` (info) is omitted. Daily 5 = `ledgerful doctor --json`, not the sidecar.
+
+**`environment.githubLatest`** (always present; schemaVersion stays **1**):
+
+| `status` | `tag` / `sha` (12-char) | `running` / `worktree` |
+|---|---|---|
+| `skipped` | omitted | omitted |
+| `unverified` | omitted | `"unknown"` (present) |
+| `match` / `behind` / `ahead` / `mixed` / `unknown` | present | present |
+
+Sample (T4 dogfood — PATH matches HEAD, both ahead of the published tag):
+
+```json
+"githubLatest": {
+  "status": "ahead",
+  "tag": "v0.2.10",
+  "sha": "c4a2308fe985",
+  "running": "ahead",
+  "worktree": "unknown"
+}
+```
+
+Latest SHA is peeled from `GET /commits/{tag_name}` — never `releases/latest.target_commitish` (live value is `"main"`).
 
 ### Remediation notes (0125)
 
