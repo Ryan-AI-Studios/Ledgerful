@@ -26,7 +26,7 @@ on stderr.
 
 | Command | Has `--json` | Pure success stderr | Notes |
 |---|---|---|---|
-| `doctor --json` | yes | yes | schemaVersion 1 findings |
+| `doctor --json` | yes | yes | schemaVersion 1 findings; additive `environment.githubLatest` (0205); schemaVersion stays 1. Sidecar `doctor-results.json` does **not** include `githubLatest` |
 | `change-context --json` | yes | yes | impact-shaped packet |
 | `ledger status --json` | yes | yes | schemaVersion 1 |
 | `status --json` | yes (0149) | yes | **same payload** as `ledger status --json` |

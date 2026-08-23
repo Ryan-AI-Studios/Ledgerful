@@ -502,6 +502,17 @@ mod tests {
             DoctorSeverity::Warn,
             DoctorCategory::Tools,
         )));
+        // 0205: behind-latest is warn/tools (action-critical); ahead is info (not).
+        assert!(is_action_critical(&f(
+            "binary-behind-latest",
+            DoctorSeverity::Warn,
+            DoctorCategory::Tools,
+        )));
+        assert!(!is_action_critical(&f(
+            "binary-ahead-of-latest",
+            DoctorSeverity::Info,
+            DoctorCategory::Tools,
+        )));
         // Info never action-critical.
         assert!(!is_action_critical(&f(
             "sccache-hint",

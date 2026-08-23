@@ -6,6 +6,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Doctor GitHub Latest (0205):** Engine `doctor` distinguishes PATH vs this
+  worktree vs published GitHub Latest (`environment.githubLatest`). New findings
+  `binary-behind-latest` (warn/tools) and `binary-ahead-of-latest` (info/tools).
+  Latest SHA is peeled from `GET /commits/{tag}` — never `target_commitish`.
+  Consumer repos skip with zero HTTP. Sidecar schema unchanged. No Cargo bump.
+
 ### Changed
 
 - **JSON list envelope (0207):** Populated `--json` lists are a schemaVersion-1

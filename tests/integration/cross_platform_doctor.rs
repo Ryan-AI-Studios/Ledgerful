@@ -4,6 +4,8 @@ use std::process::Command;
 fn test_doctor_runs_on_all_platforms() {
     let mut cmd = Command::new(env!("CARGO_BIN_EXE_ledgerful"));
     cmd.arg("doctor");
+    // Engine-root doctor must not open GitHub (0205 F14). Test-local only — not ci.yml.
+    cmd.env("LEDGERFUL_NO_NETWORK", "1");
 
     let output = cmd.output().expect("Failed to execute process");
     let stdout = String::from_utf8_lossy(&output.stdout);
