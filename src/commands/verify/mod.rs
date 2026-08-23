@@ -1,6 +1,6 @@
 use crate::output::human::print_verify_plan;
 use crate::output::verification::{
-    VerificationReporter, print_dry_run_human, should_print_suggested_actions,
+    VerificationReporter, dry_run_scope_line, print_dry_run_human, should_print_suggested_actions,
 };
 use crate::state::storage::StorageManager;
 use crate::verify::engine::{VerificationContext, VerifyEngine};
@@ -206,6 +206,21 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                             && !working_tree_has_material_changes(layout.root.as_std_path())
                         {
                             crate::verify::plan::build_empty_changes_plan(&profile)
+                        } else if scope.is_fast() {
+                            // 0203-B: classify from live git paths (replace
+                            // snapshot packet.changes). Overlay is not persisted.
+                            let conn = ctx.storage.as_ref().map(|s| s.get_connection());
+                            build_fast_scoped_from_overlay_or_fail_closed(
+                                Some(packet),
+                                &layout,
+                                &rules,
+                                &prediction.files,
+                                &config.verify,
+                                &profile,
+                                conn,
+                                auto_index,
+                                allow_full_fallback,
+                            )
                         } else {
                             let conn = ctx.storage.as_ref().map(|s| s.get_connection());
                             crate::verify::plan::build_plan_scoped_with_options(
@@ -223,37 +238,29 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                         }
                     }
                     None => {
-                        // No saved impact packet (0135 final codex P1):
+                        // No saved impact packet (0135 final codex P1 / 0203 P2):
                         // - Full scope: keep build_plan (historical).
                         // - Fast + clean working tree: EmptyChanges cheap path.
-                        // - Fast + dirty working tree: MappingRefuse (or allow
-                        //   full) — never pretend EmptyChanges and under-verify.
+                        // - Fast + dirty: live overlay + classifier (docs-only
+                        //   cheap; SharedInfra / unmapped src still refuse).
                         let profile = crate::platform::repository::detect_repository(
                             layout.root.as_std_path(),
                         );
                         let empty_packet = crate::impact::packet::ImpactPacket::default();
                         if scope.is_fast() {
                             if working_tree_has_material_changes(layout.root.as_std_path()) {
-                                if allow_full_fallback {
-                                    let mut plan = crate::verify::plan::build_plan(
-                                        &empty_packet,
-                                        &rules,
-                                        &[],
-                                        &config.verify,
-                                        &profile,
-                                        layout.root.as_std_path(),
-                                    );
-                                    plan.fallback_reason = Some(
-                                        "fast scope unavailable — no impact packet for dirty tree; run `ledgerful scan --impact`; running full (~5-8 min)"
-                                            .to_string(),
-                                    );
-                                    plan.refused = false;
-                                    plan
-                                } else {
-                                    crate::verify::plan::refuse_plan_for_trigger(
-                                        "no impact packet for dirty tree; run `ledgerful scan --impact`",
-                                    )
-                                }
+                                let conn = ctx.storage.as_ref().map(|s| s.get_connection());
+                                build_fast_scoped_from_overlay_or_fail_closed(
+                                    None,
+                                    &layout,
+                                    &rules,
+                                    &prediction.files,
+                                    &config.verify,
+                                    &profile,
+                                    conn,
+                                    auto_index,
+                                    allow_full_fallback,
+                                )
                             } else {
                                 let conn = ctx.storage.as_ref().map(|s| s.get_connection());
                                 crate::verify::plan::build_plan_scoped_with_options(
@@ -310,20 +317,13 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
 
                 // Announce fast→full fallback or MappingRefuse before the user
                 // waits. On --json the reason is in fallbackReason — do not
-                // print around the payload.
-                if !json && let Some(reason) = &plan.fallback_reason {
-                    println!(
-                        "{} {}",
-                        "ℹ".if_supports_color(Stream::Stdout, |s| s.cyan()),
-                        reason.if_supports_color(Stream::Stdout, |s| s.yellow())
-                    );
-                    if plan.refused {
-                        println!(
-                            "{}",
-                            "Next: ledgerful index --incremental\n      ledgerful verify --scope fast --auto-index\n      ledgerful verify --scope full\n      ledgerful verify --scope fast --allow-full-fallback"
-                                .if_supports_color(Stream::Stdout, |s| s.yellow())
-                        );
-                    }
+                // print around the payload. On --dry-run, defer so `scope:` is
+                // the first product line (0203-C / P5).
+                if !json
+                    && !dry_run
+                    && let Some(reason) = &plan.fallback_reason
+                {
+                    print_fallback_announcement(reason, plan.refused);
                 }
 
                 // Plan banner only under --verbose live path (0121 quiet success).
@@ -444,16 +444,18 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                     "verify --json cannot be combined with --dry-run"
                 ));
             }
-            // Reason + Next already printed above when !json.
+            // P5: scope line first, then ℹ/Next, then the refused footer.
+            println!("{}", dry_run_scope_line(scope));
+            let reason = plan
+                .as_ref()
+                .and_then(|p| p.fallback_reason.clone())
+                .unwrap_or_else(|| "fast scope unavailable; refusing full suite".to_string());
+            print_fallback_announcement(&reason, true);
             println!(
                 "\n{}",
                 "Dry run mode: plan refused — no commands would be executed."
                     .if_supports_color(Stream::Stdout, |s| s.yellow())
             );
-            let reason = plan
-                .as_ref()
-                .and_then(|p| p.fallback_reason.clone())
-                .unwrap_or_else(|| "fast scope unavailable; refusing full suite".to_string());
             return Err(miette::miette!("{reason}"));
         }
 
@@ -481,7 +483,9 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
             ));
         }
         // Manual --command: keep simple Verification Plan + single step + footer.
+        // P9: same `scope:` first product line as plan dry-run.
         if manual_requested {
+            println!("{}", dry_run_scope_line(scope));
             println!(
                 "{}",
                 "Verification Plan"
@@ -503,12 +507,36 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
 
         // CLI --verbose expands path lists; VERBOSE_DRY_RUN remains additive alias.
         let dry_verbose = verbose || std::env::var("VERBOSE_DRY_RUN").is_ok();
-        print_dry_run_human(
+        let formatted = crate::output::verification::format_dry_run_human(
             &steps,
             bayesian_matched_steps,
             bayesian_dataset_keys,
             dry_verbose,
+            scope,
         );
+        // SharedInfra dry-run: keep ℹ after `scope:` (first line), before the
+        // rest of the 0144 layout.
+        if let Some(reason) = plan.as_ref().and_then(|p| p.fallback_reason.as_deref()) {
+            match formatted.split_once('\n') {
+                Some((first, rest)) => {
+                    println!("{first}");
+                    print_fallback_announcement(reason, false);
+                    print!("{rest}");
+                }
+                None => {
+                    println!("{formatted}");
+                    print_fallback_announcement(reason, false);
+                }
+            }
+        } else {
+            print_dry_run_human(
+                &steps,
+                bayesian_matched_steps,
+                bayesian_dataset_keys,
+                dry_verbose,
+                scope,
+            );
+        }
         return Ok(());
     }
 
@@ -746,6 +774,142 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
     }
 }
 
+fn print_fallback_announcement(reason: &str, refused: bool) {
+    println!(
+        "{} {}",
+        "ℹ".if_supports_color(Stream::Stdout, |s| s.cyan()),
+        reason.if_supports_color(Stream::Stdout, |s| s.yellow())
+    );
+    if refused {
+        println!(
+            "{}",
+            "Next: ledgerful index --incremental\n      ledgerful verify --scope fast --auto-index\n      ledgerful verify --scope full\n      ledgerful verify --scope fast --allow-full-fallback"
+                .if_supports_color(Stream::Stdout, |s| s.yellow())
+        );
+    }
+}
+
+/// Overlay live ignore-filtered git paths onto a classifier packet (`--scope fast`
+/// + dirty).
+///
+/// Replaces `packet.changes` (does not union). Sets `head_hash` from
+/// live HEAD. Does not persist the overlay or write `latest-impact.json`.
+fn overlay_fast_classifier_packet(
+    layout: &crate::state::layout::Layout,
+    mut packet: crate::impact::packet::ImpactPacket,
+) -> miette::Result<crate::impact::packet::ImpactPacket> {
+    let live = crate::git::status::collect_changed_files_for_filter(layout)?;
+    let mut changes: Vec<crate::impact::packet::ChangedFile> = live
+        .into_iter()
+        .filter(|c| is_material_or_cheap_verify_path(&c.path))
+        .map(file_change_to_changed_file)
+        .collect();
+    changes.sort_by(|a, b| a.path.cmp(&b.path));
+    packet.changes = changes;
+
+    if let Ok(repo) = crate::git::repo::open_repo(layout.root.as_std_path())
+        && let Ok((hash, _)) = crate::git::repo::get_head_info(&repo)
+    {
+        packet.head_hash = hash;
+    }
+    Ok(packet)
+}
+
+fn file_change_to_changed_file(
+    change: crate::git::FileChange,
+) -> crate::impact::packet::ChangedFile {
+    let (status, old_path) = match change.change_type {
+        crate::git::ChangeType::Added => ("Added".to_string(), None),
+        crate::git::ChangeType::Modified => ("Modified".to_string(), None),
+        crate::git::ChangeType::Deleted => ("Deleted".to_string(), None),
+        crate::git::ChangeType::Renamed { old_path } => ("Renamed".to_string(), Some(old_path)),
+    };
+    crate::impact::packet::ChangedFile {
+        path: change.path,
+        status,
+        old_path,
+        is_staged: change.is_staged,
+        ..Default::default()
+    }
+}
+
+fn is_material_or_cheap_verify_path(path: &std::path::Path) -> bool {
+    is_material_verify_path(path) || crate::verify::plan::is_non_code_cheap_path(path)
+}
+
+/// Live overlay + classifier for `--scope fast` dirty trees. Shared by Some-packet
+/// and None-packet (P2) arms. Overlay failure is fail-closed (snapshot or refuse).
+#[allow(clippy::too_many_arguments)]
+fn build_fast_scoped_from_overlay_or_fail_closed(
+    snapshot: Option<&crate::impact::packet::ImpactPacket>,
+    layout: &crate::state::layout::Layout,
+    rules: &crate::policy::rules::Rules,
+    predicted: &[crate::verify::predict::PredictedFile],
+    verify_config: &crate::config::model::VerifyConfig,
+    profile: &crate::platform::repository::RepositoryProfile,
+    conn: Option<&rusqlite::Connection>,
+    auto_index: bool,
+    allow_full_fallback: bool,
+) -> crate::verify::plan::VerificationPlan {
+    let base = snapshot.cloned().unwrap_or_default();
+    let overlaid = match overlay_fast_classifier_packet(layout, base) {
+        Ok(packet) => packet,
+        Err(err) => {
+            warn!("fast-scope live overlay failed: {err}");
+            match snapshot {
+                Some(packet) => {
+                    return crate::verify::plan::build_plan_scoped_with_options(
+                        packet,
+                        rules,
+                        predicted,
+                        verify_config,
+                        profile,
+                        crate::verify::plan::VerifyScope::Fast,
+                        conn,
+                        layout,
+                        auto_index,
+                        allow_full_fallback,
+                    );
+                }
+                None => {
+                    if allow_full_fallback {
+                        let empty = crate::impact::packet::ImpactPacket::default();
+                        let mut plan = crate::verify::plan::build_plan(
+                            &empty,
+                            rules,
+                            &[],
+                            verify_config,
+                            profile,
+                            layout.root.as_std_path(),
+                        );
+                        plan.fallback_reason = Some(
+                            "fast scope unavailable — no impact packet for dirty tree; run `ledgerful scan --impact`; running full (~5-8 min)"
+                                .to_string(),
+                        );
+                        plan.refused = false;
+                        return plan;
+                    }
+                    return crate::verify::plan::refuse_plan_for_trigger(
+                        "no impact packet for dirty tree; run `ledgerful scan --impact`",
+                    );
+                }
+            }
+        }
+    };
+    crate::verify::plan::build_plan_scoped_with_options(
+        &overlaid,
+        rules,
+        predicted,
+        verify_config,
+        profile,
+        crate::verify::plan::VerifyScope::Fast,
+        conn,
+        layout,
+        auto_index,
+        allow_full_fallback,
+    )
+}
+
 /// True when the working tree has **material** changes that verify should not
 /// ignore when there is no saved impact packet (0135 final codex P1).
 ///
@@ -777,6 +941,11 @@ fn is_material_verify_path(path: &std::path::Path) -> bool {
         || norm.eq_ignore_ascii_case("cargo")
     {
         return false;
+    }
+    // 0203-D: packaging templates (including `.rb`) are material so a
+    // template-only diff is not LiveEmpty.
+    if norm == "packaging" || norm.starts_with("packaging/") {
+        return true;
     }
     let name = path
         .file_name()
@@ -870,7 +1039,154 @@ mod material_verify_path_tests {
         assert!(!is_material_verify_path(Path::new(
             ".ledgerful/state/ledger.cozo"
         )));
+        assert!(!is_material_verify_path(Path::new(".ledgerful/state/x")));
+        assert!(!is_material_verify_path(Path::new("cargo.bat")));
         assert!(!is_material_verify_path(Path::new("notes.txt")));
+    }
+
+    #[test]
+    fn packaging_homebrew_rb_is_material() {
+        assert!(is_material_verify_path(Path::new(
+            "packaging/homebrew/ledgerful.rb"
+        )));
+        assert!(is_material_verify_path(Path::new(
+            "packaging/scoop/ledgerful.json"
+        )));
+    }
+}
+
+#[cfg(test)]
+mod overlay_fast_tests {
+    use super::{is_material_verify_path, overlay_fast_classifier_packet};
+    use crate::impact::packet::{ChangedFile, ImpactPacket};
+    use crate::state::layout::Layout;
+    use std::fs;
+    use std::path::{Path, PathBuf};
+    use std::process::Command;
+    use tempfile::tempdir;
+
+    fn git(cwd: &Path, args: &[&str]) -> std::process::Output {
+        Command::new("git")
+            .args(args)
+            .current_dir(cwd)
+            .env("GIT_AUTHOR_NAME", "test")
+            .env("GIT_AUTHOR_EMAIL", "test@example.com")
+            .env("GIT_COMMITTER_NAME", "test")
+            .env("GIT_COMMITTER_EMAIL", "test@example.com")
+            .output()
+            .expect("git command")
+    }
+
+    fn init_repo_with_commit(dir: &Path) {
+        assert!(git(dir, &["init", "-b", "main"]).status.success());
+        assert!(
+            git(dir, &["config", "user.email", "test@example.com"])
+                .status
+                .success()
+        );
+        assert!(git(dir, &["config", "user.name", "test"]).status.success());
+        fs::write(dir.join("README.md"), "hello\n").expect("write tracked");
+        assert!(git(dir, &["add", "."]).status.success());
+        assert!(git(dir, &["commit", "-m", "init"]).status.success());
+    }
+
+    fn overlay_paths(dir: &Path, snapshot: ImpactPacket) -> Vec<String> {
+        let root = camino::Utf8Path::from_path(dir).expect("utf8 path");
+        let layout = Layout::new(root);
+        let overlaid = overlay_fast_classifier_packet(&layout, snapshot).expect("overlay");
+        let mut paths: Vec<String> = overlaid
+            .changes
+            .iter()
+            .map(|c| c.path.to_string_lossy().replace('\\', "/"))
+            .collect();
+        paths.sort();
+        paths
+    }
+
+    fn snapshot_with_src() -> ImpactPacket {
+        ImpactPacket {
+            head_hash: Some("stale-snapshot-hash".to_string()),
+            changes: vec![ChangedFile {
+                path: PathBuf::from("src/foo.rs"),
+                status: "Modified".to_string(),
+                ..Default::default()
+            }],
+            ..ImpactPacket::default()
+        }
+    }
+
+    #[test]
+    fn overlay_fast_replaces_snapshot_changes_not_union() {
+        let dir = tempdir().expect("tempdir");
+        init_repo_with_commit(dir.path());
+        fs::write(dir.path().join("CHANGELOG.md"), "unreleased\n").expect("changelog");
+        fs::create_dir_all(dir.path().join("docs")).expect("docs dir");
+        fs::write(dir.path().join("docs").join("installation.md"), "docs\n").expect("docs");
+
+        let paths = overlay_paths(dir.path(), snapshot_with_src());
+        assert!(
+            paths.iter().any(|p| p == "CHANGELOG.md"),
+            "live CHANGELOG must replace snapshot, got {paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| p == "docs/installation.md"),
+            "live docs must be classified, got {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p == "src/foo.rs"),
+            "must replace snapshot src, not union, got {paths:?}"
+        );
+    }
+
+    #[test]
+    fn overlay_fast_sets_live_head_hash() {
+        let dir = tempdir().expect("tempdir");
+        init_repo_with_commit(dir.path());
+        fs::write(dir.path().join("CHANGELOG.md"), "unreleased\n").expect("changelog");
+        let root = camino::Utf8Path::from_path(dir.path()).expect("utf8 path");
+        let layout = Layout::new(root);
+        let overlaid =
+            overlay_fast_classifier_packet(&layout, snapshot_with_src()).expect("overlay");
+        let repo = crate::git::repo::open_repo(dir.path()).expect("open");
+        let (live_head, _) = crate::git::repo::get_head_info(&repo).expect("head");
+        assert_eq!(
+            overlaid.head_hash, live_head,
+            "overlay head_hash must be live HEAD, not snapshot"
+        );
+        assert_ne!(
+            overlaid.head_hash.as_deref(),
+            Some("stale-snapshot-hash"),
+            "must not keep snapshot head"
+        );
+    }
+
+    #[test]
+    fn overlay_fast_retains_packaging_rb_drops_ledgerful_and_cargo_bat() {
+        let dir = tempdir().expect("tempdir");
+        init_repo_with_commit(dir.path());
+        let pkg = dir.path().join("packaging").join("homebrew");
+        fs::create_dir_all(&pkg).expect("packaging dir");
+        fs::write(pkg.join("ledgerful.rb"), "class Ledgerful\n").expect("rb");
+        let state = dir.path().join(".ledgerful").join("state");
+        fs::create_dir_all(&state).expect("ledgerful state");
+        fs::write(state.join("x"), "nope\n").expect("state file");
+        fs::write(dir.path().join("cargo.bat"), "@echo off\n").expect("cargo.bat");
+
+        let paths = overlay_paths(dir.path(), ImpactPacket::default());
+        assert!(
+            paths.iter().any(|p| p == "packaging/homebrew/ledgerful.rb"),
+            "packaging rb must be retained, got {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p.contains(".ledgerful")),
+            ".ledgerful must be ignore-filtered, got {paths:?}"
+        );
+        assert!(
+            !paths.iter().any(|p| p.eq_ignore_ascii_case("cargo.bat")),
+            "cargo.bat must not be classified, got {paths:?}"
+        );
+        assert!(!is_material_verify_path(Path::new("cargo.bat")));
+        assert!(!is_material_verify_path(Path::new(".ledgerful/state/x")));
     }
 }
 
@@ -1082,6 +1398,35 @@ mod verify_cli_json_tests {
                 .unwrap()
                 .contains("\"matchedSteps\": 0")
         );
+    }
+
+    #[test]
+    fn non_code_cheap_json_scope_executed_fast_no_fallback() {
+        // DoD-6: NonCodeCheap (fallback_reason=None, refused=false, fmt+clippy)
+        // must keep scopeExecuted fast. schemaVersion stays 1.
+        let report = sample_report(
+            vec![
+                sample_result("cargo fmt --all -- --check", 0),
+                sample_result(
+                    "cargo clippy --all-targets --all-features -- -D warnings",
+                    0,
+                ),
+            ],
+            None,
+        );
+        let payload = VerifyCliJson::from_report(&report, VerifyScope::Fast, None);
+        assert_eq!(payload.schema_version, 1);
+        assert_eq!(payload.schema_version, VERIFY_JSON_SCHEMA_VERSION);
+        assert_eq!(payload.scope_requested, "fast");
+        assert_eq!(payload.scope_executed, "fast");
+        assert!(payload.fallback_reason.is_none());
+        let json = payload.to_json_string().unwrap();
+        assert!(
+            !json.contains("fallbackReason"),
+            "skip_serializing_if must omit fallbackReason: {json}"
+        );
+        assert!(json.contains("\"schemaVersion\": 1"));
+        assert!(payload.ok);
     }
 
     #[test]

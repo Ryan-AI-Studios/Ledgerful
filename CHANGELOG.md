@@ -42,6 +42,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Verify `--scope fast` cheap on docs/packaging/CHANGELOG (0203):**
+  Dirty docs, packaging templates, CHANGELOG, and bump-manifests scripts
+  no longer MappingRefuse or surprise-run workspace nextest. Classifier
+  uses live git paths; packaging injects scoped `bump_manifests`. Human
+  `verify --dry-run` names `scope` on the first line (`scope: full
+  (pre-push uses --scope fast)` or `scope: fast`). Default executed
+  `verify` stays `--scope full`. No Cargo bump.
+
 - **Ledger search omits ROLLBACK by default (0213):** `ledger search` /
   `ledger history` hide `entry_type = ROLLBACK` unless `--include-rollback`
   (then non-rollback ranks first, then BM25, then recency). Human output

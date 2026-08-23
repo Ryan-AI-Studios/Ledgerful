@@ -26,19 +26,23 @@ intentional: fmt and clippy are cheap and catch issues the test suite does not.
 
 ### Fast-or-refuse class table (never surprise full hang)
 
-Classifier order is load-bearing. **LiveEmpty** is decided in
-`commands/verify/mod.rs` (before `build_plan_scoped_with_options`) so plan units stay
-hermetic; the rest lives in `build_plan_scoped_with_options`:
+Classifier order is load-bearing (`--scope fast` only). **LiveEmpty** is
+decided in `commands/verify/mod.rs` (before `build_plan_scoped_with_options`)
+so plan units stay hermetic. A **dirty** tree then **overlays live git paths**
+onto the classifier packet (replace, not union; `head_hash` = live HEAD;
+ignore-filter drops `.ledgerful/**` / `.agents/**`). None-packet dirty uses
+the same overlay. The rest lives in `build_plan_scoped_with_options`:
 
 | Class | Detection | Default under `--scope fast` |
 |---|---|---|
 | **LiveEmpty** | Working tree has **no material** changes (git status) — **before** SharedInfra; ignores non-empty saved impact packet | **EmptyChanges** cheap plan (Rust: fmt+clippy; non-Rust: zero steps). Exit 0 if steps pass. Prevents phantom scoped work after merge/pull. |
-| **SharedInfra** | (live dirty) changed paths in **packet** match shared-infra globs (Cargo.toml, cli/args, config/**, migrations/**, …) | **Full suite** + announce (`scopeExecuted: "full"`) — justified |
-| **EmptyChanges** | `packet.changes` empty (checked **before** stem query) | Same cheap plan as LiveEmpty |
+| **SharedInfra** | (live dirty, after overlay) changed paths match shared-infra globs (Cargo.toml, cli/args, config/**, migrations/**, …) | **Full suite** + announce (`scopeExecuted: "full"`) — justified. SharedInfra’s `.ledgerful/**` glob is **unreachable** on the fast+dirty overlay path (watch ignore-list wins). A `.ledgerful/rules.toml`-only dirty tree is LiveEmpty / EmptyChanges, **not** SharedInfra. |
+| **NonCodeCheap** | Every classified path matches the cheap glob set: exact `CHANGELOG.md` / `README.md` / `LICENSE` / `SECURITY.md` / `AGENTS.md` / `Agents.md` / `Claude.md` / `scripts/bump-manifests.ps1` / `.sh`; prefix `docs/**` **except** `docs/api/openapi.json`; prefix `packaging/**`. **Not** cheap: `.agents/**` (watch-ignored; skill edits are not docs-cheap), `src/**`, OpenAPI JSON. | Skip freshness. **Docs/CHANGELOG-only:** fmt+clippy, **zero** nextest, `fallback_reason=None`, `scopeExecuted: "fast"`. **Packaging / bump-script (A2):** inject scoped nextest `test(bump_manifests)` (not workspace `--profile ci`). Mixed src **mapped** + packaging **unions** `bump_manifests` into ScopedOk. Mixed src **unmapped** + packaging still MappingRefuse (do not cheap mixed). |
+| **EmptyChanges** | `packet.changes` empty after overlay (checked **before** stem query) | Same cheap plan as LiveEmpty |
 | **HeadMismatch** | `test_mapping` populated + index `head_hash` ≠ packet head | **Auto-repair once** (bounded incremental) **without** `--auto-index`; re-classify; still lag → **refuse**. Not silent ScopedOk on stems alone. |
 | **EmptyMapping** | `test_mapping` count == 0 / table missing | **Refuse** unless `--auto-index` (try once; still empty → refuse). Bootstrap cost is opt-in. |
-| **ScopedOk** | freshness Ok + `test_mapping` yields stems for changed files | Existing 3-step scoped plan |
-| **MappingRefuse** | empty mapping (no flag), head-lag still unusable after repair, PacketHeadMissing without flag, no stems, no DB | **Refuse** — do **not** execute full. Exit ≠ 0. `scopeExecuted: "refused"`, `plan.refused=true`, empty steps |
+| **ScopedOk** | freshness Ok + `test_mapping` yields stems for changed files | Existing 3-step scoped plan; **union** stem `bump_manifests` when any packaging / bump-script path is in the classified set (A2 mixed) |
+| **MappingRefuse** | empty mapping (no flag), head-lag still unusable after repair, PacketHeadMissing without flag, no stems, no DB, unmapped src/openapi | **Refuse** — do **not** execute full. Exit ≠ 0. `scopeExecuted: "refused"`, `plan.refused=true`, empty steps |
 
 **Escape hatches:**
 
@@ -49,15 +53,21 @@ hermetic; the rest lives in `build_plan_scoped_with_options`:
 | `--auto-index` | Required for **empty** mapping bootstrap; also repairs PacketHeadMissing. Head-lag repairs **without** this flag. Still-cannot → **refuse** unless allow also set |
 | Pre-push | `verify --scope fast` **without** allow — benefits from LiveEmpty + head-lag auto-repair; empty mapping still blocks until index fixed |
 
-Human refuse first line is greppable:
+Human dry-run first product line is always `scope:` (`scope: fast` or
+`scope: full (pre-push uses --scope fast)`). On MappingRefuse `--dry-run`,
+that line is **above** the greppable ℹ reason:
 
 ```text
-fast scope unavailable — <trigger>; refusing full suite (~5-8 min)
+scope: fast
+ℹ fast scope unavailable — <trigger>; refusing full suite (~5-8 min)
 Next: ledgerful index --incremental
       ledgerful verify --scope fast --auto-index
       ledgerful verify --scope full
       ledgerful verify --scope fast --allow-full-fallback
 ```
+
+Live (non-dry-run) refuse still prints the ℹ reason first (no `scope:`
+banner). The ℹ line remains greppable either way.
 
 All speed measures in this guide apply to `--scope fast` only. `--scope full`
 remains unchanged.

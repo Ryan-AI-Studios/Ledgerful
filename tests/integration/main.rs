@@ -56,6 +56,7 @@ mod cli_update;
 mod cli_usage;
 mod cli_verify;
 mod cli_verify_explain_test_mapping;
+mod cli_verify_fast_non_code;
 mod cli_verify_rules;
 mod cli_verify_stacks;
 mod cli_viz;
