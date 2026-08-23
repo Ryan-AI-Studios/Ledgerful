@@ -174,6 +174,8 @@ mod tests {
             )
         });
         assert!(output.is_object());
+        assert_eq!(output["schemaVersion"], 1);
+        assert_eq!(output["resultCount"], 0);
         assert_eq!(output["emptyReason"], "noMatches");
         assert!(
             output["message"]
@@ -185,13 +187,22 @@ mod tests {
     }
 
     #[test]
-    fn non_empty_json_is_bare_array() {
+    fn non_empty_json_is_object_envelope() {
         let items = vec![serde_json::json!({"var_name": "FOO"})];
         let output = format_json_empty_state(items, "results", || {
-            (EmptyReason::NoMatches, "unused".to_string())
+            panic!("reason_fn must not run for populated lists");
         });
-        assert!(output.is_array());
-        assert_eq!(output.as_array().unwrap().len(), 1);
+        assert!(
+            output.is_object(),
+            "populated schema JSON must be an object"
+        );
+        assert_eq!(output["schemaVersion"], 1);
+        assert_eq!(output["resultCount"], 1);
+        assert_eq!(output["results"].as_array().map(|a| a.len()), Some(1));
+        assert!(
+            output.get("emptyReason").is_none(),
+            "populated arm must omit emptyReason: {output}"
+        );
     }
 
     #[test]

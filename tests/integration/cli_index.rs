@@ -72,6 +72,19 @@ fn test_index_check_json_is_pure() {
         panic!("DoD-3: entire stdout must parse as JSON: {e}; stdout={stdout}");
     });
     assert!(parsed.is_object(), "expected JSON object, got {parsed}");
+    assert_eq!(
+        parsed["schemaVersion"], 1,
+        "check JSON schemaVersion: {parsed}"
+    );
+    assert_eq!(parsed["kind"], "indexCheck", "check JSON kind: {parsed}");
+    assert!(
+        parsed.get("totalFiles").is_some(),
+        "check JSON must expose camelCase totalFiles: {parsed}"
+    );
+    assert!(
+        parsed.get("total_files").is_none(),
+        "check JSON must not expose snake total_files: {parsed}"
+    );
     // 0149 DoD-4: success path must not print human Info on stderr.
     assert!(
         stderr.trim().is_empty(),
@@ -130,7 +143,7 @@ fn test_index_check_strict_stale_exits_with_reason() {
 }
 
 /// 0128: content-dirty age-fresh index must never report FreshPopulated with
-/// positive stale_files; assessment.stale_files == top-level stale_files.
+/// positive staleFiles; assessment.staleFiles == top-level staleFiles.
 #[test]
 fn test_index_check_json_content_stale_not_fresh_populated() {
     let tmp = tempdir().unwrap();
@@ -170,9 +183,7 @@ fn test_index_check_json_content_stale_not_fresh_populated() {
         panic!("entire stdout must parse as JSON: {e}; stdout={stdout}");
     });
 
-    let top_stale = parsed["stale_files"]
-        .as_u64()
-        .expect("top-level stale_files");
+    let top_stale = parsed["staleFiles"].as_u64().expect("top-level staleFiles");
     assert!(
         top_stale > 0,
         "edited file must produce content drift: {parsed}"
@@ -184,22 +195,22 @@ fn test_index_check_json_content_stale_not_fresh_populated() {
     let state = assessment["state"].as_str().unwrap_or("");
     assert_ne!(
         state, "FreshPopulated",
-        "DoD-1: never FreshPopulated with stale_files > 0: {parsed}"
+        "DoD-1: never FreshPopulated with staleFiles > 0: {parsed}"
     );
     assert!(
         state == "ContentStalePopulated" || state.contains("Stale") || state.contains("Content"),
         "expected ContentStalePopulated (or stale variant), got {state}: {parsed}"
     );
-    let assess_stale = assessment["stale_files"]
+    let assess_stale = assessment["staleFiles"]
         .as_u64()
-        .expect("assessment.stale_files");
+        .expect("assessment.staleFiles");
     assert_eq!(
         assess_stale, top_stale,
-        "DoD-2: assessment.stale_files must equal top-level stale_files"
+        "DoD-2: assessment.staleFiles must equal top-level staleFiles"
     );
 }
 
-/// 0128: clean age-fresh index reports up to date with stale_files 0.
+/// 0128: clean age-fresh index reports up to date with staleFiles 0.
 #[test]
 fn test_index_check_json_clean_is_fresh_populated_zero_stale() {
     let tmp = tempdir().unwrap();
@@ -226,9 +237,9 @@ fn test_index_check_json_clean_is_fresh_populated_zero_stale() {
     });
 
     assert_eq!(
-        parsed["stale_files"].as_u64().unwrap_or(999),
+        parsed["staleFiles"].as_u64().unwrap_or(999),
         0,
-        "clean tree must have top-level stale_files 0: {parsed}"
+        "clean tree must have top-level staleFiles 0: {parsed}"
     );
     let assessment = &parsed["assessment"];
     assert_eq!(
@@ -237,9 +248,9 @@ fn test_index_check_json_clean_is_fresh_populated_zero_stale() {
         "clean age-fresh must be FreshPopulated: {parsed}"
     );
     assert_eq!(
-        assessment["stale_files"].as_u64().unwrap_or(999),
+        assessment["staleFiles"].as_u64().unwrap_or(999),
         0,
-        "assessment.stale_files must be 0 when clean: {parsed}"
+        "assessment.staleFiles must be 0 when clean: {parsed}"
     );
 }
 

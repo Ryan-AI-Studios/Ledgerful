@@ -222,9 +222,13 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
             }
         }
     } else if json {
-        let output = crate::output::empty::format_json_empty_state(displayed, "impacted", || {
-            (crate::output::empty::EmptyReason::NoMatches, String::new())
-        });
+        let mut output =
+            crate::output::empty::format_json_empty_state(displayed, "impacted", || {
+                (crate::output::empty::EmptyReason::NoMatches, String::new())
+            });
+        if let Some(map) = output.as_object_mut() {
+            map.insert("indexedCount".to_string(), serde_json::json!(indexed));
+        }
         println!(
             "{}",
             serde_json::to_string_pretty(&output).into_diagnostic()?

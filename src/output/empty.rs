@@ -12,25 +12,15 @@ pub enum EmptyReason {
     NoMatches,
 }
 
-#[derive(Serialize)]
-#[serde(untagged)]
-pub enum JsonEmptyState<T: Serialize> {
-    Results(Vec<T>),
-    Empty {
-        results: Vec<T>,
-        empty_reason: EmptyReason,
-        message: String,
-    },
-}
-
-impl<T: Serialize> JsonEmptyState<T> {
-    pub fn new_empty(reason: EmptyReason, message: String) -> Self {
-        JsonEmptyState::Empty {
-            results: Vec::new(),
-            empty_reason: reason,
-            message,
-        }
-    }
+/// Always-object list envelope (`schemaVersion` 1 + collection key + `resultCount`).
+/// Used by printers that never carry `emptyReason` (including empty catalogs).
+pub fn format_json_list_envelope<T: Serialize>(items: Vec<T>, key: &str) -> serde_json::Value {
+    let result_count = items.len();
+    let mut map = serde_json::Map::new();
+    map.insert("schemaVersion".to_string(), json!(1));
+    map.insert(key.to_string(), json!(items));
+    map.insert("resultCount".to_string(), json!(result_count));
+    json!(map)
 }
 
 pub fn format_json_empty_state<T: Serialize>(
@@ -41,13 +31,14 @@ pub fn format_json_empty_state<T: Serialize>(
     if items.is_empty() {
         let (reason, message) = reason_fn();
         let mut map = serde_json::Map::new();
+        map.insert("schemaVersion".to_string(), json!(1));
         map.insert(key.to_string(), json!(items));
+        map.insert("resultCount".to_string(), json!(0));
         map.insert("emptyReason".to_string(), json!(reason));
         map.insert("message".to_string(), json!(message));
         json!(map)
     } else {
-        // If not empty, return array
-        json!(items)
+        format_json_list_envelope(items, key)
     }
 }
 
@@ -132,5 +123,56 @@ mod tests {
              (then `ledgerful config set coverage.deploy.enabled=true`) \
              (then `ledgerful config set coverage.services.enabled=true`)."
         );
+    }
+
+    #[test]
+    fn empty_list_is_object_with_reason_and_result_count_zero() {
+        let items: Vec<serde_json::Value> = vec![];
+        let output = format_json_empty_state(items, "results", || {
+            (EmptyReason::NoMatches, "no hits".to_string())
+        });
+        assert!(output.is_object(), "empty arm must be an object: {output}");
+        assert_eq!(output["schemaVersion"], 1);
+        assert_eq!(output["resultCount"], 0);
+        assert_eq!(output["emptyReason"], "noMatches");
+        assert_eq!(output["message"], "no hits");
+        assert_eq!(output["results"], json!([]));
+        assert!(!output.is_array());
+    }
+
+    #[test]
+    fn populated_list_is_object_without_empty_reason() {
+        let items = vec![serde_json::json!({"path": "a.rs"})];
+        let output = format_json_empty_state(items, "results", || {
+            panic!("reason_fn must not run for populated lists");
+        });
+        assert!(
+            output.is_object(),
+            "populated arm must be an object: {output}"
+        );
+        assert_eq!(output["schemaVersion"], 1);
+        assert_eq!(output["resultCount"], 1);
+        assert_eq!(output["results"].as_array().map(|a| a.len()), Some(1));
+        assert!(
+            output.get("emptyReason").is_none(),
+            "populated arm must omit emptyReason: {output}"
+        );
+        assert!(
+            output.get("message").is_none(),
+            "populated arm must omit message: {output}"
+        );
+        assert!(!output.is_array());
+    }
+
+    #[test]
+    fn list_envelope_omits_empty_reason_even_when_empty() {
+        let items: Vec<serde_json::Value> = vec![];
+        let output = format_json_list_envelope(items, "gates");
+        assert!(output.is_object());
+        assert_eq!(output["schemaVersion"], 1);
+        assert_eq!(output["resultCount"], 0);
+        assert_eq!(output["gates"], json!([]));
+        assert!(output.get("emptyReason").is_none());
+        assert!(output.get("message").is_none());
     }
 }

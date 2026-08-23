@@ -67,10 +67,19 @@ fn env_example_incremental_index_makes_config_schema_ready() {
     let (stdout, stderr, code) = run_cli(root, &["config", "schema", "--json"]);
     assert_eq!(code, 0, "config schema --json; stderr={stderr}");
     let v: serde_json::Value = serde_json::from_str(stdout.trim())
-        .unwrap_or_else(|e| panic!("expected populated schema JSON array: {e}\n{stdout}"));
-    let rows = v.as_array().unwrap_or_else(|| {
-        panic!("populated schema must be a bare array, got empty envelope: {stdout}")
-    });
+        .unwrap_or_else(|e| panic!("expected populated schema JSON object: {e}\n{stdout}"));
+    assert_eq!(
+        v["schemaVersion"], 1,
+        "schema envelope schemaVersion: {stdout}"
+    );
+    let rows = v["results"]
+        .as_array()
+        .unwrap_or_else(|| panic!("populated schema must expose results[], got: {stdout}"));
+    assert_eq!(
+        v["resultCount"],
+        rows.len(),
+        "resultCount must match results length: {stdout}"
+    );
     assert_eq!(
         rows.len(),
         21,
@@ -305,17 +314,25 @@ fn security_impact_changed_clean_tree_is_clean_diff() {
     assert_eq!(code, 0, "security impact --json; stderr={stderr}");
     let bare: serde_json::Value = serde_json::from_str(bare_json.trim())
         .unwrap_or_else(|e| panic!("expected populated impact JSON: {e}\n{bare_json}"));
-    let rows = bare.as_array().unwrap_or_else(|| {
-        panic!("bare security impact --json must stay a raw array, got: {bare_json}")
+    assert!(
+        bare.is_object(),
+        "populated security impact --json must be an object envelope, got: {bare_json}"
+    );
+    let rows = bare["impacted"].as_array().unwrap_or_else(|| {
+        panic!("populated security impact --json must expose impacted[], got: {bare_json}")
     });
     assert_eq!(
         rows.len(),
         8,
-        "bare impact must still list all indexed policies, got: {bare_json}"
+        "impact must still list all indexed policies, got: {bare_json}"
+    );
+    assert!(
+        bare.get("indexedCount").is_some(),
+        "populated security impact --json must include indexedCount, got: {bare_json}"
     );
 }
 
-/// 0208-E: dirty `policies/daemon-api.cedar` → `--changed --json` is a raw array of 8.
+/// 0207-A1: dirty `policies/daemon-api.cedar` → `--changed --json` is an object with `impacted`.
 #[test]
 fn security_impact_changed_dirty_cedar_returns_source_file_array() {
     let tmp = init_cedar_indexed_clean_repo();
@@ -329,9 +346,13 @@ fn security_impact_changed_dirty_cedar_returns_source_file_array() {
     assert_eq!(code, 0, "security impact --changed --json; stderr={stderr}");
     let v: serde_json::Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("expected impact JSON: {e}\n{stdout}"));
-    let rows = v.as_array().unwrap_or_else(|| {
-        panic!("dirty --changed JSON must be a raw array, not an object envelope: {stdout}")
-    });
+    assert!(
+        v.is_object(),
+        "dirty --changed JSON must be an object envelope, got: {stdout}"
+    );
+    let rows = v["impacted"]
+        .as_array()
+        .unwrap_or_else(|| panic!("dirty --changed JSON must expose impacted[], got: {stdout}"));
     assert_eq!(rows.len(), 8, "expected 8 changed policies: {stdout}");
     assert!(
         rows.iter().all(|row| {
@@ -340,8 +361,8 @@ fn security_impact_changed_dirty_cedar_returns_source_file_array() {
         "every changed item must expose slash-folded source_file and is_changed, got: {stdout}"
     );
     assert!(
-        v.get("indexedCount").is_none(),
-        "non-empty JSON must not grow indexedCount, got: {stdout}"
+        v.get("indexedCount").is_some(),
+        "populated/dirty --changed JSON must include indexedCount, got: {stdout}"
     );
 }
 

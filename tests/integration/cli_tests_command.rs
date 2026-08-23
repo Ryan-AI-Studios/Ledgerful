@@ -229,6 +229,20 @@ fn test_cli_tests_json_output() {
         .unwrap();
     let stdout2 = String::from_utf8_lossy(&output2.stdout);
     assert!(stdout2.contains(r#""tests/lib_test.rs::test_tested_fn""#));
+    let mapped: serde_json::Value = serde_json::from_str(stdout2.trim())
+        .unwrap_or_else(|e| panic!("mapped tests --json must parse: {e}; {stdout2}"));
+    assert_eq!(
+        mapped["schemaVersion"], 1,
+        "mapped tests schemaVersion: {stdout2}"
+    );
+    assert!(
+        mapped["resultCount"].as_u64().unwrap_or(0) >= 1,
+        "mapped tests resultCount: {stdout2}"
+    );
+    assert!(
+        mapped["mappings"].as_array().is_some(),
+        "mapped tests must expose mappings[]: {stdout2}"
+    );
 }
 
 #[test]

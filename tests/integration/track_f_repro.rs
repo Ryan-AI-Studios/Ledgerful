@@ -224,11 +224,10 @@ fn main() { let app = Router::new().route("/health", get(health)); }
     let v: serde_json::Value = serde_json::from_str(&dirty_stdout).unwrap_or_else(|e| {
         panic!("expected JSON from endpoints --changed --json: {e}; body={dirty_stdout}");
     });
-    // Non-empty results: no emptyReason envelope (or results array with route).
+    // Non-empty results: object envelope with results[] (no emptyReason).
     let results = v
         .get("results")
         .and_then(|r| r.as_array())
-        .or_else(|| v.as_array())
         .unwrap_or_else(|| {
             panic!("expected results array in dirty --changed JSON: {dirty_stdout}");
         });

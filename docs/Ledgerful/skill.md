@@ -172,14 +172,14 @@ ledgerful doctor --json
 - **Documentation Generation**: Export Knowledge Graph data to Markdown/Mermaid passive documentation (`index --export-docs`).
 - **Dead Code Detection**: Confidence-based dead code detection blending graph reachability, git activity, and test history (`dead-code` command). Use `dead-code --prune` for interactive opt-in removal.
 - **Live Visualization**: WebSocket-based Arc Diagram for real-time Knowledge Graph updates (`viz-server`, `viz-server --stop`).
-- **Endpoints**: Indexed endpoint graph with auth, schemas, consumers, and owner links. `ledgerful endpoints --json` / `--changed` (matches handler symbol, impl file, registration file, or blast edges — not registration-only). Change-set `affectedFlows` on impact / change-context / PR is the same route-map signal (sample-capped on reports; filter uncapped).
+- **Endpoints**: Indexed endpoint graph with auth, schemas, consumers, and owner links. `ledgerful endpoints --json` / `--changed` is a schemaVersion-1 object with `results[]` (0207). MCP `endpoints_changed` re-execs that CLI envelope. Change-set `affectedFlows` on impact / change-context / PR is the same route-map signal (sample-capped on reports; filter uncapped).
 - **Services Diff**: Declared service map with queue/topic/RPC edges and PR-style boundary diff. `ledgerful services diff`.
 - **Data Models**: Durable data model, table, migration, and compatibility-class relations with impact rules for destructive changes. `ledgerful data-models impact --changed`.
 - **Config Schema & Diff**: Explicit env var schema metadata and change diff. `ledgerful config schema` / `config diff`.
 - **Dependency & Advisory Graph**: Cargo/npm/Python lockfile ingestion with cargo-audit/osv advisory matching.
 - **Test Mapping**: Durable test nodes linked to endpoints, symbols, services, and data models. `ledgerful verify --explain --entity <path>`.
 - **Observability Graph**: SLO, metric, alert, and signal nodes from OpenSLO YAML. `ledgerful observability diff` / `observability coverage`.
-- **Hotspot Trends**: Persistent hotspot and temporal coupling snapshots with trend deltas. Default `ledgerful hotspots trend` is a top-20 file summary (`--limit N`, `-a/--all` for full matrix, `--entity` for one-file series). `hotspots explain`.
+- **Hotspot Trends**: Persistent hotspot and temporal coupling snapshots with trend deltas. Default `ledgerful hotspots trend` is a top-20 file summary (`--limit N`, `-a/--all` for full matrix, `--entity` for one-file series). CLI `hotspots --json` is a schemaVersion-1 object with `files[]`. **MCP `hotspots` is still an in-process array** (not wrapped). `hotspots explain`.
 - **Ledger Graph**: Per-transaction entity neighborhood view. `ledgerful ledger graph <tx-id>`.
 - **Security Boundaries**: Cedar policy parsing with cross-surface links. `ledgerful security boundaries` / `security impact --changed`.
 - **Surfaces inventory**: `ledgerful surfaces` (alias `tour`) lists which advanced surfaces are ready, empty, or gated by coverage. Read-only; does not enable coverage. Engine dogfood ships `.env.example` + `policies/daemon-api.cedar` so schema and security can be ready after index.

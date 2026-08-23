@@ -867,14 +867,17 @@ fn test_dogfood_recipe_end_to_end_populates_observability_and_security() {
     let coverage_json: serde_json::Value = serde_json::from_str(&coverage_stdout)
         .unwrap_or_else(|e| panic!("coverage output was not valid JSON: {e}\n{coverage_stdout}"));
 
-    // `format_json_empty_state` (src/output/empty.rs) emits a bare JSON array
-    // when populated, and an object wrapping `results`/`emptyReason`/`message`
-    // when empty. Asserting the top-level shape is a bare, non-empty array is
-    // exactly how to distinguish "populated" from the empty state.
-    let coverage_array = coverage_json.as_array().unwrap_or_else(|| {
+    // `format_json_empty_state` (src/output/empty.rs) always emits an object
+    // with `results`. Empty also carries `emptyReason`/`message`; populated omits
+    // those keys.
+    assert!(
+        coverage_json.is_object(),
+        "expected `observability coverage --json` to be an object envelope, got: {coverage_stdout}"
+    );
+    assert_eq!(coverage_json["schemaVersion"], 1);
+    let coverage_array = coverage_json["results"].as_array().unwrap_or_else(|| {
         panic!(
-            "expected `observability coverage --json` to return a populated bare JSON array \
-             (not the wrapped empty-state object), got: {coverage_stdout}"
+            "expected `observability coverage --json` to expose populated results[], got: {coverage_stdout}"
         )
     });
     assert!(
