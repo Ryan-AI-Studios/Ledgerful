@@ -245,8 +245,19 @@ fn cli_ledger_history_alias_include_rollback_parses() {
 
     let value: serde_json::Value =
         serde_json::from_str(stdout.trim()).expect("history alias JSON must parse");
+    let arr = value
+        .as_array()
+        .unwrap_or_else(|| panic!("history alias must emit a JSON array, got: {stdout}"));
     assert!(
-        value.is_array(),
-        "history alias must emit a JSON array, got: {stdout}"
+        arr.iter().any(|e| e["entry_type"] == "ROLLBACK"),
+        "history --include-rollback must include ROLLBACK, got: {stdout}"
+    );
+    assert!(
+        !arr.is_empty(),
+        "history --include-rollback must not be empty, got: {stdout}"
+    );
+    assert_ne!(
+        arr[0]["entry_type"], "ROLLBACK",
+        "history alias first element must not be ROLLBACK, got: {stdout}"
     );
 }
