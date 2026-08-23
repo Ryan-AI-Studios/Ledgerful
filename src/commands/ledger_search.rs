@@ -28,6 +28,10 @@ pub(crate) fn format_committed_short(committed_at: &str) -> String {
 }
 
 /// Truncate display text for table cells (display-only; JSON unchanged).
+///
+/// If the char cut is mid-token, snap to the last whitespace in the kept prefix
+/// only when the snapped prefix is at least `max(8, keep/2)` chars and the
+/// whitespace is not index 0. Otherwise keep mid-word ellipsis.
 pub(crate) fn truncate_display(s: &str, max_chars: usize) -> String {
     if max_chars == 0 {
         return String::new();
@@ -40,11 +44,42 @@ pub(crate) fn truncate_display(s: &str, max_chars: usize) -> String {
         return s.chars().take(max_chars).collect();
     }
     let keep = max_chars.saturating_sub(3);
-    let mut out: String = s.chars().take(keep).collect();
-    out.push_str("...");
-    out
+    let prefix: String = s.chars().take(keep).collect();
+
+    let last_kept_ws = prefix.chars().next_back().is_some_and(char::is_whitespace);
+    let first_dropped_ws = s.chars().nth(keep).is_some_and(char::is_whitespace);
+    let mid_token = !last_kept_ws && !first_dropped_ws;
+
+    if mid_token
+        && let Some((ws_byte, _)) = prefix.char_indices().rev().find(|(_, c)| c.is_whitespace())
+        && ws_byte != 0
+    {
+        let snapped = &prefix[..ws_byte];
+        let snapped_chars = snapped.chars().count();
+        let min_kept = 8.max(keep / 2);
+        if snapped_chars >= min_kept {
+            return format!("{snapped}...");
+        }
+    }
+
+    format!("{prefix}...")
 }
 
+/// Human omitted-honesty line (CLI table footer / empty-visible path).
+pub(crate) fn omitted_rollback_line(n: usize) -> String {
+    format!("{n} rolled-back matches omitted. Pass --include-rollback to show them.")
+}
+
+/// Empty human-search message. Never a bare miss when rollbacks were omitted.
+pub(crate) fn format_empty_human_search(miss_line: &str, omitted_rollbacks: usize) -> String {
+    if omitted_rollbacks == 0 {
+        miss_line.to_string()
+    } else {
+        format!("{miss_line}\n{}", omitted_rollback_line(omitted_rollbacks))
+    }
+}
+
+#[allow(clippy::too_many_arguments)] // include_rollback is a required extra filter (0213)
 pub fn execute_ledger_search(
     query: String,
     category: Option<Category>,
@@ -53,6 +88,7 @@ pub fn execute_ledger_search(
     limit: usize,
     offset: usize,
     json: bool,
+    include_rollback: bool,
 ) -> Result<()> {
     let layout = get_layout()?;
     let mut storage = StorageManager::init_with_layout(&layout)?;
@@ -74,6 +110,7 @@ pub fn execute_ledger_search(
             breaking,
             Some(limit),
             offset,
+            include_rollback,
         )
         .map_err(|e| miette::miette!("{}", e))?;
 
@@ -85,11 +122,20 @@ pub fn execute_ledger_search(
         return Ok(());
     }
 
+    let omitted = if include_rollback {
+        0
+    } else {
+        manager
+            .count_rollback_matches(&query, cat_filter.as_deref(), days, breaking)
+            .map_err(|e| miette::miette!("{}", e))?
+    };
+
     if results.is_empty() {
-        println!(
+        let miss = format!(
             "No ledger entries found matching '{}'.",
             query.if_supports_color(Stream::Stdout, |s| s.yellow())
         );
+        println!("{}", format_empty_human_search(&miss, omitted));
         return Ok(());
     }
 
@@ -153,6 +199,10 @@ pub fn execute_ledger_search(
 
     println!("{table}");
 
+    if omitted > 0 {
+        println!("{}", omitted_rollback_line(omitted));
+    }
+
     Ok(())
 }
 
@@ -199,6 +249,68 @@ mod tests {
         let t = truncate_display(s, 10);
         assert_eq!(t, "abcdefg...");
         assert!(t.chars().count() <= 10);
+    }
+
+    #[test]
+    fn truncate_display__spaced_sentence__no_partial_word() {
+        let s = "The quick brown fox jumps over the lazy dog";
+        let t = truncate_display(s, 20);
+        assert_eq!(t, "The quick brown...");
+        assert!(!t.contains("f..."));
+        assert!(!t.ends_with("f..."));
+    }
+
+    #[test]
+    fn truncate_display__long_token_after_early_space__min_kept() {
+        let s = "New feature: Supercalifragilisticexpialidocious extra";
+        let t = truncate_display(s, 48);
+        assert_ne!(t, "New feature: ...");
+        assert!(!t.starts_with("New feature: ..."));
+        let keep = 48usize.saturating_sub(3);
+        let min_kept = 8.max(keep / 2);
+        let body = t.strip_suffix("...").unwrap_or(&t);
+        assert!(
+            body.chars().count() >= min_kept,
+            "expected at least {min_kept} kept chars, got {t:?}"
+        );
+        assert!(t.ends_with("..."));
+    }
+
+    #[test]
+    fn omitted_rollback_line__contains_honesty_tokens() {
+        let line = omitted_rollback_line(3);
+        assert!(line.contains("rolled-back matches omitted"));
+        assert!(line.contains("--include-rollback"));
+        assert!(line.contains('3'));
+    }
+
+    #[test]
+    fn empty_visible_with_omitted_rollbacks_is_not_a_bare_miss() {
+        let miss = "No ledger entries found matching 'q'.";
+        let combined = format_empty_human_search(miss, 2);
+        assert!(combined.contains("No ledger entries found"));
+        assert!(combined.contains("rolled-back matches omitted"));
+        assert!(combined.contains("--include-rollback"));
+        assert_ne!(combined.trim(), miss);
+    }
+
+    #[test]
+    fn empty_visible_with_zero_omitted_has_no_extra_line() {
+        let miss = "No ledger entries found matching 'q'.";
+        let combined = format_empty_human_search(miss, 0);
+        assert_eq!(combined, miss);
+        assert!(!combined.contains("rolled-back matches omitted"));
+    }
+
+    #[test]
+    fn json_path_has_no_omitted_footer() {
+        // P8: JSON is a bare array; omitted honesty is human-only.
+        let payload = serde_json::to_string_pretty(&Vec::<String>::new()).expect("json");
+        assert!(payload.trim_start().starts_with('['));
+        assert!(!payload.contains("rolled-back matches omitted"));
+        assert!(!payload.contains("--include-rollback"));
+        let human = omitted_rollback_line(1);
+        assert!(human.contains("rolled-back matches omitted"));
     }
 
     #[test]

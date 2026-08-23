@@ -33,6 +33,42 @@ fn insert_dummy_tx(db: &LedgerDb, tx_id: &str) {
     db.insert_transaction(&tx).unwrap();
 }
 
+fn dummy_entry(
+    id: i64,
+    tx_id: &str,
+    entry_type: EntryType,
+    entity: &str,
+    summary: &str,
+    reason: &str,
+) -> LedgerEntry {
+    LedgerEntry {
+        id,
+        tx_id: tx_id.to_string(),
+        category: Category::Feature,
+        entry_type,
+        entity: entity.to_string(),
+        entity_normalized: entity.to_string(),
+        change_type: ChangeType::Modify,
+        summary: summary.to_string(),
+        reason: reason.to_string(),
+        is_breaking: false,
+        committed_at: "2026-01-01T10:00:00Z".to_string(),
+        verification_status: None,
+        verification_basis: None,
+        outcome_notes: None,
+        origin: "LOCAL".to_string(),
+        trace_id: None,
+        signature: None,
+        public_key: None,
+        risk: None,
+        related_tickets: None,
+        author: "Test User".to_string(),
+        observed: None,
+        prev_hash: None,
+        sig_version: 1,
+    }
+}
+
 #[test]
 fn test_search_basic() {
     let conn = setup_db();
@@ -100,14 +136,14 @@ fn test_search_basic() {
 
     // Search for "database"
     let results = db
-        .search_ledger("database", None, None, false, None, 0)
+        .search_ledger("database", None, None, false, None, 0, false)
         .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].summary, "Implement database search");
 
     // Search for "search"
     let results = db
-        .search_ledger("search", None, None, false, None, 0)
+        .search_ledger("search", None, None, false, None, 0, false)
         .unwrap();
     assert_eq!(results.len(), 2);
 }
@@ -179,13 +215,15 @@ fn test_search_filters() {
 
     // Filter by category
     let results = db
-        .search_ledger("FTS", Some("BUGFIX"), None, false, None, 0)
+        .search_ledger("FTS", Some("BUGFIX"), None, false, None, 0, false)
         .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].summary, "FTS fix");
 
     // Filter by breaking
-    let results = db.search_ledger("FTS", None, None, true, None, 0).unwrap();
+    let results = db
+        .search_ledger("FTS", None, None, true, None, 0, false)
+        .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].summary, "FTS search");
 }
@@ -257,7 +295,7 @@ fn test_search_ranking() {
 
     // Query for "Search"
     let results = db
-        .search_ledger("Search", None, None, false, None, 0)
+        .search_ledger("Search", None, None, false, None, 0, false)
         .unwrap();
     assert_eq!(results.len(), 2);
     // entry2 has "Search" in summary, entry1 has it in reason.
@@ -273,7 +311,7 @@ fn test_search_invalid_syntax() {
     // prevent hyphenated terms from being misinterpreted as column qualifiers.
     // This means previously "invalid" syntax like "summary: ( )" is now treated
     // as a literal phrase search and returns empty results instead of erroring.
-    let result = db.search_ledger("summary: ( )", None, None, false, None, 0);
+    let result = db.search_ledger("summary: ( )", None, None, false, None, 0, false);
     match result {
         Ok(entries) => {
             // Phrase search for literal "summary: ( )" returns no matches.
@@ -366,14 +404,123 @@ fn test_search_days_filtering() {
 
     // Search with --days 5
     let results = db
-        .search_ledger("change", None, Some(5), false, None, 0)
+        .search_ledger("change", None, Some(5), false, None, 0, false)
         .unwrap();
     assert_eq!(results.len(), 1);
     assert_eq!(results[0].summary, "Recent change");
 
     // Search with --days 15
     let results = db
-        .search_ledger("change", None, Some(15), false, None, 0)
+        .search_ledger("change", None, Some(15), false, None, 0, false)
         .unwrap();
     assert_eq!(results.len(), 2);
+}
+
+#[test]
+fn search_omits_rollback_by_default() {
+    let conn = setup_db();
+    let db = LedgerDb::new(&conn);
+
+    insert_dummy_tx(&db, "tx-impl");
+    insert_dummy_tx(&db, "tx-rb");
+
+    let entity = "track-0213-omit";
+    db.insert_ledger_entry(&dummy_entry(
+        1,
+        "tx-impl",
+        EntryType::Implementation,
+        entity,
+        "Committed work for track 0213 omit fixture",
+        "Longer reason so the implementation FTS document is not empty",
+    ))
+    .unwrap();
+    db.insert_ledger_entry(&dummy_entry(
+        2,
+        "tx-rb",
+        EntryType::Rollback,
+        entity,
+        "RB",
+        "x",
+    ))
+    .unwrap();
+
+    let results = db
+        .search_ledger(entity, None, None, false, None, 0, false)
+        .unwrap();
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].entry_type, EntryType::Implementation);
+    assert_ne!(results[0].entry_type, EntryType::Rollback);
+}
+
+#[test]
+fn search_include_rollback_ranks_non_rollback_first() {
+    let conn = setup_db();
+    let db = LedgerDb::new(&conn);
+
+    insert_dummy_tx(&db, "tx-impl");
+    insert_dummy_tx(&db, "tx-rb");
+
+    let entity = "track-0213-rank";
+    // P2: ROLLBACK FTS doc is shorter than IMPLEMENTATION so BM25 (f.rank)
+    // alone would rank ROLLBACK first. CASE must still put non-rollback first.
+    db.insert_ledger_entry(&dummy_entry(
+        1,
+        "tx-impl",
+        EntryType::Implementation,
+        entity,
+        "Committed implementation with a much longer summary so BM25 length-normalizes this document worse than the short rollback",
+        "Extended reason text that further lengthens the FTS document relative to the rollback row",
+    ))
+    .unwrap();
+    db.insert_ledger_entry(&dummy_entry(
+        2,
+        "tx-rb",
+        EntryType::Rollback,
+        entity,
+        "RB",
+        "x",
+    ))
+    .unwrap();
+
+    let results = db
+        .search_ledger(entity, None, None, false, None, 0, true)
+        .unwrap();
+    assert_eq!(results.len(), 2);
+    assert_ne!(results[0].entry_type, EntryType::Rollback);
+    assert_eq!(results[0].entry_type, EntryType::Implementation);
+    assert!(
+        results.iter().any(|e| e.entry_type == EntryType::Rollback),
+        "opt-in must still return the rollback row"
+    );
+}
+
+#[test]
+fn count_rollback_matches_returns_ok_for_rollback_only_query() {
+    let conn = setup_db();
+    let db = LedgerDb::new(&conn);
+
+    insert_dummy_tx(&db, "tx-rb-only");
+
+    let entity = "track-0213-count-only";
+    db.insert_ledger_entry(&dummy_entry(
+        1,
+        "tx-rb-only",
+        EntryType::Rollback,
+        entity,
+        "RB",
+        "x",
+    ))
+    .unwrap();
+
+    let visible = db
+        .search_ledger(entity, None, None, false, None, 0, false)
+        .unwrap();
+    assert!(
+        visible.is_empty(),
+        "default search must omit the only matching ROLLBACK"
+    );
+
+    let counted = db.count_rollback_matches(entity, None, None, false);
+    let n = counted.expect("count helper must return Ok, never swallow errors");
+    assert!(n > 0, "expected rollback matches, got {n}");
 }

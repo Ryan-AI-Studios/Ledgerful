@@ -428,8 +428,34 @@ mod tests {
         let cli = Cli::try_parse_from(["ledgerful", "ledger", "history", "q"]).unwrap();
         match cli.command {
             Commands::Ledger { command } => match command {
-                LedgerCommands::Search { query, .. } => {
+                LedgerCommands::Search {
+                    query,
+                    include_rollback,
+                    ..
+                } => {
                     assert_eq!(query, "q");
+                    assert!(
+                        !include_rollback,
+                        "omitted --include-rollback must default false"
+                    );
+                }
+                other => panic!("expected LedgerCommands::Search, got {other:?}"),
+            },
+            _ => panic!("expected Ledger command"),
+        }
+
+        let cli =
+            Cli::try_parse_from(["ledgerful", "ledger", "history", "q", "--include-rollback"])
+                .unwrap();
+        match cli.command {
+            Commands::Ledger { command } => match command {
+                LedgerCommands::Search {
+                    query,
+                    include_rollback,
+                    ..
+                } => {
+                    assert_eq!(query, "q");
+                    assert!(include_rollback);
                 }
                 other => panic!("expected LedgerCommands::Search, got {other:?}"),
             },
@@ -442,8 +468,33 @@ mod tests {
         let cli = Cli::try_parse_from(["ledgerful", "ledger", "search", "q"]).unwrap();
         match cli.command {
             Commands::Ledger { command } => match command {
-                LedgerCommands::Search { query, .. } => {
+                LedgerCommands::Search {
+                    query,
+                    include_rollback,
+                    ..
+                } => {
                     assert_eq!(query, "q");
+                    assert!(
+                        !include_rollback,
+                        "omitted --include-rollback must default false"
+                    );
+                }
+                other => panic!("expected LedgerCommands::Search, got {other:?}"),
+            },
+            _ => panic!("expected Ledger command"),
+        }
+
+        let cli = Cli::try_parse_from(["ledgerful", "ledger", "search", "q", "--include-rollback"])
+            .unwrap();
+        match cli.command {
+            Commands::Ledger { command } => match command {
+                LedgerCommands::Search {
+                    query,
+                    include_rollback,
+                    ..
+                } => {
+                    assert_eq!(query, "q");
+                    assert!(include_rollback);
                 }
                 other => panic!("expected LedgerCommands::Search, got {other:?}"),
             },

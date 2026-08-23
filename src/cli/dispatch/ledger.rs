@@ -132,8 +132,16 @@ pub(super) fn dispatch_ledger(command: LedgerCommands) -> Result<()> {
             limit,
             offset,
             json,
+            include_rollback,
         } => crate::commands::ledger_search::execute_ledger_search(
-            query, category, days, breaking, limit, offset, json,
+            query,
+            category,
+            days,
+            breaking,
+            limit,
+            offset,
+            json,
+            include_rollback,
         ),
         LedgerCommands::Reconcile {
             tx_id,
