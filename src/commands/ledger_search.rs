@@ -304,8 +304,13 @@ mod tests {
 
     #[test]
     fn json_path_has_no_omitted_footer() {
-        // P8: JSON is a bare array; omitted honesty is human-only.
-        let payload = serde_json::to_string_pretty(&Vec::<String>::new()).expect("json");
+        // Greppable helper tokens stay here. Production JSON stdout is pinned by
+        // CLI subprocess tests in tests/integration/ledger_search_cli.rs (they
+        // spawn execute_ledger_search; a Vec<String> pretty-print would still
+        // pass if that path grew a human omitted footer).
+        let payload =
+            serde_json::to_string_pretty(&Vec::<crate::ledger::types::LedgerEntry>::new())
+                .expect("json");
         assert!(payload.trim_start().starts_with('['));
         assert!(!payload.contains("rolled-back matches omitted"));
         assert!(!payload.contains("--include-rollback"));

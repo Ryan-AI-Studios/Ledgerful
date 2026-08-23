@@ -100,6 +100,7 @@ mod ledger_lifecycle;
 mod ledger_provenance;
 mod ledger_re_sign;
 mod ledger_search;
+mod ledger_search_cli;
 mod ledger_signature_fix;
 mod lifecycle_integrity;
 mod m33_migration;

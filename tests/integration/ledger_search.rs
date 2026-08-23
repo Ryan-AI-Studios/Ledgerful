@@ -10,7 +10,7 @@ fn setup_db() -> Connection {
     conn
 }
 
-fn insert_dummy_tx(db: &LedgerDb, tx_id: &str) {
+pub(crate) fn insert_dummy_tx(db: &LedgerDb, tx_id: &str) {
     let tx = Transaction {
         tx_id: tx_id.to_string(),
         operation_id: None,
@@ -33,7 +33,7 @@ fn insert_dummy_tx(db: &LedgerDb, tx_id: &str) {
     db.insert_transaction(&tx).unwrap();
 }
 
-fn dummy_entry(
+pub(crate) fn dummy_entry(
     id: i64,
     tx_id: &str,
     entry_type: EntryType,
