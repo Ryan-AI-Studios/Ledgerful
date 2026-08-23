@@ -42,6 +42,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Ask empty-tree honesty (0211):** On a live-clean working tree
+  (watch-filtered git status empty), `ask` ignores a cached dirty SQLite
+  `ImpactPacket` and tells the model `No pending changes found`. Git
+  discovery errors still fall through to the snapshot. Does not flip
+  `auto_scan_default` or change classifier intent. No Cargo bump.
+
 - **Ledger cwd/root honesty + `~` warnings (0200):** `ledger status --json`
   names `workRoot` and `stateDir` (schemaVersion stays 1). Compact is
   `Ledger [<workRoot>]: N pending, M unaudited drift.` Top-level
