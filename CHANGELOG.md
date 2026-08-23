@@ -50,6 +50,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **CHANGELOG / docs / packaging-template diffs no longer inflate default change-context/impact risk (0202):**
+  Keep-a-Changelog co-evolution and directory-prefix temporal pairs
+  (packaging parent-child, `docs` as Code) no longer push default
+  `pathMode=code` risk to High. `--include-governance` restores the
+  pre-0202 CHANGELOG wall. `CHANGELOG.md` remains Contract (class
+  counts / p1-when-changed). No Cargo bump.
+
 - **Verify `--scope fast` cheap on docs/packaging/CHANGELOG (0203):**
   Dirty docs, packaging templates, CHANGELOG, and bump-manifests scripts
   no longer MappingRefuse or surprise-run workspace nextest. Classifier

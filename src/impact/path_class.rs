@@ -76,18 +76,36 @@ pub fn classify_path_buf(path: &Path) -> PathClass {
 
 /// Whether a temporal pair should be demoted under the given path mode.
 ///
-/// Demote when either endpoint is Governance **and** neither is Contract.
-/// `path_mode` of `"all"` (include-governance) never demotes.
+/// Order is load-bearing (0202 F9): `pathMode=all` never; CHANGELOG.md
+/// basename demotes; either Contract keeps; strict ancestor-path demotes;
+/// either Governance demotes; else keep.
 pub fn should_demote_pair(path_a: &str, path_b: &str, path_mode: &str) -> bool {
+    // 1. pathMode=all never demotes (including F1/F2).
     if path_mode.eq_ignore_ascii_case("all") {
         return false;
     }
-    // Default and any unrecognized mode → code-default demotion.
-    let a = classify_path(path_a);
-    let b = classify_path(path_b);
+    let na = normalize_path(path_a);
+    let nb = normalize_path(path_b);
+
+    // 2. F1: CHANGELOG.md basename (case-insensitive, after normalize).
+    if basename_eq(&na, "CHANGELOG.md") || basename_eq(&nb, "CHANGELOG.md") {
+        return true;
+    }
+
+    // 3. Either Contract → keep (T16 openapi ancestor).
+    let a = classify_path(&na);
+    let b = classify_path(&nb);
     if a == PathClass::Contract || b == PathClass::Contract {
         return false;
     }
+
+    // 4. F2: strict ancestor-path with slash boundary (T6 packaging parent).
+    if is_strict_path_prefix(&na, &nb) {
+        return true;
+    }
+
+    // 5. Either Governance → demote (T7 rb↔docs after F3).
+    // 6. Else keep (T5 siblings, T17 packaging siblings).
     a == PathClass::Governance || b == PathClass::Governance
 }
 
@@ -236,6 +254,11 @@ fn is_governance(norm: &str) -> bool {
         return true;
     }
 
+    // F3 (0202): docs directory and docs/** unless already Contract / source-ext.
+    if norm.eq_ignore_ascii_case("docs") || under_prefix(norm, "docs/") {
+        return true;
+    }
+
     // .agents/** process dumps, but SKILL.md already classified as Contract
     if under_prefix(norm, ".agents/") {
         return true;
@@ -250,6 +273,23 @@ fn is_markdown_or_txt(norm: &str) -> bool {
 
 fn under_prefix(norm: &str, prefix: &str) -> bool {
     norm.starts_with(prefix)
+}
+
+/// True when one path is a strict ancestor of the other with a `/` boundary.
+/// Trailing slashes are stripped here only (do not change [`normalize_path`]).
+/// Does not match `src/foo` vs `src/foobar`.
+fn is_strict_path_prefix(a: &str, b: &str) -> bool {
+    let a = a.trim_end_matches('/');
+    let b = b.trim_end_matches('/');
+    if a.is_empty() || b.is_empty() || a == b {
+        return false;
+    }
+    fn ancestor_of(prefix: &str, path: &str) -> bool {
+        path.len() > prefix.len()
+            && path.starts_with(prefix)
+            && path.as_bytes().get(prefix.len()) == Some(&b'/')
+    }
+    ancestor_of(a, b) || ancestor_of(b, a)
 }
 
 fn basename_eq(norm: &str, name: &str) -> bool {
@@ -362,5 +402,122 @@ mod tests {
     fn path_mode_from_flag() {
         assert_eq!(path_mode_from_include_governance(false), "code");
         assert_eq!(path_mode_from_include_governance(true), "all");
+    }
+
+    #[test]
+    fn changelog_pairs_demote_under_code_mode() {
+        // T9 CHANGELOG ↔ docs, T10 CHANGELOG ↔ skill.md (F1 before Contract),
+        // T11 CHANGELOG ↔ src.
+        assert!(should_demote_pair(
+            "CHANGELOG.md",
+            "docs/Call-Resolution.md",
+            "code"
+        ));
+        assert!(should_demote_pair(
+            "CHANGELOG.md",
+            "docs/Ledgerful/skill.md",
+            "code"
+        ));
+        assert!(should_demote_pair(
+            "CHANGELOG.md",
+            "src/commands/doctor.rs",
+            "code"
+        ));
+        assert!(!should_demote_pair(
+            "CHANGELOG.md",
+            "docs/Ledgerful/skill.md",
+            "all"
+        ));
+    }
+
+    #[test]
+    fn changelog_still_classifies_as_contract() {
+        // T12: CHANGELOG stays Contract (class counts / p1-when-changed).
+        assert_eq!(classify_path("CHANGELOG.md"), PathClass::Contract);
+        assert_eq!(classify_path("changelog.md"), PathClass::Contract);
+    }
+
+    #[test]
+    fn docs_dir_and_docs_ledgerful_are_governance() {
+        // T13
+        assert_eq!(classify_path("docs"), PathClass::Governance);
+        assert_eq!(classify_path("docs/"), PathClass::Governance);
+        assert_eq!(classify_path("docs/Ledgerful"), PathClass::Governance);
+        // Source-ext under docs/ stays Code (contract → code-root → F3).
+        assert_eq!(classify_path("docs/foo.rs"), PathClass::Code);
+        // T8: md under docs already Governance; dir is now Governance too.
+        assert!(should_demote_pair("docs/installation.md", "docs", "code"));
+    }
+
+    #[test]
+    fn skill_md_stays_contract() {
+        assert_eq!(
+            classify_path("docs/Ledgerful/skill.md"),
+            PathClass::Contract
+        );
+        // Pair with CHANGELOG still DEM via F1 (before Contract guard).
+        assert!(should_demote_pair(
+            "CHANGELOG.md",
+            "docs/Ledgerful/skill.md",
+            "code"
+        ));
+    }
+
+    #[test]
+    fn ancestor_path_demotes_packaging_parent() {
+        // T6
+        assert!(should_demote_pair(
+            "packaging/homebrew/ledgerful.rb",
+            "packaging",
+            "code"
+        ));
+        assert!(should_demote_pair(
+            "packaging/homebrew/ledgerful.rb",
+            "packaging/homebrew",
+            "code"
+        ));
+    }
+
+    #[test]
+    fn slash_boundary_does_not_match_foobar() {
+        assert!(!is_strict_path_prefix("src/foo", "src/foobar"));
+        assert!(is_strict_path_prefix("docs", "docs/installation.md"));
+        assert!(is_strict_path_prefix("docs/", "docs/foo"));
+        assert!(is_strict_path_prefix(
+            "packaging",
+            "packaging/homebrew/ledgerful.rb"
+        ));
+        assert!(!should_demote_pair("src/foo", "src/foobar", "code"));
+    }
+
+    #[test]
+    fn rb_vs_docs_dir_demotes_after_f3() {
+        // T7: packaging rb ↔ docs dir (docs was Code; F3 makes it Governance).
+        assert!(should_demote_pair(
+            "packaging/homebrew/ledgerful.rb",
+            "docs",
+            "code"
+        ));
+    }
+
+    #[test]
+    fn docs_dir_vs_openapi_stays_keep() {
+        // T16: F2 after Contract — ancestor + Contract keeps.
+        assert!(!should_demote_pair("docs", "docs/api/openapi.json", "code"));
+        assert_eq!(classify_path("docs/api/openapi.json"), PathClass::Contract);
+    }
+
+    #[test]
+    fn packaging_siblings_stay_keep() {
+        // T17: F2 slash-prefix does not treat packaging siblings as ancestors.
+        assert!(!should_demote_pair(
+            "packaging/homebrew/ledgerful.rb",
+            "packaging/scoop/ledgerful.json",
+            "code"
+        ));
+        assert!(!is_strict_path_prefix(
+            "packaging/homebrew/ledgerful.rb",
+            "packaging/scoop/ledgerful.json"
+        ));
     }
 }
