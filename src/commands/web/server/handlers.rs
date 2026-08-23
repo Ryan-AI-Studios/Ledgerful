@@ -751,6 +751,7 @@ pub(crate) async fn ledger_search_handler(
     };
 
     let layout = state.layout.clone();
+    let include_rollback = params.include_rollback.unwrap_or(false);
     let entries = tokio::task::spawn_blocking(move || {
         search_ledger_entries(
             &layout,
@@ -758,6 +759,7 @@ pub(crate) async fn ledger_search_handler(
             params.days,
             params.limit,
             params.offset.unwrap_or(0),
+            include_rollback,
         )
     })
     .await
@@ -772,6 +774,7 @@ fn search_ledger_entries(
     days: Option<u64>,
     limit: Option<usize>,
     offset: usize,
+    include_rollback: bool,
 ) -> Result<Vec<LedgerEntryResponse>> {
     let db_path = layout.state_subdir().join("ledger.db");
     if !db_path.exists() {
@@ -781,7 +784,7 @@ fn search_ledger_entries(
     let conn = open_ledger_connection(db_path.as_std_path())?;
     let db = LedgerDb::new(&conn);
     let entries = db
-        .search_ledger(query, None, days, false, limit, offset)
+        .search_ledger(query, None, days, false, limit, offset, include_rollback)
         .map_err(|e| miette!("Failed to search ledger entries: {}", e))?;
     Ok(entries.into_iter().map(LedgerEntryResponse::from).collect())
 }

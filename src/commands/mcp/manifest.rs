@@ -87,7 +87,7 @@ pub const INVENTORY: &[ToolDescriptor] = &[
     },
     ToolDescriptor {
         name: "ledger_search",
-        description: "Search the architectural history and transaction ledger.",
+        description: "Search the architectural history and transaction ledger. Default omits ROLLBACK entries; pass include_rollback to restore them ranked after non-rollback.",
         schema_json: r#"{
             "type": "object",
             "properties": {
@@ -99,6 +99,11 @@ pub const INVENTORY: &[ToolDescriptor] = &[
                     "type": "integer",
                     "description": "Limit search to the last N days",
                     "default": 30
+                },
+                "include_rollback": {
+                    "type": "boolean",
+                    "description": "Include ROLLBACK entries (omitted by default; ranked after non-rollback)",
+                    "default": false
                 }
             },
             "required": ["query"]

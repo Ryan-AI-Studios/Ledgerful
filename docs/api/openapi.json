@@ -453,6 +453,17 @@
               ],
               "minimum": 0
             }
+          },
+          {
+            "name": "include_rollback",
+            "in": "query",
+            "required": false,
+            "schema": {
+              "type": [
+                "boolean",
+                "null"
+              ]
+            }
           }
         ],
         "responses": {
@@ -1592,6 +1603,12 @@
             ],
             "format": "int64",
             "minimum": 0
+          },
+          "include_rollback": {
+            "type": [
+              "boolean",
+              "null"
+            ]
           },
           "limit": {
             "type": [

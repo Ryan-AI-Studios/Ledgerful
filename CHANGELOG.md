@@ -42,6 +42,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Ledger search omits ROLLBACK by default (0213):** `ledger search` /
+  `ledger history` hide `entry_type = ROLLBACK` unless `--include-rollback`
+  (then non-rollback ranks first, then BM25, then recency). Human output
+  reports omitted matches; `--json` stays a bare array. No FTS rewrite.
+  No Cargo bump.
+
 - **Ask empty-tree honesty (0211):** On a live-clean working tree
   (watch-filtered git status empty), `ask` ignores a cached dirty SQLite
   `ImpactPacket` and tells the model `No pending changes found`. Git

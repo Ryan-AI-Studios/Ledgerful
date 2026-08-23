@@ -298,6 +298,9 @@ pub enum LedgerCommands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Include ROLLBACK entries (omitted by default; ranked after non-rollback)
+        #[arg(long)]
+        include_rollback: bool,
     },
     /// Reconcile detected drift with a transaction or pattern
     Reconcile {

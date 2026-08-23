@@ -243,6 +243,7 @@ pub(crate) struct LedgerSearchQuery {
     pub(crate) days: Option<u64>,
     pub(crate) limit: Option<usize>,
     pub(crate) offset: Option<usize>,
+    pub(crate) include_rollback: Option<bool>,
 }
 
 #[derive(Debug, Deserialize, Default)]

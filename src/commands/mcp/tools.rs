@@ -352,7 +352,16 @@ fn handle_ledger_search(params: Value) -> Value {
             Err(e) => return error_response(format!("Failed to open storage: {}", e)),
         };
     let db = crate::ledger::db::LedgerDb::new(storage.get_connection_mut());
-    let results = match db.search_ledger(query, None, Some(days.into()), false, Some(50), 0) {
+    let include_rollback = params["include_rollback"].as_bool().unwrap_or(false);
+    let results = match db.search_ledger(
+        query,
+        None,
+        Some(days.into()),
+        false,
+        Some(50),
+        0,
+        include_rollback,
+    ) {
         Ok(r) => r,
         Err(e) => return error_response(format!("Ledger search failed: {}", e)),
     };

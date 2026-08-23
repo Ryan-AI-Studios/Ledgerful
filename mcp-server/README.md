@@ -85,7 +85,7 @@ The tool table is cross-checked against `src/commands/mcp/manifest.rs`.
 | `search` | High-precision regex and text discovery for code symbols. |
 | `ask` | Conceptual and semantic natural language queries about the codebase. |
 | `ledger_status` | Get the current provenance status, including pending transactions and unaudited drift. |
-| `ledger_search` | Search the architectural history and transaction ledger. |
+| `ledger_search` | Search the architectural history and transaction ledger. Default omits ROLLBACK; pass `include_rollback` to restore. |
 | `hotspots` | Identify brittle files with high change frequency or complexity. |
 | `endpoints_changed` | List API endpoints affected by current changes. |
 | `security_boundaries` | Inspect security policy boundaries and their risk status. |

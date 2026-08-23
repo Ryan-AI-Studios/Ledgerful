@@ -149,6 +149,7 @@ impl<'a> LedgerDb<'a> {
         adr::get_adr_entries(self.conn, days)
     }
 
+    #[allow(clippy::too_many_arguments)] // include_rollback is a required extra filter (0213)
     pub fn search_ledger(
         &self,
         query: &str,
@@ -157,6 +158,7 @@ impl<'a> LedgerDb<'a> {
         breaking_only: bool,
         limit: Option<usize>,
         offset: usize,
+        include_rollback: bool,
     ) -> Result<Vec<LedgerEntry>, LedgerError> {
         search::search_ledger(
             self.conn,
@@ -166,7 +168,18 @@ impl<'a> LedgerDb<'a> {
             breaking_only,
             limit,
             offset,
+            include_rollback,
         )
+    }
+
+    pub fn count_rollback_matches(
+        &self,
+        query: &str,
+        category: Option<&str>,
+        days: Option<u64>,
+        breaking_only: bool,
+    ) -> Result<usize, LedgerError> {
+        search::count_rollback_matches(self.conn, query, category, days, breaking_only)
     }
 
     pub fn get_all_pending(&self) -> Result<Vec<Transaction>, LedgerError> {

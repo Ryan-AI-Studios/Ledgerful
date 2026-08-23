@@ -67,7 +67,7 @@ still writes concrete command/args and never writes secrets or embedding URLs.
    (`schemaVersion` 1, `results[]`) from CLI `search --json` — not NDJSON lines.
 4. `ask`: Semantic Q&A with context assembly (MCP children default to zero cloud egress).
 5. `ledger_status`: Current pending/unaudited state.
-6. `ledger_search`: Full-text search transactions.
+6. `ledger_search`: Full-text search transactions. Default omits ROLLBACK; pass `include_rollback` to restore.
 7. `hotspots`: Current hotspot rankings. **In-process array** (not the CLI `{files:[…]}` envelope).
 8. `endpoints_changed`: API endpoints affected by current diff. Tool text is the CLI `endpoints --changed --json` envelope (`schemaVersion` 1, `results[]`).
 9. `security_boundaries`: Security policy graph summary.

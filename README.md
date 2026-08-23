@@ -193,7 +193,7 @@ ledgerful ledger note docs/api.md "Update endpoint docs"
 ledgerful ledger status
 ledgerful ledger reconcile --all --reason "Intentional local changes"
 
-# Search and audit
+# Search and audit (ROLLBACK rows omitted by default; --include-rollback restores)
 ledgerful ledger search "auth logic" --category FEATURE --days 30
 ledgerful ledger audit --include-unaudited
 ledgerful ledger adr --output-dir docs/adr

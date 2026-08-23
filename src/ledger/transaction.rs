@@ -886,6 +886,7 @@ impl<'a> TransactionManager<'a> {
         db.get_adr_entries(days)
     }
 
+    #[allow(clippy::too_many_arguments)] // include_rollback is a required extra filter (0213)
     pub fn search_ledger(
         &self,
         query: &str,
@@ -894,9 +895,29 @@ impl<'a> TransactionManager<'a> {
         breaking_only: bool,
         limit: Option<usize>,
         offset: usize,
+        include_rollback: bool,
     ) -> Result<Vec<LedgerEntry>, LedgerError> {
         let db = LedgerDb::new(self.storage.get_connection());
-        db.search_ledger(query, category, days, breaking_only, limit, offset)
+        db.search_ledger(
+            query,
+            category,
+            days,
+            breaking_only,
+            limit,
+            offset,
+            include_rollback,
+        )
+    }
+
+    pub fn count_rollback_matches(
+        &self,
+        query: &str,
+        category: Option<&str>,
+        days: Option<u64>,
+        breaking_only: bool,
+    ) -> Result<usize, LedgerError> {
+        let db = LedgerDb::new(self.storage.get_connection());
+        db.count_rollback_matches(query, category, days, breaking_only)
     }
 
     pub fn get_ledger_entries(&self, entity: &str) -> Result<Vec<LedgerEntry>, LedgerError> {

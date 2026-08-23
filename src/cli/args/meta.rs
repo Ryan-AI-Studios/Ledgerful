@@ -1059,6 +1059,7 @@ impl Commands {
                     limit,
                     offset,
                     json,
+                    include_rollback,
                 } => {
                     if category.is_some() {
                         f.push("category");
@@ -1077,6 +1078,9 @@ impl Commands {
                     }
                     if *json {
                         f.push("json");
+                    }
+                    if *include_rollback {
+                        f.push("include_rollback");
                     }
                 }
                 LedgerCommands::Rollback { .. } => {
