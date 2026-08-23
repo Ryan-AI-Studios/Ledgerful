@@ -56,6 +56,7 @@ impl std::str::FromStr for VerifyScope {
 }
 
 mod full;
+mod non_code;
 mod scoped;
 mod shared_infra;
 
@@ -65,6 +66,7 @@ pub use scoped::{build_plan_scoped, build_plan_scoped_with_options};
 pub(crate) use full::build_plan_with_scope;
 #[cfg(test)]
 pub(crate) use full::{append_full_tier_commands, nextest_has_profile};
+pub(crate) use non_code::is_non_code_cheap_path;
 #[cfg(test)]
 pub(crate) use scoped::{
     build_scoped_nextest_command, is_test_mapping_stale, should_attempt_mapping_repair,

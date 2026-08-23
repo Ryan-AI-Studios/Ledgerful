@@ -1764,6 +1764,350 @@ fn test_build_plan_scoped_fast_auto_index_not_triggered_when_mapping_exists() {
     );
 }
 
+fn rust_profile() -> crate::platform::repository::RepositoryProfile {
+    crate::platform::repository::RepositoryProfile {
+        rust: Some(crate::platform::repository::RustProfile {
+            is_virtual_workspace: false,
+        }),
+        ..Default::default()
+    }
+}
+
+fn packet_with_paths(paths: &[&str]) -> ImpactPacket {
+    ImpactPacket {
+        changes: paths
+            .iter()
+            .map(|p| ChangedFile {
+                path: PathBuf::from(p),
+                ..Default::default()
+            })
+            .collect(),
+        ..ImpactPacket::default()
+    }
+}
+
+fn nextest_step(plan: &VerificationPlan) -> Option<&VerificationStep> {
+    plan.steps.iter().find(|s| s.command.contains("nextest"))
+}
+
+fn assert_scoped_filterset_not_workspace_ci(command: &str) {
+    assert!(
+        command.contains("-E") && command.contains("test("),
+        "scoped nextest must use a filterset, got: {command}"
+    );
+    if command.contains("--profile ci") {
+        panic!("scoped nextest must not use workspace --profile ci, got: {command}");
+    }
+}
+
+fn plan_fast(
+    packet: &ImpactPacket,
+    conn: Option<&rusqlite::Connection>,
+    profile: &crate::platform::repository::RepositoryProfile,
+) -> VerificationPlan {
+    let rules = Rules::default();
+    let layout = crate::state::layout::Layout::new(".");
+    build_plan_scoped_with_options(
+        packet,
+        &rules,
+        &[],
+        &crate::config::model::VerifyConfig::default(),
+        profile,
+        VerifyScope::Fast,
+        conn,
+        &layout,
+        false,
+        false,
+    )
+}
+
+#[test]
+fn test_non_code_changelog_docs_cheap_no_nextest() {
+    let packet = packet_with_paths(&["CHANGELOG.md", "docs/installation.md"]);
+    let plan = plan_fast(&packet, None, &rust_profile());
+    assert!(!plan.refused);
+    assert!(plan.fallback_reason.is_none());
+    assert!(
+        plan.steps.iter().any(|s| s.command.contains("fmt")),
+        "fmt must be present, got {:?}",
+        plan.steps
+    );
+    assert!(
+        plan.steps.iter().any(|s| s.command.contains("clippy")),
+        "clippy must be present, got {:?}",
+        plan.steps
+    );
+    assert!(
+        !plan
+            .steps
+            .iter()
+            .any(|s| s.command.contains("nextest") || s.command.contains("cargo test")),
+        "docs/CHANGELOG cheap path must not schedule tests, got {:?}",
+        plan.steps
+    );
+    assert!(
+        plan.steps
+            .iter()
+            .any(|s| s.description.contains("Non-code changes")),
+        "descriptions must mention Non-code changes, got {:?}",
+        plan.steps
+    );
+}
+
+#[test]
+fn test_packaging_injects_bump_manifests_stem() {
+    let packet = packet_with_paths(&["packaging/homebrew/ledgerful.rb"]);
+    let plan = plan_fast(&packet, None, &rust_profile());
+    assert!(!plan.refused);
+    assert!(plan.fallback_reason.is_none());
+    let nextest = nextest_step(&plan).expect("packaging must inject nextest");
+    assert!(
+        nextest.command.contains("test(bump_manifests)"),
+        "expected bump_manifests filterset, got {}",
+        nextest.command
+    );
+    assert_scoped_filterset_not_workspace_ci(&nextest.command);
+    assert!(
+        !nextest.description.contains("via test_mapping"),
+        "injected description must not claim test_mapping, got {}",
+        nextest.description
+    );
+}
+
+#[test]
+fn test_scripts_bump_manifests_ps1_injects_stem() {
+    let packet = packet_with_paths(&["scripts/bump-manifests.ps1"]);
+    let plan = plan_fast(&packet, None, &rust_profile());
+    assert!(!plan.refused);
+    let nextest = nextest_step(&plan).expect("bump script must inject nextest");
+    assert!(
+        nextest.command.contains("test(bump_manifests)"),
+        "expected bump_manifests filterset, got {}",
+        nextest.command
+    );
+    assert_scoped_filterset_not_workspace_ci(&nextest.command);
+    assert!(!nextest.description.contains("via test_mapping"));
+}
+
+#[test]
+fn test_docs_only_does_not_inject_bump_manifests() {
+    let packet = packet_with_paths(&["docs/installation.md"]);
+    let plan = plan_fast(&packet, None, &rust_profile());
+    assert!(!plan.refused);
+    assert!(
+        nextest_step(&plan).is_none(),
+        "docs-only must not inject bump_manifests, got {:?}",
+        plan.steps
+    );
+    assert!(
+        !plan
+            .steps
+            .iter()
+            .any(|s| s.command.contains("bump_manifests")),
+        "docs-only must not mention bump_manifests, got {:?}",
+        plan.steps
+    );
+}
+
+#[test]
+fn test_inject_description_not_via_test_mapping() {
+    let packet = packet_with_paths(&["packaging/scoop/ledgerful.json"]);
+    let plan = plan_fast(&packet, None, &rust_profile());
+    let nextest = nextest_step(&plan).expect("packaging inject");
+    assert!(!nextest.description.contains("via test_mapping"));
+    assert!(
+        nextest.description.contains("Non-code changes")
+            || nextest.description.contains("packaging/scripts"),
+        "inject description should name packaging/scripts, got {}",
+        nextest.description
+    );
+}
+
+#[test]
+fn test_mixed_src_mapped_plus_packaging_unions_stem() {
+    // Copy of test_build_plan_scoped_head_match_with_stems_scoped_ok_without_auto_index
+    // plus a packaging path — P7 unions bump_manifests into ScopedOk.
+    let packet = ImpactPacket {
+        head_hash: Some("matched-head".to_string()),
+        changes: vec![
+            ChangedFile {
+                path: PathBuf::from("src/commands/hotspots.rs"),
+                ..Default::default()
+            },
+            ChangedFile {
+                path: PathBuf::from("packaging/homebrew/ledgerful.rb"),
+                ..Default::default()
+            },
+        ],
+        ..ImpactPacket::default()
+    };
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute(
+        "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
+             tested_symbol_id INTEGER, tested_file_id INTEGER)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE index_metadata (key TEXT PRIMARY KEY, value TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO index_metadata (key, value) VALUES ('head_hash', 'matched-head')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path) VALUES (1, 'src/commands/hotspots.rs')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path) VALUES (2, 'tests/integration/cli_hotspots.rs')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
+             VALUES (10, 2, 20, 1)",
+        [],
+    )
+    .unwrap();
+
+    let plan = plan_fast(&packet, Some(&conn), &rust_profile());
+    assert!(
+        !plan.refused,
+        "mapped src + packaging must ScopedOk with union; reason={:?}",
+        plan.fallback_reason
+    );
+    let nextest = nextest_step(&plan).expect("ScopedOk nextest");
+    assert!(
+        nextest.command.contains("test(cli_hotspots)"),
+        "original mapping stem must remain, got {}",
+        nextest.command
+    );
+    assert!(
+        nextest.command.contains("test(bump_manifests)"),
+        "P7 must union bump_manifests, got {}",
+        nextest.command
+    );
+    assert_scoped_filterset_not_workspace_ci(&nextest.command);
+    assert!(
+        !nextest.description.contains("via test_mapping"),
+        "unioned description must not claim test_mapping, got {}",
+        nextest.description
+    );
+}
+
+#[test]
+fn test_mixed_src_unmapped_plus_packaging_still_mapping_refuse() {
+    let packet = ImpactPacket {
+        head_hash: Some("matched-head".to_string()),
+        changes: vec![
+            ChangedFile {
+                path: PathBuf::from("src/foo.rs"),
+                ..Default::default()
+            },
+            ChangedFile {
+                path: PathBuf::from("packaging/homebrew/ledgerful.rb"),
+                ..Default::default()
+            },
+        ],
+        ..ImpactPacket::default()
+    };
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute(
+        "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
+             tested_symbol_id INTEGER, tested_file_id INTEGER)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE index_metadata (key TEXT PRIMARY KEY, value TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO index_metadata (key, value) VALUES ('head_hash', 'matched-head')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path) VALUES (1, 'src/foo.rs')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path) VALUES (2, 'tests/integration/cli_hotspots.rs')",
+        [],
+    )
+    .unwrap();
+    // Mapping exists (freshness Ok) but not for src/foo.rs — unmapped src.
+    conn.execute(
+        "INSERT INTO project_files (id, file_path) VALUES (3, 'src/other.rs')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
+             VALUES (10, 2, 20, 3)",
+        [],
+    )
+    .unwrap();
+
+    let plan = plan_fast(&packet, Some(&conn), &rust_profile());
+    assert!(
+        plan.refused,
+        "unmapped src + packaging must MappingRefuse, not cheap; steps={:?} reason={:?}",
+        plan.steps, plan.fallback_reason
+    );
+}
+
+#[test]
+fn test_non_code_cheap_no_fallback_reason() {
+    let packet = packet_with_paths(&["CHANGELOG.md"]);
+    let plan = plan_fast(&packet, None, &rust_profile());
+    assert!(!plan.refused);
+    assert!(
+        plan.fallback_reason.is_none(),
+        "NonCodeCheap must not set fallback_reason (dto maps it to scopeExecuted full), got {:?}",
+        plan.fallback_reason
+    );
+}
+
+#[test]
+fn test_src_plus_changelog_is_not_non_code_cheap() {
+    let packet = packet_with_paths(&["src/foo.rs", "CHANGELOG.md"]);
+    let plan = plan_fast(&packet, None, &rust_profile());
+    assert!(
+        plan.refused,
+        "mixed src + CHANGELOG must not take NonCodeCheap; steps={:?} reason={:?}",
+        plan.steps, plan.fallback_reason
+    );
+}
+
+#[test]
+fn test_openapi_json_is_not_non_code_cheap() {
+    let packet = packet_with_paths(&["docs/api/openapi.json"]);
+    let plan = plan_fast(&packet, None, &rust_profile());
+    assert!(
+        plan.refused,
+        "openapi.json must not be NonCodeCheap; steps={:?} reason={:?}",
+        plan.steps, plan.fallback_reason
+    );
+}
+
 fn step(cmd: &str) -> VerificationStep {
     VerificationStep {
         command: cmd.to_string(),

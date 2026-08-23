@@ -9,7 +9,11 @@ use crate::policy::rules::Rules;
 use crate::verify::predict::PredictedFile;
 use crate::verify::timeouts::DEFAULT_AUTO_TIMEOUT_SECS;
 
+use super::non_code::{all_non_code_cheap, any_packaging_or_bump_script};
 use super::shared_infra::touches_shared_infra;
+
+/// nextest `test()` stem injected when packaging templates or bump scripts change.
+const BUMP_MANIFESTS_STEM: &str = "bump_manifests";
 
 /// Query `test_mapping` for the test files that cover the changed source
 /// files. Returns a sorted, deduplicated list of test file stems suitable for
@@ -109,16 +113,19 @@ pub(crate) fn build_scoped_nextest_command(test_stems: &[String]) -> String {
 /// Build a scoped test plan using `test_mapping` to run only the tests that
 /// cover the changed files.
 ///
-/// Classifier order under `--scope fast` (load-bearing, 0135 + 0145):
+/// Classifier order under `--scope fast` (load-bearing, 0135 + 0145 + 0203):
 /// 1. **SharedInfra** → full suite + announce
-/// 2. **EmptyChanges** → cheap fmt+clippy when Rust detected (no nextest);
+/// 2. **NonCodeCheap** → all paths match cheap globs (docs/CHANGELOG/packaging
+///    / bump scripts); skip freshness; A2 inject `bump_manifests` or fmt+clippy
+/// 3. **EmptyChanges** → cheap fmt+clippy when Rust detected (no nextest);
 ///    non-Rust → zero steps, still pass
 ///    (Live-empty working tree short-circuits in `commands/verify` before
 ///    this builder — not here, so plan unit tests stay hermetic.)
-/// 3. **Freshness gate** (before trusting stems): HeadMismatch auto-repairs
+/// 4. **Freshness gate** (before trusting stems): HeadMismatch auto-repairs
 ///    once without `--auto-index`; Empty / PacketHeadMissing need the flag
-/// 4. **ScopedOk** → stems from a non-stale mapping → 3-step scoped plan
-/// 5. **MappingRefuse** → no stems / no conn (unless `allow_full_fallback` → full + announce)
+/// 5. **ScopedOk** → stems from a non-stale mapping → 3-step scoped plan;
+///    union `bump_manifests` when any packaging / bump-script path (P7)
+/// 6. **MappingRefuse** → no stems / no conn (unless `allow_full_fallback` → full + announce)
 ///
 /// Spec B7/0145: non-empty mapping + head mismatch never silent ScopedOk on
 /// stems alone; HeadMismatch attempts one bounded repair first.
@@ -184,7 +191,14 @@ pub fn build_plan_scoped_with_options(
         return plan;
     }
 
-    // 2. EmptyChanges — before stem query (query_scoped returns None for both
+    // 2. NonCodeCheap — all classified paths match cheap globs (docs /
+    // CHANGELOG / packaging / bump scripts). Skip freshness and mapping.
+    // `fallback_reason` stays None so JSON `scopeExecuted` remains `"fast"`.
+    if all_non_code_cheap(packet) {
+        return build_non_code_cheap_plan(packet, profile);
+    }
+
+    // 3. EmptyChanges — before stem query (query_scoped returns None for both
     // empty changes and no-mappings; cannot distinguish after the fact).
     // Profile-aware: only schedule cargo fmt/clippy when Rust is detected so
     // non-Rust / empty repos still exit 0 under --scope fast (Daily 5 honesty
@@ -195,7 +209,7 @@ pub fn build_plan_scoped_with_options(
         return build_empty_changes_plan(profile);
     }
 
-    // 3. Freshness gate — must run before trusting stems.
+    // 4. Freshness gate — must run before trusting stems.
     // HeadMismatch auto-repairs once (no flag). Empty still needs --auto-index.
     const EMPTY_REMEDIATION: &str =
         "test_mapping is empty; run `ledgerful index --incremental` or use `--auto-index`";
@@ -269,13 +283,17 @@ pub fn build_plan_scoped_with_options(
         );
     }
 
-    // 4. ScopedOk — stems only after non-stale gate passed.
+    // 5. ScopedOk — stems only after non-stale gate passed.
+    // P7: union `bump_manifests` when any packaging / bump-script path is in
+    // the classified set (mixed src+packaging that already ScopedOk on src).
     let scoped_stems = conn.and_then(|c| query_scoped_test_files(c, packet));
-    if let Some(test_stems) = scoped_stems {
-        return build_fast_scoped_plan(packet, &test_stems);
+    if let Some(mut test_stems) = scoped_stems {
+        let unioned = union_bump_manifests_if_needed(packet, &mut test_stems);
+        return build_fast_scoped_plan(packet, &test_stems, unioned);
     }
 
-    // 5. MappingRefuse — fresh mapping but no coverage for changed files.
+    // 6. MappingRefuse — fresh mapping but no coverage for changed files.
+    // Mixed src unmapped + packaging still refuses (do not cheap mixed).
     mapping_cannot_scope_outcome(
         "test_mapping has no mappings for the changed files",
         allow_full_fallback,
@@ -313,10 +331,81 @@ pub(crate) fn mapping_cannot_scope_outcome(
     }
 }
 
-fn build_fast_scoped_plan(packet: &ImpactPacket, test_stems: &[String]) -> VerificationPlan {
-    let scoped_cmd = build_scoped_nextest_command(test_stems);
-    let mut steps: Vec<VerificationStep> = Vec::new();
+fn build_non_code_cheap_plan(
+    packet: &ImpactPacket,
+    profile: &crate::platform::repository::RepositoryProfile,
+) -> VerificationPlan {
+    let rust_steps: Vec<VerificationStep> = if profile.rust.is_some() {
+        vec![
+            VerificationStep {
+                command: "cargo fmt --all -- --check".to_string(),
+                timeout_secs: 60,
+                description: "Non-code changes: format check (scoped tests N/A)".to_string(),
+                shell: false,
+            },
+            VerificationStep {
+                command: "cargo clippy --all-targets --all-features -- -D warnings".to_string(),
+                timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
+                description: "Non-code changes: lints (scoped tests N/A)".to_string(),
+                shell: false,
+            },
+        ]
+    } else {
+        Vec::new()
+    };
+    let packaging_step = any_packaging_or_bump_script(packet).then(|| {
+        let stems = vec![BUMP_MANIFESTS_STEM.to_string()];
+        VerificationStep {
+            command: build_scoped_nextest_command(&stems),
+            timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
+            description: "Non-code changes: packaging/scripts tests (bump_manifests)".to_string(),
+            shell: false,
+        }
+    });
+    let steps: Vec<VerificationStep> = rust_steps.into_iter().chain(packaging_step).collect();
+    VerificationPlan {
+        source: Some(PlanSource::AutoPolicy),
+        steps,
+        fallback_reason: None,
+        refused: false,
+    }
+}
 
+/// Union stem `bump_manifests` into `stems` when any classified path is
+/// packaging or a bump script. Returns true when the stem was added (inject).
+fn union_bump_manifests_if_needed(packet: &ImpactPacket, stems: &mut Vec<String>) -> bool {
+    if !any_packaging_or_bump_script(packet) {
+        return false;
+    }
+    if stems.iter().any(|s| s == BUMP_MANIFESTS_STEM) {
+        return false;
+    }
+    stems.push(BUMP_MANIFESTS_STEM.to_string());
+    stems.sort();
+    stems.dedup();
+    true
+}
+
+fn scoped_nextest_description(packet: &ImpactPacket, injected: bool) -> String {
+    if injected {
+        format!(
+            "Scoped: tests covering {} changed file(s) plus packaging/scripts (bump_manifests)",
+            packet.changes.len()
+        )
+    } else {
+        format!(
+            "Scoped: tests covering {} changed file(s) via test_mapping",
+            packet.changes.len()
+        )
+    }
+}
+
+fn build_fast_scoped_plan(
+    packet: &ImpactPacket,
+    test_stems: &[String],
+    injected: bool,
+) -> VerificationPlan {
+    let scoped_cmd = build_scoped_nextest_command(test_stems);
     // Always include fmt + clippy in fast scope — they're cheap and
     // catch issues the test suite doesn't.
     //
@@ -324,27 +413,26 @@ fn build_fast_scoped_plan(packet: &ImpactPacket, test_stems: &[String]) -> Verif
     // `cargo fmt` (without `--check`) concurrently with a build: a mutating fmt
     // rewrites .rs files in place, which would cause rustc/clippy torn reads,
     // spurious errors, and incremental-cache invalidation.
-    steps.push(VerificationStep {
-        command: "cargo fmt --all -- --check".to_string(),
-        timeout_secs: 60,
-        description: "Scoped: format check".to_string(),
-        shell: false,
-    });
-    steps.push(VerificationStep {
-        command: "cargo clippy --all-targets --all-features -- -D warnings".to_string(),
-        timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
-        description: "Scoped: lints".to_string(),
-        shell: false,
-    });
-    steps.push(VerificationStep {
-        command: scoped_cmd,
-        timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
-        description: format!(
-            "Scoped: tests covering {} changed file(s) via test_mapping",
-            packet.changes.len()
-        ),
-        shell: false,
-    });
+    let steps = vec![
+        VerificationStep {
+            command: "cargo fmt --all -- --check".to_string(),
+            timeout_secs: 60,
+            description: "Scoped: format check".to_string(),
+            shell: false,
+        },
+        VerificationStep {
+            command: "cargo clippy --all-targets --all-features -- -D warnings".to_string(),
+            timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
+            description: "Scoped: lints".to_string(),
+            shell: false,
+        },
+        VerificationStep {
+            command: scoped_cmd,
+            timeout_secs: DEFAULT_AUTO_TIMEOUT_SECS,
+            description: scoped_nextest_description(packet, injected),
+            shell: false,
+        },
+    ];
 
     VerificationPlan {
         source: Some(PlanSource::AutoPolicy), // Scoped testing is always auto-policy derived

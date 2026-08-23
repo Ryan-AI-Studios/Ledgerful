@@ -1,6 +1,6 @@
 use crate::output::diagnostics::print_header;
 use crate::verify::engine::VerificationContext;
-use crate::verify::plan::VerificationStep;
+use crate::verify::plan::{VerificationStep, VerifyScope};
 use crate::verify::results::VerificationReport;
 use crate::verify::suggestions::{Suggestion, SuggestionSeverity};
 use owo_colors::{OwoColorize, Stream, Style};
@@ -59,22 +59,36 @@ pub fn parse_predicted_impacts(steps: &[VerificationStep]) -> BTreeMap<String, V
     groups
 }
 
+/// First product line of every human dry-run (plan, refuse, `--command`).
+///
+/// Static phrasing: omitted `--scope` and explicit `--scope full` both print
+/// the `full` line. Do not mention `CLI default` (clap `ValueSource` is not used).
+pub fn dry_run_scope_line(scope: VerifyScope) -> String {
+    match scope {
+        VerifyScope::Fast => "scope: fast".to_string(),
+        VerifyScope::Full => "scope: full (pre-push uses --scope fast)".to_string(),
+    }
+}
+
 /// Format human dry-run stdout (plan-first, scannable). Pure — no side effects.
 ///
-/// Layout (0144 B1/B2):
-/// 1. Optional Bayesian line when `matched` is `Some` (ordering ran)
-/// 2. Verification Steps — every plan step's `command` + timeout (same set the
+/// Layout (0144 B1/B2 + 0203-C):
+/// 1. `scope:` line (requested/executed verify scope for this invocation)
+/// 2. Optional Bayesian line when `matched` is `Some` (ordering ran)
+/// 3. Verification Steps — every plan step's `command` + timeout (same set the
 ///    engine would execute; do not filter by description — pure predicted-impact
 ///    rows still carry real commands, B1 rule 2 / B5)
-/// 3. Predicted Impacts (grouped by source) — omit section when empty
-/// 4. Dry-run footer
+/// 4. Predicted Impacts (grouped by source) — omit section when empty
+/// 5. Dry-run footer
 pub fn format_dry_run_human(
     steps: &[VerificationStep],
     matched: Option<usize>,
     dataset_keys: Option<usize>,
     dry_verbose: bool,
+    scope: VerifyScope,
 ) -> String {
     let mut sections: Vec<String> = Vec::new();
+    sections.push(dry_run_scope_line(scope));
 
     if let Some(n) = matched {
         let keys = dataset_keys.unwrap_or(0);
@@ -141,10 +155,11 @@ pub fn print_dry_run_human(
     matched: Option<usize>,
     dataset_keys: Option<usize>,
     dry_verbose: bool,
+    scope: VerifyScope,
 ) {
     print!(
         "{}",
-        format_dry_run_human(steps, matched, dataset_keys, dry_verbose)
+        format_dry_run_human(steps, matched, dataset_keys, dry_verbose, scope)
     );
 }
 
@@ -393,12 +408,13 @@ impl VerificationReporter {
 #[cfg(test)]
 mod tests {
     use super::{
-        DRY_RUN_PRED_PATH_DEFAULT, format_dry_run_human, format_duration_compact,
-        format_verify_step_ok, format_verify_step_start, parse_predicted_impacts,
-        should_emit_verify_progress_info, should_emit_verify_step_progress,
-        should_print_success_step, should_print_suggested_actions, verify_step_result_label,
+        DRY_RUN_PRED_PATH_DEFAULT, dry_run_scope_line, format_dry_run_human,
+        format_duration_compact, format_verify_step_ok, format_verify_step_start,
+        parse_predicted_impacts, should_emit_verify_progress_info,
+        should_emit_verify_step_progress, should_print_success_step,
+        should_print_suggested_actions, verify_step_result_label,
     };
-    use crate::verify::plan::VerificationStep;
+    use crate::verify::plan::{VerificationStep, VerifyScope};
     use std::time::Duration;
 
     fn step(command: &str, description: &str) -> VerificationStep {
@@ -563,7 +579,7 @@ mod tests {
             step("cargo clippy --all-targets", &desc),
             step("cargo nextest run", "From rules: cargo nextest run"),
         ];
-        let formatted = format_dry_run_human(&steps, Some(3), Some(11), false);
+        let formatted = format_dry_run_human(&steps, Some(3), Some(11), false, VerifyScope::Full);
 
         assert!(
             formatted.contains("Bayesian ordering: matched_steps=3 dataset_keys=11"),
@@ -609,7 +625,7 @@ mod tests {
             | Predicted impact (CallGraph) on c.rs \
             | Predicted impact (CallGraph) on d.rs";
         let steps = vec![step("cargo clippy", desc)];
-        let formatted = format_dry_run_human(&steps, Some(1), Some(2), true);
+        let formatted = format_dry_run_human(&steps, Some(1), Some(2), true, VerifyScope::Full);
 
         // All 4 paths, one per line
         for p in ["a.rs", "b.rs", "c.rs", "d.rs"] {
@@ -644,7 +660,7 @@ mod tests {
             "cargo clippy",
             "From rules: cargo clippy --all-targets",
         )];
-        let formatted = format_dry_run_human(&steps, None, None, false);
+        let formatted = format_dry_run_human(&steps, None, None, false, VerifyScope::Full);
         assert!(!formatted.contains("Predicted Impacts"));
         assert!(!formatted.contains("Bayesian ordering:"));
         assert!(formatted.contains("Verification Steps:"));
@@ -657,7 +673,7 @@ mod tests {
     fn format_dry_run_matched_zero_still_prints_line() {
         // 0140 vacuous honesty: ordering ran, zero hits — still print key=value.
         let steps = vec![step("cargo test", "From rules: cargo test")];
-        let formatted = format_dry_run_human(&steps, Some(0), Some(5), false);
+        let formatted = format_dry_run_human(&steps, Some(0), Some(5), false, VerifyScope::Full);
         assert!(formatted.contains("Bayesian ordering: matched_steps=0 dataset_keys=5"));
     }
 
@@ -670,7 +686,7 @@ mod tests {
             "cargo fmt --all -- --check",
             "Predicted impact (Temporal) on docs/x.md",
         )];
-        let formatted = format_dry_run_human(&steps, None, None, false);
+        let formatted = format_dry_run_human(&steps, None, None, false, VerifyScope::Full);
         assert!(
             formatted.contains("cargo fmt --all -- --check"),
             "executable command must appear in Verification Steps: {formatted}"
@@ -682,5 +698,34 @@ mod tests {
         assert!(formatted.contains("Verification Steps:"));
         assert!(formatted.contains("Predicted Impacts (grouped by source):"));
         assert!(formatted.contains("Source: Temporal — 1 items"));
+    }
+
+    #[test]
+    fn format_dry_run_human_first_line_scope_fast() {
+        let steps = vec![step("cargo fmt --all -- --check", "Non-code changes")];
+        let formatted = format_dry_run_human(&steps, None, None, false, VerifyScope::Fast);
+        assert_eq!(
+            formatted.lines().next(),
+            Some("scope: fast"),
+            "first product line must name fast scope: {formatted}"
+        );
+        assert!(!formatted.contains("CLI default"));
+    }
+
+    #[test]
+    fn format_dry_run_human_first_line_scope_full_static() {
+        let steps = vec![step("cargo nextest run --workspace", "full")];
+        let formatted = format_dry_run_human(&steps, None, None, false, VerifyScope::Full);
+        assert_eq!(
+            formatted.lines().next(),
+            Some("scope: full (pre-push uses --scope fast)"),
+            "first product line must be the static full line: {formatted}"
+        );
+        assert!(formatted.contains("pre-push uses --scope fast"));
+        assert!(!formatted.contains("CLI default"));
+        assert_eq!(
+            dry_run_scope_line(VerifyScope::Full),
+            "scope: full (pre-push uses --scope fast)"
+        );
     }
 }
