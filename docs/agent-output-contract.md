@@ -918,14 +918,18 @@ structure, doctor readiness, open ledger work, and a budgeted `readSet`.
 - Human mode (no `--json`): print **`agentSummary` header first**, then status,
   freeform `summary`, risk, readSet count, readyForPublish, next steps.
 
-### Path mode (code vs governance) — 0173
+### Path mode (code vs governance) — 0173 / 0202
 
 Default **`pathMode=code`**: process/governance temporal couplings (conductor /
 deferred / process docs, and code↔governance pairs) are **demoted** from risk
-weight/reasons and from `readSet` priority-3. Full `temporalCouplings` remain on
+weight/reasons and from `readSet` priority-3. **0202** also demotes
+`CHANGELOG.md` temporal pairs (CHANGELOG stays **Contract** / p1-when-changed)
+and ancestor-path (directory-prefix) pairs such as `packaging` ↔
+`packaging/homebrew/ledgerful.rb`. Full `temporalCouplings` remain on
 `impact --json` for audit; `demotedTemporalCount` is honest. Restore pre-0173
-behavior with **`--include-governance`** (`pathMode=all`). Contract allowlist
-paths (agent-output-contract, Engineering, SKILL.md, Cargo.toml, …) never demote.
+process demotion and the **pre-0202 CHANGELOG wall** with
+**`--include-governance`** (`pathMode=all`). Other contract allowlist paths
+(agent-output-contract, Engineering, SKILL.md, Cargo.toml, …) never demote.
 
 ### Prospective `--paths` — 0173
 
