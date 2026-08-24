@@ -23,6 +23,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Thursday release-cut cadence (0218):** `release-cut.yml` schedule is
+  Thursdays `17 10 * * 4` `America/New_York` (was weekdays `1-5`). Empty
+  `[Unreleased]` still skips; open `release-cut` PR still guards; Unreleased
+  batch is unbounded (no track-count cap; five-**file** prepare stays). Gate B
+  `release-state.yml` remains weekday. No Cargo bump.
+
 - **JSON list envelope (0207):** Populated `--json` lists are a schemaVersion-1
   object with a command-specific collection (`results` / `impacted` /
   `files` / `models` / `gates` / `mappings`) and `resultCount`. Empty helper

@@ -39,6 +39,12 @@ jobs:
           set -euo pipefail
           chmod +x scripts/test-prepare-release-cut.sh scripts/prepare-release-cut.sh scripts/lib/release-changelog.sh scripts/changelog-unreleased.sh
           scripts/test-prepare-release-cut.sh
+      - name: Release-cut schedule cadence (0218)
+        shell: bash
+        run: |
+          set -euo pipefail
+          chmod +x scripts/test-release-cut-schedule.sh
+          scripts/test-release-cut-schedule.sh
       - name: npm publish three-state decision matrix (DoD-8)
         shell: bash
         run: |
