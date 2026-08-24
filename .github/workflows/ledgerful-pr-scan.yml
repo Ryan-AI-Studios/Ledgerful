@@ -3,10 +3,9 @@
 # Untrusted PR code only runs here (scan). Workflow B posts the comment/check-run
 # and never checks out or executes PR code.
 #
-# Pin: Ryan-AI-Studios/ledgerful-action@bacf400797142884c46e97c6ce755b7ef7433a53
-# (0198 / 0086 consumer pin after Action PR #11 merge SHA; SHA bump follows
-# Action v0.2.11 version PR merge). Engine binary: v0.2.11 + published Linux
-# gnu sidecar. Never reintroduce inline `./action`.
+# Pin: Ryan-AI-Studios/ledgerful-action@2142ced7092a9b3e41cb842255272df979ed4b87
+# (0218 / 0198-B consumer pin = Action PR #13 squash-merge SHA). Engine binary:
+# v0.2.11 + published Linux gnu sidecar. Never reintroduce inline `./action`.
 
 name: Ledgerful PR Scan
 
@@ -28,7 +27,7 @@ jobs:
       - name: Run Ledgerful PR risk scan
         id: ledgerful-scan
         # Pin ledgerful-action to a full commit SHA (no mutable tag yet).
-        uses: Ryan-AI-Studios/ledgerful-action@bacf400797142884c46e97c6ce755b7ef7433a53
+        uses: Ryan-AI-Studios/ledgerful-action@2142ced7092a9b3e41cb842255272df979ed4b87
         with:
           ledgerful-version: v0.2.11
           # ledgerful-x86_64-unknown-linux-gnu.tar.gz from v0.2.11 published .sha256 sidecar
