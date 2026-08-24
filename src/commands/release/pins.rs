@@ -1094,7 +1094,14 @@ fn read_advisory(engine_root: &Path) -> Option<AdvisoryInput> {
 
 fn remotes_from_fetch(fetched: &PinFetchBundle) -> RemotePins {
     let homebrew_tap = match &fetched.tap {
-        Ok(body) => RemoteFact::Value(parse_homebrew_formula(body)),
+        Ok(body) => {
+            let pin = parse_homebrew_formula(body);
+            if pin.version.is_none() && pin.hashes.is_empty() {
+                RemoteFact::Unverified
+            } else {
+                RemoteFact::Value(pin)
+            }
+        }
         Err(_) => RemoteFact::Unverified,
     };
     let scoop_bucket = match &fetched.bucket {
@@ -1557,6 +1564,41 @@ mod tests {
             pins.archives.get(ARCHIVE_DARWIN_ARM).map(String::as_str),
             Some(HASH_SIDECAR)
         );
+    }
+
+    #[test]
+    fn classify_remote_homebrew_invalid_body_is_unverified() {
+        let latest = published_latest();
+        let scoop_body = format!(
+            r#"{{"version":"0.2.10","architecture":{{"64bit":{{"url":"{}","hash":"{HASH_WINDOWS}"}}}}}}"#,
+            scoop_url_for(LATEST_TAG)
+        );
+        let npm_body = json!({
+            "version": MCP_VERSION,
+            "ledgerfulEngineTag": LATEST_TAG,
+        });
+        for body in ["", "not a formula"] {
+            let remotes = remotes_from_fetch(&PinFetchBundle {
+                latest: Ok(latest.clone()),
+                tap: Ok(body.to_string()),
+                bucket: Ok(scoop_body.clone()),
+                npm: Ok(npm_body.clone()),
+            });
+            assert!(
+                matches!(remotes.homebrew_tap, RemoteFact::Unverified),
+                "unparseable tap must be unverified: {body:?}"
+            );
+            let env = classify_engine(Some(&latest), &matching_locals(), &remotes, false, None);
+            assert_eq!(env.status, PinStatus::Unverified);
+            assert_eq!(exit_code_for(env.status), 2);
+            assert_eq!(surface_status(&env, ID_REMOTE_TAP), PinStatus::Unverified);
+            assert_eq!(
+                surface_status(&env, ID_PACKAGING_HOMEBREW),
+                PinStatus::Match
+            );
+            assert_eq!(surface_status(&env, ID_REMOTE_BUCKET), PinStatus::Match);
+            assert_eq!(surface_status(&env, ID_MCP_NPM), PinStatus::Match);
+        }
     }
 
     #[test]
