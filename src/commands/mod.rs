@@ -43,6 +43,7 @@ pub mod pid;
 /// CI policy gate (`ledgerful policy check`). Distinct from `crate::policy`
 /// (tech-stack `rules.toml` matching).
 pub mod policy_check;
+pub mod release;
 pub mod reset;
 pub mod scan;
 pub mod scan_pr;

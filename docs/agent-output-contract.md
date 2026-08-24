@@ -27,6 +27,7 @@ on stderr.
 | Command | Has `--json` | Pure success stderr | Notes |
 |---|---|---|---|
 | `doctor --json` | yes | yes | schemaVersion 1 findings; additive `environment.githubLatest` (0205); schemaVersion stays 1. Sidecar `doctor-results.json` does **not** include `githubLatest` |
+| `release pins --json` (bare `release --json`) | yes (0201) | yes | schemaVersion 1 object `kind: "releasePins"`; exit **0** match / **1** drift / **2** skipped or unverified. Parent `--json` (T18). Not Daily 5 |
 | `change-context --json` | yes | yes | impact-shaped packet |
 | `ledger status --json` | yes | yes | schemaVersion 1 |
 | `status --json` | yes (0149) | yes | **same payload** as `ledger status --json` |
@@ -50,6 +51,46 @@ on stderr.
 
 \* Non-essential progress INFO suppressed under machine mode; hard failures still
 use stderr.
+
+### `release pins --json` schema (0201)
+
+Pure stdout. Diffs GitHub Latest (`tag_name` + archive `assets[].digest`) against
+in-tree packaging templates, live Homebrew tap / Scoop bucket remotes, and npm
+`@ledgerful/mcp-server` `ledgerfulEngineTag`. Web launch-facts is **advisory**
+and never flips overall status.
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "releasePins",
+  "status": "match",
+  "latest": { "tag": "v0.2.10", "sha": "c4a2308fe985" },
+  "surfaces": [
+    {
+      "id": "mcp.inTree",
+      "status": "match",
+      "local": { "version": "0.1.19", "ledgerfulEngineTag": "v0.2.10" },
+      "expected": { "ledgerfulEngineTag": "v0.2.10" },
+      "remote": null
+    }
+  ],
+  "advisory": {
+    "launchFactsPath": "…/launch-facts.ts",
+    "releaseTag": "v0.2.10",
+    "mcpEngineTag": "v0.2.10",
+    "status": "match"
+  }
+}
+```
+
+| Field | Rules |
+|---|---|
+| `schemaVersion` | number **1** |
+| `kind` | always **`"releasePins"`** |
+| `status` | `match` (exit 0) / `drift` (exit 1) / `unverified` or `skipped` (exit 2) |
+| `latest` | omitted on `skipped` and when Latest fetch failed; `sha` omitted when peel fails |
+| `surfaces` | six required ids, **sorted by `id`**. Empty `[]` when `skipped` |
+| `advisory` | present only if sibling `../ledgerful-web/src/lib/content/launch-facts.ts` existed; mismatch does **not** change overall status |
 
 **Caveat:** `--auto-index` on any surface may print human progress on stderr when
 an index refresh actually runs (ambient `try_auto_index` path). Prefer a fresh

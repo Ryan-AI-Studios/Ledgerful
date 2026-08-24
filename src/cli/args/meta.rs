@@ -33,6 +33,8 @@ impl Commands {
                     .as_deref()
                     .is_some_and(|f| f.eq_ignore_ascii_case("json")),
             },
+            // Parent `--json` (global) even when `command` is None (T18).
+            Commands::Release { json, .. } => *json,
             Commands::Setup(SetupArgs { .. }) => false,
             Commands::Scan(ScanArgs { json, format, .. }) => {
                 *json
@@ -196,6 +198,9 @@ impl Commands {
             },
             Commands::Policy { command } => match command {
                 None | Some(PolicyCommands::Check { .. }) => "policy_check",
+            },
+            Commands::Release { command, .. } => match command {
+                None | Some(ReleaseCommands::Pins) => "release_pins",
             },
 
             Commands::Setup(SetupArgs { .. }) => "setup",
@@ -1331,6 +1336,12 @@ impl Commands {
                     }
                 }
             },
+            // Parent `json` for both `None` and `Some(Pins)` so T18 argv_shape matches.
+            Commands::Release { json, command: _ } => {
+                if *json {
+                    f.push("json");
+                }
+            }
             Commands::Audit(AuditArgs {
                 entity,
                 pos_entity: _,
@@ -1943,6 +1954,12 @@ mod machine_output_tests {
         assert!(parse(&["tour", "--json"]).is_machine_output());
         assert!(!parse(&["tour"]).is_machine_output());
         assert_eq!(parse(&["tour"]).command_name(), "surfaces");
+        assert!(parse(&["release", "--json"]).is_machine_output());
+        assert!(parse(&["release", "pins", "--json"]).is_machine_output());
+        assert!(!parse(&["release"]).is_machine_output());
+        assert!(!parse(&["release", "pins"]).is_machine_output());
+        assert_eq!(parse(&["release"]).command_name(), "release_pins");
+        assert_eq!(parse(&["release", "pins"]).command_name(), "release_pins");
         assert!(
             Cli::try_parse_from(["ledgerful", "symbols", "--limit", "5001"]).is_err(),
             "symbols --limit > 5000 must be rejected"
