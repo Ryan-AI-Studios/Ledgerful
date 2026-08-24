@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Engine dogfood v0.2.11 + Action `#13` SHA (0218 / 0198-B):** Workflow A
+  `ledgerful-version` + Linux gnu sidecar checksum track published
+  **v0.2.11** (`5c26c34…`). Both Workflow A and B `uses:` pin
+  `Ryan-AI-Studios/ledgerful-action@2142ced7092a9b3e41cb842255272df979ed4b87`
+  (Action PR #13 squash). Workflow B remains report-only (no version/checksum).
+  No Cargo bump.
+
 - **Packaging templates pin published v0.2.11 (0218):** Homebrew formula and
   Scoop manifest templates match GitHub Latest with published sidecar sha256
   hashes. Live tap/bucket remotes already auto-bumped on the release; this
