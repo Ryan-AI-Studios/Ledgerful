@@ -15,6 +15,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   (Action PR #13 squash). Workflow B remains report-only (no version/checksum).
   No Cargo bump.
 
+- **Packaging templates pin published v0.2.11 (0218):** Homebrew formula and
+  Scoop manifest templates match GitHub Latest with published sidecar sha256
+  hashes. Live tap/bucket remotes already auto-bumped on the release; this
+  syncs in-engine templates. No Cargo bump.
+
 ## [0.2.11] - 2026-08-24
 
 ### Added
