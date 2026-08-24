@@ -70,6 +70,21 @@ pub enum Commands {
         #[command(subcommand)]
         command: Option<PolicyCommands>,
     },
+    /// Diff GitHub Latest vs packaging templates, brew/scoop remotes, and npm engine pin
+    #[command(after_help = "\
+Default when omitted: pins.
+
+Examples:
+  ledgerful release pins --json     Machine envelope (kind: releasePins)
+  ledgerful release --json          Same (pins is the default subcommand)
+")]
+    Release {
+        /// Output results as JSON
+        #[arg(long, global = true)]
+        json: bool,
+        #[command(subcommand)]
+        command: Option<ReleaseCommands>,
+    },
     /// Guided onboarding wizard (welcome → init → doctor → first scan → success)
     Setup(SetupArgs),
     /// Scan git changes and identify affected symbols

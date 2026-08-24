@@ -315,6 +315,7 @@ non-Rust: zero steps, exit 0). Shared infra still runs full with an announcement
 - `scan --impact --json` — B2 only (readSetCapped / high risk multi-module / unclear public API / user DoD / change-context not_ready)
 - `index --incremental` / `--full` / search `--auto-index` — freshness
 - `verify --scope full` / CI — not the local fast gate
+- `ledgerful release pins --json` — post-cut: do packaging templates, brew/scoop remotes, and npm engine pin match GitHub Latest? (not Daily 5)
 
 **Honesty:** doctor ≠ verify ≠ full CI. Empty-tree packets stay low risk with
 `analysisWarnings` (0129). Index/search freshness: prefer `--auto-index` or

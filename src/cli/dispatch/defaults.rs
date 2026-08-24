@@ -1,4 +1,6 @@
-use crate::cli::args::{FederateCommands, GateCommands, PolicyCommands, ServiceSubcommands};
+use crate::cli::args::{
+    FederateCommands, GateCommands, PolicyCommands, ReleaseCommands, ServiceSubcommands,
+};
 use miette::Result;
 
 pub(super) fn dispatch_federate(command: FederateCommands) -> Result<()> {
@@ -45,6 +47,17 @@ pub(super) fn services_or_default(command: Option<ServiceSubcommands>) -> Servic
     command.unwrap_or(ServiceSubcommands::Diff(
         crate::commands::services_diff::ServicesDiffArgs::default(),
     ))
+}
+
+/// Bare `release` → `pins`. JSON lives on the parent (T18).
+pub(super) fn release_or_default(command: Option<ReleaseCommands>) -> ReleaseCommands {
+    command.unwrap_or(ReleaseCommands::Pins)
+}
+
+pub(super) fn dispatch_release(command: ReleaseCommands, json: bool) -> Result<()> {
+    match command {
+        ReleaseCommands::Pins => crate::commands::release::execute_release_pins(json),
+    }
 }
 
 pub(super) fn dispatch_gate(command: GateCommands) -> Result<()> {

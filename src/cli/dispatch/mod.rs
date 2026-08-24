@@ -17,8 +17,9 @@ mod verify;
 
 use config::dispatch_config;
 use defaults::{
-    dispatch_federate, dispatch_gate, dispatch_policy, dispatch_services, federate_or_default,
-    gate_or_default, policy_or_default, services_or_default,
+    dispatch_federate, dispatch_gate, dispatch_policy, dispatch_release, dispatch_services,
+    federate_or_default, gate_or_default, policy_or_default, release_or_default,
+    services_or_default,
 };
 use export::dispatch_export;
 use index::dispatch_index;
@@ -79,6 +80,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
         }
         Commands::Gate { command } => dispatch_gate(gate_or_default(command)),
         Commands::Policy { command } => dispatch_policy(policy_or_default(command)),
+        Commands::Release { json, command } => dispatch_release(release_or_default(command), json),
         Commands::Setup(SetupArgs { yes, skip_scan }) => {
             crate::commands::setup::execute_setup(yes, skip_scan)
         }

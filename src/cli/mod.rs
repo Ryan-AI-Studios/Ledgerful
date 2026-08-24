@@ -271,6 +271,7 @@ mod tests {
             "deploy",
             "federate",
             "services",
+            "release",
         ] {
             let cli = Cli::try_parse_from(["ledgerful", parent]).unwrap_or_else(|e| {
                 panic!("bare `{parent}` must parse without missing-subcommand: {e}")
@@ -397,6 +398,72 @@ mod tests {
             other => panic!("expected Services {{ command: None }}, got {other:?}"),
         }
         assert_eq!(cli.command.command_name(), "services_diff");
+    }
+
+    #[test]
+    fn clap_release_defaults_to_pins() {
+        let cli = Cli::try_parse_from(["ledgerful", "release"]).expect("bare release parses");
+        match &cli.command {
+            Commands::Release {
+                json: false,
+                command: None,
+            } => {}
+            other => panic!("expected Release {{ json: false, command: None }}, got {other:?}"),
+        }
+        assert_eq!(cli.command.command_name(), "release_pins");
+        assert!(!cli.command.is_machine_output());
+    }
+
+    #[test]
+    fn clap_release_json_on_parent_and_subcommand() {
+        let parent = Cli::try_parse_from(["ledgerful", "release", "--json"])
+            .expect("release --json must parse");
+        match &parent.command {
+            Commands::Release {
+                json: true,
+                command: None,
+            } => {}
+            other => panic!("release --json: {other:?}"),
+        }
+        assert!(parent.command.is_machine_output());
+
+        let sub = Cli::try_parse_from(["ledgerful", "release", "pins", "--json"])
+            .expect("release pins --json must parse");
+        match &sub.command {
+            Commands::Release {
+                json: true,
+                command: Some(ReleaseCommands::Pins),
+            } => {}
+            other => panic!("release pins --json: {other:?}"),
+        }
+        assert!(sub.command.is_machine_output());
+    }
+
+    #[test]
+    fn argv_shape_release_json_eq_release_pins_json() {
+        let parent = Cli::try_parse_from(["ledgerful", "release", "--json"]).expect("parent json");
+        let sub =
+            Cli::try_parse_from(["ledgerful", "release", "pins", "--json"]).expect("sub json");
+        assert_eq!(parent.command.argv_shape(), "release_pins|json");
+        assert_eq!(parent.command.argv_shape(), sub.command.argv_shape());
+    }
+
+    #[test]
+    fn clap_release_pins_help_mentions_json() {
+        let result = Cli::try_parse_from(["ledgerful", "release", "--help"]);
+        assert!(
+            result.is_err(),
+            "--help should trigger clap's special error"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("pins"),
+            "release help must mention pins: {err}"
+        );
+        assert!(
+            err.contains("--json"),
+            "release help must mention --json: {err}"
+        );
     }
 
     #[test]

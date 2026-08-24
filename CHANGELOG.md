@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Release pin currency (0201):** `ledgerful release pins` (bare `release`
+  defaults to pins) diffs GitHub Latest tag + archive digests against in-tree
+  packaging templates, live Homebrew tap / Scoop bucket remotes, and npm
+  `ledgerfulEngineTag`. Three-state `match` / `drift` / `unverified`
+  (exit 0 / 1 / 2). `--json` on the parent (`release --json` and
+  `release pins --json`). Web launch-facts is advisory only. No Cargo bump.
+
 - **Doctor GitHub Latest (0205):** Engine `doctor` distinguishes PATH vs this
   worktree vs published GitHub Latest (`environment.githubLatest`). New findings
   `binary-behind-latest` (warn/tools) and `binary-ahead-of-latest` (info/tools).

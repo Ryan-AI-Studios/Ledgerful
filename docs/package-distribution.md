@@ -96,6 +96,15 @@ git push origin vX.Y.Z
 - `verify-manifests` (`needs: bump-manifests`): live `gh api` read of `homebrew-tap/ledgerful.rb` and `scoop-bucket/ledgerful.json` (not the job's own `bumped/` output).
 - `npm-publish` (`needs: publish` only; **nothing** depends on it): publishes `@ledgerful/mcp-server` via trusted publishing after release assets exist.
 
+### Post-cut pin closeout (0201)
+
+After a cut, `ledgerful release pins --json` (bare `ledgerful release` defaults
+to pins) diffs GitHub Latest tag + archive `assets[].digest` against in-tree
+`packaging/` templates, live Homebrew tap / Scoop bucket remotes, and npm
+`@ledgerful/mcp-server` `ledgerfulEngineTag`. Overall `match` / `drift` /
+`unverified` (exit 0 / 1 / 2). This does **not** replace Gate A/B or
+`bump-manifests`.
+
 ## Bump automation
 
 ### Scheduled release cut (0104) — proposes, does not merge

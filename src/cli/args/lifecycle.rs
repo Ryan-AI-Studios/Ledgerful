@@ -172,3 +172,10 @@ pub enum ConfigCommands {
         key: String,
     },
 }
+
+/// Subcommands of `ledgerful release`. Bare `release` defaults to [`Self::Pins`].
+#[derive(Subcommand, Debug)]
+pub enum ReleaseCommands {
+    /// Diff GitHub Latest vs packaging templates, brew/scoop remotes, and npm engine pin
+    Pins,
+}
