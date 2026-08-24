@@ -57,6 +57,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Doctor mixed ahead names the worktree, not PATH (0217):** When
+  `githubLatest.status=mixed` (PATH behind Latest and worktree version >
+  Latest), `binary-ahead-of-latest` interpolates the cargo-tip worktree
+  version/SHA — not the already-behind PATH binary. Running-ahead
+  (`status=ahead`) message/remediation stay byte-stable. No new finding
+  code; schemaVersion stays 1. No Cargo bump.
+
 - **CHANGELOG / docs / packaging-template diffs no longer inflate default change-context/impact risk (0202):**
   Keep-a-Changelog co-evolution and directory-prefix temporal pairs
   (packaging parent-child, `docs` as Code) no longer push default
