@@ -433,7 +433,7 @@ fn github_get(agent: &ureq::Agent, url: &str) -> Result<serde_json::Value, Lates
 
 /// Fetch GitHub Latest: `releases/latest` `tag_name` + peeled `GET /commits/{tag}` SHA.
 ///
-/// 0201 may later lift `fetch_github_latest`. Helper lives under `doctor/`.
+/// 0201 shipped its own `fetch_latest_pins`; this helper stays doctor-only.
 /// Never uses `target_commitish`. Never sends `GITHUB_TOKEN` / `GH_TOKEN`.
 /// Never spawns `gh` / `git`. No retry. Check `LEDGERFUL_NO_NETWORK` before
 /// `AgentBuilder` / `call()`.
@@ -674,6 +674,11 @@ mod tests {
             .expect("behind finding");
         let tip12 = shorten_sha_for_display(TIP_SHA);
         let old12 = shorten_sha_for_display(OLD_SHA);
+        assert!(
+            ahead.message.contains("This worktree"),
+            "ahead must use worktree stem: {}",
+            ahead.message
+        );
         assert!(
             ahead.message.contains("0.2.11"),
             "ahead must name worktree ver: {}",
