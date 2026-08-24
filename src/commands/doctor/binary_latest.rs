@@ -4,8 +4,7 @@
 //! release tag via `GET /commits/{tag}` — never `releases/latest.target_commitish`
 //! (live value is `"main"`).
 //!
-//! `fetch_github_latest` lives under `doctor/` so 0201 may later lift it for
-//! packaging pin checks.
+//! 0201 shipped its own `fetch_latest_pins`; this helper stays doctor-only.
 
 use super::binary_currency::{sha_prefix_equal, shorten_sha_for_display};
 use super::finding::{DoctorCategory, DoctorFinding, DoctorSeverity};
@@ -230,6 +229,13 @@ fn ahead_of_latest_remediation(tag: &str, sha12: &str) -> String {
     )
 }
 
+fn ahead_of_latest_worktree_remediation(tag: &str, sha12: &str) -> String {
+    format!(
+        "This worktree is not GitHub Latest {tag} ({sha12}) — do not recapture public exhibits from this tree.\n{}",
+        release_tag_url(tag)
+    )
+}
+
 fn behind_latest_message(running_ver: &str, running_sha: &str, latest: &PublishedLatest) -> String {
     let latest_sha12 = shorten_sha_for_display(&latest.sha);
     let run_sha = if sha_usable(running_sha) {
@@ -254,6 +260,20 @@ fn ahead_of_latest_message(
         shorten_sha_for_display(&latest.sha),
         running_ver,
         shorten_sha_for_display(running_sha)
+    )
+}
+
+fn ahead_of_latest_worktree_message(
+    worktree_ver: &str,
+    worktree_sha: &str,
+    latest: &PublishedLatest,
+) -> String {
+    format!(
+        "This worktree is not GitHub Latest {} ({}): cargo {} ({}) — do not recapture public exhibits from this tree",
+        latest.tag,
+        shorten_sha_for_display(&latest.sha),
+        worktree_ver,
+        shorten_sha_for_display(worktree_sha)
     )
 }
 
@@ -282,6 +302,23 @@ pub(crate) fn build_ahead_of_latest_finding(
         category: DoctorCategory::Tools,
         message: ahead_of_latest_message(running_ver, running_sha, latest),
         remediation: Some(ahead_of_latest_remediation(
+            &latest.tag,
+            &shorten_sha_for_display(&latest.sha),
+        )),
+    }
+}
+
+fn build_ahead_of_latest_worktree_finding(
+    worktree_ver: &str,
+    worktree_sha: &str,
+    latest: &PublishedLatest,
+) -> DoctorFinding {
+    DoctorFinding {
+        code: BINARY_AHEAD_OF_LATEST_CODE.to_string(),
+        severity: DoctorSeverity::Info,
+        category: DoctorCategory::Tools,
+        message: ahead_of_latest_worktree_message(worktree_ver, worktree_sha, latest),
+        remediation: Some(ahead_of_latest_worktree_remediation(
             &latest.tag,
             &shorten_sha_for_display(&latest.sha),
         )),
@@ -335,16 +372,19 @@ pub(crate) fn classify_github_latest(input: ClassifyLatestInput<'_>) -> LatestCl
             latest,
         ));
     }
-    // Ahead finding is about the **running** binary, except F8 mixed
-    // (running-behind + worktree version > Latest) which emits both codes.
-    let emit_ahead = running == EntityRelation::Ahead
-        || (running == EntityRelation::Behind && worktree == EntityRelation::Ahead);
-    if emit_ahead {
+    // Running-ahead (T4/T9): subject is PATH. Mixed (F8): ahead subject is worktree.
+    // Do not use `if worktree == Ahead` alone — that would emit on T18 (PATH match).
+    if running == EntityRelation::Ahead {
         findings.push(build_ahead_of_latest_finding(
             input.running_ver,
             input.running_sha,
             latest,
         ));
+    } else if running == EntityRelation::Behind && worktree == EntityRelation::Ahead {
+        // Fail-soft: mixed without worktree facts cannot happen; no unwrap.
+        if let (Some(v), Some(s)) = (input.worktree_ver, input.worktree_head) {
+            findings.push(build_ahead_of_latest_worktree_finding(v, s, latest));
+        }
     }
     findings.sort_by(|a, b| {
         a.code
@@ -393,7 +433,7 @@ fn github_get(agent: &ureq::Agent, url: &str) -> Result<serde_json::Value, Lates
 
 /// Fetch GitHub Latest: `releases/latest` `tag_name` + peeled `GET /commits/{tag}` SHA.
 ///
-/// 0201 may later lift `fetch_github_latest`. Helper lives under `doctor/`.
+/// 0201 shipped its own `fetch_latest_pins`; this helper stays doctor-only.
 /// Never uses `target_commitish`. Never sends `GITHUB_TOKEN` / `GH_TOKEN`.
 /// Never spawns `gh` / `git`. No retry. Check `LEDGERFUL_NO_NETWORK` before
 /// `AgentBuilder` / `call()`.
@@ -614,6 +654,161 @@ mod tests {
         assert_eq!(v["running"], "behind");
         assert_eq!(v["worktree"], "ahead");
         assert!(ready_for_publish(&c.findings));
+    }
+
+    #[test]
+    fn classify_t15_mixed_ahead_subject_is_worktree() {
+        // F8 fixture: PATH old, worktree version > Latest. Ahead must name the tree.
+        let latest = published();
+        let c = classify_engine("0.2.9", OLD_SHA, "0.2.11", TIP_SHA, Some(&latest));
+        assert_eq!(c.env.status, LatestStatus::Mixed);
+        let ahead = c
+            .findings
+            .iter()
+            .find(|f| f.code == BINARY_AHEAD_OF_LATEST_CODE)
+            .expect("ahead finding");
+        let behind = c
+            .findings
+            .iter()
+            .find(|f| f.code == BINARY_BEHIND_LATEST_CODE)
+            .expect("behind finding");
+        let tip12 = shorten_sha_for_display(TIP_SHA);
+        let old12 = shorten_sha_for_display(OLD_SHA);
+        assert!(
+            ahead.message.contains("This worktree"),
+            "ahead must use worktree stem: {}",
+            ahead.message
+        );
+        assert!(
+            ahead.message.contains("0.2.11"),
+            "ahead must name worktree ver: {}",
+            ahead.message
+        );
+        assert!(
+            ahead.message.contains(&tip12),
+            "ahead must name worktree SHA: {}",
+            ahead.message
+        );
+        assert!(
+            !ahead.message.contains("0.2.9"),
+            "ahead must not name running ver: {}",
+            ahead.message
+        );
+        assert!(
+            !ahead.message.contains(&old12),
+            "ahead must not name running SHA: {}",
+            ahead.message
+        );
+        assert!(
+            !ahead.message.contains("Installed ledgerful binary"),
+            "ahead must not use running stem: {}",
+            ahead.message
+        );
+        assert!(
+            !ahead.message.contains("This binary"),
+            "ahead message must not say This binary: {}",
+            ahead.message
+        );
+        assert!(
+            !ahead.message.contains("cargo install --path ."),
+            "ahead must not suggest cargo install: {}",
+            ahead.message
+        );
+        let ahead_rem = ahead.remediation.as_deref().unwrap_or("");
+        assert!(
+            ahead_rem.contains("This worktree"),
+            "ahead remediation must name worktree: {ahead_rem}"
+        );
+        assert!(
+            !ahead_rem.contains("This binary"),
+            "ahead remediation must not say This binary: {ahead_rem}"
+        );
+        assert!(
+            !ahead_rem.contains("cargo install --path ."),
+            "ahead remediation must not suggest cargo install: {ahead_rem}"
+        );
+        assert!(
+            !ahead_rem.contains("--force"),
+            "ahead remediation must not say --force: {ahead_rem}"
+        );
+        assert!(
+            behind.message.contains("0.2.9"),
+            "behind must name running ver: {}",
+            behind.message
+        );
+        assert!(
+            behind.message.contains("Installed ledgerful binary"),
+            "behind must keep PATH stem: {}",
+            behind.message
+        );
+    }
+
+    #[test]
+    fn classify_t16_running_ahead_message_still_installed_binary() {
+        // T4-style: equal version, running SHA ≠ Latest — running-ahead text stays byte-stable.
+        let latest = published();
+        let c = classify_engine("0.2.10", TIP_SHA, "0.2.10", TIP_SHA, Some(&latest));
+        assert_eq!(c.env.status, LatestStatus::Ahead);
+        assert_eq!(codes(&c), vec![BINARY_AHEAD_OF_LATEST_CODE]);
+        let msg = &c.findings[0].message;
+        let rem = c.findings[0].remediation.as_deref().unwrap_or("");
+        let tip12 = shorten_sha_for_display(TIP_SHA);
+        assert!(
+            msg.contains("Installed ledgerful binary"),
+            "running-ahead message stem: {msg}"
+        );
+        assert!(
+            msg.contains(&tip12),
+            "running-ahead must name running SHA: {msg}"
+        );
+        assert!(
+            rem.contains("This binary"),
+            "running-ahead remediation stem: {rem}"
+        );
+        assert!(
+            !msg.contains("This worktree"),
+            "running-ahead message must not say worktree: {msg}"
+        );
+        assert!(
+            !rem.contains("This worktree"),
+            "running-ahead remediation must not say worktree: {rem}"
+        );
+    }
+
+    #[test]
+    fn classify_t17_mixed_ahead_is_info() {
+        let latest = published();
+        let c = classify_engine("0.2.9", OLD_SHA, "0.2.11", TIP_SHA, Some(&latest));
+        assert_eq!(c.env.status, LatestStatus::Mixed);
+        let ahead = c
+            .findings
+            .iter()
+            .find(|f| f.code == BINARY_AHEAD_OF_LATEST_CODE)
+            .expect("ahead finding");
+        let behind = c
+            .findings
+            .iter()
+            .find(|f| f.code == BINARY_BEHIND_LATEST_CODE)
+            .expect("behind finding");
+        assert_eq!(ahead.severity, DoctorSeverity::Info);
+        assert!(!is_action_critical(ahead));
+        assert_eq!(behind.severity, DoctorSeverity::Warn);
+        assert!(is_action_critical(behind));
+        assert!(ready_for_publish(&c.findings));
+    }
+
+    #[test]
+    fn classify_t18_running_match_worktree_newer_no_ahead() {
+        // PATH matches Latest; tree version > Latest → status=match, not mixed; no 0205 finding.
+        let latest = published();
+        let c = classify_engine("0.2.10", LATEST_SHA, "0.2.11", TIP_SHA, Some(&latest));
+        assert_eq!(c.env.status, LatestStatus::Match);
+        assert_ne!(c.env.status, LatestStatus::Mixed);
+        assert_eq!(c.env.running, Some(EntityRelation::Match));
+        assert_eq!(c.env.worktree, Some(EntityRelation::Ahead));
+        assert!(c.findings.is_empty());
+        assert!(!codes(&c).contains(&BINARY_AHEAD_OF_LATEST_CODE));
+        assert!(!codes(&c).contains(&BINARY_BEHIND_LATEST_CODE));
     }
 
     #[test]
