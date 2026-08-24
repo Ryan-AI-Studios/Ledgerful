@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.11] - 2026-08-24
+
 ### Added
 
 - **Release pin currency (0201):** `ledgerful release pins` (bare `release`
