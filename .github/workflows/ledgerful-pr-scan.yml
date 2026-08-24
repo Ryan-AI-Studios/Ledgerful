@@ -4,8 +4,9 @@
 # and never checks out or executes PR code.
 #
 # Pin: Ryan-AI-Studios/ledgerful-action@bacf400797142884c46e97c6ce755b7ef7433a53
-# (0198 / 0086 consumer pin after Action PR #11 merge SHA). Engine binary:
-# v0.2.10 + published Linux gnu sidecar. Never reintroduce inline `./action`.
+# (0198 / 0086 consumer pin after Action PR #11 merge SHA; SHA bump follows
+# Action v0.2.11 version PR merge). Engine binary: v0.2.11 + published Linux
+# gnu sidecar. Never reintroduce inline `./action`.
 
 name: Ledgerful PR Scan
 
@@ -29,9 +30,9 @@ jobs:
         # Pin ledgerful-action to a full commit SHA (no mutable tag yet).
         uses: Ryan-AI-Studios/ledgerful-action@bacf400797142884c46e97c6ce755b7ef7433a53
         with:
-          ledgerful-version: v0.2.10
-          # ledgerful-x86_64-unknown-linux-gnu.tar.gz from v0.2.10 published .sha256 sidecar
-          ledgerful-checksum: 817debe3fa56db93aeb1273b1648a2b6370a50f3c69150caf8cdc423d9c1930d
+          ledgerful-version: v0.2.11
+          # ledgerful-x86_64-unknown-linux-gnu.tar.gz from v0.2.11 published .sha256 sidecar
+          ledgerful-checksum: 5c26c34db4cc50f51a6ff0cf129ad5c175c35716941f7c6354b47f3d7aa12e1a
         env:
           LEDGERFUL_NO_NETWORK: "1"
 
