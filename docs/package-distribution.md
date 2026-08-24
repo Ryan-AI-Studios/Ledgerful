@@ -65,7 +65,7 @@ Gate B is scheduled, not a PR gate — a short red window between a merged relea
 **Schedule operational facts** (normal, not bugs):
 
 - Delivery can **lag under load** (GitHub high-load includes the start of every hour — the cron is non-top-of-hour for that reason).
-- A **missed day is harmless**: the next run sees a larger `[Unreleased]` (or the same half-executed state if still untagged).
+- A **missed Gate B weekday** or **missed Thursday cut** is harmless: the next run sees the same half-executed state if still untagged, or (for the cutter) a larger `[Unreleased]`.
 - On a **public** repo, scheduled workflows **auto-disable after ~60 days of repository inactivity**. Re-enable with a `workflow_dispatch` run or any push.
 - Parser unit matrix: `bash scripts/test-release-changelog.sh` (also run as the first step of `release-state.yml`).
 
@@ -114,7 +114,7 @@ Tier-2 cut when there is work; a human still merges after `ai-reviewed` and the 
 
 | | Value |
 |---|---|
-| **Schedule** | Weekdays `17 10 * * 1-5` with `timezone: America/New_York` (10:17 ET mid-morning, non-top-of-hour) |
+| **Schedule** | Thursdays `17 10 * * 4` with `timezone: America/New_York` (10:17 ET mid-morning, non-top-of-hour). Unreleased batch is **unbounded** (no track-count cap); five-**file** prepare invariant stays |
 | **Manual** | `workflow_dispatch` with optional `version` (`X.Y.Z` / `vX.Y.Z`) and `dry_run` (boolean) |
 | **Branch** | `release/vX.Y.Z` — **the version's only durable carrier** (tag job parses it) |
 | **Title** | `chore(release): cut vX.Y.Z` (cosmetic; editable — do not trust for version) |
@@ -137,7 +137,7 @@ Tier-2 cut when there is work; a human still merges after `ai-reviewed` and the 
 
 **Still required before merge:** `ai-reviewed` and the other required checks. This automation **cannot** set `ai-reviewed` (token has no commit-statuses write — load-bearing). See `docs/AI-CODE-REVIEW-PROTOCOL.md`.
 
-**Schedule operational facts** (same class as Gate B): delivery can lag under load (15 min–2 h reported under high load); a missed day is harmless (next run sees a larger `[Unreleased]`); public-repo schedules auto-disable after ~60 days of inactivity.
+**Schedule operational facts** (same class as Gate B): delivery can lag under load (15 min–2 h reported under high load); a missed week is harmless (next Thursday sees a larger `[Unreleased]`); public-repo schedules auto-disable after ~60 days of inactivity.
 
 **Credential inventory:** `RELEASE_CUT_TOKEN` is a fine-grained PAT with **no expiration** (a fact, not a missing date). Nothing forces a periodic review of whether it is still needed or correctly scoped — that is prose, not a mechanism. Revocation path: github.com/settings/personal-access-tokens → Delete. Do not grant it `workflows: write` or `commit statuses: write` (those absences enforce "never commit `.github/`" and "cannot set ai-reviewed").
 
@@ -148,7 +148,7 @@ Tier-2 cut when there is work; a human still merges after `ai-reviewed` and the 
 | **Merged release-cut PR but no tag** | Tag job failed or label was removed. Re-run the *Tag merged release-cut PR* job, or tag by hand with the PAT: `git tag vX.Y.Z <merge_sha> && git push origin vX.Y.Z`. Gate B going red for a few **seconds** between merge and tag is expected; **hours** means a stuck tag job. |
 | **Tag pushed but no release** | Gate A rejected the tag. Orphaned-tag recovery: `git push --delete origin vX.Y.Z` (then fix tree and re-tag). |
 | **Abandoned `release/vX.Y.Z` branch** | Inspect, then `git push origin --delete release/vX.Y.Z` — never force-push over it. |
-| **Quiet days show green with notice** | Expected: empty Unreleased or open release-cut PR both exit 0 with distinct `::notice::` text. |
+| **Quiet Thursday shows green with notice** | Expected: empty Unreleased or open release-cut PR both exit 0 with distinct `::notice::` text. |
 
 **Local prepare (human cut or dry exercise):**
 
@@ -159,6 +159,7 @@ bash scripts/prepare-release-cut.sh 0.2.4     # or v0.2.4
 # (CHANGELOG.md, Cargo.toml, Cargo.lock, docs/api/openapi.json, mcp-server/package.json)
 # (mode-only chmod noise on scripts is ignored by the invariant)
 bash scripts/test-prepare-release-cut.sh
+bash scripts/test-release-cut-schedule.sh   # Thursday cron + Gate B weekday
 ```
 
 **Out-of-band / manual cut:** always run `prepare-release-cut.sh` (or otherwise bump

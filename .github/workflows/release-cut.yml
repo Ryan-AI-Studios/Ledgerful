@@ -1,13 +1,16 @@
-# 0104 — Scheduled Tier-2 release cut (0098 Part B).
+# 0104 — Scheduled Tier-2 release cut (0098 Part B); cadence revised 0218.
 #
 # Proposes a release PR when [Unreleased] has content; tags on merge of a
 # release-cut-labelled PR. Does NOT auto-merge and cannot set ai-reviewed
 # (token lacks commit_statuses: write by design).
 #
-# Cadence: weekdays mid-morning America/New_York, non-top-of-hour (GitHub
+# Cadence: Thursday mid-morning America/New_York, non-top-of-hour (GitHub
 # high-load includes the start of every hour; delivery can still lag 15m–2h).
-# A missed day is harmless — the next run sees a larger [Unreleased].
+# Empty [Unreleased] skips cleanly; an open release-cut PR skips (no stack).
+# Unreleased batch is unbounded — no track-count cap (five-file prepare stays).
+# A missed week is harmless — the next run sees a larger [Unreleased].
 # Public-repo schedules auto-disable after ~60 days of repository inactivity.
+# Keep: workflow_dispatch, five-file prepare, tag-on-merge.
 #
 # Credential: secrets.RELEASE_CUT_TOKEN (fine-grained PAT, contents+PR write on
 # Ledgerful only; no workflows:write, no commit_statuses:write, no expiration).
@@ -18,8 +21,8 @@ name: Release cut
 
 on:
   schedule:
-    # 10:17 America/New_York weekdays ≈ mid-morning ET (DST-aware via timezone).
-    - cron: "17 10 * * 1-5"
+    # 10:17 America/New_York Thursdays (DST-aware via timezone); 0218.
+    - cron: "17 10 * * 4"
       timezone: "America/New_York"
   workflow_dispatch:
     inputs:
