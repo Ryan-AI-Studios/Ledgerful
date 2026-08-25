@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Winget present-tense honesty (0219):** Installation and
+  package-distribution floors stop saying community index 0.2.10 matches
+  GitHub Latest. Index still **0.2.10** while Latest is **v0.2.11**; version
+  PR #423248 OPEN — do not claim winget live at 0.2.11 until `winget
+  search` shows it. Leftover #415913/#416853 skipped/WDSI unchanged. No
+  packaging rewrite; no Cargo bump.
+
 - **Engine dogfood v0.2.11 + Action `#13` SHA (0218 / 0198-B):** Workflow A
   `ledgerful-version` + Linux gnu sidecar checksum track published
   **v0.2.11** (`5c26c34…`). Both Workflow A and B `uses:` pin
