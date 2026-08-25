@@ -210,7 +210,7 @@ scripts/bump-manifests.sh \
 
 - Identifier: `Ledgerful.Ledgerful` (accepted 2026-07-30; live on winget)
 - Install: `winget install Ledgerful.Ledgerful`
-- Note: community index **includes 0.2.10**, matching GitHub Latest (`winget search Ledgerful` → 0.2.10; PR [#421115](https://github.com/microsoft/winget-pkgs/pull/421115) merged). Leftover [#415913](https://github.com/microsoft/winget-pkgs/pull/415913) (0.2.8) and [#416853](https://github.com/microsoft/winget-pkgs/pull/416853) (0.2.9) remain OPEN (skipped/WDSI) and are not current lag of Latest.
+- Note: community index still **0.2.10** (`winget search Ledgerful` → 0.2.10 after `winget source update`) while GitHub Latest is **v0.2.11**. Version PR [#423248](https://github.com/microsoft/winget-pkgs/pull/423248) is **OPEN** for 0.2.11 — do **not** claim winget is live at 0.2.11 until search shows it. Leftover [#415913](https://github.com/microsoft/winget-pkgs/pull/415913) (0.2.8) and [#416853](https://github.com/microsoft/winget-pkgs/pull/416853) (0.2.9) remain OPEN (skipped/WDSI) and are not current lag of Latest.
 - Action: `vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e` (tag v2, SHA-pinned)
 - Installer regex: portable `ledgerful-x86_64-pc-windows-msvc.zip`
 - Secret: `WINGET_TOKEN` (PAT that can open PRs against `microsoft/winget-pkgs` via fork)
