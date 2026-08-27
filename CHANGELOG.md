@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.12] - 2026-08-27
+
 ### Changed
 
 - **Winget present-tense honesty (0219):** Installation and
