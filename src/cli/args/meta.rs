@@ -968,10 +968,13 @@ impl Commands {
                 }
             }
             Commands::Ledger { command } => match command {
-                LedgerCommands::Start { .. } => {
+                LedgerCommands::Start { force, .. } => {
                     // category/message/entity are values — names only via presence of required flags.
                     f.push("category");
                     f.push("message");
+                    if *force {
+                        f.push("force");
+                    }
                 }
                 LedgerCommands::Commit {
                     tx_id,

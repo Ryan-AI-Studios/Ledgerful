@@ -5,5 +5,6 @@ pub mod human;
 pub mod json;
 #[cfg(feature = "daemon")]
 pub mod lsp;
+pub mod requested_exit;
 pub mod table;
 pub mod verification;

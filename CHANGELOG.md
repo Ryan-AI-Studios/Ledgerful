@@ -6,6 +6,18 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Pending entity collision (0223):** `ledger start` refuses with greppable
+  `[Ledgerful] Collision: pending tx {id} owns {entity}` (exit 2, would-block)
+  when a PENDING entity overlaps the new `--entity` or any current dirty path.
+  Overlap is slash-normalized, trailing-`/` trimmed, case-insensitive,
+  component-boundary prefix (`crates/foo` does not match `crates/foo-bar`);
+  slug entities exact-match only. Owner self-collision is intended.
+  `ledger start --force` starts anyway — not the same as `ledger commit
+  --force` (verification gate). No `collisions[]` on `ledger status --json`
+  v1 (0224 `session --json`). No Cargo bump.
+
 ### Changed
 
 - **CLI hotspots default excludes tests/examples (0222):** `ledgerful hotspots`

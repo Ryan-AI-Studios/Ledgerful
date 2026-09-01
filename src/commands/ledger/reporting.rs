@@ -719,6 +719,10 @@ mod status_json_tests {
         assert!(pretty.contains("pendingTxIds"));
         assert!(pretty.contains("workRoot"));
         assert!(pretty.contains("stateDir"));
+        assert!(
+            !pretty.contains("collisions"),
+            "0223: StatusJson v1 must not grow collisions[] (0224 owns that array); got {pretty}"
+        );
     }
 
     #[test]

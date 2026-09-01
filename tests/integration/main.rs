@@ -111,6 +111,7 @@ mod narrative_golden;
 mod observability_cedar_graph_test;
 mod observability_empty_honesty;
 mod path_security;
+mod pending_entity_collision;
 mod persistence;
 mod platform_windows;
 mod platform_wsl;

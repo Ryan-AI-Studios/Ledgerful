@@ -11,7 +11,13 @@ pub(super) fn dispatch_ledger(command: LedgerCommands) -> Result<()> {
             entity,
             category,
             message,
-        } => crate::commands::ledger::execute_ledger_start(entity, &category.to_string(), &message),
+            force,
+        } => crate::commands::ledger::execute_ledger_start(
+            entity,
+            &category.to_string(),
+            &message,
+            force,
+        ),
         LedgerCommands::Commit {
             tx_id,
             summary,

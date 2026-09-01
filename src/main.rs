@@ -223,7 +223,7 @@ fn main() {
     if let Err(e) = result {
         eprintln!("{}", e);
         // 0072: signature verify may request distinct exit codes (e.g. UNSIGNED=3).
-        let code = ledgerful::commands::verify::sig_exit::take_requested_exit_code().unwrap_or(1);
+        let code = ledgerful::output::requested_exit::take_requested_exit_code().unwrap_or(1);
         std::process::exit(code);
     }
 }

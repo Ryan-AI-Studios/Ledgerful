@@ -41,7 +41,7 @@ Format-only, lockfile-only, binary/media, scratch, or explicit bypass. Read-only
 
 ## Collision
 
-If `ledger status` shows pending and dirty paths overlap that entity: do not ledger start; do not `scan --impact`; prefer `change-context --json`.
+If `ledger status` shows pending and dirty paths overlap that entity: do not ledger start; do not `scan --impact`; prefer `change-context --json`. Owner who needs a second start while pending+dirty: `ledger start --force` or commit first. `ledger start --force` bypasses this lock; `ledger commit --force` bypasses the verification gate.
 
 ## Fallback
 

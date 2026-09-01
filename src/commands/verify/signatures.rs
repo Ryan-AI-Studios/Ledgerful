@@ -164,8 +164,6 @@ pub fn tally_signature_classes(
 /// CLI wiring: `request_exit` + `take_requested_exit_code` so `main` can exit
 /// with the distinct code without a full `ExitCode` refactor of every path.
 pub mod sig_exit {
-    use std::sync::atomic::{AtomicI32, Ordering};
-
     /// All signed rows valid; no hard policy failure.
     pub const OK: i32 = 0;
     /// INVALID signature, wrong version, entity_normalized mismatch, or chain break.
@@ -175,17 +173,14 @@ pub mod sig_exit {
     /// Unsigned present under require_signing or --strict-signatures.
     pub const UNSIGNED: i32 = 3;
 
-    static REQUESTED: AtomicI32 = AtomicI32::new(0);
-
     /// Record a non-zero exit code for the CLI process (first-write-wins).
     pub fn request_exit(code: i32) {
-        let _ = REQUESTED.compare_exchange(0, code, Ordering::SeqCst, Ordering::SeqCst);
+        crate::output::requested_exit::request_exit(code);
     }
 
     /// Take the requested exit code (if any) and reset. Used by `main`.
     pub fn take_requested_exit_code() -> Option<i32> {
-        let c = REQUESTED.swap(0, Ordering::SeqCst);
-        if c == 0 { None } else { Some(c) }
+        crate::output::requested_exit::take_requested_exit_code()
     }
 
     /// Pure exit-code decision for the signature path (0072 DoD-4 matrix).
