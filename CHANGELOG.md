@@ -27,6 +27,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   hashes. Live tap/bucket remotes already auto-bumped on the release; this
   syncs in-engine templates. No Cargo bump.
 
+### Docs
+
+- **AI-only agent skill (0221):** Tracked `docs/Ledgerful/skill.md` is a short
+  Daily 5 procedure for agents (not a human tutorial). Collision skip;
+  `change-context` does not rewrite `latest-impact.json`. SCIP honesty tokens
+  kept. No CLI change.
+
 ## [0.2.11] - 2026-08-24
 
 ### Added
