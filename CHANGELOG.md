@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **CLI hotspots default excludes tests/examples (0222):** `ledgerful hotspots`
+  (human + `--json`) ranks production code by dropping test/example/bench
+  paths inside `calculate_hotspots` before max_freq/max_comp. `--include
+  tests` restores the previous unfiltered list. Dashboard `/api/hotspots`
+  and MCP `hotspots` stay unfiltered. JSON `score` is the 0–1 agent unit;
+  `displayScore` is the human ln display. No `scoreUnit` field. No Cargo
+  bump.
+
 - **Winget present-tense honesty (0219):** Installation and
   package-distribution floors stop saying community index 0.2.10 matches
   GitHub Latest. Index still **0.2.10** while Latest is **v0.2.11**; version

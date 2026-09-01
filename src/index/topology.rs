@@ -2,7 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
 const SOURCE_PATTERNS: &[&str] = &["src", "lib", "app", "pkg", "internal"];
-const TEST_PATTERNS: &[&str] = &["tests", "test", "spec", "specs", "__tests__", "test_utils"];
+pub(crate) const TEST_PATTERNS: &[&str] =
+    &["tests", "test", "spec", "specs", "__tests__", "test_utils"];
 const CONFIG_PATTERNS: &[&str] = &["config", "configs", "conf", ".config"];
 const INFRA_PATTERNS: &[&str] = &[
     ".github",
@@ -41,7 +42,8 @@ const SOURCE_EXTENSIONS: &[&str] = &[
     "rs", "ts", "tsx", "js", "jsx", "py", "go", "java", //
     "c", "h", "cpp", "cc", "cxx", "hpp", "hh", "hxx", "h++",
 ];
-const TEST_PATTERNS_FILE: &[&str] = &["_test.", "_spec.", "test_", "spec_", "_test_", "_spec_"];
+pub(crate) const TEST_PATTERNS_FILE: &[&str] =
+    &["_test.", "_spec.", "test_", "spec_", "_test_", "_spec_"];
 const CONFIG_EXTENSIONS: &[&str] = &["toml", "yaml", "yml", "json", "env", "ini"];
 const DOC_EXTENSIONS: &[&str] = &["md", "rst", "adoc", "html"];
 

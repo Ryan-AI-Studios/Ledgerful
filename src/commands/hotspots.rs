@@ -1,10 +1,10 @@
-use crate::cli::{HotspotArgs, HotspotSubcommands};
+use crate::cli::{HotspotArgs, HotspotIncludeScope, HotspotSubcommands};
 use crate::commands::helpers::get_layout;
 use crate::commands::hook_post_commit::insert_hotspot_trends_with_retry;
 use crate::config::load_config;
 use crate::git::repo::open_repo;
 use crate::impact::hotspots::{
-    HotspotInterpretation, HotspotQuery, calculate_hotspots,
+    HotspotInterpretation, HotspotQuery, calculate_hotspots, calculate_hotspots_detailed,
     compute_hotspot_score_breakdown_from_hotspots, normalize_score,
 };
 use crate::impact::temporal::{GixHistoryProvider, TemporalEngine};
@@ -147,6 +147,7 @@ pub fn execute_hotspots(args: HotspotArgs) -> Result<()> {
     }
 
     let history_provider = GixHistoryProvider::new(&repo);
+    let exclude_test_paths = !matches!(args.include, Some(HotspotIncludeScope::Tests));
     let query = HotspotQuery {
         limit: args.limit.unwrap_or(config.hotspots.limit),
         commits: args.commits.unwrap_or(config.hotspots.max_commits),
@@ -154,10 +155,12 @@ pub fn execute_hotspots(args: HotspotArgs) -> Result<()> {
         decay_half_life: config.hotspots.decay_half_life,
         dir_filter: args.entity.clone(),
         centrality: args.centrality,
+        exclude_test_paths,
         ..Default::default()
     };
 
-    let hotspots = calculate_hotspots(&storage, &history_provider, &query)?;
+    let calculated = calculate_hotspots_detailed(&storage, &history_provider, &query)?;
+    let hotspots = calculated.hotspots;
 
     if args.snapshot {
         let couplings_persisted =
@@ -181,11 +184,27 @@ pub fn execute_hotspots(args: HotspotArgs) -> Result<()> {
         );
     } else if args.centrality {
         crate::output::human::print_hotspots_table_with_centrality(&hotspots);
+        if let Some(footer) = omitted_hotspots_footer(calculated.omitted_test_paths) {
+            println!("{footer}");
+        }
     } else {
         crate::output::human::print_hotspots_table(&hotspots);
+        if let Some(footer) = omitted_hotspots_footer(calculated.omitted_test_paths) {
+            println!("{footer}");
+        }
     }
 
     Ok(())
+}
+
+fn omitted_hotspots_footer(omitted: usize) -> Option<String> {
+    if omitted == 0 {
+        None
+    } else {
+        Some(format!(
+            "{omitted} test/example files omitted; --include tests"
+        ))
+    }
 }
 
 /// Persists a hotspot snapshot (and, history permitting, the accompanying
@@ -1369,6 +1388,19 @@ mod tests {
             score,
             commit_hash: Some(hash.to_string()),
         }
+    }
+
+    #[test]
+    fn omitted_hotspots_footer_zero_is_none() {
+        assert_eq!(omitted_hotspots_footer(0), None);
+    }
+
+    #[test]
+    fn omitted_hotspots_footer_n_names_include_tests_flag() {
+        assert_eq!(
+            omitted_hotspots_footer(3).as_deref(),
+            Some("3 test/example files omitted; --include tests")
+        );
     }
 
     #[test]

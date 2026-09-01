@@ -787,6 +787,9 @@ impl Commands {
                 if args.snapshot {
                     f.push("snapshot");
                 }
+                if args.include.is_some() {
+                    f.push("include");
+                }
                 match &args.command {
                     Some(HotspotSubcommands::Trend {
                         entity,
@@ -1945,6 +1948,16 @@ mod machine_output_tests {
         assert!(parse(&["index", "--check", "--json"]).is_machine_output());
         assert!(parse(&["timings", "--json"]).is_machine_output());
         assert!(parse(&["hotspots", "--json"]).is_machine_output());
+        match parse(&["hotspots", "--include", "tests"]) {
+            Commands::Hotspots { args } => {
+                assert_eq!(args.include, Some(crate::cli::HotspotIncludeScope::Tests));
+            }
+            other => panic!("expected hotspots, got {other:?}"),
+        }
+        assert!(
+            Cli::try_parse_from(["ledgerful", "hotspots", "--include", "nope"]).is_err(),
+            "--include must only accept tests"
+        );
         assert!(parse(&["symbols", "--json"]).is_machine_output());
         assert!(!parse(&["symbols"]).is_machine_output());
         assert_eq!(parse(&["symbols"]).command_name(), "symbols");

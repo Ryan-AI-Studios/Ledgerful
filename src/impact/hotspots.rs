@@ -111,6 +111,66 @@ pub struct HotspotQuery {
     pub lang_filter: Option<String>,
     pub exact_file: Option<String>,
     pub centrality: bool,
+    /// When true, drop test/example/bench paths from the candidate map before
+    /// `max_freq` / `max_comp`. Default false so MCP, `/api/hotspots`, packet
+    /// enrich, hooks, and other existing callers stay unfiltered.
+    pub exclude_test_paths: bool,
+}
+
+/// Ranked hotspot list plus how many candidate paths were omitted when
+/// `HotspotQuery::exclude_test_paths` is set (0 otherwise).
+#[derive(Debug, Clone, Default)]
+pub struct HotspotCalculation {
+    pub hotspots: Vec<Hotspot>,
+    pub omitted_test_paths: usize,
+}
+
+/// Directory components excluded in addition to topology `TEST_PATTERNS`.
+const HOTSPOT_EXTRA_DIR_COMPONENTS: &[&str] = &["examples", "benches"];
+
+/// Filename suffixes excluded in addition to topology `TEST_PATTERNS_FILE`.
+const HOTSPOT_WEB_TEST_SUFFIXES: &[&str] = &[
+    ".test.ts",
+    ".test.tsx",
+    ".spec.ts",
+    ".spec.tsx",
+    ".test.jsx",
+    ".spec.jsx",
+];
+
+/// Whether `path` is a test, example, or bench path for CLI hotspot exclusion.
+///
+/// Reuses topology `TEST_PATTERNS` (directory components) and `TEST_PATTERNS_FILE`
+/// (filename substrings). Hotspots-only delta: `examples` / `benches` directory
+/// components, plus `*.test.ts(x)` / `*.spec.ts(x)` / `*.test.jsx` / `*.spec.jsx`.
+/// Case-insensitive and slash-normalized. Does not inspect `#[cfg(test)]`.
+pub(crate) fn is_excluded_hotspot_path(path: &str) -> bool {
+    let lower = path.replace('\\', "/").to_ascii_lowercase();
+    let parts: Vec<&str> = lower.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.is_empty() {
+        return false;
+    }
+
+    for part in parts.iter().take(parts.len().saturating_sub(1)) {
+        if crate::index::topology::TEST_PATTERNS.contains(part)
+            || HOTSPOT_EXTRA_DIR_COMPONENTS.contains(part)
+        {
+            return true;
+        }
+    }
+
+    if crate::index::topology::TEST_PATTERNS_FILE
+        .iter()
+        .any(|needle| lower.contains(needle))
+    {
+        return true;
+    }
+
+    parts.last().is_some_and(|filename| {
+        HOTSPOT_WEB_TEST_SUFFIXES
+            .iter()
+            .any(|suffix| filename.ends_with(suffix))
+    })
 }
 
 pub fn calculate_hotspots(
@@ -118,6 +178,14 @@ pub fn calculate_hotspots(
     history_provider: &dyn HistoryProvider,
     query: &HotspotQuery,
 ) -> Result<Vec<Hotspot>> {
+    Ok(calculate_hotspots_detailed(storage, history_provider, query)?.hotspots)
+}
+
+pub fn calculate_hotspots_detailed(
+    storage: &StorageManager,
+    history_provider: &dyn HistoryProvider,
+    query: &HotspotQuery,
+) -> Result<HotspotCalculation> {
     let history = history_provider
         .get_history(
             query.commits,
@@ -174,7 +242,19 @@ pub fn calculate_hotspots(
     }
 
     if total_eligible_commits == 0 {
-        return Ok(Vec::new());
+        return Ok(HotspotCalculation::default());
+    }
+
+    let mut omitted_test_paths = 0;
+    if query.exclude_test_paths {
+        frequency_map.retain(|path, _| {
+            if is_excluded_hotspot_path(path.as_str()) {
+                omitted_test_paths += 1;
+                false
+            } else {
+                true
+            }
+        });
     }
 
     let file_paths: Vec<String> = frequency_map.keys().map(|p| p.to_string()).collect();
@@ -232,7 +312,10 @@ pub fn calculate_hotspots(
     });
     hotspots.truncate(query.limit);
 
-    Ok(hotspots)
+    Ok(HotspotCalculation {
+        hotspots,
+        omitted_test_paths,
+    })
 }
 
 pub(crate) fn query_file_complexities(
@@ -509,5 +592,30 @@ mod tests {
         let result = query_file_complexities(&storage, &["a.rs".to_string()]).unwrap();
         assert_eq!(result.get("a.rs"), Some(&5));
         // No crash even though project_symbols table is missing
+    }
+
+    #[test]
+    fn hotspot_query_default_does_not_exclude_test_paths() {
+        assert!(!HotspotQuery::default().exclude_test_paths);
+    }
+
+    #[test]
+    fn is_excluded_hotspot_path_topology_and_delta() {
+        assert!(is_excluded_hotspot_path("tests/foo.rs"));
+        assert!(is_excluded_hotspot_path(r"tests\foo.rs"));
+        assert!(is_excluded_hotspot_path("Tests/Foo.rs"));
+        assert!(is_excluded_hotspot_path("src/tests/bar.rs"));
+        assert!(is_excluded_hotspot_path("crates/x/__tests__/a.ts"));
+        assert!(is_excluded_hotspot_path("test_utils/h.rs"));
+        assert!(is_excluded_hotspot_path("examples/x.rs"));
+        assert!(is_excluded_hotspot_path(r"examples\x.rs"));
+        assert!(is_excluded_hotspot_path("benches/b.rs"));
+        assert!(is_excluded_hotspot_path("src/foo_test.rs"));
+        assert!(is_excluded_hotspot_path("ui/Foo.test.tsx"));
+        assert!(is_excluded_hotspot_path("ui/Foo.spec.jsx"));
+        assert!(!is_excluded_hotspot_path("src/lib.rs"));
+        assert!(!is_excluded_hotspot_path("src/foo.rs"));
+        assert!(!is_excluded_hotspot_path("src/examples.rs"));
+        assert!(!is_excluded_hotspot_path("src/test.rs"));
     }
 }

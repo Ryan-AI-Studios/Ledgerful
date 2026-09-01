@@ -37,7 +37,7 @@ on stderr.
 | `index --semantic --json` | yes (0161) | yes | One final JSON object (`schemaVersion`, `mode`, `reason`, counts, `upToDate`); zero human mid-run lines on stdout |
 | `index --json` (main / `--auto-scip` / `--scip`) | yes | yes* | Merged index stats object; top-level **`scip`** (0157/0166): `status`, `edges_added`/`edges_updated`, `definitions_mapped`/`definitions_seen`, `files_skipped`, skip/recovery tallies (`edges_skipped_enclosing_disagreement`, `edges_recovered_nest_prefer`, `edges_skipped_unmapped`, `edges_skipped_invalid_occ_range`, `edges_skipped_duplicate`, `definitions_skipped_invalid_range`, `invalid_enclosing_fallback`), `references_seen`, optional `message`. On Success skip/recovery fields are always present (incl. 0). WARN summary for disagreement/invalid-range is **stderr** only (O(1)); not part of the JSON payload |
 | `dead-code --json` | yes (0149) | yes | schemaVersion 1 envelope; see rejected combos |
-| `hotspots --json` | yes | yes | schemaVersion 1 object; collection `files`; list and `--semantic` echo `limit` (0207). **MCP `hotspots` stays an in-process array** |
+| `hotspots --json` | yes | yes | schemaVersion 1 object; collection `files`; list and `--semantic` echo `limit` (0207). CLI default list omits test/example/bench paths (0222; `--include tests` restores). **`score` is 0–1**; `displayScore` is ln display. No `scoreUnit`. **MCP `hotspots` stays an in-process array** and stays unfiltered |
 | `hotspots trend --json` | yes (0151) | yes | schemaVersion 1; modes summary/full/entity; see schema below |
 | `endpoints --json` | yes | yes | schemaVersion 1 object; collection `results` (0207). MCP `endpoints_changed` re-execs CLI and rides this envelope |
 | `symbols --json` | yes (0163) | yes | schemaVersion **1** inventory; path/changed/kind/pub filters; COUNT-backed `totalMatching`; optional `indexStatus`; see schema below |
@@ -672,7 +672,7 @@ field names stay command-specific (`results` / `impacted` / `files` /
 | `observability coverage --json` | `results` | Item `slo_count` / `metric_count` stay snake |
 | `data-models list --json` | `models` | Item `file_path` stays snake |
 | `data-models impact --json` | `impacted` | |
-| `hotspots --json` (list + `--semantic`) | `files` | List and `--semantic` echo `limit`. No `truncated` (no extra overfetch) |
+| `hotspots --json` (list + `--semantic`) | `files` | List and `--semantic` echo `limit`. No `truncated` (no extra overfetch). CLI default omits test/example/bench paths; `--include tests` is the unfiltered audit view (0222). Item `score` is 0–1 (`f_norm × c_norm`); `displayScore` is `ln_1p(score × 1000)` for humans. AI-T252 must pin `score`, not `displayScore`. No `scoreUnit` key. |
 | `ci diff --json` / `ci list --json` | `gates` | Empty catalog: `gates: []`, `resultCount: 0`, **no** `emptyReason` |
 | `tests --json` (mapped) | `mappings` | Additive `resolvedPath` (omit when none); empty arms use the helper |
 
@@ -682,7 +682,18 @@ No top-level `kind` on this helper (0180 `kind` is gitScan-only).
 
 **MCP honesty:** `endpoints_changed` text is the CLI envelope (re-exec
 `endpoints --changed --json`). MCP `hotspots` is in-process and **remains a
-hotspot array** — do not parse it as `{files:[…]}`.
+hotspot array** — do not parse it as `{files:[…]}`. MCP and `/api/hotspots`
+stay **unfiltered** (0222); only the CLI list/JSON list default excludes
+tests/examples/benches.
+
+### `hotspots --json` `files[]` score units (0222)
+
+| Field | Unit | Consumer |
+|---|---|---|
+| `score` | 0–1 (`f_norm × c_norm`) | Agents — pin this (AI-T252) |
+| `displayScore` | ln display (`ln_1p(score × 1000)`) | Human table / dashboard |
+
+Do **not** add a third score field. SchemaVersion stays 1.
 
 ---
 

@@ -67,6 +67,10 @@ ledgerful search execute_change_context --auto-index
 
 Unquoted multi-word joins; `--` for hyphen-leading queries.
 
+## Hotspots
+
+Default CLI `hotspots` / `hotspots --json` exclude tests/examples/benches; `--include tests` restores the audit view. Pin JSON `score` (0–1), not `displayScore` (ln). MCP and `/api/hotspots` stay unfiltered.
+
 ## Windows
 
 Do not overlap `cargo` / `verify` jobs.
