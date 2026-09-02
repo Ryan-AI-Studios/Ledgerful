@@ -37,13 +37,22 @@ pub struct LedgerCommitGitOptions {
     pub dry_run: bool,
 }
 
-pub fn execute_ledger_start(entity: String, category: &str, message: &str) -> Result<()> {
+pub fn execute_ledger_start(
+    entity: String,
+    category: &str,
+    message: &str,
+    force: bool,
+) -> Result<()> {
     let category = resolve_start_category(category)?;
     let layout = get_layout()?;
     let mut storage = StorageManager::init_with_layout(&layout)?;
     let config = load_ledger_config(&layout)?;
     let work_root = layout.root.clone();
     let mut tx_mgr = TransactionManager::new(&mut storage, layout.root.into(), config);
+
+    if !force {
+        refuse_overlapping_start(&tx_mgr, &work_root, &entity)?;
+    }
 
     let tx_id = tx_mgr
         .start_change(TransactionRequest {
@@ -60,6 +69,48 @@ pub fn execute_ledger_start(entity: String, category: &str, message: &str) -> Re
         work_root
     );
     Ok(())
+}
+
+/// Refuse `ledger start` when any PENDING entity overlaps the new entity or
+/// current dirty paths (0223). Requests exit 2 (would-block class).
+fn refuse_overlapping_start(
+    tx_mgr: &TransactionManager<'_>,
+    work_root: &camino::Utf8Path,
+    new_entity: &str,
+) -> Result<()> {
+    let pending = tx_mgr
+        .get_all_pending()
+        .map_err(|e| miette::miette!("{}", e))?;
+    if pending.is_empty() {
+        return Ok(());
+    }
+
+    let dirty = collect_dirty_paths_for_collision(work_root)?;
+    let hits = crate::ledger::find_start_collisions(&pending, new_entity, &dirty);
+    if hits.is_empty() {
+        return Ok(());
+    }
+
+    crate::output::requested_exit::request_exit(2);
+    Err(crate::ledger::PendingEntityCollision {
+        message: crate::ledger::format_collision_report(&hits),
+    }
+    .into())
+}
+
+/// Dirty paths via `get_repo_status` at `layout.root` (0200 workRoot). No git spawn.
+fn collect_dirty_paths_for_collision(work_root: &camino::Utf8Path) -> Result<Vec<String>> {
+    let repo = crate::git::repo::open_repo(work_root.as_std_path())
+        .map_err(|e| miette::miette!("Failed to open repository for collision check: {e}"))?;
+    let changes = crate::git::status::get_repo_status(&repo)
+        .map_err(|e| miette::miette!("Failed to read git status for collision check: {e}"))?;
+    let mut paths: Vec<String> = changes
+        .into_iter()
+        .map(|c| c.path.to_string_lossy().into_owned())
+        .collect();
+    paths.sort();
+    paths.dedup();
+    Ok(paths)
 }
 
 pub fn execute_ledger_commit(
@@ -683,6 +734,129 @@ mod tests {
             assert!(
                 err.contains("not found") || err.contains("'00000000-0000-0000-0000-000000000001'"),
                 "unexpected error: {err}"
+            );
+        });
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn execute_ledger_start_owner_self_collision_refuses_without_force() {
+        let _ = crate::output::requested_exit::take_requested_exit_code();
+        execute_ledger_resume_with_test_context(|| {
+            execute_ledger_start(
+                "crates/dedupe-chrome".into(),
+                "FEATURE",
+                "chrome work",
+                false,
+            )
+            .expect("first start");
+
+            std::fs::create_dir_all("crates/dedupe-chrome").expect("mkdir chrome");
+            std::fs::write("crates/dedupe-chrome/foo.rs", "fn x() {}\n").expect("dirty chrome");
+
+            let err = execute_ledger_start("crates/other".into(), "FEATURE", "adjacent", false)
+                .expect_err("owner self-collision must refuse")
+                .to_string();
+            assert!(
+                err.contains("[Ledgerful] Collision: pending tx")
+                    && err.contains("owns crates/dedupe-chrome"),
+                "expected grep line, got {err}"
+            );
+            assert!(
+                err.contains("category: FEATURE") && err.contains("message: chrome work"),
+                "collision report must include category and message: {err}"
+            );
+            assert!(
+                err.contains("crates/dedupe-chrome/foo.rs")
+                    || err.contains("crates\\dedupe-chrome\\foo.rs"),
+                "overlapping dirty path must be listed: {err}"
+            );
+            assert_eq!(
+                crate::output::requested_exit::take_requested_exit_code(),
+                Some(2)
+            );
+        });
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn execute_ledger_start_force_bypasses_collision() {
+        let _ = crate::output::requested_exit::take_requested_exit_code();
+        execute_ledger_resume_with_test_context(|| {
+            execute_ledger_start(
+                "crates/dedupe-chrome".into(),
+                "FEATURE",
+                "chrome work",
+                false,
+            )
+            .expect("first start");
+
+            std::fs::create_dir_all("crates/dedupe-chrome").expect("mkdir chrome");
+            std::fs::write("crates/dedupe-chrome/foo.rs", "fn x() {}\n").expect("dirty chrome");
+
+            execute_ledger_start("crates/other".into(), "FEATURE", "adjacent", true)
+                .expect("--force must start anyway");
+            assert_eq!(
+                crate::output::requested_exit::take_requested_exit_code(),
+                None
+            );
+        });
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn execute_ledger_start_overlapping_entity_refuses() {
+        let _ = crate::output::requested_exit::take_requested_exit_code();
+        execute_ledger_resume_with_test_context(|| {
+            execute_ledger_start(
+                "crates/dedupe-chrome".into(),
+                "FEATURE",
+                "chrome work",
+                false,
+            )
+            .expect("first start");
+
+            let err = execute_ledger_start(
+                "crates/dedupe-chrome/nested".into(),
+                "FEATURE",
+                "nested",
+                false,
+            )
+            .expect_err("overlapping entity must refuse")
+            .to_string();
+            assert!(
+                err.contains("[Ledgerful] Collision: pending tx")
+                    && err.contains("owns crates/dedupe-chrome"),
+                "expected grep line, got {err}"
+            );
+            assert_eq!(
+                crate::output::requested_exit::take_requested_exit_code(),
+                Some(2)
+            );
+        });
+    }
+
+    #[serial_test::serial(cwd)]
+    #[test]
+    fn execute_ledger_start_disjoint_dirty_and_entity_succeeds() {
+        let _ = crate::output::requested_exit::take_requested_exit_code();
+        execute_ledger_resume_with_test_context(|| {
+            execute_ledger_start(
+                "crates/dedupe-chrome".into(),
+                "FEATURE",
+                "chrome work",
+                false,
+            )
+            .expect("first start");
+
+            std::fs::create_dir_all("crates/other/src").expect("mkdir other");
+            std::fs::write("crates/other/src/lib.rs", "fn y() {}\n").expect("dirty other");
+
+            execute_ledger_start("crates/other".into(), "FEATURE", "other crate", false)
+                .expect("disjoint dirty+entity must start");
+            assert_eq!(
+                crate::output::requested_exit::take_requested_exit_code(),
+                None
             );
         });
     }

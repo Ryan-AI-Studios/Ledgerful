@@ -59,6 +59,40 @@ impl DoctorCategory {
     }
 }
 
+/// Session attention for a doctor finding (0225).
+///
+/// Wire form: `"now" | "later"`. Derived at emission from live
+/// `gate.mode` + `intent.require_signing`. Default `Now`. Present on
+/// `doctor --json`; omitted from sidecar `doctor-results.json`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SessionPriority {
+    #[default]
+    Now,
+    Later,
+}
+
+impl SessionPriority {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Now => "now",
+            Self::Later => "later",
+        }
+    }
+
+    pub fn is_later(self) -> bool {
+        matches!(self, Self::Later)
+    }
+}
+
+/// Exact codes collapsed to `later` under observe + `!require_signing`.
+pub(crate) fn is_observe_signing_later_code(code: &str) -> bool {
+    matches!(
+        code,
+        "PHANTOM_PROMOTED_WITHOUT_VERIFY" | "sig-pin" | "sig-version"
+    )
+}
+
 /// A single doctor finding with stable machine identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DoctorFinding {
@@ -71,6 +105,9 @@ pub struct DoctorFinding {
     /// Machine source of truth when present; omitted from JSON when `None`.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub remediation: Option<String>,
+    /// Config-relative session attention (0225). Always serialized on CLI JSON.
+    #[serde(rename = "sessionPriority")]
+    pub session_priority: SessionPriority,
 }
 
 impl DoctorFinding {
@@ -86,6 +123,7 @@ impl DoctorFinding {
             category,
             message: message.into(),
             remediation: None,
+            session_priority: SessionPriority::Now,
         }
     }
 
@@ -589,6 +627,7 @@ mod tests {
         assert!(v.get("message").is_some());
         // remediation omitted when None (skip_serializing_if)
         assert!(v.get("remediation").is_none());
+        assert_eq!(v["sessionPriority"], "now");
     }
 
     #[test]
@@ -597,5 +636,48 @@ mod tests {
             .with_remediation("ledgerful doctor --json");
         let v = serde_json::to_value(&finding).expect("serialize");
         assert_eq!(v["remediation"], "ledgerful doctor --json");
+        assert_eq!(v["sessionPriority"], "now");
+    }
+
+    #[test]
+    fn is_observe_signing_later_code_exact_three() {
+        assert!(is_observe_signing_later_code(
+            "PHANTOM_PROMOTED_WITHOUT_VERIFY"
+        ));
+        assert!(is_observe_signing_later_code("sig-pin"));
+        assert!(is_observe_signing_later_code("sig-version"));
+        assert!(!is_observe_signing_later_code("binary-behind-tree"));
+        assert!(!is_observe_signing_later_code("binary-behind-latest"));
+        assert!(!is_observe_signing_later_code("sig-pin-extra"));
+        assert!(!is_observe_signing_later_code("search-empty"));
+        assert!(!is_observe_signing_later_code(
+            "phantom_promoted_without_verify"
+        ));
+    }
+
+    #[test]
+    fn session_priority_serde_camel_case_now_later() {
+        assert_eq!(
+            serde_json::to_value(SessionPriority::Now).expect("now"),
+            serde_json::json!("now")
+        );
+        assert_eq!(
+            serde_json::to_value(SessionPriority::Later).expect("later"),
+            serde_json::json!("later")
+        );
+        let mut later = DoctorFinding::warn("sig-pin", DoctorCategory::Signing, "pin");
+        later.session_priority = SessionPriority::Later;
+        let v = serde_json::to_value(&later).expect("serialize");
+        assert_eq!(v["sessionPriority"], "later");
+        assert_eq!(v["category"], "signing");
+        assert_eq!(v["severity"], "warn");
+    }
+
+    #[test]
+    fn later_sig_pin_remains_action_critical() {
+        let mut f = f("sig-pin", DoctorSeverity::Warn, DoctorCategory::Signing);
+        f.session_priority = SessionPriority::Later;
+        assert!(is_action_critical(&f));
+        assert!(!is_hygiene(&f));
     }
 }

@@ -1,4 +1,11 @@
-use clap::{Args, Subcommand};
+use clap::{Args, Subcommand, ValueEnum};
+
+/// Extra path classes to include in the CLI hotspot list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum HotspotIncludeScope {
+    /// Tests, examples, and benches (audit view; default CLI list omits these)
+    Tests,
+}
 
 #[derive(Args, Debug)]
 pub struct HotspotArgs {
@@ -48,6 +55,10 @@ pub struct HotspotArgs {
     /// Persist the results as a snapshot in the history tables
     #[arg(long)]
     pub snapshot: bool,
+
+    /// Include test, example, and bench paths (default CLI list omits them)
+    #[arg(long, value_enum, value_name = "SCOPE")]
+    pub include: Option<HotspotIncludeScope>,
 }
 
 #[derive(Subcommand, Debug)]

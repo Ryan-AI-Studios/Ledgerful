@@ -8,6 +8,7 @@ use crate::platform::env::ExecutableStatus;
 use crate::verify::plan::VerificationPlan;
 use comfy_table::{Cell, Color, Table};
 use owo_colors::{OwoColorize, Stream, Style};
+use std::io::{self, Write};
 
 pub struct DoctorReport<'a> {
     pub platform: &'a str,
@@ -99,6 +100,14 @@ pub fn format_hygiene_collapse_trailer(hygiene_count: usize, warn_optional: u64)
     }
 }
 
+/// Greppable trailer when observe-mode signing hygiene is deferred (0225).
+///
+/// Separate from [`format_hygiene_collapse_trailer`] — never fold `later`
+/// into `hygiene_count`.
+pub fn format_signing_deferred_trailer(later_count: usize) -> String {
+    format!("{later_count} signing finding(s) deferred (observe) — run doctor --full")
+}
+
 /// Tools-table label + uncoloured status text (0209-B).
 ///
 /// `gemini` / `gemini-cli` are the optional PATH CLI, not Cloud Ask.
@@ -150,7 +159,9 @@ pub fn partition_doctor_findings_for_human(
     let index_health: Vec<_> = findings
         .iter()
         .filter(|f| {
-            if is_action_critical(f) {
+            if f.session_priority.is_later() && !full {
+                false
+            } else if is_action_critical(f) {
                 true
             } else if full {
                 // Non-optional info expands under Index Health when --full.
@@ -188,35 +199,48 @@ pub fn print_doctor_report(
     findings: &[crate::commands::doctor::DoctorFinding],
     profile: DoctorHumanProfile,
 ) {
-    // Aggregate-first: first meaningful line is the status (no leading blank).
-    // Copy uses action/optional split; colour stays on total summary.warn.
+    let mut out = io::stdout();
+    let _ = print_doctor_report_to(&mut out, report, summary, findings, profile);
+}
+
+/// Write the human doctor report to `out` (0225 tests capture this path).
+pub(crate) fn print_doctor_report_to(
+    out: &mut dyn Write,
+    report: &DoctorReport,
+    summary: &DoctorSummaryCounts,
+    findings: &[crate::commands::doctor::DoctorFinding],
+    profile: DoctorHumanProfile,
+) -> io::Result<()> {
     let split = crate::commands::doctor::split_doctor_warns(findings);
     debug_assert_eq!(split.total, summary.warn);
     let summary_text =
         format_doctor_summary_text(summary.block, split.action, split.optional, summary.info);
     if summary.block > 0 {
-        println!(
+        writeln!(
+            out,
             "{}",
             summary_text.if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold()))
-        );
+        )?;
     } else if summary.warn > 0 {
-        println!(
+        writeln!(
+            out,
             "{}",
             summary_text
                 .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
-        );
+        )?;
     } else {
-        println!(
+        writeln!(
+            out,
             "{}",
             summary_text
                 .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
-        );
+        )?;
     }
 
-    println!("\nLedgerful Doctor - Environment Health Check");
-    println!("==================================================");
-    println!("{:<20} {}", "Environment:", report.platform);
-    println!("{:<20} {}", "Active Shell:", report.shell);
+    writeln!(out, "\nLedgerful Doctor - Environment Health Check")?;
+    writeln!(out, "==================================================")?;
+    writeln!(out, "{:<20} {}", "Environment:", report.platform)?;
+    writeln!(out, "{:<20} {}", "Active Shell:", report.shell)?;
 
     let family = if cfg!(windows) { "windows" } else { "unix" };
     let telemetry = format!(
@@ -226,9 +250,9 @@ pub fn print_doctor_report(
         family,
         report.target_triple
     );
-    println!("{:<20} {}", "LEDGERFUL_PLATFORM:", telemetry);
+    writeln!(out, "{:<20} {}", "LEDGERFUL_PLATFORM:", telemetry)?;
 
-    println!("\nTools:");
+    writeln!(out, "\nTools:")?;
     for (name, status) in report.tools {
         let (label, status_text) = format_doctor_tool_line(name, status);
         let status_str = if matches!(status, ExecutableStatus::NotFound) {
@@ -238,50 +262,65 @@ pub fn print_doctor_report(
         } else {
             status_text
         };
-        println!("  {:<18} {}", label, status_str);
+        writeln!(out, "  {:<18} {}", label, status_str)?;
     }
 
-    println!("\nCurrent Path:        {}", report.path_display);
-    println!("Path Type:           {}", report.path_kind);
-    println!("Work root:           {}", report.work_root);
-    println!("State dir:           {}", report.state_dir);
+    writeln!(out, "\nCurrent Path:        {}", report.path_display)?;
+    writeln!(out, "Path Type:           {}", report.path_kind)?;
+    writeln!(out, "Work root:           {}", report.work_root)?;
+    writeln!(out, "State dir:           {}", report.state_dir)?;
     if let Some(line) = wsl_support_line(report.is_wsl_mounted) {
-        println!("{line}");
+        writeln!(out, "{line}")?;
     }
 
-    // Core health: ask backend + native graph stay here; optional model /
-    // accelerator lines move under Optional Accelerators (0100 DoD-6).
-    println!("\nActive Ask Backend:  {}", report.active_ask_backend);
-    println!("Native Graph:        {}", report.native_graph_status);
+    writeln!(out, "\nActive Ask Backend:  {}", report.active_ask_backend)?;
+    writeln!(out, "Native Graph:        {}", report.native_graph_status)?;
 
     let (index_findings, optional_findings, hygiene_count) =
         partition_doctor_findings_for_human(findings, profile.full);
 
     if !report.index_health.is_empty() || !index_findings.is_empty() {
-        println!("\nIndex Health:");
+        writeln!(out, "\nIndex Health:")?;
         for health in &report.index_health {
-            println!("  • {}", health);
+            writeln!(out, "  • {}", health)?;
         }
         for f in &index_findings {
-            print_doctor_finding_line(f, "  • ", profile.quiet);
+            print_doctor_finding_line(out, f, "  • ", profile.quiet)?;
         }
     }
 
-    // Optional accelerators: embedding/completion display always; findings when --full.
-    println!("\n── Optional Accelerators ──────────────────────");
-    println!("Embedding Model:     {}", report.embedding_model_status);
-    println!("Completion Model:    {}", report.completion_model_status);
+    writeln!(out, "\n── Optional Accelerators ──────────────────────")?;
+    writeln!(
+        out,
+        "Embedding Model:     {}",
+        report.embedding_model_status
+    )?;
+    writeln!(
+        out,
+        "Completion Model:    {}",
+        report.completion_model_status
+    )?;
     for f in &optional_findings {
-        print_doctor_finding_line(f, "", profile.quiet);
+        print_doctor_finding_line(out, f, "", profile.quiet)?;
     }
 
-    // Collapse trailer for hygiene (optional/info) when not --full.
     if !profile.full && hygiene_count > 0 {
-        println!(
+        writeln!(
+            out,
             "\n{}",
             format_hygiene_collapse_trailer(hygiene_count, split.optional)
-        );
+        )?;
     }
+    if !profile.full {
+        let later_count = findings
+            .iter()
+            .filter(|f| f.session_priority.is_later())
+            .count();
+        if later_count > 0 {
+            writeln!(out, "\n{}", format_signing_deferred_trailer(later_count))?;
+        }
+    }
+    Ok(())
 }
 
 /// Whether multi-line remediations print under the finding (suppressed when quiet).
@@ -291,10 +330,11 @@ pub(crate) fn doctor_should_print_remediation(quiet: bool) -> bool {
 
 /// Print one finding line with optional remediation (suppressed when quiet).
 fn print_doctor_finding_line(
+    out: &mut dyn Write,
     f: &crate::commands::doctor::DoctorFinding,
     bullet: &str,
     quiet: bool,
-) {
+) -> io::Result<()> {
     let prefix = match f.severity {
         crate::commands::doctor::DoctorSeverity::Block => "[block]"
             .if_supports_color(Stream::Stdout, |s| s.red())
@@ -306,25 +346,37 @@ fn print_doctor_finding_line(
             .if_supports_color(Stream::Stdout, |s| s.cyan())
             .to_string(),
     };
-    println!("{bullet}{prefix} [{}] {}", f.code, f.message);
+    writeln!(out, "{bullet}{prefix} [{}] {}", f.code, f.message)?;
     if doctor_should_print_remediation(quiet) {
         let rem_indent = if bullet.is_empty() { "  " } else { "    " };
-        print_doctor_remediation(f.remediation.as_deref(), f.message.as_str(), rem_indent);
+        print_doctor_remediation(
+            out,
+            f.remediation.as_deref(),
+            f.message.as_str(),
+            rem_indent,
+        )?;
     }
+    Ok(())
 }
 
 /// Print structured remediation under a finding once (skip if identical to message).
-fn print_doctor_remediation(remediation: Option<&str>, message: &str, indent: &str) {
+fn print_doctor_remediation(
+    out: &mut dyn Write,
+    remediation: Option<&str>,
+    message: &str,
+    indent: &str,
+) -> io::Result<()> {
     let Some(rem) = remediation else {
-        return;
+        return Ok(());
     };
     let rem = rem.trim();
     if rem.is_empty() || rem == message.trim() {
-        return;
+        return Ok(());
     }
     for line in rem.lines() {
-        println!("{indent}{line}");
+        writeln!(out, "{indent}{line}")?;
     }
+    Ok(())
 }
 
 /// Honest-ceiling footer for dead-code human output (0100 Option 1 / DoD-4).
@@ -1221,6 +1273,25 @@ mod tests {
         assert!(!t10.contains("optional"), "{t10}");
     }
 
+    #[test]
+    fn format_signing_deferred_trailer_exact() {
+        assert_eq!(
+            format_signing_deferred_trailer(3),
+            "3 signing finding(s) deferred (observe) — run doctor --full"
+        );
+        assert_eq!(
+            format_signing_deferred_trailer(1),
+            "1 signing finding(s) deferred (observe) — run doctor --full"
+        );
+        let hygiene = format_hygiene_collapse_trailer(10, 0);
+        assert_eq!(
+            hygiene,
+            "10 hygiene finding(s) collapsed — run doctor --full"
+        );
+        assert!(!hygiene.contains("signing"), "{hygiene}");
+        assert!(!hygiene.contains("deferred"), "{hygiene}");
+    }
+
     /// 0174 T1–T5: human 3-tier partition + --full expands hygiene.
     #[test]
     fn doctor_human_partition_three_tier() {
@@ -1268,6 +1339,201 @@ mod tests {
         let trailer = format_hygiene_collapse_trailer(3, 1);
         assert!(trailer.contains("3 hygiene finding(s) collapsed"));
         assert!(trailer.contains("doctor --full"));
+    }
+
+    /// 0225: later signing omitted from default Index Health; hygiene_count unchanged.
+    #[test]
+    fn doctor_human_partition_later_signing_omitted_not_hygiene() {
+        use crate::commands::doctor::{DoctorCategory, DoctorFinding, SessionPriority};
+
+        let mut later_pin = DoctorFinding::warn("sig-pin", DoctorCategory::Signing, "no keys");
+        later_pin.session_priority = SessionPriority::Later;
+        let mut later_ver = DoctorFinding::warn("sig-version", DoctorCategory::Signing, "v1 rows");
+        later_ver.session_priority = SessionPriority::Later;
+        let mut later_phantom = DoctorFinding::warn(
+            "PHANTOM_PROMOTED_WITHOUT_VERIFY",
+            DoctorCategory::Signing,
+            "phantoms",
+        );
+        later_phantom.session_priority = SessionPriority::Later;
+        let behind = DoctorFinding::warn(
+            "binary-behind-tree",
+            DoctorCategory::Tools,
+            "PATH binary lags tree",
+        );
+        let hygiene_info =
+            DoctorFinding::info("hook-template-stale", DoctorCategory::Gate, "hooks stale");
+
+        let findings = vec![later_pin, later_ver, later_phantom, behind, hygiene_info];
+
+        let (index, optional, hygiene) = partition_doctor_findings_for_human(&findings, false);
+        assert_eq!(hygiene, 1, "later must not increment hygiene_count");
+        let codes: Vec<&str> = index.iter().map(|f| f.code.as_str()).collect();
+        assert_eq!(codes, vec!["binary-behind-tree"]);
+        assert!(optional.is_empty());
+        assert!(!codes.contains(&"sig-pin"));
+        assert!(!codes.contains(&"sig-version"));
+        assert!(!codes.contains(&"PHANTOM_PROMOTED_WITHOUT_VERIFY"));
+
+        let (index_full, _, hygiene_full) = partition_doctor_findings_for_human(&findings, true);
+        assert_eq!(hygiene_full, 1);
+        let full_codes: Vec<&str> = index_full.iter().map(|f| f.code.as_str()).collect();
+        assert!(full_codes.contains(&"sig-pin"));
+        assert!(full_codes.contains(&"sig-version"));
+        assert!(full_codes.contains(&"PHANTOM_PROMOTED_WITHOUT_VERIFY"));
+        assert!(full_codes.contains(&"binary-behind-tree"));
+        assert!(full_codes.contains(&"hook-template-stale"));
+    }
+
+    /// 0225 Codex P2-1: printer emits deferred trailer; `--full` expands bodies.
+    #[test]
+    fn print_doctor_report_later_trailer_and_full_expand() {
+        use crate::commands::doctor::{DoctorCategory, DoctorFinding, SessionPriority, summarize};
+
+        fn later(code: &str, msg: &str) -> DoctorFinding {
+            let mut f = DoctorFinding::warn(code, DoctorCategory::Signing, msg);
+            f.session_priority = SessionPriority::Later;
+            f
+        }
+
+        let findings = vec![
+            later("PHANTOM_PROMOTED_WITHOUT_VERIFY", "phantoms"),
+            later("sig-pin", "no keys"),
+            later("sig-version", "v1 rows"),
+            DoctorFinding::warn(
+                "binary-behind-tree",
+                DoctorCategory::Tools,
+                "PATH binary lags tree",
+            ),
+            DoctorFinding::info("hook-template-stale", DoctorCategory::Gate, "hooks stale"),
+        ];
+
+        let tools: Vec<(String, ExecutableStatus)> = Vec::new();
+        let report = DoctorReport {
+            platform: "test",
+            shell: "test",
+            tools: &tools,
+            path_display: "test",
+            path_kind: "test",
+            work_root: "test",
+            state_dir: "test/.ledgerful",
+            is_wsl_mounted: false,
+            embedding_model_status: "OK".to_string(),
+            embedding_model_failed: false,
+            completion_model_status: "OK".to_string(),
+            native_graph_status: "Ready".to_string(),
+            active_ask_backend: "test".to_string(),
+            index_health: vec!["Search index: OK (1 documents)".to_string()],
+            target_triple: "test",
+        };
+        let counts = summarize(&findings);
+        let summary = DoctorSummaryCounts {
+            block: counts.block,
+            warn: counts.warn,
+            info: counts.info,
+        };
+
+        let mut default_buf = Vec::new();
+        print_doctor_report_to(
+            &mut default_buf,
+            &report,
+            &summary,
+            &findings,
+            DoctorHumanProfile {
+                full: false,
+                quiet: true,
+            },
+        )
+        .expect("write default");
+        let default = String::from_utf8(default_buf).expect("utf8");
+        assert!(
+            default.contains("3 signing finding(s) deferred (observe) — run doctor --full"),
+            "{default}"
+        );
+        assert!(
+            default.contains("1 hygiene finding(s) collapsed — run doctor --full"),
+            "{default}"
+        );
+        assert!(!default.contains("[sig-pin]"), "{default}");
+        assert!(!default.contains("[sig-version]"), "{default}");
+        assert!(
+            !default.contains("[PHANTOM_PROMOTED_WITHOUT_VERIFY]"),
+            "{default}"
+        );
+        assert!(default.contains("[binary-behind-tree]"), "{default}");
+        assert!(!default.contains("[hook-template-stale]"), "{default}");
+        assert!(default.contains("warning(s)"), "{default}");
+
+        let mut full_buf = Vec::new();
+        print_doctor_report_to(
+            &mut full_buf,
+            &report,
+            &summary,
+            &findings,
+            DoctorHumanProfile {
+                full: true,
+                quiet: true,
+            },
+        )
+        .expect("write full");
+        let full = String::from_utf8(full_buf).expect("utf8");
+        assert!(full.contains("[sig-pin]"), "{full}");
+        assert!(full.contains("[sig-version]"), "{full}");
+        assert!(full.contains("[PHANTOM_PROMOTED_WITHOUT_VERIFY]"), "{full}");
+        assert!(full.contains("[binary-behind-tree]"), "{full}");
+        assert!(full.contains("[hook-template-stale]"), "{full}");
+        assert!(!full.contains("signing finding(s) deferred"), "{full}");
+        assert!(!full.contains("hygiene finding(s) collapsed"), "{full}");
+    }
+
+    #[test]
+    fn print_doctor_report_hygiene_only_trailer_byte_stable_without_later() {
+        use crate::commands::doctor::{DoctorCategory, DoctorFinding, summarize};
+
+        let findings = vec![
+            DoctorFinding::info("hook-template-stale", DoctorCategory::Gate, "hooks stale"),
+            DoctorFinding::info("sccache-hint", DoctorCategory::Optional, "sccache"),
+        ];
+        let tools: Vec<(String, ExecutableStatus)> = Vec::new();
+        let report = DoctorReport {
+            platform: "test",
+            shell: "test",
+            tools: &tools,
+            path_display: "test",
+            path_kind: "test",
+            work_root: "test",
+            state_dir: "test/.ledgerful",
+            is_wsl_mounted: false,
+            embedding_model_status: "OK".to_string(),
+            embedding_model_failed: false,
+            completion_model_status: "OK".to_string(),
+            native_graph_status: "Ready".to_string(),
+            active_ask_backend: "test".to_string(),
+            index_health: Vec::new(),
+            target_triple: "test",
+        };
+        let counts = summarize(&findings);
+        let summary = DoctorSummaryCounts {
+            block: counts.block,
+            warn: counts.warn,
+            info: counts.info,
+        };
+        let mut buf = Vec::new();
+        print_doctor_report_to(
+            &mut buf,
+            &report,
+            &summary,
+            &findings,
+            DoctorHumanProfile::default(),
+        )
+        .expect("write");
+        let text = String::from_utf8(buf).expect("utf8");
+        assert!(
+            text.contains("2 hygiene finding(s) collapsed — run doctor --full"),
+            "{text}"
+        );
+        assert!(!text.contains("signing finding(s) deferred"), "{text}");
+        assert!(!text.contains("optional warning"), "{text}");
     }
 
     /// 0209-D: mixed info tool-gemini + optional warn; trailer uses warnOptional.

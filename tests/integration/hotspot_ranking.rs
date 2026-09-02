@@ -1,6 +1,6 @@
 use camino::Utf8PathBuf;
 use ledgerful::git::GitError;
-use ledgerful::impact::hotspots::{HotspotQuery, calculate_hotspots};
+use ledgerful::impact::hotspots::{HotspotQuery, calculate_hotspots, calculate_hotspots_detailed};
 
 fn query(limit: usize) -> HotspotQuery {
     HotspotQuery {
@@ -159,6 +159,141 @@ fn test_hotspot_score_is_finite_when_all_complexity_is_zero() {
     for h in &decoded {
         assert!(h.score.is_finite());
     }
+}
+
+/// DoD-3 frozen unfiltered `score` JSON (sorted path → score) for the
+/// `src/lib.rs` + `src/foo.rs` + `tests/foo.rs` + `examples/x.rs` fixture.
+/// Captured against pre-0222 `calculate_hotspots` math (exclude_test_paths
+/// default false). `--include tests` must keep these bytes.
+const UNFILTERED_FIXTURE_SCORE_JSON: &str = concat!(
+    r#"{"examples/x.rs":0.20000000298023224,"src/foo.rs":0.07500000298023224,"#,
+    r#""src/lib.rs":0.20000000298023224,"tests/foo.rs":1.0}"#
+);
+
+fn agent_default_fixture(
+    storage: &StorageManager,
+) -> (MockHistoryProvider, HotspotQuery, HotspotQuery) {
+    insert_snapshot(storage);
+    insert_complexity(storage, "tests/foo.rs", 80);
+    insert_complexity(storage, "src/lib.rs", 20);
+    insert_complexity(storage, "src/foo.rs", 10);
+    insert_complexity(storage, "examples/x.rs", 40);
+
+    let history = MockHistoryProvider {
+        history: vec![
+            commit(&["tests/foo.rs", "src/lib.rs", "src/foo.rs", "examples/x.rs"]),
+            commit(&["tests/foo.rs", "src/lib.rs", "src/foo.rs", "examples/x.rs"]),
+            commit(&["tests/foo.rs", "src/lib.rs", "src/foo.rs"]),
+            commit(&["tests/foo.rs", "src/lib.rs"]),
+            commit(&["tests/foo.rs"]),
+        ],
+    };
+    let include_tests = HotspotQuery {
+        commits: 10,
+        limit: 10,
+        exclude_test_paths: false,
+        ..Default::default()
+    };
+    let default_cli = HotspotQuery {
+        commits: 10,
+        limit: 10,
+        exclude_test_paths: true,
+        ..Default::default()
+    };
+    (history, include_tests, default_cli)
+}
+
+fn scores_json(hotspots: &[ledgerful::impact::packet::Hotspot]) -> String {
+    let mut pairs: Vec<(String, serde_json::Value)> = hotspots
+        .iter()
+        .map(|h| {
+            (
+                h.path.to_string_lossy().replace('\\', "/"),
+                serde_json::json!(h.score),
+            )
+        })
+        .collect();
+    pairs.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut map = serde_json::Map::new();
+    for (path, score) in pairs {
+        map.insert(path, score);
+    }
+    serde_json::Value::Object(map).to_string()
+}
+
+fn paths_of(hotspots: &[ledgerful::impact::packet::Hotspot]) -> Vec<String> {
+    hotspots
+        .iter()
+        .map(|h| h.path.to_string_lossy().replace('\\', "/"))
+        .collect()
+}
+
+#[test]
+fn hotspots_cli_default_fixture_excludes_tests_examples_ranks_src_lib() {
+    let tmp = tempdir().unwrap();
+    let storage = StorageManager::init(&tmp.path().join("ledger.db")).unwrap();
+    let (history, _, default_cli) = agent_default_fixture(&storage);
+
+    let calculated = calculate_hotspots_detailed(&storage, &history, &default_cli).unwrap();
+    let paths = paths_of(&calculated.hotspots);
+
+    assert_eq!(paths[0], "src/lib.rs");
+    assert!(
+        paths.iter().any(|p| p == "src/foo.rs"),
+        "src/foo.rs (#[cfg(test)] production path) must still rank: {paths:?}"
+    );
+    assert!(
+        paths
+            .iter()
+            .all(|p| !p.starts_with("tests/") && !p.starts_with("examples/")),
+        "default must not list tests/ or examples/: {paths:?}"
+    );
+    assert_eq!(calculated.omitted_test_paths, 2);
+}
+
+#[test]
+fn hotspots_include_tests_fixture_ranks_test_first_and_keeps_unfiltered_scores() {
+    let tmp = tempdir().unwrap();
+    let storage = StorageManager::init(&tmp.path().join("ledger.db")).unwrap();
+    let (history, include_tests, _) = agent_default_fixture(&storage);
+
+    let hotspots = calculate_hotspots(&storage, &history, &include_tests).unwrap();
+    let paths = paths_of(&hotspots);
+    assert_eq!(paths[0], "tests/foo.rs");
+    assert!(paths.iter().any(|p| p == "examples/x.rs"));
+    assert_eq!(
+        scores_json(&hotspots),
+        UNFILTERED_FIXTURE_SCORE_JSON,
+        "unfiltered score bytes must match pre-change capture"
+    );
+    assert!(
+        !serde_json::to_string(&hotspots)
+            .unwrap()
+            .contains("scoreUnit"),
+        "must not add scoreUnit on Hotspot"
+    );
+}
+
+#[test]
+fn hotspots_exclude_before_max_comp_does_not_crush_production_c_norm() {
+    let tmp = tempdir().unwrap();
+    let storage = StorageManager::init(&tmp.path().join("ledger.db")).unwrap();
+    let (history, include_tests, default_cli) = agent_default_fixture(&storage);
+
+    let unfiltered = calculate_hotspots(&storage, &history, &include_tests).unwrap();
+    let filtered = calculate_hotspots(&storage, &history, &default_cli).unwrap();
+
+    let unfiltered_lib = unfiltered
+        .iter()
+        .find(|h| h.path.to_string_lossy().replace('\\', "/") == "src/lib.rs")
+        .unwrap();
+    let filtered_lib = filtered
+        .iter()
+        .find(|h| h.path.to_string_lossy().replace('\\', "/") == "src/lib.rs")
+        .unwrap();
+
+    assert_eq!(unfiltered_lib.score, 0.2);
+    assert_eq!(filtered_lib.score, 1.0);
 }
 
 #[test]

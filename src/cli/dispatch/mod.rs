@@ -1,7 +1,7 @@
 use crate::cli::args::{
     AskArgs, AuditArgs, ChangeContextArgs, Cli, Commands, DeadCodeArgs, DemoArgs, DoctorArgs,
-    ImpactArgs, InitArgs, LedgerCommands, ResetArgs, ScanArgs, SearchTrigramsArgs, SetupArgs,
-    StatusArgs, SurfacesArgs, TimingsCliArgs, UpdateArgs, VizArgs, WatchArgs,
+    ImpactArgs, InitArgs, LedgerCommands, ResetArgs, ScanArgs, SearchTrigramsArgs, SessionArgs,
+    SetupArgs, StatusArgs, SurfacesArgs, TimingsCliArgs, UpdateArgs, VizArgs, WatchArgs,
 };
 use miette::{IntoDiagnostic, Result};
 use std::env;
@@ -147,6 +147,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
             )?;
             crate::commands::change_context::execute_change_context(opts, json)
         }
+        Commands::Session(SessionArgs { json }) => crate::commands::session::execute_session(json),
         Commands::Index(args) => dispatch_index(args).or_else(handle_schema_error),
         Commands::Search(args) => dispatch_search(current_dir, args).or_else(handle_schema_error),
         Commands::Hotspots { args } => crate::commands::hotspots::execute_hotspots(args),

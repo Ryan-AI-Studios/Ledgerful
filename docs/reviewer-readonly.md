@@ -150,9 +150,9 @@ review. When a writable implementer (or accidental Class D invoke) runs `impact`
 
 ## Related
 
-- Dual skill RO section (`.agents/skills/ledgerful/SKILL.md`,
-  `docs/Ledgerful/skill.md`)
+- This file is the read-only command-matrix SoT (the agent skill no longer duplicates the RO matrix)
+- Agent Daily 5 procedure: [`Ledgerful/skill.md`](Ledgerful/skill.md)
 - `codex-review` skill: orchestrator owns write-class gates
 - Worktree state sharing: [Engineering.md — Git worktrees](Engineering.md#git-worktrees-state-sharing)
-- Default implementer preflight: dual skill + `AGENTS.md` / `Claude.md`
+- Default implementer preflight: `docs/Ledgerful/skill.md` Daily 5 + `AGENTS.md` / `Claude.md`
 - Human doctor progressive disclosure: [doctor-severity.md](doctor-severity.md)

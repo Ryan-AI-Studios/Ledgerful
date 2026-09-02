@@ -105,6 +105,14 @@ pub struct ChangeContextArgs {
     pub include_governance: bool,
 }
 
+/// One-shot agent session briefing (git + ledger + doctor + change-context + hotspots).
+#[derive(Args, Debug)]
+pub struct SessionArgs {
+    /// Emit schema-v1 JSON envelope (`kind: session`) on stdout (0093 machine mode)
+    #[arg(long)]
+    pub json: bool,
+}
+
 /// Clap bag for `search` (query tokens + flags). Not
 /// [`crate::commands::search::SearchArgs`] (execution DTO).
 #[derive(Args, Debug)]

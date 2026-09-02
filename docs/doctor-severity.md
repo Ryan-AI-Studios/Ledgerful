@@ -44,26 +44,30 @@ Pure stdout schema v1 (`schemaVersion` is integer `1`):
       "severity": "warn",
       "category": "signing",
       "message": "no intent.trusted_public_keys pinned; crypto-valid signatures report VALID (unknown key). Pin keys after init or re-sign. Next: pin the current identity via config set (see remediation).",
-      "remediation": "ledgerful config set 'intent.trusted_public_keys=[\"<hex>\"]'\nledgerful doctor --json\nledgerful verify --signatures"
+      "remediation": "ledgerful config set 'intent.trusted_public_keys=[\"<hex>\"]'\nledgerful doctor --json\nledgerful verify --signatures",
+      "sessionPriority": "later"
     },
     {
       "code": "sig-version",
       "severity": "warn",
       "category": "signing",
       "message": "intent.min_sig_version=1 still accepts legacy v1 signatures. N LOCAL row(s) have sig_version < 2. Upgrade with `ledger re-sign --all`, then set min_sig_version=2 to close the downgrade path.",
-      "remediation": "ledgerful ledger re-sign --all --dry-run\nledgerful ledger re-sign --all --yes\nledgerful config set intent.min_sig_version=2\nledgerful verify --signatures"
+      "remediation": "ledgerful ledger re-sign --all --dry-run\nledgerful ledger re-sign --all --yes\nledgerful config set intent.min_sig_version=2\nledgerful verify --signatures",
+      "sessionPriority": "later"
     },
     {
       "code": "PHANTOM_PROMOTED_WITHOUT_VERIFY",
       "severity": "warn",
       "category": "signing",
-      "message": "2 committed row(s) have verification_status=Verified with no bound verification_results row (legacy promote phantoms; forward-only)."
+      "message": "2 committed row(s) have verification_status=Verified with no bound verification_results row (legacy promote phantoms; forward-only).",
+      "sessionPriority": "later"
     },
     {
       "code": "completion-unreachable",
       "severity": "warn",
       "category": "optional",
-      "message": "Completion model unreachable (connection refused)"
+      "message": "Completion model unreachable (connection refused)",
+      "sessionPriority": "now"
     }
   ],
   "environment": {
@@ -131,12 +135,16 @@ Examples:
 
 | Flag / env | Effect |
 |---|---|
-| **(default)** | Expand Block + ActionWarn only; greppable trailer `N hygiene finding(s) collapsed — run doctor --full`. When optional warns exist, the trailer adds `(1 optional warning)` / `(N optional warnings)`; with none, the default string is unchanged. |
+| **(default)** | Expand Block + ActionWarn only; greppable trailer `N hygiene finding(s) collapsed — run doctor --full`. When optional warns exist, the trailer adds `(1 optional warning)` / `(N optional warnings)`; with none, the default string is unchanged. Observe-mode later signing warns (0225) are omitted from the body and get a **separate** deferred trailer — never the hygiene line. |
 | **`doctor --full`** | Expand hygiene too: non-optional **info** under Index Health; **optional** findings under Optional Accelerators. Orthogonal to global `-v` (logging). |
 | **`-q` / `--quiet` or `LEDGERFUL_QUIET=1\|true`** | Via shared `resolve_quiet`: suppress multi-line remediations + **VRAM** footer; keep finding one-liners + hygiene collapse. Does **not** select machine mode. |
-| **`doctor --json`** | Unchanged: schemaVersion **1**, **full** findings always. `full`/`quiet` ignored for JSON content. |
+| **`doctor --json`** | Unchanged: schemaVersion **1**, **full** findings always. `full`/`quiet` ignored for JSON content. Additive `sessionPriority` (`now` \| `later`) on each finding (0225). |
 
 VRAM section: shown under default and `--full`; **suppressed under quiet**.
+
+### `sessionPriority` (0225)
+
+On **observe** + `intent.require_signing = false`, `PHANTOM_PROMOTED_WITHOUT_VERIFY`, `sig-pin`, and `sig-version` are assigned `sessionPriority: later` at emission (CLI `doctor --json` only; omitted from sidecar `doctor-results.json` / change-context `topFindings`). Human default omits those bodies and prints `{n} signing finding(s) deferred (observe) — run doctor --full` — **not** the 0174 hygiene line (`hygiene_count` / Index Health expand stay `is_hygiene` only). Header `warnAction` still counts them (0209); `--full` expands later bodies. Enforce or `require_signing` keeps `now`. `binary-behind-tree` stays `now`. Category / `is_action_critical` / 0138 B7 unchanged.
 
 Agents should keep using **`doctor --json`** as SSOT; human disclosure is for interactive scans.
 

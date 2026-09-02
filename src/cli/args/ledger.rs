@@ -145,6 +145,9 @@ pub enum LedgerCommands {
         /// Intent message for the change
         #[arg(short, long)]
         message: String,
+        /// Bypass pending-entity collision lock (not commit --force verification bypass)
+        #[arg(long)]
+        force: bool,
     },
     /// Finalize and commit a change transaction
     Commit {

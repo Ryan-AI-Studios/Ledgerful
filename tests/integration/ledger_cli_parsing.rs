@@ -66,6 +66,7 @@ fn test_start_success_with_all_args() {
         entity,
         category,
         message,
+        force,
     } = command
     else {
         panic!("expected Start");
@@ -73,6 +74,7 @@ fn test_start_success_with_all_args() {
     assert_eq!(entity, "src/main.rs");
     assert_eq!(category, Category::Bugfix);
     assert_eq!(message, "fix crash");
+    assert!(!force);
 }
 
 #[test]
@@ -139,6 +141,28 @@ fn test_start_accepts_lowercase_canonical() {
 }
 
 #[test]
+fn test_start_force_parses_and_is_distinct_from_required_flags() {
+    let cli = parse_ok(&[
+        "ledgerful",
+        "ledger",
+        "start",
+        "crates/foo",
+        "--category",
+        "FEATURE",
+        "--message",
+        "msg",
+        "--force",
+    ]);
+    let Commands::Ledger { command, .. } = cli.command else {
+        panic!("expected Ledger");
+    };
+    let LedgerCommands::Start { force, .. } = command else {
+        panic!("expected Start");
+    };
+    assert!(force);
+}
+
+#[test]
 fn test_start_rejects_unknown_category() {
     let err = parse_err(&[
         "ledgerful",
@@ -176,6 +200,29 @@ fn test_start_rejects_unknown_category() {
                 || purple.contains("error")
                 || purple.contains("Unknown")),
         "Expected purple reject, got: {purple}"
+    );
+}
+
+#[test]
+fn test_start_help_force_is_collision_not_verification() {
+    let help = parse_err(&["ledgerful", "ledger", "start", "--help"]);
+    let lower = help.to_lowercase();
+    assert!(
+        lower.contains("collision") || lower.contains("pending-entity"),
+        "start --help must describe --force as collision bypass; got: {help}"
+    );
+    assert!(
+        !lower.contains("verification gate"),
+        "start --force must not be described as verification bypass; got: {help}"
+    );
+}
+
+#[test]
+fn test_commit_help_force_is_verification_gate() {
+    let help = parse_err(&["ledgerful", "ledger", "commit", "--help"]);
+    assert!(
+        help.to_lowercase().contains("verification"),
+        "commit --help must describe --force as verification bypass; got: {help}"
     );
 }
 

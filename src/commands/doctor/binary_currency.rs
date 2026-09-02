@@ -7,7 +7,7 @@
 //! Consumer repos (non-engine) stay silent. Runtime HEAD is via gix only —
 //! no `Command::new("git")` at doctor runtime.
 
-use super::finding::{DoctorCategory, DoctorFinding, DoctorSeverity};
+use super::finding::{DoctorCategory, DoctorFinding};
 use std::path::Path;
 
 /// Stable finding code (greppable; distinct from `tool-git`).
@@ -171,13 +171,12 @@ pub fn compose_binary_currency_message(lag: &BinaryCurrencyLag) -> String {
 
 /// Build the single `binary-behind-tree` finding (warn / tools; install remediation).
 pub fn build_binary_behind_tree_finding(lag: &BinaryCurrencyLag) -> DoctorFinding {
-    DoctorFinding {
-        code: BINARY_BEHIND_TREE_CODE.to_string(),
-        severity: DoctorSeverity::Warn,
-        category: DoctorCategory::Tools,
-        message: compose_binary_currency_message(lag),
-        remediation: Some(BINARY_BEHIND_TREE_REMEDIATION.to_string()),
-    }
+    DoctorFinding::warn(
+        BINARY_BEHIND_TREE_CODE,
+        DoctorCategory::Tools,
+        compose_binary_currency_message(lag),
+    )
+    .with_remediation(BINARY_BEHIND_TREE_REMEDIATION)
 }
 
 /// Probe: resolve engine root, gather facts, return finding if lagging.
@@ -217,7 +216,7 @@ pub fn probe_binary_currency(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::commands::doctor::finding::{dashboard_failures, ready_for_publish};
+    use crate::commands::doctor::finding::{DoctorSeverity, dashboard_failures, ready_for_publish};
     use std::fs;
     use tempfile::tempdir;
 

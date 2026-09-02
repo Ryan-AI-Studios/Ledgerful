@@ -6,7 +6,43 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Session briefing (0224):** `ledgerful session --json` is a schemaVersion-1
+  `kind: session` facade (git, ledger pending/`collisions[]`, doctor counts,
+  budgeted change-context with `max_files=5`, bounded non-test hotspots,
+  `impactCache` vs live HEAD). Human default is a 10-line summary that is
+  **not** JSON. Does not rewrite `latest-impact.json`. CLI-only (no MCP tool).
+  Daily 5 argv unchanged. No Cargo bump.
+
+- **Pending entity collision (0223):** `ledger start` refuses with greppable
+  `[Ledgerful] Collision: pending tx {id} owns {entity}` (exit 2, would-block)
+  when a PENDING entity overlaps the new `--entity` or any current dirty path.
+  Overlap is slash-normalized, trailing-`/` trimmed, case-insensitive,
+  component-boundary prefix (`crates/foo` does not match `crates/foo-bar`);
+  slug entities exact-match only. Owner self-collision is intended.
+  `ledger start --force` starts anyway — not the same as `ledger commit
+  --force` (verification gate). No `collisions[]` on `ledger status --json`
+  v1 (0224 `session --json`). No Cargo bump.
+
 ### Changed
+
+- **Doctor observe sessionPriority (0225):** On observe +
+  `intent.require_signing=false`, `PHANTOM_PROMOTED_WITHOUT_VERIFY`,
+  `sig-pin`, and `sig-version` emit additive `sessionPriority: later` on
+  `doctor --json`. Human default omits those bodies and prints
+  `{n} signing finding(s) deferred (observe) — run doctor --full` (not the
+  0174 hygiene trailer). Enforce or `require_signing` keeps `now`.
+  `binary-behind-tree` stays `now`. Sidecar / `topFindings` omit the
+  field. `warnAction` and `is_action_critical` unchanged. No Cargo bump.
+
+- **CLI hotspots default excludes tests/examples (0222):** `ledgerful hotspots`
+  (human + `--json`) ranks production code by dropping test/example/bench
+  paths inside `calculate_hotspots` before max_freq/max_comp. `--include
+  tests` restores the previous unfiltered list. Dashboard `/api/hotspots`
+  and MCP `hotspots` stay unfiltered. JSON `score` is the 0–1 agent unit;
+  `displayScore` is the human ln display. No `scoreUnit` field. No Cargo
+  bump.
 
 - **Winget present-tense honesty (0219):** Installation and
   package-distribution floors stop saying community index 0.2.10 matches
@@ -26,6 +62,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   Scoop manifest templates match GitHub Latest with published sidecar sha256
   hashes. Live tap/bucket remotes already auto-bumped on the release; this
   syncs in-engine templates. No Cargo bump.
+
+### Docs
+
+- **AI-only agent skill (0221):** Tracked `docs/Ledgerful/skill.md` is a short
+  Daily 5 procedure for agents (not a human tutorial). Collision skip;
+  `change-context` does not rewrite `latest-impact.json`. SCIP honesty tokens
+  kept. No CLI change.
 
 ## [0.2.11] - 2026-08-24
 

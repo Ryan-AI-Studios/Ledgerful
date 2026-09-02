@@ -373,12 +373,12 @@ pub struct CommandSurface {
 
 /// Curated list of command names that answer "how do I check repo health /
 /// current state" style questions. Grounded in this repo's own documented
-/// session-start workflow: CLAUDE.md's `ledgerful.before` list and
-/// `.agents/skills/ledgerful/SKILL.md`'s "Default Workflow" both name
+/// session-start workflow: AGENTS.md / CLAUDE.md `ledgerful.before` name
 /// `doctor`, `audit`, and `ledger status` (aliased at the top level as
-/// `status`) as the canonical repo-health/session-start commands. Only the
-/// *names* are hardcoded here; the descriptions shown to the user are always
-/// looked up live from `build_command_corpus()` below, never duplicated here.
+/// `status`). The AI-only skill (`docs/Ledgerful/skill.md`) Daily 5 is a
+/// subset (no audit). Only the *names* are hardcoded here; the descriptions
+/// shown to the user are always looked up live from `build_command_corpus()`
+/// below, never duplicated here.
 const REPO_HEALTH_COMMANDS: &[&str] = &["doctor", "status", "audit", "ledger status"];
 
 /// Recursively flattens the active clap `Command` tree (built from `Cli`,

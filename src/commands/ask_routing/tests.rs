@@ -432,6 +432,59 @@ fn test_daily5_skill_sot_contains_five_argv_substrings() {
 }
 
 #[test]
+fn test_daily5_skill_sot_is_ai_only_procedure() {
+    // 0221: tracked skill is an AI-only Daily 5 card, not a product brochure.
+    let skill = include_str!("../../../docs/Ledgerful/skill.md");
+    for banned in [
+        "handleGetUser",
+        "Purpose",
+        "viz-server",
+        "token budgeting",
+        "compiler-grade",
+        "This file is intentionally portable",
+    ] {
+        assert!(
+            !skill.contains(banned),
+            "skill.md must not contain brochure leftover `{banned}`"
+        );
+    }
+    let lower = skill.to_lowercase();
+    assert!(
+        lower.contains("do not ledger start"),
+        "collision skip must say do not ledger start on overlapping pending"
+    );
+    assert!(
+        skill.contains("latest-impact.json"),
+        "skill must name latest-impact.json"
+    );
+    assert!(
+        lower.contains("does not rewrite") || lower.contains("does **not** rewrite"),
+        "skill must state change-context does not rewrite latest-impact.json"
+    );
+
+    let mut fence = 0usize;
+    let mut body_start = 0usize;
+    for (i, line) in skill.lines().enumerate() {
+        if line.trim() == "---" {
+            fence += 1;
+            if fence == 2 {
+                body_start = i + 1;
+                break;
+            }
+        }
+    }
+    let body_lines = skill
+        .lines()
+        .skip(body_start)
+        .filter(|l| !l.trim().is_empty())
+        .count();
+    assert!(
+        body_lines <= 120,
+        "skill body must be ≤120 non-blank lines excluding YAML, got {body_lines}"
+    );
+}
+
+#[test]
 fn test_product_docs_daily5_banner_locked_string() {
     assert_eq!(
         PRODUCT_DOCS_DAILY5_BANNER,

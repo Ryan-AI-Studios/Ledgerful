@@ -11,10 +11,12 @@ pub use binary_currency::{
     worktree_package_version,
 };
 pub use finding::{
-    DoctorCategory, DoctorFinding, DoctorSeverity, DoctorSummary, dashboard_failures,
-    ready_for_publish, summarize,
+    DoctorCategory, DoctorFinding, DoctorSeverity, DoctorSummary, SessionPriority,
+    dashboard_failures, ready_for_publish, summarize,
 };
-pub(crate) use finding::{is_action_critical, is_hygiene, split_doctor_warns};
+pub(crate) use finding::{
+    is_action_critical, is_hygiene, is_observe_signing_later_code, split_doctor_warns,
+};
 pub use remediation::{
     ContentHashDriftInputs, GraphAgeInputs, GraphIndexHealth, SearchDocsClassification,
     build_graph_content_stale_finding, build_graph_drift_check_failed_finding,
@@ -285,6 +287,8 @@ pub fn execute_doctor(
             .then(a.severity.as_str().cmp(b.severity.as_str()))
     });
 
+    assign_session_priorities(&mut findings, &config);
+
     let counts = summarize(&findings);
     let split = split_doctor_warns(&findings);
     debug_assert_eq!(split.total, counts.warn);
@@ -360,6 +364,25 @@ pub fn execute_doctor(
     }
 
     Ok(())
+}
+
+/// Derive `sessionPriority` from live gate/intent (0225).
+///
+/// `later` only when observe AND `intent.require_signing == false` AND the
+/// code is one of the three signing-hygiene codes. Enforce or require_signing
+/// keeps `now`. Config-relative — do not persist on the sidecar.
+pub(crate) fn assign_session_priorities(
+    findings: &mut [DoctorFinding],
+    config: &crate::config::model::Config,
+) {
+    let later_eligible = config.gate.is_observe() && !config.intent.require_signing;
+    for f in findings.iter_mut() {
+        f.session_priority = if later_eligible && is_observe_signing_later_code(&f.code) {
+            SessionPriority::Later
+        } else {
+            SessionPriority::Now
+        };
+    }
 }
 
 /// Join embed/completion handles after local probes (0143). Lives on the
@@ -482,6 +505,8 @@ fn apply_joined_network_probes(
 /// `findings[]`, which includes `category`). Severity-first re-sort (block
 /// before warn, then code, then message) before cap 5. Optional
 /// `remediation` when present (never null).
+/// **`sessionPriority` is omitted** (0225): config-relative; a persisted
+/// `later` would lie after a gate/intent flip. CLI `doctor --json` includes it.
 ///
 /// Legacy `results: [{passed}]` array shape is accepted on read only (writers
 /// no longer emit it).

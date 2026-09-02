@@ -26,9 +26,10 @@ on stderr.
 
 | Command | Has `--json` | Pure success stderr | Notes |
 |---|---|---|---|
-| `doctor --json` | yes | yes | schemaVersion 1 findings; additive `environment.githubLatest` (0205); schemaVersion stays 1. Sidecar `doctor-results.json` does **not** include `githubLatest` |
+| `doctor --json` | yes | yes | schemaVersion 1 findings; additive `environment.githubLatest` (0205); additive per-finding `sessionPriority` `now`\|`later` (0225, emission-only). schemaVersion stays 1. Sidecar `doctor-results.json` does **not** include `githubLatest` or `sessionPriority` |
 | `release pins --json` (bare `release --json`) | yes (0201) | yes | schemaVersion 1 object `kind: "releasePins"`; exit **0** match / **1** drift / **2** skipped or unverified. Parent `--json` (T18). Not Daily 5 |
 | `change-context --json` | yes | yes | impact-shaped packet |
+| `session --json` | yes (0224) | yes | schemaVersion 1 object `kind: "session"`; human default is **not** JSON. Does not rewrite `latest-impact.json`. `collisions[]` lives here (not status v1). No `warnAction`. CLI-only |
 | `ledger status --json` | yes | yes | schemaVersion 1 |
 | `status --json` | yes (0149) | yes | **same payload** as `ledger status --json` |
 | `search --json` | yes | yes | 0136 envelope; empty results OK |
@@ -37,7 +38,7 @@ on stderr.
 | `index --semantic --json` | yes (0161) | yes | One final JSON object (`schemaVersion`, `mode`, `reason`, counts, `upToDate`); zero human mid-run lines on stdout |
 | `index --json` (main / `--auto-scip` / `--scip`) | yes | yes* | Merged index stats object; top-level **`scip`** (0157/0166): `status`, `edges_added`/`edges_updated`, `definitions_mapped`/`definitions_seen`, `files_skipped`, skip/recovery tallies (`edges_skipped_enclosing_disagreement`, `edges_recovered_nest_prefer`, `edges_skipped_unmapped`, `edges_skipped_invalid_occ_range`, `edges_skipped_duplicate`, `definitions_skipped_invalid_range`, `invalid_enclosing_fallback`), `references_seen`, optional `message`. On Success skip/recovery fields are always present (incl. 0). WARN summary for disagreement/invalid-range is **stderr** only (O(1)); not part of the JSON payload |
 | `dead-code --json` | yes (0149) | yes | schemaVersion 1 envelope; see rejected combos |
-| `hotspots --json` | yes | yes | schemaVersion 1 object; collection `files`; list and `--semantic` echo `limit` (0207). **MCP `hotspots` stays an in-process array** |
+| `hotspots --json` | yes | yes | schemaVersion 1 object; collection `files`; list and `--semantic` echo `limit` (0207). CLI default list omits test/example/bench paths (0222; `--include tests` restores). **`score` is 0–1**; `displayScore` is ln display. No `scoreUnit`. **MCP `hotspots` stays an in-process array** and stays unfiltered |
 | `hotspots trend --json` | yes (0151) | yes | schemaVersion 1; modes summary/full/entity; see schema below |
 | `endpoints --json` | yes | yes | schemaVersion 1 object; collection `results` (0207). MCP `endpoints_changed` re-execs CLI and rides this envelope |
 | `symbols --json` | yes (0163) | yes | schemaVersion **1** inventory; path/changed/kind/pub filters; COUNT-backed `totalMatching`; optional `indexStatus`; see schema below |
@@ -672,7 +673,7 @@ field names stay command-specific (`results` / `impacted` / `files` /
 | `observability coverage --json` | `results` | Item `slo_count` / `metric_count` stay snake |
 | `data-models list --json` | `models` | Item `file_path` stays snake |
 | `data-models impact --json` | `impacted` | |
-| `hotspots --json` (list + `--semantic`) | `files` | List and `--semantic` echo `limit`. No `truncated` (no extra overfetch) |
+| `hotspots --json` (list + `--semantic`) | `files` | List and `--semantic` echo `limit`. No `truncated` (no extra overfetch). CLI default omits test/example/bench paths; `--include tests` is the unfiltered audit view (0222). Item `score` is 0–1 (`f_norm × c_norm`); `displayScore` is `ln_1p(score × 1000)` for humans. AI-T252 must pin `score`, not `displayScore`. No `scoreUnit` key. |
 | `ci diff --json` / `ci list --json` | `gates` | Empty catalog: `gates: []`, `resultCount: 0`, **no** `emptyReason` |
 | `tests --json` (mapped) | `mappings` | Additive `resolvedPath` (omit when none); empty arms use the helper |
 
@@ -682,7 +683,18 @@ No top-level `kind` on this helper (0180 `kind` is gitScan-only).
 
 **MCP honesty:** `endpoints_changed` text is the CLI envelope (re-exec
 `endpoints --changed --json`). MCP `hotspots` is in-process and **remains a
-hotspot array** — do not parse it as `{files:[…]}`.
+hotspot array** — do not parse it as `{files:[…]}`. MCP and `/api/hotspots`
+stay **unfiltered** (0222); only the CLI list/JSON list default excludes
+tests/examples/benches.
+
+### `hotspots --json` `files[]` score units (0222)
+
+| Field | Unit | Consumer |
+|---|---|---|
+| `score` | 0–1 (`f_norm × c_norm`) | Agents — pin this (AI-T252) |
+| `displayScore` | ln display (`ln_1p(score × 1000)`) | Human table / dashboard |
+
+Do **not** add a third score field. SchemaVersion stays 1.
 
 ---
 
@@ -1017,6 +1029,53 @@ ledgerful change-context --json --detail minimal --max-files 5
 ledgerful change-context --json --base-ref HEAD~1
 ledgerful change-context --json --paths src/impact/analysis/temporal.rs
 ledgerful change-context --json --include-governance
+```
+
+---
+
+## `session --json` schema (v1)
+
+Track **0224**. One-shot agent briefing. Human `ledgerful session` is a 10-line
+summary that **must not** parse as JSON. Agents pass `--json`. Does **not**
+rewrite `latest-impact.json`. CLI-only (MCP registry is not one-file additive).
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "session",
+  "git": { "branch": "", "head": "", "dirtyCount": 0, "dirtyPaths": [] },
+  "ledger": { "workRoot": "", "pendingCount": 0, "pending": [], "unauditedDrift": 0, "collisions": [] },
+  "doctor": { "readyForPublish": true, "block": 0, "warn": 0, "info": 0 },
+  "changeContext": {
+    "status": "empty",
+    "riskLevel": "low",
+    "readSetCapped": false,
+    "readSetTotalCandidates": 0,
+    "readSet": []
+  },
+  "hotspots": { "files": [], "excludedTests": true },
+  "impactCache": { "present": false, "validForHead": false, "treeClean": false },
+  "next": ["ledgerful change-context --json"]
+}
+```
+
+| Field | Notes |
+|---|---|
+| `schemaVersion` | number **1** |
+| `kind` | `"session"` |
+| `git.dirtyPaths` | cap 5; `dirtyCount` is the true total |
+| `ledger.collisions` | 0223 `pending_entity_overlap` vs dirty paths; `[]` when none. **Not** on status v1 |
+| `doctor` | sidecar `block`/`warn`/`info` + `readyForPublish`. **No** `warnAction`. Per-finding `sessionPriority` stays on `doctor --json` |
+| `changeContext.readSetCapped` / `readSetTotalCandidates` | pass-through from `build_change_context` with `max_files=5` (not a post-slice of a 20-file packet) |
+| `hotspots.files` | limit 5, `exclude_test_paths: true`, git walk `commits ≤ min(config, 50)`, `days: 30` |
+| `impactCache` | new HEAD comparator: None → all false; Packet → `present`, `treeClean=false`, `validForHead` iff packet head equals live HEAD; CleanTree → `present`, `treeClean=true`, `validForHead` iff tombstone head equals live HEAD |
+| `next` | sorted deterministic strings (change-context `next_actions` idiom plus cache/collision notes) |
+
+When `validForHead` is false, do not read `.ledgerful/reports/latest-impact.json`.
+
+```powershell
+ledgerful session
+ledgerful session --json
 ```
 
 ---

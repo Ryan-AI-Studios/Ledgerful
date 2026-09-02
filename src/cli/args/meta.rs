@@ -44,6 +44,7 @@ impl Commands {
             }
             Commands::Impact(ImpactArgs { json, .. }) => *json,
             Commands::ChangeContext(ChangeContextArgs { json, .. }) => *json,
+            Commands::Session(SessionArgs { json }) => *json,
             Commands::Index(IndexArgs { json, .. }) => *json,
             Commands::Search(SearchCliArgs {
                 json, json_lines, ..
@@ -207,6 +208,7 @@ impl Commands {
             Commands::Scan(ScanArgs { .. }) => "scan",
             Commands::Impact(ImpactArgs { .. }) => "impact",
             Commands::ChangeContext(ChangeContextArgs { .. }) => "change_context",
+            Commands::Session(SessionArgs { .. }) => "session",
             Commands::Index(IndexArgs { .. }) => "index",
             Commands::Search(SearchCliArgs { .. }) => "search",
             Commands::Hotspots { args } => match &args.command {
@@ -423,6 +425,11 @@ impl Commands {
                 }
                 if *include_governance {
                     f.push("include_governance");
+                }
+            }
+            Commands::Session(SessionArgs { json }) => {
+                if *json {
+                    f.push("json");
                 }
             }
             Commands::Scan(ScanArgs {
@@ -787,6 +794,9 @@ impl Commands {
                 if args.snapshot {
                     f.push("snapshot");
                 }
+                if args.include.is_some() {
+                    f.push("include");
+                }
                 match &args.command {
                     Some(HotspotSubcommands::Trend {
                         entity,
@@ -965,10 +975,13 @@ impl Commands {
                 }
             }
             Commands::Ledger { command } => match command {
-                LedgerCommands::Start { .. } => {
+                LedgerCommands::Start { force, .. } => {
                     // category/message/entity are values — names only via presence of required flags.
                     f.push("category");
                     f.push("message");
+                    if *force {
+                        f.push("force");
+                    }
                 }
                 LedgerCommands::Commit {
                     tx_id,
@@ -1945,6 +1958,16 @@ mod machine_output_tests {
         assert!(parse(&["index", "--check", "--json"]).is_machine_output());
         assert!(parse(&["timings", "--json"]).is_machine_output());
         assert!(parse(&["hotspots", "--json"]).is_machine_output());
+        match parse(&["hotspots", "--include", "tests"]) {
+            Commands::Hotspots { args } => {
+                assert_eq!(args.include, Some(crate::cli::HotspotIncludeScope::Tests));
+            }
+            other => panic!("expected hotspots, got {other:?}"),
+        }
+        assert!(
+            Cli::try_parse_from(["ledgerful", "hotspots", "--include", "nope"]).is_err(),
+            "--include must only accept tests"
+        );
         assert!(parse(&["symbols", "--json"]).is_machine_output());
         assert!(!parse(&["symbols"]).is_machine_output());
         assert_eq!(parse(&["symbols"]).command_name(), "symbols");
@@ -2072,6 +2095,15 @@ mod machine_output_tests {
         let cmd = parse(&["change-context", "--json", "--base-ref", "HEAD~1"]);
         assert!(cmd.is_machine_output());
         assert_eq!(cmd.command_name(), "change_context");
+    }
+
+    #[test]
+    fn session_json_is_machine_output() {
+        assert!(parse(&["session", "--json"]).is_machine_output());
+        assert!(!parse(&["session"]).is_machine_output());
+        assert_eq!(parse(&["session"]).command_name(), "session");
+        assert_eq!(parse(&["session", "--json"]).command_name(), "session");
+        assert_eq!(parse(&["session", "--json"]).argv_shape(), "session|json");
     }
 
     #[test]

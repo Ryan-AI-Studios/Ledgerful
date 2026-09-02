@@ -2,6 +2,10 @@ use crate::common::{DirGuard, git_add_and_commit, setup_git_repo};
 use camino::Utf8Path;
 use ledgerful::commands::index::{IndexArgs, execute_index};
 use ledgerful::commands::init::execute_init;
+use ledgerful::config::load_config;
+use ledgerful::git::repo::open_repo;
+use ledgerful::impact::hotspots::{HotspotQuery, calculate_hotspots};
+use ledgerful::impact::temporal::GixHistoryProvider;
 use ledgerful::state::layout::Layout;
 use ledgerful::state::storage::StorageManager;
 use std::fs;
@@ -112,8 +116,9 @@ fn seed_hotspot_trends(root: &std::path::Path, paths_and_scores: &[(&str, f64)])
     let layout = Layout::new(repo_root);
     let storage = StorageManager::init_with_layout(&layout).unwrap();
     let conn = storage.get_connection();
-    // Recent RFC3339 timestamp so default --days window includes the rows.
-    let recorded_at = "2026-08-01T12:00:00+00:00";
+    // Must stay inside default `hotspots trend --days 30`. A fixed 2026-08-01
+    // stamp aged out on 2026-09-02 (CI: historyAvailable false / totalFiles 0).
+    let recorded_at = chrono::Utc::now().to_rfc3339();
     for (i, (path, score)) in paths_and_scores.iter().enumerate() {
         conn.execute(
             "INSERT INTO hotspot_trends (file_path, score, frequency, complexity, commit_hash, recorded_at) \
@@ -602,5 +607,165 @@ fn test_trend_entity_json_mode_filters_to_path() {
     assert_eq!(
         json["totalFiles"], 1,
         "entity window should report a single file, got: {stdout}"
+    );
+}
+
+fn setup_mixed_hotspot_repo() -> tempfile::TempDir {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+
+    setup_git_repo(root);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::create_dir_all(root.join("tests")).unwrap();
+    fs::create_dir_all(root.join("examples")).unwrap();
+    fs::write(
+        root.join("src/lib.rs"),
+        "pub fn add(a: i32, b: i32) -> i32 { a + b }\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("src/foo.rs"),
+        "pub fn prod() -> i32 { 1 }\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn t() {\n        assert_eq!(super::prod(), 1);\n    }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("tests/foo.rs"),
+        "pub fn big(x: i32) -> i32 {\n    match x {\n        0 => 0,\n        1 => 1,\n        2 => 2,\n        3 => 3,\n        4 => 4,\n        5 => 5,\n        6 => 6,\n        7 => 7,\n        8 => 8,\n        9 => 9,\n        _ => x,\n    }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("examples/x.rs"),
+        "fn main() { println!(\"x\"); }\n",
+    )
+    .unwrap();
+    git_add_and_commit(root, "initial mixed");
+
+    for i in 1..=8 {
+        fs::write(
+            root.join("tests/foo.rs"),
+            format!(
+                "pub fn big(x: i32) -> i32 {{\n    match x {{\n        0 => {i},\n        1 => 1,\n        2 => 2,\n        3 => 3,\n        4 => 4,\n        5 => 5,\n        6 => 6,\n        7 => 7,\n        8 => 8,\n        9 => 9,\n        _ => x,\n    }}\n}}\n"
+            ),
+        )
+        .unwrap();
+        git_add_and_commit(root, &format!("churn tests {i}"));
+    }
+
+    let _guard = DirGuard::new(root);
+    execute_init(false, false).unwrap();
+    execute_index(IndexArgs::default()).unwrap();
+
+    tmp
+}
+
+#[test]
+fn cli_hotspots_default_json_omits_tests_and_examples() {
+    let tmp = setup_mixed_hotspot_repo();
+    let root = tmp.path();
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["hotspots", "--limit", "5", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "CLI failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let files = json["files"].as_array().expect("files array");
+    for f in files {
+        let path = f["path"].as_str().unwrap_or("");
+        assert!(
+            !path.contains("tests/") && !path.contains("examples/"),
+            "default JSON listed test/example path {path}: {stdout}"
+        );
+        assert!(
+            f.get("scoreUnit").is_none(),
+            "must not add scoreUnit: {stdout}"
+        );
+    }
+}
+
+#[test]
+fn cli_hotspots_include_tests_json_can_rank_tests() {
+    let tmp = setup_mixed_hotspot_repo();
+    let root = tmp.path();
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["hotspots", "--limit", "5", "--include", "tests", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "CLI failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("tests/foo.rs") || stdout.contains(r"tests\foo.rs"),
+        "include tests must restore test rows: {stdout}"
+    );
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let files = json["files"].as_array().expect("files array");
+    assert!(
+        files.iter().all(|f| f.get("scoreUnit").is_none()),
+        "must not add scoreUnit: {stdout}"
+    );
+
+    let repo_root = Utf8Path::from_path(root).unwrap();
+    let layout = Layout::new(repo_root);
+    let storage = StorageManager::open_read_only_sqlite_only(&layout).unwrap();
+    let config = load_config(&layout).unwrap_or_default();
+    let repo = open_repo(root).unwrap();
+    let history = GixHistoryProvider::new(&repo);
+    let library = calculate_hotspots(
+        &storage,
+        &history,
+        &HotspotQuery {
+            limit: 5,
+            commits: config.hotspots.max_commits,
+            decay_half_life: config.hotspots.decay_half_life,
+            exclude_test_paths: false,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(files.len(), library.len().min(5));
+    for (cli_row, lib) in files.iter().zip(library.iter()) {
+        let cli_path = cli_row["path"].as_str().unwrap_or("");
+        let lib_path = lib.path.to_string_lossy().replace('\\', "/");
+        assert_eq!(cli_path.replace('\\', "/"), lib_path);
+        let cli_score = cli_row["score"].as_f64().unwrap();
+        assert_eq!(cli_score as f32, lib.score);
+    }
+}
+
+#[test]
+fn cli_hotspots_human_default_footer_when_omitted() {
+    let tmp = setup_mixed_hotspot_repo();
+    let root = tmp.path();
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["hotspots", "--limit", "5"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "CLI failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("test/example files omitted; --include tests"),
+        "human default must print omit footer: {stdout}"
+    );
+    assert!(
+        !stdout.contains("tests/foo.rs"),
+        "human default must not list tests/foo.rs: {stdout}"
     );
 }
