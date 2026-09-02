@@ -5,7 +5,7 @@
 //! deterministic and message/remediation cannot drift.
 
 use super::SIG_PIN_WARNING;
-use super::finding::{DoctorCategory, DoctorFinding, DoctorSeverity};
+use super::finding::{DoctorCategory, DoctorFinding};
 
 /// Build the `sig-pin` finding when `intent.trusted_public_keys` is empty.
 ///
@@ -20,15 +20,14 @@ pub fn build_sig_pin_finding(pub_key_hex: Option<&str>) -> DoctorFinding {
                  ledgerful doctor --json\n\
                  ledgerful verify --signatures"
             );
-            DoctorFinding {
-                code: "sig-pin".to_string(),
-                severity: DoctorSeverity::Warn,
-                category: DoctorCategory::Signing,
-                message: format!(
+            DoctorFinding::warn(
+                "sig-pin",
+                DoctorCategory::Signing,
+                format!(
                     "{SIG_PIN_WARNING} Next: pin the current identity via config set (see remediation)."
                 ),
-                remediation: Some(remediation),
-            }
+            )
+            .with_remediation(remediation)
         }
         None => {
             let remediation = "\
@@ -37,15 +36,14 @@ ledgerful init
 ledgerful doctor --json
 # follow the sig-pin remediation once the public key is readable"
                 .to_string();
-            DoctorFinding {
-                code: "sig-pin".to_string(),
-                severity: DoctorSeverity::Warn,
-                category: DoctorCategory::Signing,
-                message: format!(
+            DoctorFinding::warn(
+                "sig-pin",
+                DoctorCategory::Signing,
+                format!(
                     "{SIG_PIN_WARNING} Local signing identity not found under ~/.ledgerful/keys; complete init/signing before pinning."
                 ),
-                remediation: Some(remediation),
-            }
+            )
+            .with_remediation(remediation)
         }
     }
 }
@@ -100,13 +98,8 @@ ledgerful verify --signatures"
         }
     };
 
-    DoctorFinding {
-        code: "sig-version".to_string(),
-        severity: DoctorSeverity::Warn,
-        category: DoctorCategory::Signing,
-        message,
-        remediation: Some(remediation),
-    }
+    DoctorFinding::warn("sig-version", DoctorCategory::Signing, message)
+        .with_remediation(remediation)
 }
 
 /// Normative human Index Health line when the search index exists but has

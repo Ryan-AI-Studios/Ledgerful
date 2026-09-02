@@ -26,7 +26,7 @@ on stderr.
 
 | Command | Has `--json` | Pure success stderr | Notes |
 |---|---|---|---|
-| `doctor --json` | yes | yes | schemaVersion 1 findings; additive `environment.githubLatest` (0205); schemaVersion stays 1. Sidecar `doctor-results.json` does **not** include `githubLatest` |
+| `doctor --json` | yes | yes | schemaVersion 1 findings; additive `environment.githubLatest` (0205); additive per-finding `sessionPriority` `now`\|`later` (0225, emission-only). schemaVersion stays 1. Sidecar `doctor-results.json` does **not** include `githubLatest` or `sessionPriority` |
 | `release pins --json` (bare `release --json`) | yes (0201) | yes | schemaVersion 1 object `kind: "releasePins"`; exit **0** match / **1** drift / **2** skipped or unverified. Parent `--json` (T18). Not Daily 5 |
 | `change-context --json` | yes | yes | impact-shaped packet |
 | `ledger status --json` | yes | yes | schemaVersion 1 |

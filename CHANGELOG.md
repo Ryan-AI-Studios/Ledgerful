@@ -20,6 +20,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Doctor observe sessionPriority (0225):** On observe +
+  `intent.require_signing=false`, `PHANTOM_PROMOTED_WITHOUT_VERIFY`,
+  `sig-pin`, and `sig-version` emit additive `sessionPriority: later` on
+  `doctor --json`. Human default omits those bodies and prints
+  `{n} signing finding(s) deferred (observe) — run doctor --full` (not the
+  0174 hygiene trailer). Enforce or `require_signing` keeps `now`.
+  `binary-behind-tree` stays `now`. Sidecar / `topFindings` omit the
+  field. `warnAction` and `is_action_critical` unchanged. No Cargo bump.
+
 - **CLI hotspots default excludes tests/examples (0222):** `ledgerful hotspots`
   (human + `--json`) ranks production code by dropping test/example/bench
   paths inside `calculate_hotspots` before max_freq/max_comp. `--include

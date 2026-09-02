@@ -7,7 +7,7 @@
 //! 0201 shipped its own `fetch_latest_pins`; this helper stays doctor-only.
 
 use super::binary_currency::{sha_prefix_equal, shorten_sha_for_display};
-use super::finding::{DoctorCategory, DoctorFinding, DoctorSeverity};
+use super::finding::{DoctorCategory, DoctorFinding};
 use serde::Serialize;
 use std::cmp::Ordering;
 use std::time::Duration;
@@ -282,13 +282,12 @@ pub(crate) fn build_behind_latest_finding(
     running_sha: &str,
     latest: &PublishedLatest,
 ) -> DoctorFinding {
-    DoctorFinding {
-        code: BINARY_BEHIND_LATEST_CODE.to_string(),
-        severity: DoctorSeverity::Warn,
-        category: DoctorCategory::Tools,
-        message: behind_latest_message(running_ver, running_sha, latest),
-        remediation: Some(behind_latest_remediation(&latest.tag)),
-    }
+    DoctorFinding::warn(
+        BINARY_BEHIND_LATEST_CODE,
+        DoctorCategory::Tools,
+        behind_latest_message(running_ver, running_sha, latest),
+    )
+    .with_remediation(behind_latest_remediation(&latest.tag))
 }
 
 pub(crate) fn build_ahead_of_latest_finding(
@@ -296,16 +295,15 @@ pub(crate) fn build_ahead_of_latest_finding(
     running_sha: &str,
     latest: &PublishedLatest,
 ) -> DoctorFinding {
-    DoctorFinding {
-        code: BINARY_AHEAD_OF_LATEST_CODE.to_string(),
-        severity: DoctorSeverity::Info,
-        category: DoctorCategory::Tools,
-        message: ahead_of_latest_message(running_ver, running_sha, latest),
-        remediation: Some(ahead_of_latest_remediation(
-            &latest.tag,
-            &shorten_sha_for_display(&latest.sha),
-        )),
-    }
+    DoctorFinding::info(
+        BINARY_AHEAD_OF_LATEST_CODE,
+        DoctorCategory::Tools,
+        ahead_of_latest_message(running_ver, running_sha, latest),
+    )
+    .with_remediation(ahead_of_latest_remediation(
+        &latest.tag,
+        &shorten_sha_for_display(&latest.sha),
+    ))
 }
 
 fn build_ahead_of_latest_worktree_finding(
@@ -313,16 +311,15 @@ fn build_ahead_of_latest_worktree_finding(
     worktree_sha: &str,
     latest: &PublishedLatest,
 ) -> DoctorFinding {
-    DoctorFinding {
-        code: BINARY_AHEAD_OF_LATEST_CODE.to_string(),
-        severity: DoctorSeverity::Info,
-        category: DoctorCategory::Tools,
-        message: ahead_of_latest_worktree_message(worktree_ver, worktree_sha, latest),
-        remediation: Some(ahead_of_latest_worktree_remediation(
-            &latest.tag,
-            &shorten_sha_for_display(&latest.sha),
-        )),
-    }
+    DoctorFinding::info(
+        BINARY_AHEAD_OF_LATEST_CODE,
+        DoctorCategory::Tools,
+        ahead_of_latest_worktree_message(worktree_ver, worktree_sha, latest),
+    )
+    .with_remediation(ahead_of_latest_worktree_remediation(
+        &latest.tag,
+        &shorten_sha_for_display(&latest.sha),
+    ))
 }
 
 fn skipped() -> LatestClassification {
@@ -466,7 +463,7 @@ pub(crate) fn fetch_github_latest(base_url: &str) -> Result<PublishedLatest, Lat
 mod tests {
     use super::*;
     use crate::commands::doctor::finding::{
-        dashboard_failures, is_action_critical, ready_for_publish,
+        DoctorSeverity, dashboard_failures, is_action_critical, ready_for_publish,
     };
     use crate::commands::doctor::{
         BINARY_BEHIND_TREE_CODE, BINARY_BEHIND_TREE_REMEDIATION, build_binary_behind_tree_finding,

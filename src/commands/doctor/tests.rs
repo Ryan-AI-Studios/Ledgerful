@@ -512,6 +512,12 @@ fn test_write_doctor_results_writes_file() {
             .all(|f| f.get("severity").and_then(|s| s.as_str()) != Some("info")),
         "info must be excluded from findings"
     );
+    for f in findings_arr {
+        assert!(
+            f.get("sessionPriority").is_none(),
+            "sidecar must omit sessionPriority: {f}"
+        );
+    }
 }
 
 #[test]
@@ -1279,4 +1285,126 @@ fn split_brain_silent_when_paths_are_same_file() {
         split_brain_ledger_warning(&layout).is_none(),
         "single-tree layout must not warn"
     );
+}
+
+/// 0225: observe + !require_signing → three codes later; others now.
+#[test]
+fn assign_session_priorities_observe_later_three_codes() {
+    let config = crate::config::model::Config::default();
+    assert!(config.gate.is_observe());
+    assert!(!config.intent.require_signing);
+
+    let mut findings = vec![
+        DoctorFinding::warn(
+            "PHANTOM_PROMOTED_WITHOUT_VERIFY",
+            DoctorCategory::Signing,
+            "phantoms",
+        ),
+        DoctorFinding::warn("sig-pin", DoctorCategory::Signing, "pin"),
+        DoctorFinding::warn("sig-version", DoctorCategory::Signing, "version"),
+        DoctorFinding::warn(
+            "binary-behind-tree",
+            DoctorCategory::Tools,
+            "PATH binary lags tree",
+        ),
+        DoctorFinding::warn("search-empty", DoctorCategory::Index, "empty"),
+    ];
+    assign_session_priorities(&mut findings, &config);
+
+    let later: Vec<&str> = findings
+        .iter()
+        .filter(|f| f.session_priority == SessionPriority::Later)
+        .map(|f| f.code.as_str())
+        .collect();
+    assert_eq!(
+        later,
+        vec!["PHANTOM_PROMOTED_WITHOUT_VERIFY", "sig-pin", "sig-version"]
+    );
+    let behind = findings
+        .iter()
+        .find(|f| f.code == "binary-behind-tree")
+        .expect("behind");
+    assert_eq!(behind.session_priority, SessionPriority::Now);
+    let empty = findings
+        .iter()
+        .find(|f| f.code == "search-empty")
+        .expect("empty");
+    assert_eq!(empty.session_priority, SessionPriority::Now);
+
+    let split = split_doctor_warns(&findings);
+    assert_eq!(split.action, 5, "later signing warns still in warnAction");
+    for f in &findings {
+        if f.code == "sig-pin" || f.code == "sig-version" {
+            assert!(is_action_critical(f));
+            assert!(!is_hygiene(f));
+        }
+    }
+
+    let json = serde_json::to_value(&findings).expect("cli json");
+    let arr = json.as_array().expect("array");
+    assert_eq!(arr[0]["sessionPriority"], "later");
+    assert_eq!(arr[3]["sessionPriority"], "now");
+}
+
+#[test]
+fn assign_session_priorities_enforce_is_now() {
+    let mut config = crate::config::model::Config::default();
+    config.gate.mode = "enforce".to_string();
+    config.intent.require_signing = false;
+    let mut findings = vec![
+        DoctorFinding::warn("sig-pin", DoctorCategory::Signing, "pin"),
+        DoctorFinding::warn("sig-version", DoctorCategory::Signing, "version"),
+        DoctorFinding::warn(
+            "PHANTOM_PROMOTED_WITHOUT_VERIFY",
+            DoctorCategory::Signing,
+            "phantoms",
+        ),
+    ];
+    assign_session_priorities(&mut findings, &config);
+    assert!(
+        findings
+            .iter()
+            .all(|f| f.session_priority == SessionPriority::Now)
+    );
+}
+
+#[test]
+fn assign_session_priorities_require_signing_is_now() {
+    let mut config = crate::config::model::Config::default();
+    assert!(config.gate.is_observe());
+    config.intent.require_signing = true;
+    let mut findings = vec![
+        DoctorFinding::warn("sig-pin", DoctorCategory::Signing, "pin"),
+        DoctorFinding::warn("sig-version", DoctorCategory::Signing, "version"),
+        DoctorFinding::warn(
+            "PHANTOM_PROMOTED_WITHOUT_VERIFY",
+            DoctorCategory::Signing,
+            "phantoms",
+        ),
+        DoctorFinding::warn(
+            "binary-behind-tree",
+            DoctorCategory::Tools,
+            "PATH binary lags tree",
+        ),
+    ];
+    assign_session_priorities(&mut findings, &config);
+    assert!(
+        findings
+            .iter()
+            .all(|f| f.session_priority == SessionPriority::Now)
+    );
+}
+
+#[test]
+fn assign_session_priorities_resets_later_when_enforce() {
+    let mut findings = vec![DoctorFinding::warn(
+        "sig-pin",
+        DoctorCategory::Signing,
+        "pin",
+    )];
+    findings[0].session_priority = SessionPriority::Later;
+    let mut config = crate::config::model::Config::default();
+    config.gate.mode = "enforce".to_string();
+    assign_session_priorities(&mut findings, &config);
+    assert_eq!(findings[0].session_priority, SessionPriority::Now);
 }
