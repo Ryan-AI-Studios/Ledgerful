@@ -116,8 +116,9 @@ fn seed_hotspot_trends(root: &std::path::Path, paths_and_scores: &[(&str, f64)])
     let layout = Layout::new(repo_root);
     let storage = StorageManager::init_with_layout(&layout).unwrap();
     let conn = storage.get_connection();
-    // Recent RFC3339 timestamp so default --days window includes the rows.
-    let recorded_at = "2026-08-01T12:00:00+00:00";
+    // Must stay inside default `hotspots trend --days 30`. A fixed 2026-08-01
+    // stamp aged out on 2026-09-02 (CI: historyAvailable false / totalFiles 0).
+    let recorded_at = chrono::Utc::now().to_rfc3339();
     for (i, (path, score)) in paths_and_scores.iter().enumerate() {
         conn.execute(
             "INSERT INTO hotspot_trends (file_path, score, frequency, complexity, commit_hash, recorded_at) \
