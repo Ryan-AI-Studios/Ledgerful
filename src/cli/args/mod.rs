@@ -93,6 +93,8 @@ Examples:
     Impact(ImpactArgs),
     /// Budgeted agent change packet (impact + doctor + ledger + readSet)
     ChangeContext(ChangeContextArgs),
+    /// One-shot agent session briefing (git + ledger + doctor + change-context + hotspots)
+    Session(SessionArgs),
     /// Index the project for search and discovery
     Index(IndexArgs),
     /// Search the codebase using high-performance regex or semantic search

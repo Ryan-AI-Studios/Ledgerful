@@ -29,6 +29,7 @@ on stderr.
 | `doctor --json` | yes | yes | schemaVersion 1 findings; additive `environment.githubLatest` (0205); additive per-finding `sessionPriority` `now`\|`later` (0225, emission-only). schemaVersion stays 1. Sidecar `doctor-results.json` does **not** include `githubLatest` or `sessionPriority` |
 | `release pins --json` (bare `release --json`) | yes (0201) | yes | schemaVersion 1 object `kind: "releasePins"`; exit **0** match / **1** drift / **2** skipped or unverified. Parent `--json` (T18). Not Daily 5 |
 | `change-context --json` | yes | yes | impact-shaped packet |
+| `session --json` | yes (0224) | yes | schemaVersion 1 object `kind: "session"`; human default is **not** JSON. Does not rewrite `latest-impact.json`. `collisions[]` lives here (not status v1). No `warnAction`. CLI-only |
 | `ledger status --json` | yes | yes | schemaVersion 1 |
 | `status --json` | yes (0149) | yes | **same payload** as `ledger status --json` |
 | `search --json` | yes | yes | 0136 envelope; empty results OK |
@@ -1028,6 +1029,53 @@ ledgerful change-context --json --detail minimal --max-files 5
 ledgerful change-context --json --base-ref HEAD~1
 ledgerful change-context --json --paths src/impact/analysis/temporal.rs
 ledgerful change-context --json --include-governance
+```
+
+---
+
+## `session --json` schema (v1)
+
+Track **0224**. One-shot agent briefing. Human `ledgerful session` is a 10-line
+summary that **must not** parse as JSON. Agents pass `--json`. Does **not**
+rewrite `latest-impact.json`. CLI-only (MCP registry is not one-file additive).
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "session",
+  "git": { "branch": "", "head": "", "dirtyCount": 0, "dirtyPaths": [] },
+  "ledger": { "workRoot": "", "pendingCount": 0, "pending": [], "unauditedDrift": 0, "collisions": [] },
+  "doctor": { "readyForPublish": true, "block": 0, "warn": 0, "info": 0 },
+  "changeContext": {
+    "status": "empty",
+    "riskLevel": "low",
+    "readSetCapped": false,
+    "readSetTotalCandidates": 0,
+    "readSet": []
+  },
+  "hotspots": { "files": [], "excludedTests": true },
+  "impactCache": { "present": false, "validForHead": false, "treeClean": false },
+  "next": ["ledgerful change-context --json"]
+}
+```
+
+| Field | Notes |
+|---|---|
+| `schemaVersion` | number **1** |
+| `kind` | `"session"` |
+| `git.dirtyPaths` | cap 5; `dirtyCount` is the true total |
+| `ledger.collisions` | 0223 `pending_entity_overlap` vs dirty paths; `[]` when none. **Not** on status v1 |
+| `doctor` | sidecar `block`/`warn`/`info` + `readyForPublish`. **No** `warnAction`. Per-finding `sessionPriority` stays on `doctor --json` |
+| `changeContext.readSetCapped` / `readSetTotalCandidates` | pass-through from `build_change_context` with `max_files=5` (not a post-slice of a 20-file packet) |
+| `hotspots.files` | limit 5, `exclude_test_paths: true`, git walk `commits ≤ min(config, 50)`, `days: 30` |
+| `impactCache` | new HEAD comparator: None → all false; Packet → `present`, `treeClean=false`, `validForHead` iff packet head equals live HEAD; CleanTree → `present`, `treeClean=true`, `validForHead` iff tombstone head equals live HEAD |
+| `next` | sorted deterministic strings (change-context `next_actions` idiom plus cache/collision notes) |
+
+When `validForHead` is false, do not read `.ledgerful/reports/latest-impact.json`.
+
+```powershell
+ledgerful session
+ledgerful session --json
 ```
 
 ---

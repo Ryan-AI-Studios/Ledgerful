@@ -44,6 +44,7 @@ impl Commands {
             }
             Commands::Impact(ImpactArgs { json, .. }) => *json,
             Commands::ChangeContext(ChangeContextArgs { json, .. }) => *json,
+            Commands::Session(SessionArgs { json }) => *json,
             Commands::Index(IndexArgs { json, .. }) => *json,
             Commands::Search(SearchCliArgs {
                 json, json_lines, ..
@@ -207,6 +208,7 @@ impl Commands {
             Commands::Scan(ScanArgs { .. }) => "scan",
             Commands::Impact(ImpactArgs { .. }) => "impact",
             Commands::ChangeContext(ChangeContextArgs { .. }) => "change_context",
+            Commands::Session(SessionArgs { .. }) => "session",
             Commands::Index(IndexArgs { .. }) => "index",
             Commands::Search(SearchCliArgs { .. }) => "search",
             Commands::Hotspots { args } => match &args.command {
@@ -423,6 +425,11 @@ impl Commands {
                 }
                 if *include_governance {
                     f.push("include_governance");
+                }
+            }
+            Commands::Session(SessionArgs { json }) => {
+                if *json {
+                    f.push("json");
                 }
             }
             Commands::Scan(ScanArgs {
@@ -2088,6 +2095,15 @@ mod machine_output_tests {
         let cmd = parse(&["change-context", "--json", "--base-ref", "HEAD~1"]);
         assert!(cmd.is_machine_output());
         assert_eq!(cmd.command_name(), "change_context");
+    }
+
+    #[test]
+    fn session_json_is_machine_output() {
+        assert!(parse(&["session", "--json"]).is_machine_output());
+        assert!(!parse(&["session"]).is_machine_output());
+        assert_eq!(parse(&["session"]).command_name(), "session");
+        assert_eq!(parse(&["session", "--json"]).command_name(), "session");
+        assert_eq!(parse(&["session", "--json"]).argv_shape(), "session|json");
     }
 
     #[test]

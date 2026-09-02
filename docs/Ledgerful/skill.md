@@ -15,6 +15,8 @@ Repo has Ledgerful, or the user asked for impact, blast radius, risk, ledger, ve
 
 Prefer `--json` when parsing. Packet schema: `docs/agent-output-contract.md`. Command sheet: `references/commands.md`.
 
+Optional step 0: `ledgerful session --json` (one-shot briefing; does not replace 1–5; does not rewrite `latest-impact.json`).
+
 | # | Command | Role |
 |---|---|---|
 | 1 | `ledgerful doctor --json` | Env readiness (`readyForPublish`). Skip phantom / sig-pin / v1 ceremony unless the task is signing or `require_signing`. |

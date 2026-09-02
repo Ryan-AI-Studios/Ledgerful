@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Session briefing (0224):** `ledgerful session --json` is a schemaVersion-1
+  `kind: session` facade (git, ledger pending/`collisions[]`, doctor counts,
+  budgeted change-context with `max_files=5`, bounded non-test hotspots,
+  `impactCache` vs live HEAD). Human default is a 10-line summary that is
+  **not** JSON. Does not rewrite `latest-impact.json`. CLI-only (no MCP tool).
+  Daily 5 argv unchanged. No Cargo bump.
+
 - **Pending entity collision (0223):** `ledger start` refuses with greppable
   `[Ledgerful] Collision: pending tx {id} owns {entity}` (exit 2, would-block)
   when a PENDING entity overlaps the new `--entity` or any current dirty path.
