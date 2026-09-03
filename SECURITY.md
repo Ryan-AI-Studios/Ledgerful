@@ -23,7 +23,7 @@ will respond as quickly as we can.
 Choose **one** of these channels:
 
 1. **Email** (preferred): send your report to **security@ledgerful.dev**.
-2. **GitHub Private Vulnerability Reporting:** open the repo's **Security tab â†’
+2. **GitHub Private Vulnerability Reporting:** open the repo's **Security tab →
    "Report a vulnerability"**. This uses GitHub's built-in private advisory
    channel.
 
@@ -41,7 +41,7 @@ Please include as much of the following as you can:
 
 **Do not attach large files, binaries, videos, or scripts directly to your
 email.** Cloudflare Email Routing silently drops oversized or
-attachment-heavy messages â€” your report may vanish without notice. Instead,
+attachment-heavy messages — your report may vanish without notice. Instead,
 upload the PoC to a cloud storage service (Google Drive, Dropbox, S3, etc.)
 with an **unlisted or access-controlled link**, and include the link in your
 report body. For GitHub private reports, attach files directly (GitHub does not
@@ -73,17 +73,17 @@ used to report.
 
 **In scope:**
 
-- The Ledgerful engine (`src/`) â€” CLI commands, web daemon, MCP server, ledger
+- The Ledgerful engine (`src/`) — CLI commands, web daemon, MCP server, ledger
   validation/process runner, sync bundle handling.
 - The Ledgerful GitHub Action.
 - The Ledgerful web frontend (`ledgerful-frontend`) and marketing site
-  (`ledgerful-web`) â€” XSS, auth bypass, data exposure.
-- Cryptographic operations (Ed25519 device keys, ChaCha20-Poly1305 AEAD,
+  (`ledgerful-web`) — XSS, auth bypass, data exposure.
+- Cryptographic operations (Ed25519 device keys, XChaCha20-Poly1305 AEAD,
   Argon2id KDF, session tokens).
 
 **Out of scope:**
 
-- Vulnerabilities in third-party dependencies â€” report those to the upstream
+- Vulnerabilities in third-party dependencies — report those to the upstream
   maintainer. We track dependency advisories via `cargo audit` and `cargo deny`
   and will update affected deps, but the upstream issue is theirs.
 - Self-inflicted issues from running the daemon bound to a non-loopback
@@ -214,7 +214,7 @@ binary itself.
 
 ## Coordination and Disclosure
 
-- We prefer **coordinated disclosure** â€” work with us to fix the issue before
+- We prefer **coordinated disclosure** — work with us to fix the issue before
   publishing details.
 - We will credit researchers in release notes (with permission) unless
   anonymity is requested.

@@ -20,7 +20,7 @@
 
 ### Crypto / auth (`src/ledger/crypto.rs`, `src/sync/crypto.rs`, session-token code, `src/commands/web/auth.rs`)
 - Ed25519 signing/verification uses the vetted crate API correctly; no custom signature logic.
-- ChaCha20-Poly1305 AEAD: unique nonces per message (no reuse), AAD covers what it must,
+- XChaCha20-Poly1305 AEAD: unique nonces per message (no reuse), AAD covers what it must,
   decryption failures are hard-rejected (no partial-plaintext use).
 - Argon2id parameters meet current OWASP guidance (memory/iterations/parallelism).
 - Session token: generated from a CSPRNG, sufficient entropy, compared in **constant time**
