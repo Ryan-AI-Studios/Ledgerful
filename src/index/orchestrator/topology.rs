@@ -340,13 +340,7 @@ pub fn classify_entrypoints(indexer: &mut ProjectIndexer) -> Result<EntrypointSt
 
         let mut sym_vec: Vec<crate::index::symbols::Symbol> = Vec::new();
         for (_, name, kind, is_public, metadata) in symbols {
-            let Some(parsed_kind) = crate::index::symbols::SymbolKind::parse(kind) else {
-                tracing::warn!(
-                    symbol = %name,
-                    kind = %kind,
-                    file = %file_path,
-                    "skipping symbol with unknown kind during entrypoint classification"
-                );
+            let Some(parsed_kind) = symbol_kind_for_entrypoint(kind, name, &file_path) else {
                 continue;
             };
             sym_vec.push(crate::index::symbols::Symbol {
@@ -503,9 +497,31 @@ pub fn infer_services(indexer: &mut ProjectIndexer) -> Result<super::ServiceInde
     })
 }
 
+/// Parse a stored symbol kind for entrypoint classification.
+/// Unknown kinds are skipped with a warning — never defaulted to Function (Q6).
+fn symbol_kind_for_entrypoint(
+    kind: &str,
+    name: &str,
+    file_path: &str,
+) -> Option<crate::index::symbols::SymbolKind> {
+    match crate::index::symbols::SymbolKind::parse(kind) {
+        Some(parsed) => Some(parsed),
+        None => {
+            tracing::warn!(
+                symbol = %name,
+                kind = %kind,
+                file = %file_path,
+                "skipping symbol with unknown kind during entrypoint classification"
+            );
+            None
+        }
+    }
+}
+
 #[cfg(test)]
 mod topology_unwrap_tests {
-    use super::resolve_service_for_path;
+    use super::{resolve_service_for_path, symbol_kind_for_entrypoint};
+    use crate::index::symbols::SymbolKind;
 
     #[test]
     fn topology_resolve_service_for_path_longest_prefix_wins() {
@@ -521,8 +537,18 @@ mod topology_unwrap_tests {
 
     #[test]
     fn topology_unknown_symbol_kind_skipped_not_function() {
-        use crate::index::symbols::SymbolKind;
-        assert!(SymbolKind::parse("NotARealKind").is_none());
-        assert_eq!(SymbolKind::parse("Function"), Some(SymbolKind::Function));
+        assert_eq!(
+            symbol_kind_for_entrypoint("NotARealKind", "mystery", "src/lib.rs"),
+            None,
+            "unknown kind must skip, not become Function"
+        );
+        assert_eq!(
+            symbol_kind_for_entrypoint("Function", "main", "src/lib.rs"),
+            Some(SymbolKind::Function)
+        );
+        assert_ne!(
+            symbol_kind_for_entrypoint("NotARealKind", "mystery", "src/lib.rs"),
+            Some(SymbolKind::Function)
+        );
     }
 }

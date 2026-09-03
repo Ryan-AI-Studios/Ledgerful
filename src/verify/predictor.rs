@@ -517,4 +517,28 @@ mod tests {
         assert!(result.files.is_empty());
         assert!(result.warnings.is_empty());
     }
+
+    #[test]
+    fn predictor_packet_history_load_err_degraded_without_truncate_warning() {
+        let storage = in_memory_storage();
+        storage
+            .get_connection()
+            .execute_batch("PRAGMA foreign_keys = OFF; DROP TABLE snapshots;")
+            .unwrap();
+
+        let mut ctx = predict_ctx(storage);
+        OutcomePredictor::predict(&mut ctx).unwrap();
+        assert!(
+            ctx.warnings
+                .iter()
+                .any(|w| w.contains("Historical prediction degraded")),
+            "missing degraded warning in {:?}",
+            ctx.warnings
+        );
+        assert!(
+            ctx.warnings.iter().all(|w| !is_truncate_warning(w)),
+            "truncation warning must not fire on load error: {:?}",
+            ctx.warnings
+        );
+    }
 }
