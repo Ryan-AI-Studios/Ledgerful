@@ -7,7 +7,7 @@ use crate::commands::web::git_meta::{
 };
 use crate::commands::web::server::git::{current_user, fetch_changes};
 use crate::commands::web::server::health::{compute_health_score, project_status_from_score};
-use crate::commands::web::server::middleware::record_rate_limit;
+use crate::commands::web::server::middleware::{origin_is_loopback, record_rate_limit};
 use crate::commands::web::server::startup::open_ledger_connection;
 use crate::commands::web::state::{AppState, RATE_LIMIT_MAX_KEYS, evaluate_handoff_exchange};
 use crate::commands::web::types::{
@@ -28,10 +28,11 @@ use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use axum::Json;
 use axum::extract::{ConnectInfo, Path, Query, State};
+#[cfg(not(debug_assertions))]
+use axum::http::HeaderValue;
 #[cfg(any(test, debug_assertions))]
 use axum::http::StatusCode;
-#[cfg(not(debug_assertions))]
-use axum::http::{HeaderValue, header};
+use axum::http::{HeaderMap, header};
 use axum::response::{IntoResponse, Response};
 use miette::{Result, miette};
 use serde_json::json;
@@ -91,6 +92,9 @@ pub(crate) async fn session_handler() -> Result<impl IntoResponse, WebError> {
 /// - Wrong code → 403, recorded on `auth_fail_limiter`, **code not burned**
 /// - Match → consume handoff, return `{ "token": "<session>" }`
 ///
+/// Track 0239: if `Origin` is **present** and not loopback → 403. Missing Origin
+/// still succeeds (curl / some same-origin clients).
+///
 /// Never logs the handoff code or session token.
 #[utoipa::path(
     post,
@@ -100,15 +104,22 @@ pub(crate) async fn session_handler() -> Result<impl IntoResponse, WebError> {
     request_body = SessionExchangeRequest,
     responses(
         (status = 200, description = "Handoff accepted; session bearer token returned", body = SessionExchangeResponse),
-        (status = 403, description = "Handoff absent, expired, already consumed, or mismatched"),
+        (status = 403, description = "Handoff absent, expired, already consumed, mismatched, or non-loopback Origin"),
         (status = 429, description = "Auth-failure rate limit exceeded")
     )
 )]
 pub(crate) async fn session_exchange_handler(
     State(state): State<Arc<AppState>>,
     ConnectInfo(addr): ConnectInfo<SocketAddr>,
+    headers: HeaderMap,
     Json(body): Json<SessionExchangeRequest>,
 ) -> Result<impl IntoResponse, WebError> {
+    if let Some(origin) = headers.get(header::ORIGIN)
+        && !origin_is_loopback(origin)
+    {
+        return Err(WebError::Forbidden);
+    }
+
     let ip = addr.ip();
     let path = "/api/session/exchange".to_string();
 

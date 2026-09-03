@@ -79,6 +79,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Loopback CORS headers and exchange Origin (0239):** `local_cors()` allows
+  GET/POST/OPTIONS and `Authorization`/`Content-Type`/`Accept`. `POST
+  /api/session/exchange` returns 403 when `Origin` is present and not
+  loopback; missing Origin is unchanged. No `allow_origin(Any)`. No Cargo
+  bump.
+
 - **Windows DACL on ledger `private.key` (0238):** After each production
   write or successful `private.pem` → `private.key` rename, apply the
   token-file Windows user-only ACL (`icacls /inheritance:r /grant:r` with

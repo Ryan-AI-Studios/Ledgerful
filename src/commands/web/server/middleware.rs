@@ -5,7 +5,7 @@ use crate::commands::web::error::WebError;
 use crate::commands::web::server::csp::PERMISSIONS_POLICY;
 use crate::commands::web::state::{AppState, RATE_LIMIT_MAX_KEYS, RateLimitMap};
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{HeaderValue, header};
+use axum::http::{HeaderValue, Method, header};
 use axum::middleware::Next;
 use axum::response::Response;
 use std::net::{IpAddr, SocketAddr};
@@ -16,21 +16,30 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 /// Restrict CORS to local dashboard origins. The production SPA is served from
 /// the same origin, so this primarily supports the Next.js dev server on
 /// http://localhost:3001 / http://127.0.0.1:3001 and manual local testing.
+///
+/// Standing rule: do not add a new mutating `/api` route without CSRF/Origin
+/// checks (present non-loopback `Origin` is 403; missing Origin is allowed).
 pub(crate) fn local_cors() -> CorsLayer {
-    CorsLayer::new().allow_origin(AllowOrigin::predicate(
-        |origin: &HeaderValue, _parts: &axum::http::request::Parts| {
-            let Ok(text) = origin.to_str() else {
-                return false;
-            };
-            let Ok(uri) = text.parse::<axum::http::Uri>() else {
-                return false;
-            };
-            let Some(authority) = uri.authority() else {
-                return false;
-            };
-            is_loopback_host(authority.host())
-        },
-    ))
+    CorsLayer::new()
+        .allow_origin(AllowOrigin::predicate(
+            |origin: &HeaderValue, _parts: &axum::http::request::Parts| origin_is_loopback(origin),
+        ))
+        .allow_methods([Method::GET, Method::POST, Method::OPTIONS])
+        .allow_headers([header::AUTHORIZATION, header::CONTENT_TYPE, header::ACCEPT])
+}
+
+/// True when `Origin` parses to a loopback host (IPv4, IPv6 `[::1]`, localhost).
+pub(crate) fn origin_is_loopback(origin: &HeaderValue) -> bool {
+    let Ok(text) = origin.to_str() else {
+        return false;
+    };
+    let Ok(uri) = text.parse::<axum::http::Uri>() else {
+        return false;
+    };
+    let Some(authority) = uri.authority() else {
+        return false;
+    };
+    is_loopback_host(authority.host())
 }
 
 pub(crate) fn is_loopback_host(host: &str) -> bool {
@@ -329,6 +338,71 @@ mod tests {
             headers.get(header::STRICT_TRANSPORT_SECURITY).is_none(),
             "daemon must never set Strict-Transport-Security"
         );
+    }
+
+    #[tokio::test]
+    async fn cors_preflight_on_router_with_local_cors_allows_authorization() {
+        use axum::Router;
+        use axum::http::StatusCode;
+        use axum::routing::post;
+        use tokio::net::TcpListener;
+
+        let app = Router::new()
+            .route("/api/session/exchange", post(|| async { "ok" }))
+            .layer(local_cors());
+
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let handle = tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .await
+                .unwrap();
+        });
+
+        let response = reqwest::Client::new()
+            .request(
+                reqwest::Method::OPTIONS,
+                format!("http://{addr}/api/session/exchange"),
+            )
+            .header("Origin", "http://127.0.0.1:3001")
+            .header("Access-Control-Request-Method", "POST")
+            .header(
+                "Access-Control-Request-Headers",
+                "authorization,content-type,accept",
+            )
+            .send()
+            .await
+            .unwrap();
+
+        assert_eq!(
+            response.status(),
+            StatusCode::OK,
+            "preflight on Router + local_cors() must succeed"
+        );
+        let allow_headers = response
+            .headers()
+            .get("access-control-allow-headers")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        assert!(
+            allow_headers.contains("authorization"),
+            "preflight must allow Authorization, got {allow_headers}"
+        );
+        assert!(
+            allow_headers.contains("content-type"),
+            "preflight must allow Content-Type, got {allow_headers}"
+        );
+        assert!(
+            allow_headers.contains("accept"),
+            "preflight must allow Accept, got {allow_headers}"
+        );
+        let acao = response
+            .headers()
+            .get("access-control-allow-origin")
+            .and_then(|v| v.to_str().ok());
+        assert_eq!(acao, Some("http://127.0.0.1:3001"));
+        handle.abort();
     }
 
     #[test]
