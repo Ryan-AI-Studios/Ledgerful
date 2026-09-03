@@ -43,6 +43,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Semgrep digest pin and required-check honesty (0237):** Engine
+  `security.yml` Semgrep job uses job-level `container.image`
+  `semgrep/semgrep:1.168.0@sha256:59fbed6127ea7c5dde3ba6a85142733bb20ea9aaa36120c953904f1539aaf66e`
+  (copied from ledgerful-frontend; Docker inspect not used). Gitleaks
+  digest pin unchanged. Protocol Enforcement lists the seven live
+  protection contexts; Security workflow jobs are not merge gates unless
+  protection is updated. Does not edit `ci.yml` (0241). No Cargo bump.
+
 - **Doctor observe sessionPriority (0225):** On observe +
   `intent.require_signing=false`, `PHANTOM_PROMOTED_WITHOUT_VERIFY`,
   `sig-pin`, and `sig-version` emit additive `sessionPriority: later` on
