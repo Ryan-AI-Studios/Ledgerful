@@ -210,16 +210,22 @@ pub fn get_or_create_keys_in(keys_dir: &Path) -> Result<(SigningKey, VerifyingKe
     // to the canonical name. We only rename when the target does not already
     // exist, so an existing `private.key` is never clobbered. If the rename
     // fails, we fall back to reading from the legacy path for this call so
-    // the user's existing key is never lost.
-    if legacy_priv_path.exists()
-        && !priv_path.exists()
-        && let Err(e) = fs::rename(&legacy_priv_path, &priv_path)
-    {
-        tracing::warn!(
-            "Failed to rename legacy private key {:?} to {:?}: {e}. Reading from legacy path.",
-            legacy_priv_path,
-            priv_path
-        );
+    // the user's existing key is never lost. On success, apply the same
+    // user-only permissions as a fresh write (0238).
+    if legacy_priv_path.exists() && !priv_path.exists() {
+        match fs::rename(&legacy_priv_path, &priv_path) {
+            Ok(()) => {
+                assert_within_state_root(&priv_path, keys_dir)?;
+                restrict_private_key_permissions(&priv_path)?;
+            }
+            Err(e) => {
+                tracing::warn!(
+                    "Failed to rename legacy private key {:?} to {:?}: {e}. Reading from legacy path.",
+                    legacy_priv_path,
+                    priv_path
+                );
+            }
+        }
     }
 
     // Resolve which private-key file to use. Prefer the canonical
@@ -280,17 +286,59 @@ pub fn get_or_create_keys_in(keys_dir: &Path) -> Result<(SigningKey, VerifyingKe
 
         assert_within_state_root(&priv_path, keys_dir)?;
         fs::write(&priv_path, priv_hex)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            let perms = std::fs::Permissions::from_mode(0o600);
-            fs::set_permissions(&priv_path, perms)?;
-        }
+        restrict_private_key_permissions(&priv_path)?;
         assert_within_state_root(&pub_path, keys_dir)?;
         fs::write(&pub_path, pub_hex)?;
 
         Ok((signing_key, verifying_key))
     }
+}
+
+/// Best-effort user-only permissions on `private.key`.
+///
+/// Copied from `commands/web/mod.rs` `restrict_token_file_permissions`
+/// (token-style `USERNAME` `(R,W)` as one argv element, not pid `:F`).
+/// Do **not** DACL `public.pem` (verifying key, not a secret).
+///
+/// Unix: `0600` (fail-closed). Windows: `icacls /inheritance:r /grant:r`
+/// with `{user}:(R,W)`; on failure warn and keep the file.
+fn restrict_private_key_permissions(path: &Path) -> Result<(), CryptoError> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let perms = std::fs::Permissions::from_mode(0o600); // restrict_private_key_unix_0600
+        fs::set_permissions(path, perms)?;
+    }
+    #[cfg(windows)]
+    {
+        // Residual: full Windows ACL APIs are heavier than warranted for
+        // incidental-leak defense. Prefer `icacls` to grant the current user
+        // only; on failure we keep the file and warn (do not claim 0600).
+        if let Ok(user) = std::env::var("USERNAME") {
+            let path_str = path.to_string_lossy();
+            let status = std::process::Command::new("icacls")
+                .args([
+                    path_str.as_ref(),
+                    "/inheritance:r",
+                    "/grant:r",
+                    &format!("{user}:(R,W)"),
+                ])
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status();
+            match status {
+                Ok(s) if s.success() => {}
+                _ => {
+                    tracing::warn!(
+                        "Could not tighten Windows ACL on private key {}; \
+                         file may inherit directory ACLs (same-user TCB residual)",
+                        path.display()
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Read the hex public key from `public.pem` under `keys_dir`, if present.
@@ -872,6 +920,63 @@ enum ChainHeadVerifyError {
 mod tests {
     use super::*;
     use crate::ledger::types::{Category, ChangeType, EntryType};
+
+    #[test]
+    fn unix_key_mode_0600() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("private.key");
+        fs::write(&path, b"test-key-material").unwrap();
+        restrict_private_key_permissions(&path).unwrap();
+        assert!(
+            path.exists(),
+            "helper must keep the file (fail-open on Windows ACL)"
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = fs::metadata(&path).unwrap().permissions().mode() & 0o777;
+            assert_eq!(mode, 0o600, "Unix private.key must be user-only 0600");
+        }
+        #[cfg(not(unix))]
+        {
+            let src = include_str!("crypto.rs");
+            let needle = format!("{}{}", "restrict_private_key_unix_", "0600");
+            assert!(
+                src.contains(&needle),
+                "Unix 0o600 arm must remain in restrict_private_key_permissions"
+            );
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_key_acl_smoke() {
+        let tmp = tempfile::tempdir().unwrap();
+        let path = tmp.path().join("private.key");
+        fs::write(&path, b"test-key-material").unwrap();
+        restrict_private_key_permissions(&path).unwrap();
+        assert!(
+            path.exists(),
+            "fail-open: private.key must remain after ACL attempt"
+        );
+
+        let user = std::env::var("USERNAME").expect("USERNAME is set on Windows");
+        let output = std::process::Command::new("icacls")
+            .arg(&path)
+            .output()
+            .expect("icacls listing");
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let stdout_l = stdout.to_ascii_lowercase();
+        let user_l = user.to_ascii_lowercase();
+        assert!(
+            stdout_l.contains(&user_l),
+            "ACL listing should include current user {user}: {stdout}"
+        );
+        assert!(
+            stdout.contains("(R,W)") || (stdout.contains("(R)") && stdout.contains("(W)")),
+            "ACL listing should show (R,W) grant: {stdout}"
+        );
+    }
 
     #[test]
     fn read_private_key_roundtrip() {
