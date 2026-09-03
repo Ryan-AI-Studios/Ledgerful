@@ -1,6 +1,6 @@
 #[cfg(feature = "mcp")]
 mod tests {
-    use crate::common::setup_git_repo;
+    use crate::common::{git_add_and_commit, setup_git_repo};
     use camino::Utf8Path;
     use std::io::{BufRead, BufReader, Read, Write};
     use std::path::PathBuf;
@@ -38,6 +38,60 @@ mod tests {
                 break;
             }
         }
+    }
+
+    /// Isolated git work root for MCP `search` (always `--auto-index`).
+    /// `run_ledgerful_tool` does not set `.current_dir()`, so the grandchild
+    /// `search` inherits the MCP parent's cwd after `apply_cli_directory`.
+    /// Spawn with both `.current_dir(tmp)` and `-C <tmp>` so UNIQUE
+    /// `project_files.file_path` cannot collide with the engine checkout
+    /// under llvm-cov / mutants baseline.
+    fn hermetic_mcp_search_fixture() -> tempfile::TempDir {
+        let tmp = tempdir().expect("tempdir for hermetic MCP search");
+        setup_git_repo(tmp.path());
+        std::fs::create_dir_all(tmp.path().join("src")).expect("create src/");
+        std::fs::write(tmp.path().join("src/lib.rs"), "pub fn run_server() {}\n")
+            .expect("write src/lib.rs");
+        git_add_and_commit(tmp.path(), "fixture: pub fn run_server");
+        tmp
+    }
+
+    fn spawn_mcp_in_tempdir(tmp: &tempfile::TempDir) -> std::process::Child {
+        let bin_path = get_mcp_binary();
+        Command::new(bin_path)
+            .current_dir(tmp.path())
+            .arg("-C")
+            .arg(tmp.path())
+            .arg("mcp")
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .expect("Failed to spawn ledgerful mcp")
+    }
+
+    fn assert_ledgerful_in_tempdir(tmp: &tempfile::TempDir) {
+        let state = tmp.path().join(".ledgerful");
+        assert!(
+            state.exists(),
+            ".ledgerful must be created inside the tempdir (not process cwd / CI checkout); missing at {}",
+            state.display()
+        );
+    }
+
+    fn assert_search_hit_run_server(response: &serde_json::Value) {
+        let is_error = response["result"]["isError"].as_bool().unwrap_or(false);
+        let text = response["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap_or("(no text)");
+        assert!(
+            !is_error,
+            "search isError must be false (no STALE / no-index green path); body={text}"
+        );
+        assert!(
+            text.contains("run_server"),
+            "search body must contain run_server; body={text}"
+        );
     }
 
     #[test]
@@ -126,19 +180,8 @@ mod tests {
 
     #[test]
     fn test_search_round_trip_and_no_stdout_pollution() {
-        // This test requires a search index. On CI (fresh checkout) the index
-        // may not exist, so skip gracefully if the search tool returns an error
-        // indicating no index.
-        // Since we wired up `ledgerful mcp`, we test through the main CLI.
-        let bin_path = get_mcp_binary();
-
-        let mut child = Command::new(bin_path)
-            .arg("mcp")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("Failed to spawn ledgerful mcp");
+        let tmp = hermetic_mcp_search_fixture();
+        let mut child = spawn_mcp_in_tempdir(&tmp);
 
         let stdin = child.stdin.as_mut().expect("Failed to open stdin");
 
@@ -197,40 +240,14 @@ mod tests {
         let response: serde_json::Value =
             serde_json::from_str(&response_str).expect("Failed to parse JSON response");
         assert_eq!(response["id"], 2);
-
-        assert!(
-            !response["result"]["isError"].as_bool().unwrap_or(false)
-                || response["result"]["content"][0]["text"]
-                    .as_str()
-                    .map(|t| t.contains("no search index")
-                        || t.contains("index not found")
-                        || t.contains("STALE"))
-                    .unwrap_or(false),
-            "Tool returned error: {}",
-            response["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap_or("(no text)")
-        );
-        let text = response["result"]["content"][0]["text"]
-            .as_str()
-            .expect("Expected text content");
-        println!("Search results: {}", text);
-        // We just assert that the search tool returned successfully and gave us text.
-        // It's brittle to assert on specific index contents like "run_server" because the global index might not be up-to-date.
-        assert!(!text.is_empty(), "Search results should not be empty");
+        assert_search_hit_run_server(&response);
+        assert_ledgerful_in_tempdir(&tmp);
     }
 
     #[test]
     fn test_tools_call_standalone() {
-        let bin_path = get_mcp_binary();
-
-        let mut child = Command::new(bin_path)
-            .arg("mcp")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::inherit())
-            .spawn()
-            .expect("Failed to spawn ledgerful mcp");
+        let tmp = hermetic_mcp_search_fixture();
+        let mut child = spawn_mcp_in_tempdir(&tmp);
 
         let stdin = child.stdin.as_mut().expect("Failed to open stdin");
 
@@ -280,15 +297,12 @@ mod tests {
         let response: serde_json::Value =
             serde_json::from_str(&response_str).expect("Failed to parse JSON response");
         assert_eq!(response["id"], 3);
-
-        // The search tool may return an error or empty results if no index
-        // exists in the current working directory (e.g., on a fresh CI
-        // checkout). We only assert that the tool responded with a valid
-        // JSON-RPC result, not that it found anything.
         assert!(
             response["result"].is_object(),
             "Expected result object in response, got: {response}"
         );
+        assert_search_hit_run_server(&response);
+        assert_ledgerful_in_tempdir(&tmp);
     }
 
     #[test]
