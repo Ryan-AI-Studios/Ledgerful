@@ -10,7 +10,7 @@ How Ledgerful reaches package managers. Distribution only — no engine runtime,
 | `cargo binstall --git …` | Engine-ready | `[package.metadata.binstall]` in `Cargo.toml`; uses release assets |
 | Homebrew tap | Live | Formula (CLI), not cask; tap-first (not homebrew-core); auto-bumped on each release |
 | Scoop bucket | Live | 64-bit portable `.zip` only; auto-bumped on each release |
-| winget (`Ledgerful.Ledgerful`) | Live (accepted 2026-07-30) | `winget install Ledgerful.Ledgerful`; community package may lag engine releases; subsequent bumps via SHA-pinned `winget-releaser` |
+| winget (`Ledgerful.Ledgerful`) | Live at **0.2.11** (#423248 merged 2026-08-26) | `winget install Ledgerful.Ledgerful`; `WINGET_TOKEN` is set; subsequent tags bump via SHA-pinned `winget-releaser` |
 | npm (`@ledgerful/mcp-server`) | Live | Independent wrapper version line; engine pin `ledgerfulEngineTag` (downloads release binary on install) |
 | crates.io `cargo install ledgerful` | **Not pursued** for distribution | Heavy native graph; prebuilt path preferred |
 
@@ -184,7 +184,7 @@ On each release, job `bump-manifests` (after `publish`):
 
 **Invariant:** the bump script reads hashes **only** from published `.sha256` files. It never recomputes hashes from archives.
 
-`WINGET_TOKEN` remains an intentional skip when unset (`::notice::` + step summary); that is deliberate when the secret is not configured — package `Ledgerful.Ledgerful` is live on winget, but automated version bumps still need the token.
+`WINGET_TOKEN` **is set**; `winget-releaser` opens version PRs on subsequent tags. If the secret is unset, the job notices (`::notice::` + step summary) and skips — that is a failure mode, not the current ops story. Package `Ledgerful.Ledgerful` is live on winget at **0.2.11**.
 
 ### Local / CI fixture test
 
@@ -208,13 +208,13 @@ scripts/bump-manifests.sh \
 
 ## winget
 
-- Identifier: `Ledgerful.Ledgerful` (accepted 2026-07-30; live on winget)
+- Identifier: `Ledgerful.Ledgerful` (accepted 2026-07-30; live on winget at **0.2.11**)
 - Install: `winget install Ledgerful.Ledgerful`
-- Note: community index still **0.2.10** (`winget search Ledgerful` → 0.2.10 after `winget source update`) while GitHub Latest is **v0.2.11**. Version PR [#423248](https://github.com/microsoft/winget-pkgs/pull/423248) is **OPEN** for 0.2.11 — do **not** claim winget is live at 0.2.11 until search shows it. Leftover [#415913](https://github.com/microsoft/winget-pkgs/pull/415913) (0.2.8) and [#416853](https://github.com/microsoft/winget-pkgs/pull/416853) (0.2.9) remain OPEN (skipped/WDSI) and are not current lag of Latest.
+- Note: community index **0.2.11** — version PR [#423248](https://github.com/microsoft/winget-pkgs/pull/423248) **merged** 2026-08-26. History: leftover [#415913](https://github.com/microsoft/winget-pkgs/pull/415913) (0.2.8) **merged**; [#416853](https://github.com/microsoft/winget-pkgs/pull/416853) (0.2.9) **closed-superseded**. The community index can lag a merge by minutes–hours; do not invent a `winget search` result.
 - Action: `vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e` (tag v2, SHA-pinned)
 - Installer regex: portable `ledgerful-x86_64-pc-windows-msvc.zip`
-- Secret: `WINGET_TOKEN` (PAT that can open PRs against `microsoft/winget-pkgs` via fork)
-- **Version bumps:** subsequent tags use this job when `WINGET_TOKEN` is set.
+- Secret: `WINGET_TOKEN` (PAT that can open PRs against `microsoft/winget-pkgs` via fork) — **is set**
+- **Version bumps:** subsequent tags use this job; `WINGET_TOKEN` is set. If unset, the job notices and skips (failure mode).
 
 ## Secrets checklist
 
