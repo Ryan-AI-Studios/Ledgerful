@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Verify predictor snapshot history cap (0233):** `verify` predict loads at
+  most 64 recent `snapshots` rows (`PREDICTOR_SNAPSHOT_HISTORY_CAP`) via
+  `get_recent_packets`. When history is truncated, warns
+  `packet history truncated to {N} of {M} snapshots`. Scoring formula
+  unchanged. `get_all_packets` stays unbounded. No Cargo bump.
+
 - **Impact docs-mode lead (0227):** `scan --impact --mode docs` (ValueEnum;
   requires `--impact`) plus strict auto-detect when every dirty/`--paths`
   file is documentation-shaped. Human leads with **Actionable (≤5)**;
