@@ -1,6 +1,7 @@
 mod ask;
 mod bridge;
 mod coverage;
+mod doctor;
 mod env;
 mod federation;
 mod gate;
@@ -16,6 +17,7 @@ mod verify;
 pub use self::ask::*;
 pub use self::bridge::*;
 pub use self::coverage::*;
+pub use self::doctor::*;
 pub use self::federation::*;
 pub use self::gate::*;
 pub use self::gemini::*;
@@ -59,6 +61,7 @@ mod tests {
                 .contains(&"target/**".to_string())
         );
         assert_eq!(config.gate.mode, "observe");
+        assert!(config.doctor.acknowledged_codes.is_empty());
     }
 
     #[test]

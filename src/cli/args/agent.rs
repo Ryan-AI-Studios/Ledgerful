@@ -196,10 +196,17 @@ pub struct DoctorArgs {
     #[arg(long)]
     pub json: bool,
     /// Refresh stale Ledgerful marker-bounded hook blocks to current product templates
-    #[arg(long = "apply-hook-refresh")]
+    #[arg(long = "apply-hook-refresh", group = "fix_or_refresh")]
     pub apply_hook_refresh: bool,
-    /// With `--apply-hook-refresh`, report would-refresh without writing
-    #[arg(long = "dry-run")]
+    /// Pin observe-mode signing remediations (keys / min_sig_version / phantom ack).
+    /// Never runs `ledger re-sign --all`. Conflicts with `--apply-hook-refresh`.
+    #[arg(long, conflicts_with = "apply_hook_refresh", group = "fix_or_refresh")]
+    pub fix: bool,
+    /// Confirm `--fix` mutations (non-interactive). Requires `--fix`.
+    #[arg(long, requires = "fix")]
+    pub yes: bool,
+    /// With `--fix` or `--apply-hook-refresh`, report would-apply without writing
+    #[arg(long = "dry-run", requires = "fix_or_refresh")]
     pub dry_run: bool,
     /// Expand collapsed hygiene findings (optional/info) in human output
     #[arg(long)]

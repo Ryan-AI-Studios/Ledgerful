@@ -663,7 +663,7 @@ pub fn hook_template_stale_findings(
     if !stale_labels.is_empty() {
         stale_labels.sort();
         let list = stale_labels.join(", ");
-        findings.push(DoctorFinding::info(
+        findings.push(DoctorFinding::warn(
             "hook-template-stale",
             DoctorCategory::Gate,
             format!(
@@ -1068,7 +1068,7 @@ if command -v ledgerful &>/dev/null; then
     }
 
     #[test]
-    fn stale_findings_info_gate_not_block() {
+    fn stale_findings_warn_gate_not_block() {
         use crate::commands::doctor::{DoctorCategory, DoctorSeverity, ready_for_publish};
 
         let tmp = tempfile::tempdir().unwrap();
@@ -1081,7 +1081,7 @@ if command -v ledgerful &>/dev/null; then
         let findings = hook_template_stale_findings(&root);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].code, "hook-template-stale");
-        assert_eq!(findings[0].severity, DoctorSeverity::Info);
+        assert_eq!(findings[0].severity, DoctorSeverity::Warn);
         assert_eq!(findings[0].category, DoctorCategory::Gate);
         assert!(
             findings[0]

@@ -1384,12 +1384,20 @@ impl Commands {
                 apply_hook_refresh,
                 dry_run,
                 full,
+                fix,
+                yes,
             }) => {
                 if *json {
                     f.push("json");
                 }
                 if *apply_hook_refresh {
                     f.push("apply-hook-refresh");
+                }
+                if *fix {
+                    f.push("fix");
+                }
+                if *yes {
+                    f.push("yes");
                 }
                 if *dry_run {
                     f.push("dry-run");
@@ -2181,11 +2189,15 @@ mod machine_output_tests {
                 apply_hook_refresh,
                 dry_run,
                 full,
+                fix,
+                yes,
             }) => {
                 assert!(!json);
                 assert!(!apply_hook_refresh);
                 assert!(!dry_run);
                 assert!(full);
+                assert!(!fix);
+                assert!(!yes);
             }
             other => panic!("expected Doctor, got {other:?}"),
         }
@@ -2201,6 +2213,53 @@ mod machine_output_tests {
             shape.contains("json"),
             "argv_shape must include json: {shape}"
         );
+    }
+
+    /// 0226 clap matrix: `--fix` / `--yes` / `--dry-run` / hook-refresh.
+    #[test]
+    fn doctor_fix_clap_matrix() {
+        assert!(
+            Cli::try_parse_from(["ledgerful", "doctor", "--dry-run"]).is_err(),
+            "--dry-run requires --fix or --apply-hook-refresh"
+        );
+        assert!(
+            Cli::try_parse_from(["ledgerful", "doctor", "--fix", "--apply-hook-refresh"]).is_err(),
+            "--fix conflicts with --apply-hook-refresh"
+        );
+        assert!(
+            Cli::try_parse_from(["ledgerful", "doctor", "--yes"]).is_err(),
+            "--yes requires --fix"
+        );
+        Cli::try_parse_from(["ledgerful", "doctor", "--fix", "--dry-run"])
+            .expect("--fix --dry-run");
+        Cli::try_parse_from(["ledgerful", "doctor", "--json", "--fix", "--dry-run"])
+            .expect("--json + --fix --dry-run allowed");
+        Cli::try_parse_from(["ledgerful", "doctor", "--apply-hook-refresh", "--dry-run"])
+            .expect("--apply-hook-refresh --dry-run");
+        let json_refresh =
+            Cli::try_parse_from(["ledgerful", "doctor", "--json", "--apply-hook-refresh"]);
+        assert!(
+            json_refresh.is_ok(),
+            "--json + --apply-hook-refresh still parses; execute_doctor rejects"
+        );
+        let cli =
+            Cli::try_parse_from(["ledgerful", "doctor", "--fix", "--yes"]).expect("--fix --yes");
+        match cli.command {
+            Commands::Doctor(DoctorArgs {
+                fix, yes, dry_run, ..
+            }) => {
+                assert!(fix);
+                assert!(yes);
+                assert!(!dry_run);
+            }
+            other => panic!("expected Doctor, got {other:?}"),
+        }
+        let shape = Cli::try_parse_from(["ledgerful", "doctor", "--fix", "--dry-run"])
+            .unwrap()
+            .command
+            .argv_shape();
+        assert!(shape.contains("fix"), "{shape}");
+        assert!(shape.contains("dry-run"), "{shape}");
     }
 
     #[test]

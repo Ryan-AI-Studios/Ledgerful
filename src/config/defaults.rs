@@ -94,6 +94,11 @@ min_sig_version = 1
 [gate]
 mode = "observe"
 
+# [doctor]
+# Finding codes whose human bodies are suppressed (0226). Sorted. Stale
+# codes (no finding this run) are inert — no GC.
+# acknowledged_codes = []
+
 [bridge]
 # Master switch for the Ledgerful data-interchange bridge. Default is false.
 # When false, Ledgerful performs zero implicit bridge activity (no IPC, no

@@ -26,7 +26,7 @@ on stderr.
 
 | Command | Has `--json` | Pure success stderr | Notes |
 |---|---|---|---|
-| `doctor --json` | yes | yes | schemaVersion 1 findings; additive `environment.githubLatest` (0205); additive per-finding `sessionPriority` `now`\|`later` (0225, emission-only). schemaVersion stays 1. Sidecar `doctor-results.json` does **not** include `githubLatest` or `sessionPriority` |
+| `doctor --json` | yes | yes | schemaVersion 1 findings; additive `environment.githubLatest` (0205); additive per-finding `sessionPriority` `now`\|`later` (0225, emission-only); additive per-finding `acknowledged` / `acknowledgedAt` (0226). schemaVersion stays 1. Sidecar `doctor-results.json` does **not** include `githubLatest`, `sessionPriority`, `acknowledged`, or `acknowledgedAt` |
 | `release pins --json` (bare `release --json`) | yes (0201) | yes | schemaVersion 1 object `kind: "releasePins"`; exit **0** match / **1** drift / **2** skipped or unverified. Parent `--json` (T18). Not Daily 5 |
 | `change-context --json` | yes | yes | impact-shaped packet |
 | `session --json` | yes (0224) | yes | schemaVersion 1 object `kind: "session"`; human default is **not** JSON. Does not rewrite `latest-impact.json`. `collisions[]` lives here (not status v1). No `warnAction`. CLI-only |
@@ -176,9 +176,11 @@ These reject rather than emit empty stdout under machine mode.
 | Combo | Error |
 |---|---|
 | `doctor --json --apply-hook-refresh` | `doctor --json cannot be combined with --apply-hook-refresh` |
+| `doctor --fix` (no `--yes` / `--dry-run`) | `doctor --fix requires --yes or --dry-run` |
+| `doctor --dry-run` (no `--fix` / `--apply-hook-refresh`) | clap: `--dry-run` requires `--fix` or `--apply-hook-refresh` |
+| `doctor --fix --apply-hook-refresh` | clap: `--fix` conflicts with `--apply-hook-refresh` |
 
-Apply is always a human path (rewrites `.git/hooks` under opt-in). Detect-only
-`doctor --json` remains pure schema-v1 findings JSON.
+`--json --fix --dry-run` is allowed (additive top-level `fix` plan; schemaVersion stays 1). Apply is always a human path for hooks (rewrites `.git/hooks` under opt-in). Detect-only `doctor --json` remains pure schema-v1 findings JSON.
 
 ### Rejected flag combinations (`dead-code --json`)
 
@@ -1065,7 +1067,7 @@ rewrite `latest-impact.json`. CLI-only (MCP registry is not one-file additive).
 | `kind` | `"session"` |
 | `git.dirtyPaths` | cap 5; `dirtyCount` is the true total |
 | `ledger.collisions` | 0223 `pending_entity_overlap` vs dirty paths; `[]` when none. **Not** on status v1 |
-| `doctor` | sidecar `block`/`warn`/`info` + `readyForPublish`. **No** `warnAction`. Per-finding `sessionPriority` stays on `doctor --json` |
+| `doctor` | sidecar `block`/`warn`/`info` + `readyForPublish`. **No** `warnAction`. Per-finding `sessionPriority` / `acknowledged` stay on `doctor --json` |
 | `changeContext.readSetCapped` / `readSetTotalCandidates` | pass-through from `build_change_context` with `max_files=5` (not a post-slice of a 20-file packet) |
 | `hotspots.files` | limit 5, `exclude_test_paths: true`, git walk `commits ≤ min(config, 50)`, `days: 30` |
 | `impactCache` | new HEAD comparator: None → all false; Packet → `present`, `treeClean=false`, `validForHead` iff packet head equals live HEAD; CleanTree → `present`, `treeClean=true`, `validForHead` iff tombstone head equals live HEAD |

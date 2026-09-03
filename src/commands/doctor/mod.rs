@@ -2,6 +2,7 @@ mod binary_currency;
 mod binary_latest;
 mod checks;
 mod finding;
+mod fix;
 mod remediation;
 
 pub use binary_currency::{
@@ -17,6 +18,7 @@ pub use finding::{
 pub(crate) use finding::{
     is_action_critical, is_hygiene, is_observe_signing_later_code, split_doctor_warns,
 };
+pub(crate) use fix::{apply_doctor_fix, format_fix_plan_lines, plan_doctor_fix};
 pub use remediation::{
     ContentHashDriftInputs, GraphAgeInputs, GraphIndexHealth, SearchDocsClassification,
     build_graph_content_stale_finding, build_graph_drift_check_failed_finding,
@@ -61,6 +63,18 @@ pub(crate) use checks::llm::{
 #[cfg(test)]
 pub(crate) use checks::optional::{chain_checkpoint_practice_finding, collect_scip_findings};
 
+/// Options for [`execute_doctor`] (mapped from clap `DoctorArgs`).
+#[derive(Debug, Clone, Copy, Default)]
+pub struct DoctorRunOpts {
+    pub json: bool,
+    pub apply_hook_refresh: bool,
+    pub dry_run: bool,
+    pub full: bool,
+    pub quiet: bool,
+    pub fix: bool,
+    pub yes: bool,
+}
+
 /// Run doctor health checks.
 ///
 /// When `json` is true, stdout is pure schema-v1 JSON only (no human banners,
@@ -70,19 +84,30 @@ pub(crate) use checks::optional::{chain_checkpoint_practice_finding, collect_sci
 /// `--apply-hook-refresh` rewrites only known Ledgerful marker-bounded product
 /// templates (0121). Cannot be combined with `--json`.
 ///
+/// `--fix` pins keys / acks phantom / bumps `min_sig_version` when LOCAL rows
+/// are already ≥2. Never runs `ledger re-sign --all`. Requires `--yes` or
+/// `--dry-run`. Conflicts with `--apply-hook-refresh`.
+///
 /// Human profile (0174): `full` expands hygiene (optional/info); `quiet`
 /// suppresses multi-line remediations and the VRAM footer.
-pub fn execute_doctor(
-    json: bool,
-    apply_hook_refresh: bool,
-    dry_run: bool,
-    full: bool,
-    quiet: bool,
-) -> Result<()> {
+pub fn execute_doctor(opts: DoctorRunOpts) -> Result<()> {
+    let DoctorRunOpts {
+        json,
+        apply_hook_refresh,
+        dry_run,
+        full,
+        quiet,
+        fix,
+        yes,
+    } = opts;
+
     if json && apply_hook_refresh {
         return Err(miette::miette!(
             "doctor --json cannot be combined with --apply-hook-refresh"
         ));
+    }
+    if fix && !yes && !dry_run {
+        return Err(miette::miette!("doctor --fix requires --yes or --dry-run"));
     }
 
     let doctor_started = std::time::Instant::now();
@@ -291,6 +316,48 @@ pub fn execute_doctor(
     });
 
     assign_session_priorities(&mut findings, &config);
+    apply_acknowledgements(&mut findings, &config);
+
+    let fix_plan = if fix {
+        let pub_hex = crate::ledger::crypto::keys_dir_path()
+            .ok()
+            .and_then(|keys_dir| {
+                crate::ledger::crypto::read_public_key_hex(&keys_dir)
+                    .ok()
+                    .flatten()
+            });
+        let v1_count =
+            checks::lifecycle::count_entries_below_sig_version(storage.get_connection(), 2).ok();
+        Some(plan_doctor_fix(
+            &findings,
+            pub_hex.as_deref(),
+            v1_count,
+            dry_run,
+        ))
+    } else {
+        None
+    };
+
+    if let Some(plan) = fix_plan.as_ref() {
+        if dry_run {
+            if !json {
+                for line in format_fix_plan_lines(plan) {
+                    println!("{line}");
+                }
+            }
+        } else if yes {
+            let applied = apply_doctor_fix(&layout, plan)?;
+            if !json {
+                if applied.is_empty() {
+                    println!("No --fix actions.");
+                } else {
+                    for line in applied {
+                        println!("{line}");
+                    }
+                }
+            }
+        }
+    }
 
     let counts = summarize(&findings);
     let split = split_doctor_warns(&findings);
@@ -312,7 +379,7 @@ pub fn execute_doctor(
             json!({"status": "unverified", "running": "unknown", "worktree": "unknown"})
         });
         let duration_ms = doctor_started.elapsed().as_millis() as u64;
-        let body = json!({
+        let mut body = json!({
             "schemaVersion": 1u32,
             "readyForPublish": ready,
             "summary": {
@@ -336,6 +403,9 @@ pub fn execute_doctor(
             },
             "durationMs": duration_ms,
         });
+        if let Some(plan) = fix_plan.as_ref() {
+            body["fix"] = serde_json::to_value(plan).unwrap_or_else(|_| json!(null));
+        }
         let pretty = serde_json::to_string_pretty(&body).into_diagnostic()?;
         println!("{pretty}");
     } else {
@@ -385,6 +455,24 @@ pub(crate) fn assign_session_priorities(
         } else {
             SessionPriority::Now
         };
+    }
+}
+
+/// Mark findings listed in `[doctor] acknowledged_codes` (0226).
+///
+/// Stale acks (code present, finding absent) are inert — no GC, no extra
+/// finding. Does not change `sessionPriority`.
+pub(crate) fn apply_acknowledgements(
+    findings: &mut [DoctorFinding],
+    config: &crate::config::model::Config,
+) {
+    if config.doctor.acknowledged_codes.is_empty() {
+        return;
+    }
+    for f in findings.iter_mut() {
+        if config.doctor.contains(&f.code) {
+            f.acknowledged = true;
+        }
     }
 }
 
@@ -504,6 +592,7 @@ fn apply_joined_network_probes(
 /// `remediation` when present (never null).
 /// **`sessionPriority` is omitted** (0225): config-relative; a persisted
 /// `later` would lie after a gate/intent flip. CLI `doctor --json` includes it.
+/// **`acknowledged` / `acknowledgedAt` are omitted** (0226): same sidecar freeze.
 ///
 /// Legacy `results: [{passed}]` array shape is accepted on read only (writers
 /// no longer emit it).
@@ -523,6 +612,7 @@ fn write_doctor_results(layout: &Layout, findings: &[DoctorFinding]) -> Result<(
             if let Some(ref rem) = f.remediation {
                 obj.insert("remediation".into(), json!(rem));
             }
+            // 0225/0226: omit sessionPriority, acknowledged, acknowledgedAt.
             serde_json::Value::Object(obj)
         })
         .collect();

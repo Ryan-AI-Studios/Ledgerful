@@ -159,7 +159,7 @@ pub fn partition_doctor_findings_for_human(
     let index_health: Vec<_> = findings
         .iter()
         .filter(|f| {
-            if f.session_priority.is_later() && !full {
+            if (f.session_priority.is_later() || f.acknowledged) && !full {
                 false
             } else if is_action_critical(f) {
                 true
@@ -314,7 +314,7 @@ pub(crate) fn print_doctor_report_to(
     if !profile.full {
         let later_count = findings
             .iter()
-            .filter(|f| f.session_priority.is_later())
+            .filter(|f| f.session_priority.is_later() && !f.acknowledged)
             .count();
         if later_count > 0 {
             writeln!(out, "\n{}", format_signing_deferred_trailer(later_count))?;
@@ -1303,7 +1303,7 @@ mod tests {
                 DoctorCategory::Optional,
                 "completion down",
             ),
-            DoctorFinding::info("hook-template-stale", DoctorCategory::Gate, "hooks stale"),
+            DoctorFinding::warn("hook-template-stale", DoctorCategory::Gate, "hooks stale"),
             DoctorFinding::warn("sig-pin", DoctorCategory::Signing, "no keys")
                 .with_remediation("ledgerful config set 'intent.trusted_public_keys=[\"hex\"]'"),
             DoctorFinding::block("tool-git", DoctorCategory::Tools, "git missing"),
@@ -1311,14 +1311,15 @@ mod tests {
         ];
 
         let (index, optional, hygiene) = partition_doctor_findings_for_human(&findings, false);
-        // T1 optional warn + T2 info (gate + optional) collapsed → hygiene_count=3
-        assert_eq!(hygiene, 3);
-        // T3 sig-pin + T4 block expanded
+        // T1 optional warn + T2 info (sccache) collapsed → hygiene_count=2
+        // 0226: hook-template-stale is Warn/Gate → expanded, not hygiene
+        assert_eq!(hygiene, 2);
+        // T3 sig-pin + T4 block + hook-template-stale expanded
         let codes: Vec<&str> = index.iter().map(|f| f.code.as_str()).collect();
         assert!(codes.contains(&"sig-pin"));
         assert!(codes.contains(&"tool-git"));
+        assert!(codes.contains(&"hook-template-stale"));
         assert!(!codes.contains(&"completion-unreachable"));
-        assert!(!codes.contains(&"hook-template-stale"));
         assert!(
             optional.is_empty(),
             "optional findings collapsed by default"
@@ -1327,7 +1328,7 @@ mod tests {
         // T5 --full expands hygiene
         let (index_full, optional_full, hygiene_full) =
             partition_doctor_findings_for_human(&findings, true);
-        assert_eq!(hygiene_full, 3);
+        assert_eq!(hygiene_full, 2);
         let full_index_codes: Vec<&str> = index_full.iter().map(|f| f.code.as_str()).collect();
         assert!(full_index_codes.contains(&"hook-template-stale"));
         assert!(full_index_codes.contains(&"sig-pin"));
@@ -1362,14 +1363,24 @@ mod tests {
             "PATH binary lags tree",
         );
         let hygiene_info =
-            DoctorFinding::info("hook-template-stale", DoctorCategory::Gate, "hooks stale");
+            DoctorFinding::info("sccache-hint", DoctorCategory::Optional, "sccache hint");
+        let hook_stale =
+            DoctorFinding::warn("hook-template-stale", DoctorCategory::Gate, "hooks stale");
 
-        let findings = vec![later_pin, later_ver, later_phantom, behind, hygiene_info];
+        let findings = vec![
+            later_pin,
+            later_ver,
+            later_phantom,
+            behind,
+            hygiene_info,
+            hook_stale,
+        ];
 
         let (index, optional, hygiene) = partition_doctor_findings_for_human(&findings, false);
         assert_eq!(hygiene, 1, "later must not increment hygiene_count");
         let codes: Vec<&str> = index.iter().map(|f| f.code.as_str()).collect();
-        assert_eq!(codes, vec!["binary-behind-tree"]);
+        assert!(codes.contains(&"binary-behind-tree"));
+        assert!(codes.contains(&"hook-template-stale"));
         assert!(optional.is_empty());
         assert!(!codes.contains(&"sig-pin"));
         assert!(!codes.contains(&"sig-version"));
@@ -1405,7 +1416,8 @@ mod tests {
                 DoctorCategory::Tools,
                 "PATH binary lags tree",
             ),
-            DoctorFinding::info("hook-template-stale", DoctorCategory::Gate, "hooks stale"),
+            DoctorFinding::warn("hook-template-stale", DoctorCategory::Gate, "hooks stale"),
+            DoctorFinding::info("sccache-hint", DoctorCategory::Optional, "sccache"),
         ];
 
         let tools: Vec<(String, ExecutableStatus)> = Vec::new();
@@ -1461,7 +1473,8 @@ mod tests {
             "{default}"
         );
         assert!(default.contains("[binary-behind-tree]"), "{default}");
-        assert!(!default.contains("[hook-template-stale]"), "{default}");
+        assert!(default.contains("[hook-template-stale]"), "{default}");
+        assert!(!default.contains("[sccache-hint]"), "{default}");
         assert!(default.contains("warning(s)"), "{default}");
 
         let mut full_buf = Vec::new();
@@ -1482,6 +1495,7 @@ mod tests {
         assert!(full.contains("[PHANTOM_PROMOTED_WITHOUT_VERIFY]"), "{full}");
         assert!(full.contains("[binary-behind-tree]"), "{full}");
         assert!(full.contains("[hook-template-stale]"), "{full}");
+        assert!(full.contains("[sccache-hint]"), "{full}");
         assert!(!full.contains("signing finding(s) deferred"), "{full}");
         assert!(!full.contains("hygiene finding(s) collapsed"), "{full}");
     }
@@ -1491,8 +1505,10 @@ mod tests {
         use crate::commands::doctor::{DoctorCategory, DoctorFinding, summarize};
 
         let findings = vec![
-            DoctorFinding::info("hook-template-stale", DoctorCategory::Gate, "hooks stale"),
+            DoctorFinding::warn("hook-template-stale", DoctorCategory::Gate, "hooks stale"),
             DoctorFinding::info("sccache-hint", DoctorCategory::Optional, "sccache"),
+            DoctorFinding::info("tool-gemini", DoctorCategory::Optional, "gemini"),
+            DoctorFinding::info("scip-rust-missing", DoctorCategory::Optional, "scip"),
         ];
         let tools: Vec<(String, ExecutableStatus)> = Vec::new();
         let report = DoctorReport {
@@ -1529,9 +1545,13 @@ mod tests {
         .expect("write");
         let text = String::from_utf8(buf).expect("utf8");
         assert!(
-            text.contains("2 hygiene finding(s) collapsed — run doctor --full"),
+            text.contains("3 hygiene finding(s) collapsed — run doctor --full"),
             "{text}"
         );
+        assert!(text.contains("[hook-template-stale]"), "{text}");
+        assert!(!text.contains("[sccache-hint]"), "{text}");
+        assert!(!text.contains("[tool-gemini]"), "{text}");
+        assert!(!text.contains("[scip-rust-missing]"), "{text}");
         assert!(!text.contains("signing finding(s) deferred"), "{text}");
         assert!(!text.contains("optional warning"), "{text}");
     }
@@ -1588,6 +1608,152 @@ mod tests {
             quiet: true,
         };
         assert!(!doctor_should_print_remediation(full_quiet.quiet));
+    }
+
+    /// 0226 invert of 0174 hook-template collapse: Warn/Gate is visible by default.
+    #[test]
+    fn doctor_human_hook_template_stale_visible_on_default() {
+        use crate::commands::doctor::{DoctorCategory, DoctorFinding, summarize};
+
+        let findings = vec![
+            DoctorFinding::warn("hook-template-stale", DoctorCategory::Gate, "hooks stale"),
+            DoctorFinding::info("tool-gemini", DoctorCategory::Optional, "gemini"),
+            DoctorFinding::info("scip-rust-missing", DoctorCategory::Optional, "scip"),
+            DoctorFinding::info("sccache-hint", DoctorCategory::Optional, "sccache"),
+            DoctorFinding::warn("impact-stale", DoctorCategory::Index, "impact stale"),
+        ];
+        let (index, _, hygiene) = partition_doctor_findings_for_human(&findings, false);
+        let codes: Vec<&str> = index.iter().map(|f| f.code.as_str()).collect();
+        assert!(codes.contains(&"hook-template-stale"));
+        assert!(codes.contains(&"impact-stale"));
+        assert!(!codes.contains(&"tool-gemini"));
+        assert!(!codes.contains(&"scip-rust-missing"));
+        assert_eq!(hygiene, 3);
+
+        let tools: Vec<(String, ExecutableStatus)> = Vec::new();
+        let report = DoctorReport {
+            platform: "test",
+            shell: "test",
+            tools: &tools,
+            path_display: "test",
+            path_kind: "test",
+            work_root: "test",
+            state_dir: "test/.ledgerful",
+            is_wsl_mounted: false,
+            embedding_model_status: "OK".to_string(),
+            embedding_model_failed: false,
+            completion_model_status: "OK".to_string(),
+            native_graph_status: "Ready".to_string(),
+            active_ask_backend: "test".to_string(),
+            index_health: Vec::new(),
+            target_triple: "test",
+        };
+        let counts = summarize(&findings);
+        let summary = DoctorSummaryCounts {
+            block: counts.block,
+            warn: counts.warn,
+            info: counts.info,
+        };
+        let mut buf = Vec::new();
+        print_doctor_report_to(
+            &mut buf,
+            &report,
+            &summary,
+            &findings,
+            DoctorHumanProfile {
+                full: false,
+                quiet: true,
+            },
+        )
+        .expect("write");
+        let text = String::from_utf8(buf).expect("utf8");
+        assert!(text.contains("[hook-template-stale]"), "{text}");
+        assert!(text.contains("[impact-stale]"), "{text}");
+        assert!(!text.contains("[tool-gemini]"), "{text}");
+        assert!(!text.contains("[scip-rust-missing]"), "{text}");
+    }
+
+    /// 0226 DoD-1 / DoD-4: acked later signing omits bodies and later trailer.
+    #[test]
+    fn doctor_human_acked_signing_omits_bodies_not_later_trailer() {
+        use crate::commands::doctor::{DoctorCategory, DoctorFinding, SessionPriority, summarize};
+
+        fn acked_later(code: &str, msg: &str) -> DoctorFinding {
+            let mut f = DoctorFinding::warn(code, DoctorCategory::Signing, msg);
+            f.session_priority = SessionPriority::Later;
+            f.acknowledged = true;
+            f
+        }
+
+        let findings = vec![
+            acked_later("PHANTOM_PROMOTED_WITHOUT_VERIFY", "phantoms"),
+            acked_later("sig-pin", "no keys"),
+            acked_later("sig-version", "v1 rows"),
+            DoctorFinding::warn(
+                "binary-behind-tree",
+                DoctorCategory::Tools,
+                "PATH binary lags tree",
+            ),
+        ];
+        let tools: Vec<(String, ExecutableStatus)> = Vec::new();
+        let report = DoctorReport {
+            platform: "test",
+            shell: "test",
+            tools: &tools,
+            path_display: "test",
+            path_kind: "test",
+            work_root: "test",
+            state_dir: "test/.ledgerful",
+            is_wsl_mounted: false,
+            embedding_model_status: "OK".to_string(),
+            embedding_model_failed: false,
+            completion_model_status: "OK".to_string(),
+            native_graph_status: "Ready".to_string(),
+            active_ask_backend: "test".to_string(),
+            index_health: Vec::new(),
+            target_triple: "test",
+        };
+        let counts = summarize(&findings);
+        let summary = DoctorSummaryCounts {
+            block: counts.block,
+            warn: counts.warn,
+            info: counts.info,
+        };
+        let mut buf = Vec::new();
+        print_doctor_report_to(
+            &mut buf,
+            &report,
+            &summary,
+            &findings,
+            DoctorHumanProfile {
+                full: false,
+                quiet: true,
+            },
+        )
+        .expect("write");
+        let text = String::from_utf8(buf).expect("utf8");
+        assert!(!text.contains("[sig-pin]"), "{text}");
+        assert!(!text.contains("[sig-version]"), "{text}");
+        assert!(
+            !text.contains("[PHANTOM_PROMOTED_WITHOUT_VERIFY]"),
+            "{text}"
+        );
+        assert!(text.contains("[binary-behind-tree]"), "{text}");
+        assert!(
+            !text.contains("signing finding(s) deferred"),
+            "acked codes must not inflate later trailer: {text}"
+        );
+        let json = serde_json::to_value(&findings).expect("json");
+        for code in ["sig-pin", "sig-version", "PHANTOM_PROMOTED_WITHOUT_VERIFY"] {
+            let row = json
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|v| v["code"] == code)
+                .unwrap_or_else(|| panic!("{code}"));
+            assert_eq!(row["acknowledged"], true);
+            assert_eq!(row["sessionPriority"], "later");
+        }
     }
 
     #[test]
