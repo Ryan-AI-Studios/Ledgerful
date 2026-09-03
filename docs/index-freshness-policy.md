@@ -36,12 +36,25 @@ when installed. That is not user-facing `--auto-index`.
 Doctor’s **Graph state** Index Health line is **age first**, then **content** when
 the age path is non-stale (not never-indexed / not time-stale):
 
-| Age path (`check_index_staleness`) | Content path (`count_content_hash_drift` on repo root) | Graph Index Health |
+| Age path (`check_index_staleness`) | Content path (age-fresh only) | Graph Index Health |
 |---|---|---|
 | Some (never-indexed / age-stale) | **not run** (STOP) | `graph-empty` \| `graph-stale` findings only |
 | None (age-fresh) | dirty (`changed_or_unindexed > 0`) | `graph-content-stale` warn + content-stale health line (**never** success `Current`) |
 | None | clean | `Graph state: Current` (or empty-Cozo analyze-graph hint) |
 | None | Err | `graph-drift-check-failed` warn (**never** `Current`) |
+
+**Doctor content-path budget (0232):** age-fresh doctor uses a **metadata-first**
+walk (`HashBudget::MetadataFirst`). It skips blake3 when stored `content_hash`
+is present **and** live size+mtime match stored `file_size`/`mtime_ns` (exact
+i64 equality via shared `extract_mtime_ns`), **and** when the file is
+unindexed (no stored hash). Blake3 still runs when metadata mismatches or
+`mtime_ns`/`file_size` is NULL (legacy rows). `doctor --full` does **not**
+force a full hash walk — it only uncollapses hygiene findings (0226).
+
+**Byte source of truth** remains `ledgerful index --check` (and
+`try_auto_index`), which always blake3 (`HashBudget::Full`). Residual:
+identical size+mtime with different bytes (`cp -p` / `rsync -a`) will **not**
+fire `graph-content-stale` on the doctor path; `--check` still will.
 
 **Still not the readiness JSON SoT.** `ledgerful index --check --json` remains the
 authoritative content-aware readiness assessment (`ContentStalePopulated`,

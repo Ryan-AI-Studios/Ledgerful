@@ -26,6 +26,7 @@ pub fn index_file(
     let outcome = analyze_file(relative.as_std_path(), indexer.repo_path.as_std_path());
 
     let now = chrono::Utc::now().to_rfc3339();
+    let meta = fs::metadata(path).ok();
     let mut pf = ProjectFile {
         id: None,
         file_path: relative.to_string().replace('\\', "/"),
@@ -35,8 +36,10 @@ pub fn index_file(
             .map(|l| format!("{:?}", l)),
         content_hash: None,
         git_blob_oid: None,
-        file_size: fs::metadata(path).ok().map(|m| m.len() as i64),
-        mtime_ns: None,
+        file_size: meta.as_ref().map(|m| m.len() as i64),
+        mtime_ns: meta
+            .as_ref()
+            .and_then(crate::index::staleness::extract_mtime_ns),
         parser_version: super::PARSER_VERSION.to_string(),
         parse_status: if outcome.analysis_status.symbols
             == crate::impact::packet::AnalysisStatus::Ok
