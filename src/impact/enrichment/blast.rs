@@ -928,8 +928,9 @@ mod tests {
 
     #[test]
     fn blast_resolve_seeds_shared_qn_dedups_and_sorts() {
-        // Two packet symbols share one QN; reuse of the prepared QN statement
-        // must still dedup to one seed and keep (file_path, name, symbol_id) order.
+        // Two `foo` symbols share QN `crate::foo` plus distinct `bar`;
+        // prepared QN reuse must collapse the foos to one seed (len 2 total)
+        // and keep (file_path, name, symbol_id) order.
         let conn = setup_conn();
         let a_f = insert_file(&conn, "src/a.rs");
         let b_f = insert_file(&conn, "src/b.rs");
@@ -982,7 +983,11 @@ mod tests {
         });
 
         let seeds = resolve_seeds(&packet, &conn).unwrap();
-        assert_eq!(seeds.len(), 2, "shared QN must collapse to one seed");
+        assert_eq!(
+            seeds.len(),
+            2,
+            "two foos sharing QN plus bar must collapse to 2 seeds"
+        );
         assert_eq!(seeds[0].symbol_id, foo);
         assert_eq!(seeds[0].name, "foo");
         assert_eq!(seeds[0].file_path, "src/a.rs");
