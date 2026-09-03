@@ -5,9 +5,20 @@ review) should ground “what changed / what to test” **without** a fully writ
 agent checkout — and what they must **not** claim.
 
 Canonical matrix for agent skills (`ledgerful` dual skill, `codex-review`).
-Implementers on a normal writable tree keep the default preflight ladder
-(`doctor` → `audit` → `ledger status` → `change-context`); this doc is the
-**reviewer sibling**.
+Implementers on a normal writable tree keep **Edit / Daily 5** (`doctor` →
+`change-context` → `ledger status` → code `search` → `verify --scope fast`).
+This doc is the **sandbox RO sibling**, not the writable review-only path.
+
+**Writable review-only ≠ Codex `-s read-only`.** A reviewer on a writable tree
+who will not modify product files follows skill **Review-only**: `ledger
+status --compact` required; do **not** mandate `change-context`, `audit`, or
+`scan --impact`. Optional: `session --json` (Class-C-adjacent: soft-open;
+skip on pure-RO write-fail). Optional `doctor --json` only when the tree is
+writable and signing/env matters.
+
+**Pure RO** (Codex `-s read-only`): this matrix. Class C `doctor` stays
+**skip**. Class B already prefers `ledger status` when the DB is readable —
+do not invent a new pure-RO required-set.
 
 ---
 
@@ -21,7 +32,9 @@ Full verify / cargo test / nextest / index rebuild / ledger start|commit
 Independent review in pure RO:
   → git + read tools first; ledgerful optional for grounding if the binary
     and readable state exist.
-  → Prefer change-context / status / audit when they succeed.
+  → Prefer `ledger status` when the DB is readable (Class B). change-context /
+    audit are optional grounding when they succeed — **not** required for
+    writable review-only (no product edits).
   → On storage/write failure: report unavailable — do not invent impact.
 ```
 
@@ -39,7 +52,7 @@ Agent-critical classes only (not every CLI surface):
 |---|---|---|
 | **A — Git-only** | `git status` / `diff` / `log` / `show` | Always available to reviewers |
 | **B — Read-heavy ledgerful** | `ledger status --json` / `--compact`, `audit` | Prefer existing `ledger.db`; RO open when DB present |
-| **C — Write-open today** | `doctor` (**always** write-mode), `change-context` (soft-open when DB exists) | Doctor: create/migrate/WAL + may write `doctor-results.json` (still Class C — **skip on pure RO**). change-context: prefers RO open when `ledger.db` exists; degrades to `not_ready` on RO fail |
+| **C — Write-open today** | `doctor` (**always** write-mode), `change-context` (soft-open when DB exists), `session --json` (optional Class-C-adjacent; soft-open; skip on pure-RO write-fail) | Doctor: create/migrate/WAL + may write `doctor-results.json` (still Class C — **skip on pure RO**). change-context: prefers RO open when `ledger.db` exists; degrades to `not_ready` on RO fail. `session --json`: same soft-open class as change-context — optional one-shot; not a Daily 5 replacement |
 | **D — Explicit write / exec** | `index`, `scan` / `scan --impact` / `impact`, `verify`, `ledger start`/`commit`, `update`, hooks | **Out of RO reviewer path** for durable gates — orchestrator / implementer. Residual (0174): impact / scan(--impact) **soft-open** when `ledger.db` exists and **soft-skip** durable report write under RO (stdout-only + greppable `report write unavailable under RO`); prefer **change-context** for grounding |
 | **E — Network** | embedding/completion probes, cloud ask, npm/uv caches | Sandbox network + cache dirs separate from FS RO |
 
@@ -65,17 +78,27 @@ treat it as convenience, not hard isolation (known confinement caveats).
 ```text
 Independent review:
 
+  Writable review-only (no product edits, tree may be writable):
+                  skill Review-only — status compact required;
+                  change-context / audit / scan --impact not required;
+                  optional session --json (soft-open); optional doctor if writable.
+                  This is NOT the Codex pure-RO ladder below.
+
   Codex pure RO:  codex exec -C <repo> -s read-only …   (native Windows OK)
   Claude:         restricted tools; if Bash sandbox on, cwd is often writable
                   (see host table — not equivalent to Codex pure RO)
 
 1. Scope: git status + git diff (base..HEAD or working tree) — always.
 2. If ledgerful on PATH and .ledgerful (or LEDGERFUL_STATE_DIR → populated) exists:
-   a. ledgerful ledger status --json   # or --compact
-   b. ledgerful audit                  # if provenance matters
-   c. ledgerful change-context --json  # preferred grounding packet (soft-open)
+   a. ledgerful ledger status --json   # or --compact (Class B; prefer when DB readable)
+   b. ledgerful session --json         # optional Class-C-adjacent (soft-open;
+                                       # skip on pure-RO write-fail)
+   c. ledgerful audit                  # optional grounding — not required for
+                                       # writable review-only
+   d. ledgerful change-context --json  # optional grounding packet (soft-open);
+                                       # not required for writable review-only
       optional: --base-ref <merge-base>
-   d. ledgerful doctor --json          # Class C write-mode — SKIP on pure RO
+   e. ledgerful doctor --json          # Class C write-mode — SKIP on pure RO
                                        # unless orchestrator pre-wrote doctor-results.json
                                        # or sandbox is workspace-write / cwd-writable
 3. If change-context fails with RO/permission class: git-only review + note
@@ -145,14 +168,16 @@ review. When a writable implementer (or accidental Class D invoke) runs `impact`
 - Never claim “Wrote impact report” / “impact report refreshed” when skip.
 - Writable trees still write durable reports when write succeeds.
 
-**Reviewers:** prefer **`change-context --json`** for grounding; do not treat
-`scan --impact` as the RO path. Doctor remains Class C (write-open) — skip on pure RO.
+**Reviewers (pure RO):** prefer **`change-context --json`** over `scan --impact`
+when grounding; do not treat scan as the RO path. Writable review-only does
+**not** require change-context. Doctor remains Class C (write-open) — skip on
+pure RO.
 
 ## Related
 
 - This file is the read-only command-matrix SoT (the agent skill no longer duplicates the RO matrix)
-- Agent Daily 5 procedure: [`Ledgerful/skill.md`](Ledgerful/skill.md)
+- Agent Daily 5 / Review-only procedure: [`Ledgerful/skill.md`](Ledgerful/skill.md)
 - `codex-review` skill: orchestrator owns write-class gates
 - Worktree state sharing: [Engineering.md — Git worktrees](Engineering.md#git-worktrees-state-sharing)
-- Default implementer preflight: `docs/Ledgerful/skill.md` Daily 5 + `AGENTS.md` / `Claude.md`
+- Default implementer preflight: `docs/Ledgerful/skill.md` Edit/Daily 5 + `AGENTS.md` / `Claude.md`
 - Human doctor progressive disclosure: [doctor-severity.md](doctor-severity.md)
