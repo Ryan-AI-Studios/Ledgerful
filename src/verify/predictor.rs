@@ -1,6 +1,7 @@
 use crate::impact::packet::ImpactPacket;
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
+use crate::state::storage::packets::{PREDICTOR_SNAPSHOT_HISTORY_CAP, PacketHistory};
 use crate::verify::engine::VerificationContext;
 use crate::verify::predict::{
     PredictionResult, Predictor, StructuralCallData, TestMappingData, enrich_with_semantic,
@@ -40,8 +41,21 @@ impl OutcomePredictor {
         }
 
         let history = match &ctx.storage {
-            Some(storage) => match storage.get_all_packets() {
-                Ok(history) => history,
+            Some(storage) => match storage.get_recent_packets(PREDICTOR_SNAPSHOT_HISTORY_CAP) {
+                Ok(PacketHistory {
+                    packets,
+                    truncated,
+                    total_count,
+                }) => {
+                    if truncated {
+                        ctx.add_warning(format!(
+                            "packet history truncated to {N} of {M} snapshots",
+                            N = PREDICTOR_SNAPSHOT_HISTORY_CAP,
+                            M = total_count,
+                        ));
+                    }
+                    packets
+                }
                 Err(err) => {
                     let warning = format!(
                         "Historical prediction degraded: failed to load packet history: {err}"
@@ -386,5 +400,127 @@ impl OutcomePredictor {
         }
 
         TestMappingData { mappings }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::model::Config;
+    use crate::impact::packet::{ChangedFile, TemporalCoupling};
+    use crate::state::storage::connection::in_memory_storage;
+    use std::path::PathBuf;
+
+    fn packet_with_change() -> ImpactPacket {
+        ImpactPacket {
+            changes: vec![ChangedFile {
+                path: PathBuf::from("src/a.rs"),
+                status: "Modified".to_string(),
+                ..Default::default()
+            }],
+            temporal_couplings: vec![TemporalCoupling {
+                file_a: PathBuf::from("src/a.rs"),
+                file_b: PathBuf::from("src/b.rs"),
+                score: 0.9,
+            }],
+            ..Default::default()
+        }
+    }
+
+    fn predict_ctx(storage: StorageManager) -> VerificationContext {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        VerificationContext {
+            layout: Layout::new(root),
+            current_dir: tmp.path().to_path_buf(),
+            config: Config::default(),
+            packet: Some(packet_with_change()),
+            storage: Some(storage),
+            no_predict: false,
+            explain: false,
+            health: false,
+            warnings: Vec::new(),
+            suppress_human_output: true,
+            verbose: false,
+        }
+    }
+
+    fn is_truncate_warning(warning: &str) -> bool {
+        warning.contains("packet history truncated")
+    }
+
+    #[test]
+    fn predictor_packet_history_two_snapshots_no_truncate_warning() {
+        let storage = in_memory_storage();
+        storage
+            .save_packet(&ImpactPacket {
+                head_hash: Some("h0".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+        storage
+            .save_packet(&ImpactPacket {
+                head_hash: Some("h1".to_string()),
+                ..Default::default()
+            })
+            .unwrap();
+
+        let mut ctx = predict_ctx(storage);
+        OutcomePredictor::predict(&mut ctx).unwrap();
+        assert!(
+            ctx.warnings.iter().all(|w| !is_truncate_warning(w)),
+            "unexpected truncation warning(s): {:?}",
+            ctx.warnings
+        );
+    }
+
+    #[test]
+    fn predictor_packet_history_sixty_five_snapshots_emits_truncate_warning() {
+        let storage = in_memory_storage();
+        for i in 0..65 {
+            storage
+                .save_packet(&ImpactPacket {
+                    head_hash: Some(format!("h{i}")),
+                    ..Default::default()
+                })
+                .unwrap();
+        }
+
+        let mut ctx = predict_ctx(storage);
+        OutcomePredictor::predict(&mut ctx).unwrap();
+        let expected = format!(
+            "packet history truncated to {N} of {M} snapshots",
+            N = PREDICTOR_SNAPSHOT_HISTORY_CAP,
+            M = 65
+        );
+        assert!(
+            ctx.warnings.iter().any(|w| w == &expected),
+            "missing exact truncation warning {expected:?} in {:?}",
+            ctx.warnings
+        );
+    }
+
+    #[test]
+    fn predictor_packet_history_load_err_degraded_without_truncate_warning() {
+        let storage = in_memory_storage();
+        storage
+            .get_connection()
+            .execute_batch("PRAGMA foreign_keys = OFF; DROP TABLE snapshots;")
+            .unwrap();
+
+        let mut ctx = predict_ctx(storage);
+        OutcomePredictor::predict(&mut ctx).unwrap();
+        assert!(
+            ctx.warnings
+                .iter()
+                .any(|w| w.contains("Historical prediction degraded")),
+            "missing degraded warning in {:?}",
+            ctx.warnings
+        );
+        assert!(
+            ctx.warnings.iter().all(|w| !is_truncate_warning(w)),
+            "truncation warning must not fire on load error: {:?}",
+            ctx.warnings
+        );
     }
 }
