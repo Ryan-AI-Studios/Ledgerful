@@ -133,6 +133,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Docs
 
+- **SECURITY encoding and LICENSE Exception URL (0240):** SECURITY.md
+  mojibake sequences replaced (em dash, arrow); AEAD named
+  **XChaCha20-Poly1305** to match `src/sync/crypto.rs`. Protocol AEAD
+  name updated. LICENSE Required Notice includes
+  `https://www.ledgerful.dev/COMMERCIAL-EXCEPTION.md`. Frontend LICENSE
+  byte-identical. No Cargo bump.
+
 - **Winget live at 0.2.11 (0220):** Community index is **0.2.11**;
   microsoft/winget-pkgs #423248 merged 2026-08-26. Installation,
   package-distribution, and Unreleased copy drop the OPEN / older-index
