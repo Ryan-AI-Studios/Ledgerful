@@ -14,3 +14,6 @@ paths = [
   'src/impact/redact.rs',
   '\.ledgerful\/',
 ]
+regexes = [
+  '''XChaCha20-Poly1305''',
+]
