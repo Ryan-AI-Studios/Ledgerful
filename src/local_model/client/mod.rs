@@ -11,6 +11,7 @@ mod util;
 pub use cloud::has_ollama_cloud_fallback;
 #[cfg(test)]
 pub(crate) use complete::cloud_fallback_env;
+pub(crate) use complete::ping_completions_detailed;
 pub use complete::{
     DEFAULT_CLOUD_FALLBACK_TIMEOUT_SECS, HARD_DEADLINE_BUFFER_SECS, LOCAL_TCP_PRECHECK_CAP_SECS,
     complete, complete_with_first_byte_timeout, complete_with_hard_deadline,

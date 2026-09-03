@@ -1028,6 +1028,37 @@ fn test_probe_with_retry_hang_hard_deadline() {
     );
 }
 
+#[test]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
+fn probe_with_retry_budgeted__503_sleep__fits_remaining_doctor_budget() {
+    // Doctor ping window is 2s; ask-path 503 sleep is also 2s if uncapped.
+    // Remaining budget here is a small slice; delay is the uncapped 2s sleep.
+    // Must still retry once, and wall time must stay inside the remaining slice.
+    let budget = std::time::Duration::from_millis(80);
+    let delay = std::time::Duration::from_secs(2);
+    let deadline = std::time::Duration::from_millis(50);
+    let start = std::time::Instant::now();
+    let res: ProbeResult<()> = probe_with_retry_budgeted(
+        || Err("503 server error (Service Unavailable)".to_string()),
+        budget,
+        delay,
+        deadline,
+        1,
+    );
+    let elapsed = start.elapsed();
+    match res {
+        ProbeResult::Unreachable { retries, err } => {
+            assert_eq!(retries, 1, "503 retry must not be dropped, err={err}");
+            assert!(err.contains("503"), "expected 503 cause, got {err}");
+        }
+        other => panic!("expected Unreachable, got {other:?}"),
+    }
+    assert!(
+        elapsed < std::time::Duration::from_millis(500),
+        "503 sleep must fit remaining doctor budget, got {elapsed:?}"
+    );
+}
+
 /// DoD-6 / R5: clean repo produces zero legacy-migration findings.
 #[test]
 fn legacy_findings_silent_on_clean_repo() {

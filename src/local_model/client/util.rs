@@ -67,12 +67,17 @@ pub fn check_base_url_warnings(base_url: &str, _kind: EndpointKind) -> Option<St
 /// `io::Error` carries the kind — the outer `Transport::Display` string is
 /// the OS-level error message, not "timeout".
 pub fn transport_is_timeout(err: &ureq::Transport) -> bool {
+    transport_io_kind(err) == Some(std::io::ErrorKind::TimedOut)
+}
+
+/// First `io::ErrorKind` in the `ureq::Transport` source chain (if any).
+pub(crate) fn transport_io_kind(err: &ureq::Transport) -> Option<std::io::ErrorKind> {
     let mut source: Option<&(dyn std::error::Error + 'static)> = Some(err);
     while let Some(e) = source {
         if let Some(io_err) = e.downcast_ref::<std::io::Error>() {
-            return io_err.kind() == std::io::ErrorKind::TimedOut;
+            return Some(io_err.kind());
         }
         source = e.source();
     }
-    false
+    None
 }

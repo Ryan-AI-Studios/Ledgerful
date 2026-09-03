@@ -7,7 +7,9 @@ use super::gemini::gemini_complete_unsanitized;
 use super::ollama;
 use super::openai;
 use super::types::{self, ChatMessage, CompletionOptions, EndpointKind, EndpointTarget};
-use super::util::{check_base_url_warnings, completion_target, transport_is_timeout};
+use super::util::{
+    check_base_url_warnings, completion_target, transport_io_kind, transport_is_timeout,
+};
 
 use crate::config::model::LocalModelConfig;
 use crate::local_model::cloud_policy::{CloudPolicy, cloud_policy_forbidden_error};
@@ -122,20 +124,42 @@ use cloud::ollama_cloud_endpoint;
 use ollama::ollama_native_num_predict;
 use types::CompletionEndpoint;
 
+/// Structured ping failure so doctor can classify via `ErrorKind` (no second TCP).
+#[derive(Debug)]
+pub(crate) struct CompletionPingFailure {
+    pub message: String,
+    pub url_empty: bool,
+    pub ureq_kind: Option<ureq::ErrorKind>,
+    pub io_kind: Option<std::io::ErrorKind>,
+}
+
 pub fn ping_completions(config: &LocalModelConfig) -> Result<String, String> {
-    if config.base_url.is_empty() && config.generation_url.is_none() {
-        return Err("not configured".to_string());
+    ping_completions_detailed(config).map_err(|e| e.message)
+}
+
+pub(crate) fn ping_completions_detailed(
+    config: &LocalModelConfig,
+) -> Result<String, CompletionPingFailure> {
+    let check_url = config.generation_url.as_deref().unwrap_or(&config.base_url);
+    if check_url.trim().is_empty() {
+        return Err(CompletionPingFailure {
+            message: "not configured".to_string(),
+            url_empty: true,
+            ureq_kind: None,
+            io_kind: None,
+        });
     }
 
-    let check_url = config.generation_url.as_deref().unwrap_or(&config.base_url);
     // Local TCP precheck uses min(30, effective) so delayed-accept cold routers
     // are not killed at 500ms (B2b). Connection refused on loopback stays fast.
     let precheck = Duration::from_secs(local_tcp_budget_secs(config.timeout_secs));
     if !crate::util::network::is_url_reachable(check_url, precheck) {
-        return Err(format!(
-            "Local model server at {} is unreachable",
-            check_url
-        ));
+        return Err(CompletionPingFailure {
+            message: format!("Local model server at {check_url} is unreachable"),
+            url_empty: false,
+            ureq_kind: Some(ureq::ErrorKind::ConnectionFailed),
+            io_kind: Some(std::io::ErrorKind::ConnectionRefused),
+        });
     }
 
     let url = if let Some(gen_url) = &config.generation_url {
@@ -168,17 +192,33 @@ pub fn ping_completions(config: &LocalModelConfig) -> Result<String, String> {
         Ok(resp) => resp,
         Err(ureq::Error::Status(code, response)) => {
             let body = response.into_string().unwrap_or_default();
-            return Err(format!(
-                "{} server error ({})",
-                code,
-                body.chars().take(100).collect::<String>()
-            ));
+            return Err(CompletionPingFailure {
+                message: format!(
+                    "{} server error ({})",
+                    code,
+                    body.chars().take(100).collect::<String>()
+                ),
+                url_empty: false,
+                ureq_kind: Some(ureq::ErrorKind::HTTP),
+                io_kind: None,
+            });
         }
         Err(ureq::Error::Transport(inner)) => {
-            if format!("{:?}", inner).to_lowercase().contains("timeout") {
-                return Err(format!("timed out after {}s", config.timeout_secs));
+            let io_kind = transport_io_kind(&inner);
+            if transport_is_timeout(&inner) {
+                return Err(CompletionPingFailure {
+                    message: format!("timed out after {}s", config.timeout_secs),
+                    url_empty: false,
+                    ureq_kind: Some(inner.kind()),
+                    io_kind: Some(std::io::ErrorKind::TimedOut),
+                });
             }
-            return Err(format!("unreachable ({})", inner));
+            return Err(CompletionPingFailure {
+                message: format!("transport ({inner})"),
+                url_empty: false,
+                ureq_kind: Some(inner.kind()),
+                io_kind,
+            });
         }
     };
 

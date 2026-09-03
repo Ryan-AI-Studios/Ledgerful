@@ -8,6 +8,31 @@ use crate::state::cozo::{init, queries};
 
 use crate::state::graph_kinds::{EdgeKind, NodeKind};
 
+/// Parse Cozo `::columns` type text like `<F32; 768>` or `<F32;0>`.
+pub(crate) fn parse_f32_vec_dim(typ: &str) -> Option<usize> {
+    let t = typ.trim();
+    let rest = t.strip_prefix("<F32;")?;
+    let rest = rest.strip_suffix('>')?;
+    rest.trim().parse().ok()
+}
+
+/// Cozo `::columns` row: `[name, is_key, ordinal, type, ...]`.
+pub(crate) fn cozo_column_name_and_type(row: &[DataValue]) -> Option<(String, String)> {
+    let name = match row.first() {
+        Some(DataValue::Str(s)) => s.to_string(),
+        _ => return None,
+    };
+    if let Some(DataValue::Str(typ)) = row.get(3) {
+        return Some((name, typ.to_string()));
+    }
+    for cell in row.iter().skip(1) {
+        if let DataValue::Str(typ) = cell {
+            return Some((name, typ.to_string()));
+        }
+    }
+    None
+}
+
 #[derive(Debug, Clone)]
 pub struct GraphNode {
     pub id: String,
@@ -177,15 +202,24 @@ impl CozoStorage {
     }
 
     pub fn verify_embedding_dimension(&self, relation: &str, expected_dim: usize) -> Result<()> {
+        if expected_dim == 0 {
+            return Err(miette::miette!(
+                "Dimension mismatch for relation '{}': expected dimension must be > 0.",
+                relation
+            ));
+        }
         let script = format!("::columns {}", relation);
         let res = self.run_script(&script)?;
         for row in res.rows {
-            if let (Some(DataValue::Str(name)), Some(DataValue::Str(typ))) =
-                (row.first(), row.get(1))
-                && name == "embedding"
-            {
-                let expected = format!("<F32; {}>", expected_dim);
-                if typ != &expected {
+            let Some((name, typ)) = cozo_column_name_and_type(&row) else {
+                continue;
+            };
+            if name != "embedding" {
+                continue;
+            }
+            let expected = format!("<F32; {}>", expected_dim);
+            match parse_f32_vec_dim(&typ) {
+                Some(0) => {
                     return Err(miette::miette!(
                         "Dimension mismatch for relation '{}': expected {}, found {}.",
                         relation,
@@ -193,6 +227,24 @@ impl CozoStorage {
                         typ
                     ));
                 }
+                Some(found) if found != expected_dim => {
+                    return Err(miette::miette!(
+                        "Dimension mismatch for relation '{}': expected {}, found {}.",
+                        relation,
+                        expected,
+                        typ
+                    ));
+                }
+                Some(_) => {}
+                None if typ != expected => {
+                    return Err(miette::miette!(
+                        "Dimension mismatch for relation '{}': expected {}, found {}.",
+                        relation,
+                        expected,
+                        typ
+                    ));
+                }
+                None => {}
             }
         }
         Ok(())
@@ -468,5 +520,34 @@ mod tests {
         assert!(relations.contains(&"Session".to_string()));
         assert!(relations.contains(&"Memory".to_string()));
         assert!(relations.contains(&"Decision".to_string()));
+    }
+
+    #[test]
+    fn parse_f32_vec_dim_accepts_spaced_and_compact_forms() {
+        assert_eq!(parse_f32_vec_dim("<F32; 768>"), Some(768));
+        assert_eq!(parse_f32_vec_dim("<F32;0>"), Some(0));
+        assert_eq!(parse_f32_vec_dim("  <F32; 384>  "), Some(384));
+        assert_eq!(parse_f32_vec_dim("Vec<F32>"), None);
+    }
+
+    #[test]
+    fn verify_embedding_dimension_rejects_zero_dim_column() {
+        let storage = CozoStorage::new_in_memory().unwrap();
+        let created = storage.run_script(
+            ":create snippet_embedding {file_path, name, line_offset => embedding: <F32; 0>}",
+        );
+        if created.is_err() {
+            return;
+        }
+        match storage.verify_embedding_dimension("snippet_embedding", 768) {
+            Ok(()) => panic!("0-dim column must mismatch 768"),
+            Err(e) => {
+                let msg = format!("{e:#}");
+                assert!(
+                    msg.contains("Dimension mismatch"),
+                    "expected mismatch, got: {msg}"
+                );
+            }
+        }
     }
 }

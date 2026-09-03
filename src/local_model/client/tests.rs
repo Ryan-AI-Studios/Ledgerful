@@ -599,6 +599,49 @@ fn complete_falls_back_to_ollama_cloud_with_auth() {
 }
 
 #[test]
+#[serial_test::serial(env)]
+fn complete_strips_ollama_run_prefix_from_cloud_model() {
+    let _iso = isolate_cloud_env();
+    let server = MockServer::start();
+
+    let mock = server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/chat/completions")
+            .header("Authorization", "Bearer test-token")
+            .json_body_includes(r#"{"model":"minimax-m3:cloud"}"#);
+        then.status(200)
+            .header("Content-Type", "application/json")
+            .json_body(serde_json::json!({
+                "choices": [
+                    {
+                        "message": {
+                            "content": "cloud response"
+                        }
+                    }
+                ]
+            }));
+    });
+
+    let config = LocalModelConfig {
+        base_url: "http://127.0.0.1:1".to_string(),
+        ollama_cloud_url: Some(server.base_url()),
+        ollama_cloud_api_key: Some("test-token".to_string()),
+        ollama_cloud_model: Some("ollama run minimax-m3:cloud".to_string()),
+        ..test_config("")
+    };
+
+    let result = complete(
+        &config,
+        &test_messages(),
+        &CompletionOptions::default(),
+        None,
+    )
+    .unwrap();
+    assert_eq!(result, "cloud response");
+    assert_eq!(mock.calls(), 1);
+}
+
+#[test]
 fn test_detect_endpoint_kind_openai() {
     assert_eq!(
         detect_endpoint_kind("https://ollama.com"),
@@ -975,16 +1018,18 @@ fn complete_first_byte_timeout_accept_then_hang() {
 
     let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind listener");
     let addr = listener.local_addr().expect("get local addr");
+    let (release_tx, release_rx) = std::sync::mpsc::channel::<()>();
 
     std::thread::spawn(move || {
         // Accept connections and hold them open without reading/writing,
         // simulating an overloaded or hung model server.
-        while let Ok((stream, _)) = listener.accept() {
-            let _ = stream.set_read_timeout(Some(Duration::from_secs(60)));
-            let _ = stream.set_write_timeout(Some(Duration::from_secs(60)));
-            // Leak this thread until the test process exits; the
-            // first-byte wrapper returns long before then.
-            std::thread::sleep(Duration::from_secs(60));
+        if let Ok((stream, _)) = listener.accept() {
+            let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
+            let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
+            // Hold until the test drops `release_tx` (or 15s safety). A wait
+            // equal to the first-byte deadline races Linux RST vs timeout.
+            let _ = release_rx.recv_timeout(Duration::from_secs(15));
+            drop(stream);
         }
     });
 
@@ -1020,6 +1065,7 @@ fn complete_first_byte_timeout_accept_then_hang() {
         elapsed < Duration::from_secs(5),
         "expected <5s first-byte fail-fast, got {elapsed:?}"
     );
+    drop(release_tx);
 }
 
 /// U17.2: connection-refused must fail fast without waiting for the first

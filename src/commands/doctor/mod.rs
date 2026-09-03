@@ -52,11 +52,11 @@ pub(crate) use checks::lifecycle::split_brain_ledger_warning;
 pub(crate) use checks::llm::is_transient_error;
 pub(crate) use checks::llm::{
     BackendAvailabilityReport, ProbeResult, embedding_finding, format_active_ask_backend,
-    format_embedding_backend_availability, probe_with_retry,
+    format_embedding_backend_availability,
 };
 #[cfg(test)]
 pub(crate) use checks::llm::{
-    format_active_ask_backend_with, parse_url_host, probe_with_retry_budgeted,
+    format_active_ask_backend_with, parse_url_host, probe_with_retry, probe_with_retry_budgeted,
 };
 #[cfg(test)]
 pub(crate) use checks::optional::{chain_checkpoint_practice_finding, collect_scip_findings};
@@ -150,6 +150,9 @@ pub fn execute_doctor(
         }
     };
     let mut model_config = config.local_model.clone();
+    // Short ping budget so doctor stays snappy. A listening local router
+    // that misses this window is `completion-not-ready`, not unreachable
+    // (`ask` uses `local_model.timeout_secs`, often 300s on cold load).
     model_config.timeout_secs = 2;
     report.active_ask_backend = format_active_ask_backend(&config);
     checks::lifecycle::apply_gate_mode(&layout, &config, &mut report, &mut findings);
@@ -170,7 +173,7 @@ pub fn execute_doctor(
     let completion_handle = if generation_configured {
         let cfg = model_config.clone();
         Some(std::thread::spawn(move || {
-            probe_with_retry(move || crate::local_model::client::ping_completions(&cfg))
+            checks::llm::probe_completion_classified(cfg)
         }))
     } else {
         None
@@ -389,7 +392,9 @@ pub(crate) fn assign_session_priorities(
 /// doctor orchestrator — not in `checks/llm.rs`.
 fn apply_joined_network_probes(
     embed_handle: std::thread::JoinHandle<BackendAvailabilityReport>,
-    completion_handle: Option<std::thread::JoinHandle<ProbeResult<String>>>,
+    completion_handle: Option<
+        std::thread::JoinHandle<(ProbeResult<String>, checks::llm::CompletionPingClass)>,
+    >,
     generation_endpoint: &str,
     config: &crate::config::model::Config,
     report: &mut crate::output::human::DoctorReport<'_>,
@@ -420,7 +425,7 @@ fn apply_joined_network_probes(
             ));
         }
         Some(handle) => {
-            let completion_probe = match handle.join() {
+            let (completion_probe, ping_class) = match handle.join() {
                 Ok(v) => v,
                 Err(payload) => std::panic::resume_unwind(payload),
             };
@@ -445,30 +450,22 @@ fn apply_joined_network_probes(
                     );
                 }
                 ProbeResult::Unreachable { err, retries } => {
-                    let retry_suffix = if retries > 0 {
-                        format!(" after {retries} retries")
+                    let class = if generation_endpoint.trim().is_empty() {
+                        checks::llm::CompletionPingClass::EmptyUrl
                     } else {
-                        String::new()
+                        ping_class
                     };
-                    let truncated: String = err.chars().take(80).collect();
-                    let detail_hint = if err.chars().count() > 80 {
-                        " [set RUST_LOG=debug for details]"
-                    } else {
-                        ""
-                    };
-                    report.completion_model_status = format!(
-                        "unreachable ({}{}){}",
-                        truncated.if_supports_color(Stream::Stdout, |s| s.yellow()),
-                        retry_suffix,
-                        detail_hint
-                    );
+                    let (code, status_prefix, finding_lead) =
+                        checks::llm::completion_probe_failure_kind(class.tcp_ok());
                     tracing::debug!("Full completion model error: {}", err);
+                    let (truncated, retry_suffix, detail_hint) =
+                        checks::llm::completion_status_detail(&err, retries);
+                    report.completion_model_status =
+                        format!("{status_prefix} ({truncated}{retry_suffix}){detail_hint}");
                     findings.push(DoctorFinding::warn(
-                        "completion-unreachable",
+                        code,
                         DoctorCategory::Optional,
-                        format!(
-                            "Completion model unreachable ({truncated}{retry_suffix}){detail_hint}"
-                        ),
+                        checks::llm::completion_finding_message(finding_lead, &err, retries),
                     ));
                 }
             }
