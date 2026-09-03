@@ -45,11 +45,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   bump.
 
 - **Winget present-tense honesty (0219):** Installation and
-  package-distribution floors stop saying community index 0.2.10 matches
-  GitHub Latest. Index still **0.2.10** while Latest is **v0.2.11**; version
-  PR #423248 OPEN — do not claim winget live at 0.2.11 until `winget
-  search` shows it. Leftover #415913/#416853 skipped/WDSI unchanged. No
-  packaging rewrite; no Cargo bump.
+  package-distribution floors no longer claim an older community index
+  matches GitHub Latest. Superseded by 0220 (live at 0.2.11; #423248
+  merged 2026-08-26). No packaging rewrite; no Cargo bump.
 
 - **Engine dogfood v0.2.11 + Action `#13` SHA (0218 / 0198-B):** Workflow A
   `ledgerful-version` + Linux gnu sidecar checksum track published
@@ -75,6 +73,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   budget (`ask` timeout unchanged). No Cargo bump.
 
 ### Docs
+
+- **Winget live at 0.2.11 (0220):** Community index is **0.2.11**;
+  microsoft/winget-pkgs #423248 merged 2026-08-26. Installation,
+  package-distribution, and Unreleased copy drop the OPEN / older-index
+  lag claim. `WINGET_TOKEN` is set; subsequent tags bump via
+  winget-releaser. Community search can lag a merge by minutes–hours. No
+  Cargo bump.
 
 - **AI-only agent skill (0221):** Tracked `docs/Ledgerful/skill.md` is a short
   Daily 5 procedure for agents (not a human tutorial). Collision skip;

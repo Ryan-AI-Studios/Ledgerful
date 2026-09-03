@@ -54,13 +54,13 @@ scoop install ledgerful
 
 ### winget
 
-Package accepted on winget (2026-07-30):
+Package accepted on winget (2026-07-30); community index is live at **0.2.11** (version PR [#423248](https://github.com/microsoft/winget-pkgs/pull/423248) merged 2026-08-26):
 
 ```powershell
 winget install Ledgerful.Ledgerful
 ```
 
-Community index still **0.2.10** (`winget search Ledgerful` → 0.2.10 after `winget source update`) while GitHub Latest is **v0.2.11**. Version PR [#423248](https://github.com/microsoft/winget-pkgs/pull/423248) is **OPEN** for 0.2.11 — do **not** claim winget is live at 0.2.11 until search shows it. Leftover open PRs [#415913](https://github.com/microsoft/winget-pkgs/pull/415913) (0.2.8) and [#416853](https://github.com/microsoft/winget-pkgs/pull/416853) (0.2.9) are skipped/WDSI and are not current lag of Latest. Architecture and secrets: [package-distribution.md](package-distribution.md).
+The community index can lag a merge by minutes–hours. History: leftover PRs [#415913](https://github.com/microsoft/winget-pkgs/pull/415913) (0.2.8, merged) and [#416853](https://github.com/microsoft/winget-pkgs/pull/416853) (0.2.9, closed-superseded) are not current lag of Latest. Architecture and secrets: [package-distribution.md](package-distribution.md).
 
 ### macOS Gatekeeper / quarantine (interim)
 
@@ -102,7 +102,7 @@ Notes:
   **skipped** (unknown), never partial-rewritten.
 - Second apply is a no-op (“already current”).
 
-## Migrating from ChangeGuard (legacy name)
+## Upgrading from pre-rename installs
 
 If a repository still has residue from the pre-rename product name, run this sequence:
 
