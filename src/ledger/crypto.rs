@@ -941,7 +941,7 @@ mod tests {
         {
             let src = include_str!("crypto.rs");
             assert!(
-                src.contains("from_mode(0o600)"),
+                src.contains("let perms = std::fs::Permissions::from_mode(0o600);"),
                 "Unix 0o600 arm must remain in restrict_private_key_permissions"
             );
         }
