@@ -115,8 +115,10 @@ pub fn index_service_boundaries(indexer: &mut ProjectIndexer) -> Result<()> {
         params.insert("ts".to_string(), DataValue::Str(now.clone().into()));
 
         let script = "?[name, dir_path, marker_kind, confidence, last_indexed_at] <- [[$name, $dir_path, $marker_kind, $confidence, $ts]] :put service_roots";
-        cozo.run_script_with_params(script, params, ScriptMutability::Mutable)
-            .unwrap();
+        annotate_cozo_put(
+            cozo.run_script_with_params(script, params, ScriptMutability::Mutable),
+            "partial KG failure: failed to put service_roots row",
+        )?;
     }
 
     tracing::debug!("K4: Indexed {} service boundaries", boundaries.len());
@@ -234,8 +236,10 @@ pub fn index_service_boundaries(indexer: &mut ProjectIndexer) -> Result<()> {
                     params.insert("ts".to_string(), DataValue::Str(now.clone().into()));
 
                     let script = "?[caller_service, callee_service, pattern, call_kind, confidence, last_indexed_at] <- [[$caller_service, $callee_service, $pattern, $call_kind, $confidence, $ts]] :put service_dependencies";
-                    cozo.run_script_with_params(script, params, ScriptMutability::Mutable)
-                        .unwrap();
+                    annotate_cozo_put(
+                        cozo.run_script_with_params(script, params, ScriptMutability::Mutable),
+                        "partial KG failure: failed to put service_dependencies row",
+                    )?;
                 }
             }
         }
@@ -249,9 +253,12 @@ fn resolve_service_for_path(file_path: &str, service_map: &[(String, String)]) -
     // Find the longest matching prefix (deepest service root wins)
     let mut best: Option<(&str, &str)> = None;
     for (dir, name) in service_map {
-        #[allow(clippy::collapsible_if)]
         if file_path.starts_with(dir.as_str()) || (dir.is_empty() || dir == ".") {
-            if best.is_none() || dir.len() > best.unwrap().0.len() {
+            let should_replace = match best {
+                None => true,
+                Some((best_dir, _)) => dir.len() > best_dir.len(),
+            };
+            if should_replace {
                 best = Some((dir.as_str(), name.as_str()));
             }
         }
@@ -324,29 +331,29 @@ pub fn classify_entrypoints(indexer: &mut ProjectIndexer) -> Result<EntrypointSt
             continue;
         };
 
-        let sym_vec: Vec<crate::index::symbols::Symbol> = symbols
-            .iter()
-            .map(
-                |(_, name, kind, is_public, metadata)| crate::index::symbols::Symbol {
-                    name: name.clone(),
-                    kind: crate::index::symbols::SymbolKind::parse(kind)
-                        .unwrap_or(crate::index::symbols::SymbolKind::Function),
-                    is_public: *is_public,
-                    cognitive_complexity: None,
-                    cyclomatic_complexity: None,
-                    line_start: None,
-                    line_end: None,
-                    qualified_name: None,
-                    byte_start: None,
-                    byte_end: None,
-                    entrypoint_kind: None,
-                    metadata: metadata
-                        .as_ref()
-                        .and_then(|m| serde_json::from_str(m).ok())
-                        .unwrap_or_default(),
-                },
-            )
-            .collect();
+        let mut sym_vec: Vec<crate::index::symbols::Symbol> = Vec::new();
+        for (_, name, kind, is_public, metadata) in symbols {
+            let Some(parsed_kind) = symbol_kind_for_entrypoint(kind, name, &file_path) else {
+                continue;
+            };
+            sym_vec.push(crate::index::symbols::Symbol {
+                name: name.clone(),
+                kind: parsed_kind,
+                is_public: *is_public,
+                cognitive_complexity: None,
+                cyclomatic_complexity: None,
+                line_start: None,
+                line_end: None,
+                qualified_name: None,
+                byte_start: None,
+                byte_end: None,
+                entrypoint_kind: None,
+                metadata: metadata
+                    .as_ref()
+                    .and_then(|m| serde_json::from_str(m).ok())
+                    .unwrap_or_default(),
+            });
+        }
 
         let classifications = match file_lang.as_deref() {
             Some("Rust") => detect_rust_entrypoints(&content, &sym_vec),
@@ -481,4 +488,76 @@ pub fn infer_services(indexer: &mut ProjectIndexer) -> Result<super::ServiceInde
         services_inferred: services.len(),
         files_assigned,
     })
+}
+
+/// Cozo `:put` must warn **and** return `Err` (Q1). Never swallow with `Ok(())`.
+fn annotate_cozo_put<T>(result: Result<T>, context: &'static str) -> Result<T> {
+    result.inspect_err(|err| {
+        tracing::warn!(error = %err, "{context}");
+    })
+}
+
+/// Parse a stored symbol kind for entrypoint classification.
+/// Unknown kinds are skipped with a warning — never defaulted to Function (Q6).
+fn symbol_kind_for_entrypoint(
+    kind: &str,
+    name: &str,
+    file_path: &str,
+) -> Option<crate::index::symbols::SymbolKind> {
+    match crate::index::symbols::SymbolKind::parse(kind) {
+        Some(parsed) => Some(parsed),
+        None => {
+            tracing::warn!(
+                symbol = %name,
+                kind = %kind,
+                file = %file_path,
+                "skipping symbol with unknown kind during entrypoint classification"
+            );
+            None
+        }
+    }
+}
+
+#[cfg(test)]
+mod topology_unwrap_tests {
+    use super::{annotate_cozo_put, resolve_service_for_path, symbol_kind_for_entrypoint};
+    use crate::index::symbols::SymbolKind;
+
+    #[test]
+    fn topology_resolve_service_for_path_longest_prefix_wins() {
+        let map = vec![
+            ("src".to_string(), "root".to_string()),
+            ("src/api".to_string(), "api".to_string()),
+        ];
+        assert_eq!(
+            resolve_service_for_path("src/api/handler.rs", &map),
+            Some("api".to_string())
+        );
+    }
+
+    #[test]
+    fn topology_unknown_symbol_kind_skipped_not_function() {
+        assert_eq!(
+            symbol_kind_for_entrypoint("NotARealKind", "mystery", "src/lib.rs"),
+            None,
+            "unknown kind must skip, not become Function"
+        );
+        assert_eq!(
+            symbol_kind_for_entrypoint("Function", "main", "src/lib.rs"),
+            Some(SymbolKind::Function)
+        );
+        assert_ne!(
+            symbol_kind_for_entrypoint("NotARealKind", "mystery", "src/lib.rs"),
+            Some(SymbolKind::Function)
+        );
+    }
+
+    #[test]
+    fn topology_cozo_put_error_propagates_not_ok() {
+        let err = annotate_cozo_put::<()>(
+            Err(miette::miette!("boom")),
+            "partial KG failure: failed to put service_roots row",
+        );
+        assert!(err.is_err(), "Cozo put Err must not become Ok(())");
+    }
 }

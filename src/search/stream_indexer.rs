@@ -49,9 +49,27 @@ impl StreamIndexer {
                         return;
                     }
                 };
-                let content_field = schema.get_field("content").unwrap();
-                let line_count_field = schema.get_field("line_count").unwrap();
-                let trigrams_field = schema.get_field("trigrams").unwrap();
+                let content_field = match schema.get_field("content") {
+                    Ok(f) => f,
+                    Err(e) => {
+                        tracing::error!("Worker {}: missing content field: {}", i, e);
+                        return;
+                    }
+                };
+                let line_count_field = match schema.get_field("line_count") {
+                    Ok(f) => f,
+                    Err(e) => {
+                        tracing::error!("Worker {}: missing line_count field: {}", i, e);
+                        return;
+                    }
+                };
+                let trigrams_field = match schema.get_field("trigrams") {
+                    Ok(f) => f,
+                    Err(e) => {
+                        tracing::error!("Worker {}: missing trigrams field: {}", i, e);
+                        return;
+                    }
+                };
 
                 for job in rx {
                     debug!("Worker {}: Indexing file: {}", i, job.path);
@@ -125,7 +143,9 @@ impl StreamIndexer {
         drop(job_tx); // Signals workers to finish
 
         for worker in workers {
-            worker.join().unwrap();
+            if let Err(err) = worker.join() {
+                tracing::warn!("stream_indexer worker thread panicked: {err:?}");
+            }
         }
 
         let mut writer = std::sync::Arc::into_inner(writer)
@@ -138,5 +158,22 @@ impl StreamIndexer {
         debug!("Tantivy index committed with {} segments", segment_count);
 
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod stream_indexer_tests {
+    use crate::search::tantivy_engine::TantivySearchEngine;
+    use tempfile::tempdir;
+
+    #[test]
+    fn stream_indexer_schema_fields_resolve_like_production_workers() {
+        let dir = tempdir().expect("tempdir");
+        let engine = TantivySearchEngine::open_or_create(dir.path()).expect("open index");
+        let schema = engine.schema();
+        assert!(schema.get_field("path").is_ok());
+        assert!(schema.get_field("content").is_ok());
+        assert!(schema.get_field("line_count").is_ok());
+        assert!(schema.get_field("trigrams").is_ok());
     }
 }
