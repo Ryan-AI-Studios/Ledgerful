@@ -2,7 +2,6 @@ use crate::config::model::LocalModelConfig;
 use crate::local_model::client::{ChatMessage, CompletionOptions, complete};
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
 pub struct IntentDraft {
@@ -100,7 +99,8 @@ fn escape_untrusted_content(input: &str) -> String {
 }
 
 fn get_staged_diff(repo_root: &Path) -> Option<String> {
-    let output = Command::new("git")
+    let output = crate::git::git_command()
+        .ok()?
         .args(["diff", "--staged"])
         .current_dir(repo_root)
         .output()
@@ -123,7 +123,8 @@ fn get_commit_msg(repo_root: &Path) -> Option<String> {
 }
 
 fn get_branch_name(repo_root: &Path) -> Option<String> {
-    let output = Command::new("git")
+    let output = crate::git::git_command()
+        .ok()?
         .args(["rev-parse", "--abbrev-ref", "HEAD"])
         .current_dir(repo_root)
         .output()
@@ -137,7 +138,8 @@ fn get_branch_name(repo_root: &Path) -> Option<String> {
 }
 
 fn get_recent_commits(repo_root: &Path) -> Option<String> {
-    let output = Command::new("git")
+    let output = crate::git::git_command()
+        .ok()?
         .args(["log", "-n", "10", "--oneline"])
         .current_dir(repo_root)
         .output()

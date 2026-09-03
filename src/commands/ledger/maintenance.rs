@@ -438,7 +438,8 @@ pub fn execute_ledger_hook_repair(force: bool) -> Result<()> {
 
     // Fetch HEAD commit msg
     let repo_root = layout.root.clone();
-    let git_out = std::process::Command::new("git")
+    let config = load_ledger_config(&layout)?;
+    let git_out = crate::git::git_command_with_policy(&config.verify.effective_process_policy())?
         .args(["log", "-1", "--format=%B"])
         .current_dir(repo_root)
         .output()

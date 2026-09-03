@@ -116,7 +116,7 @@ fn promote_pending_ledger_tx(layout: &crate::state::layout::Layout) -> Result<()
 
     // Verify commit hash (message-hash heuristic; not git oid).
     let repo_root = layout.root.clone();
-    let output = std::process::Command::new("git")
+    let output = crate::git::git_command_with_policy(&config.verify.effective_process_policy())?
         .args(["log", "-1", "--format=%B"])
         .current_dir(repo_root.as_std_path())
         .output()

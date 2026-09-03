@@ -4,7 +4,7 @@ use std::process::Command;
 use miette::Diagnostic;
 use thiserror::Error;
 
-use crate::platform::process_policy::{ProcessPolicy, check_policy};
+use crate::platform::process_policy::{ProcessPolicy, ProcessPolicyError, check_policy};
 
 /// Error variants for git commit failures, mapped from git stderr output.
 #[derive(Debug, Error, Diagnostic)]
@@ -115,20 +115,30 @@ pub fn harden_git_env(cmd: &mut Command) {
 /// - Strips execution-altering git env vars
 /// - Passes `-c core.hooksPath=` so local hooks do not run for internal calls
 /// - Applies a process-policy timeout env hint
-pub fn git_command() -> Command {
+///
+/// Uses [`ProcessPolicy::default`]. Callers that already have `Config` should
+/// use [`git_command_with_policy`] with `verify.effective_process_policy()`.
+///
+/// Returns `Err` on process-policy deny **before** constructing a `Command`
+/// (fail-closed: never return a spawnable `Command` after deny).
+pub fn git_command() -> Result<Command, ProcessPolicyError> {
+    git_command_with_policy(&ProcessPolicy::default())
+}
+
+/// Like [`git_command`], honoring an explicit [`ProcessPolicy`] so operator
+/// `verify.denied_commands` (including `"git"`) fail closed.
+pub fn git_command_with_policy(policy: &ProcessPolicy) -> Result<Command, ProcessPolicyError> {
+    // Deny first: never hand back a Command that could be spawned.
+    check_policy("git", policy)?;
     let binary = git_binary();
     let mut cmd = Command::new(binary);
     harden_git_env(&mut cmd);
     cmd.arg("-c").arg("core.hooksPath=");
-    let policy = ProcessPolicy::default();
-    if let Err(e) = check_policy("git", &policy) {
-        tracing::warn!("Git command blocked by process policy: {}", e);
-    }
     cmd.env(
         "CG_PROCESS_TIMEOUT",
         policy.default_timeout_secs.to_string(),
     );
-    cmd
+    Ok(cmd)
 }
 
 /// Check whether a git commit can proceed by inspecting repository state.
@@ -157,6 +167,7 @@ pub fn can_commit() -> Result<bool, GitStateError> {
 
 fn git_rev_parse_merge_head_exists() -> Result<bool, GitStateError> {
     let output = git_command()
+        .map_err(|e| GitStateError::CommandFailed(e.to_string()))?
         .args(["rev-parse", "--git-path", "MERGE_HEAD"])
         .output()
         .map_err(|e| GitStateError::CommandFailed(format!("Failed to run git rev-parse: {}", e)))?;
@@ -173,6 +184,7 @@ fn git_rev_parse_merge_head_exists() -> Result<bool, GitStateError> {
 
 fn has_unresolved_conflicts() -> Result<bool, GitStateError> {
     let output = git_command()
+        .map_err(|e| GitStateError::CommandFailed(e.to_string()))?
         .args(["diff", "--name-only", "--diff-filter=U"])
         .output()
         .map_err(|e| GitStateError::CommandFailed(format!("Failed to run git diff: {}", e)))?;
@@ -187,6 +199,7 @@ fn has_unresolved_conflicts() -> Result<bool, GitStateError> {
 
 fn has_staged_changes() -> Result<bool, GitStateError> {
     let status = git_command()
+        .map_err(|e| GitStateError::CommandFailed(e.to_string()))?
         .args(["diff", "--cached", "--quiet"])
         .status()
         .map_err(|e| {
@@ -216,6 +229,10 @@ fn has_staged_changes() -> Result<bool, GitStateError> {
 /// Note: for interactive user commits we still hardens env, but do **not**
 /// clear hooksPath so the user's pre-commit hooks run as expected.
 pub fn git_commit(message: &str, signoff: bool) -> Result<(), GitCommitError> {
+    let policy = ProcessPolicy::default();
+    check_policy("git", &policy).map_err(|e| GitCommitError::Other {
+        stderr: e.to_string(),
+    })?;
     let binary = git_binary();
     let mut cmd = Command::new(&binary);
     harden_git_env(&mut cmd);
@@ -226,7 +243,6 @@ pub fn git_commit(message: &str, signoff: bool) -> Result<(), GitCommitError> {
         cmd.arg("--signoff");
     }
 
-    let policy = ProcessPolicy::default();
     cmd.env(
         "CG_PROCESS_TIMEOUT",
         policy.default_timeout_secs.to_string(),
@@ -403,6 +419,7 @@ mod tests {
 
         // Hardened: poison must not appear.
         let hardened = git_command()
+            .expect("default policy allows git")
             .args(["--exec-path"])
             .output()
             .expect("hardened git --exec-path");
@@ -440,6 +457,7 @@ mod tests {
 
         // Local, non-network git operation that must not invoke ssh.
         let output = git_command()
+            .expect("default policy allows git")
             .args(["--version"])
             .output()
             .expect("git --version should spawn");
@@ -462,6 +480,48 @@ mod tests {
             // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
             unsafe { std::env::remove_var("GIT_SSH_COMMAND") };
         }
+    }
+
+    #[test]
+    fn git_command_with_policy_denied_commands_git_returns_err_without_spawn() {
+        let policy = ProcessPolicy {
+            denied_commands: vec!["git".to_string()],
+            ..ProcessPolicy::default()
+        };
+        let err = git_command_with_policy(&policy)
+            .expect_err("denied git must fail closed without returning Command");
+        match err {
+            ProcessPolicyError::Denied {
+                command, reason, ..
+            } => {
+                assert_eq!(command, "git");
+                assert!(
+                    reason.contains("explicitly denied"),
+                    "unexpected reason: {reason}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn git_command_argv_order_hooks_path_then_subcommand_then_end_of_options() {
+        let mut cmd = git_command().expect("default policy allows git");
+        cmd.args(["rev-parse", "--verify", "--end-of-options", "HEAD"]);
+        let args: Vec<String> = cmd
+            .get_args()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(
+            args,
+            [
+                "-c",
+                "core.hooksPath=",
+                "rev-parse",
+                "--verify",
+                "--end-of-options",
+                "HEAD",
+            ]
+        );
     }
 
     #[test]

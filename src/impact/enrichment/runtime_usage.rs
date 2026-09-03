@@ -2,7 +2,6 @@ use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
 use crate::impact::packet::{ImpactPacket, RuntimeUsageDelta};
 use crate::index::runtime_usage::extract_runtime_usage;
 use miette::Result;
-use std::process::Command;
 
 pub struct RuntimeUsageProvider;
 
@@ -33,10 +32,12 @@ impl EnrichmentProvider for RuntimeUsageProvider {
 
             let path_str = change.path.to_string_lossy().replace('\\', "/");
 
-            let output = Command::new("git")
-                .args(["show", &format!("HEAD:{}", path_str)])
-                .current_dir(&context.project_root)
-                .output();
+            let output = crate::git::git_command_with_policy(
+                &context.config.verify.effective_process_policy(),
+            )?
+            .args(["show", &format!("HEAD:{}", path_str)])
+            .current_dir(&context.project_root)
+            .output();
 
             let mut previous_env_vars = 0;
             let mut previous_env_var_names: Vec<String> = Vec::new();

@@ -119,8 +119,12 @@ pub fn is_gc_eligible(sidecar: &PendingHookTx, ctx: &GcContext<'_>) -> bool {
 }
 
 /// Load HEAD commit message hash from a repo root (best-effort).
+///
+/// Uses Default process policy (no `Config` on this helper). Policy deny
+/// returns `None` without spawning.
 pub fn head_message_hash(repo_root: &Path) -> Option<String> {
-    let output = std::process::Command::new("git")
+    let output = crate::git::git_command()
+        .ok()?
         .args(["log", "-1", "--format=%B"])
         .current_dir(repo_root)
         .output()

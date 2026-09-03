@@ -32,7 +32,8 @@ pub fn per_file_numstat(
     repo_root: &Path,
     commit_ref: &str,
 ) -> Result<HashMap<String, FileNumstat>, GitError> {
-    let output = std::process::Command::new("git")
+    let output = crate::git::git_command()
+        .map_err(|e| GitError::MetadataError { source: e.into() })?
         .args([
             "--no-pager",
             "show",

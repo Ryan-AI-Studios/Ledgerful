@@ -7,7 +7,6 @@ use chrono::NaiveDate;
 use rusqlite::Connection;
 use std::fs;
 use std::path::Path;
-use std::process::Command;
 use std::time::SystemTime;
 
 /// Broad intent classification for `ledgerful ask` queries.
@@ -561,7 +560,8 @@ pub fn compute_staleness(file_path: &Path, _threshold_days: u32) -> Option<u32> 
 }
 
 fn git_last_commit_timestamp(file_path: &Path) -> Option<SystemTime> {
-    let output = Command::new("git")
+    let output = crate::git::git_command()
+        .ok()?
         .args(["log", "-1", "--format=%ct", "--", file_path.to_str()?])
         .output()
         .ok()?;

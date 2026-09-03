@@ -79,6 +79,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Internal git spawn fail-closed (0235):** Production git subprocesses go
+  through `git_command` / `git_command_with_policy`, which return `Err` on
+  process-policy deny (`verify.denied_commands`) instead of warning and still
+  returning a `Command`. Scan hyphen-ref refuse and `--end-of-options` are
+  unchanged. No Cargo bump.
+
 - **Verify predictor snapshot history cap (0233):** `verify` predict loads at
   most 64 recent `snapshots` rows (`PREDICTOR_SNAPSHOT_HISTORY_CAP`) via
   `get_recent_packets`. When history is truncated, warns

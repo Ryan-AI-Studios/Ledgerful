@@ -17,7 +17,6 @@ use crate::state::storage::StorageManager;
 use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 /// Stable schema version for `PolicyCheckReport`. Breaking changes bump this.
 pub const POLICY_CHECK_SCHEMA_VERSION: u32 = 1;
@@ -403,7 +402,7 @@ fn synthesize_pr_defaults() -> PolicyConfig {
 /// Invalid refs and other fatals return `Err` with an actionable message.
 pub fn load_policy_from_git(repo_root: &Path, base_ref: &str) -> Result<Option<String>> {
     let spec = format!("{}:{}", base_ref, DEFAULT_POLICY_REL);
-    let output = Command::new("git")
+    let output = crate::git::git_command()?
         .args(["show", &spec])
         .current_dir(repo_root)
         .output()

@@ -134,7 +134,16 @@ fn create_initial_files(root: &Path) -> Result<()> {
 }
 
 fn run_git(root: &Path, args: &[&str]) -> Result<std::process::Output> {
-    let output = Command::new("git")
+    // Demo `git commit` must run commit-msg/post-commit hooks. `git_command()`
+    // always sets `-c core.hooksPath=` which would skip them. Fail-closed
+    // policy check + env hardening, without clearing hooks.
+    crate::platform::process_policy::check_policy(
+        "git",
+        &crate::platform::process_policy::ProcessPolicy::default(),
+    )?;
+    let mut cmd = Command::new(crate::git::commit::git_binary());
+    crate::git::commit::harden_git_env(&mut cmd);
+    let output = cmd
         .args(args)
         .current_dir(root)
         .env("LEDGERFUL_NON_INTERACTIVE", "1")
