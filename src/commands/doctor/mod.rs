@@ -346,19 +346,15 @@ pub fn execute_doctor(opts: DoctorRunOpts) -> Result<()> {
                 }
             }
         } else if yes {
-            match apply_doctor_fix(&layout, plan) {
-                Ok(applied) => {
-                    if !json {
-                        if applied.is_empty() {
-                            println!("No --fix actions.");
-                        } else {
-                            for line in applied {
-                                println!("{line}");
-                            }
-                        }
+            let applied = apply_doctor_fix(&layout, plan)?;
+            if !json {
+                if applied.is_empty() {
+                    println!("No --fix actions.");
+                } else {
+                    for line in applied {
+                        println!("{line}");
                     }
                 }
-                Err(e) => return Err(e),
             }
         }
     }
