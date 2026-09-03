@@ -964,6 +964,22 @@ mod tests {
         .unwrap();
     }
 
+    fn insert_file_with_null_hash(
+        storage: &StorageManager,
+        path: &str,
+        indexed_at: &str,
+        file_size: Option<i64>,
+        mtime_ns: Option<i64>,
+    ) {
+        let conn = storage.get_connection();
+        conn.execute(
+            "INSERT INTO project_files (file_path, parse_status, last_indexed_at, content_hash, file_size, mtime_ns) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![path, "OK", indexed_at, Option::<String>::None, file_size, mtime_ns],
+        )
+        .unwrap();
+    }
+
     fn set_last_indexed_at(storage: &StorageManager, ts: &str) {
         let conn = storage.get_connection();
         conn.execute(
@@ -1357,6 +1373,34 @@ mod tests {
             "unindexed discovered file must not blake3: {drift:?}"
         );
         assert!(drift.sample_paths.iter().any(|p| p == "src/new.rs"));
+        assert!(drift.is_dirty());
+    }
+
+    #[test]
+    fn content_hash_drift_metadata_first_null_hash_row_unindexed_hashed_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let live = root.join("src/lib.rs");
+        write_utf8(live.as_std_path(), "fn a() {}\n");
+        set_mtime_secs(live.as_std_path(), FIXTURE_MTIME_SECS);
+        let (size, mtime_ns) = live_size_and_mtime_ns(live.as_std_path());
+
+        let storage = in_memory_storage();
+        let now = Utc::now().to_rfc3339();
+        insert_file_with_null_hash(&storage, "src/lib.rs", &now, Some(size), Some(mtime_ns));
+        set_last_indexed_at(&storage, &now);
+
+        let drift =
+            count_content_hash_drift_with_budget(&storage, &root, HashBudget::MetadataFirst)
+                .unwrap();
+        assert_eq!(
+            drift.unindexed, 1,
+            "NULL content_hash row must be Unindexed: {drift:?}"
+        );
+        assert_eq!(
+            drift.hashed, 0,
+            "NULL content_hash must not blake3: {drift:?}"
+        );
         assert!(drift.is_dirty());
     }
 
