@@ -59,6 +59,7 @@
 pub mod analysis;
 pub mod enrichment;
 pub mod hotspots;
+pub mod lead;
 pub mod orchestrator;
 pub mod packet;
 pub mod path_class;

@@ -343,6 +343,8 @@ fn test_schema_stability_golden() {
         analysis_mode: "working_tree".to_string(),
         // Empty → skipped by serde; not in exact-key set when empty.
         prospective_paths: Vec::new(),
+        actionable_lead: Vec::new(),
+        glossary: None,
     };
 
     let json = serde_json::to_string_pretty(&packet).unwrap();

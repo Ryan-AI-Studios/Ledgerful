@@ -2,6 +2,13 @@ use crate::commands::ask::Backend;
 use clap::Args;
 use std::path::PathBuf;
 
+/// Presentation mode for `scan --impact` (0227). Unknown values are clap-rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, clap::ValueEnum)]
+pub enum ScanImpactMode {
+    /// Docs-only lead: actionable couplings / test gaps; skip crate co-change trivia.
+    Docs,
+}
+
 /// Scan git changes and identify affected symbols.
 #[derive(Args, Debug)]
 pub struct ScanArgs {
@@ -41,6 +48,12 @@ pub struct ScanArgs {
     /// Include process/governance temporal couplings in risk + readSet (pathMode=all)
     #[arg(long)]
     pub include_governance: bool,
+    /// Impact presentation mode. Requires `--impact`. Currently `docs` only.
+    #[arg(long, value_enum, value_name = "MODE")]
+    pub mode: Option<ScanImpactMode>,
+    /// Expand remaining temporal couplings in docs-mode human output (default: collapsed).
+    #[arg(long)]
+    pub full: bool,
 }
 
 /// Analyze impact of current changes.

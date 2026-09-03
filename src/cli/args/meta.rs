@@ -443,6 +443,8 @@ impl Commands {
                 blast_depth,
                 paths,
                 include_governance,
+                mode,
+                full,
             }) => {
                 if *impact {
                     f.push("impact");
@@ -473,6 +475,12 @@ impl Commands {
                 }
                 if *include_governance {
                     f.push("include_governance");
+                }
+                if mode.is_some() {
+                    f.push("mode");
+                }
+                if *full {
+                    f.push("full");
                 }
             }
             Commands::Impact(ImpactArgs {
@@ -2310,6 +2318,60 @@ mod machine_output_tests {
             ])
             .is_err(),
             "--all-invalid must conflict with --tx"
+        );
+    }
+
+    #[test]
+    fn scan_mode_docs_requires_impact_and_rejects_unknown() {
+        use crate::cli::args::ScanImpactMode;
+        let err = Cli::try_parse_from(["ledgerful", "scan", "--mode", "fast"])
+            .expect_err("--mode fast must be clap-rejected")
+            .to_string();
+        assert!(
+            err.contains("invalid value")
+                || err.contains("possible values")
+                || err.contains("fast"),
+            "expected ValueEnum reject, got {err}"
+        );
+
+        let parsed = Cli::try_parse_from(["ledgerful", "scan", "--impact", "--mode", "docs"])
+            .expect("scan --impact --mode docs");
+        match parsed.command {
+            Commands::Scan(ScanArgs {
+                impact, mode, full, ..
+            }) => {
+                assert!(impact);
+                assert!(matches!(mode, Some(ScanImpactMode::Docs)));
+                assert!(!full);
+            }
+            other => panic!("expected Scan, got {other:?}"),
+        }
+
+        let with_full =
+            Cli::try_parse_from(["ledgerful", "scan", "--impact", "--mode", "docs", "--full"])
+                .expect("scan --impact --mode docs --full");
+        match with_full.command {
+            Commands::Scan(ScanArgs { full, mode, .. }) => {
+                assert!(full);
+                assert!(matches!(mode, Some(ScanImpactMode::Docs)));
+            }
+            other => panic!("expected Scan, got {other:?}"),
+        }
+
+        // `--mode docs` without `--impact` parses; execute rejects with miette
+        // before gitScan (see validate_mode_requires_impact).
+        let no_impact = Cli::try_parse_from(["ledgerful", "scan", "--mode", "docs"])
+            .expect("parse succeeds; execute requires --impact");
+        match no_impact.command {
+            Commands::Scan(ScanArgs { impact, mode, .. }) => {
+                assert!(!impact);
+                assert!(matches!(mode, Some(ScanImpactMode::Docs)));
+            }
+            other => panic!("expected Scan, got {other:?}"),
+        }
+        assert_eq!(
+            parse(&["scan", "--impact", "--mode", "docs"]).argv_shape(),
+            "scan|impact,mode"
         );
     }
 }

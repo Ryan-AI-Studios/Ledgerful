@@ -95,6 +95,8 @@ pub fn run_with(cli: Cli) -> Result<()> {
             blast_depth,
             paths,
             include_governance,
+            mode,
+            full,
         }) => crate::commands::scan::execute_scan_with_opts(
             impact,
             summary,
@@ -106,6 +108,8 @@ pub fn run_with(cli: Cli) -> Result<()> {
             blast_depth,
             paths,
             include_governance,
+            mode,
+            full,
         ),
         Commands::Impact(ImpactArgs {
             all_parents,

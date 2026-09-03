@@ -201,6 +201,8 @@ Interactive prune and human explain have no machine schema (explain types lack
 | `scan --json` with `--pr` | exit **1**; use `--format json` with `--pr` |
 | `scan --json` with `--paths` | exit **1**; `--paths requires --impact` |
 | `scan --json` auto-implies `--impact` | **Not supported** — impact analysis is expensive; pass `--impact` explicitly |
+| `scan --mode docs` without `--impact` | exit **1**; `--mode requires --impact` (miette; reject **before** gitScan). Unknown `--mode fast` is clap-rejected |
+| `scan --impact --mode docs` | Docs presentation: human **Actionable (≤5)** first; JSON additive `actionableLead` (cap 5, sorted) + `glossary` for `no_source_seeds` / `mapped=0`. Full `temporalCouplings` remain. Does **not** rewrite `latest-impact.json`. Auto-detects when **every** dirty/`--paths` entry is documentation-shaped (`.md`/`.txt`/`.rst`/`docs/**`/conductor process docs). Mixed `src`+docs does **not** auto-enter. `--include-governance` still restores pathMode=all **weights**; docs mode is presentation. `--full` expands remaining couplings in human output |
 
 ### `scan --json` gitScan schema (0180)
 
@@ -1000,6 +1002,30 @@ ledgerful scan --impact --json --paths src/foo.rs
 - Mutually exclusive with `--base-ref`. Cap ≤ 50. Empty/whitespace → usage error.
 - **Write policy:** prospective does **not** rewrite `latest-impact.json`
   (in-memory only). Working-tree impact without `--paths` keeps current write.
+
+### Docs-mode impact lead — 0227
+
+```powershell
+ledgerful scan --impact --mode docs
+ledgerful scan --impact --mode docs --json --paths docs/agent-output-contract.md
+ledgerful scan --impact --json --paths src/lib.rs,docs/installation.md  # mixed: not docs mode
+```
+
+When `--mode docs` is set, or when **every** dirty/prospective path is
+documentation-shaped, impact **presentation** leads with ≤5 actionable
+couplings / test-gap rows instead of crate co-change trivia:
+
+| Field | Rules |
+|---|---|
+| `schemaVersion` | string **`"v1"`** (unchanged; not numeric 1) |
+| `actionableLead` | Additive array, cap 5, **sorted**. Omitted when empty (non-docs runs). Items: `kind` `coupling` \| `test_gap`; coupling rows have `fileA`/`fileB`/`score`; test-gap rows have `status` / `mappedCount` / `explain` |
+| `glossary` | Object with `no_source_seeds` and `mapped=0` explanations. Present in docs mode. Omitted otherwise |
+| `temporalCouplings` | **Full list remains** (honesty). Trivia is out of the lead only |
+| `agentSummary` | **Not** on `ImpactPacket` — change-context only |
+| `latest-impact.json` | **Not rewritten** on `--mode docs` or auto-detect (0221 freeze; in-memory / stdout only) |
+
+`--include-governance` still sets `pathMode=all` weights. Docs mode does not
+change coupling math.
 
 ### `--base-ref` present-tense rule
 
