@@ -68,6 +68,10 @@ pub struct ContentHashDrift {
     pub changed_or_unindexed: usize,
     /// Subset of the above that had no stored row / hash.
     pub unindexed: usize,
+    /// Files actually blake3-hashed during this walk (`#[serde(default)]` for
+    /// additive JSON round-trip; 0 when MetadataFirst skips).
+    #[serde(default)]
+    pub hashed: usize,
     /// Deterministic sample paths (sorted, capped).
     pub sample_paths: Vec<String>,
 }
@@ -298,6 +302,115 @@ enum FileHashDriftKind {
     Unreadable,
 }
 
+/// How thoroughly [`count_content_hash_drift_with_budget`] hashes discovered files.
+///
+/// `try_auto_index` / `index --check` keep [`HashBudget::Full`]. Doctor's
+/// age-fresh path uses [`HashBudget::MetadataFirst`] (0232).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HashBudget {
+    /// Blake3 every readable discovered file (byte source of truth).
+    Full,
+    /// Skip blake3 when stored size+mtime match, or when the file is unindexed.
+    MetadataFirst,
+}
+
+/// Stored `project_files` columns used by the budgeted walk.
+#[derive(Debug, Clone)]
+struct StoredFileRow {
+    content_hash: Option<String>,
+    file_size: Option<i64>,
+    mtime_ns: Option<i64>,
+}
+
+/// Truncate filesystem mtime to i64 nanoseconds since Unix epoch.
+///
+/// Used at **both** discovered-file persist and the budgeted drift walk so skip
+/// equality is the same conversion (Windows NTFS 100ns vs FAT 2s). Exact i64
+/// equality is the metadata-first skip rule.
+pub fn extract_mtime_ns(meta: &std::fs::Metadata) -> Option<i64> {
+    let modified = meta.modified().ok()?;
+    let duration = modified.duration_since(std::time::UNIX_EPOCH).ok()?;
+    i64::try_from(duration.as_nanos()).ok()
+}
+
+fn blake3_file(file_path: &Utf8Path) -> std::result::Result<String, ()> {
+    match crate::util::fs::read_to_string_with_encoding(file_path.as_std_path()) {
+        Ok(c) => Ok(blake3::hash(c.as_bytes()).to_hex().to_string()),
+        Err(_) => Err(()),
+    }
+}
+
+/// Classify one discovered file. Returns `(kind, did_hash)`.
+fn classify_discovered_hash_drift(
+    file_path: &Utf8Path,
+    relative: &str,
+    stored: &std::collections::HashMap<String, StoredFileRow>,
+    budget: HashBudget,
+) -> (FileHashDriftKind, bool) {
+    match budget {
+        HashBudget::Full => match blake3_file(file_path) {
+            Err(()) => (FileHashDriftKind::Unreadable, false),
+            Ok(current_hash) => {
+                let kind = match stored.get(relative) {
+                    Some(row) if row.content_hash.as_ref() == Some(&current_hash) => {
+                        FileHashDriftKind::Clean
+                    }
+                    Some(row) if row.content_hash.is_some() => FileHashDriftKind::Changed,
+                    Some(_) | None => FileHashDriftKind::Unindexed,
+                };
+                (kind, true)
+            }
+        },
+        HashBudget::MetadataFirst => match stored.get(relative) {
+            None
+            | Some(StoredFileRow {
+                content_hash: None, ..
+            }) => match std::fs::metadata(file_path.as_std_path()) {
+                Ok(_) => (FileHashDriftKind::Unindexed, false),
+                Err(_) => (FileHashDriftKind::Unreadable, false),
+            },
+            Some(row) => {
+                let stored_hash = match row.content_hash.as_ref() {
+                    Some(h) => h,
+                    None => return (FileHashDriftKind::Unindexed, false),
+                };
+                let meta = match std::fs::metadata(file_path.as_std_path()) {
+                    Ok(m) => m,
+                    Err(_) => return (FileHashDriftKind::Unreadable, false),
+                };
+                let live_size = meta.len() as i64;
+                let live_mtime = extract_mtime_ns(&meta);
+                let metadata_match = row.file_size == Some(live_size)
+                    && row.mtime_ns.is_some()
+                    && live_mtime.is_some()
+                    && row.mtime_ns == live_mtime;
+                if metadata_match {
+                    return (FileHashDriftKind::Clean, false);
+                }
+                match blake3_file(file_path) {
+                    Ok(current_hash) if current_hash == *stored_hash => {
+                        (FileHashDriftKind::Clean, true)
+                    }
+                    Ok(_) => (FileHashDriftKind::Changed, true),
+                    Err(()) => (FileHashDriftKind::Unreadable, false),
+                }
+            }
+        },
+    }
+}
+
+/// Compare worktree supported-source hashes against `project_files.content_hash`.
+///
+/// Full blake3 walk — used by `try_auto_index` / `index --check`. Doctor's
+/// age-fresh path uses [`count_content_hash_drift_with_budget`] with
+/// [`HashBudget::MetadataFirst`].
+pub fn count_content_hash_drift(
+    storage: &StorageManager,
+    repo_root: &Utf8Path,
+) -> Result<ContentHashDrift> {
+    count_content_hash_drift_with_budget(storage, repo_root, HashBudget::Full)
+}
+
 /// Compare worktree supported-source hashes against `project_files.content_hash`.
 ///
 /// Walks the same supported-extension set as the indexer. Relative paths are
@@ -305,9 +418,10 @@ enum FileHashDriftKind {
 ///
 /// Per-file hashing is parallelized with rayon (0143); counts and sorted
 /// `sample_paths` remain deterministic (collect → sort → cap).
-pub fn count_content_hash_drift(
+pub fn count_content_hash_drift_with_budget(
     storage: &StorageManager,
     repo_root: &Utf8Path,
+    budget: HashBudget,
 ) -> Result<ContentHashDrift> {
     use crate::index::orchestrator::{BINARY_EXTENSIONS, SUPPORTED_EXTENSIONS};
     use crate::index::walker::RepoWalker;
@@ -324,22 +438,29 @@ pub fn count_content_hash_drift(
     let conn = storage.get_connection();
     let mut stmt = conn
         .prepare(
-            "SELECT file_path, content_hash FROM project_files WHERE parse_status != 'DELETED'",
+            "SELECT file_path, content_hash, file_size, mtime_ns FROM project_files WHERE parse_status != 'DELETED'",
         )
         .into_diagnostic()?;
-    let mut stored: HashMap<String, Option<String>> = HashMap::new();
+    let mut stored: HashMap<String, StoredFileRow> = HashMap::new();
     let rows = stmt
         .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+            Ok((
+                row.get::<_, String>(0)?,
+                StoredFileRow {
+                    content_hash: row.get(1)?,
+                    file_size: row.get(2)?,
+                    mtime_ns: row.get(3)?,
+                },
+            ))
         })
         .into_diagnostic()?;
     for row in rows {
-        let (path, hash) = row.into_diagnostic()?;
-        stored.insert(path.replace('\\', "/"), hash);
+        let (path, meta) = row.into_diagnostic()?;
+        stored.insert(path.replace('\\', "/"), meta);
     }
 
-    // Parallel map: hash each discovered file and classify vs stored rows.
-    let file_results: Vec<(String, FileHashDriftKind)> = discovered
+    // Parallel map: metadata (and optional hash) each discovered file.
+    let file_results: Vec<(String, FileHashDriftKind, bool)> = discovered
         .par_iter()
         .map(|file_path| {
             let relative = file_path
@@ -348,31 +469,23 @@ pub fn count_content_hash_drift(
                 .as_str()
                 .replace('\\', "/");
 
-            let current_hash =
-                match crate::util::fs::read_to_string_with_encoding(file_path.as_std_path()) {
-                    Ok(c) => blake3::hash(c.as_bytes()).to_hex().to_string(),
-                    Err(_) => {
-                        // Unreadable worktree path: treat as drift so refresh can retry.
-                        return (relative, FileHashDriftKind::Unreadable);
-                    }
-                };
-
-            let kind = match stored.get(&relative) {
-                Some(Some(stored_hash)) if stored_hash == &current_hash => FileHashDriftKind::Clean,
-                Some(Some(_)) => FileHashDriftKind::Changed,
-                Some(None) | None => FileHashDriftKind::Unindexed,
-            };
-            (relative, kind)
+            let (kind, did_hash) =
+                classify_discovered_hash_drift(file_path, &relative, &stored, budget);
+            (relative, kind, did_hash)
         })
         .collect();
 
     // Sequential reduce: counts + sample candidates (deterministic after sort).
     let mut changed_or_unindexed = 0usize;
     let mut unindexed = 0usize;
+    let mut hashed = 0usize;
     let mut sample_paths = Vec::new();
     let mut seen_stored: std::collections::HashSet<String> = std::collections::HashSet::new();
 
-    for (relative, kind) in file_results {
+    for (relative, kind, did_hash) in file_results {
+        if did_hash {
+            hashed += 1;
+        }
         seen_stored.insert(relative.clone());
         match kind {
             FileHashDriftKind::Clean => {}
@@ -409,6 +522,7 @@ pub fn count_content_hash_drift(
     Ok(ContentHashDrift {
         changed_or_unindexed,
         unindexed,
+        hashed,
         sample_paths,
     })
 }
@@ -816,6 +930,56 @@ mod tests {
         .unwrap();
     }
 
+    /// Explicit mtime in unix seconds (≥1s deltas in fixtures — FAT/exFAT safe).
+    const FIXTURE_MTIME_SECS: i64 = 1_700_000_000;
+    const FIXTURE_MTIME_SECS_DELTA: i64 = 1_700_000_002;
+
+    fn set_mtime_secs(path: &std::path::Path, unix_secs: i64) {
+        filetime::set_file_mtime(path, filetime::FileTime::from_unix_time(unix_secs, 0)).unwrap();
+    }
+
+    fn live_size_and_mtime_ns(path: &std::path::Path) -> (i64, i64) {
+        let meta = fs::metadata(path).unwrap();
+        (
+            meta.len() as i64,
+            extract_mtime_ns(&meta).expect("extract_mtime_ns after explicit set"),
+        )
+    }
+
+    fn insert_file_with_hash_meta(
+        storage: &StorageManager,
+        path: &str,
+        content: &str,
+        indexed_at: &str,
+        file_size: Option<i64>,
+        mtime_ns: Option<i64>,
+    ) {
+        let hash = blake3::hash(content.as_bytes()).to_hex().to_string();
+        let conn = storage.get_connection();
+        conn.execute(
+            "INSERT INTO project_files (file_path, parse_status, last_indexed_at, content_hash, file_size, mtime_ns) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![path, "OK", indexed_at, hash, file_size, mtime_ns],
+        )
+        .unwrap();
+    }
+
+    fn insert_file_with_null_hash(
+        storage: &StorageManager,
+        path: &str,
+        indexed_at: &str,
+        file_size: Option<i64>,
+        mtime_ns: Option<i64>,
+    ) {
+        let conn = storage.get_connection();
+        conn.execute(
+            "INSERT INTO project_files (file_path, parse_status, last_indexed_at, content_hash, file_size, mtime_ns) \
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![path, "OK", indexed_at, Option::<String>::None, file_size, mtime_ns],
+        )
+        .unwrap();
+    }
+
     fn set_last_indexed_at(storage: &StorageManager, ts: &str) {
         let conn = storage.get_connection();
         conn.execute(
@@ -1001,6 +1165,7 @@ mod tests {
         let drift = ContentHashDrift {
             changed_or_unindexed: 2,
             unindexed: 0,
+            hashed: 0,
             sample_paths: vec!["src/a.rs".into()],
         };
         assert_eq!(
@@ -1132,6 +1297,288 @@ mod tests {
     }
 
     #[test]
+    fn content_hash_drift_hashed_deserializes_with_serde_default() {
+        let v: ContentHashDrift =
+            serde_json::from_str(r#"{"changed_or_unindexed":0,"unindexed":0,"sample_paths":[]}"#)
+                .unwrap();
+        assert_eq!(v.hashed, 0);
+        assert_eq!(v.changed_or_unindexed, 0);
+    }
+
+    #[test]
+    fn content_hash_drift_metadata_first_all_matching_hashed_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let live = root.join("src/lib.rs");
+        write_utf8(live.as_std_path(), "fn a() {}\n");
+        set_mtime_secs(live.as_std_path(), FIXTURE_MTIME_SECS);
+        let (size, mtime_ns) = live_size_and_mtime_ns(live.as_std_path());
+
+        let storage = in_memory_storage();
+        let now = Utc::now().to_rfc3339();
+        insert_file_with_hash_meta(
+            &storage,
+            "src/lib.rs",
+            "fn a() {}\n",
+            &now,
+            Some(size),
+            Some(mtime_ns),
+        );
+        set_last_indexed_at(&storage, &now);
+
+        let drift =
+            count_content_hash_drift_with_budget(&storage, &root, HashBudget::MetadataFirst)
+                .unwrap();
+        assert_eq!(
+            drift.hashed, 0,
+            "matching size+mtime must skip blake3: {drift:?}"
+        );
+        assert_eq!(
+            drift.changed_or_unindexed, 0,
+            "all-matching must be clean: {drift:?}"
+        );
+        assert!(!drift.is_dirty());
+    }
+
+    #[test]
+    fn content_hash_drift_metadata_first_unindexed_hashed_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let indexed = root.join("src/lib.rs");
+        let unindexed = root.join("src/new.rs");
+        write_utf8(indexed.as_std_path(), "fn a() {}\n");
+        write_utf8(unindexed.as_std_path(), "fn b() {}\n");
+        set_mtime_secs(indexed.as_std_path(), FIXTURE_MTIME_SECS);
+        set_mtime_secs(unindexed.as_std_path(), FIXTURE_MTIME_SECS_DELTA);
+        let (size, mtime_ns) = live_size_and_mtime_ns(indexed.as_std_path());
+
+        let storage = in_memory_storage();
+        let now = Utc::now().to_rfc3339();
+        insert_file_with_hash_meta(
+            &storage,
+            "src/lib.rs",
+            "fn a() {}\n",
+            &now,
+            Some(size),
+            Some(mtime_ns),
+        );
+        set_last_indexed_at(&storage, &now);
+
+        let drift =
+            count_content_hash_drift_with_budget(&storage, &root, HashBudget::MetadataFirst)
+                .unwrap();
+        assert_eq!(drift.unindexed, 1, "new.rs must be unindexed: {drift:?}");
+        assert_eq!(
+            drift.hashed, 0,
+            "unindexed discovered file must not blake3: {drift:?}"
+        );
+        assert!(drift.sample_paths.iter().any(|p| p == "src/new.rs"));
+        assert!(drift.is_dirty());
+    }
+
+    #[test]
+    fn content_hash_drift_metadata_first_null_hash_row_unindexed_hashed_zero() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let live = root.join("src/lib.rs");
+        write_utf8(live.as_std_path(), "fn a() {}\n");
+        set_mtime_secs(live.as_std_path(), FIXTURE_MTIME_SECS);
+        let (size, mtime_ns) = live_size_and_mtime_ns(live.as_std_path());
+
+        let storage = in_memory_storage();
+        let now = Utc::now().to_rfc3339();
+        insert_file_with_null_hash(&storage, "src/lib.rs", &now, Some(size), Some(mtime_ns));
+        set_last_indexed_at(&storage, &now);
+
+        let drift =
+            count_content_hash_drift_with_budget(&storage, &root, HashBudget::MetadataFirst)
+                .unwrap();
+        assert_eq!(
+            drift.unindexed, 1,
+            "NULL content_hash row must be Unindexed: {drift:?}"
+        );
+        assert_eq!(
+            drift.hashed, 0,
+            "NULL content_hash must not blake3: {drift:?}"
+        );
+        assert!(drift.is_dirty());
+    }
+
+    #[test]
+    fn content_hash_drift_metadata_first_size_mismatch_is_changed() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let live = root.join("src/lib.rs");
+        // Same-length swap so this case is size mismatch (stored size wrong), not
+        // an accidental length change from the live rewrite.
+        write_utf8(live.as_std_path(), "fn new() {}\n");
+        set_mtime_secs(live.as_std_path(), FIXTURE_MTIME_SECS);
+        let (live_size, mtime_ns) = live_size_and_mtime_ns(live.as_std_path());
+        assert_eq!(
+            live_size,
+            "fn old() {}\n".len() as i64,
+            "fixture lengths must match so stored size is the only mismatch lever"
+        );
+
+        let storage = in_memory_storage();
+        let now = Utc::now().to_rfc3339();
+        // Stored hash is old content; stored size is deliberately wrong.
+        insert_file_with_hash_meta(
+            &storage,
+            "src/lib.rs",
+            "fn old() {}\n",
+            &now,
+            Some(live_size + 99),
+            Some(mtime_ns),
+        );
+        set_last_indexed_at(&storage, &now);
+
+        let drift =
+            count_content_hash_drift_with_budget(&storage, &root, HashBudget::MetadataFirst)
+                .unwrap();
+        assert!(drift.is_dirty(), "size mismatch + hash drift: {drift:?}");
+        assert_eq!(drift.changed_or_unindexed, 1);
+        assert_eq!(drift.unindexed, 0);
+        assert_eq!(
+            drift.hashed, 1,
+            "size mismatch must blake3 (not skip): {drift:?}"
+        );
+        assert!(drift.sample_paths.iter().any(|p| p == "src/lib.rs"));
+    }
+
+    #[test]
+    fn content_hash_drift_metadata_first_legacy_null_mtime_hash_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let live = root.join("src/lib.rs");
+        write_utf8(live.as_std_path(), "fn new() {}\n");
+        set_mtime_secs(live.as_std_path(), FIXTURE_MTIME_SECS);
+        let (live_size, _) = live_size_and_mtime_ns(live.as_std_path());
+
+        let storage = in_memory_storage();
+        let now = Utc::now().to_rfc3339();
+        insert_file_with_hash_meta(
+            &storage,
+            "src/lib.rs",
+            "fn old() {}\n",
+            &now,
+            Some(live_size),
+            None,
+        );
+        set_last_indexed_at(&storage, &now);
+
+        let drift =
+            count_content_hash_drift_with_budget(&storage, &root, HashBudget::MetadataFirst)
+                .unwrap();
+        assert!(
+            drift.is_dirty(),
+            "NULL mtime + differing blake3 must be changed: {drift:?}"
+        );
+        assert_eq!(drift.changed_or_unindexed, 1);
+        assert_eq!(drift.hashed, 1, "legacy NULL mtime must blake3: {drift:?}");
+    }
+
+    #[test]
+    fn content_hash_drift_full_budget_hashes_matching_metadata() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
+        let live = root.join("src/lib.rs");
+        write_utf8(live.as_std_path(), "fn a() {}\n");
+        set_mtime_secs(live.as_std_path(), FIXTURE_MTIME_SECS);
+        let (size, mtime_ns) = live_size_and_mtime_ns(live.as_std_path());
+
+        let storage = in_memory_storage();
+        let now = Utc::now().to_rfc3339();
+        insert_file_with_hash_meta(
+            &storage,
+            "src/lib.rs",
+            "fn a() {}\n",
+            &now,
+            Some(size),
+            Some(mtime_ns),
+        );
+        set_last_indexed_at(&storage, &now);
+
+        let full = count_content_hash_drift(&storage, &root).unwrap();
+        assert_eq!(full.changed_or_unindexed, 0);
+        assert!(
+            full.hashed >= 1,
+            "Full budget must blake3 even when metadata matches: {full:?}"
+        );
+
+        let budgeted =
+            count_content_hash_drift_with_budget(&storage, &root, HashBudget::MetadataFirst)
+                .unwrap();
+        assert_eq!(budgeted.hashed, 0);
+        assert_eq!(budgeted.changed_or_unindexed, 0);
+    }
+
+    #[test]
+    fn content_hash_drift_try_auto_index_and_check_status_keep_full_budget() {
+        let staleness = include_str!("staleness.rs");
+        let lifecycle = include_str!("orchestrator/lifecycle.rs");
+        let doctor = include_str!("../commands/doctor/checks/index.rs");
+
+        let try_start = staleness
+            .find("pub fn try_auto_index")
+            .expect("try_auto_index present");
+        let try_end = staleness[try_start..]
+            .find("#[cfg(test)]")
+            .map(|i| try_start + i)
+            .unwrap_or(staleness.len());
+        let try_body = &staleness[try_start..try_end];
+        assert!(
+            try_body.contains("count_content_hash_drift(&storage, &layout.root)"),
+            "try_auto_index must call Full count_content_hash_drift"
+        );
+        assert!(
+            !try_body.contains("HashBudget::MetadataFirst"),
+            "try_auto_index must not use MetadataFirst"
+        );
+
+        let check_start = lifecycle
+            .find("pub fn check_status")
+            .expect("check_status present");
+        let check_end = lifecycle[check_start..]
+            .find("pub fn full_index")
+            .map(|i| check_start + i)
+            .unwrap_or(lifecycle.len());
+        let check_body = &lifecycle[check_start..check_end];
+        assert!(
+            check_body.contains("count_content_hash_drift(&indexer.storage, &indexer.repo_path)"),
+            "check_status (index --check) must call Full count_content_hash_drift"
+        );
+        assert!(
+            !check_body.contains("HashBudget::MetadataFirst"),
+            "check_status must not use MetadataFirst"
+        );
+
+        assert!(
+            doctor.contains("HashBudget::MetadataFirst"),
+            "doctor age-fresh path must use MetadataFirst"
+        );
+        assert!(
+            doctor.contains("count_content_hash_drift_with_budget"),
+            "doctor must call the budgeted walk"
+        );
+
+        let parsing = include_str!("orchestrator/parsing.rs");
+        let docs = include_str!("orchestrator/docs.rs");
+        assert!(
+            parsing.contains("extract_mtime_ns"),
+            "parsing persist must fill mtime_ns via extract_mtime_ns"
+        );
+        assert!(
+            lifecycle.contains("extract_mtime_ns"),
+            "lifecycle persist must fill mtime_ns via extract_mtime_ns"
+        );
+        assert!(
+            !docs.contains("extract_mtime_ns"),
+            "docs.rs must keep NULL mtime (walker never discovers .md)"
+        );
+    }
+
+    #[test]
     fn age_fresh_plus_dirty_plans_auto_index() {
         let tmp = tempfile::tempdir().unwrap();
         let root = Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).unwrap();
@@ -1221,6 +1668,7 @@ mod tests {
         let drift = ContentHashDrift {
             changed_or_unindexed: 7,
             unindexed: 2,
+            hashed: 0,
             sample_paths: vec!["src/a.rs".into(), "src/b.rs".into()],
         };
         let out = apply_content_drift_override(assessment, &drift);
@@ -1254,6 +1702,7 @@ mod tests {
         let drift = ContentHashDrift {
             changed_or_unindexed: 3,
             unindexed: 3,
+            hashed: 0,
             sample_paths: vec!["src/a.rs".into()],
         };
         let out = apply_content_drift_override(assessment, &drift);
@@ -1283,6 +1732,7 @@ mod tests {
         let drift = ContentHashDrift {
             changed_or_unindexed: 1,
             unindexed: 1,
+            hashed: 0,
             sample_paths: vec!["src/a.rs".into()],
         };
         let out = apply_content_drift_override(assessment, &drift);
@@ -1320,6 +1770,7 @@ mod tests {
         let drift = ContentHashDrift {
             changed_or_unindexed: 2,
             unindexed: 0,
+            hashed: 0,
             sample_paths: vec!["src/x.rs".into()],
         };
         assert_eq!(
@@ -1351,6 +1802,7 @@ mod tests {
         let drift = ContentHashDrift {
             changed_or_unindexed: 1,
             unindexed: 0,
+            hashed: 0,
             sample_paths: vec!["src/a.rs".into()],
         };
         let out = apply_content_drift_override(assessment, &drift);

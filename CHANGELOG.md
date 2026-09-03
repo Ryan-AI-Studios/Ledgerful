@@ -79,6 +79,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Doctor metadata-first content-hash budget (0232):** Age-fresh Daily 5
+  `doctor` skips blake3 when stored `file_size`+`mtime_ns` match live
+  metadata, and does not hash unindexed discovered files. `index --check`
+  and `try_auto_index` keep full blake3. Residual: identical size+mtime
+  with different bytes (`cp -p`) is a documented non-firing case.
+  Finding codes unchanged. No Cargo bump.
+
 - **Blast seed resolve prepare-once (0234):** `resolve_seeds` prepares the
   qualified_name and file+name SQLite statements once per call (exactly two
   `prepare`s), then reuses them per changed symbol. Seed identity, matching

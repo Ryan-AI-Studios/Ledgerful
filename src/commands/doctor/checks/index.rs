@@ -130,8 +130,10 @@ pub(crate) fn collect_index_findings(
 
     // 2. Knowledge Graph Staleness (0133: age first STOP, else content-hash drift)
     // Age path: graph-empty | graph-stale only — do not run content drift (double findings + I/O).
-    // Else: one count_content_hash_drift on layout.root (never bare cwd); dirty → content-stale;
-    // clean → Current / empty-Cozo hint; Err → graph-drift-check-failed (never Current).
+    // Else: metadata-first count_content_hash_drift on layout.root (never bare cwd);
+    // dirty → content-stale; clean → Current / empty-Cozo hint; Err →
+    // graph-drift-check-failed (never Current). Full blake3 stays on
+    // try_auto_index / index --check. `doctor --full` does not force full hash.
     let age_warning =
         crate::index::staleness::check_index_staleness(storage, config.index.stale_threshold_days);
     let age_inputs = age_warning.as_ref().map(|w| GraphAgeInputs {
@@ -140,12 +142,16 @@ pub(crate) fn collect_index_findings(
     });
     let drift_for_classify: Option<Result<ContentHashDriftInputs, String>> = if age_inputs.is_none()
     {
-        match crate::index::staleness::count_content_hash_drift(storage, layout.root.as_path()) {
+        match crate::index::staleness::count_content_hash_drift_with_budget(
+            storage,
+            layout.root.as_path(),
+            crate::index::staleness::HashBudget::MetadataFirst,
+        ) {
             Ok(d) => Some(Ok(ContentHashDriftInputs {
                 changed_or_unindexed: d.changed_or_unindexed,
             })),
             Err(e) => {
-                tracing::debug!("Full graph content-hash drift check error: {e}");
+                tracing::debug!("Graph content-hash drift check error: {e}");
                 Some(Err(e.to_string()))
             }
         }

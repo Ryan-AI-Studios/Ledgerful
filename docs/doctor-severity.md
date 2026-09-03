@@ -288,6 +288,9 @@ warn when Cozo is unset and content drift is dirty).
 
 Control flow: **age first STOP**; content-hash drift only when age path is
 non-stale. Repo root for drift is **`layout.root` only** (never bare `cwd`).
+Age-fresh doctor uses **metadata-first** skip (size+mtime match or unindexed
+→ no blake3). Codes below are **frozen**. `index --check` remains full blake3
+(byte SoT). `doctor --full` does not force full hash.
 
 ```text
 check_index_staleness → Some(missing)  → graph-empty            (warn / index)
@@ -295,9 +298,11 @@ check_index_staleness → Some(age-stale) → graph-stale           (warn / inde
   // STOP — do not run count_content_hash_drift
 
 check_index_staleness → None (age-fresh):
-  count_content_hash_drift dirty       → graph-content-stale    (warn / index)
+  count_content_hash_drift (MetadataFirst) dirty
+                                       → graph-content-stale    (warn / index)
                                          + non-Current health line with N
-  count_content_hash_drift clean       → human only: Graph state: Current
+  count_content_hash_drift (MetadataFirst) clean
+                                       → human only: Graph state: Current
                                          (or empty-Cozo analyze-graph Current hint)
   count_content_hash_drift Err         → graph-drift-check-failed (warn / index)
                                          + non-Current health line
@@ -307,7 +312,7 @@ check_index_staleness → None (age-fresh):
 |---|---|---|---|---|
 | `graph-empty` | warn | index | Never indexed / missing floor | Age path; no content walk |
 | `graph-stale` | warn | index | Time-stale vs `stale_threshold_days` | Age path; no content walk; message includes file count |
-| `graph-content-stale` | warn | index | Age-fresh + content-hash drift | Message includes **N** = `changed_or_unindexed`; greppable content/drift/stale; remediation: `index --incremental` then `index --check --json` |
+| `graph-content-stale` | warn | index | Age-fresh + content-hash drift | Message includes **N** = `changed_or_unindexed`; greppable content/drift/stale; remediation: `index --incremental` then `index --check --json`. Doctor walk is metadata-first (0232); identical size+mtime with different bytes (`cp -p`) is a documented non-firing residual — `--check` is byte SoT. |
 | `graph-drift-check-failed` | warn | index | Age-fresh + drift walk error | Display error truncated to 80 chars; full at `tracing::debug!`; never claim Current |
 
 **Human Index Health (content-stale example — must not contain bare success `Current`):**

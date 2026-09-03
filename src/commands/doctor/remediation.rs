@@ -628,6 +628,25 @@ mod tests {
     }
 
     #[test]
+    fn classify_graph_age_stop_unchanged_when_drift_would_fail() {
+        // DoD-3: age STOP still wins; drift Err is not evaluated.
+        let age = age_stale(3);
+        let h = classify_graph_index_health(Some(&age), Some(Err("io exploded".into())), 0, 0);
+        assert_eq!(h, GraphIndexHealth::AgeStale { stale_files: 3 });
+        assert!(
+            !matches!(h, GraphIndexHealth::DriftCheckFailed { .. }),
+            "age STOP must not emit drift-check-failed"
+        );
+        assert!(
+            !matches!(
+                h,
+                GraphIndexHealth::CurrentPopulated | GraphIndexHealth::CurrentEmptyCozo
+            ),
+            "age STOP must not emit Current"
+        );
+    }
+
+    #[test]
     fn classify_graph_drift_err_truncates_to_80_chars() {
         let long = "x".repeat(200);
         let h = classify_graph_index_health(None, Some(Err(long.clone())), 1, 1);
