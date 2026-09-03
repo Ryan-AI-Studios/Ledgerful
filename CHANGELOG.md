@@ -79,6 +79,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Production unwrap elimination (0236):** Named panic-prone sites in Cozo
+  topology puts, verify predictor packet access, search stream indexer /
+  code tokenizer, incremental watch rows, and Rust route AST extraction now
+  use `?`, degrade, or skip-with-warn. Unknown `SymbolKind` values are
+  skipped with a warning instead of defaulting to `Function`. No Cargo bump.
+
 - **Internal git spawn fail-closed (0235):** Production git subprocesses go
   through `git_command` / `git_command_with_policy`, which return `Err` on
   process-policy deny (`verify.denied_commands`) instead of warning and still

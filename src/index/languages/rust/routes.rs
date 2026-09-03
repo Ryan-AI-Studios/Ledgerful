@@ -156,9 +156,10 @@ fn extract_axum_route(
     routes: &mut Vec<ExtractedRoute>,
     handler_info: &std::collections::HashMap<String, HandlerInfo>,
 ) {
-    let args_node = call_node
-        .child_by_field_name("arguments")
-        .expect("route() should have arguments");
+    let args_node = match call_node.child_by_field_name("arguments") {
+        Some(node) => node,
+        None => return,
+    };
     let mut arg_cursor = args_node.walk();
     let args: Vec<Node> = args_node.children(&mut arg_cursor).collect();
 
@@ -312,4 +313,27 @@ fn extract_decorator_route(
         }
     }
     None
+}
+
+#[cfg(test)]
+mod routes_unwrap_tests {
+    use super::*;
+    use tree_sitter::Parser;
+
+    #[test]
+    fn routes_axum_route_without_arguments_skips_without_panic() {
+        let mut parser = Parser::new();
+        parser
+            .set_language(&tree_sitter_rust::LANGUAGE.into())
+            .expect("rust grammar");
+        let source = "fn build() { let _ = route(); }";
+        let tree = parser.parse(source, None).expect("parse");
+        let call = tree
+            .root_node()
+            .descendant_for_byte_range(source.find("route").unwrap(), source.len())
+            .expect("route call");
+        let mut routes = Vec::new();
+        extract_axum_route(&call, source, &mut routes, &Default::default());
+        assert!(routes.is_empty());
+    }
 }

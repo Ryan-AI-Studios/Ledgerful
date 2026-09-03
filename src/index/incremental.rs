@@ -235,7 +235,13 @@ impl IncrementalSyncEngine {
 
             match item.event.kind {
                 WatchEventKind::Create | WatchEventKind::Modify => {
-                    let project_file = item.project_file.as_ref().unwrap();
+                    let Some(project_file) = item.project_file.as_ref() else {
+                        tracing::warn!(
+                            path = %relative,
+                            "incremental watch event missing parsed project_file; skipping"
+                        );
+                        continue;
+                    };
                     // Delete old dependents and symbols
                     delete_file_index_dependents(&tx, &relative)?;
                     tx.execute(
@@ -329,10 +335,13 @@ impl IncrementalSyncEngine {
             }
             drop(caller_stmt);
 
-            let record = affected
-                .iter_mut()
-                .find(|r| r.file_path == relative)
-                .expect("affected record should exist");
+            let Some(record) = affected.iter_mut().find(|r| r.file_path == relative) else {
+                tracing::warn!(
+                    path = %relative,
+                    "incremental call edge pass missing affected record; skipping file"
+                );
+                continue;
+            };
 
             for call in &item.calls {
                 let caller_symbol_id = match caller_by_name.get(&call.caller_name) {

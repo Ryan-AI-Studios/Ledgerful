@@ -12,11 +12,15 @@ impl CodeTokenizer {
 
     pub fn tokenize(&self, code: &str) -> Vec<String> {
         let mut parser = Parser::new();
-        parser
-            .set_language(&self.language)
-            .expect("Error loading grammar");
+        if let Err(err) = parser.set_language(&self.language) {
+            tracing::warn!("code_tokenizer: failed to load grammar: {err}");
+            return Vec::new();
+        }
 
-        let tree = parser.parse(code, None).expect("Error parsing code");
+        let Some(tree) = parser.parse(code, None) else {
+            tracing::warn!("code_tokenizer: failed to parse code");
+            return Vec::new();
+        };
         let mut tokens = HashSet::new();
 
         self.traverse_nodes(tree.root_node(), code, &mut tokens);
@@ -65,4 +69,25 @@ pub fn get_typescript_tokenizer() -> CodeTokenizer {
 
 pub fn get_go_tokenizer() -> CodeTokenizer {
     CodeTokenizer::new(tree_sitter_go::LANGUAGE.into())
+}
+
+#[cfg(test)]
+mod tokenize_tests {
+    use super::*;
+
+    #[test]
+    fn tokenize_invalid_syntax_returns_without_panic() {
+        let tokenizer = get_rust_tokenizer();
+        let tokens = tokenizer.tokenize("fn {{{ not valid rust");
+        // tree-sitter may still recover partial identifiers; the contract is no panic.
+        let _ = tokens;
+    }
+
+    #[test]
+    fn tokenize_valid_rust_extracts_identifiers() {
+        let tokenizer = get_rust_tokenizer();
+        let tokens = tokenizer.tokenize("fn main() { let value = 1; }");
+        assert!(tokens.contains(&"main".to_string()));
+        assert!(tokens.contains(&"value".to_string()));
+    }
 }

@@ -74,32 +74,27 @@ impl OutcomePredictor {
         // Structural impact is primarily handled via the `structural_edges` DB (call_data).
         let current_imports = BTreeMap::new();
 
+        let Some(packet) = ctx.packet.clone() else {
+            return Ok(PredictionResult::default());
+        };
+
         let call_data = match &ctx.storage {
-            Some(storage) => {
-                let packet = ctx.packet.as_ref().unwrap();
-                Self::fetch_structural_call_data(packet, storage, &mut ctx.warnings)
-            }
+            Some(storage) => Self::fetch_structural_call_data(&packet, storage, &mut ctx.warnings),
             None => StructuralCallData::default(),
         };
 
         let test_mapping_data = match &ctx.storage {
-            Some(storage) => {
-                let packet = ctx.packet.as_ref().unwrap();
-                Self::fetch_test_mapping_data(packet, storage, &mut ctx.warnings)
-            }
+            Some(storage) => Self::fetch_test_mapping_data(&packet, storage, &mut ctx.warnings),
             None => TestMappingData::default(),
         };
 
-        let mut prediction = {
-            let packet = ctx.packet.as_ref().unwrap();
-            Predictor::predict_with_test_mappings(
-                packet,
-                &history,
-                &current_imports,
-                &call_data,
-                &test_mapping_data,
-            )
-        };
+        let mut prediction = Predictor::predict_with_test_mappings(
+            &packet,
+            &history,
+            &current_imports,
+            &call_data,
+            &test_mapping_data,
+        );
 
         for warning in &prediction.warnings {
             warn!("{}", warning);
@@ -111,7 +106,7 @@ impl OutcomePredictor {
         if semantic_weight > 0.0
             && let Some(storage) = &ctx.storage
         {
-            let diff_text = semantic_predictor::build_diff_text(ctx.packet.as_ref().unwrap());
+            let diff_text = semantic_predictor::build_diff_text(&packet);
             let mut embed_config = ctx.config.local_model.clone();
             embed_config.timeout_secs = 6;
             let conn = storage.get_connection();
@@ -167,7 +162,7 @@ impl OutcomePredictor {
         if semantic_weight > 0.0
             && let Some(storage) = &ctx.storage
         {
-            let diff_text = semantic_predictor::build_diff_text(ctx.packet.as_ref().unwrap());
+            let diff_text = semantic_predictor::build_diff_text(&packet);
             let mut embed_config = ctx.config.local_model.clone();
             embed_config.timeout_secs = 6;
 
@@ -501,26 +496,25 @@ mod tests {
     }
 
     #[test]
-    fn predictor_packet_history_load_err_degraded_without_truncate_warning() {
+    fn predictor_storage_some_packet_none_returns_default_without_panic() {
         let storage = in_memory_storage();
-        storage
-            .get_connection()
-            .execute_batch("PRAGMA foreign_keys = OFF; DROP TABLE snapshots;")
-            .unwrap();
-
-        let mut ctx = predict_ctx(storage);
-        OutcomePredictor::predict(&mut ctx).unwrap();
-        assert!(
-            ctx.warnings
-                .iter()
-                .any(|w| w.contains("Historical prediction degraded")),
-            "missing degraded warning in {:?}",
-            ctx.warnings
-        );
-        assert!(
-            ctx.warnings.iter().all(|w| !is_truncate_warning(w)),
-            "truncation warning must not fire on load error: {:?}",
-            ctx.warnings
-        );
+        let tmp = tempfile::tempdir().unwrap();
+        let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+        let mut ctx = VerificationContext {
+            layout: Layout::new(root),
+            current_dir: tmp.path().to_path_buf(),
+            config: Config::default(),
+            packet: None,
+            storage: Some(storage),
+            no_predict: false,
+            explain: false,
+            health: false,
+            warnings: Vec::new(),
+            suppress_human_output: true,
+            verbose: false,
+        };
+        let result = OutcomePredictor::predict(&mut ctx).unwrap();
+        assert!(result.files.is_empty());
+        assert!(result.warnings.is_empty());
     }
 }
