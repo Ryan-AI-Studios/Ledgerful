@@ -8,12 +8,6 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
-- **Verify predictor snapshot history cap (0233):** `verify` predict loads at
-  most 64 recent `snapshots` rows (`PREDICTOR_SNAPSHOT_HISTORY_CAP`) via
-  `get_recent_packets`. When history is truncated, warns
-  `packet history truncated to {N} of {M} snapshots`. Scoring formula
-  unchanged. `get_all_packets` stays unbounded. No Cargo bump.
-
 - **Impact docs-mode lead (0227):** `scan --impact --mode docs` (ValueEnum;
   requires `--impact`) plus strict auto-detect when every dirty/`--paths`
   file is documentation-shaped. Human leads with **Actionable (≤5)**;
@@ -84,6 +78,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   syncs in-engine templates. No Cargo bump.
 
 ### Fixed
+
+- **Verify predictor snapshot history cap (0233):** `verify` predict loads at
+  most 64 recent `snapshots` rows (`PREDICTOR_SNAPSHOT_HISTORY_CAP`) via
+  `get_recent_packets`. When history is truncated, warns
+  `packet history truncated to {N} of {M} snapshots`. Scoring formula
+  unchanged. `get_all_packets` stays unbounded. No Cargo bump.
 
 - **Doctor metadata-first content-hash budget (0232):** Age-fresh Daily 5
   `doctor` skips blake3 when stored `file_size`+`mtime_ns` match live
