@@ -79,6 +79,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Windows DACL on ledger `private.key` (0238):** After each production
+  write or successful `private.pem` → `private.key` rename, apply the
+  token-file Windows user-only ACL (`icacls /inheritance:r /grant:r` with
+  `{USERNAME}:(R,W)` as one argv element). Failure warns and keeps the
+  file. Unix `0o600` unchanged. `public.pem` is not DACLed. No Cargo bump.
+
 - **Production unwrap elimination (0236):** Named panic-prone sites in Cozo
   topology puts, verify predictor packet access, search stream indexer /
   code tokenizer, incremental watch rows, and Rust route AST extraction now
