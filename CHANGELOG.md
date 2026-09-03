@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Blast seed resolve prepare-once (0234):** `resolve_seeds` prepares the
+  qualified_name and file+name SQLite statements once per call (exactly two
+  `prepare`s), then reuses them per changed symbol. Seed identity, matching
+  order, hop SQL, and blast depth/confidence freeze (0106/0117) are
+  unchanged. No Cargo bump.
+
 - **Impact docs-mode lead (0227):** `scan --impact --mode docs` (ValueEnum;
   requires `--impact`) plus strict auto-detect when every dirty/`--paths`
   file is documentation-shaped. Human leads with **Actionable (≤5)**;
