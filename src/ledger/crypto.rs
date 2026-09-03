@@ -306,7 +306,7 @@ fn restrict_private_key_permissions(path: &Path) -> Result<(), CryptoError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let perms = std::fs::Permissions::from_mode(0o600);
+        let perms = std::fs::Permissions::from_mode(0o600); // restrict_private_key_unix_0600
         fs::set_permissions(path, perms)?;
     }
     #[cfg(windows)]
@@ -940,8 +940,9 @@ mod tests {
         #[cfg(not(unix))]
         {
             let src = include_str!("crypto.rs");
+            let needle = format!("{}{}", "restrict_private_key_unix_", "0600");
             assert!(
-                src.contains("let perms = std::fs::Permissions::from_mode(0o600);"),
+                src.contains(&needle),
                 "Unix 0o600 arm must remain in restrict_private_key_permissions"
             );
         }
