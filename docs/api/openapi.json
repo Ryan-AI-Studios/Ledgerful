@@ -641,7 +641,7 @@
           "session"
         ],
         "summary": "`POST /api/session/exchange` — bootstrap the SPA from a single-use handoff code.",
-        "description": "Unauthenticated by design (no `Authorization` header): the SPA exchanges the\nfragment code (`#c=…`) for the long-lived bearer token before any other API\ncall. Still wrapped by outer `host_validation_layer` and `rate_limit_layer`.\n\nSemantics (track 0090):\n- Absent / expired handoff → 403 (expired entries are cleared)\n- Wrong code → 403, recorded on `auth_fail_limiter`, **code not burned**\n- Match → consume handoff, return `{ \"token\": \"<session>\" }`\n\nNever logs the handoff code or session token.",
+        "description": "Unauthenticated by design (no `Authorization` header): the SPA exchanges the\nfragment code (`#c=…`) for the long-lived bearer token before any other API\ncall. Still wrapped by outer `host_validation_layer` and `rate_limit_layer`.\n\nSemantics (track 0090):\n- Absent / expired handoff → 403 (expired entries are cleared)\n- Wrong code → 403, recorded on `auth_fail_limiter`, **code not burned**\n- Match → consume handoff, return `{ \"token\": \"<session>\" }`\n\nTrack 0239: if `Origin` is **present** and not loopback → 403. Missing Origin\nstill succeeds (curl / some same-origin clients).\n\nNever logs the handoff code or session token.",
         "operationId": "exchangeSession",
         "requestBody": {
           "content": {
@@ -665,7 +665,7 @@
             }
           },
           "403": {
-            "description": "Handoff absent, expired, already consumed, or mismatched"
+            "description": "Handoff absent, expired, already consumed, mismatched, or non-loopback Origin"
           },
           "429": {
             "description": "Auth-failure rate limit exceeded"

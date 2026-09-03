@@ -592,6 +592,50 @@ async fn session_exchange_public_but_protected_routes_still_gated() {
 }
 
 #[tokio::test]
+async fn session_exchange_rejects_non_loopback_origin() {
+    let code = generate_token();
+    let guard = temp_layout();
+    let (url, token, handle) = spawn_server_with_handoff(
+        guard.layout(),
+        Some(HandoffCode {
+            code: code.clone(),
+            expires_at: Instant::now() + HANDOFF_TTL,
+        }),
+    )
+    .await;
+
+    let evil = client()
+        .post(format!("{}/api/session/exchange", url))
+        .header(ORIGIN, "https://evil.example")
+        .header(CONTENT_TYPE, "application/json")
+        .body(format!(r#"{{"code":"{code}"}}"#))
+        .send()
+        .await
+        .unwrap()
+        .status()
+        .as_u16();
+    assert_eq!(evil, 403, "present non-loopback Origin must 403");
+
+    // Missing Origin still succeeds; Origin reject must not burn the code.
+    let ok = client()
+        .post(format!("{}/api/session/exchange", url))
+        .header(CONTENT_TYPE, "application/json")
+        .body(format!(r#"{{"code":"{code}"}}"#))
+        .send()
+        .await
+        .unwrap();
+    assert_eq!(
+        ok.status().as_u16(),
+        200,
+        "missing Origin must still succeed on a valid handoff"
+    );
+    let body: serde_json::Value =
+        serde_json::from_str(&ok.text().await.unwrap()).expect("exchange json");
+    assert_eq!(body["token"].as_str(), Some(token.as_str()));
+    handle.abort();
+}
+
+#[tokio::test]
 async fn session_exchange_rejects_non_loopback_host() {
     let code = generate_token();
     let guard = temp_layout();
