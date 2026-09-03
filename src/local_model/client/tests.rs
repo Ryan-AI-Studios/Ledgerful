@@ -1026,8 +1026,9 @@ fn complete_first_byte_timeout_accept_then_hang() {
         if let Ok((stream, _)) = listener.accept() {
             let _ = stream.set_read_timeout(Some(Duration::from_secs(2)));
             let _ = stream.set_write_timeout(Some(Duration::from_secs(2)));
-            // Bounded drop/channel wait (Windows port reuse). Do not sleep 60s.
-            let _ = release_rx.recv_timeout(Duration::from_secs(2));
+            // Hold until the test drops `release_tx` (or 15s safety). A wait
+            // equal to the first-byte deadline races Linux RST vs timeout.
+            let _ = release_rx.recv_timeout(Duration::from_secs(15));
             drop(stream);
         }
     });

@@ -488,10 +488,12 @@ mod tests {
             "\n  C:\\Users\\me\\.rustup\\toolchains\\stable-x86_64-pc-windows-msvc\\bin\\rust-analyzer.exe  \n",
         )
         .expect("path");
+        // Path::ends_with is component-based; Windows rustup output is one
+        // component on Unix because `\` is not a separator.
+        let displayed = p.to_string_lossy();
         assert!(
-            p.ends_with("rust-analyzer.exe"),
-            "unexpected parse: {}",
-            p.display()
+            displayed.ends_with("rust-analyzer.exe"),
+            "unexpected parse: {displayed}"
         );
     }
 
