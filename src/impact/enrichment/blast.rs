@@ -66,6 +66,23 @@ pub fn resolve_seeds(packet: &ImpactPacket, conn: &Connection) -> Result<Vec<See
     let mut seeds: Vec<Seed> = Vec::new();
     let mut seen_ids: BTreeSet<i64> = BTreeSet::new();
 
+    let mut qn_stmt = conn
+        .prepare(
+            "SELECT ps.id, ps.symbol_name, pf.file_path, ps.qualified_name
+             FROM project_symbols ps
+             JOIN project_files pf ON ps.file_id = pf.id
+             WHERE ps.qualified_name = ?1",
+        )
+        .into_diagnostic()?;
+    let mut file_name_stmt = conn
+        .prepare(
+            "SELECT ps.id, ps.symbol_name, pf.file_path, ps.qualified_name
+             FROM project_symbols ps
+             JOIN project_files pf ON ps.file_id = pf.id
+             WHERE pf.file_path = ?1 AND ps.symbol_name = ?2",
+        )
+        .into_diagnostic()?;
+
     for change in &packet.changes {
         let Some(symbols) = change.symbols.as_ref() else {
             continue;
@@ -77,28 +94,23 @@ pub fn resolve_seeds(packet: &ImpactPacket, conn: &Connection) -> Result<Vec<See
             if let Some(ref qn) = symbol.qualified_name
                 && !qn.is_empty()
             {
-                let mut stmt = conn
-                    .prepare(
-                        "SELECT ps.id, ps.symbol_name, pf.file_path, ps.qualified_name
-                         FROM project_symbols ps
-                         JOIN project_files pf ON ps.file_id = pf.id
-                         WHERE ps.qualified_name = ?1",
-                    )
-                    .into_diagnostic()?;
-                let rows = stmt
-                    .query_map([qn.as_str()], |row| {
-                        Ok(Seed {
-                            symbol_id: row.get(0)?,
-                            name: row.get(1)?,
-                            file_path: normalize_path(&row.get::<_, String>(2)?),
-                            qualified_name: row.get(3)?,
+                {
+                    let rows = qn_stmt
+                        .query_map([qn.as_str()], |row| {
+                            Ok(Seed {
+                                symbol_id: row.get(0)?,
+                                name: row.get(1)?,
+                                file_path: normalize_path(&row.get::<_, String>(2)?),
+                                qualified_name: row.get(3)?,
+                            })
                         })
-                    })
-                    .into_diagnostic()?;
-                for row in rows {
-                    let seed = row.into_diagnostic()?;
-                    if seen_ids.insert(seed.symbol_id) {
-                        seeds.push(seed);
+                        .into_diagnostic()?
+                        .collect::<Result<Vec<_>, _>>()
+                        .into_diagnostic()?;
+                    for seed in rows {
+                        if seen_ids.insert(seed.symbol_id) {
+                            seeds.push(seed);
+                        }
                     }
                 }
                 // If QN matched, skip file+name for this symbol.
@@ -111,28 +123,23 @@ pub fn resolve_seeds(packet: &ImpactPacket, conn: &Connection) -> Result<Vec<See
             }
 
             // file_path + symbol_name (mandatory; never bare name alone)
-            let mut stmt = conn
-                .prepare(
-                    "SELECT ps.id, ps.symbol_name, pf.file_path, ps.qualified_name
-                     FROM project_symbols ps
-                     JOIN project_files pf ON ps.file_id = pf.id
-                     WHERE pf.file_path = ?1 AND ps.symbol_name = ?2",
-                )
-                .into_diagnostic()?;
-            let rows = stmt
-                .query_map([file_path.as_str(), symbol.name.as_str()], |row| {
-                    Ok(Seed {
-                        symbol_id: row.get(0)?,
-                        name: row.get(1)?,
-                        file_path: normalize_path(&row.get::<_, String>(2)?),
-                        qualified_name: row.get(3)?,
+            {
+                let rows = file_name_stmt
+                    .query_map([file_path.as_str(), symbol.name.as_str()], |row| {
+                        Ok(Seed {
+                            symbol_id: row.get(0)?,
+                            name: row.get(1)?,
+                            file_path: normalize_path(&row.get::<_, String>(2)?),
+                            qualified_name: row.get(3)?,
+                        })
                     })
-                })
-                .into_diagnostic()?;
-            for row in rows {
-                let seed = row.into_diagnostic()?;
-                if seen_ids.insert(seed.symbol_id) {
-                    seeds.push(seed);
+                    .into_diagnostic()?
+                    .collect::<Result<Vec<_>, _>>()
+                    .into_diagnostic()?;
+                for seed in rows {
+                    if seen_ids.insert(seed.symbol_id) {
+                        seeds.push(seed);
+                    }
                 }
             }
         }
@@ -917,6 +924,78 @@ mod tests {
         let blast = compute_blast(&conn, &seeds, 1, 3, BlastCaps::default()).unwrap();
         assert_eq!(blast.edges.len(), 1);
         assert_eq!(blast.edges[0].from_symbol, "call_a");
+    }
+
+    #[test]
+    fn blast_resolve_seeds_shared_qn_dedups_and_sorts() {
+        // Two `foo` symbols share QN `crate::foo` plus distinct `bar`;
+        // prepared QN reuse must collapse the foos to one seed (len 2 total)
+        // and keep (file_path, name, symbol_id) order.
+        let conn = setup_conn();
+        let a_f = insert_file(&conn, "src/a.rs");
+        let b_f = insert_file(&conn, "src/b.rs");
+        let foo = insert_symbol(&conn, a_f, "foo", "crate::foo");
+        let bar = insert_symbol(&conn, b_f, "bar", "crate::bar");
+
+        let mut packet = packet_with_symbol("src/b.rs", "bar", Some("crate::bar"));
+        packet.changes.push(ChangedFile {
+            path: PathBuf::from("src/a.rs"),
+            status: "Modified".to_string(),
+            old_path: None,
+            is_staged: false,
+            symbols: Some(vec![
+                Symbol {
+                    name: "foo".into(),
+                    kind: SymbolKind::Function,
+                    is_public: true,
+                    cognitive_complexity: None,
+                    cyclomatic_complexity: None,
+                    line_start: None,
+                    line_end: None,
+                    qualified_name: Some("crate::foo".into()),
+                    byte_start: None,
+                    byte_end: None,
+                    entrypoint_kind: None,
+                    metadata: std::collections::BTreeMap::new(),
+                },
+                Symbol {
+                    name: "foo".into(),
+                    kind: SymbolKind::Function,
+                    is_public: true,
+                    cognitive_complexity: None,
+                    cyclomatic_complexity: None,
+                    line_start: None,
+                    line_end: None,
+                    qualified_name: Some("crate::foo".into()),
+                    byte_start: None,
+                    byte_end: None,
+                    entrypoint_kind: None,
+                    metadata: std::collections::BTreeMap::new(),
+                },
+            ]),
+            imports: None,
+            runtime_usage: None,
+            analysis_status: FileAnalysisStatus::default(),
+            analysis_warnings: Vec::new(),
+            api_routes: Vec::new(),
+            data_models: Vec::new(),
+            ci_gates: Vec::new(),
+        });
+
+        let seeds = resolve_seeds(&packet, &conn).unwrap();
+        assert_eq!(
+            seeds.len(),
+            2,
+            "two foos sharing QN plus bar must collapse to 2 seeds"
+        );
+        assert_eq!(seeds[0].symbol_id, foo);
+        assert_eq!(seeds[0].name, "foo");
+        assert_eq!(seeds[0].file_path, "src/a.rs");
+        assert_eq!(seeds[0].qualified_name.as_deref(), Some("crate::foo"));
+        assert_eq!(seeds[1].symbol_id, bar);
+        assert_eq!(seeds[1].name, "bar");
+        assert_eq!(seeds[1].file_path, "src/b.rs");
+        assert_eq!(seeds[1].qualified_name.as_deref(), Some("crate::bar"));
     }
 
     #[test]

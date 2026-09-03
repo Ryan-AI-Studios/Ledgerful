@@ -79,6 +79,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Blast seed resolve prepare-once (0234):** `resolve_seeds` prepares the
+  qualified_name and file+name SQLite statements once per call (exactly two
+  `prepare`s), then reuses them per changed symbol. Seed identity, matching
+  order, hop SQL, and blast depth/confidence freeze (0106/0117) are
+  unchanged. No Cargo bump.
+
 - **LLM / SCIP / Cozo honesty (0231):** Listening-but-slow completion is
   `completion-not-ready` (not unreachable). Ureq failures are labeled
   **transport** via `ErrorKind` (not OS English). rust-analyzer is resolved
