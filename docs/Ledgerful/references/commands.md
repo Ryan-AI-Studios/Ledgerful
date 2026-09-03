@@ -9,10 +9,16 @@ Short flags only. Humans: `ledgerful --help`.
 | `ledgerful doctor --json` | Env readiness |
 | `ledgerful change-context --json` | Default pre-edit packet (does not rewrite `latest-impact.json`) |
 | `ledgerful ledger status --compact` or `--json` | Pending / drift; names `workRoot` |
-| `ledgerful search …` | Discovery (`--auto-index` when stale) |
+| `ledgerful search …` | Discovery (`--auto-index` when stale). Code FTS; unquoted multi-word OK. Not `ledger search`. |
 | `ledgerful verify --scope fast` | Local gate |
 
 Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/change-context/hotspots/`impactCache`). Does **not** replace Daily 5. Does not rewrite `latest-impact.json`. Human `session` is a 10-line summary, not JSON.
+
+## Provenance (not Daily 5)
+
+| Command | Role |
+|---|---|
+| `ledgerful ledger search "<topic>" [--json]` | Committed-plan / TX FTS. **Quotes required** (clap `query` is one `String` token). Contrast: code `ledgerful search foo bar` stays unquoted multi-word. `--json` is a **bare array** (`Vec<LedgerEntry>`) — 0213 freeze; not a `schemaVersion` object. Empty `[]` is a valid FTS miss. Example: `ledgerful ledger search "0126" --json`. |
 
 ## `ledger start --force` vs `ledger commit --force`
 

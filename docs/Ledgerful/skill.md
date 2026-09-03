@@ -1,6 +1,6 @@
 ---
 name: ledgerful
-description: Use this skill for Daily 5 and whenever a repository contains Ledgerful, or the user asks about impact analysis, blast radius, risk, verification planning, hotspots, temporal coupling, change-context, verify, search, ledger provenance, or drift. Default pre-edit: `doctor --json` then `change-context --json`. Escalate to `scan --impact` only for high-risk / readSetCapped / multi-module cases. Prefer `--json` for machine-readable agent output.
+description: Use this skill for Daily 5 and whenever a repository contains Ledgerful, or the user asks about impact analysis, blast radius, risk, verification planning, hotspots, temporal coupling, change-context, verify, search, ledger provenance, or drift. Review-only (no product edits): `ledger status --compact` required; skip change-context / scan --impact. Edit/Daily 5: `doctor --json` then `change-context --json`. Escalate to `scan --impact` only for high-risk / readSetCapped / multi-module edit cases. Prefer `--json` for machine-readable agent output.
 ---
 
 # Ledgerful
@@ -11,7 +11,21 @@ AI agents only. Humans use README, `ledgerful --help`, and `docs/`. Run / skip /
 
 Repo has Ledgerful, or the user asked for impact, blast radius, risk, ledger, verify, search, or change-context.
 
-## Daily 5
+## Review-only
+
+No product file modifications this session (plan audit, DoD audit, diff review). Writable review ≠ Codex `-s read-only` (`docs/reviewer-readonly.md`).
+
+**Required** (writable review): `ledgerful ledger status --compact` (or `--json`); git status/diff.
+
+**Not required:** `change-context --json`, `scan --impact`, `audit`. B2 escalate presupposes an edit session; review-only does not run change-context, so it cannot trigger B2.
+
+**Optional:** `ledgerful session --json` (one-shot briefing; does not replace Edit/Daily 5). `ledgerful doctor --json` when the tree is writable and signing/env matters — skip in pure read-only filesystem sandboxes.
+
+Collision skip (0223) still applies: do not ledger start / do not `scan --impact` over a sibling pending TX. Review-only does not start TXs.
+
+## Edit / Daily 5
+
+Use this ladder when the session **will** modify product files (code, config, policy, tracked docs). Review-only sessions use **Review-only** instead.
 
 Prefer `--json` when parsing. Packet schema: `docs/agent-output-contract.md`. Command sheet: `references/commands.md`.
 
@@ -67,7 +81,21 @@ This engine, not a generic tutorial:
 ledgerful search execute_change_context --auto-index
 ```
 
-Unquoted multi-word joins; `--` for hyphen-leading queries.
+Unquoted multi-word joins; `--` for hyphen-leading queries. Daily 5 step 4 stays this code FTS — not `ledger search`.
+
+## Provenance
+
+Committed-plan / TX history. Not a Daily 5 replacement for code `search`.
+
+```
+ledgerful ledger search "<topic>" [--json]
+```
+
+**Quotes required** — clap `query` is one `String` token. Contrast: code FTS `ledgerful search foo bar` stays unquoted multi-word.
+
+`--json` is a **bare array** (`Vec<LedgerEntry>`) — 0213 freeze; do **not** wrap in `schemaVersion`. Empty `[]` is a valid FTS miss, not proof of missing provenance.
+
+Example that finds 0126-class hits: `ledgerful ledger search "0126" --json`.
 
 ## Hotspots
 
