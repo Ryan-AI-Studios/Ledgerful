@@ -47,7 +47,7 @@ fn test_federate_scan_warns_on_stale_cached_impact_packet__slow() {
     let root = tmp.path();
     setup_git_repo(root);
 
-    fs::write(root.join("a.txt"), "v1").unwrap();
+    fs::write(root.join("a.rs"), "fn a() {}").unwrap();
     git_add_and_commit(root, "initial");
 
     let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
@@ -60,7 +60,7 @@ fn test_federate_scan_warns_on_stale_cached_impact_packet__slow() {
 
     // Record a packet via `scan --impact`, then advance HEAD past it so the
     // cached packet `federate scan` reads is stale.
-    fs::write(root.join("a.txt"), "v2").unwrap();
+    fs::write(root.join("a.rs"), "fn a() { /* v2 */ }").unwrap();
     let scan_out = Command::new(ledgerful_bin)
         .args(["scan", "--impact"])
         .current_dir(root)

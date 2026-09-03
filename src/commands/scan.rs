@@ -1,3 +1,4 @@
+use crate::cli::args::ScanImpactMode;
 use crate::commands::scan_pr::{HistoryEnrichment, PrScanContext, PrScanReport};
 use crate::config::load::load_config;
 use crate::git::RepoSnapshot;
@@ -442,6 +443,49 @@ fn validate_blast_depth_requires_impact(
     Ok(())
 }
 
+/// Reject `--mode` without `--impact` before gitScan dispatch (0227).
+fn validate_mode_requires_impact(run_impact: bool, mode: Option<ScanImpactMode>) -> Result<()> {
+    if mode.is_some() && !run_impact {
+        return Err(miette::miette!("--mode requires --impact"));
+    }
+    Ok(())
+}
+
+/// Emit impact JSON/human for in-memory paths (prospective / docs mode).
+/// Never claims `latest-impact.json` was written.
+fn emit_scan_impact_in_memory(
+    impact_packet: &crate::impact::packet::ImpactPacket,
+    write_impact_json: bool,
+    out: Option<PathBuf>,
+    summary: bool,
+    full: bool,
+    prospective: bool,
+) -> Result<()> {
+    if write_impact_json {
+        let json_output = serde_json::to_string_pretty(impact_packet).into_diagnostic()?;
+        if let Some(path) = out {
+            std::fs::write(&path, json_output).into_diagnostic()?;
+        } else {
+            println!("{}", json_output);
+        }
+    } else if summary {
+        crate::output::human::print_impact_brief(impact_packet);
+        if prospective {
+            println!(
+                "\nProspective analysis (in-memory only — did not rewrite latest-impact.json)"
+            );
+        }
+    } else {
+        crate::output::human::print_impact_summary_with_full(impact_packet, full);
+        if prospective {
+            println!(
+                "\nProspective analysis (in-memory only — did not rewrite latest-impact.json)"
+            );
+        }
+    }
+    Ok(())
+}
+
 /// Scan entrypoint (default blast depth from config).
 pub fn execute_scan(
     run_impact: bool,
@@ -462,6 +506,8 @@ pub fn execute_scan(
         format,
         None,
         Vec::new(),
+        false,
+        None,
         false,
     )
 }
@@ -489,10 +535,12 @@ pub fn execute_scan_with_blast_depth(
         blast_depth,
         Vec::new(),
         false,
+        None,
+        false,
     )
 }
 
-/// Scan entrypoint with 0173 `--paths` / `--include-governance`.
+/// Scan entrypoint with 0173 `--paths` / `--include-governance` and 0227 `--mode`.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_scan_with_opts(
     run_impact: bool,
@@ -505,12 +553,15 @@ pub fn execute_scan_with_opts(
     blast_depth: Option<u32>,
     paths: Vec<String>,
     include_governance: bool,
+    mode: Option<ScanImpactMode>,
+    full: bool,
 ) -> Result<()> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
 
     validate_scan_args(&pr, &base_ref, &format, run_impact, summary, json, &out)?;
     validate_blast_depth_requires_impact(run_impact, &pr, blast_depth)?;
+    validate_mode_requires_impact(run_impact, mode)?;
 
     if !paths.is_empty() {
         if !run_impact {
@@ -738,21 +789,28 @@ pub fn execute_scan_with_opts(
         // Always use the snapshot derived above so that --base-ref / --paths
         // changes are passed through regardless of whether --json / --out is set.
         // Thread --blast-depth so scan --impact matches impact CLI (DoD-9).
-        // Prospective (--paths): in-memory only — no latest-impact.json clobber (0173-G).
-        if prospective {
-            let parsed = prospective_parsed
-                .clone()
-                .ok_or_else(|| miette::miette!("internal: prospective paths missing"))?;
+        // Prospective (--paths) and docs-mode (explicit or auto-detect) are
+        // in-memory only — no latest-impact.json clobber (0173-G / 0221 / 0227).
+        let docs_mode = crate::impact::lead::docs_mode_active(
+            matches!(mode, Some(ScanImpactMode::Docs)),
+            snapshot.changes.iter().map(|c| c.path.to_string_lossy()),
+        );
+        if prospective || docs_mode {
+            // Prospective / docs-mode skip write_scan_report, which is what
+            // normally creates `.ledgerful/state` before sqlite open.
+            layout.ensure_state_dir()?;
             let mut config = load_config(&layout).unwrap_or_default();
             let depth_note = crate::impact::enrichment::blast::apply_cli_blast_depth(
                 &mut config.impact.blast_depth,
                 config.impact.blast_depth_max,
                 blast_depth,
             );
-            // Soft-open when DB exists (0174-T13); prospective never writes report.
             let storage = crate::commands::impact::open_storage_for_impact(&layout)?;
-            let snap = crate::commands::impact::build_prospective_snapshot(work_dir, &parsed)?;
-            let mut impact_packet =
+            let mut impact_packet = if prospective {
+                let parsed = prospective_parsed
+                    .clone()
+                    .ok_or_else(|| miette::miette!("internal: prospective paths missing"))?;
+                let snap = crate::commands::impact::build_prospective_snapshot(work_dir, &parsed)?;
                 crate::commands::impact::compute_impact_from_snapshot_in_memory_with_mode(
                     &storage,
                     &config,
@@ -761,32 +819,40 @@ pub fn execute_scan_with_opts(
                     include_governance,
                     "prospective",
                     parsed,
-                )?;
+                )?
+            } else {
+                let analysis_mode = if base_ref.is_some() {
+                    "base_ref"
+                } else {
+                    "working_tree"
+                };
+                crate::commands::impact::compute_impact_from_snapshot_in_memory_with_mode(
+                    &storage,
+                    &config,
+                    work_dir,
+                    snapshot,
+                    include_governance,
+                    analysis_mode,
+                    Vec::new(),
+                )?
+            };
             if let Some(note) = depth_note {
                 impact_packet.analysis_warnings.push(note);
                 impact_packet.analysis_warnings.sort();
                 impact_packet.analysis_warnings.dedup();
             }
-            let _ = storage.shutdown();
-
-            if write_impact_json {
-                let json_output = serde_json::to_string_pretty(&impact_packet).into_diagnostic()?;
-                if let Some(path) = out {
-                    std::fs::write(&path, json_output).into_diagnostic()?;
-                } else {
-                    println!("{}", json_output);
-                }
-            } else if summary {
-                crate::output::human::print_impact_brief(&impact_packet);
-                println!(
-                    "\nProspective analysis (in-memory only — did not rewrite latest-impact.json)"
-                );
-            } else {
-                crate::output::human::print_impact_summary(&impact_packet);
-                println!(
-                    "\nProspective analysis (in-memory only — did not rewrite latest-impact.json)"
-                );
+            if docs_mode {
+                crate::impact::lead::apply_docs_mode_presentation(&mut impact_packet);
             }
+            let _ = storage.shutdown();
+            emit_scan_impact_in_memory(
+                &impact_packet,
+                write_impact_json,
+                out,
+                summary,
+                full,
+                prospective,
+            )?;
             return Ok(());
         }
 
@@ -1456,6 +1522,32 @@ mod tests {
     }
 
     #[test]
+    fn mode_docs_requires_impact_before_gitscan() {
+        let err = validate_mode_requires_impact(false, Some(ScanImpactMode::Docs))
+            .unwrap_err()
+            .to_string();
+        assert!(
+            err.contains("--impact"),
+            "expected --mode reject to mention --impact, got {err}"
+        );
+        assert!(validate_mode_requires_impact(true, Some(ScanImpactMode::Docs)).is_ok());
+        assert!(validate_mode_requires_impact(false, None).is_ok());
+    }
+
+    #[test]
+    fn docs_mode_paths_fixtures_auto_detect() {
+        use crate::impact::lead::should_auto_detect_docs_mode;
+        assert!(should_auto_detect_docs_mode([
+            "docs/agent-output-contract.md"
+        ]));
+        assert!(should_auto_detect_docs_mode(["conductor.md"]));
+        assert!(
+            !should_auto_detect_docs_mode(["src/lib.rs", "docs/installation.md"]),
+            "mixed src+docs must not enter docs mode"
+        );
+    }
+
+    #[test]
     fn json_out_ok_without_impact_summary_still_requires_impact() {
         // 0180: bare --json / --out allowed (gitScan); --summary still requires --impact.
         assert!(
@@ -1620,6 +1712,10 @@ mod tests {
         );
         let _ = storage.shutdown();
     }
+
+    /// Dispatch proof for 0227 mtime freeze lives in
+    /// `tests/integration/cli_scan.rs` (`scan_docs_mode_does_not_clobber_latest_impact_mtime`
+    /// and auto-detect sibling). Overlay-only would not catch a write regression.
 
     #[test]
     fn prospective_snapshot_roots_paths_at_repo_root_not_cwd_subdir() {

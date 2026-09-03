@@ -96,6 +96,13 @@ pub struct ImpactPacket {
     /// Normalized prospective paths when `analysis_mode == "prospective"` (0173).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub prospective_paths: Vec<String>,
+    /// Docs-mode punchlist (0227). Omitted when empty. Cap 5, sorted. Does not
+    /// replace `temporalCouplings`. Never includes `agentSummary` (change-context only).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub actionable_lead: Vec<crate::impact::lead::ActionableLeadItem>,
+    /// Inline explanations for `no_source_seeds` / mapped=0 (0227 docs mode).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub glossary: Option<std::collections::BTreeMap<String, String>>,
 }
 
 fn default_path_mode() -> String {
@@ -142,8 +149,9 @@ impl ImpactPacket {
             && self.analysis_warnings.is_empty()
             && self.dead_code_findings.is_empty()
             && self.prospective_paths.is_empty()
-        // path_mode / demoted_temporal_count / analysis_mode are metadata defaults —
-        // they do not make a clean packet "non-empty" for empty-tree checks.
+        // path_mode / demoted_temporal_count / analysis_mode / actionable_lead /
+        // glossary are metadata or presentation overlays — they do not make a
+        // clean packet "non-empty" for empty-tree checks.
     }
 }
 
@@ -194,6 +202,8 @@ impl Default for ImpactPacket {
             demoted_temporal_count: 0,
             analysis_mode: default_analysis_mode(),
             prospective_paths: Vec::new(),
+            actionable_lead: Vec::new(),
+            glossary: None,
         }
     }
 }
@@ -379,6 +389,7 @@ impl ImpactPacket {
         });
         self.service_impact.sort_unstable();
         self.dead_code_findings.sort_unstable();
+        self.actionable_lead.sort();
     }
 
     /// Escalate risk_level by one tier for observability/contract signals.

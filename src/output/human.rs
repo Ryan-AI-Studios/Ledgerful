@@ -498,6 +498,10 @@ pub fn print_scan_summary(snapshot: &crate::git::RepoSnapshot) {
 }
 
 pub fn print_impact_summary(packet: &ImpactPacket) {
+    print_impact_summary_with_full(packet, false);
+}
+
+pub fn print_impact_summary_with_full(packet: &ImpactPacket, full: bool) {
     println!(
         "\n{}",
         "Change Impact Analysis"
@@ -530,6 +534,14 @@ pub fn print_impact_summary(packet: &ImpactPacket) {
         );
     }
 
+    let docs_mode = packet.glossary.is_some();
+    if docs_mode {
+        println!(
+            "\n{}",
+            crate::impact::lead::format_actionable_section(packet)
+        );
+    }
+
     if !packet.hotspots.is_empty() {
         print_hotspots(&packet.hotspots);
     }
@@ -541,7 +553,17 @@ pub fn print_impact_summary(packet: &ImpactPacket) {
     }
 
     if !packet.temporal_couplings.is_empty() {
-        print_temporal_couplings(&packet.temporal_couplings);
+        if docs_mode && !full {
+            let remaining = crate::impact::lead::remaining_coupling_count(packet);
+            if remaining > 0 {
+                println!(
+                    "\n{}",
+                    crate::impact::lead::format_more_couplings_line(remaining)
+                );
+            }
+        } else {
+            print_temporal_couplings(&packet.temporal_couplings);
+        }
     }
 
     if !packet.observability.is_empty() {
@@ -631,6 +653,9 @@ pub fn print_impact_brief(packet: &ImpactPacket) {
             "  {} process/governance temporal coupling(s) demoted from risk (use --include-governance to restore)",
             packet.demoted_temporal_count
         );
+    }
+    if packet.glossary.is_some() {
+        println!("{}", crate::impact::lead::format_actionable_section(packet));
     }
     if let Some(ref blast) = packet.blast_radius
         && !blast.edges.is_empty()

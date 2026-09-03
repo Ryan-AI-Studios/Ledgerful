@@ -46,7 +46,9 @@ fn test_scan_dirty_tree_does_not_write_tombstone() {
     let root = tmp.path();
 
     setup_git_repo(root);
-    fs::write(root.join("file.txt"), "hello").unwrap();
+    // Source file: 0227 auto-detect would skip latest-impact.json for docs-shaped
+    // dirty trees (`.txt`/`.md`). This test asserts the durable packet write.
+    fs::write(root.join("file.rs"), "fn hello() {}").unwrap();
     git_add_and_commit(root, "initial");
 
     let _guard = DirGuard::new(root);
@@ -54,7 +56,7 @@ fn test_scan_dirty_tree_does_not_write_tombstone() {
 
     // Pre-populate with a full packet by making the tree dirty and running
     // scan --impact.
-    fs::write(root.join("file.txt"), "modified").unwrap();
+    fs::write(root.join("file.rs"), "fn hello() { /* dirty */ }").unwrap();
     execute_scan(true, false, false, None, None, None, None).unwrap();
     let original_report = read_latest_impact_report(&layout)
         .unwrap()
@@ -68,7 +70,7 @@ fn test_scan_dirty_tree_does_not_write_tombstone() {
 
     // Now dirty the tree again and run scan without --impact. The existing
     // impact report must be left unchanged.
-    fs::write(root.join("file.txt"), "modified again").unwrap();
+    fs::write(root.join("file.rs"), "fn hello() { /* dirty again */ }").unwrap();
     execute_scan(false, false, false, None, None, None, None).unwrap();
 
     let new_report = read_latest_impact_report(&layout).unwrap().unwrap();

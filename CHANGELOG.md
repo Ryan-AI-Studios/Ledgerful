@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Impact docs-mode lead (0227):** `scan --impact --mode docs` (ValueEnum;
+  requires `--impact`) plus strict auto-detect when every dirty/`--paths`
+  file is documentation-shaped. Human leads with **Actionable (≤5)**;
+  JSON adds sorted `actionableLead` (cap 5) and a `glossary` for
+  `no_source_seeds` / `mapped=0`. Full coupling list remains. Does not
+  rewrite `latest-impact.json`. Does not change temporal weights.
+  `--full` expands remaining couplings. No Cargo bump.
+
 - **Doctor standing-warning ack / `--fix` (0226):** `[doctor] acknowledged_codes`
   (sorted) suppresses human bodies for observe-signing findings; JSON keeps
   the codes with `acknowledged: true`. `doctor --fix --yes` pins

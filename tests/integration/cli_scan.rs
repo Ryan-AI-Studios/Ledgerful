@@ -1,7 +1,10 @@
+use ledgerful::cli::args::ScanImpactMode;
 use ledgerful::commands::scan::{execute_scan, execute_scan_with_opts};
 use ledgerful::state::layout::Layout;
+use ledgerful::state::reports::{LATEST_IMPACT_REPORT, write_impact_report};
 use std::fs;
 use std::process::Command;
+use std::time::Duration;
 use tempfile::tempdir;
 
 use crate::common::{DirGuard, setup_git_repo};
@@ -292,6 +295,8 @@ fn test_scan_json_paths_still_requires_impact() {
         None,
         vec!["src/foo.rs".into()],
         false,
+        None,
+        false,
     )
     .unwrap_err();
     assert!(
@@ -490,4 +495,249 @@ fn scan_with_base_ref_detects_deleted_file() {
     assert!(deleted.is_some(), "expected to_delete.rs in changes");
     let status = deleted.unwrap()["status"].as_str().unwrap_or("");
     assert_eq!(status, "Deleted");
+}
+
+fn seed_latest_impact(
+    root: &std::path::Path,
+    marker: &str,
+) -> (Layout, String, std::time::SystemTime) {
+    let layout = Layout::new(root.to_string_lossy().as_ref());
+    layout.ensure_state_dir().unwrap();
+    let seed = ledgerful::impact::packet::ImpactPacket {
+        schema_version: "v1".to_string(),
+        head_hash: Some(marker.to_string()),
+        risk_reasons: vec!["seed-docs-do-not-clobber".to_string()],
+        ..Default::default()
+    };
+    write_impact_report(&layout, &seed).unwrap();
+    let report_path = layout.reports_dir().join(LATEST_IMPACT_REPORT);
+    let before_meta = fs::metadata(report_path.as_std_path()).unwrap();
+    let before_mtime = before_meta.modified().unwrap();
+    let before = fs::read_to_string(report_path.as_std_path()).unwrap();
+    assert!(before.contains(marker));
+    (layout, before, before_mtime)
+}
+
+fn assert_latest_impact_unclobbered(
+    layout: &Layout,
+    before: &str,
+    before_mtime: std::time::SystemTime,
+) {
+    let report_path = layout.reports_dir().join(LATEST_IMPACT_REPORT);
+    let after_meta = fs::metadata(report_path.as_std_path()).unwrap();
+    let after = fs::read_to_string(report_path.as_std_path()).unwrap();
+    assert_eq!(
+        before, after,
+        "docs mode must not rewrite latest-impact.json contents"
+    );
+    assert_eq!(
+        before_mtime,
+        after_meta.modified().unwrap(),
+        "docs mode must not change latest-impact.json mtime"
+    );
+}
+
+/// H-0227-1: `--mode docs` on a **source** dirty tree (not `--paths`) must skip
+/// `execute_impact_silent*` write. Deleting `|| docs_mode` would clobber the seed.
+#[test]
+fn scan_docs_mode_does_not_clobber_latest_impact_mtime() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/lib.rs"), "fn a() {}").unwrap();
+    git_cmd(root, &["add", "src/lib.rs"]);
+    git_cmd(root, &["commit", "-m", "src"]);
+    fs::write(root.join("src/lib.rs"), "fn a() { /* dirty */ }").unwrap();
+
+    let (layout, before, before_mtime) = seed_latest_impact(root, "SEED_MARKER_0227_DOCS");
+    std::thread::sleep(Duration::from_millis(100));
+
+    let out_path = root.join("docs-mode-impact.json");
+    let _guard = DirGuard::new(root);
+    execute_scan_with_opts(
+        true,
+        false,
+        true,
+        Some(out_path.clone()),
+        None,
+        None,
+        None,
+        None,
+        Vec::new(),
+        false,
+        Some(ScanImpactMode::Docs),
+        false,
+    )
+    .expect("scan --impact --mode docs on source dirty tree");
+
+    let packet: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).unwrap();
+    assert_eq!(packet["schemaVersion"], "v1");
+    assert!(
+        packet.get("glossary").is_some(),
+        "explicit --mode docs must apply presentation: {packet}"
+    );
+    assert_latest_impact_unclobbered(&layout, &before, before_mtime);
+}
+
+/// H-0227-1 auto-detect: docs-only working tree, no `--mode`, no `--paths`.
+#[test]
+fn scan_docs_auto_detect_does_not_clobber_latest_impact_mtime() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+
+    fs::create_dir_all(root.join("docs")).unwrap();
+    fs::write(root.join("docs/note.md"), "v1").unwrap();
+    git_cmd(root, &["add", "docs/note.md"]);
+    git_cmd(root, &["commit", "-m", "docs"]);
+    fs::write(root.join("docs/note.md"), "v2 dirty").unwrap();
+
+    let (layout, before, before_mtime) = seed_latest_impact(root, "SEED_MARKER_0227_AUTO");
+    std::thread::sleep(Duration::from_millis(100));
+
+    let out_path = root.join("auto-docs-impact.json");
+    let _guard = DirGuard::new(root);
+    execute_scan_with_opts(
+        true,
+        false,
+        true,
+        Some(out_path.clone()),
+        None,
+        None,
+        None,
+        None,
+        Vec::new(),
+        false,
+        None,
+        false,
+    )
+    .expect("scan --impact auto-detect docs-only dirty tree");
+
+    let packet: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).unwrap();
+    assert_eq!(packet["schemaVersion"], "v1");
+    assert!(
+        packet.get("glossary").is_some(),
+        "docs-only dirty tree must auto-detect: {packet}"
+    );
+    assert_latest_impact_unclobbered(&layout, &before, before_mtime);
+}
+
+/// M-0227-1: `--mode docs` without `--impact` errors before `open_repo`.
+#[test]
+fn execute_scan_mode_docs_without_impact_errors_before_open_repo() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    // No git repo on purpose.
+    let _guard = DirGuard::new(root);
+    let error = execute_scan_with_opts(
+        false,
+        false,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+        Vec::new(),
+        false,
+        Some(ScanImpactMode::Docs),
+        false,
+    )
+    .unwrap_err();
+    let msg = error.to_string();
+    assert!(
+        msg.contains("--impact"),
+        "expected --mode requires --impact, got {msg}"
+    );
+    assert!(
+        !msg.contains("Failed to discover git repository"),
+        "reject must fire before open_repo, got {msg}"
+    );
+}
+
+/// M-0227-2: `--paths` docs-only vs mixed execute fixtures (plan Phase 0/3).
+#[test]
+fn scan_impact_paths_docs_only_emits_glossary_mixed_does_not() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+
+    fs::create_dir_all(root.join("docs")).unwrap();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("docs/agent-output-contract.md"), "docs").unwrap();
+    fs::write(root.join("docs/installation.md"), "install").unwrap();
+    fs::write(root.join("src/lib.rs"), "fn x() {}").unwrap();
+    git_cmd(root, &["add", "-A"]);
+    git_cmd(root, &["commit", "-m", "seed"]);
+
+    let _guard = DirGuard::new(root);
+
+    let docs_out = root.join("paths-docs.json");
+    execute_scan_with_opts(
+        true,
+        false,
+        true,
+        Some(docs_out.clone()),
+        None,
+        None,
+        None,
+        None,
+        vec!["docs/agent-output-contract.md".into()],
+        false,
+        None,
+        false,
+    )
+    .expect("scan --impact --json --paths docs-only");
+    let docs_packet: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&docs_out).unwrap()).unwrap();
+    assert_eq!(docs_packet["schemaVersion"], "v1");
+    assert!(
+        docs_packet.get("glossary").is_some(),
+        "docs-only --paths must enter docs mode: {docs_packet}"
+    );
+    let glossary = docs_packet["glossary"]
+        .as_object()
+        .expect("glossary object");
+    assert!(glossary.contains_key("no_source_seeds"));
+    assert!(glossary.contains_key("mapped=0"));
+    if let Some(lead) = docs_packet["actionableLead"].as_array() {
+        for item in lead {
+            let a = item["fileA"].as_str().unwrap_or("");
+            let b = item["fileB"].as_str().unwrap_or("");
+            let pair_trivia = (a.contains("docs/") || a.ends_with(".md"))
+                && (b.contains("src/") || b.ends_with(".rs"));
+            assert!(
+                !pair_trivia,
+                "docs↔crate trivia must not be in actionableLead: {item}"
+            );
+        }
+    }
+
+    let mixed_out = root.join("paths-mixed.json");
+    execute_scan_with_opts(
+        true,
+        false,
+        true,
+        Some(mixed_out.clone()),
+        None,
+        None,
+        None,
+        None,
+        vec!["src/lib.rs".into(), "docs/installation.md".into()],
+        false,
+        None,
+        false,
+    )
+    .expect("scan --impact --json --paths mixed");
+    let mixed_packet: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&mixed_out).unwrap()).unwrap();
+    assert_eq!(mixed_packet["schemaVersion"], "v1");
+    assert!(
+        mixed_packet.get("glossary").is_none(),
+        "mixed --paths must not auto-detect docs mode: {mixed_packet}"
+    );
 }
