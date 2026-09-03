@@ -9,6 +9,7 @@ pub mod repo;
 pub mod status;
 
 pub use blob::read_head_blob;
+pub use commit::{git_command, git_command_with_policy};
 
 use miette::Diagnostic;
 use std::path::PathBuf;

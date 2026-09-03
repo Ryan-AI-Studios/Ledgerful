@@ -14,7 +14,6 @@ use miette::{IntoDiagnostic, Result};
 use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
-use std::process::Command;
 
 // Re-export for tests / historical imports.
 pub use crate::commands::hook_sidecar::PendingHookTx;
@@ -885,8 +884,10 @@ fn write_signed_sidecar_for_tx(args: WriteSidecarArgs<'_>) -> Result<()> {
 
     // Match commit_change basis: author from git, origin LOCAL, entry_type from category.
     let author = {
+        let policy = args.config.verify.effective_process_policy();
         let read = |key: &str| -> Option<String> {
-            std::process::Command::new("git")
+            crate::git::git_command_with_policy(&policy)
+                .ok()?
                 .args(["config", key])
                 .current_dir(args.layout.root.as_std_path())
                 .output()
@@ -1088,11 +1089,12 @@ fn capture_staged_snapshot(
 }
 
 fn get_staged_files(repo_root: &Path) -> Vec<String> {
-    let output = Command::new("git")
-        .args(["diff", "--name-only", "--cached"])
-        .current_dir(repo_root)
-        .output()
-        .ok();
+    let output = crate::git::git_command().ok().and_then(|mut cmd| {
+        cmd.args(["diff", "--name-only", "--cached"])
+            .current_dir(repo_root)
+            .output()
+            .ok()
+    });
 
     if let Some(out) = output
         && out.status.success()

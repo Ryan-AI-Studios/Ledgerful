@@ -6,7 +6,6 @@ use crate::git::repo::open_repo;
 use crate::git::status::get_repo_status;
 use crate::state::layout::Layout;
 use miette::{Result, miette};
-use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub(crate) fn fetch_changes(
@@ -97,11 +96,13 @@ fn count_worktree_diff_stats(repo: &gix::Repository, _paths: &[String]) -> (usiz
     let repo_root = repo.workdir().unwrap_or(repo.path());
     let mut additions = 0usize;
     let mut deletions = 0usize;
-    let output = Command::new("git")
-        .args(["--no-pager", "diff", "HEAD", "--numstat"])
-        .current_dir(repo_root)
-        .output();
-    if let Ok(output) = output
+    let output = crate::git::git_command().ok().and_then(|mut cmd| {
+        cmd.args(["--no-pager", "diff", "HEAD", "--numstat"])
+            .current_dir(repo_root)
+            .output()
+            .ok()
+    });
+    if let Some(output) = output
         && output.status.success()
     {
         let text = String::from_utf8_lossy(&output.stdout);
@@ -294,8 +295,8 @@ fn batch_numstat(
     let repo_root = repo.workdir().unwrap_or(repo.path());
     let mut stats = std::collections::HashMap::new();
 
-    let output = Command::new("git")
-        .args([
+    let output = crate::git::git_command().ok().and_then(|mut cmd| {
+        cmd.args([
             "--no-pager",
             "log",
             "--numstat",
@@ -305,9 +306,11 @@ fn batch_numstat(
             head_oid,
         ])
         .current_dir(repo_root)
-        .output();
+        .output()
+        .ok()
+    });
 
-    let Ok(output) = output else {
+    let Some(output) = output else {
         tracing::warn!("batch_numstat: git log subprocess failed");
         return stats;
     };

@@ -116,7 +116,8 @@ fn find_sdk_name(import: &str, lower_patterns: &[String]) -> String {
 
 fn get_git_content(repo_root: &Path, rel_path: &Path) -> Option<String> {
     let path_str = rel_path.to_string_lossy().replace('\\', "/");
-    let output = std::process::Command::new("git")
+    let output = crate::git::git_command()
+        .ok()?
         .args(["show", &format!("HEAD:{}", path_str)])
         .current_dir(repo_root)
         .output()

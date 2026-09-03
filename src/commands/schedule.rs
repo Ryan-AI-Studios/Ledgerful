@@ -347,7 +347,7 @@ pub fn execute_run_nightly() -> Result<()> {
     append_log(&log_path, "--- Nightly run started ---").into_diagnostic()?;
 
     // 1. git fetch
-    let fetch_status = Command::new("git")
+    let fetch_status = crate::git::git_command()?
         .args(["fetch"])
         .current_dir(layout.root.as_std_path())
         .status()

@@ -12,6 +12,7 @@ use crate::ledger::provenance::{ProvenanceAction, TokenProvenance};
 use crate::ledger::session::get_session_id;
 use crate::ledger::types::*;
 use crate::ledger::validators::ValidatorRunner;
+use crate::platform::process_policy::ProcessPolicy;
 
 pub struct TransactionManager<'a> {
     storage: &'a mut crate::state::storage::StorageManager,
@@ -339,7 +340,10 @@ impl<'a> TransactionManager<'a> {
             });
 
             // Capture author from git config at commit time (needed for v2 basis)
-            let author = capture_git_author(&self.repo_root);
+            let author = capture_git_author(
+                &self.repo_root,
+                &self.config.verify.effective_process_policy(),
+            );
             let related_tickets = req.related_tickets.clone().or(req.issue_ref.clone());
             let origin = "LOCAL".to_string();
 
@@ -529,7 +533,10 @@ impl<'a> TransactionManager<'a> {
             }
 
             // 2. Insert auditable entry
-            let author = capture_git_author(&self.repo_root);
+            let author = capture_git_author(
+                &self.repo_root,
+                &self.config.verify.effective_process_policy(),
+            );
             let origin = "LOCAL".to_string();
             let summary_text = "Transaction Rolled Back".to_string();
             let risk = Some("TRIVIAL".to_string());
@@ -674,7 +681,10 @@ impl<'a> TransactionManager<'a> {
 
             for tx in to_reconcile {
                 let summary_text = format!("Reconciled drift ({} changes)", tx.drift_count);
-                let author = capture_git_author(&self.repo_root);
+                let author = capture_git_author(
+                    &self.repo_root,
+                    &self.config.verify.effective_process_policy(),
+                );
                 let origin = "LOCAL".to_string();
                 let risk = Some("TRIVIAL".to_string());
                 let input = crate::ledger::crypto::LedgerSignInput::for_new_commit(
@@ -1201,9 +1211,10 @@ fn sign_entry_or_warn(
 /// plan's "no retroactive git-blame" carve-out was about *existing*
 /// rows, not about entries we are creating *right now* and for which
 /// we know who ran the command.
-fn capture_git_author(repo_root: &Path) -> String {
+fn capture_git_author(repo_root: &Path, policy: &ProcessPolicy) -> String {
     let read = |key: &str| -> Option<String> {
-        std::process::Command::new("git")
+        crate::git::git_command_with_policy(policy)
+            .ok()?
             .args(["config", key])
             .current_dir(repo_root)
             .output()
@@ -1356,6 +1367,7 @@ fn append_to_chain_with_cas(
 #[cfg(test)]
 mod capture_git_author_tests {
     use super::capture_git_author;
+    use crate::platform::process_policy::ProcessPolicy;
     use std::process::Command;
 
     /// When the supplied `repo_root` is a tempdir that is *not* a
@@ -1372,7 +1384,7 @@ mod capture_git_author_tests {
         // repo, so `git config` exits non-zero. This exercises the
         // final fallback branch deterministically without mutating
         // process state.
-        let author = capture_git_author(tmp.path());
+        let author = capture_git_author(tmp.path(), &ProcessPolicy::default());
 
         // The strict guarantee we can test is that the function does
         // not panic and returns a non-empty string. The exact value
@@ -1405,7 +1417,7 @@ mod capture_git_author_tests {
         run(&["config", "user.name", "Helper Test User"]);
         run(&["config", "user.email", "helper@test.local"]);
 
-        let author = capture_git_author(tmp.path());
+        let author = capture_git_author(tmp.path(), &ProcessPolicy::default());
         assert_eq!(author, "Helper Test User");
     }
 }

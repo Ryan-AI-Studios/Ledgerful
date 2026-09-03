@@ -18,7 +18,6 @@ use globset::{Glob, GlobSetBuilder};
 use miette::{IntoDiagnostic, Result};
 use std::env;
 use std::path::PathBuf;
-use std::process::Command;
 use tracing::info;
 
 /// Whether scan-report RO honesty may print on stdout (human only).
@@ -236,7 +235,7 @@ pub(crate) fn resolve_commit_oid(repo_root: &std::path::Path, rev: &str) -> Resu
         ));
     }
     let peel = format!("{rev}^{{commit}}");
-    let output = Command::new("git")
+    let output = crate::git::git_command()?
         .args(["rev-parse", "--verify", "--end-of-options", &peel])
         .current_dir(repo_root)
         .output()
@@ -276,7 +275,7 @@ pub(crate) fn files_changed_between(
             "git diff range must not start with '-': refused '{range}'"
         ));
     }
-    let output = Command::new("git")
+    let output = crate::git::git_command()?
         .args(["diff", "--name-status", "--end-of-options", range])
         .current_dir(repo_root)
         .output()

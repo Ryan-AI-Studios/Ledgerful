@@ -238,7 +238,7 @@ pub fn execute_ledger_re_sign_with_keys_dir(
     let mut storage = StorageManager::init_with_layout(&layout)?;
     let backup_path = backup_ledger_db(storage.get_connection(), &db_path)?;
 
-    let author = current_actor(&layout);
+    let author = current_actor(&layout, &config);
     let now = Utc::now().to_rfc3339();
 
     let mut repaired_tx_ids: Vec<String> = Vec::with_capacity(candidates.len());
@@ -743,10 +743,15 @@ fn key_fingerprint(hex_key: &str) -> String {
     hex_key.chars().take(16).collect()
 }
 
-fn current_actor(repo_root: &crate::state::layout::Layout) -> String {
+fn current_actor(
+    repo_root: &crate::state::layout::Layout,
+    config: &crate::config::model::Config,
+) -> String {
     let from_git = || {
+        let policy = config.verify.effective_process_policy();
         let read = |key: &str| -> Option<String> {
-            std::process::Command::new("git")
+            crate::git::git_command_with_policy(&policy)
+                .ok()?
                 .args(["config", key])
                 .current_dir(repo_root.root.as_path())
                 .output()
