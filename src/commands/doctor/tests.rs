@@ -30,7 +30,12 @@ fn doctor_json_plus_apply_hook_refresh_rejected() {
     use crate::cli::Cli;
     use clap::Parser;
     // Rejected at execute_doctor entry (also covered by clap path when wired).
-    let err = execute_doctor(true, true, false, false, false).unwrap_err();
+    let err = execute_doctor(DoctorRunOpts {
+        json: true,
+        apply_hook_refresh: true,
+        ..DoctorRunOpts::default()
+    })
+    .unwrap_err();
     let msg = format!("{err:?}");
     assert!(
         msg.contains("doctor --json cannot be combined with --apply-hook-refresh"),
@@ -516,6 +521,14 @@ fn test_write_doctor_results_writes_file() {
         assert!(
             f.get("sessionPriority").is_none(),
             "sidecar must omit sessionPriority: {f}"
+        );
+        assert!(
+            f.get("acknowledged").is_none(),
+            "sidecar must omit acknowledged: {f}"
+        );
+        assert!(
+            f.get("acknowledgedAt").is_none(),
+            "sidecar must omit acknowledgedAt: {f}"
         );
     }
 }
@@ -1438,4 +1451,84 @@ fn assign_session_priorities_resets_later_when_enforce() {
     config.gate.mode = "enforce".to_string();
     assign_session_priorities(&mut findings, &config);
     assert_eq!(findings[0].session_priority, SessionPriority::Now);
+}
+
+#[test]
+fn doctor_fix_without_yes_or_dry_run_is_miette() {
+    let err = execute_doctor(DoctorRunOpts {
+        fix: true,
+        ..DoctorRunOpts::default()
+    })
+    .unwrap_err();
+    let msg = format!("{err:?}");
+    assert!(
+        msg.contains("doctor --fix requires --yes or --dry-run"),
+        "got {msg}"
+    );
+}
+
+/// 0226 DoD-1/DoD-4: ack in config → JSON `acknowledged: true`, later unchanged.
+#[test]
+fn apply_acknowledgements_sets_flag_keeps_later() {
+    let mut config = crate::config::model::Config::default();
+    config.doctor.acknowledged_codes = vec![
+        "PHANTOM_PROMOTED_WITHOUT_VERIFY".to_string(),
+        "sig-pin".to_string(),
+        "sig-version".to_string(),
+    ];
+    let mut findings = vec![
+        DoctorFinding::warn("sig-pin", DoctorCategory::Signing, "pin"),
+        DoctorFinding::warn("sig-version", DoctorCategory::Signing, "version"),
+        DoctorFinding::warn(
+            "PHANTOM_PROMOTED_WITHOUT_VERIFY",
+            DoctorCategory::Signing,
+            "phantoms",
+        ),
+        DoctorFinding::warn(
+            "binary-behind-tree",
+            DoctorCategory::Tools,
+            "PATH binary lags tree",
+        ),
+    ];
+    assign_session_priorities(&mut findings, &config);
+    apply_acknowledgements(&mut findings, &config);
+    for f in &findings {
+        if is_observe_signing_later_code(&f.code) {
+            assert!(f.acknowledged, "{}", f.code);
+            assert_eq!(f.session_priority, SessionPriority::Later);
+        } else {
+            assert!(!f.acknowledged, "{}", f.code);
+        }
+    }
+    let json = serde_json::to_value(&findings).expect("cli json");
+    let pin = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["code"] == "sig-pin")
+        .expect("sig-pin");
+    assert_eq!(pin["acknowledged"], true);
+    assert_eq!(pin["sessionPriority"], "later");
+    assert!(pin.get("acknowledgedAt").is_none());
+    let behind = json
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|v| v["code"] == "binary-behind-tree")
+        .expect("behind");
+    assert!(behind.get("acknowledged").is_none());
+}
+
+#[test]
+fn stale_ack_without_finding_is_inert() {
+    let mut config = crate::config::model::Config::default();
+    config.doctor.acknowledged_codes = vec!["not-emitted-this-run".to_string()];
+    let mut findings = vec![DoctorFinding::warn(
+        "binary-behind-tree",
+        DoctorCategory::Tools,
+        "lag",
+    )];
+    apply_acknowledgements(&mut findings, &config);
+    assert!(!findings[0].acknowledged);
+    assert_eq!(findings.len(), 1);
 }

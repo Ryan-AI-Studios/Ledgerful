@@ -128,7 +128,7 @@ Examples:
 
 - `sig-pin` / `binary-behind-tree` / `binary-behind-latest` (non-optional **warn**) → expanded
 - `completion-unreachable` (optional **warn**) → hygiene (collapsed)
-- `hook-template-stale` (**info** / gate) → hygiene (collapsed) — leaves Index Health by default
+- `hook-template-stale` (**warn** / gate) → expanded on default human (0226; was info/hygiene in 0174). Increments `summary.warnAction` by 1. GPU/gemini/SCIP optional info stay collapsed. Repair remains `doctor --apply-hook-refresh` (not `--fix`).
 - Optional accelerators section still shows embedding/completion status lines always
 
 ### Flags
@@ -138,13 +138,21 @@ Examples:
 | **(default)** | Expand Block + ActionWarn only; greppable trailer `N hygiene finding(s) collapsed — run doctor --full`. When optional warns exist, the trailer adds `(1 optional warning)` / `(N optional warnings)`; with none, the default string is unchanged. Observe-mode later signing warns (0225) are omitted from the body and get a **separate** deferred trailer — never the hygiene line. |
 | **`doctor --full`** | Expand hygiene too: non-optional **info** under Index Health; **optional** findings under Optional Accelerators. Orthogonal to global `-v` (logging). |
 | **`-q` / `--quiet` or `LEDGERFUL_QUIET=1\|true`** | Via shared `resolve_quiet`: suppress multi-line remediations + **VRAM** footer; keep finding one-liners + hygiene collapse. Does **not** select machine mode. |
-| **`doctor --json`** | Unchanged: schemaVersion **1**, **full** findings always. `full`/`quiet` ignored for JSON content. Additive `sessionPriority` (`now` \| `later`) on each finding (0225). |
+| **`doctor --json`** | Unchanged: schemaVersion **1**, **full** findings always. `full`/`quiet` ignored for JSON content. Additive `sessionPriority` (`now` \| `later`) on each finding (0225). Additive `acknowledged` (bool, omitted when false) + `acknowledgedAt` (optional ISO time) (0226). |
 
 VRAM section: shown under default and `--full`; **suppressed under quiet**.
 
 ### `sessionPriority` (0225)
 
 On **observe** + `intent.require_signing = false`, `PHANTOM_PROMOTED_WITHOUT_VERIFY`, `sig-pin`, and `sig-version` are assigned `sessionPriority: later` at emission (CLI `doctor --json` only; omitted from sidecar `doctor-results.json` / change-context `topFindings`). Human default omits those bodies and prints `{n} signing finding(s) deferred (observe) — run doctor --full` — **not** the 0174 hygiene line (`hygiene_count` / Index Health expand stay `is_hygiene` only). Header `warnAction` still counts them (0209); `--full` expands later bodies. Enforce or `require_signing` keeps `now`. `binary-behind-tree` stays `now`. Category / `is_action_critical` / 0138 B7 unchanged.
+
+### Acknowledged standing warnings (0226)
+
+Repo config `[doctor] acknowledged_codes` (sorted) suppresses human **bodies** for those codes until the finding disappears. JSON still lists the finding with `acknowledged: true` (and `sessionPriority` still `later` when eligible). Acked codes do **not** inflate the later trailer. Stale acks (code in config, no finding this run) are inert — no GC.
+
+`--fix --dry-run` names the `config set` for `sig-pin`. `--fix --yes` pins `intent.trusted_public_keys` only; `sig-version` refuses with greppable `re-sign first` when LOCAL v1 rows remain (never `ledger re-sign --all`). Phantom `--yes` writes ack only. `--fix` conflicts with `--apply-hook-refresh`. `--json --fix --dry-run` is allowed; `--json --apply-hook-refresh` stays rejected.
+
+Sidecar omits `acknowledged` / `acknowledgedAt` (same freeze as `sessionPriority`).
 
 Agents should keep using **`doctor --json`** as SSOT; human disclosure is for interactive scans.
 

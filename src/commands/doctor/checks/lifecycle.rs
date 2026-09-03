@@ -108,7 +108,10 @@ fn count_phantom_verified(conn: &rusqlite::Connection) -> Result<i64> {
 ///
 /// Defensive: returns `Err` when the table/column is missing (fresh repos).
 /// Callers should use `if let Ok(count) = …` and omit the count on error.
-fn count_entries_below_sig_version(conn: &rusqlite::Connection, below: u32) -> Result<i64> {
+pub(crate) fn count_entries_below_sig_version(
+    conn: &rusqlite::Connection,
+    below: u32,
+) -> Result<i64> {
     let count: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM ledger_entries
@@ -301,7 +304,7 @@ pub(crate) fn collect_lifecycle_findings(
         findings.extend(legacy);
     }
 
-    // 0121: product hook template stamp drift (Info + Gate; never blocks publish).
+    // 0121 / 0226: product hook template stamp drift (Warn + Gate; never blocks publish).
     findings.extend(
         crate::commands::hook_template::hook_template_stale_findings(layout.root.as_path()),
     );

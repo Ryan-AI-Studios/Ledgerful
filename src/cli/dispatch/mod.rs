@@ -232,13 +232,17 @@ pub fn run_with(cli: Cli) -> Result<()> {
             apply_hook_refresh,
             dry_run,
             full,
-        }) => crate::commands::doctor::execute_doctor(
+            fix,
+            yes,
+        }) => crate::commands::doctor::execute_doctor(crate::commands::doctor::DoctorRunOpts {
             json,
             apply_hook_refresh,
             dry_run,
             full,
-            crate::cli::resolve_quiet(cli.quiet),
-        ),
+            quiet: crate::cli::resolve_quiet(cli.quiet),
+            fix,
+            yes,
+        }),
         Commands::Status(StatusArgs { json, compact }) => {
             crate::commands::ledger::execute_ledger_status(
                 crate::commands::ledger::LedgerStatusOpts {

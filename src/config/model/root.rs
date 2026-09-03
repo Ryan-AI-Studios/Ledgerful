@@ -49,6 +49,8 @@ pub struct Config {
     #[serde(default)]
     pub gate: super::gate::GateConfig,
     #[serde(default)]
+    pub doctor: super::doctor::DoctorConfig,
+    #[serde(default)]
     pub bridge: super::bridge::BridgeConfig,
     #[serde(default)]
     pub global_rollup: super::rollup::GlobalRollupConfig,

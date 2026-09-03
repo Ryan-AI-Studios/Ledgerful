@@ -93,6 +93,10 @@ pub(crate) fn is_observe_signing_later_code(code: &str) -> bool {
     )
 }
 
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
 /// A single doctor finding with stable machine identity.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct DoctorFinding {
@@ -108,6 +112,13 @@ pub struct DoctorFinding {
     /// Config-relative session attention (0225). Always serialized on CLI JSON.
     #[serde(rename = "sessionPriority")]
     pub session_priority: SessionPriority,
+    /// Operator ack from `[doctor] acknowledged_codes` (0226). Additive.
+    /// Omitted from JSON when false; sidecar omits this key entirely.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub acknowledged: bool,
+    /// Optional ISO-8601 ack time when stored. Sidecar always omits.
+    #[serde(rename = "acknowledgedAt", skip_serializing_if = "Option::is_none")]
+    pub acknowledged_at: Option<String>,
 }
 
 impl DoctorFinding {
@@ -124,6 +135,8 @@ impl DoctorFinding {
             message: message.into(),
             remediation: None,
             session_priority: SessionPriority::Now,
+            acknowledged: false,
+            acknowledged_at: None,
         }
     }
 
@@ -468,7 +481,7 @@ mod tests {
         // Row 5: empty → 0 / 0 / 0
         assert_warn_split(&[], 0, 0, 0);
 
-        // Row 6: info only (3) → 0 / 0 / 0
+        // Row 6: info only (3) → 0 / 0 / 0 (hook-template-stale is Warn as of 0226)
         let row6 = vec![
             f(
                 "tool-gemini",
@@ -481,13 +494,25 @@ mod tests {
                 DoctorCategory::Optional,
             ),
             f(
-                "hook-template-stale",
+                "scip-rust-missing",
                 DoctorSeverity::Info,
-                DoctorCategory::Gate,
+                DoctorCategory::Optional,
             ),
         ];
         assert_warn_split(&row6, 0, 0, 0);
         assert_eq!(summarize(&row6).info, 3);
+
+        // 0226: hook-template-stale Warn/Gate increments warnAction by 1.
+        assert_warn_split(
+            &[f(
+                "hook-template-stale",
+                DoctorSeverity::Warn,
+                DoctorCategory::Gate,
+            )],
+            1,
+            1,
+            0,
+        );
     }
 
     /// 0209-D: tool-gemini info/optional must not increment warnOptional.
@@ -557,9 +582,9 @@ mod tests {
             DoctorSeverity::Info,
             DoctorCategory::Optional,
         )));
-        assert!(!is_action_critical(&f(
+        assert!(is_action_critical(&f(
             "hook-template-stale",
-            DoctorSeverity::Info,
+            DoctorSeverity::Warn,
             DoctorCategory::Gate,
         )));
     }
@@ -576,14 +601,17 @@ mod tests {
         assert!(is_hygiene(&optional_warn));
         assert!(!is_action_critical(&optional_warn));
 
-        // T2: info any category → hygiene (hook-template-stale pin).
+        // T2: info any category → hygiene. hook-template-stale is Warn/Gate (0226).
+        let info_gate = f("gate-info", DoctorSeverity::Info, DoctorCategory::Gate);
+        assert!(is_hygiene(&info_gate));
+        assert!(!is_action_critical(&info_gate));
         let hook_stale = f(
             "hook-template-stale",
-            DoctorSeverity::Info,
+            DoctorSeverity::Warn,
             DoctorCategory::Gate,
         );
-        assert!(is_hygiene(&hook_stale));
-        assert!(!is_action_critical(&hook_stale));
+        assert!(!is_hygiene(&hook_stale));
+        assert!(is_action_critical(&hook_stale));
         let info_optional = f(
             "sccache-hint",
             DoctorSeverity::Info,
@@ -628,6 +656,20 @@ mod tests {
         // remediation omitted when None (skip_serializing_if)
         assert!(v.get("remediation").is_none());
         assert_eq!(v["sessionPriority"], "now");
+        assert!(v.get("acknowledged").is_none());
+        assert!(v.get("acknowledgedAt").is_none());
+    }
+
+    #[test]
+    fn serde_acknowledged_true_omits_false_and_timestamp_when_none() {
+        let mut finding = DoctorFinding::warn("sig-pin", DoctorCategory::Signing, "no keys");
+        finding.acknowledged = true;
+        let v = serde_json::to_value(&finding).expect("serialize");
+        assert_eq!(v["acknowledged"], true);
+        assert!(v.get("acknowledgedAt").is_none());
+        finding.acknowledged_at = Some("2026-09-03T00:00:00Z".to_string());
+        let v = serde_json::to_value(&finding).expect("serialize");
+        assert_eq!(v["acknowledgedAt"], "2026-09-03T00:00:00Z");
     }
 
     #[test]

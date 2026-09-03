@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Doctor standing-warning ack / `--fix` (0226):** `[doctor] acknowledged_codes`
+  (sorted) suppresses human bodies for observe-signing findings; JSON keeps
+  the codes with `acknowledged: true`. `doctor --fix --yes` pins
+  `intent.trusted_public_keys` only (never `ledger re-sign --all`);
+  `sig-version --yes` refuses `re-sign first` when LOCAL v1 remain.
+  `hook-template-stale` is Warn/Gate (visible on default human; `warnAction`
+  +1). `--fix` conflicts with `--apply-hook-refresh`. No Cargo bump.
+
 - **Session briefing (0224):** `ledgerful session --json` is a schemaVersion-1
   `kind: session` facade (git, ledger pending/`collisions[]`, doctor counts,
   budgeted change-context with `max_files=5`, bounded non-test hotspots,

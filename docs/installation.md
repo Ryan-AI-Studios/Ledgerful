@@ -81,7 +81,7 @@ After upgrading the `ledgerful` binary on PATH, existing repos that already call
 
 ```powershell
 # 1. PATH upgrade alone → quieter hooks + better fail UX (no repo changes)
-# 2. Detect stamp drift (Info finding `hook-template-stale`; never blocks publish)
+# 2. Detect stamp drift (Warn finding `hook-template-stale`; never blocks publish)
 ledgerful doctor
 
 # 3. Optional one-shot refresh of known Ledgerful marker-bounded blocks only
