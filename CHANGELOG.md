@@ -63,6 +63,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   hashes. Live tap/bucket remotes already auto-bumped on the release; this
   syncs in-engine templates. No Cargo bump.
 
+### Fixed
+
+- **LLM / SCIP / Cozo honesty (0231):** Listening-but-slow completion is
+  `completion-not-ready` (not unreachable). Ureq failures are labeled
+  **transport** via `ErrorKind` (not OS English). rust-analyzer is resolved
+  via `rustup which` with a process-wide `PathBuf` cache after `--version`.
+  0-dim `snippet_embedding` is recreated via `::remove`. Failed ping is
+  classified without a second 2s TCP; doctor completion text goes through
+  `sanitize_cause`; 503 retry sleep is capped to the remaining doctor 2s
+  budget (`ask` timeout unchanged). No Cargo bump.
+
 ### Docs
 
 - **AI-only agent skill (0221):** Tracked `docs/Ledgerful/skill.md` is a short

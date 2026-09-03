@@ -16,11 +16,15 @@ const SCIP_INDEX_TIMEOUT_SECS: u64 = 600;
 /// Short timeout for capability probes (`exe --version`).
 const SCIP_PROBE_TIMEOUT_SECS: u64 = 5;
 
-/// Process-wide cache of capability probe results (base executable name → ok).
-fn capability_cache() -> &'static Mutex<HashMap<String, bool>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, bool>>> = OnceLock::new();
+/// Process-wide cache: exe name → resolved `PathBuf` after a successful
+/// `--version` probe (`None` = probed, not capable).
+fn capability_cache() -> &'static Mutex<HashMap<String, Option<PathBuf>>> {
+    static CACHE: OnceLock<Mutex<HashMap<String, Option<PathBuf>>>> = OnceLock::new();
     CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
+
+#[cfg(test)]
+static RUSTUP_WHICH_CALLS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
 /// Clear the capability cache (tests only).
 #[cfg(test)]
@@ -28,6 +32,7 @@ pub fn clear_capability_cache_for_test() {
     if let Ok(mut guard) = capability_cache().lock() {
         guard.clear();
     }
+    RUSTUP_WHICH_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -132,7 +137,16 @@ impl ScipToolchain {
 
         check_policy(exe, policy).into_diagnostic()?;
 
-        let mut cmd = Command::new(exe);
+        let resolved = resolve_scip_binary(exe).ok_or_else(|| {
+            miette!(
+                "SCIP indexer '{}' not found on PATH{}. Install with `{}`.",
+                exe,
+                rustup_which_hint(exe),
+                self.install_hint()
+            )
+        })?;
+
+        let mut cmd = Command::new(&resolved);
         cmd.args(exe_args);
         cmd.current_dir(repo_root);
         cmd.stdout(Stdio::piped()).stderr(Stdio::piped());
@@ -238,29 +252,117 @@ impl ScipToolchain {
 /// Never probes the composite ingestion command (`rust-analyzer scip --version`
 /// is invalid). Exit 0 → available; anything else → not available.
 ///
-/// Results are cached per process.
+/// Results are cached per process as the resolved `PathBuf` after `--version`.
 pub fn is_capable(binary: &str) -> bool {
-    if let Ok(guard) = capability_cache().lock()
-        && let Some(&cached) = guard.get(binary)
-    {
-        return cached;
-    }
-
-    let ok = probe_base_exe_version(binary);
-
-    if let Ok(mut guard) = capability_cache().lock() {
-        guard.insert(binary.to_string(), ok);
-    }
-    ok
+    resolve_scip_binary(binary).is_some()
 }
 
-fn probe_base_exe_version(binary: &str) -> bool {
-    // PATH presence alone is not enough (rustup shim); must execute.
-    if crate::util::which::which(binary).is_none() {
-        return false;
+/// Resolve a SCIP indexer executable: PATH first, then `rustup which` for
+/// rust-analyzer (component lives in the toolchain bin, which is often not on
+/// PATH on Windows). A PATH hit that fails `--version` (broken shim / missing
+/// DLLs) is ignored so rustup can still succeed.
+///
+/// Cached after the first `--version` probe so `rustup which` / `probe_version_at`
+/// run at most once per binary per process.
+pub(crate) fn resolve_scip_binary(binary: &str) -> Option<PathBuf> {
+    if let Ok(guard) = capability_cache().lock()
+        && let Some(cached) = guard.get(binary)
+    {
+        return cached.clone();
     }
 
-    let mut cmd = Command::new(binary);
+    let resolved = resolve_scip_binary_uncached(binary);
+
+    if let Ok(mut guard) = capability_cache().lock() {
+        guard.insert(binary.to_string(), resolved.clone());
+    }
+    resolved
+}
+
+fn resolve_scip_binary_uncached(binary: &str) -> Option<PathBuf> {
+    if let Some(p) = crate::util::which::which(binary)
+        && probe_version_at(&p)
+    {
+        return Some(p);
+    }
+    let base = binary
+        .strip_suffix(".exe")
+        .or_else(|| binary.strip_suffix(".EXE"))
+        .unwrap_or(binary);
+    if base.eq_ignore_ascii_case("rust-analyzer") {
+        let p = rustup_which("rust-analyzer").filter(|p| p.is_file())?;
+        if probe_version_at(&p) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+fn rustup_which_hint(binary: &str) -> &'static str {
+    let base = binary
+        .strip_suffix(".exe")
+        .or_else(|| binary.strip_suffix(".EXE"))
+        .unwrap_or(binary);
+    if base.eq_ignore_ascii_case("rust-analyzer") {
+        " (not on PATH; `rustup which rust-analyzer` may still find the component)"
+    } else {
+        ""
+    }
+}
+
+/// Parse `rustup which <component>` stdout (first non-empty trimmed line).
+pub(crate) fn parse_rustup_which_stdout(stdout: &str) -> Option<PathBuf> {
+    let line = stdout.lines().map(str::trim).find(|l| !l.is_empty())?;
+    Some(PathBuf::from(line))
+}
+
+fn rustup_which(component: &str) -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        RUSTUP_WHICH_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }
+    let mut cmd = Command::new("rustup");
+    cmd.args(["which", component]);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
+
+    let mut child = match cmd.spawn() {
+        Ok(c) => c,
+        Err(_) => return None,
+    };
+    let stdout_handle = child.stdout.take();
+    let reader = std::thread::spawn(move || {
+        let mut buf = Vec::new();
+        if let Some(mut r) = stdout_handle {
+            use std::io::Read;
+            let _ = r.read_to_end(&mut buf);
+        }
+        buf
+    });
+
+    let timeout = Duration::from_secs(SCIP_PROBE_TIMEOUT_SECS);
+    let status = match wait_timeout::ChildExt::wait_timeout(&mut child, timeout) {
+        Ok(Some(status)) => status,
+        Ok(None) => {
+            let _ = child.kill();
+            let _ = reader.join();
+            return None;
+        }
+        Err(_) => {
+            let _ = child.kill();
+            let _ = reader.join();
+            return None;
+        }
+    };
+    let stdout = reader.join().unwrap_or_default();
+    if !status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&stdout);
+    parse_rustup_which_stdout(&text).filter(|p| p.is_file())
+}
+
+fn probe_version_at(exe: &Path) -> bool {
+    let mut cmd = Command::new(exe);
     cmd.arg("--version");
     cmd.stdout(Stdio::null()).stderr(Stdio::null());
 
@@ -286,9 +388,21 @@ fn probe_base_exe_version(binary: &str) -> bool {
 /// Inject a capability result for tests (bypasses real spawn).
 #[cfg(test)]
 pub fn set_capability_for_test(binary: &str, available: bool) {
+    let path = available.then(|| PathBuf::from(format!("__ledgerful_test_capable__/{binary}")));
+    set_resolved_path_for_test(binary, path);
+}
+
+/// Inject a resolved SCIP path (tests only).
+#[cfg(test)]
+pub fn set_resolved_path_for_test(binary: &str, path: Option<PathBuf>) {
     if let Ok(mut guard) = capability_cache().lock() {
-        guard.insert(binary.to_string(), available);
+        guard.insert(binary.to_string(), path);
     }
+}
+
+#[cfg(test)]
+fn rustup_which_call_count() -> usize {
+    RUSTUP_WHICH_CALLS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 #[cfg(test)]
@@ -297,6 +411,7 @@ mod tests {
     use crate::platform::process_policy::ProcessPolicy;
 
     #[test]
+    #[serial_test::serial(scip_capability_cache)]
     fn detect_all_empty_repo_returns_empty() {
         clear_capability_cache_for_test();
         set_capability_for_test("rust-analyzer", false);
@@ -307,6 +422,7 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(scip_capability_cache)]
     fn detect_all_respects_capability_not_just_manifest() {
         clear_capability_cache_for_test();
         let tmp = tempfile::tempdir().unwrap();
@@ -357,12 +473,70 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(scip_capability_cache)]
     fn capability_cache_returns_injected_value() {
         clear_capability_cache_for_test();
         set_capability_for_test("totally-fake-scip-tool-0095", false);
         assert!(!is_capable("totally-fake-scip-tool-0095"));
         set_capability_for_test("totally-fake-scip-tool-0095", true);
         assert!(is_capable("totally-fake-scip-tool-0095"));
+    }
+
+    #[test]
+    fn parse_rustup_which_stdout_takes_first_nonempty_line() {
+        let p = parse_rustup_which_stdout(
+            "\n  C:\\Users\\me\\.rustup\\toolchains\\stable-x86_64-pc-windows-msvc\\bin\\rust-analyzer.exe  \n",
+        )
+        .expect("path");
+        assert!(
+            p.ends_with("rust-analyzer.exe"),
+            "unexpected parse: {}",
+            p.display()
+        );
+    }
+
+    #[test]
+    fn parse_rustup_which_stdout_empty_is_none() {
+        assert!(parse_rustup_which_stdout("   \n\n").is_none());
+    }
+
+    #[test]
+    #[serial_test::serial(scip_capability_cache)]
+    fn resolve_rust_analyzer_via_rustup_when_component_installed() {
+        clear_capability_cache_for_test();
+        if rustup_which("rust-analyzer").is_none() {
+            return;
+        }
+        let resolved = resolve_scip_binary("rust-analyzer")
+            .expect("rustup which should resolve rust-analyzer");
+        assert!(
+            resolved.is_file(),
+            "resolved rust-analyzer missing: {}",
+            resolved.display()
+        );
+        assert!(
+            is_capable("rust-analyzer"),
+            "capability probe must succeed via rustup which when component is installed"
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)] // project test naming: feature__condition__expected
+    #[serial_test::serial(scip_capability_cache)]
+    fn scip_resolve_path_cache__second_call__reuses_pathbuf_no_rustup() {
+        clear_capability_cache_for_test();
+        let injected = PathBuf::from("C:\\injected\\rust-analyzer.exe");
+        set_resolved_path_for_test("rust-analyzer", Some(injected.clone()));
+        let rustup_before = rustup_which_call_count();
+        let first = resolve_scip_binary("rust-analyzer");
+        let second = resolve_scip_binary("rust-analyzer");
+        let rustup_after = rustup_which_call_count();
+        assert_eq!(first.as_ref(), Some(&injected));
+        assert_eq!(second, first, "second resolve must reuse cached PathBuf");
+        assert_eq!(
+            rustup_before, rustup_after,
+            "second resolve must not invoke rustup which"
+        );
     }
 
     #[test]

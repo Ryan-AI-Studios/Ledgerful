@@ -90,6 +90,11 @@ impl<'a> VectorStore<'a> {
         if hnsw_rebuild_threshold == 0 {
             return Err(miette!("HNSW rebuild threshold must be > 0"));
         }
+        if dim == 0 {
+            return Err(miette!(
+                "Cannot create snippet_embedding with dimension 0. Set `local_model.dimensions` (nomic-embed-text is 768) or ensure the embedding probe returns a non-zero size. Inspect with `ledgerful index --semantic-dry-run`."
+            ));
+        }
         let store = Self {
             storage,
             dim,
@@ -105,6 +110,11 @@ impl<'a> VectorStore<'a> {
     /// where the index will be created separately (e.g., after migration).
     #[doc(hidden)]
     pub fn new_without_hnsw(storage: &'a CozoStorage, dim: usize) -> Result<Self> {
+        if dim == 0 {
+            return Err(miette!(
+                "Cannot create snippet_embedding with dimension 0. Set `local_model.dimensions` (nomic-embed-text is 768) or ensure the embedding probe returns a non-zero size. Inspect with `ledgerful index --semantic-dry-run`."
+            ));
+        }
         let store = Self {
             storage,
             dim,
@@ -116,6 +126,10 @@ impl<'a> VectorStore<'a> {
     }
 
     fn setup_schema(&self) -> Result<()> {
+        self.setup_schema_inner(false)
+    }
+
+    fn setup_schema_inner(&self, already_recreated: bool) -> Result<()> {
         let relations = self.storage.get_relations()?;
         if !relations.contains(&"snippet_embedding".to_string()) {
             // RO Cozo (soft-open / search read path): do not :create schema.
@@ -151,21 +165,27 @@ impl<'a> VectorStore<'a> {
                     warn!("Dimension mismatch under read-only Cozo (cannot recreate schema): {e}");
                     return Ok(());
                 }
+                if already_recreated {
+                    return Err(miette!(
+                        "Failed to recreate snippet_embedding after dimension mismatch: {e}"
+                    ));
+                }
                 warn!(
                     "Dimension mismatch or verification failed: {}. Clearing stale snippet embeddings.",
                     e
                 );
-                // HP3: must drop FTS + HNSW indices before dropping the relation
+                // HP3: must drop FTS + HNSW indices before dropping the relation.
+                // Cozo uses `::remove` to drop a stored relation (`:drop` is a no-op here).
                 for script in [
                     "::fts drop snippet_embedding:fts_idx",
                     "::hnsw drop snippet_embedding:snippet_idx",
-                    ":drop snippet_embedding",
+                    "::remove snippet_embedding",
                 ] {
                     if let Err(e) = self.storage.run_script(script) {
                         warn!("Failed to run migration cleanup script: {script} — {e}");
                     }
                 }
-                return self.setup_schema();
+                return self.setup_schema_inner(true);
             }
 
             if !self.skip_hnsw {
@@ -1135,5 +1155,37 @@ mod tests {
         let results = store.query(vec![0.0, 1.0, 0.0], 5).expect("query");
         assert_eq!(results.len(), 1);
         assert_eq!(results[0].0, "src/other.rs");
+    }
+
+    #[test]
+    fn new_without_hnsw_rejects_zero_dimension() {
+        let storage = CozoStorage::new_in_memory().expect("in-memory cozo");
+        let err = match VectorStore::new_without_hnsw(&storage, 0) {
+            Err(e) => e,
+            Ok(_) => panic!("dim 0 must be refused"),
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("dimension 0"),
+            "expected dimension 0 refusal, got: {msg}"
+        );
+    }
+
+    #[test]
+    fn setup_recreates_zero_dimension_snippet_embedding() {
+        let storage = CozoStorage::new_in_memory().expect("in-memory cozo");
+        let created = storage.run_script(
+            ":create snippet_embedding {file_path,name,line_offset=>embedding:<F32; 0>}",
+        );
+        if created.is_err() {
+            // Some Cozo builds refuse dim-0 columns; leftover 0-dim is still a
+            // production recovery path when the relation already exists.
+            return;
+        }
+        let store = VectorStore::new_without_hnsw(&storage, 3).expect("recreate at dim 3");
+        storage
+            .verify_embedding_dimension("snippet_embedding", 3)
+            .expect("schema must be 3-dim after recovery");
+        assert_eq!(store.get_vector_count().unwrap_or(0), 0);
     }
 }

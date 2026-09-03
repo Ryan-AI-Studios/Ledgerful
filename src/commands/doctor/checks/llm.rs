@@ -194,6 +194,130 @@ pub(crate) fn is_transient_error(err: &str) -> bool {
     false
 }
 
+/// Doctor honesty: a listening local router (TCP open) is not "unreachable"
+/// when the 2s ping budget expires (cold load). `ask` uses the full timeout.
+pub(crate) fn completion_probe_failure_kind(
+    tcp_ok: bool,
+) -> (&'static str, &'static str, &'static str) {
+    if tcp_ok {
+        (
+            "completion-not-ready",
+            "listening; ping failed",
+            "Completion model listening but ping failed in doctor budget",
+        )
+    } else {
+        (
+            "completion-unreachable",
+            "unreachable",
+            "Completion model unreachable",
+        )
+    }
+}
+
+/// Classification of a failed doctor completion ping. Pure: no network.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompletionPingClass {
+    /// Connect succeeded or HTTP answered; ping missed the doctor budget.
+    Timeout,
+    /// Transport-level connect failure (refused, DNS, reset).
+    ConnectionFailed,
+    /// Generation URL missing/empty.
+    EmptyUrl,
+}
+
+impl CompletionPingClass {
+    pub(crate) fn tcp_ok(self) -> bool {
+        matches!(self, Self::Timeout)
+    }
+}
+
+/// Classify a ping failure from ureq / `io::ErrorKind` — not OS English strings.
+///
+/// Unit tests must not open TCP or call `is_url_reachable`.
+pub(crate) fn classify_completion_ping_error(
+    url_empty: bool,
+    ureq_kind: Option<ureq::ErrorKind>,
+    io_kind: Option<std::io::ErrorKind>,
+) -> CompletionPingClass {
+    if url_empty {
+        return CompletionPingClass::EmptyUrl;
+    }
+    if io_kind == Some(std::io::ErrorKind::TimedOut)
+        || io_kind == Some(std::io::ErrorKind::WouldBlock)
+    {
+        return CompletionPingClass::Timeout;
+    }
+    match ureq_kind {
+        Some(ureq::ErrorKind::ConnectionFailed) | Some(ureq::ErrorKind::Dns) => {
+            CompletionPingClass::ConnectionFailed
+        }
+        Some(ureq::ErrorKind::HTTP) => CompletionPingClass::Timeout,
+        Some(ureq::ErrorKind::Io) => CompletionPingClass::ConnectionFailed,
+        None => CompletionPingClass::Timeout,
+        _ => CompletionPingClass::ConnectionFailed,
+    }
+}
+
+/// Human/JSON completion finding text: `sanitize_cause` then truncate.
+pub(crate) fn completion_finding_message(finding_lead: &str, err: &str, retries: u32) -> String {
+    let sanitized = crate::local_model::client::sanitize_cause(err);
+    let truncated: String = sanitized.chars().take(80).collect();
+    let retry_suffix = if retries > 0 {
+        format!(" after {retries} retries")
+    } else {
+        String::new()
+    };
+    let detail_hint = if sanitized.chars().count() > 80 {
+        " [set RUST_LOG=debug for details]"
+    } else {
+        ""
+    };
+    format!("{finding_lead} ({truncated}{retry_suffix}){detail_hint}")
+}
+
+/// Status-line twin of [`completion_finding_message`] (same sanitized truncate).
+pub(crate) fn completion_status_detail(err: &str, retries: u32) -> (String, String, &'static str) {
+    let sanitized = crate::local_model::client::sanitize_cause(err);
+    let truncated: String = sanitized.chars().take(80).collect();
+    let retry_suffix = if retries > 0 {
+        format!(" after {retries} retries")
+    } else {
+        String::new()
+    };
+    let detail_hint = if sanitized.chars().count() > 80 {
+        " [set RUST_LOG=debug for details]"
+    } else {
+        ""
+    };
+    (truncated, retry_suffix, detail_hint)
+}
+
+/// Doctor completion ping with retry; last failure classified without a second TCP.
+pub(crate) fn probe_completion_classified(
+    config: crate::config::model::LocalModelConfig,
+) -> (ProbeResult<String>, CompletionPingClass) {
+    let last_class = std::sync::Arc::new(std::sync::Mutex::new(CompletionPingClass::Timeout));
+    let slot = std::sync::Arc::clone(&last_class);
+    let result = probe_with_retry(move || {
+        crate::local_model::client::ping_completions_detailed(&config).map_err(|failure| {
+            let class = classify_completion_ping_error(
+                failure.url_empty,
+                failure.ureq_kind,
+                failure.io_kind,
+            );
+            if let Ok(mut guard) = slot.lock() {
+                *guard = class;
+            }
+            failure.message
+        })
+    });
+    let class = match last_class.lock() {
+        Ok(guard) => *guard,
+        Err(_) => CompletionPingClass::Timeout,
+    };
+    (result, class)
+}
+
 /// Wall-clock cap on sleep time between retries (secondary bound).
 /// Primary session-start bound for 0143 is [`PROBE_MAX_RETRIES`]: production
 /// allows at most one retry (two attempts). `RETRY_BUDGET` still caps total
@@ -309,9 +433,16 @@ where
             }
             Err(err) => {
                 let elapsed = start.elapsed();
-                if is_transient_error(&err) && retries < max_retries && elapsed + delay <= budget {
+                // Cap sleep to remaining budget so a 503 retry cannot add a
+                // second 2s wait on top of the doctor ping window. Still retry
+                // while `elapsed < budget` (do not drop the retry entirely).
+                if is_transient_error(&err) && retries < max_retries && elapsed < budget {
                     retries += 1;
-                    std::thread::sleep(delay);
+                    let remaining = budget.saturating_sub(elapsed);
+                    let sleep_for = delay.min(remaining);
+                    if !sleep_for.is_zero() {
+                        std::thread::sleep(sleep_for);
+                    }
                     continue;
                 }
                 return ProbeResult::Unreachable { err, retries };
@@ -383,5 +514,89 @@ pub(crate) fn parse_url_host(url: &str) -> Option<String> {
         None
     } else {
         Some(host.to_string())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        CompletionPingClass, classify_completion_ping_error, completion_finding_message,
+        completion_probe_failure_kind,
+    };
+
+    #[test]
+    fn listening_local_router_is_not_unreachable() {
+        let (code, status, lead) = completion_probe_failure_kind(true);
+        assert_eq!(code, "completion-not-ready");
+        assert!(status.contains("listening"));
+        assert!(lead.contains("listening"));
+        assert!(!lead.to_lowercase().contains("unreachable"));
+    }
+
+    #[test]
+    fn tcp_down_stays_unreachable() {
+        let (code, status, lead) = completion_probe_failure_kind(false);
+        assert_eq!(code, "completion-unreachable");
+        assert_eq!(status, "unreachable");
+        assert!(lead.contains("unreachable"));
+    }
+
+    #[test]
+    #[allow(non_snake_case)] // project test naming: feature__condition__expected
+    fn classify_completion_ping_error__timeout_kind__not_unreachable() {
+        let class = classify_completion_ping_error(
+            false,
+            Some(ureq::ErrorKind::Io),
+            Some(std::io::ErrorKind::TimedOut),
+        );
+        assert_eq!(class, CompletionPingClass::Timeout);
+        assert!(class.tcp_ok());
+        let (code, _, lead) = completion_probe_failure_kind(class.tcp_ok());
+        assert_eq!(code, "completion-not-ready");
+        assert!(!lead.to_lowercase().contains("unreachable"));
+    }
+
+    #[test]
+    #[allow(non_snake_case)] // project test naming: feature__condition__expected
+    fn classify_completion_ping_error__connection_failed_kind__transport() {
+        let class =
+            classify_completion_ping_error(false, Some(ureq::ErrorKind::ConnectionFailed), None);
+        assert_eq!(class, CompletionPingClass::ConnectionFailed);
+        assert!(!class.tcp_ok());
+        let (code, status, lead) = completion_probe_failure_kind(class.tcp_ok());
+        assert_eq!(code, "completion-unreachable");
+        assert_eq!(status, "unreachable");
+        assert!(lead.contains("unreachable"));
+    }
+
+    #[test]
+    #[allow(non_snake_case)] // project test naming: feature__condition__expected
+    fn classify_completion_ping_error__empty_url__unreachable() {
+        let class = classify_completion_ping_error(true, None, None);
+        assert_eq!(class, CompletionPingClass::EmptyUrl);
+        assert!(!class.tcp_ok());
+        let (code, _, _) = completion_probe_failure_kind(class.tcp_ok());
+        assert_eq!(code, "completion-unreachable");
+    }
+
+    #[test]
+    #[allow(non_snake_case)] // project test naming: feature__condition__expected
+    fn completion_finding_message__url_shaped_cause__sanitize_cause_strips() {
+        let raw = "POST http://127.0.0.1:11434/v1/chat/completions \
+Authorization Bearer sk-secret-token-xyz api_key=supersecret failed";
+        let msg = completion_finding_message("Completion model unreachable", raw, 0);
+        assert!(
+            !msg.contains("sk-secret-token-xyz"),
+            "bearer token must not leak: {msg}"
+        );
+        assert!(
+            !msg.contains("supersecret"),
+            "api_key value must not leak: {msg}"
+        );
+        assert!(msg.contains("[REDACTED]"), "redaction marker: {msg}");
+        assert!(
+            msg.contains("http://127.0.0.1:11434"),
+            "url-shaped cause still present after sanitize: {msg}"
+        );
     }
 }
