@@ -1125,6 +1125,8 @@ pub struct HotspotExplanation {
     pub complexity: i32,
     pub frequency: f64,
     pub couplings: Vec<crate::impact::packet::TemporalCoupling>,
+    /// Greppable reason the couplings list is omitted/untrusted. `None` means trusted.
+    pub couplings_warning: Option<String>,
     pub score_breakdown: Option<crate::impact::hotspots::HotspotScoreBreakdown>,
 }
 
@@ -1145,7 +1147,7 @@ pub fn compute_hotspot_explanation(
     let conn = storage.get_connection();
     let indexed = complexity_for_entity_path(conn, &normalized_entity)?;
 
-    let config = load_config(&get_layout()?).unwrap_or_default();
+    let config = load_config(&get_layout()?)?;
     let history_provider = GixHistoryProvider::new(repo);
     let query = HotspotQuery {
         exact_file: None,
@@ -1164,7 +1166,7 @@ pub fn compute_hotspot_explanation(
     let complexity = matching.map(|h| h.complexity).unwrap_or(indexed);
 
     let engine = TemporalEngine::new(history_provider, config.temporal.clone());
-    let couplings = engine.calculate_couplings().unwrap_or_default();
+    let (couplings, couplings_warning) = annotate_couplings(engine.calculate_couplings());
     let entity_couplings: Vec<_> = couplings
         .into_iter()
         .filter(|c| {
@@ -1184,8 +1186,27 @@ pub fn compute_hotspot_explanation(
         complexity,
         frequency,
         couplings: entity_couplings,
+        couplings_warning,
         score_breakdown,
     })
+}
+
+fn annotate_couplings(
+    result: Result<Vec<crate::impact::packet::TemporalCoupling>, crate::git::GitError>,
+) -> (Vec<crate::impact::packet::TemporalCoupling>, Option<String>) {
+    match result {
+        Ok(couplings) => (couplings, None),
+        Err(e) => {
+            tracing::warn!(
+                error = %e,
+                "failed to calculate temporal couplings; omitting untrusted list"
+            );
+            (
+                Vec::new(),
+                Some(format!("temporal couplings untrusted: {e}")),
+            )
+        }
+    }
 }
 
 /// File-level complexity from `project_files` with 0183 unique-path resolve
@@ -1255,7 +1276,10 @@ fn execute_hotspots_explain(
         "  Change Frequency (weighted): {:.2}",
         explanation.frequency
     );
-    println!("  Temporal Couplings: {}", explanation.couplings.len());
+    match &explanation.couplings_warning {
+        Some(warning) => println!("  Temporal Couplings: untrusted ({warning})"),
+        None => println!("  Temporal Couplings: {}", explanation.couplings.len()),
+    }
 
     if let Some(breakdown) = &explanation.score_breakdown {
         println!("\nScore Breakdown:");
@@ -1400,6 +1424,28 @@ mod tests {
         assert_eq!(
             omitted_hotspots_footer(3).as_deref(),
             Some("3 test/example files omitted; --include tests")
+        );
+    }
+
+    #[test]
+    fn couplings_failure_is_annotated_not_silent_zero() {
+        let err = crate::git::GitError::InsufficientHistory {
+            found: 3,
+            required: 10,
+        };
+        let (list, warning) = annotate_couplings(Err(err));
+        assert!(
+            list.is_empty(),
+            "failed couplings must be omitted, not a trusted empty list with no warning"
+        );
+        let warning = warning.expect("couplings failure must be annotated");
+        assert!(
+            warning.contains("untrusted"),
+            "expected greppable untrusted warning, got {warning}"
+        );
+        assert!(
+            warning.contains('3') && warning.contains("10"),
+            "warning should include found/required: {warning}"
         );
     }
 

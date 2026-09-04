@@ -100,11 +100,27 @@ pub fn write_verify_report(layout: &Layout, report: &VerificationReport) -> Resu
     Ok(())
 }
 
+/// Decode on-disk `VERIFY_HISTORY` JSON. Parse failure is an error — callers
+/// must not treat it as an empty list (that looks like "none" and invites a wipe).
+pub fn parse_verify_history(content: &str) -> Result<Vec<VerifyHistoryRecord>, serde_json::Error> {
+    serde_json::from_str(content)
+}
+
 fn update_verify_history(layout: &Layout, report: &VerificationReport) -> Result<()> {
     let history_path = layout.reports_dir().join(VERIFY_HISTORY);
     let mut history: Vec<VerifyHistoryRecord> = if history_path.exists() {
         let content = fs::read_to_string(&history_path).into_diagnostic()?;
-        serde_json::from_str(&content).unwrap_or_default()
+        match parse_verify_history(&content) {
+            Ok(h) => h,
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    path = %history_path,
+                    "failed to parse verify history JSON; skipping update to avoid wiping the file"
+                );
+                return Ok(());
+            }
+        }
     } else {
         Vec::new()
     };
@@ -156,5 +172,37 @@ mod tests {
         let loaded: VerificationReport = serde_json::from_str(&saved).unwrap();
         assert!(loaded.overall_pass);
         assert_eq!(loaded.results[0].command, "cargo test");
+    }
+
+    #[test]
+    fn verify_history_corrupt_parse_does_not_wipe_file() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        let history_path = layout.reports_dir().join(VERIFY_HISTORY);
+        let corrupt = "{not-valid-verify-history";
+        fs::write(&history_path, corrupt).unwrap();
+
+        let report = VerificationReport::new(
+            None,
+            vec![VerificationResult {
+                command: "cargo test".to_string(),
+                exit_code: 0,
+                duration_ms: 1,
+                stdout_summary: "ok".to_string(),
+                stderr_summary: String::new(),
+                truncated: false,
+                timestamp: "2026-01-01T00:00:00Z".to_string(),
+            }],
+        );
+
+        write_verify_report(&layout, &report).unwrap();
+
+        let after = fs::read_to_string(&history_path).unwrap();
+        assert_eq!(
+            after, corrupt,
+            "corrupt verify-history.json must not be replaced with []+new row"
+        );
     }
 }

@@ -15,6 +15,10 @@ use crate::output::table::{apply_table_style, resolve_table_style};
 use crate::state::storage::StorageManager;
 use crate::verify::results::VERIFY_HISTORY;
 
+fn is_false(v: &bool) -> bool {
+    !*v
+}
+
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ProjectAuditReport {
@@ -23,6 +27,9 @@ pub struct ProjectAuditReport {
     pub unaudited_drift: Vec<DriftEntry>,
     pub hotspots: Vec<Hotspot>,
     pub ci_trend: Vec<bool>,
+    /// True when `VERIFY_HISTORY` exists but JSON parse failed. Omitted when false.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub ci_trend_corrupt: bool,
     pub recent_entries: Vec<AuditEntry>,
 }
 
@@ -221,16 +228,26 @@ fn gather_audit_data(
     .unwrap_or_default();
 
     let history_path = layout.reports_dir().join(VERIFY_HISTORY);
+    let mut ci_trend_corrupt = false;
     let ci_trend = if history_path.exists() {
         let content = std::fs::read_to_string(&history_path).into_diagnostic()?;
-        let history: Vec<crate::verify::results::VerifyHistoryRecord> =
-            serde_json::from_str(&content).unwrap_or_default();
-        history
-            .into_iter()
-            .rev()
-            .take(limit)
-            .map(|h| h.passed)
-            .collect()
+        match crate::verify::results::parse_verify_history(&content) {
+            Ok(history) => history
+                .into_iter()
+                .rev()
+                .take(limit)
+                .map(|h| h.passed)
+                .collect(),
+            Err(e) => {
+                tracing::warn!(
+                    error = %e,
+                    path = %history_path,
+                    "failed to parse verify history JSON"
+                );
+                ci_trend_corrupt = true;
+                vec![]
+            }
+        }
     } else {
         vec![]
     };
@@ -247,6 +264,7 @@ fn gather_audit_data(
         unaudited_drift,
         hotspots,
         ci_trend,
+        ci_trend_corrupt,
         recent_entries,
     })
 }
@@ -312,6 +330,14 @@ fn audit_global(
 
     render_project_audit_human(&report, include_unaudited, limit, offset);
     Ok(())
+}
+
+fn ci_trend_human_placeholder(ci_trend_corrupt: bool) -> &'static str {
+    if ci_trend_corrupt {
+        "CI trend unreadable (ciTrendCorrupt)."
+    } else {
+        "No history yet."
+    }
 }
 
 fn render_project_audit_human(
@@ -431,8 +457,8 @@ fn render_project_audit_human(
         format!("CI TREND (Last {})", limit)
             .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
     );
-    if report.ci_trend.is_empty() {
-        println!("  No history yet.");
+    if report.ci_trend_corrupt || report.ci_trend.is_empty() {
+        println!("  {}", ci_trend_human_placeholder(report.ci_trend_corrupt));
     } else {
         let mut trend_str = String::new();
         for passed in report.ci_trend.iter().rev() {
@@ -700,4 +726,56 @@ fn print_audit_entry_list(
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn empty_audit_report(ci_trend_corrupt: bool) -> ProjectAuditReport {
+        ProjectAuditReport {
+            velocity: VelocitySummary {
+                last_7_days: 0,
+                last_30_days: 0,
+                total: 0,
+                pending: 0,
+                federated: 0,
+            },
+            churn: vec![],
+            unaudited_drift: vec![],
+            hotspots: vec![],
+            ci_trend: vec![],
+            ci_trend_corrupt,
+            recent_entries: vec![],
+        }
+    }
+
+    #[test]
+    fn verify_history_corrupt_human_does_not_say_no_history_yet() {
+        let corrupt = ci_trend_human_placeholder(true);
+        assert!(
+            corrupt.contains("ciTrendCorrupt"),
+            "corrupt placeholder must be greppable: {corrupt}"
+        );
+        assert!(
+            !corrupt.contains("No history yet."),
+            "file exists but unreadable must not look like missing history"
+        );
+        assert_eq!(ci_trend_human_placeholder(false), "No history yet.");
+    }
+
+    #[test]
+    fn verify_history_ci_trend_corrupt_false_is_quiet_in_json() {
+        let json = serde_json::to_value(empty_audit_report(false)).unwrap();
+        assert!(
+            json.get("ciTrendCorrupt").is_none(),
+            "false must skip_serializing_if: {json}"
+        );
+    }
+
+    #[test]
+    fn verify_history_ci_trend_corrupt_true_is_serialized() {
+        let json = serde_json::to_value(empty_audit_report(true)).unwrap();
+        assert_eq!(json["ciTrendCorrupt"], true);
+    }
 }
