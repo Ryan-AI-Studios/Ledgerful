@@ -8,6 +8,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **CLI matcher split (0246):** `cli/args/meta.rs` matchers live in
+  `meta/{machine,names,flags}.rs` (`is_machine_output`, command-name/
+  `argv_shape`, `present_flag_names`). No new `_ =>` on `Commands`.
+  Machine-output selection unchanged. No Cargo bump.
+
 - **Index modes split (0247):** `execute_check_mode` and
   `execute_export_docs_mode` live in `commands/index/modes/{check,export_docs}.rs`;
   `execute_index` stays the dispatcher. `--analyze-graph` still passes
