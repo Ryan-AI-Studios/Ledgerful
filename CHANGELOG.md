@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **CLI hotspots split (0250):** `commands/hotspots.rs` is a barrel
+  (`hotspots/{list,trend,explain,budget,tests}.rs`). CLI entry is
+  `execute_hotspots`. Pre-existing `pub` `compute_hotspot_explanation`
+  stays re-exported for `tests/integration/cli_hotspots_explain.rs`.
+  JSON `score` stays 0–1; 0243 couplings honesty unchanged. Scoring
+  engine `impact/hotspots.rs` not edited. No Cargo bump.
+
 - **Hook repair split (0248):** `commands/hook_repair.rs` is a barrel
   (`hook_repair/{detect,resolve,rewrite,doctor,tests}.rs`). Rewrite+apply
   share `rewrite.rs`. `LEGACY_BINARY` stays `concat!("change","guard")`.

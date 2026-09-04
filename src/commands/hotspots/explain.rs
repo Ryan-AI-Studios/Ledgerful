@@ -9,7 +9,7 @@ use crate::state::storage::StorageManager;
 use miette::Result;
 
 /// CLI presentation so the resolution logic is directly testable.
-pub struct HotspotExplanation {
+pub(crate) struct HotspotExplanation {
     pub normalized_entity: String,
     pub complexity: i32,
     pub frequency: f64,
@@ -19,7 +19,7 @@ pub struct HotspotExplanation {
     pub score_breakdown: Option<crate::impact::hotspots::HotspotScoreBreakdown>,
 }
 
-pub fn compute_hotspot_explanation(
+pub(crate) fn compute_hotspot_explanation(
     storage: &StorageManager,
     entity: &str,
     repo: &gix::Repository,

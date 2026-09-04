@@ -15,8 +15,6 @@ mod trend;
 #[cfg(test)]
 mod tests;
 
-pub use explain::{HotspotExplanation, compute_hotspot_explanation};
-
 pub fn execute_hotspots(args: HotspotArgs) -> Result<()> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
