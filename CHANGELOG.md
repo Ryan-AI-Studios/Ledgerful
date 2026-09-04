@@ -8,6 +8,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Layout helpers home (0253):** `get_layout*` / `resolve_state_dir*` /
+  `get_repo_root` live in `state/layout.rs`. `commands::helpers` re-exports
+  them. `load_ledger_config` stays in helpers. Impact, ledger, and bridge
+  no longer import `commands::helpers`. No `human.rs` edits. No Cargo bump.
+
 - **CLI hotspots split (0250):** `commands/hotspots.rs` is a barrel
   (`hotspots/{list,trend,explain,budget,tests}.rs`). CLI entry is
   `execute_hotspots`. Pre-existing `pub` `compute_hotspot_explanation`
