@@ -9,7 +9,7 @@ use crate::util::query::sanitize_fts5_query;
 pub(crate) use client_cli::query_external_cli;
 
 pub fn query_unified(query: &str) -> Result<Vec<BridgeRecord>> {
-    let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git()?;
+    let layout = crate::state::layout::get_layout_or_cwd_if_not_git()?;
     let project_id = layout.get_project_id();
 
     if std::env::var("LEDGERFUL_NON_INTERACTIVE").is_ok() {
@@ -52,7 +52,7 @@ pub fn is_bridge_enabled(layout: &Layout) -> bool {
 }
 
 pub fn is_bridge_enabled_or_default() -> bool {
-    match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
+    match crate::state::layout::get_layout_or_cwd_if_not_git() {
         Ok(layout) => is_bridge_enabled(&layout),
         Err(_) => false,
     }
@@ -62,7 +62,7 @@ const BRIDGE_ENABLE_HINT: &str =
     "Bridge is disabled. Enable with `bridge.enabled = true` in config or set LEDGERFUL_BRIDGE=1.";
 
 pub fn execute_query(query: String) -> Result<()> {
-    let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git()?;
+    let layout = crate::state::layout::get_layout_or_cwd_if_not_git()?;
     if !is_bridge_enabled(&layout) {
         eprintln!("{}", BRIDGE_ENABLE_HINT);
         return Ok(());

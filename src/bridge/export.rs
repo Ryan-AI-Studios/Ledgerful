@@ -1,5 +1,4 @@
 use crate::bridge::model::{BridgeDirection, BridgePayload, BridgeRecord, SnapshotPayload};
-use crate::commands::helpers::get_layout_or_cwd_if_not_git;
 use crate::git::RepoSnapshot;
 use crate::git::repo::{get_head_info, open_repo};
 use crate::git::status::get_repo_status;
@@ -7,6 +6,7 @@ use crate::impact::hotspots::calculate_hotspots;
 use crate::impact::orchestrator::{ImpactOrchestrator, map_snapshot_to_packet};
 use crate::impact::temporal::GixHistoryProvider;
 use crate::ledger::db::LedgerDb;
+use crate::state::layout::get_layout_or_cwd_if_not_git;
 use crate::state::storage::StorageManager;
 use clap::Args;
 use miette::{IntoDiagnostic, Result};

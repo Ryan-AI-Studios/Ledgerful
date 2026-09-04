@@ -15,7 +15,7 @@
 //! separate from the engine's main signing key. Entry signatures are read-only and
 //! are not modified by this export.
 
-use crate::commands::helpers::get_layout;
+use crate::state::layout::get_layout;
 
 use crate::ledger::db::LedgerDb;
 use crate::ledger::types::{ChainHead, LedgerEntry, VerificationStatus};

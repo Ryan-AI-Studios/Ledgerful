@@ -216,7 +216,7 @@ impl ImpactOrchestrator {
         // 3. Execute Analysis (Scoring) — load policy rules via resolved layout.
         // Rules-only: soft-fail to defaults. Never invent private worktree state
         // when git discover succeeded but resolve failed (fail-closed).
-        let rules = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
+        let rules = match crate::state::layout::get_layout_or_cwd_if_not_git() {
             Ok(layout) => match crate::policy::load::load_rules(&layout) {
                 Ok(r) => r,
                 Err(e) => {
