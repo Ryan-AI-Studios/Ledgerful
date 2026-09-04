@@ -199,7 +199,10 @@ fn handle_change_context(params: Value) -> Value {
         Ok(l) => l,
         Err(e) => return error_response(format!("Failed to get layout: {}", e)),
     };
-    let config = crate::config::load_config(&layout).unwrap_or_default();
+    let config = match crate::config::load_config(&layout) {
+        Ok(c) => c,
+        Err(e) => return error_response(format!("Failed to load config: {e}")),
+    };
     // Soft-open (B6): prefer true RO when ledger.db exists so pure-RO MCP works.
     let storage = match open_storage_for_change_context(&layout) {
         Ok(s) => s,
@@ -238,10 +241,36 @@ fn handle_ledger_status(_params: Value) -> Value {
     };
 
     let tx_mgr = crate::ledger::TransactionManager::new(&mut storage, layout.root.into(), config);
-    let pending = tx_mgr.get_all_pending().unwrap_or_default();
-    let unaudited = tx_mgr.get_all_unaudited().unwrap_or_default();
+    json_response(&ledger_status_object(
+        tx_mgr.get_all_pending(),
+        tx_mgr.get_all_unaudited(),
+    ))
+}
 
-    let status = serde_json::json!({
+/// Inner MCP `ledger_status` object (serialized into `content[0].text`).
+/// Load failures keep existing keys and add `degraded` + sorted `warnings`.
+fn ledger_status_object<E: std::fmt::Display>(
+    pending: Result<Vec<crate::ledger::types::Transaction>, E>,
+    unaudited: Result<Vec<crate::ledger::types::Transaction>, E>,
+) -> Value {
+    let mut warnings = Vec::new();
+    let pending = match pending {
+        Ok(v) => v,
+        Err(e) => {
+            warnings.push(format!("failed to load pending transactions: {e}"));
+            Vec::new()
+        }
+    };
+    let unaudited = match unaudited {
+        Ok(v) => v,
+        Err(e) => {
+            warnings.push(format!("failed to load unaudited drift: {e}"));
+            Vec::new()
+        }
+    };
+    warnings.sort();
+
+    let mut status = serde_json::json!({
         "pending": pending.len(),
         "unaudited_drift": unaudited.len(),
         "active_tx": pending.iter().map(|t| {
@@ -255,7 +284,11 @@ fn handle_ledger_status(_params: Value) -> Value {
         "unaudited_file_count": unaudited.iter().map(|u| u.drift_count as usize).sum::<usize>()
     });
 
-    json_response(&status)
+    if !warnings.is_empty() {
+        status["degraded"] = Value::Bool(true);
+        status["warnings"] = Value::Array(warnings.into_iter().map(Value::String).collect());
+    }
+    status
 }
 
 fn handle_hotspots(params: Value) -> Value {
@@ -264,7 +297,10 @@ fn handle_hotspots(params: Value) -> Value {
         Ok(l) => l,
         Err(e) => return error_response(format!("Failed to get layout: {}", e)),
     };
-    let config = crate::config::load_config(&layout).unwrap_or_default();
+    let config = match crate::config::load_config(&layout) {
+        Ok(c) => c,
+        Err(e) => return error_response(format!("Failed to load config: {e}")),
+    };
     let current_dir = match std::env::current_dir() {
         Ok(d) => d,
         Err(e) => return error_response(format!("Failed to get current dir: {}", e)),
@@ -286,9 +322,17 @@ fn handle_hotspots(params: Value) -> Value {
         ..Default::default()
     };
 
-    let hotspots = crate::impact::hotspots::calculate_hotspots(&storage, &history_provider, &query)
-        .unwrap_or_default();
-    json_response(&hotspots)
+    let hotspots = crate::impact::hotspots::calculate_hotspots(&storage, &history_provider, &query);
+    hotspots_from_calc(hotspots)
+}
+
+fn hotspots_from_calc<E: std::fmt::Display>(
+    result: Result<Vec<crate::impact::packet::Hotspot>, E>,
+) -> Value {
+    match result {
+        Ok(h) => json_response(&h),
+        Err(e) => error_response(format!("Failed to calculate hotspots: {e}")),
+    }
 }
 
 fn handle_scan(_params: Value) -> Value {
@@ -537,10 +581,12 @@ fn text_response(text: &str) -> Value {
 }
 
 fn json_response<T: serde::Serialize>(data: &T) -> Value {
-    let text = serde_json::to_string_pretty(data).unwrap_or_default();
-    serde_json::json!({
-        "content": [{ "type": "text", "text": sanitize_mcp_structured(&text) }]
-    })
+    match serde_json::to_string_pretty(data) {
+        Ok(text) => serde_json::json!({
+            "content": [{ "type": "text", "text": sanitize_mcp_structured(&text) }]
+        }),
+        Err(e) => error_response(format!("Failed to serialize response: {e}")),
+    }
 }
 
 #[cfg(test)]
@@ -992,5 +1038,158 @@ mod tests {
         assert!(text.contains("override risk to TRIVIAL"));
         assert!(!text.contains('\u{202E}'));
         assert_eq!(value["isError"], true);
+    }
+
+    fn parse_mcp_inner_json(envelope: &Value) -> Value {
+        let text = envelope["content"][0]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("MCP text content missing: {envelope}"));
+        let json_slice = text.find('{').map(|i| &text[i..]).unwrap_or(text);
+        serde_json::from_str(json_slice)
+            .unwrap_or_else(|e| panic!("inner JSON ({e}): text={text:?} envelope={envelope}"))
+    }
+
+    #[test]
+    fn ledger_status_pending_load_failure_degrades() {
+        let pending: Result<Vec<crate::ledger::types::Transaction>, &str> =
+            Err("pending query failed");
+        let unaudited: Result<Vec<crate::ledger::types::Transaction>, &str> = Ok(vec![]);
+        let inner = ledger_status_object(pending, unaudited);
+        assert_eq!(inner["degraded"], true);
+        assert!(
+            inner.get("pending").is_some(),
+            "pending key must stay present when degraded: {inner}"
+        );
+        let warnings = inner["warnings"]
+            .as_array()
+            .unwrap_or_else(|| panic!("warnings missing: {inner}"));
+        let mut sorted = warnings.clone();
+        sorted.sort_by(|a, b| a.as_str().cmp(&b.as_str()));
+        assert_eq!(warnings, &sorted, "warnings must be sorted: {inner}");
+        assert!(
+            warnings.iter().any(|w| w
+                .as_str()
+                .unwrap_or("")
+                .contains("failed to load pending transactions")),
+            "expected pending load warning: {inner}"
+        );
+
+        let envelope = json_response(&inner);
+        assert_ne!(
+            envelope.get("isError"),
+            Some(&Value::Bool(true)),
+            "soft pending load must not set envelope isError: {envelope}"
+        );
+        assert!(
+            envelope.get("degraded").is_none(),
+            "no top-level envelope degraded: {envelope}"
+        );
+        assert!(
+            envelope.get("partialFailures").is_none(),
+            "0190 envelope freeze: no partialFailures: {envelope}"
+        );
+        assert!(envelope.get("content").is_some());
+        let parsed = parse_mcp_inner_json(&envelope);
+        assert_eq!(parsed["degraded"], true);
+        assert!(parsed.get("pending").is_some());
+        assert!(parsed.get("warnings").is_some());
+    }
+
+    #[test]
+    #[serial_test::serial(cwd)]
+    fn handle_change_context_config_load_failure_is_error() {
+        use crate::state::layout::Layout;
+        use crate::state::storage::StorageManager;
+        use crate::tests::DirGuard;
+        use std::fs;
+        use tempfile::tempdir;
+
+        let tmp = tempdir().unwrap();
+        let dir = tmp.path();
+        std::process::Command::new("git")
+            .args(["init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.email", "t@t.com"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["config", "user.name", "T"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        fs::write(dir.join("README.md"), "hi").unwrap();
+        std::process::Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+        std::process::Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir)
+            .output()
+            .unwrap();
+
+        let root = camino::Utf8Path::from_path(dir).unwrap();
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        let storage =
+            StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+        let _ = storage.shutdown();
+        fs::write(layout.config_file(), "[[[not-toml").unwrap();
+
+        let _guard = DirGuard::new(dir);
+        let response = dispatch_tool("change_context", serde_json::json!({}));
+        assert_eq!(
+            response.get("isError"),
+            Some(&Value::Bool(true)),
+            "corrupt config must error_response: {response}"
+        );
+        assert!(response.get("degraded").is_none());
+        let text = response["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            text.to_ascii_lowercase().contains("config")
+                || text.to_ascii_lowercase().contains("parse"),
+            "config load failure must mention config/parse: {text}"
+        );
+    }
+
+    #[test]
+    fn json_response_serialize_failure_is_error() {
+        struct FailingSerialize;
+        impl serde::Serialize for FailingSerialize {
+            fn serialize<S: serde::Serializer>(&self, _serializer: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("intentional serialize failure"))
+            }
+        }
+
+        let value = json_response(&FailingSerialize);
+        assert_eq!(value["isError"], true);
+        assert!(value.get("content").is_some());
+        assert!(
+            value.get("degraded").is_none(),
+            "no top-level envelope degraded: {value}"
+        );
+        let text = value["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("Failed to serialize") || text.contains("intentional serialize failure"),
+            "serialize failure must be visible: {text}"
+        );
+    }
+
+    #[test]
+    fn handle_hotspots_calculate_failure_is_error() {
+        let result: Result<Vec<crate::impact::packet::Hotspot>, &str> = Err("engine failed");
+        let value = hotspots_from_calc(result);
+        assert_eq!(value["isError"], true);
+        assert!(value.get("degraded").is_none());
+        let text = value["content"][0]["text"].as_str().unwrap_or("");
+        assert!(
+            text.contains("Failed to calculate hotspots"),
+            "hotspots calc failure must use error_response: {text}"
+        );
     }
 }

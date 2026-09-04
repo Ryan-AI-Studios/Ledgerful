@@ -66,7 +66,7 @@ still writes concrete command/args and never writes secrets or embedding URLs.
 3. `search`: BM25/regex code search. Tool text is a **single JSON object**
    (`schemaVersion` 1, `results[]`) from CLI `search --json` — not NDJSON lines.
 4. `ask`: Semantic Q&A with context assembly (MCP children default to zero cloud egress).
-5. `ledger_status`: Current pending/unaudited state.
+5. `ledger_status`: Current pending/unaudited state. Envelope stays `{content,isError}` (0190). Inner JSON may add `degraded` + sorted `warnings` when pending/unaudited loads fail; `pending` remains present.
 6. `ledger_search`: Full-text search transactions. Default omits ROLLBACK; pass `include_rollback` to restore.
 7. `hotspots`: Current hotspot rankings. **In-process array** (not the CLI `{files:[…]}` envelope).
 8. `endpoints_changed`: API endpoints affected by current diff. Tool text is the CLI `endpoints --changed --json` envelope (`schemaVersion` 1, `results[]`).

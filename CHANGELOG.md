@@ -52,6 +52,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **JSON / unwrap_or_default honesty (0243):** Corrupt `verify-history.json` is
+  not overwritten with `[]` plus a new row; parse failure warns and skips the
+  history write. `ledger audit` human does not print "No history yet." when the
+  file exists but is unreadable (`ciTrendCorrupt` on `--json`, omitted when
+  false). MCP `ledger_status` pending/unaudited load failures keep existing
+  inner keys and add `degraded` plus sorted `warnings` without setting envelope
+  `isError`. MCP `change_context`/`hotspots` config load and hotspot calc
+  failures use `error_response`; `json_response` serialize failure does too.
+  CLI `hotspots explain` no longer treats coupling failures as a trusted zero
+  count. No Cargo bump.
+
 - **Operator pre-push honesty and TempEnv unit tests (0244):** Fleet/hooks
   docs: a local pre-push that runs `scripts/check-coordination-paths.mjs`
   must not `exit 0` before `# ledgerful-ledger-gate` /
