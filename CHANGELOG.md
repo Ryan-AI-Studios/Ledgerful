@@ -8,6 +8,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Human output split (0252):** `output/human.rs` is a barrel
+  (`human/{doctor,scan,impact,hotspots,dead_code,verify,tests}.rs`).
+  `print_verify_plan` stays `pub`. `print_doctor_report_to` stays
+  `pub(crate)`. 0226 trailers and 0227 impact lead unchanged. No Cargo bump.
+
 - **Layout helpers home (0253):** `get_layout*` / `resolve_state_dir*` /
   `get_repo_root` live in `state/layout.rs`. `commands::helpers` re-exports
   them. `load_ledger_config` stays in helpers. Impact, ledger, and bridge
