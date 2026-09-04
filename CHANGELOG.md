@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Index modes split (0247):** `execute_check_mode` and
+  `execute_export_docs_mode` live in `commands/index/modes/{check,export_docs}.rs`;
+  `execute_index` stays the dispatcher. `--analyze-graph` still passes
+  `SqliteExtractPolicy::AlreadyRan`. Check JSON `kind` remains `indexCheck`.
+  No Cargo bump.
+
 - **MCP tools handler split (0245):** `commands/mcp/tools.rs` is a dispatch
   barrel (`tools/mod.rs`) with spawn, envelope, handlers, and tests in
   siblings. 0190 `{content, isError?}` envelope unchanged; INVENTORY names
