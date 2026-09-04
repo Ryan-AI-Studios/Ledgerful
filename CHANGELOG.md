@@ -6,6 +6,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Engine CI frontend pin (0241):** `ci.yml` and `smoke.yml` `web-build`
+  checkout `ledgerful-frontend` at `71d2d2db` with **Node 24** (ubuntu
+  proof). `release.yml` still resolves frontend `main` dynamically on
+  Windows. No Cargo bump.
+
 ### Added
 
 - **Impact docs-mode lead (0227):** `scan --impact --mode docs` (ValueEnum;
