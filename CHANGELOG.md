@@ -8,6 +8,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Verify execute extract (0251):** `execute_verify` lives in
+  `commands/verify/execute.rs`; `mod.rs` is the barrel. Shared test
+  fixtures in `verify/test_support.rs`. `VERIFY_JSON_SCHEMA_VERSION`
+  stays 1. No Cargo bump.
+
 - **Human output split (0252):** `output/human.rs` is a barrel
   (`human/{doctor,scan,impact,hotspots,dead_code,verify,tests}.rs`).
   `print_verify_plan` stays `pub`. `print_doctor_report_to` stays
