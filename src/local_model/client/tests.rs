@@ -4,31 +4,25 @@ use crate::local_model::cloud_policy::CloudPolicy;
 use httpmock::prelude::*;
 use std::time::Duration;
 
-#[test]
-fn test_cloud_fallback_env_blank() {
-    let key = "NONEXISTENT_BLANK_KEY_TEST";
-    // Legitimate: test-only env mutation (edition-2024 set_var is unsafe).
-    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-    unsafe {
-        std::env::set_var(key, "   ");
-    }
-    assert!(cloud_fallback_env(key).is_none());
-    // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-    unsafe {
-        std::env::remove_var(key);
-    }
-}
-
-#[test]
-fn test_cloud_fallback_env_missing() {
-    assert!(cloud_fallback_env("DEFINITELY_MISSING_KEY").is_none());
-}
-
 mod env_guard {
     include!(concat!(
         env!("CARGO_MANIFEST_DIR"),
         "/tests/integration/common/env_guard.rs"
     ));
+}
+use env_guard::TempEnv;
+
+#[test]
+#[serial_test::serial(env)]
+fn test_cloud_fallback_env_blank() {
+    let key = "NONEXISTENT_BLANK_KEY_TEST";
+    let _blank = TempEnv::set(key, "   ");
+    assert!(cloud_fallback_env(key).is_none());
+}
+
+#[test]
+fn test_cloud_fallback_env_missing() {
+    assert!(cloud_fallback_env("DEFINITELY_MISSING_KEY").is_none());
 }
 
 fn test_config(base_url: &str) -> LocalModelConfig {
@@ -1119,7 +1113,6 @@ use crate::local_model::cloud_policy::{
     CLOUD_POLICY_ENV, CLOUD_POLICY_FORBIDDEN_CODE, CLOUD_POLICY_FORBIDDEN_VALUE,
     MCP_ALLOW_CLOUD_EGRESS_ENV,
 };
-use env_guard::TempEnv;
 
 /// Isolate process env + chdir so repo `.env` / ambient keys cannot enable cloud.
 fn forbidden_cloud_isolation() -> Vec<TempEnv> {

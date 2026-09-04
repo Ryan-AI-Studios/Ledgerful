@@ -311,7 +311,14 @@ pub const DEFAULT_COMMIT_MESSAGE_TEMPLATE: &str = "[{category}] {summary}\n\nLed
 #[cfg(test)]
 mod tests {
     use super::*;
-    use serial_test::serial;
+
+    mod env_guard {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/integration/common/env_guard.rs"
+        ));
+    }
+    use env_guard::TempEnv;
 
     #[test]
     fn test_format_commit_message_default() {
@@ -366,32 +373,24 @@ mod tests {
     }
 
     #[test]
-    #[serial]
+    #[serial_test::serial(env)]
     fn test_git_binary_env_override_validated() {
-        let original = std::env::var("GIT_BINARY").ok();
-        // Legitimate: test-only env mutation (edition-2024 set_var is unsafe).
-        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-        unsafe { std::env::set_var("GIT_BINARY", "my-mock-git") };
-        assert_eq!(git_binary(), "git"); // rejected → fallback
-        // Bare PATH override must also fall back (no PATH redirection).
-        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-        unsafe { std::env::set_var("GIT_BINARY", "git") };
-        assert_eq!(git_binary(), "git");
-        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-        unsafe { std::env::set_var("GIT_BINARY", "git.exe") };
-        assert_eq!(git_binary(), "git");
-        // Cleanup
-        if let Some(orig) = original {
-            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-            unsafe { std::env::set_var("GIT_BINARY", orig) };
-        } else {
-            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-            unsafe { std::env::remove_var("GIT_BINARY") };
+        {
+            let _g = TempEnv::set("GIT_BINARY", "my-mock-git");
+            assert_eq!(git_binary(), "git"); // rejected → fallback
+        }
+        {
+            let _g = TempEnv::set("GIT_BINARY", "git");
+            assert_eq!(git_binary(), "git");
+        }
+        {
+            let _g = TempEnv::set("GIT_BINARY", "git.exe");
+            assert_eq!(git_binary(), "git");
         }
     }
 
     #[test]
-    #[serial]
+    #[serial_test::serial(env)]
     fn git_env_hardening_strips_exec_path_poison() {
         // `git --exec-path` prints GIT_EXEC_PATH when set. Unhardened spawns
         // would echo the poison path; hardened git_command() must strip it
@@ -401,10 +400,7 @@ mod tests {
         } else {
             "/nonexistent/ledgerful-git-exec-poison-0079"
         };
-        let original = std::env::var("GIT_EXEC_PATH").ok();
-        // Legitimate: test-only env mutation.
-        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-        unsafe { std::env::set_var("GIT_EXEC_PATH", poison) };
+        let _poison = TempEnv::set("GIT_EXEC_PATH", poison);
 
         // Control: unhardened spawn inherits the poison.
         let unhardened = Command::new("git")
@@ -437,23 +433,12 @@ mod tests {
             !hardened_out.trim().is_empty(),
             "expected real exec-path output"
         );
-
-        if let Some(orig) = original {
-            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-            unsafe { std::env::set_var("GIT_EXEC_PATH", orig) };
-        } else {
-            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-            unsafe { std::env::remove_var("GIT_EXEC_PATH") };
-        }
     }
 
     #[test]
-    #[serial]
+    #[serial_test::serial(env)]
     fn git_env_hardening_strips_ssh_command() {
-        let original = std::env::var("GIT_SSH_COMMAND").ok();
-        // Legitimate: test-only env mutation.
-        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-        unsafe { std::env::set_var("GIT_SSH_COMMAND", r"C:\evil\notssh.exe") };
+        let _poison = TempEnv::set("GIT_SSH_COMMAND", r"C:\evil\notssh.exe");
 
         // Local, non-network git operation that must not invoke ssh.
         let output = git_command()
@@ -472,14 +457,6 @@ mod tests {
             stdout.to_ascii_lowercase().contains("git version"),
             "unexpected version output: {stdout}"
         );
-
-        if let Some(orig) = original {
-            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-            unsafe { std::env::set_var("GIT_SSH_COMMAND", orig) };
-        } else {
-            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-            unsafe { std::env::remove_var("GIT_SSH_COMMAND") };
-        }
     }
 
     #[test]
