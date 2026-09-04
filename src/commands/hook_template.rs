@@ -815,6 +815,22 @@ mod tests {
     use super::*;
 
     #[test]
+    fn hook_template_pre_push_has_no_early_exit_zero() {
+        let bypass = "git push --no-verify";
+        // Same order as the writer: ledger gate then verify gate
+        // (`gates_for_hook("pre-push")` / init install).
+        let assembled = format!("{}{}", ledger_gate_block(bypass), verify_gate_block(bypass));
+        let ledger_at = assembled
+            .find(LEDGER_GATE_MARKER)
+            .expect("assembled pre-push must contain # ledgerful-ledger-gate");
+        let prefix = &assembled[..ledger_at];
+        assert!(
+            !prefix.contains("exit 0"),
+            "no exit 0 before first # ledgerful-ledger-gate; prefix={prefix:?}"
+        );
+    }
+
+    #[test]
     fn classify_current_stamped_verify() {
         let body = verify_gate_block("git push --no-verify");
         assert_eq!(

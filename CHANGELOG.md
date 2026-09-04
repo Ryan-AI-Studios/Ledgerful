@@ -52,6 +52,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Operator pre-push honesty and TempEnv unit tests (0244):** Fleet/hooks
+  docs: a local pre-push that runs `scripts/check-coordination-paths.mjs`
+  must not `exit 0` before `# ledgerful-ledger-gate` /
+  `# ledgerful-verify-gate`; `doctor --apply-hook-refresh` still refreshes
+  marker-bounded product blocks only. Product template regression
+  `hook_template_pre_push_has_no_early_exit_zero` assembles ledger then
+  verify. Remaining unit-test `set_var` in `git/commit.rs`,
+  `ask/backend.rs`, and `local_model/client/tests.rs` uses the existing
+  `include!` TempEnv RAII (`#[serial(env)]`). Does not commit
+  `.git/hooks`. No Cargo bump.
+
 - **Semgrep digest pin and required-check honesty (0237):** Engine
   `security.yml` Semgrep job uses job-level `container.image`
   `semgrep/semgrep:1.168.0@sha256:59fbed6127ea7c5dde3ba6a85142733bb20ea9aaa36120c953904f1539aaf66e`

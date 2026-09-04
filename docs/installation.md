@@ -101,6 +101,13 @@ Notes:
 - Customised marker blocks that no longer match a known product body are
   **skipped** (unknown), never partial-rewritten.
 - Second apply is a no-op (“already current”).
+- If a **local** pre-push prefix runs `scripts/check-coordination-paths.mjs`
+  (or a similar operator check), that prefix **must not** `exit 0` before
+  `# ledgerful-ledger-gate` / `# ledgerful-verify-gate`. An early `exit 0`
+  skips the product stamps. `doctor --apply-hook-refresh` remains the
+  vehicle for refreshing **marker-bounded product blocks only** — it does
+  not delete an untracked operator prefix. Edit the local hook yourself if
+  it still exits early.
 
 ## Upgrading from pre-rename installs
 

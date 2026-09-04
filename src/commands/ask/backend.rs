@@ -699,17 +699,9 @@ mod tests {
     fn resolve_provider_priority_env_var_invalid_fails_fast() {
         clear_provider_env();
         let key = "LEDGERFUL_ASK_PROVIDER_1";
-        // Legitimate: test-only env mutation (edition-2024 set_var is unsafe).
-        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-        unsafe {
-            std::env::set_var(key, "typo_cloud");
-        }
+        let _inj = TempEnv::set(key, "typo_cloud");
         let config = Config::default();
         let result = resolve_provider_priority(&config, None);
-        // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-        unsafe {
-            std::env::remove_var(key);
-        }
         assert!(result.is_err());
         let err = result.unwrap_err();
         assert!(err.contains("Invalid provider"));
@@ -743,13 +735,11 @@ mod tests {
         use crate::config::model::GeminiConfig;
         use crate::gemini::modes::GeminiMode;
 
-        fn clear_gemini_model_env() {
-            // Legitimate: test-only env cleanup (edition-2024 remove_var is unsafe).
-            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-            unsafe {
-                std::env::remove_var("GEMINI_FAST_MODEL");
-                std::env::remove_var("GEMINI_DEEP_MODEL");
-            }
+        fn clear_gemini_model_env() -> Vec<super::TempEnv> {
+            vec![
+                super::TempEnv::remove("GEMINI_FAST_MODEL"),
+                super::TempEnv::remove("GEMINI_DEEP_MODEL"),
+            ]
         }
 
         #[test]
@@ -758,7 +748,7 @@ mod tests {
             let packet = crate::impact::packet::ImpactPacket::default();
 
             // 1. Defaults
-            clear_gemini_model_env();
+            let _cleared = clear_gemini_model_env();
             let config = GeminiConfig {
                 fast_model: Some("fast".to_string()),
                 deep_model: Some("deep".to_string()),
@@ -788,12 +778,8 @@ mod tests {
             assert_eq!(model, "custom");
 
             // 3. Env Overrides
-            // Legitimate: test-only env mutation (edition-2024 set_var is unsafe).
-            // nosemgrep: rust.lang.security.unsafe-usage.unsafe-usage
-            unsafe {
-                std::env::set_var("GEMINI_FAST_MODEL", "env-fast");
-                std::env::set_var("GEMINI_DEEP_MODEL", "env-deep");
-            }
+            let _fast = super::TempEnv::set("GEMINI_FAST_MODEL", "env-fast");
+            let _deep = super::TempEnv::set("GEMINI_DEEP_MODEL", "env-deep");
             let config_empty = GeminiConfig::default();
             let fast_model_env = crate::gemini::wrapper::select_gemini_model(
                 &config_empty,
@@ -808,8 +794,6 @@ mod tests {
                 &packet,
             );
             assert_eq!(deep_model_env, "env-deep");
-
-            clear_gemini_model_env();
         }
     }
 
