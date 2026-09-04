@@ -8,6 +8,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **MCP tools handler split (0245):** `commands/mcp/tools.rs` is a dispatch
+  barrel (`tools/mod.rs`) with spawn, envelope, handlers, and tests in
+  siblings. 0190 `{content, isError?}` envelope unchanged; INVENTORY names
+  unchanged. No Cargo bump.
+
 - **Engine CI frontend pin (0241):** required `ci.yml`/`smoke.yml`
   `web-build` stays on `4a1df7e2` / Node 22 with an explicit
   shipped-vs-tested comment. Ubuntu `npm run build` of frontend
