@@ -8,6 +8,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Scan command split (0249):** `commands/scan.rs` is a barrel
+  (`scan/{validate,git,execute,tests}.rs`). Bare `scan --json` still
+  `schemaVersion` 1 / `kind: gitScan`. `--mode` still requires `--impact`.
+  Git rev-parse/diff still use `--end-of-options`. No Cargo bump.
+
 - **CLI matcher split (0246):** `cli/args/meta.rs` matchers live in
   `meta/{machine,names,flags}.rs` (`is_machine_output`, command-name/
   `argv_shape`, `present_flag_names`). No new `_ =>` on `Commands`.
