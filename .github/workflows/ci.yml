@@ -21,6 +21,11 @@ jobs:
       # repository secrets (only Dependabot secrets), so a required token
       # fails as empty ("Input required and not supplied: token") and blocks
       # the whole CI graph (clippy/test need web-build).
+      # 0241 shipped-vs-tested: required ubuntu web-build still pins 4a1df7e2 / Node 22.
+      # Tried frontend main 71d2d2db + Node 24: npm ci passed (not EBADENGINE); npm run
+      # build failed in ~36s (not timeout) — Linux CSP/build class. release.yml still
+      # embeds frontend main dynamically on windows-latest. Frontend gating `build` is
+      # Windows-only (0087). Keep identical to smoke.yml.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Ryan-AI-Studios/ledgerful-frontend
