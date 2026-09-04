@@ -71,7 +71,10 @@ jobs:
     permissions:
       contents: read
     container:
-      image: semgrep/semgrep
+      # Pin copied from ledgerful-frontend `.github/workflows/security.yml`
+      # (semgrep/semgrep:1.168.0). Keep job-level container.image; do not
+      # switch to docker run (root-owned cache on the runner).
+      image: semgrep/semgrep:1.168.0@sha256:59fbed6127ea7c5dde3ba6a85142733bb20ea9aaa36120c953904f1539aaf66e
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - name: Run Semgrep SAST

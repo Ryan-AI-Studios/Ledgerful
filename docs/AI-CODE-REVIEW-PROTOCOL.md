@@ -63,10 +63,31 @@
 
 ## Enforcement (CI gate)
 
-Branch protection requires a pull request and the `ai-reviewed` status check before merge. Human
-code-review approvals are not required (`required_approving_review_count = 0`); independent
+Live `main` branch protection (`required_status_checks.contexts`, re-verified 2026-09-03)
+requires a pull request plus these seven checks before merge:
+
+- `ai-reviewed`
+- `fmt (ubuntu-latest)`
+- `clippy (ubuntu-latest)`
+- `test (ubuntu-latest)`
+- `test (windows-latest)`
+- `audit`
+- `deny`
+
+Human code-review approvals are not required (`required_approving_review_count = 0`); independent
 adversarial AI review is the default technical approval gate. The owner retains the product,
-risk-acceptance, and final merge decision. Required CI and security checks remain mandatory.
+risk-acceptance, and final merge decision.
+
+`.github/workflows/security.yml` still runs on pull_request, push to `main`, and the weekly
+schedule. Job names include `Secret scan` and `Semgrep SAST` (plus display names
+`Cargo audit` / `Cargo deny`). Those jobs do not gate merge unless branch protection is
+updated to include them.
+
+Contexts `audit` and `deny` in the live list are the CI workflow jobs, not the Security
+workflow display names.
+
+HITL names if protection is updated: `Secret scan`, `Semgrep SAST`. Default is honesty
+against live protection; this track does not flip GitHub settings.
 
 The `ai-reviewed` check is set by the orchestrator **only after** the cross-model review subagent
 passes. The gate is:
