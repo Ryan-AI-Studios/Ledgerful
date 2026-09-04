@@ -8,6 +8,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Hook repair split (0248):** `commands/hook_repair.rs` is a barrel
+  (`hook_repair/{detect,resolve,rewrite,doctor,tests}.rs`). Rewrite+apply
+  share `rewrite.rs`. `LEGACY_BINARY` stays `concat!("change","guard")`.
+  No `.git/hooks` in the diff. No Cargo bump.
+
 - **Scan command split (0249):** `commands/scan.rs` is a barrel
   (`scan/{validate,git,execute,tests}.rs`). Bare `scan --json` still
   `schemaVersion` 1 / `kind: gitScan`. `--mode` still requires `--impact`.
