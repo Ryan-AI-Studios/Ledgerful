@@ -21,15 +21,19 @@ jobs:
       # repository secrets (only Dependabot secrets), so a required token
       # fails as empty ("Input required and not supplied: token") and blocks
       # the whole CI graph (clippy/test need web-build).
-      # 0241: pin proven on ubuntu web-build (Node 24). Re-verify SHA at bump.
+      # 0241 shipped-vs-tested: required ubuntu web-build still pins 4a1df7e2 / Node 22.
+      # Tried frontend main 71d2d2db + Node 24: npm ci passed (not EBADENGINE); npm run
+      # build failed in ~36s (not timeout) — Linux CSP/build class. release.yml still
+      # embeds frontend main dynamically on windows-latest. Frontend gating `build` is
+      # Windows-only (0087). Keep identical to smoke.yml.
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Ryan-AI-Studios/ledgerful-frontend
-          ref: 71d2d2dbafefdbfd26e5b5805fedf75288f7ff6c
+          ref: 4a1df7e2be68bb1136a18c52f1ba420801858c89
           path: ledgerful-frontend
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          node-version: 22
       - run: npm ci
         working-directory: ledgerful-frontend
       - run: npm run build

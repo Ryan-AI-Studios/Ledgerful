@@ -8,10 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
-- **Engine CI frontend pin (0241):** `ci.yml` and `smoke.yml` `web-build`
-  checkout `ledgerful-frontend` at `71d2d2db` with **Node 24** (ubuntu
-  proof). `release.yml` still resolves frontend `main` dynamically on
-  Windows. No Cargo bump.
+- **Engine CI frontend pin (0241):** required `ci.yml`/`smoke.yml`
+  `web-build` stays on `4a1df7e2` / Node 22 with an explicit
+  shipped-vs-tested comment. Ubuntu `npm run build` of frontend
+  `71d2d2db` + Node 24 failed (~36s, not timeout; `npm ci` passed).
+  `release.yml` still resolves frontend `main` dynamically on Windows.
+  No Cargo bump.
 
 ### Added
 

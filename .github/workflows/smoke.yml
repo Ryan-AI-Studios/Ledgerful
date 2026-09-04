@@ -16,15 +16,18 @@ jobs:
     timeout-minutes: 15
     steps:
       # Public frontend repo — no PAT (Dependabot cannot see repo secrets).
-      # 0241: pin proven on ubuntu web-build (Node 24). Keep identical to ci.yml.
+      # 0241 shipped-vs-tested: same pin as ci.yml (4a1df7e2 / Node 22). Tried
+      # 71d2d2db + Node 24: npm ci passed; ubuntu npm run build failed ~36s
+      # (not timeout; Linux CSP/build). release.yml dynamic main on Windows.
+      # Frontend gating build is Windows-only (0087).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           repository: Ryan-AI-Studios/ledgerful-frontend
-          ref: 71d2d2dbafefdbfd26e5b5805fedf75288f7ff6c
+          ref: 4a1df7e2be68bb1136a18c52f1ba420801858c89
           path: ledgerful-frontend
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
-          node-version: 24
+          node-version: 22
       - run: npm ci
         working-directory: ledgerful-frontend
       - run: npm run build
