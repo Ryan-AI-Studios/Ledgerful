@@ -29,6 +29,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Ledger named re-exports (0262):** `src/ledger/mod.rs` replaces glob
+  `pub use foo::*` with named lists. `load_checkpoint_head` stays
+  `#[cfg(feature = "export")]`. `public_export` `#[cfg(test)]` helpers are
+  not crate-root re-exports. Crypto stays on the crate root. No TX
+  lifecycle change. No Cargo bump.
+
 - **Extractor symbol clone budget (0260):** Call-graph / routes / data-models
   borrow per-file symbol slices instead of cloning the map `Vec`. Identity
   tests unchanged. No Cargo bump.
