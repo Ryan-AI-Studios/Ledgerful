@@ -107,6 +107,27 @@ pub fn execute_impact_silent_with_snapshot_opts(
     crate::impact::packet::ImpactPacket,
     ImpactReportWriteOutcome,
 )> {
+    execute_impact_silent_with_snapshot_opts_storage(
+        snapshot,
+        blast_depth,
+        include_governance,
+        analysis_mode,
+        None,
+    )
+}
+
+/// Like [`execute_impact_silent_with_snapshot_opts`] with an optional
+/// pre-opened `StorageManager` (scan auto-graph reuse, 0259).
+pub fn execute_impact_silent_with_snapshot_opts_storage(
+    snapshot: crate::git::RepoSnapshot,
+    blast_depth: Option<u32>,
+    include_governance: bool,
+    analysis_mode: &str,
+    preopened: Option<StorageManager>,
+) -> Result<(
+    crate::impact::packet::ImpactPacket,
+    ImpactReportWriteOutcome,
+)> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
 
@@ -125,8 +146,12 @@ pub fn execute_impact_silent_with_snapshot_opts(
         packet.analysis_warnings.push(note);
     }
 
-    // Write-first open with RO fallback when write open fails (0174 B7).
-    let storage = open_storage_for_impact(&layout)?;
+    // Write-first open with RO fallback when write open fails (0174 B7),
+    // unless scan already opened a write handle for auto-graph.
+    let storage = match preopened {
+        Some(s) => s,
+        None => open_storage_for_impact(&layout)?,
+    };
 
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
     orchestrator.run(&mut packet, &storage, &config, &current_dir)?;
@@ -174,6 +199,19 @@ pub fn execute_impact_silent_with_depth_opts(
     crate::impact::packet::ImpactPacket,
     ImpactReportWriteOutcome,
 )> {
+    execute_impact_silent_with_depth_opts_storage(blast_depth, include_governance, None)
+}
+
+/// Like [`execute_impact_silent_with_depth_opts`] with an optional pre-opened
+/// `StorageManager` (scan auto-graph reuse, 0259).
+pub fn execute_impact_silent_with_depth_opts_storage(
+    blast_depth: Option<u32>,
+    include_governance: bool,
+    preopened: Option<StorageManager>,
+) -> Result<(
+    crate::impact::packet::ImpactPacket,
+    ImpactReportWriteOutcome,
+)> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
 
@@ -212,8 +250,12 @@ pub fn execute_impact_silent_with_depth_opts(
         packet.analysis_warnings.push(note);
     }
 
-    // Write-first open with RO fallback when write open fails (0174 B7).
-    let storage = open_storage_for_impact(&layout)?;
+    // Write-first open with RO fallback when write open fails (0174 B7),
+    // unless scan already opened a write handle for auto-graph.
+    let storage = match preopened {
+        Some(s) => s,
+        None => open_storage_for_impact(&layout)?,
+    };
 
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
     orchestrator.run(&mut packet, &storage, &config, &current_dir)?;

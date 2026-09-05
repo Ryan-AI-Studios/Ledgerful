@@ -109,29 +109,35 @@ pub(super) fn graph_is_missing_or_stale(storage: &StorageManager, threshold_days
 /// Run automatic graph analysis when an observability config file changed and
 /// the graph is missing/stale. This prevents empty-state errors in
 /// `observability diff` without requiring a manual `index --analyze-graph`.
+///
+/// Opens write storage **once** when auto-graph is eligible (obs-config in
+/// changes and `ledger.db` already exists). Returns that handle so silent
+/// impact can reuse it (`into_storage`) instead of a third `init_with_layout`.
+/// Missing db / uninitialized trees skip without creating `ledger.db`.
 pub(super) fn maybe_auto_analyze_graph(
     changes: &[FileChange],
-    storage: &StorageManager,
     project_root: &std::path::Path,
     config: &crate::config::model::Config,
     layout: &Layout,
-) -> Result<()> {
-    if !changes_include_observability_config(changes) {
-        return Ok(());
+) -> Result<Option<StorageManager>> {
+    if changes.is_empty() || !changes_include_observability_config(changes) {
+        return Ok(None);
     }
-    if !graph_is_missing_or_stale(storage, config.index.stale_threshold_days) {
-        return Ok(());
+    // Do not create ledger.db as a side effect of auto-graph.
+    if !layout.state_subdir().join("ledger.db").exists() {
+        tracing::debug!("Skipping observability auto-analysis: storage not initialized yet");
+        return Ok(None);
+    }
+
+    let write_storage = StorageManager::init_with_layout(layout)?;
+    if !graph_is_missing_or_stale(&write_storage, config.index.stale_threshold_days) {
+        return Ok(Some(write_storage));
     }
 
     info!(
         "Auto-triggering graph analysis: observability config changed and graph is missing/stale"
     );
 
-    // Re-open storage in write mode: `storage` may be read-only, and graph
-    // analysis needs a writable CozoDB/SQLite handle. Use the caller's
-    // resolved layout (shared state_dir on linked worktrees) — never invent
-    // Layout::new(project_root) here.
-    let write_storage = StorageManager::init_with_layout(layout)?;
     let utf8_repo_path = match camino::Utf8PathBuf::from_path_buf(project_root.to_path_buf()) {
         Ok(p) => p,
         Err(_) => {
@@ -149,8 +155,8 @@ pub(super) fn maybe_auto_analyze_graph(
         false,
         None,
         Some(layout),
-    )
-    .map(|_| ())
+    )?;
+    Ok(Some(indexer.into_storage()))
 }
 
 /// Emit gitScan envelope (0180-D): `--out` → file only (no stdout); else pretty stdout.
@@ -485,21 +491,11 @@ pub fn execute_scan_with_opts(
         // impact path below handles uninitialized state on its own terms, and
         // auto-analysis is strictly an optimization for the observability-diff
         // empty-state case.
-        if !snapshot.changes.is_empty() {
-            if let Ok(read_only_storage) = StorageManager::open_read_only(&layout) {
-                maybe_auto_analyze_graph(
-                    &snapshot.changes,
-                    &read_only_storage,
-                    &current_dir,
-                    &config,
-                    &layout,
-                )?;
-            } else {
-                tracing::debug!(
-                    "Skipping observability auto-analysis: storage not initialized yet"
-                );
-            }
-        }
+        let auto_graph_storage = if !snapshot.changes.is_empty() {
+            maybe_auto_analyze_graph(&snapshot.changes, &current_dir, &config, &layout)?
+        } else {
+            None
+        };
 
         // Always use the snapshot derived above so that --base-ref / --paths
         // changes are passed through regardless of whether --json / --out is set.
@@ -520,7 +516,10 @@ pub fn execute_scan_with_opts(
                 config.impact.blast_depth_max,
                 blast_depth,
             );
-            let storage = crate::commands::impact::open_storage_for_impact(&layout)?;
+            let storage = match auto_graph_storage {
+                Some(s) => s,
+                None => crate::commands::impact::open_storage_for_impact(&layout)?,
+            };
             let mut impact_packet = if prospective {
                 let parsed = prospective_parsed
                     .clone()
@@ -572,16 +571,18 @@ pub fn execute_scan_with_opts(
         }
 
         let (impact_packet, report_write_outcome) = if base_ref.is_some() {
-            crate::commands::impact::execute_impact_silent_with_snapshot_opts(
+            crate::commands::impact::execute_impact_silent_with_snapshot_opts_storage(
                 snapshot,
                 blast_depth,
                 include_governance,
                 "base_ref",
+                auto_graph_storage,
             )?
         } else {
-            crate::commands::impact::execute_impact_silent_with_depth_opts(
+            crate::commands::impact::execute_impact_silent_with_depth_opts_storage(
                 blast_depth,
                 include_governance,
+                auto_graph_storage,
             )?
         };
 
