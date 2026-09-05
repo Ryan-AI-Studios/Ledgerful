@@ -67,7 +67,9 @@ impl<'repo> HistoryProvider for GixHistoryProvider<'repo> {
             let head = self
                 .repo
                 .head_commit()
-                .map_err(|e| GitError::MetadataError { source: e.into() })?;
+                .map_err(|e| GitError::HeadCommitFailed {
+                    source: Box::new(e),
+                })?;
             head.id().ancestors()
         };
 
@@ -77,9 +79,9 @@ impl<'repo> HistoryProvider for GixHistoryProvider<'repo> {
             walk = walk.sorting(gix::revision::walk::Sorting::BreadthFirst);
         }
 
-        let walk = walk
-            .all()
-            .map_err(|e| GitError::MetadataError { source: e.into() })?;
+        let walk = walk.all().map_err(|e| GitError::HistoryWalkFailed {
+            source: Box::new(e),
+        })?;
 
         let cutoff_time = max_days.map(|d| {
             let now = std::time::SystemTime::now()
@@ -121,7 +123,9 @@ impl<'repo> HistoryProvider for GixHistoryProvider<'repo> {
             if let Some(cutoff) = cutoff_time {
                 let commit_time = commit
                     .time()
-                    .map_err(|e| GitError::MetadataError { source: e.into() })?
+                    .map_err(|e| GitError::CommitTimeFailed {
+                        source: Box::new(e),
+                    })?
                     .seconds;
                 if (commit_time as u64) < cutoff {
                     if !all_parents {

@@ -19,7 +19,8 @@ pub struct FileNumstat {
 /// **new** path of each changed file; for renames this is the destination path.
 /// Binary files map to `FileNumstat { additions: None, deletions: None }`.
 ///
-/// Errors are returned as `GitError::MetadataError`; callers in the commit path
+/// Errors are returned as typed `GitError` variants (`ProcessPolicy`,
+/// `NumstatSpawn`, `NumstatFailed`, `NumstatParse`); callers in the commit path
 /// should treat missing stats as a best-effort absence (leave columns NULL)
 /// and never block the commit.
 ///
@@ -33,7 +34,7 @@ pub fn per_file_numstat(
     commit_ref: &str,
 ) -> Result<HashMap<String, FileNumstat>, GitError> {
     let output = crate::git::git_command()
-        .map_err(|e| GitError::MetadataError { source: e.into() })?
+        .map_err(|e| GitError::ProcessPolicy { source: e })?
         .args([
             "--no-pager",
             "show",
@@ -44,15 +45,11 @@ pub fn per_file_numstat(
         ])
         .current_dir(repo_root)
         .output()
-        .map_err(|e| GitError::MetadataError {
-            source: anyhow::anyhow!("Failed to run git show --numstat: {e}"),
-        })?;
+        .map_err(|e| GitError::NumstatSpawn { source: e })?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(GitError::MetadataError {
-            source: anyhow::anyhow!("git show --numstat failed: {stderr}"),
-        });
+        let stderr = String::from_utf8_lossy(&output.stderr).into_owned();
+        return Err(GitError::NumstatFailed { stderr });
     }
 
     parse_numstat_z(&output.stdout)
@@ -113,29 +110,30 @@ fn parse_numstat_z(data: &[u8]) -> Result<HashMap<String, FileNumstat>, GitError
 fn parse_record(record: &[u8]) -> Result<(FileNumstat, String), GitError> {
     let text = String::from_utf8_lossy(record);
     let mut parts = text.splitn(3, '\t');
-    let adds = parts.next().ok_or_else(|| GitError::MetadataError {
-        source: anyhow::anyhow!("numstat record missing additions field"),
-    })?;
-    let dels = parts.next().ok_or_else(|| GitError::MetadataError {
-        source: anyhow::anyhow!("numstat record missing deletions field"),
-    })?;
+    let adds = parts
+        .next()
+        .ok_or(GitError::NumstatParse { field: "additions" })?;
+    let dels = parts
+        .next()
+        .ok_or(GitError::NumstatParse { field: "deletions" })?;
     let path = parts.next().unwrap_or("");
 
-    let stats = if adds == "-" && dels == "-" {
-        FileNumstat {
-            additions: None,
-            deletions: None,
-        }
-    } else {
-        let additions = adds.parse::<u64>().ok();
-        let deletions = dels.parse::<u64>().ok();
-        FileNumstat {
-            additions,
-            deletions,
-        }
+    let stats = FileNumstat {
+        additions: parse_count(adds, "additions")?,
+        deletions: parse_count(dels, "deletions")?,
     };
 
     Ok((stats, path.replace('\\', "/")))
+}
+
+fn parse_count(raw: &str, field: &'static str) -> Result<Option<u64>, GitError> {
+    if raw == "-" {
+        Ok(None)
+    } else {
+        raw.parse::<u64>()
+            .map(Some)
+            .map_err(|_| GitError::NumstatParse { field })
+    }
 }
 
 #[cfg(test)]
@@ -261,5 +259,14 @@ mod tests {
             })
         );
         assert_eq!(stats.len(), 3);
+    }
+
+    #[test]
+    fn parse_missing_additions_is_numstat_parse() {
+        let err = parse_numstat_z(b"not-a-number\t1\tfile.rs\x00").unwrap_err();
+        assert!(
+            matches!(err, GitError::NumstatParse { field: "additions" }),
+            "got {err:?}"
+        );
     }
 }

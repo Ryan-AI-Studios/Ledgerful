@@ -11,6 +11,7 @@ pub mod status;
 pub use blob::read_head_blob;
 pub use commit::{git_command, git_command_with_policy};
 
+use crate::platform::process_policy::ProcessPolicyError;
 use miette::Diagnostic;
 use std::path::PathBuf;
 use thiserror::Error;
@@ -46,10 +47,64 @@ pub enum GitError {
         source: Box<gix::open::Error>,
     },
 
-    #[error("Failed to get repository metadata")]
-    MetadataError {
-        #[from]
-        source: anyhow::Error,
+    #[error("Process policy denied git command")]
+    ProcessPolicy {
+        #[source]
+        source: ProcessPolicyError,
+    },
+
+    #[error("Failed to run git show --numstat")]
+    NumstatSpawn {
+        #[source]
+        source: std::io::Error,
+    },
+
+    #[error("git show --numstat failed: {stderr}")]
+    NumstatFailed { stderr: String },
+
+    #[error("Failed to parse numstat record: invalid or missing {field} field")]
+    NumstatParse { field: &'static str },
+
+    #[error("Failed to read git HEAD")]
+    HeadFailed {
+        #[source]
+        source: Box<gix::reference::find::existing::Error>,
+    },
+
+    #[error("Failed to start git status")]
+    StatusPlatform {
+        #[source]
+        source: Box<gix::status::Error>,
+    },
+
+    #[error("Failed to iterate git status")]
+    StatusIter {
+        #[source]
+        source: Box<gix::status::into_iter::Error>,
+    },
+
+    #[error("Failed to read git status item")]
+    StatusItem {
+        #[source]
+        source: Box<gix::status::iter::Error>,
+    },
+
+    #[error("Failed to read HEAD commit")]
+    HeadCommitFailed {
+        #[source]
+        source: Box<gix::reference::head_commit::Error>,
+    },
+
+    #[error("Failed to walk git history")]
+    HistoryWalkFailed {
+        #[source]
+        source: Box<gix::revision::walk::Error>,
+    },
+
+    #[error("Failed to read commit time")]
+    CommitTimeFailed {
+        #[source]
+        source: Box<gix::object::commit::Error>,
     },
 
     #[error("Shallow clone detected")]

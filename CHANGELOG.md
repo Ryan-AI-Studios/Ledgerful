@@ -29,6 +29,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **GitError typed sources (0266):** `src/git` production modules no longer
+  use anyhow. `MetadataError` is replaced with named `GitError` variants
+  (`ProcessPolicy`, numstat spawn/fail/parse, gix status/head/history).
+  `git_command` / ProcessPolicy spawn path (0235) is unchanged. No Cargo
+  bump.
+
 - **Ledger graph extract (0269):** `commands/ledger_graph.rs` is a barrel
   (`ledger_graph/{query,assemble,print}.rs`). Public path stays
   `LedgerGraphArgs` / `execute_ledger_graph`. JSON `{exact, derived,
