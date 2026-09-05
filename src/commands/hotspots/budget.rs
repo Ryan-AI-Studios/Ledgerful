@@ -38,14 +38,11 @@ pub(super) fn execute_hotspots_budget(
     }
 
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "status": if violations.is_empty() { "OK" } else { "VIOLATION" },
-                "violations": violations,
-            }))
-            .map_err(|e| miette::miette!("Failed to serialize budget check: {}", e))?
-        );
+        crate::output::json::emit(&serde_json::json!({
+            "status": if violations.is_empty() { "OK" } else { "VIOLATION" },
+            "violations": violations,
+        }))
+        .map_err(|e| miette::miette!("Failed to serialize budget check: {}", e))?;
     } else {
         println!(
             "{}",

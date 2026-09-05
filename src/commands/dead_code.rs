@@ -214,8 +214,7 @@ pub fn execute_dead_code_with_prompt(
             findings: all_findings,
             heuristic_note: DEAD_CODE_HEURISTIC_NOTE.to_string(),
         };
-        let output = serde_json::to_string_pretty(&envelope).into_diagnostic()?;
-        println!("{output}");
+        crate::output::json::emit(&envelope)?;
         return Ok(());
     }
 
