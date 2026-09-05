@@ -8,6 +8,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **KG seed bind (0258):** Reachability seeds and file_path lookups use
+  `run_script_with_params` (`$seeds` / `$fp`); no JSON-in-script interpolation.
+  Hop depth unchanged. No Cozo crate bump.
+
 - **Ask truncate serialize budget (0256):** `ImpactPacket::truncate_for_context`
   compact-serializes the full packet at most twice per call (once when already
   under budget). Serialize failure is over-budget + warn, not a silent skip.
