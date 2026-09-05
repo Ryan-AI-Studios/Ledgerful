@@ -6,6 +6,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **HNSW overfetch pin (0255):** First-pass candidate cap stays
+  `max(k*10, 50)`; retry is two-arm 200/500. `query_scoped` still
+  skips the second fetch when `foreign == 0`. Ranking (`:order +dist`,
+  HNSW L2 m:16 ef_construction:100) unchanged. No TOML overfetch key.
+  No Cargo bump.
+
 ### Changed
 
 - **Index extract content cache (0254):** WorkerPool parse captures
