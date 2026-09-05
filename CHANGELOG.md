@@ -29,6 +29,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Hook commit-msg extract (0270):** `execute_hook_commit_msg` is split
+  into `hook_commit_msg/{execute,gc,staged,sot,intent,record}.rs`. Never-gate
+  runs before GC. `GcOutcome` distinguishes proceed vs amend/orphan early
+  Ok. Abort `eprintln` remains the only success-path-quiet stderr. Compact
+  status is not a TX id (0200-A2). No Cargo bump.
+
 - **Library eprintln to tracing (0267):** `try_auto_index` INFO banners use
   `warn!(target: "cli_summary")` (not `info!`, which would land on stdout
   and pollute `--json`). Call-graph builder edge-cap is unstyled
