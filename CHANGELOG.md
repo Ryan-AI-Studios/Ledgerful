@@ -29,6 +29,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Ledger re-sign extract (0265):** `commands/ledger_re_sign.rs` is a barrel
+  (`ledger_re_sign/{mod,preview,backup,mutate,tests}.rs`). Public path stays
+  `commands::ledger_re_sign`. Dry-run still does not create keys. `--yes`,
+  WAL backup, and LOCAL-only CAS chain rewrite unchanged. No Cargo bump.
+
 - **Ledger named re-exports (0262):** `src/ledger/mod.rs` replaces glob
   `pub use foo::*` with named lists. `load_checkpoint_head` stays
   `#[cfg(feature = "export")]`. `public_export` `#[cfg(test)]` helpers are
