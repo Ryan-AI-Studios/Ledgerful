@@ -19,7 +19,7 @@ use crate::state::storage::StorageManager;
 use camino::Utf8Path;
 use comfy_table::{Cell, Color, Table};
 use globset::{Glob, GlobSetBuilder};
-use miette::{IntoDiagnostic, Result};
+use miette::Result;
 use std::env;
 use std::path::PathBuf;
 use tracing::info;
@@ -163,13 +163,7 @@ pub(super) fn maybe_auto_analyze_graph(
 fn emit_git_scan_json(report: &ScanReport, out: Option<&PathBuf>) -> Result<()> {
     use crate::state::reports::ScanGitJson;
     let envelope = ScanGitJson::from_report(report);
-    let json_output = serde_json::to_string_pretty(&envelope).into_diagnostic()?;
-    if let Some(path) = out {
-        std::fs::write(path, json_output).into_diagnostic()?;
-    } else {
-        println!("{json_output}");
-    }
-    Ok(())
+    crate::output::json::emit_to(&envelope, out.map(|p| p.as_path()))
 }
 
 /// Emit impact JSON/human for in-memory paths (prospective / docs mode).
@@ -183,12 +177,7 @@ fn emit_scan_impact_in_memory(
     prospective: bool,
 ) -> Result<()> {
     if write_impact_json {
-        let json_output = serde_json::to_string_pretty(impact_packet).into_diagnostic()?;
-        if let Some(path) = out {
-            std::fs::write(&path, json_output).into_diagnostic()?;
-        } else {
-            println!("{}", json_output);
-        }
+        crate::output::json::emit_to(impact_packet, out.as_deref())?;
     } else if summary {
         crate::output::human::print_impact_brief(impact_packet);
         if prospective {
@@ -458,12 +447,7 @@ pub fn execute_scan_with_opts(
         );
 
         if format.as_deref() == Some("json") {
-            let json_output = serde_json::to_string_pretty(&report).into_diagnostic()?;
-            if let Some(path) = out {
-                std::fs::write(&path, json_output).into_diagnostic()?;
-            } else {
-                println!("{}", json_output);
-            }
+            crate::output::json::emit_to(&report, out.as_deref())?;
         } else {
             if report.test_gaps.unmapped_count > 0 {
                 eprintln!(
@@ -587,13 +571,7 @@ pub fn execute_scan_with_opts(
         };
 
         if write_impact_json {
-            let json_output = serde_json::to_string_pretty(&impact_packet).into_diagnostic()?;
-
-            if let Some(path) = out {
-                std::fs::write(&path, json_output).into_diagnostic()?;
-            } else {
-                println!("{}", json_output);
-            }
+            crate::output::json::emit_to(&impact_packet, out.as_deref())?;
         } else {
             crate::commands::impact::execute_impact_human(
                 &impact_packet,

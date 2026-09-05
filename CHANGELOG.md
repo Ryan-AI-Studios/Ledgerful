@@ -35,6 +35,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   not crate-root re-exports. Crypto stays on the crate root. No TX
   lifecycle change. No Cargo bump.
 
+- **CLI pretty JSON emit (0261):** Named audit commands pretty-write
+  through `output::json` (`emit` stdout trailing newline, `emit_to`
+  `--out` no extra newline). Helper does not inject `schemaVersion`.
+  MCP envelope / 0213 ledger search / human printers unchanged. No
+  Cargo bump.
+
 - **Extractor symbol clone budget (0260):** Call-graph / routes / data-models
   borrow per-file symbol slices instead of cloning the map `Vec`. Identity
   tests unchanged. No Cargo bump.

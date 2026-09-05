@@ -746,7 +746,7 @@ fn emit_impact_output(
     write_outcome: Option<ImpactReportWriteOutcome>,
 ) -> Result<()> {
     if json || out.is_some() {
-        let json_output = serde_json::to_string_pretty(packet)
+        let json_output = crate::output::json::format_json(packet)
             .map_err(|e| miette::miette!("Failed to serialize impact report: {}", e))?;
 
         if let Some(path) = out {
@@ -766,7 +766,7 @@ fn emit_impact_output(
                 );
             }
         } else {
-            println!("{}", json_output);
+            println!("{json_output}");
         }
         return Ok(());
     }

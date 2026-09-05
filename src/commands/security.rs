@@ -193,10 +193,7 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
             if let Some(map) = output.as_object_mut() {
                 map.insert("indexedCount".to_string(), serde_json::json!(indexed));
             }
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&output).into_diagnostic()?
-            );
+            crate::output::json::emit(&output)?;
         } else {
             println!(
                 "{}",
@@ -229,10 +226,7 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
         if let Some(map) = output.as_object_mut() {
             map.insert("indexedCount".to_string(), serde_json::json!(indexed));
         }
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&output).into_diagnostic()?
-        );
+        crate::output::json::emit(&output)?;
     } else {
         println!(
             "{}",
@@ -396,10 +390,7 @@ fn execute_boundaries(json: bool, layout: &crate::state::layout::Layout) -> Resu
                 },
             })
         };
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&json_out).into_diagnostic()?
-        );
+        crate::output::json::emit(&json_out)?;
     } else {
         // --- Summary counts header ---
         if auth_res.rows.is_empty() {

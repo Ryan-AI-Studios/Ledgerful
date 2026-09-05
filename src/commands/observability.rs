@@ -5,7 +5,7 @@ use crate::output::table::build_premium_table;
 use crate::state::storage::StorageManager;
 use crate::util::term::prompt_yes_no;
 use clap::{Args, Subcommand};
-use miette::{IntoDiagnostic, Result};
+use miette::Result;
 use owo_colors::{OwoColorize, Stream, Style};
 
 /// 0215-A5: indexed==0 three-arm empty taxonomy (disk / unbuilt / NoMatches).
@@ -171,10 +171,7 @@ pub fn execute_observability(args: ObservabilityArgs) -> Result<()> {
                         (EmptyReason::NoMatches, String::new())
                     })
                 };
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&output).into_diagnostic()?
-                );
+                crate::output::json::emit(&output)?;
             } else {
                 println!(
                     "{}",
@@ -329,10 +326,7 @@ pub fn execute_observability(args: ObservabilityArgs) -> Result<()> {
                         "unchanged_count": unchanged.len(),
                     })
                 };
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&json_out).into_diagnostic()?
-                );
+                crate::output::json::emit(&json_out)?;
             } else {
                 println!(
                     "{}",

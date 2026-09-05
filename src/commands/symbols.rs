@@ -505,9 +505,7 @@ fn build_envelope_with_resolve(
 }
 
 fn print_json(envelope: &SymbolsJsonEnvelope) -> Result<()> {
-    let output = serde_json::to_string_pretty(envelope).into_diagnostic()?;
-    println!("{output}");
-    Ok(())
+    crate::output::json::emit(envelope)
 }
 
 fn print_human_path_resolve(note: &PathResolveNote) {

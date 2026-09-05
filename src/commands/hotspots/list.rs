@@ -49,11 +49,8 @@ pub(super) fn execute_hotspots_list(
             // truncates the already-computed Vec so echoing `limit` matches
             // the serialized `files` (no extra scan).
             let output = wrap_hotspots_list_json(matches, limit);
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&output)
-                    .map_err(|e| miette::miette!("Failed to serialize semantic hotspots: {}", e))?
-            );
+            crate::output::json::emit(&output)
+                .map_err(|e| miette::miette!("Failed to serialize semantic hotspots: {}", e))?;
         } else {
             crate::output::human::print_semantic_hotspots(&matches);
         }
@@ -91,10 +88,7 @@ pub(super) fn execute_hotspots_list(
 
     if args.json {
         let output = wrap_hotspots_list_json(hotspots, query.limit);
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&output).map_err(|e| miette::miette!("{}", e))?
-        );
+        crate::output::json::emit(&output).map_err(|e| miette::miette!("{}", e))?;
     } else if args.centrality {
         crate::output::human::print_hotspots_table_with_centrality(&hotspots);
         if let Some(footer) = omitted_hotspots_footer(calculated.omitted_test_paths) {

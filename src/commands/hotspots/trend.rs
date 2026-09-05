@@ -682,11 +682,8 @@ pub(super) fn execute_hotspots_trend(
                 })
             }
         };
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&payload)
-                .map_err(|e| miette::miette!("Failed to serialize trend data: {}", e))?
-        );
+        crate::output::json::emit(&payload)
+            .map_err(|e| miette::miette!("Failed to serialize trend data: {}", e))?;
     } else {
         if bootstrapped {
             println!("Bootstrapped hotspot trend history from historical commits.");

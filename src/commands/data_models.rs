@@ -170,10 +170,7 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
                     })
                     .collect();
                 let output = crate::output::empty::format_json_list_envelope(results, "models");
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&output).into_diagnostic()?
-                );
+                crate::output::json::emit(&output)?;
             } else {
                 println!(
                     "{}",
@@ -288,10 +285,7 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
                         }
                     },
                 );
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&output).into_diagnostic()?
-                );
+                crate::output::json::emit(&output)?;
             } else {
                 println!(
                     "{}",
