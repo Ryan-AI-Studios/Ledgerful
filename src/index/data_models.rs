@@ -9,6 +9,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{info, warn};
 
+fn file_symbols_slice(map: &HashMap<i64, Vec<Symbol>>, file_id: i64) -> &[Symbol] {
+    map.get(&file_id).map(Vec::as_slice).unwrap_or(&[])
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub enum ModelKind {
     Struct,
@@ -202,10 +206,10 @@ impl<'a> DataModelExtractor<'a> {
             };
 
             let path = PathBuf::from(file_path);
-            let file_symbols = symbols_by_file.get(file_id).cloned().unwrap_or_default();
+            let file_symbols = file_symbols_slice(&symbols_by_file, *file_id);
 
             let extracted_models =
-                match languages::extract_data_models(&path, content.as_ref(), &file_symbols) {
+                match languages::extract_data_models(&path, content.as_ref(), file_symbols) {
                     Ok(m) => m,
                     Err(e) => {
                         files_skipped += 1;

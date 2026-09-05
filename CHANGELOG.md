@@ -29,6 +29,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Extractor symbol clone budget (0260):** Call-graph / routes / data-models
+  borrow per-file symbol slices instead of cloning the map `Vec`. Identity
+  tests unchanged. No Cargo bump.
+
 - **Impact file-id map budget (0257):** Non-empty impact loads
   `project_files` ids only for changed paths (`IN` + not DELETED),
   chunked at 400. Empty path list skips `prepare`. 0147 empty-tree

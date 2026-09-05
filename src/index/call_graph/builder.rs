@@ -99,7 +99,6 @@ impl<'a> CallGraphBuilder<'a> {
 
         // 3. Build lookup maps
         // symbols_by_file: file_id -> per-file symbol rows for extractors / callers
-        #[derive(Clone)]
         struct FileSymbolRow {
             id: i64,
             name: String,
@@ -173,7 +172,10 @@ impl<'a> CallGraphBuilder<'a> {
             };
 
             let path = PathBuf::from(file_path);
-            let file_symbols = symbols_by_file.get(file_id).cloned().unwrap_or_default();
+            let file_symbols = symbols_by_file
+                .get(file_id)
+                .map(Vec::as_slice)
+                .unwrap_or(&[]);
 
             // Build Symbol structs for the language extractors (pass through real QN)
             let sym_vec: Vec<Symbol> = file_symbols
