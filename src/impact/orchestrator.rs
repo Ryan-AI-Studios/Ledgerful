@@ -164,8 +164,9 @@ impl ImpactOrchestrator {
             packet.analysis_warnings.push(status);
         }
 
-        // 1. Prepare Context
-        let file_id_map = storage.get_active_file_id_map()?;
+        // 1. Prepare Context — 0257: ChangedFile.path only (not rename old_path).
+        let changed_paths: Vec<_> = packet.changes.iter().map(|c| c.path.as_path()).collect();
+        let file_id_map = storage.get_active_file_id_map_for_paths(&changed_paths)?;
         let warnings_collector = Arc::new(Mutex::new(Vec::new()));
 
         // 0034: cooperative backstop deadline, computed once and threaded
@@ -672,6 +673,101 @@ mod tests {
         assert!(
             called.load(Ordering::SeqCst),
             "enrichment provider must be called when changes are non-empty"
+        );
+    }
+
+    /// 0257 DoD-1: non-empty impact map excludes uninvolved `project_files` rows.
+    #[test]
+    fn test_non_empty_impact_file_id_map_excludes_uninvolved_paths() {
+        use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
+        use std::collections::HashMap;
+        use std::path::PathBuf;
+
+        let seen = Arc::new(Mutex::new(HashMap::new()));
+        struct MapSpy {
+            seen: Arc<Mutex<HashMap<PathBuf, i64>>>,
+        }
+        impl EnrichmentProvider for MapSpy {
+            fn name(&self) -> &'static str {
+                "MapSpy"
+            }
+            fn enrich(
+                &self,
+                context: &EnrichmentContext,
+                _packet: &mut ImpactPacket,
+            ) -> Result<()> {
+                *self.seen.lock().expect("map spy mutex") = context.file_id_map.clone();
+                Ok(())
+            }
+        }
+
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::state::migrations::get_migrations()
+            .to_latest(&mut conn)
+            .unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        storage
+            .get_connection()
+            .execute(
+                "INSERT INTO project_files (file_path, parse_status, last_indexed_at) VALUES ('src/lib.rs', 'OK', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        storage
+            .get_connection()
+            .execute(
+                "INSERT INTO project_files (file_path, parse_status, last_indexed_at) VALUES ('src/extra.rs', 'OK', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        storage
+            .get_connection()
+            .execute(
+                "INSERT INTO project_files (file_path, parse_status, last_indexed_at) VALUES ('src/gone.rs', 'DELETED', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+        storage
+            .get_connection()
+            .execute(
+                "INSERT INTO project_files (file_path, parse_status, last_indexed_at) VALUES ('src/old.rs', 'OK', '2026-01-01T00:00:00Z')",
+                [],
+            )
+            .unwrap();
+
+        let config = Config::default();
+        let temp = tempfile::tempdir().unwrap();
+        let mut packet = ImpactPacket {
+            tree_clean: false,
+            changes: vec![ChangedFile {
+                path: std::path::PathBuf::from("src/lib.rs"),
+                status: "Renamed".to_string(),
+                old_path: Some(std::path::PathBuf::from("src/old.rs")),
+                ..ChangedFile::default()
+            }],
+            ..ImpactPacket::default()
+        };
+
+        let mut orchestrator = ImpactOrchestrator::new();
+        orchestrator.register_enrichment_provider(Box::new(MapSpy {
+            seen: Arc::clone(&seen),
+        }));
+
+        orchestrator
+            .run(&mut packet, &storage, &config, temp.path())
+            .expect("non-empty impact should return Ok");
+
+        let map = seen.lock().expect("map spy mutex");
+        assert_eq!(map.len(), 1);
+        assert!(map.contains_key(&PathBuf::from("src/lib.rs")));
+        assert!(
+            !map.contains_key(&PathBuf::from("src/extra.rs")),
+            "uninvolved project_files row must be absent from the impact file-id map"
+        );
+        assert!(!map.contains_key(&PathBuf::from("src/gone.rs")));
+        assert!(
+            !map.contains_key(&PathBuf::from("src/old.rs")),
+            "rename old_path must not be IN-listed"
         );
     }
 

@@ -1,7 +1,10 @@
 use crate::state::storage::connection::StorageManager;
 use miette::{IntoDiagnostic, Result};
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+/// SQLite bind limit is ~999; 400 leaves headroom for extra predicates.
+const FILE_ID_MAP_PATH_IN_CHUNK: usize = 400;
 
 impl StorageManager {
     pub fn get_directory_classifications(
@@ -53,6 +56,68 @@ impl StorageManager {
         for row in rows {
             let (path, id) = row.into_diagnostic()?;
             map.insert(path, id);
+        }
+        Ok(map)
+    }
+
+    /// Active `project_files` ids for `paths` (`IN` + `parse_status != 'DELETED'`).
+    ///
+    /// Empty `paths` returns an empty map without `prepare` (SQLite rejects `IN ()`).
+    /// Bind lists are chunked at [`FILE_ID_MAP_PATH_IN_CHUNK`]. Paths are
+    /// slash-folded to match stored `file_path`. Keys include the stored path
+    /// and the original caller `PathBuf` when that differs so providers can
+    /// `.get` either form.
+    pub fn get_active_file_id_map_for_paths<P: AsRef<Path>>(
+        &self,
+        paths: &[P],
+    ) -> Result<HashMap<PathBuf, i64>> {
+        if paths.is_empty() {
+            return Ok(HashMap::new());
+        }
+
+        let mut originals_by_normalized: HashMap<String, Vec<PathBuf>> = HashMap::new();
+        let normalized: Vec<String> = paths
+            .iter()
+            .map(|p| {
+                let original = p.as_ref();
+                let folded = original.to_string_lossy().replace('\\', "/");
+                let original_pb = original.to_path_buf();
+                if original_pb.as_path() != Path::new(&folded) {
+                    originals_by_normalized
+                        .entry(folded.clone())
+                        .or_default()
+                        .push(original_pb);
+                }
+                folded
+            })
+            .collect();
+
+        let mut map = HashMap::new();
+        for chunk in normalized.chunks(FILE_ID_MAP_PATH_IN_CHUNK) {
+            let placeholders = std::iter::repeat_n("?", chunk.len())
+                .collect::<Vec<_>>()
+                .join(",");
+            let sql = format!(
+                "SELECT id, file_path FROM project_files WHERE file_path IN ({}) AND parse_status != 'DELETED'",
+                placeholders
+            );
+            let mut stmt = self.conn.prepare(&sql).into_diagnostic()?;
+            let rows = stmt
+                .query_map(rusqlite::params_from_iter(chunk.iter()), |row| {
+                    let id: i64 = row.get(0)?;
+                    let path: String = row.get(1)?;
+                    Ok((path, id))
+                })
+                .into_diagnostic()?;
+            for row in rows {
+                let (path, id) = row.into_diagnostic()?;
+                if let Some(originals) = originals_by_normalized.get(&path) {
+                    for orig in originals {
+                        map.insert(orig.clone(), id);
+                    }
+                }
+                map.insert(PathBuf::from(path), id);
+            }
         }
         Ok(map)
     }
@@ -140,5 +205,67 @@ mod tests {
         assert_eq!(map.len(), 1);
         assert!(map.contains_key(&PathBuf::from("src/a.rs")));
         assert!(!map.contains_key(&PathBuf::from("src/b.rs")));
+    }
+
+    fn insert_project_file(storage: &StorageManager, file_path: &str, parse_status: &str) {
+        storage
+            .get_connection()
+            .execute(
+                "INSERT INTO project_files (file_path, parse_status, last_indexed_at) VALUES (?1, ?2, '2026-01-01T00:00:00Z')",
+                rusqlite::params![file_path, parse_status],
+            )
+            .unwrap();
+    }
+
+    #[test]
+    fn test_get_active_file_id_map_for_paths() {
+        let storage = in_memory_storage();
+        insert_project_file(&storage, "src/a.rs", "OK");
+        insert_project_file(&storage, "src/b.rs", "DELETED");
+        insert_project_file(&storage, "src/extra.rs", "OK");
+        insert_project_file(&storage, "src/win.rs", "OK");
+
+        let map = storage
+            .get_active_file_id_map_for_paths(&["src/a.rs", r"src\win.rs", "src/missing.rs"])
+            .unwrap();
+        assert!(map.contains_key(&PathBuf::from("src/a.rs")));
+        assert!(
+            map.contains_key(&PathBuf::from("src/win.rs")),
+            "backslash query must match slash-folded stored file_path"
+        );
+        assert!(
+            map.contains_key(&PathBuf::from(r"src\win.rs")),
+            "original caller PathBuf must still look up"
+        );
+        assert!(
+            !map.contains_key(&PathBuf::from("src/extra.rs")),
+            "uninvolved project_files row must be absent from the restricted map"
+        );
+        assert!(!map.contains_key(&PathBuf::from("src/b.rs")));
+        assert!(!map.contains_key(&PathBuf::from("src/missing.rs")));
+
+        let empty = storage
+            .get_active_file_id_map_for_paths(&[] as &[&str])
+            .unwrap();
+        assert!(
+            empty.is_empty(),
+            "empty path list must return an empty map without preparing IN ()"
+        );
+    }
+
+    #[test]
+    fn test_get_active_file_id_map_for_paths_chunks() {
+        let storage = in_memory_storage();
+        let mut paths = Vec::new();
+        for i in 0..(FILE_ID_MAP_PATH_IN_CHUNK + 1) {
+            let p = format!("src/f{i}.rs");
+            insert_project_file(&storage, &p, "OK");
+            paths.push(p);
+        }
+        insert_project_file(&storage, "src/extra.rs", "OK");
+
+        let map = storage.get_active_file_id_map_for_paths(&paths).unwrap();
+        assert_eq!(map.len(), FILE_ID_MAP_PATH_IN_CHUNK + 1);
+        assert!(!map.contains_key(&PathBuf::from("src/extra.rs")));
     }
 }
