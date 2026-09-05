@@ -226,7 +226,12 @@ mod tests {
         insert_project_file(&storage, "src/win.rs", "OK");
 
         let map = storage
-            .get_active_file_id_map_for_paths(&["src/a.rs", r"src\win.rs", "src/missing.rs"])
+            .get_active_file_id_map_for_paths(&[
+                "src/a.rs",
+                "src/b.rs",
+                r"src\win.rs",
+                "src/missing.rs",
+            ])
             .unwrap();
         assert!(map.contains_key(&PathBuf::from("src/a.rs")));
         assert!(
