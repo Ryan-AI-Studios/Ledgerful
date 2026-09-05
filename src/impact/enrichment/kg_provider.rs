@@ -1,7 +1,10 @@
 use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
 use crate::impact::packet::{ImpactPacket, KGImpact};
 use crate::ui::spinner::Spinner;
+use cozo::{DataValue, ScriptMutability};
 use miette::Result;
+use serde_json::json;
+use std::collections::BTreeMap;
 use std::time::Instant;
 use tracing::{debug, warn};
 
@@ -53,22 +56,22 @@ impl EnrichmentProvider for KGProvider {
             let mut risk_updates = Vec::new();
             for hotspot in &packet.hotspots {
                 let id = build_urn(NodeKind::File, &hotspot.path.to_string_lossy());
-                risk_updates.push(vec![
-                    cozo::DataValue::Str(id.into()),
-                    cozo::DataValue::Num(cozo::Num::Float(hotspot.score as f64)),
-                ]);
+                risk_updates.push(json!([id, hotspot.score as f64]));
             }
 
-            let risk_json =
-                serde_json::to_string(&risk_updates).unwrap_or_else(|_| "[]".to_string());
-            let sync_script = format!(
-                "updates[id, score] <- {}\n?[id, label, category, risk_score, metadata] := *node{{id, label, category, metadata}}, updates[id, risk_score]\n:put node",
-                risk_json
+            let sync_script = "updates[id, score] <- $batch\n?[id, label, category, risk_score, metadata] := *node{id, label, category, metadata}, updates[id, risk_score]\n:put node";
+            let mut params = BTreeMap::new();
+            params.insert(
+                "batch".to_string(),
+                DataValue::from(serde_json::Value::Array(risk_updates)),
             );
-            if let Err(e) = cozo.run_script(&sync_script) {
+            if let Err(e) =
+                cozo.run_script_with_params(sync_script, params, ScriptMutability::Mutable)
+            {
                 warn!("Failed to sync hotspots to KG: {}", e);
+                context.add_warning(format!("Failed to sync hotspots to KG: {e}"));
             } else {
-                debug!("Synced {} hotspots to KG", risk_updates.len());
+                debug!("Synced hotspots to KG");
             }
 
             // 1.1 Simple propagation (1-hop)
@@ -94,13 +97,17 @@ impl EnrichmentProvider for KGProvider {
                     }
                 }
                 if !updates.is_empty() {
-                    let updates_json = serde_json::Value::Array(updates).to_string();
-                    let put_script = format!(
-                        "updates[id, score] <- {}\n?[id, label, category, risk_score, metadata] := *node{{id, label, category, metadata, risk_score: current}}, updates[id, score], score > current, risk_score = score\n:put node",
-                        updates_json
+                    let put_script = "updates[id, score] <- $batch\n?[id, label, category, risk_score, metadata] := *node{id, label, category, metadata, risk_score: current}, updates[id, score], score > current, risk_score = score\n:put node";
+                    let mut params = BTreeMap::new();
+                    params.insert(
+                        "batch".to_string(),
+                        DataValue::from(serde_json::Value::Array(updates)),
                     );
-                    if let Err(e) = cozo.run_script(&put_script) {
+                    if let Err(e) =
+                        cozo.run_script_with_params(put_script, params, ScriptMutability::Mutable)
+                    {
                         warn!("Failed to apply propagated risk: {}", e);
+                        context.add_warning(format!("Failed to apply propagated risk: {e}"));
                     }
                 }
             }
@@ -118,21 +125,28 @@ impl EnrichmentProvider for KGProvider {
             let file_path = file.path.to_string_lossy();
             let file_urn = build_urn(NodeKind::File, &file_path);
 
-            // Query for symbol nodes associated with this file in SQLite project_symbols,
-            // then find their corresponding node IDs in Cozo (which are URNs).
-            let query = format!(
-                "?[id] := *project_symbol{{file_path: '{}', id: id}}, *node{{id: id}}",
-                file_path
-            );
+            // Query for symbol nodes associated with this file, bound as `$fp`
+            // (quotes/backslashes must not be interpolated into CozoScript).
+            let query = "?[id] := *project_symbol{file_path: $fp, id: id}, *node{id: id}";
+            let mut fp_params = BTreeMap::new();
+            fp_params.insert("fp".to_string(), DataValue::from(file_path.as_ref()));
 
             // Also check the file node directly
             seed_nodes.push(vec![file_urn]);
 
-            if let Ok(res) = cozo.run_script(&query) {
-                for row in res.rows {
-                    if let Some(cozo::DataValue::Str(id)) = row.first() {
-                        seed_nodes.push(vec![id.to_string()]);
+            match cozo.run_script_with_params(query, fp_params, ScriptMutability::Immutable) {
+                Ok(res) => {
+                    for row in res.rows {
+                        if let Some(cozo::DataValue::Str(id)) = row.first() {
+                            seed_nodes.push(vec![id.to_string()]);
+                        }
                     }
+                }
+                Err(e) => {
+                    warn!("KG file_path seed lookup failed for {file_path}: {e}");
+                    context.add_warning(format!(
+                        "KG file_path seed lookup failed for {file_path}: {e}"
+                    ));
                 }
             }
         }
@@ -144,13 +158,19 @@ impl EnrichmentProvider for KGProvider {
         }
 
         // 2. Perform reachability analysis with recursive Datalog query
-        let seed_list = serde_json::to_string(&seed_nodes).unwrap_or_else(|_| "[]".to_string());
+        let depth = context.config.coverage.max_reachability_depth;
         let query = format!(
-            "seeds[id] <- {}\n\
+            "seeds[id] <- $seeds\n\
              reachable[t, r, len] := seeds[s], *edge{{source: s, target: t, relation: r}}, len = 1\n\
-             reachable[t, r, len] := reachable[m, _, len_prev], *edge{{source: m, target: t, relation: r}}, len = len_prev + 1, len <= {}\n\
-             ?[t, r, len] := reachable[t, r, len]",
-            seed_list, context.config.coverage.max_reachability_depth
+             reachable[t, r, len] := reachable[m, _, len_prev], *edge{{source: m, target: t, relation: r}}, len = len_prev + 1, len <= {depth}\n\
+             ?[t, r, len] := reachable[t, r, len]"
+        );
+        let mut seed_params = BTreeMap::new();
+        seed_params.insert(
+            "seeds".to_string(),
+            DataValue::from(serde_json::Value::Array(
+                seed_nodes.iter().map(|row| json!(row)).collect(),
+            )),
         );
 
         if check_timeout(context) {
@@ -158,30 +178,36 @@ impl EnrichmentProvider for KGProvider {
             return Ok(());
         }
 
-        if let Ok(res) = cozo.run_script(&query) {
-            for row in res.rows {
-                if let (
-                    Some(cozo::DataValue::Str(target)),
-                    Some(cozo::DataValue::Str(rel)),
-                    Some(cozo::DataValue::Num(num)),
-                ) = (row.first(), row.get(1), row.get(2))
-                {
-                    let len = match num {
-                        cozo::Num::Int(i) => *i as usize,
-                        cozo::Num::Float(f) => *f as usize,
-                    };
-                    let impacted_category =
-                        target.split(':').nth(2).unwrap_or("unknown").to_string();
-                    packet.knowledge_graph.push(KGImpact {
-                        source_node: "change_seed".to_string(),
-                        source_category: "seed".to_string(),
-                        impacted_node: target.to_string(),
-                        impacted_category,
-                        relation: rel.to_string(),
-                        path_length: len,
-                        reason: format!("KG reachability via {} ({} hops)", rel, len),
-                    });
+        match cozo.run_script_with_params(&query, seed_params, ScriptMutability::Immutable) {
+            Ok(res) => {
+                for row in res.rows {
+                    if let (
+                        Some(cozo::DataValue::Str(target)),
+                        Some(cozo::DataValue::Str(rel)),
+                        Some(cozo::DataValue::Num(num)),
+                    ) = (row.first(), row.get(1), row.get(2))
+                    {
+                        let len = match num {
+                            cozo::Num::Int(i) => *i as usize,
+                            cozo::Num::Float(f) => *f as usize,
+                        };
+                        let impacted_category =
+                            target.split(':').nth(2).unwrap_or("unknown").to_string();
+                        packet.knowledge_graph.push(KGImpact {
+                            source_node: "change_seed".to_string(),
+                            source_category: "seed".to_string(),
+                            impacted_node: target.to_string(),
+                            impacted_category,
+                            relation: rel.to_string(),
+                            path_length: len,
+                            reason: format!("KG reachability via {} ({} hops)", rel, len),
+                        });
+                    }
                 }
+            }
+            Err(e) => {
+                warn!("KG reachability query failed: {e}");
+                context.add_warning(format!("KG reachability query failed: {e}"));
             }
         }
 
@@ -520,5 +546,74 @@ mod tests {
             assert!(nodes.contains(&build_urn(NodeKind::File, "file_3.rs")));
             assert!(nodes.contains(&build_urn(NodeKind::File, "file_4.rs")));
         }
+    }
+
+    #[test]
+    fn test_kg_enrichment_quoted_file_path_bind() {
+        let cozo = CozoStorage::new(&PathBuf::from("")).unwrap();
+        let quoted = "src/o'reilly\\mod.rs";
+        let neighbor = "src/neighbor.rs";
+        cozo.insert_nodes(&[
+            GraphNode {
+                id: build_urn(NodeKind::File, quoted),
+                label: quoted.to_string(),
+                category: NodeKind::File,
+                risk_score: 0.0,
+                metadata: None,
+            },
+            GraphNode {
+                id: build_urn(NodeKind::File, neighbor),
+                label: neighbor.to_string(),
+                category: NodeKind::File,
+                risk_score: 0.0,
+                metadata: None,
+            },
+        ])
+        .unwrap();
+        cozo.insert_edges(&[GraphEdge {
+            source: build_urn(NodeKind::File, quoted),
+            target: build_urn(NodeKind::File, neighbor),
+            relation: EdgeKind::DependsOn,
+            confidence: 1.0,
+            provenance_id: "txq".to_string(),
+        }])
+        .unwrap();
+
+        let mut storage =
+            StorageManager::init_from_conn(rusqlite::Connection::open_in_memory().unwrap());
+        storage.set_cozo(Some(cozo));
+        let warnings = Arc::new(Mutex::new(Vec::new()));
+        let context = EnrichmentContext {
+            storage: &storage,
+            config: &crate::config::model::Config::default(),
+            file_id_map: HashMap::new(),
+            project_root: PathBuf::from("."),
+            warnings: Arc::clone(&warnings),
+            deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+        };
+        let mut packet = ImpactPacket {
+            changes: vec![ChangedFile {
+                path: PathBuf::from(quoted),
+                status: "Modified".to_string(),
+                is_staged: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        KGProvider.enrich(&context, &mut packet).unwrap();
+        let nodes: Vec<String> = packet
+            .knowledge_graph
+            .iter()
+            .map(|k| k.impacted_node.clone())
+            .collect();
+        assert!(
+            nodes.contains(&build_urn(NodeKind::File, neighbor)),
+            "quoted/backslash path must bind as $fp and still enrich: {nodes:?}"
+        );
+        let warns = warnings.lock().expect("warnings mutex");
+        assert!(
+            warns.iter().all(|w| !w.contains("seed lookup failed")),
+            "quoted path must not fail $fp bind: {warns:?}"
+        );
     }
 }
