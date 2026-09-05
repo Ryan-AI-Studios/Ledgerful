@@ -482,6 +482,12 @@ impl<'a> VectorStore<'a> {
         k: usize,
         candidate_k: usize,
     ) -> Result<ScopedQueryResult> {
+        #[cfg(test)]
+        QUERY_SCOPED_ONCE_FETCHES.with(|c| {
+            let n = c.get();
+            c.set(n.saturating_add(1));
+        });
+
         use crate::util::path::{display_path_under_work_root, path_is_under_work_root};
 
         let candidates = self.query_candidates(query_vector, candidate_k)?;
@@ -633,18 +639,58 @@ impl<'a> VectorStore<'a> {
     }
 }
 
+/// First-pass overfetch multiplier (0096): `candidate_k = max(k * 10, 50)`.
+const DEFAULT_CANDIDATE_MULTIPLIER: usize = 10;
+/// Floor for first-pass overfetch (0096 zero-vector headroom).
+const MIN_DEFAULT_CANDIDATE_K: usize = 50;
+/// Retry low-arm threshold: `first_candidate_k < 200` uses the 100–200 clamp.
+const RETRY_CANDIDATE_LOW_THRESHOLD: usize = 200;
+/// Low-arm retry floor.
+const RETRY_CANDIDATE_LOW_MIN: usize = 100;
+/// Low-arm retry cap (same numeric as the low-arm threshold).
+const RETRY_CANDIDATE_LOW_MAX: usize = 200;
+/// High-arm retry cap (`k >= 50` already skips: retry_k == first at 500).
+const RETRY_CANDIDATE_HIGH_MAX: usize = 500;
+
 /// First-pass overfetch: `max(k * 10, 50)` (0096 zero-vector headroom).
 fn default_candidate_k(k: usize) -> usize {
-    k.saturating_mul(10).max(50)
+    k.saturating_mul(DEFAULT_CANDIDATE_MULTIPLIER)
+        .max(MIN_DEFAULT_CANDIDATE_K)
 }
 
 /// One-shot re-query cap when work-root filter under-fills top-k (0152).
+///
+/// Low arm (`first < 200`): `min(max(first * 2, 100), 200)`.
+/// High arm (`first >= 200`): `min(first * 2, 500)`.
 fn retry_candidate_k(first_candidate_k: usize) -> usize {
-    if first_candidate_k < 200 {
-        first_candidate_k.saturating_mul(2).clamp(100, 200)
+    if first_candidate_k < RETRY_CANDIDATE_LOW_THRESHOLD {
+        first_candidate_k
+            .saturating_mul(2)
+            .clamp(RETRY_CANDIDATE_LOW_MIN, RETRY_CANDIDATE_LOW_MAX)
     } else {
-        first_candidate_k.saturating_mul(2).min(500)
+        first_candidate_k
+            .saturating_mul(2)
+            .min(RETRY_CANDIDATE_HIGH_MAX)
     }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Per-thread fetch count for [`VectorStore::query_scoped_once`].
+    /// Thread-local so parallel nextest threads cannot race the skip/retry canaries.
+    static QUERY_SCOPED_ONCE_FETCHES: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+/// Test-only: how many times [`VectorStore::query_scoped_once`] ran on this thread.
+#[cfg(test)]
+fn query_scoped_once_fetch_count() -> usize {
+    QUERY_SCOPED_ONCE_FETCHES.with(|c| c.get())
+}
+
+/// Test-only: reset this thread's `query_scoped_once` fetch counter.
+#[cfg(test)]
+fn reset_query_scoped_once_fetch_count() {
+    QUERY_SCOPED_ONCE_FETCHES.with(|c| c.set(0));
 }
 
 fn truncate_hits(mut hits: Vec<SemanticHit>, k: usize) -> Vec<SemanticHit> {
@@ -1104,12 +1150,94 @@ mod tests {
     }
 
     #[test]
+    fn default_candidate_k_formula() {
+        assert_eq!(default_candidate_k(1), 50);
+        assert_eq!(default_candidate_k(10), 100);
+    }
+
+    #[test]
     fn retry_candidate_k_formula() {
         assert_eq!(retry_candidate_k(50), 100);
         assert_eq!(retry_candidate_k(100), 200);
         assert_eq!(retry_candidate_k(150), 200);
         assert_eq!(retry_candidate_k(200), 400);
         assert_eq!(retry_candidate_k(300), 500);
+        assert_eq!(retry_candidate_k(500), 500);
+        assert_eq!(retry_candidate_k(600), 500);
+    }
+
+    /// 0255: all-local corpus + underfill does **not** retry (`foreign == 0`).
+    #[test]
+    fn query_scoped_foreign_zero_skips_retry() {
+        let storage = CozoStorage::new_in_memory().expect("in-memory cozo");
+        let store = VectorStore::new_without_hnsw(&storage, 3).expect("store");
+        let dir_local = tempfile::tempdir().expect("local root");
+        let work_root = dir_local.path();
+
+        plant_embedding(&storage, "src/a.rs", "local_a", 0, vec![1.0, 0.0, 0.0]);
+        plant_embedding(&storage, "src/b.rs", "local_b", 1, vec![0.9, 0.1, 0.0]);
+
+        reset_query_scoped_once_fetch_count();
+        let (hits, foreign) = store
+            .query_scoped(work_root, vec![1.0, 0.0, 0.0], 5)
+            .expect("query_scoped");
+        assert_eq!(
+            foreign, 0,
+            "all-local corpus must not count foreign: foreign={foreign}"
+        );
+        assert!(
+            hits.len() < 5,
+            "k larger than local corpus so underfill holds: hits={hits:?}"
+        );
+        assert_eq!(
+            query_scoped_once_fetch_count(),
+            1,
+            "foreign==0 must skip the one-shot re-query"
+        );
+    }
+
+    /// 0255 canary: foreign underfill still takes the second fetch (counter works).
+    #[test]
+    fn query_scoped_foreign_underfill_retries() {
+        let storage = CozoStorage::new_in_memory().expect("in-memory cozo");
+        let store = VectorStore::new_without_hnsw(&storage, 3).expect("store");
+        let dir_local = tempfile::tempdir().expect("local root");
+        let dir_foreign = tempfile::tempdir().expect("foreign root");
+        let work_root = dir_local.path();
+
+        for i in 0..15 {
+            let fp = dir_foreign
+                .path()
+                .join(format!("foreign_{i}.rs"))
+                .to_string_lossy()
+                .replace('\\', "/");
+            plant_embedding(
+                &storage,
+                &fp,
+                &format!("foreign_{i}"),
+                i as i64,
+                vec![1.0, 0.0, 0.0],
+            );
+        }
+        plant_embedding(&storage, "src/local.rs", "local_fn", 0, vec![0.9, 0.1, 0.0]);
+
+        reset_query_scoped_once_fetch_count();
+        let (hits, foreign) = store
+            .query_scoped(work_root, vec![1.0, 0.0, 0.0], 5)
+            .expect("query_scoped");
+        assert!(
+            foreign > 0,
+            "expected foreign rows filtered from overfetch: foreign={foreign}"
+        );
+        assert!(
+            hits.len() < 5,
+            "underfill must hold so retry is eligible: hits={hits:?}"
+        );
+        assert_eq!(
+            query_scoped_once_fetch_count(),
+            2,
+            "foreign>0 underfill must run the one-shot re-query"
+        );
     }
 
     /// 0161 Codex R1 / B7: missing `snippet_embedding` relation → Ok(0), not Err/panic.
