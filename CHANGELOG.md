@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Release pins split (0263):** `commands/release/pins.rs` is a barrel
+  (`pins/{types,parse,classify,fetch,emit,tests}.rs`). `execute_release_pins`
+  stays in `release/mod.rs`. Latest still `tag_name` + archive
+  `assets[].digest` (never `target_commitish` alone). JSON `kind: releasePins`
+  / `schemaVersion` 1 frozen. No Cargo bump.
+
 - **Verify execute extract (0251):** `execute_verify` lives in
   `commands/verify/execute.rs`; `mod.rs` is the barrel. Shared test
   fixtures in `verify/test_support.rs`. `VERIFY_JSON_SCHEMA_VERSION`
