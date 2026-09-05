@@ -113,6 +113,80 @@ fn default_analysis_mode() -> String {
     "working_tree".to_string()
 }
 
+/// Compact `to_string` length of a field. `None` on serialize error; the
+/// running length is left unchanged so a failed field cannot look under-budget.
+fn field_json_len<T: Serialize>(value: &T) -> Option<usize> {
+    serde_json::to_string(value).ok().map(|s| s.len())
+}
+
+#[cfg(test)]
+thread_local! {
+    static FULL_PACKET_SERIALIZE_COUNT: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+    static FORCE_COMPACT_SERIALIZE_ERR: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// Full-packet compact JSON length (`to_string`, not pretty). The test meter
+/// increments only here, including `Err` (the call still happened).
+fn compact_packet_len(packet: &ImpactPacket) -> Result<usize, serde_json::Error> {
+    #[cfg(test)]
+    {
+        FULL_PACKET_SERIALIZE_COUNT.with(|c| c.set(c.get().saturating_add(1)));
+        // serde_json 1.0.151 writes value NaN/Inf as JSON null; this hook
+        // still exercises the production Err path (warn + over-budget).
+        if FORCE_COMPACT_SERIALIZE_ERR.with(|c| c.replace(false)) {
+            return Err(serde::ser::Error::custom("NaN is not allowed in JSON"));
+        }
+    }
+    serde_json::to_string(packet).map(|s| s.len())
+}
+
+#[cfg(test)]
+fn reset_truncate_serialize_count() {
+    FULL_PACKET_SERIALIZE_COUNT.with(|c| c.set(0));
+}
+
+#[cfg(test)]
+fn take_truncate_serialize_count() -> usize {
+    FULL_PACKET_SERIALIZE_COUNT.with(|c| c.replace(0))
+}
+
+fn confirm_compact_len(packet: &ImpactPacket) {
+    if let Err(err) = compact_packet_len(packet) {
+        tracing::warn!(
+            error = %err,
+            "impact packet compact serialize failed; treating as over-budget"
+        );
+    }
+}
+
+fn debit_running<T: Serialize>(running: &mut usize, old: &T, new: &T) {
+    let (Some(old_len), Some(new_len)) = (field_json_len(old), field_json_len(new)) else {
+        return;
+    };
+    *running = running.saturating_sub(old_len).saturating_add(new_len);
+}
+
+fn debit_clear_vec<T: Serialize>(running: &mut usize, field: &mut Vec<T>) {
+    if field.is_empty() {
+        return;
+    }
+    let old_len = field_json_len(field);
+    field.clear();
+    if let (Some(old_len), Some(new_len)) = (old_len, field_json_len(field)) {
+        *running = running.saturating_sub(old_len).saturating_add(new_len);
+    }
+}
+
+fn debit_take_opt<T: Serialize>(running: &mut usize, field: &mut Option<T>) {
+    if field.is_none() {
+        return;
+    }
+    let old = std::mem::take(field);
+    if let (Some(old_len), Some(new_len)) = (field_json_len(&old), field_json_len(field)) {
+        *running = running.saturating_sub(old_len).saturating_add(new_len);
+    }
+}
+
 impl ImpactPacket {
     pub fn is_empty(&self) -> bool {
         self.changes.is_empty()
@@ -462,91 +536,183 @@ impl ImpactPacket {
     /// 2. Strip symbol/import/runtime data for unchanged files (if any were included)
     /// 3. Strip temporal couplings
     /// 4. Strip hotspots
+    ///
+    /// Compact `to_string` is the budget meter (not pretty). At most two
+    /// full-packet serializes per call: one to decide work, one confirm if
+    /// any strip ran. Per-phase early-exit uses a running length of
+    /// field-level compact JSON, not extra full-packet serializes.
     pub fn truncate_for_context(&mut self, target_chars: usize) -> bool {
-        let current_json = serde_json::to_string(self).unwrap_or_default();
-        if current_json.len() <= target_chars {
-            return false;
-        }
+        let (mut running, measure_ok) = match compact_packet_len(self) {
+            Ok(n) if n <= target_chars => return false,
+            Ok(n) => (n, true),
+            Err(err) => {
+                tracing::warn!(
+                    error = %err,
+                    "impact packet compact serialize failed; treating as over-budget"
+                );
+                (usize::MAX, false)
+            }
+        };
+
+        let mut stripped = false;
+        let under = |running: usize| measure_ok && running <= target_chars;
 
         // Phase 1: Clear verification output
         for res in &mut self.verification_results {
-            if !res.stdout.is_empty() || !res.stderr.is_empty() {
-                res.stdout = "[TRUNCATED]".to_string();
-                res.stderr = "[TRUNCATED]".to_string();
-                res.truncated = true;
+            if res.stdout.is_empty() && res.stderr.is_empty() {
+                continue;
             }
+            stripped = true;
+            let old_stdout = std::mem::take(&mut res.stdout);
+            let old_stderr = std::mem::take(&mut res.stderr);
+            let old_truncated = res.truncated;
+            res.stdout = "[TRUNCATED]".to_string();
+            res.stderr = "[TRUNCATED]".to_string();
+            res.truncated = true;
+            debit_running(&mut running, &old_stdout, &res.stdout);
+            debit_running(&mut running, &old_stderr, &res.stderr);
+            debit_running(&mut running, &old_truncated, &res.truncated);
         }
-
-        let current_json = serde_json::to_string(self).unwrap_or_default();
-        if current_json.len() <= target_chars {
+        if stripped && under(running) {
+            confirm_compact_len(self);
             return true;
         }
 
         // Phase 2: Strip detailed analysis for non-staged files
         for change in &mut self.changes {
-            if !change.is_staged {
-                change.symbols = None;
-                change.imports = None;
-                change.runtime_usage = None;
+            if change.is_staged {
+                continue;
             }
+            if change.symbols.is_none()
+                && change.imports.is_none()
+                && change.runtime_usage.is_none()
+            {
+                continue;
+            }
+            stripped = true;
+            let old_symbols = change.symbols.take();
+            let old_imports = change.imports.take();
+            let old_runtime = change.runtime_usage.take();
+            debit_running(&mut running, &old_symbols, &change.symbols);
+            debit_running(&mut running, &old_imports, &change.imports);
+            debit_running(&mut running, &old_runtime, &change.runtime_usage);
         }
-
-        let current_json = serde_json::to_string(self).unwrap_or_default();
-        if current_json.len() <= target_chars {
+        if stripped && under(running) {
+            confirm_compact_len(self);
             return true;
         }
 
         // Phase 3: Strip temporal and structural couplings
-        self.temporal_couplings.clear();
-        self.structural_couplings.clear();
-        self.blast_radius = None;
-        self.centrality_risks.clear();
-        self.logging_coverage_delta.clear();
-        self.error_handling_delta.clear();
-        self.telemetry_coverage_delta.clear();
-        self.infrastructure_dirs.clear();
-        self.env_var_deps.clear();
-        self.test_coverage.clear();
-        self.test_gaps = None;
-        self.affected_flows = None;
-        self.runtime_usage_delta.clear();
-        self.signature_deltas.clear();
-        self.relevant_decisions.clear();
-        // CRITICAL: Clear observability signals which can contain unbounded log excerpts
-        self.observability.clear();
-        self.affected_contracts.clear();
-        self.ai_insights.clear();
-        self.data_flow_matches.clear();
-        self.trace_config_drift.clear();
-        self.trace_env_vars.clear();
-        self.sdk_dependencies_delta = None;
-        self.deploy_manifest_changes.clear();
-        self.ci_config_change = None;
-        self.ci_predictions.clear();
-        self.service_impact.clear();
-        self.service_map_delta = None;
-        self.dead_code_findings.clear();
-
-        let current_json = serde_json::to_string(self).unwrap_or_default();
-        if current_json.len() <= target_chars {
+        let phase3_touched = !self.temporal_couplings.is_empty()
+            || !self.structural_couplings.is_empty()
+            || self.blast_radius.is_some()
+            || !self.centrality_risks.is_empty()
+            || !self.logging_coverage_delta.is_empty()
+            || !self.error_handling_delta.is_empty()
+            || !self.telemetry_coverage_delta.is_empty()
+            || !self.infrastructure_dirs.is_empty()
+            || !self.env_var_deps.is_empty()
+            || !self.test_coverage.is_empty()
+            || self.test_gaps.is_some()
+            || self.affected_flows.is_some()
+            || !self.runtime_usage_delta.is_empty()
+            || !self.signature_deltas.is_empty()
+            || !self.relevant_decisions.is_empty()
+            || !self.observability.is_empty()
+            || !self.affected_contracts.is_empty()
+            || !self.ai_insights.is_empty()
+            || !self.data_flow_matches.is_empty()
+            || !self.trace_config_drift.is_empty()
+            || !self.trace_env_vars.is_empty()
+            || self.sdk_dependencies_delta.is_some()
+            || !self.deploy_manifest_changes.is_empty()
+            || self.ci_config_change.is_some()
+            || !self.ci_predictions.is_empty()
+            || !self.service_impact.is_empty()
+            || self.service_map_delta.is_some()
+            || !self.dead_code_findings.is_empty();
+        if phase3_touched {
+            stripped = true;
+            debit_clear_vec(&mut running, &mut self.temporal_couplings);
+            debit_clear_vec(&mut running, &mut self.structural_couplings);
+            debit_take_opt(&mut running, &mut self.blast_radius);
+            debit_clear_vec(&mut running, &mut self.centrality_risks);
+            debit_clear_vec(&mut running, &mut self.logging_coverage_delta);
+            debit_clear_vec(&mut running, &mut self.error_handling_delta);
+            debit_clear_vec(&mut running, &mut self.telemetry_coverage_delta);
+            debit_clear_vec(&mut running, &mut self.infrastructure_dirs);
+            debit_clear_vec(&mut running, &mut self.env_var_deps);
+            debit_clear_vec(&mut running, &mut self.test_coverage);
+            debit_take_opt(&mut running, &mut self.test_gaps);
+            debit_take_opt(&mut running, &mut self.affected_flows);
+            debit_clear_vec(&mut running, &mut self.runtime_usage_delta);
+            debit_clear_vec(&mut running, &mut self.signature_deltas);
+            debit_clear_vec(&mut running, &mut self.relevant_decisions);
+            debit_clear_vec(&mut running, &mut self.observability);
+            debit_clear_vec(&mut running, &mut self.affected_contracts);
+            debit_clear_vec(&mut running, &mut self.ai_insights);
+            debit_clear_vec(&mut running, &mut self.data_flow_matches);
+            debit_clear_vec(&mut running, &mut self.trace_config_drift);
+            debit_clear_vec(&mut running, &mut self.trace_env_vars);
+            debit_take_opt(&mut running, &mut self.sdk_dependencies_delta);
+            debit_clear_vec(&mut running, &mut self.deploy_manifest_changes);
+            debit_take_opt(&mut running, &mut self.ci_config_change);
+            debit_clear_vec(&mut running, &mut self.ci_predictions);
+            debit_clear_vec(&mut running, &mut self.service_impact);
+            debit_take_opt(&mut running, &mut self.service_map_delta);
+            debit_clear_vec(&mut running, &mut self.dead_code_findings);
+        }
+        if stripped && under(running) {
+            confirm_compact_len(self);
             return true;
         }
 
         // Phase 4: Strip hotspots
-        self.hotspots.clear();
-
-        let current_json = serde_json::to_string(self).unwrap_or_default();
-        if current_json.len() <= target_chars {
+        if !self.hotspots.is_empty() {
+            stripped = true;
+            debit_clear_vec(&mut running, &mut self.hotspots);
+        }
+        if stripped && under(running) {
+            confirm_compact_len(self);
             return true;
         }
 
         // Phase 5: Last resort - keep only file paths in changes
         for change in &mut self.changes {
-            change.symbols = None;
-            change.imports = None;
-            change.runtime_usage = None;
+            if change.symbols.is_none()
+                && change.imports.is_none()
+                && change.runtime_usage.is_none()
+            {
+                continue;
+            }
+            stripped = true;
+            let old_symbols = change.symbols.take();
+            let old_imports = change.imports.take();
+            let old_runtime = change.runtime_usage.take();
+            debit_running(&mut running, &old_symbols, &change.symbols);
+            debit_running(&mut running, &old_imports, &change.imports);
+            debit_running(&mut running, &old_runtime, &change.runtime_usage);
         }
 
+        if stripped {
+            confirm_compact_len(self);
+        }
         true
+    }
+
+    /// Reset the thread-local full-packet compact-serialize count, run
+    /// [`Self::truncate_for_context`], and return `(truncated, serialize_count)`.
+    #[cfg(test)]
+    pub(crate) fn truncate_for_context_metered(&mut self, target_chars: usize) -> (bool, usize) {
+        reset_truncate_serialize_count();
+        let truncated = self.truncate_for_context(target_chars);
+        (truncated, take_truncate_serialize_count())
+    }
+
+    /// Next full-packet compact serialize returns `Err` (serde_json maps
+    /// packet NaN/Inf floats to `null`, so tests inject the failure).
+    #[cfg(test)]
+    pub(crate) fn force_next_truncate_serialize_error() {
+        FORCE_COMPACT_SERIALIZE_ERR.with(|c| c.set(true));
     }
 }

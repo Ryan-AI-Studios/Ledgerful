@@ -8,6 +8,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Ask truncate serialize budget (0256):** `ImpactPacket::truncate_for_context`
+  compact-serializes the full packet at most twice per call (once when already
+  under budget). Serialize failure is over-budget + warn, not a silent skip.
+  Packet `schemaVersion` stays `"v1"`. No Cargo bump.
+
 - **HNSW overfetch pin (0255):** First-pass candidate cap stays
   `max(k*10, 50)`; retry is two-arm 200/500. `query_scoped` still
   skips the second fetch when `foreign == 0`. Ranking (`:order +dist`,

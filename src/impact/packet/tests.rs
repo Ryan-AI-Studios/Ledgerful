@@ -2721,6 +2721,169 @@ fn test_truncate_clears_dead_code_findings() {
     assert!(packet.dead_code_findings.is_empty());
 }
 
+#[test]
+fn test_truncate_for_context_under_budget_serializes_once() {
+    let mut packet = ImpactPacket {
+        service_map_delta: Some(ServiceMapDelta {
+            services: vec![Service {
+                name: "users".to_string(),
+                directory: PathBuf::from("services/users"),
+                routes: vec!["/api/v1/users".to_string()],
+                data_models: vec!["User".to_string()],
+                owners: Vec::new(),
+                runtime_name: None,
+                queues: Vec::new(),
+                topics: Vec::new(),
+                rpc_endpoints: Vec::new(),
+            }],
+            affected_services: vec!["users".to_string()],
+            cross_service_edges: Vec::new(),
+            total_services: 1,
+        }),
+        ..ImpactPacket::default()
+    };
+    let (truncated, serializes) = packet.truncate_for_context_metered(1_000_000);
+    assert!(!truncated);
+    assert_eq!(
+        serializes, 1,
+        "under-budget path must compact-serialize once"
+    );
+    assert!(packet.service_map_delta.is_some());
+    assert_eq!(packet.schema_version, "v1");
+}
+
+#[test]
+fn test_truncate_for_context_over_budget_serializes_at_most_twice() {
+    let mut packet = ImpactPacket {
+        relevant_decisions: vec![RelevantDecision {
+            file_path: PathBuf::from("docs/a.md"),
+            heading: Some("Intro".to_string()),
+            excerpt: "Content".to_string(),
+            similarity: 0.9,
+            rerank_score: None,
+            staleness_days: None,
+            staleness_tier: None,
+        }],
+        ..ImpactPacket::default()
+    };
+    let (truncated, serializes) = packet.truncate_for_context_metered(100);
+    assert!(truncated);
+    assert!(
+        serializes <= 2,
+        "truncate path must compact-serialize at most twice, got {serializes}"
+    );
+    assert_eq!(serializes, 2);
+    assert!(packet.relevant_decisions.is_empty());
+}
+
+#[test]
+fn test_truncate_for_context_phase1_preserves_couplings_and_hotspots() {
+    let mut packet = ImpactPacket {
+        verification_results: vec![VerificationResult {
+            name: "verify".to_string(),
+            command: "ledgerful verify".to_string(),
+            exit_code: 0,
+            stdout: "x".repeat(8_000),
+            stderr: "y".repeat(2_000),
+            duration_ms: 1,
+            truncated: false,
+        }],
+        temporal_couplings: vec![TemporalCoupling {
+            file_a: PathBuf::from("src/a.rs"),
+            file_b: PathBuf::from("src/b.rs"),
+            score: 0.9,
+        }],
+        hotspots: vec![Hotspot {
+            path: PathBuf::from("src/a.rs"),
+            score: 1.0,
+            display_score: 1.0,
+            complexity: 3,
+            frequency: 1.0,
+            centrality: None,
+        }],
+        ..ImpactPacket::default()
+    };
+
+    let mut after_phase1 = packet.clone();
+    for res in &mut after_phase1.verification_results {
+        res.stdout = "[TRUNCATED]".to_string();
+        res.stderr = "[TRUNCATED]".to_string();
+        res.truncated = true;
+    }
+    let after_phase1_len = serde_json::to_string(&after_phase1).unwrap().len();
+    let full_len = serde_json::to_string(&packet).unwrap().len();
+    let target = after_phase1_len.saturating_add(256);
+    assert!(
+        after_phase1_len < full_len && target < full_len,
+        "phase 1 must shrink compact JSON: {after_phase1_len} vs {full_len}"
+    );
+
+    let (truncated, serializes) = packet.truncate_for_context_metered(target);
+    assert!(truncated);
+    assert_eq!(serializes, 2);
+    assert_eq!(packet.verification_results[0].stdout, "[TRUNCATED]");
+    assert_eq!(
+        packet.temporal_couplings.len(),
+        1,
+        "Phase 1-sufficient budget must not run Phase 3"
+    );
+    assert_eq!(
+        packet.hotspots.len(),
+        1,
+        "Phase 1-sufficient budget must not run Phase 4"
+    );
+    assert_eq!(packet.schema_version, "v1");
+}
+
+#[test]
+fn test_truncate_for_context_serialize_error_still_strips() {
+    let mut packet = ImpactPacket {
+        verification_results: vec![VerificationResult {
+            name: "verify".to_string(),
+            command: "cmd".to_string(),
+            exit_code: 0,
+            stdout: "x".repeat(2_000),
+            stderr: "y".repeat(2_000),
+            duration_ms: 1,
+            truncated: false,
+        }],
+        temporal_couplings: vec![TemporalCoupling {
+            file_a: PathBuf::from("src/a.rs"),
+            file_b: PathBuf::from("src/b.rs"),
+            score: f32::NAN,
+        }],
+        hotspots: vec![Hotspot {
+            path: PathBuf::from("src/hot.rs"),
+            score: 1.0,
+            display_score: 1.0,
+            complexity: 3,
+            frequency: 1.0,
+            centrality: None,
+        }],
+        ..ImpactPacket::default()
+    };
+    // serde_json 1.0.151 writes value NaN/Inf as JSON null; inject Err so
+    // the over-budget path is still covered (DoD-3).
+    ImpactPacket::force_next_truncate_serialize_error();
+    let (truncated, serializes) = packet.truncate_for_context_metered(100);
+    assert!(
+        truncated,
+        "serialize failure must be over-budget, not a silent skip"
+    );
+    assert!(
+        serializes <= 2,
+        "full-packet compact serializes: {serializes}"
+    );
+    assert_eq!(packet.verification_results[0].stdout, "[TRUNCATED]");
+    assert!(packet.verification_results[0].truncated);
+    assert!(
+        packet.temporal_couplings.is_empty(),
+        "over-budget error path must keep stripping"
+    );
+    assert!(packet.hotspots.is_empty());
+    assert_eq!(packet.schema_version, "v1");
+}
+
 /// Compatibility smoke-test: verify the public facade re-exports every domain type.
 
 #[test]
