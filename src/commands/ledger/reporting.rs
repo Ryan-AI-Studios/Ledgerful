@@ -205,90 +205,399 @@ pub fn execute_ledger_status(opts: LedgerStatusOpts) -> Result<()> {
         );
     }
 
+    // `--json` wins over `--compact` when both are set.
     if json {
-        let pending = tx_mgr
-            .get_all_pending()
-            .map_err(|e| miette::miette!("{}", e))?;
-        let unaudited = tx_mgr
-            .get_all_unaudited()
-            .map_err(|e| miette::miette!("{}", e))?;
-        let pending_tx_ids: Vec<String> = pending.iter().map(|t| t.tx_id.clone()).collect();
-        let unaudited_file_count = unaudited.iter().map(|u| u.drift_count as usize).sum();
-        let status = build_status_json(
-            pending_tx_ids,
-            unaudited.len(),
-            unaudited_file_count,
-            &signals,
-            layout.root.as_str(),
-            layout.state_dir.as_str(),
-        );
-
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&status).into_diagnostic()?
-        );
-
-        apply_exit_code(
+        return status_json(
+            &tx_mgr,
+            &layout,
             &config,
+            &signals,
             exit_code,
             strict_observe_signal,
-            status.pending_count,
-            status.unaudited_count,
-            &signals,
         );
-        return Ok(());
     }
 
     if let Some(entity) = entity_filter {
-        println!(
-            "Ledger Status for {}:",
-            entity.if_supports_color(Stream::Stdout, |s| s.cyan())
-        );
-        if let Some(pending) = tx_mgr
-            .get_pending(&entity)
-            .map_err(|e| miette::miette!("{}", e))?
-        {
-            let started_at = DateTime::parse_from_rfc3339(&pending.started_at).into_diagnostic()?;
-            let age_str = clock.relative_time(started_at.with_timezone(&Utc));
+        return status_entity(&tx_mgr, &clock, stale_threshold, &entity, all);
+    }
 
-            let status_icon = if Utc::now()
+    let pending = tx_mgr
+        .get_all_pending()
+        .map_err(|e| miette::miette!("{}", e))?;
+    let unaudited = tx_mgr
+        .get_all_unaudited()
+        .map_err(|e| miette::miette!("{}", e))?;
+    let pending_count = pending.len();
+    let unaudited_count = unaudited.len();
+
+    if compact {
+        return status_compact(
+            &layout,
+            &config,
+            &signals,
+            pending_count,
+            unaudited_count,
+            exit_code,
+            strict_observe_signal,
+        );
+    }
+
+    status_git_human(
+        &layout,
+        &config,
+        &signals,
+        &clock,
+        stale_threshold,
+        pending,
+        unaudited,
+        all,
+        exit_code,
+        strict_observe_signal,
+        &tx_mgr,
+    )
+}
+
+fn status_json(
+    tx_mgr: &TransactionManager<'_>,
+    layout: &crate::state::layout::Layout,
+    config: &crate::config::model::Config,
+    signals: &LifecycleSignals,
+    exit_code: bool,
+    strict_observe_signal: bool,
+) -> Result<()> {
+    let pending = tx_mgr
+        .get_all_pending()
+        .map_err(|e| miette::miette!("{}", e))?;
+    let unaudited = tx_mgr
+        .get_all_unaudited()
+        .map_err(|e| miette::miette!("{}", e))?;
+    let pending_tx_ids: Vec<String> = pending.iter().map(|t| t.tx_id.clone()).collect();
+    let unaudited_file_count = unaudited.iter().map(|u| u.drift_count as usize).sum();
+    let status = build_status_json(
+        pending_tx_ids,
+        unaudited.len(),
+        unaudited_file_count,
+        signals,
+        layout.root.as_str(),
+        layout.state_dir.as_str(),
+    );
+
+    println!(
+        "{}",
+        serde_json::to_string_pretty(&status).into_diagnostic()?
+    );
+
+    apply_exit_code(
+        config,
+        exit_code,
+        strict_observe_signal,
+        status.pending_count,
+        status.unaudited_count,
+        signals,
+    );
+    Ok(())
+}
+
+fn status_entity(
+    tx_mgr: &TransactionManager<'_>,
+    clock: &SystemClock,
+    stale_threshold: i64,
+    entity: &str,
+    all: bool,
+) -> Result<()> {
+    println!(
+        "Ledger Status for {}:",
+        entity.if_supports_color(Stream::Stdout, |s| s.cyan())
+    );
+    if let Some(pending) = tx_mgr
+        .get_pending(entity)
+        .map_err(|e| miette::miette!("{}", e))?
+    {
+        let started_at = DateTime::parse_from_rfc3339(&pending.started_at).into_diagnostic()?;
+        let age_str = clock.relative_time(started_at.with_timezone(&Utc));
+
+        let status_icon = if Utc::now()
+            .signed_duration_since(started_at.with_timezone(&Utc))
+            .num_hours()
+            >= stale_threshold
+        {
+            get_status_icon(LedgerStatus::Stale)
+        } else {
+            get_status_icon(LedgerStatus::Pending)
+        };
+
+        println!(
+            "  {} PENDING: {} [{}] {}",
+            status_icon,
+            pending
+                .tx_id
+                .if_supports_color(Stream::Stdout, |s| s.yellow()),
+            crate::ledger::ui::with_icon(
+                &get_category_icon(&pending.category),
+                format!("{:?}", pending.category),
+            ),
+            age_str.if_supports_color(Stream::Stdout, |s| s.dimmed())
+        );
+    } else {
+        println!("  No pending transaction.");
+    }
+
+    println!("\nRecent History:");
+    let entries = tx_mgr
+        .get_ledger_entries(entity)
+        .map_err(|e| miette::miette!("{}", e))?;
+
+    if entries.is_empty() {
+        println!("  No history found.");
+    } else {
+        let mut table = crate::output::table::build_table(vec!["Time", "Icon", "Type", "Summary"]);
+        let limit = if all { usize::MAX } else { 10 };
+        for entry in entries.iter().take(limit) {
+            let committed_at =
+                DateTime::parse_from_rfc3339(&entry.committed_at).into_diagnostic()?;
+            table.add_row(vec![
+                clock
+                    .relative_time(committed_at.with_timezone(&Utc))
+                    .if_supports_color(Stream::Stdout, |s| s.dimmed())
+                    .to_string(),
+                get_change_type_icon(&entry.change_type),
+                format!("{:?}", entry.change_type)
+                    .if_supports_color(Stream::Stdout, |s| s.blue())
+                    .to_string(),
+                entry.summary.clone(),
+            ]);
+        }
+        println!("{}", table);
+    }
+    Ok(())
+}
+
+/// Frozen compact grammar (0200): `Ledger [<workRoot>]: N pending, M unaudited drift.`
+/// plus optional ` CRITICAL [PROMOTE_ORPHAN]` / ` CRITICAL [HEAD_UNCOVERED]`.
+/// Recover hint is stderr-only and is not part of the stdout line.
+fn format_compact_status(
+    work_root: &str,
+    pending_count: usize,
+    unaudited_count: usize,
+    signals: &LifecycleSignals,
+) -> (String, Option<&'static str>) {
+    let mut line = format!(
+        "Ledger [{}]: {} pending, {} unaudited drift.",
+        work_root,
+        pending_count
+            .to_string()
+            .if_supports_color(Stream::Stdout, |s| s.yellow()),
+        unaudited_count
+            .to_string()
+            .if_supports_color(Stream::Stdout, |s| s.red())
+    );
+    if signals.promote_orphan {
+        line.push_str(&format!(
+            " {}[{}]",
+            "CRITICAL ".if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold())),
+            CODE_PROMOTE_ORPHAN.if_supports_color(Stream::Stdout, |s| s.red())
+        ));
+    }
+    if signals.head_uncovered {
+        line.push_str(&format!(
+            " {}[{}]",
+            "CRITICAL ".if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold())),
+            CODE_HEAD_UNCOVERED.if_supports_color(Stream::Stdout, |s| s.red())
+        ));
+    }
+    let recover = signals.promote_orphan.then_some(RECOVER_HINT);
+    (line, recover)
+}
+
+fn status_compact(
+    layout: &crate::state::layout::Layout,
+    config: &crate::config::model::Config,
+    signals: &LifecycleSignals,
+    pending_count: usize,
+    unaudited_count: usize,
+    exit_code: bool,
+    strict_observe_signal: bool,
+) -> Result<()> {
+    let (line, recover) = format_compact_status(
+        layout.root.as_str(),
+        pending_count,
+        unaudited_count,
+        signals,
+    );
+    println!("{line}");
+    if let Some(hint) = recover {
+        eprintln!("  Recover with: {hint}");
+    }
+    apply_exit_code(
+        config,
+        exit_code,
+        strict_observe_signal,
+        pending_count,
+        unaudited_count,
+        signals,
+    );
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn status_git_human(
+    layout: &crate::state::layout::Layout,
+    config: &crate::config::model::Config,
+    signals: &LifecycleSignals,
+    clock: &SystemClock,
+    stale_threshold: i64,
+    pending: Vec<Transaction>,
+    unaudited: Vec<Transaction>,
+    all: bool,
+    exit_code: bool,
+    strict_observe_signal: bool,
+    tx_mgr: &TransactionManager<'_>,
+) -> Result<()> {
+    let pending_count = pending.len();
+    let unaudited_count = unaudited.len();
+
+    println!(
+        "{}",
+        "Ledgerful Ledger Status"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
+    );
+    println!(
+        "Work root: {}",
+        layout
+            .root
+            .as_str()
+            .if_supports_color(Stream::Stdout, |s| s.cyan())
+    );
+
+    print_impact_freshness(layout, config);
+
+    if signals.promote_orphan || signals.head_uncovered {
+        println!(
+            "\n{} {}",
+            "CRITICAL".if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold())),
+            "LIFECYCLE INTEGRITY"
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold()))
+        );
+        if signals.promote_orphan {
+            println!(
+                "  [{}] Promote orphan retained (tx={}). Recover with: {}",
+                CODE_PROMOTE_ORPHAN.if_supports_color(Stream::Stdout, |s| s.red()),
+                signals.promote_orphan_tx_id.as_deref().unwrap_or("unknown"),
+                RECOVER_HINT
+            );
+            if let Some(ref err) = signals.promote_error {
+                println!("    promote_error: {err}");
+            }
+        }
+        if signals.head_uncovered {
+            println!(
+                "  [{}] HEAD uncovered via promote-fail/HEAD-matching pending sidecar (message-hash heuristic; not a full material-HEAD-without-row scan).",
+                CODE_HEAD_UNCOVERED.if_supports_color(Stream::Stdout, |s| s.red())
+            );
+        }
+    }
+
+    println!(
+        "\n{} {}",
+        get_status_icon(LedgerStatus::Pending),
+        "PENDING TRANSACTIONS"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
+    );
+
+    print_pending_sidecar(layout);
+
+    if pending.is_empty() {
+        println!("  None.");
+    } else {
+        let mut table = crate::output::table::build_table(vec!["ID", "Category", "Entity", "Age"]);
+        for tx in pending {
+            let started_at = DateTime::parse_from_rfc3339(&tx.started_at).into_diagnostic()?;
+            let age_str = clock.relative_time(started_at.with_timezone(&Utc));
+            let is_stale = Utc::now()
                 .signed_duration_since(started_at.with_timezone(&Utc))
                 .num_hours()
-                >= stale_threshold
-            {
-                get_status_icon(LedgerStatus::Stale)
+                >= stale_threshold;
+            let stale_indicator = if is_stale {
+                format!("{} STALE", get_status_icon(LedgerStatus::Stale))
             } else {
-                get_status_icon(LedgerStatus::Pending)
+                "".to_string()
             };
 
-            println!(
-                "  {} PENDING: {} [{}] {}",
-                status_icon,
-                pending
-                    .tx_id
-                    .if_supports_color(Stream::Stdout, |s| s.yellow()),
+            table.add_row(vec![
+                tx.tx_id
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
+                    .to_string(),
                 crate::ledger::ui::with_icon(
-                    &get_category_icon(&pending.category),
-                    format!("{:?}", pending.category),
+                    &get_category_icon(&tx.category),
+                    format!("{:?}", tx.category),
                 ),
-                age_str.if_supports_color(Stream::Stdout, |s| s.dimmed())
-            );
-        } else {
-            println!("  No pending transaction.");
+                tx.entity
+                    .if_supports_color(Stream::Stdout, |s| s.cyan())
+                    .to_string(),
+                format!(
+                    "{} {}",
+                    age_str.if_supports_color(Stream::Stdout, |s| s.dimmed()),
+                    stale_indicator
+                ),
+            ]);
         }
+        println!("{}", table);
+    }
 
-        println!("\nRecent History:");
-        let entries = tx_mgr
-            .get_ledger_entries(&entity)
+    println!(
+        "\n{} {}",
+        get_status_icon(LedgerStatus::Stale),
+        "UNAUDITED DRIFT".if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold()))
+    );
+    if unaudited.is_empty() {
+        println!("  None.");
+    } else {
+        let mut table = crate::output::table::build_table(vec!["Entity", "Changes", "Last Seen"]);
+        for tx in unaudited {
+            let last_seen = if let Some(ts) = tx.last_seen_at {
+                if let Ok(dt) = DateTime::parse_from_rfc3339(&ts) {
+                    clock.relative_time(dt.with_timezone(&Utc))
+                } else {
+                    ts
+                }
+            } else {
+                "unknown".to_string()
+            };
+
+            table.add_row(vec![
+                tx.entity
+                    .if_supports_color(Stream::Stdout, |s| s.cyan())
+                    .to_string(),
+                tx.drift_count
+                    .to_string()
+                    .if_supports_color(Stream::Stdout, |s| s.bold())
+                    .to_string(),
+                last_seen
+                    .if_supports_color(Stream::Stdout, |s| s.dimmed())
+                    .to_string(),
+            ]);
+        }
+        println!("{}", table);
+    }
+
+    if all {
+        println!(
+            "\n{} {}",
+            get_status_icon(LedgerStatus::Committed),
+            "RECENT HISTORY"
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().blue().bold()))
+        );
+        let db = LedgerDb::new(tx_mgr.get_connection());
+        let entries = db
+            .get_all_committed_ledger_entries()
             .map_err(|e| miette::miette!("{}", e))?;
 
         if entries.is_empty() {
             println!("  No history found.");
         } else {
             let mut table =
-                crate::output::table::build_table(vec!["Time", "Icon", "Type", "Summary"]);
-            let limit = if all { usize::MAX } else { 10 };
-            for entry in entries.iter().take(limit) {
+                crate::output::table::build_table(vec!["Time", "Entity", "Type", "Summary"]);
+            for entry in entries {
                 let committed_at =
                     DateTime::parse_from_rfc3339(&entry.committed_at).into_diagnostic()?;
                 table.add_row(vec![
@@ -296,7 +605,10 @@ pub fn execute_ledger_status(opts: LedgerStatusOpts) -> Result<()> {
                         .relative_time(committed_at.with_timezone(&Utc))
                         .if_supports_color(Stream::Stdout, |s| s.dimmed())
                         .to_string(),
-                    get_change_type_icon(&entry.change_type),
+                    entry
+                        .entity_normalized
+                        .if_supports_color(Stream::Stdout, |s| s.cyan())
+                        .to_string(),
                     format!("{:?}", entry.change_type)
                         .if_supports_color(Stream::Stdout, |s| s.blue())
                         .to_string(),
@@ -305,344 +617,134 @@ pub fn execute_ledger_status(opts: LedgerStatusOpts) -> Result<()> {
             }
             println!("{}", table);
         }
-    } else {
-        let pending = tx_mgr
-            .get_all_pending()
-            .map_err(|e| miette::miette!("{}", e))?;
-        let unaudited = tx_mgr
-            .get_all_unaudited()
-            .map_err(|e| miette::miette!("{}", e))?;
-
-        let pending_count = pending.len();
-        let unaudited_count = unaudited.len();
-
-        if compact {
-            let mut line = format!(
-                "Ledger [{}]: {} pending, {} unaudited drift.",
-                layout.root,
-                pending_count
-                    .to_string()
-                    .if_supports_color(Stream::Stdout, |s| s.yellow()),
-                unaudited_count
-                    .to_string()
-                    .if_supports_color(Stream::Stdout, |s| s.red())
-            );
-            if signals.promote_orphan {
-                line.push_str(&format!(
-                    " {}[{}]",
-                    "CRITICAL "
-                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold())),
-                    CODE_PROMOTE_ORPHAN.if_supports_color(Stream::Stdout, |s| s.red())
-                ));
-            }
-            if signals.head_uncovered {
-                line.push_str(&format!(
-                    " {}[{}]",
-                    "CRITICAL "
-                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold())),
-                    CODE_HEAD_UNCOVERED.if_supports_color(Stream::Stdout, |s| s.red())
-                ));
-            }
-            println!("{line}");
-            if signals.promote_orphan {
-                eprintln!("  Recover with: {RECOVER_HINT}");
-            }
-            apply_exit_code(
-                &config,
-                exit_code,
-                strict_observe_signal,
-                pending_count,
-                unaudited_count,
-                &signals,
-            );
-            return Ok(());
-        }
-
-        println!(
-            "{}",
-            "Ledgerful Ledger Status"
-                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
-        );
-        println!(
-            "Work root: {}",
-            layout
-                .root
-                .as_str()
-                .if_supports_color(Stream::Stdout, |s| s.cyan())
-        );
-
-        if let Ok(repo) = crate::git::repo::open_repo(layout.root.as_std_path())
-            && let Ok((head_hash, branch_name)) = crate::git::repo::get_head_info(&repo)
-        {
-            let changes = crate::git::status::get_repo_status(&repo).unwrap_or_default();
-            let filtered = crate::git::ignore::filter_ignored_changes(
-                changes,
-                &config.watch.ignore_patterns,
-                true,
-            )
-            .unwrap_or_default();
-            let snapshot = crate::git::RepoSnapshot {
-                head_hash,
-                branch_name,
-                is_clean: filtered.is_empty(),
-                changes: filtered,
-            };
-            let freshness = crate::state::reports::check_impact_freshness(&layout, &snapshot);
-            let freshness_str = match freshness {
-                crate::state::reports::ImpactFreshness::Missing => "None"
-                    .if_supports_color(Stream::Stdout, |s| s.yellow())
-                    .to_string(),
-                crate::state::reports::ImpactFreshness::CurrentClean => "Current (Clean)"
-                    .if_supports_color(Stream::Stdout, |s| s.green())
-                    .to_string(),
-                crate::state::reports::ImpactFreshness::CurrentDirty => "Current (Dirty)"
-                    .if_supports_color(Stream::Stdout, |s| s.green())
-                    .to_string(),
-                crate::state::reports::ImpactFreshness::Stale { reason } => {
-                    format!("STALE ({}) — run 'ledgerful impact' to refresh", reason)
-                        .if_supports_color(Stream::Stdout, |s| s.red())
-                        .to_string()
-                }
-                crate::state::reports::ImpactFreshness::Corrupt { .. } => "Corrupt"
-                    .if_supports_color(Stream::Stdout, |s| s.red())
-                    .to_string(),
-            };
-            println!("Impact Report: {}", freshness_str);
-        }
-
-        if signals.promote_orphan || signals.head_uncovered {
-            println!(
-                "\n{} {}",
-                "CRITICAL"
-                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold())),
-                "LIFECYCLE INTEGRITY"
-                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold()))
-            );
-            if signals.promote_orphan {
-                println!(
-                    "  [{}] Promote orphan retained (tx={}). Recover with: {}",
-                    CODE_PROMOTE_ORPHAN.if_supports_color(Stream::Stdout, |s| s.red()),
-                    signals.promote_orphan_tx_id.as_deref().unwrap_or("unknown"),
-                    RECOVER_HINT
-                );
-                if let Some(ref err) = signals.promote_error {
-                    println!("    promote_error: {err}");
-                }
-            }
-            if signals.head_uncovered {
-                println!(
-                    "  [{}] HEAD uncovered via promote-fail/HEAD-matching pending sidecar (message-hash heuristic; not a full material-HEAD-without-row scan).",
-                    CODE_HEAD_UNCOVERED.if_supports_color(Stream::Stdout, |s| s.red())
-                );
-            }
-        }
-
-        println!(
-            "\n{} {}",
-            get_status_icon(LedgerStatus::Pending),
-            "PENDING TRANSACTIONS"
-                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
-        );
-
-        let sidecar_path = layout.state_subdir().join("pending_hook_tx");
-        if sidecar_path.exists() {
-            match std::fs::read_to_string(&sidecar_path) {
-                Ok(content) => match serde_json::from_str::<PendingHookTx>(&content) {
-                    Ok(pending_sidecar) => {
-                        let mut matches_head = false;
-                        if let Some(current_hash) = head_message_hash(layout.root.as_std_path()) {
-                            matches_head = current_hash == pending_sidecar.commit_msg_hash;
-                        }
-                        if pending_sidecar.is_promote_failed() {
-                            println!(
-                                "  {} [Sidecar] PROMOTE_FAILED orphan (tx {}) — do not GC; {}",
-                                get_status_icon(LedgerStatus::Stale),
-                                pending_sidecar.tx_id,
-                                RECOVER_HINT
-                            );
-                        } else if matches_head {
-                            println!(
-                                "  {} [Sidecar] Pending commit sidecar message hash matches HEAD",
-                                get_status_icon(LedgerStatus::Pending)
-                            );
-                        } else {
-                            let mut matches_editmsg = false;
-                            let editmsg_path = layout
-                                .root
-                                .as_std_path()
-                                .join(".git")
-                                .join("COMMIT_EDITMSG");
-                            let index_lock_path =
-                                layout.root.as_std_path().join(".git").join("index.lock");
-
-                            if editmsg_path.exists()
-                                && index_lock_path.exists()
-                                && let Ok(edit_msg) = std::fs::read_to_string(&editmsg_path)
-                            {
-                                let cleaned = crate::util::text::clean_commit_msg(&edit_msg);
-                                let edit_hash =
-                                    crate::commands::hook_sidecar::hash_message(&cleaned);
-                                matches_editmsg = edit_hash == pending_sidecar.commit_msg_hash;
-                            }
-
-                            if matches_editmsg {
-                                println!(
-                                    "  {} [Sidecar] Pending commit sidecar matches active COMMIT_EDITMSG",
-                                    get_status_icon(LedgerStatus::Pending)
-                                );
-                            } else {
-                                println!(
-                                    "  {} [Sidecar] Pending commit sidecar exists but does NOT match HEAD or active commit (stale)",
-                                    get_status_icon(LedgerStatus::Pending)
-                                );
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        tracing::warn!("Failed to parse pending hook sidecar: {}", e);
-                        println!(
-                            "  {} [Sidecar] Pending commit sidecar is broken/unparseable (stale)",
-                            get_status_icon(LedgerStatus::Stale)
-                        );
-                    }
-                },
-                Err(e) => {
-                    tracing::warn!("Failed to read pending hook sidecar: {}", e);
-                    println!(
-                        "  {} [Sidecar] Pending commit sidecar is unreadable (stale)",
-                        get_status_icon(LedgerStatus::Stale)
-                    );
-                }
-            }
-        }
-
-        if pending.is_empty() {
-            println!("  None.");
-        } else {
-            let mut table =
-                crate::output::table::build_table(vec!["ID", "Category", "Entity", "Age"]);
-            for tx in pending {
-                let started_at = DateTime::parse_from_rfc3339(&tx.started_at).into_diagnostic()?;
-                let age_str = clock.relative_time(started_at.with_timezone(&Utc));
-                let is_stale = Utc::now()
-                    .signed_duration_since(started_at.with_timezone(&Utc))
-                    .num_hours()
-                    >= stale_threshold;
-                let stale_indicator = if is_stale {
-                    format!("{} STALE", get_status_icon(LedgerStatus::Stale))
-                } else {
-                    "".to_string()
-                };
-
-                table.add_row(vec![
-                    tx.tx_id
-                        .if_supports_color(Stream::Stdout, |s| s.yellow())
-                        .to_string(),
-                    crate::ledger::ui::with_icon(
-                        &get_category_icon(&tx.category),
-                        format!("{:?}", tx.category),
-                    ),
-                    tx.entity
-                        .if_supports_color(Stream::Stdout, |s| s.cyan())
-                        .to_string(),
-                    format!(
-                        "{} {}",
-                        age_str.if_supports_color(Stream::Stdout, |s| s.dimmed()),
-                        stale_indicator
-                    ),
-                ]);
-            }
-            println!("{}", table);
-        }
-
-        println!(
-            "\n{} {}",
-            get_status_icon(LedgerStatus::Stale),
-            "UNAUDITED DRIFT"
-                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().red().bold()))
-        );
-        if unaudited.is_empty() {
-            println!("  None.");
-        } else {
-            let mut table =
-                crate::output::table::build_table(vec!["Entity", "Changes", "Last Seen"]);
-            for tx in unaudited {
-                let last_seen = if let Some(ts) = tx.last_seen_at {
-                    if let Ok(dt) = DateTime::parse_from_rfc3339(&ts) {
-                        clock.relative_time(dt.with_timezone(&Utc))
-                    } else {
-                        ts
-                    }
-                } else {
-                    "unknown".to_string()
-                };
-
-                table.add_row(vec![
-                    tx.entity
-                        .if_supports_color(Stream::Stdout, |s| s.cyan())
-                        .to_string(),
-                    tx.drift_count
-                        .to_string()
-                        .if_supports_color(Stream::Stdout, |s| s.bold())
-                        .to_string(),
-                    last_seen
-                        .if_supports_color(Stream::Stdout, |s| s.dimmed())
-                        .to_string(),
-                ]);
-            }
-            println!("{}", table);
-        }
-
-        if all {
-            println!(
-                "\n{} {}",
-                get_status_icon(LedgerStatus::Committed),
-                "RECENT HISTORY"
-                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().blue().bold()))
-            );
-            let db = LedgerDb::new(storage.get_connection());
-            let entries = db
-                .get_all_committed_ledger_entries()
-                .map_err(|e| miette::miette!("{}", e))?;
-
-            if entries.is_empty() {
-                println!("  No history found.");
-            } else {
-                let mut table =
-                    crate::output::table::build_table(vec!["Time", "Entity", "Type", "Summary"]);
-                for entry in entries {
-                    let committed_at =
-                        DateTime::parse_from_rfc3339(&entry.committed_at).into_diagnostic()?;
-                    table.add_row(vec![
-                        clock
-                            .relative_time(committed_at.with_timezone(&Utc))
-                            .if_supports_color(Stream::Stdout, |s| s.dimmed())
-                            .to_string(),
-                        entry
-                            .entity_normalized
-                            .if_supports_color(Stream::Stdout, |s| s.cyan())
-                            .to_string(),
-                        format!("{:?}", entry.change_type)
-                            .if_supports_color(Stream::Stdout, |s| s.blue())
-                            .to_string(),
-                        entry.summary.clone(),
-                    ]);
-                }
-                println!("{}", table);
-            }
-        }
-
-        apply_exit_code(
-            &config,
-            exit_code,
-            strict_observe_signal,
-            pending_count,
-            unaudited_count,
-            &signals,
-        );
     }
 
+    apply_exit_code(
+        config,
+        exit_code,
+        strict_observe_signal,
+        pending_count,
+        unaudited_count,
+        signals,
+    );
     Ok(())
+}
+
+fn print_impact_freshness(
+    layout: &crate::state::layout::Layout,
+    config: &crate::config::model::Config,
+) {
+    if let Ok(repo) = crate::git::repo::open_repo(layout.root.as_std_path())
+        && let Ok((head_hash, branch_name)) = crate::git::repo::get_head_info(&repo)
+    {
+        let changes = crate::git::status::get_repo_status(&repo).unwrap_or_default();
+        let filtered = crate::git::ignore::filter_ignored_changes(
+            changes,
+            &config.watch.ignore_patterns,
+            true,
+        )
+        .unwrap_or_default();
+        let snapshot = crate::git::RepoSnapshot {
+            head_hash,
+            branch_name,
+            is_clean: filtered.is_empty(),
+            changes: filtered,
+        };
+        let freshness = crate::state::reports::check_impact_freshness(layout, &snapshot);
+        let freshness_str = match freshness {
+            crate::state::reports::ImpactFreshness::Missing => "None"
+                .if_supports_color(Stream::Stdout, |s| s.yellow())
+                .to_string(),
+            crate::state::reports::ImpactFreshness::CurrentClean => "Current (Clean)"
+                .if_supports_color(Stream::Stdout, |s| s.green())
+                .to_string(),
+            crate::state::reports::ImpactFreshness::CurrentDirty => "Current (Dirty)"
+                .if_supports_color(Stream::Stdout, |s| s.green())
+                .to_string(),
+            crate::state::reports::ImpactFreshness::Stale { reason } => {
+                format!("STALE ({}) — run 'ledgerful impact' to refresh", reason)
+                    .if_supports_color(Stream::Stdout, |s| s.red())
+                    .to_string()
+            }
+            crate::state::reports::ImpactFreshness::Corrupt { .. } => "Corrupt"
+                .if_supports_color(Stream::Stdout, |s| s.red())
+                .to_string(),
+        };
+        println!("Impact Report: {}", freshness_str);
+    }
+}
+
+fn print_pending_sidecar(layout: &crate::state::layout::Layout) {
+    let sidecar_path = layout.state_subdir().join("pending_hook_tx");
+    if !sidecar_path.exists() {
+        return;
+    }
+    match std::fs::read_to_string(&sidecar_path) {
+        Ok(content) => match serde_json::from_str::<PendingHookTx>(&content) {
+            Ok(pending_sidecar) => {
+                let mut matches_head = false;
+                if let Some(current_hash) = head_message_hash(layout.root.as_std_path()) {
+                    matches_head = current_hash == pending_sidecar.commit_msg_hash;
+                }
+                if pending_sidecar.is_promote_failed() {
+                    println!(
+                        "  {} [Sidecar] PROMOTE_FAILED orphan (tx {}) — do not GC; {}",
+                        get_status_icon(LedgerStatus::Stale),
+                        pending_sidecar.tx_id,
+                        RECOVER_HINT
+                    );
+                } else if matches_head {
+                    println!(
+                        "  {} [Sidecar] Pending commit sidecar message hash matches HEAD",
+                        get_status_icon(LedgerStatus::Pending)
+                    );
+                } else {
+                    let mut matches_editmsg = false;
+                    let editmsg_path = layout
+                        .root
+                        .as_std_path()
+                        .join(".git")
+                        .join("COMMIT_EDITMSG");
+                    let index_lock_path = layout.root.as_std_path().join(".git").join("index.lock");
+
+                    if editmsg_path.exists()
+                        && index_lock_path.exists()
+                        && let Ok(edit_msg) = std::fs::read_to_string(&editmsg_path)
+                    {
+                        let cleaned = crate::util::text::clean_commit_msg(&edit_msg);
+                        let edit_hash = crate::commands::hook_sidecar::hash_message(&cleaned);
+                        matches_editmsg = edit_hash == pending_sidecar.commit_msg_hash;
+                    }
+
+                    if matches_editmsg {
+                        println!(
+                            "  {} [Sidecar] Pending commit sidecar matches active COMMIT_EDITMSG",
+                            get_status_icon(LedgerStatus::Pending)
+                        );
+                    } else {
+                        println!(
+                            "  {} [Sidecar] Pending commit sidecar exists but does NOT match HEAD or active commit (stale)",
+                            get_status_icon(LedgerStatus::Pending)
+                        );
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("Failed to parse pending hook sidecar: {}", e);
+                println!(
+                    "  {} [Sidecar] Pending commit sidecar is broken/unparseable (stale)",
+                    get_status_icon(LedgerStatus::Stale)
+                );
+            }
+        },
+        Err(e) => {
+            tracing::warn!("Failed to read pending hook sidecar: {}", e);
+            println!(
+                "  {} [Sidecar] Pending commit sidecar is unreadable (stale)",
+                get_status_icon(LedgerStatus::Stale)
+            );
+        }
+    }
 }
 
 /// Export stable provenance as pretty-printed JSON.
@@ -839,5 +941,66 @@ mod status_json_tests {
                 || serde_json::from_str::<serde_json::Value>(stdout.trim()).is_ok(),
             "stdout must stay JSON-pure; stdout={stdout:?}"
         );
+    }
+
+    fn strip_ansi(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        let mut chars = s.chars();
+        while let Some(c) = chars.next() {
+            if c == '\u{1b}' {
+                if chars.next() == Some('[') {
+                    for next in chars.by_ref() {
+                        if next.is_ascii_alphabetic() {
+                            break;
+                        }
+                    }
+                }
+            } else {
+                out.push(c);
+            }
+        }
+        out
+    }
+
+    #[test]
+    fn compact_status_frozen_grammar_plain() {
+        let signals = LifecycleSignals::default();
+        let (line, recover) = format_compact_status("/repo", 2, 0, &signals);
+        assert_eq!(
+            strip_ansi(&line),
+            "Ledger [/repo]: 2 pending, 0 unaudited drift."
+        );
+        assert!(recover.is_none());
+    }
+
+    #[test]
+    fn compact_status_promote_orphan_and_head_uncovered_suffixes() {
+        let signals = LifecycleSignals {
+            promote_orphan: true,
+            head_uncovered: true,
+            promote_orphan_tx_id: Some("tx-1".into()),
+            promote_error: None,
+        };
+        let (line, recover) = format_compact_status("/repo", 1, 1, &signals);
+        assert_eq!(
+            strip_ansi(&line),
+            "Ledger [/repo]: 1 pending, 1 unaudited drift. CRITICAL [PROMOTE_ORPHAN] CRITICAL [HEAD_UNCOVERED]"
+        );
+        assert_eq!(recover, Some(RECOVER_HINT));
+    }
+
+    #[test]
+    fn compact_status_head_uncovered_only_has_no_recover_hint() {
+        let signals = LifecycleSignals {
+            promote_orphan: false,
+            head_uncovered: true,
+            ..Default::default()
+        };
+        let (line, recover) = format_compact_status("/repo", 0, 0, &signals);
+        assert_eq!(
+            strip_ansi(&line),
+            "Ledger [/repo]: 0 pending, 0 unaudited drift. CRITICAL [HEAD_UNCOVERED]"
+        );
+        assert!(recover.is_none());
     }
 }
