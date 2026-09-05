@@ -1,5 +1,4 @@
 use crate::git::GitError;
-use anyhow::Result;
 use gix::{Repository, discover};
 use std::path::Path;
 
@@ -18,9 +17,9 @@ pub fn open_repo(path: &Path) -> Result<Repository, GitError> {
 }
 
 pub fn get_head_info(repo: &Repository) -> Result<(Option<String>, Option<String>), GitError> {
-    let head = repo
-        .head()
-        .map_err(|e| GitError::MetadataError { source: e.into() })?;
+    let head = repo.head().map_err(|e| GitError::HeadFailed {
+        source: Box::new(e),
+    })?;
 
     let hash = head.clone().id().map(|id| id.to_string());
 
@@ -42,7 +41,7 @@ mod tests {
     }
 
     #[test]
-    fn test_head_info_unborn() -> Result<()> {
+    fn test_head_info_unborn() -> Result<(), GitError> {
         let dir = tempdir().unwrap();
         let repo = gix::init(dir.path()).unwrap();
         let (hash, branch) = get_head_info(&repo)?;

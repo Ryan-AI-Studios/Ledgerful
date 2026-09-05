@@ -3,7 +3,6 @@ use crate::git::classify::classify_status;
 use crate::git::repo::open_repo;
 use crate::git::{FileChange, GitError};
 use crate::state::layout::Layout;
-use anyhow::Result;
 use gix::Repository;
 use gix::bstr::BString;
 use std::path::Path;
@@ -13,16 +12,22 @@ pub fn get_repo_status(repo: &Repository) -> Result<Vec<FileChange>, GitError> {
 
     let status = repo
         .status(gix::progress::Discard)
-        .map_err(|e| GitError::MetadataError { source: e.into() })?
+        .map_err(|e| GitError::StatusPlatform {
+            source: Box::new(e),
+        })?
         .untracked_files(gix::status::UntrackedFiles::Files)
         .index_worktree_rewrites(Some(gix::diff::Rewrites::default()));
 
     let items = status
         .into_iter(Vec::<BString>::new())
-        .map_err(|e| GitError::MetadataError { source: e.into() })?;
+        .map_err(|e| GitError::StatusIter {
+            source: Box::new(e),
+        })?;
 
     for item in items {
-        let item = item.map_err(|e| GitError::MetadataError { source: e.into() })?;
+        let item = item.map_err(|e| GitError::StatusItem {
+            source: Box::new(e),
+        })?;
         if let Some(changes) = classify_status(repo, &item) {
             file_changes.extend(changes);
         }
