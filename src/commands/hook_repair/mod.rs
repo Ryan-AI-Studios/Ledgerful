@@ -2,7 +2,7 @@
 //! instead of the canonical `ledgerful` binary, and normalize legacy
 //! idempotency marker comments so `init` recognises its own blocks.
 //!
-//! `ledgerful init` (see `src/commands/init.rs`) already writes hooks that
+//! `ledgerful init` (see `src/commands/init/`) already writes hooks that
 //! call `ledgerful`. This module fixes up hooks that were installed by an
 //! older version of `init` (or hand-written).
 //!

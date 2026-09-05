@@ -145,7 +145,7 @@ fn setup_no_git_repo_succeeds() {
 
     // Note: deliberately NOT calling setup_git_repo. The wizard must still
     // create the .ledgerful/ layout because init falls back to cwd when
-    // gix::discover fails (see src/commands/init.rs:202-209). The first-scan
+    // gix::discover fails (see src/commands/init/execute.rs). The first-scan
     // step is gated on a fresh gix::discover check, so it gracefully
     // skips with a "Skipping first scan" warning rather than erroring.
     let _guard = DirGuard::from_utf8(root);
