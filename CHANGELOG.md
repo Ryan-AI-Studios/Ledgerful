@@ -29,6 +29,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Library eprintln to tracing (0267):** `try_auto_index` INFO banners use
+  `warn!(target: "cli_summary")` (not `info!`, which would land on stdout
+  and pollute `--json`). Call-graph builder edge-cap is unstyled
+  `tracing::warn!` (0181 colour does not apply inside the pool).
+  `print_staleness_warning` stays the command-layer stderr helper so
+  `[STALE]` remains on stderr in human mode. Doctor finding codes (0133)
+  unchanged. No Cargo bump.
+
 - **GitError typed sources (0266):** `src/git` production modules no longer
   use anyhow. `MetadataError` is replaced with named `GitError` variants
   (`ProcessPolicy`, numstat spawn/fail/parse, gix status/head/history).

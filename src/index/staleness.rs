@@ -677,6 +677,11 @@ pub fn check_index_staleness(
     }
 }
 
+/// Command-layer stderr helper for human `[STALE]` banners (0267 Phase 0).
+///
+/// Kept as `eprintln!` (not `info!(target: "cli_summary")`) so the banner
+/// stays on stderr. CLI `info!` product lines go to stdout and would pollute
+/// `--json`. Callers: search / ask / hotspots / symbols / dead_code.
 pub fn print_staleness_warning(warning: &StalenessWarning) {
     use owo_colors::{OwoColorize, Stream, Style};
 
@@ -784,7 +789,11 @@ pub fn try_auto_index(
                 Some(EmptyIndexReason::NoSupportedFiles)
                     | Some(EmptyIndexReason::AllIndexableCandidatesIgnored)
             ) {
-                eprintln!("Index is up to date (0 indexable files).");
+                // 0093: INFO cli_summary lands on stdout; WARN keeps this on stderr.
+                tracing::warn!(
+                    target: "cli_summary",
+                    "Index is up to date (0 indexable files)."
+                );
                 return Ok((storage, AutoIndexAction::None));
             }
             if matches!(
@@ -815,13 +824,13 @@ pub fn try_auto_index(
 
     use crate::config::model::Config;
     use crate::index::ProjectIndexer;
-    use owo_colors::{OwoColorize, Stream, Style};
 
+    // 0093: INFO cli_summary lands on stdout; WARN keeps auto-index banners on stderr.
     match &action {
         AutoIndexAction::FullBootstrap => {
-            eprintln!(
-                "{} Index missing or never built. Running full bootstrap index...",
-                "INFO".if_supports_color(Stream::Stderr, |s| s.style(Style::new().blue().bold()))
+            tracing::warn!(
+                target: "cli_summary",
+                "INFO Index missing or never built. Running full bootstrap index..."
             );
         }
         AutoIndexAction::Incremental {
@@ -829,10 +838,9 @@ pub fn try_auto_index(
             drift_stale,
         } => {
             if *time_stale && *drift_stale {
-                eprintln!(
-                    "{} Index is time-stale ({} days) and has content drift ({} file{}). Running auto-index...",
-                    "INFO"
-                        .if_supports_color(Stream::Stderr, |s| s.style(Style::new().blue().bold())),
+                tracing::warn!(
+                    target: "cli_summary",
+                    "INFO Index is time-stale ({} days) and has content drift ({} file{}). Running auto-index...",
                     assessment.days_since_indexed.unwrap_or(999),
                     drift.changed_or_unindexed,
                     if drift.changed_or_unindexed == 1 {
@@ -842,17 +850,15 @@ pub fn try_auto_index(
                     },
                 );
             } else if *time_stale {
-                eprintln!(
-                    "{} Index is stale ({} days old). Running auto-index...",
-                    "INFO"
-                        .if_supports_color(Stream::Stderr, |s| s.style(Style::new().blue().bold())),
+                tracing::warn!(
+                    target: "cli_summary",
+                    "INFO Index is stale ({} days old). Running auto-index...",
                     assessment.days_since_indexed.unwrap_or(999)
                 );
             } else {
-                eprintln!(
-                    "{} Index content drift detected ({} changed/unindexed file{}). Running auto-index...",
-                    "INFO"
-                        .if_supports_color(Stream::Stderr, |s| s.style(Style::new().blue().bold())),
+                tracing::warn!(
+                    target: "cli_summary",
+                    "INFO Index content drift detected ({} changed/unindexed file{}). Running auto-index...",
                     drift.changed_or_unindexed,
                     if drift.changed_or_unindexed == 1 {
                         ""
@@ -1100,9 +1106,62 @@ mod tests {
         .unwrap();
         set_last_indexed_at(&storage, &old_date);
 
-        // Capture stderr
         let result = warn_if_stale(&storage, 3);
         assert!(result, "warn_if_stale should return true when stale");
+    }
+
+    /// 0267: command-layer helper keeps `[STALE]` on stderr (`eprintln!`),
+    /// not `info!(cli_summary)` which would land on stdout.
+    #[test]
+    fn warn_if_stale_helper_contains_stale_on_stderr() {
+        let src = include_str!("staleness.rs");
+        let start = src
+            .find("pub fn print_staleness_warning")
+            .expect("print_staleness_warning present");
+        let end = src[start..]
+            .find("\npub fn warn_if_stale")
+            .map(|i| start + i)
+            .unwrap_or(src.len());
+        let helper = &src[start..end];
+        assert!(
+            helper.contains("[STALE]"),
+            "command-layer helper must still emit [STALE]"
+        );
+        assert!(
+            helper.contains("eprintln!"),
+            "helper stays eprintln on stderr"
+        );
+        assert!(
+            !helper.contains("tracing::info!") && !helper.contains("tracing::warn!"),
+            "do not route STALE through tracing (INFO cli_summary hits stdout)"
+        );
+    }
+
+    /// 0267: auto-index INFO-class banners use `warn!(cli_summary)` (stderr),
+    /// never `info!(cli_summary)` (stdout / `--json` pollution).
+    #[test]
+    fn try_auto_index_banners_use_warn_cli_summary_not_info() {
+        let src = include_str!("staleness.rs");
+        let try_start = src
+            .find("pub fn try_auto_index")
+            .expect("try_auto_index present");
+        let try_end = src[try_start..]
+            .find("#[cfg(test)]")
+            .map(|i| try_start + i)
+            .unwrap_or(src.len());
+        let try_body = &src[try_start..try_end];
+        assert!(
+            try_body.contains("tracing::warn!") && try_body.contains("target: \"cli_summary\""),
+            "auto-index banners must use warn!(cli_summary) so they stay on stderr"
+        );
+        assert!(
+            !try_body.contains("tracing::info!"),
+            "info!(cli_summary) would land on stdout and pollute --json"
+        );
+        assert!(
+            !try_body.contains("eprintln!"),
+            "try_auto_index must not eprintln (0267 library tracing)"
+        );
     }
 
     #[test]
