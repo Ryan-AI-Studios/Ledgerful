@@ -29,6 +29,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Ledger status extract (0268):** `execute_ledger_status` orchestrates
+  JSON, `--entity`, compact, and git-human seams in
+  `commands/ledger/reporting.rs` (single file). Shared prelude keeps
+  `detect_lifecycle_signals`. `--json` wins over `--compact`. Entity
+  skips git freshness, sidecars, and `apply_exit_code`. Compact grammar
+  and `schemaVersion` 1 / `workRoot` / `stateDir` frozen. No Cargo bump.
+
 - **Ledger re-sign extract (0265):** `commands/ledger_re_sign.rs` is a barrel
   (`ledger_re_sign/{mod,preview,backup,mutate,tests}.rs`). Public path stays
   `commands::ledger_re_sign`. Dry-run still does not create keys. `--yes`,
