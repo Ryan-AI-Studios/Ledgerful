@@ -8,6 +8,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Init command split (0264):** `commands/init.rs` is a barrel
+  (`init/{execute,hooks,print,tests}.rs`). Public path stays
+  `execute_init`. Hook names and 0206 dual-brand install unchanged.
+  `hook_template.rs` not edited. No Cargo bump.
+
 - **Release pins split (0263):** `commands/release/pins.rs` is a barrel
   (`pins/{types,parse,classify,fetch,emit,tests}.rs`). `execute_release_pins`
   stays in `release/mod.rs`. Latest still `tag_name` + archive
