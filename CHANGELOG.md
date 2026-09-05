@@ -29,6 +29,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Ledger graph extract (0269):** `commands/ledger_graph.rs` is a barrel
+  (`ledger_graph/{query,assemble,print}.rs`). Public path stays
+  `LedgerGraphArgs` / `execute_ledger_graph`. JSON `{exact, derived,
+  heuristic}` has no `schemaVersion`. Cap stays 150 / depth 2. No Cargo bump.
+
 - **Ledger status extract (0268):** `execute_ledger_status` orchestrates
   JSON, `--entity`, compact, and git-human seams in
   `commands/ledger/reporting.rs` (single file). Shared prelude keeps
