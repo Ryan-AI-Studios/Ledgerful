@@ -9,7 +9,7 @@ use miette::{IntoDiagnostic, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
-use tracing::info;
+use tracing::{info, warn};
 
 use super::persist::{EdgeRow, clear_native_structural_edges, insert_edge_batch};
 use super::types::{CallGraphStats, ResolutionStatus};
@@ -274,7 +274,7 @@ impl<'a> CallGraphBuilder<'a> {
                 for edge in file_edges.iter_mut().skip(EDGE_CAP_PER_FILE) {
                     edge.resolution_status = ResolutionStatus::Capped.as_str().to_string();
                 }
-                eprintln!(
+                warn!(
                     "WARNING: File {} produced {} edges, capping at {} ({} capped)",
                     file_path,
                     file_edges.len(),
