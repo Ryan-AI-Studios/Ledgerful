@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Index extract content cache (0254):** WorkerPool parse captures
+  `Arc<str>` once for hash + bindings; extractors reuse a run-scoped
+  path-keyed cache (disk fallback on miss). `WorkerPool::new(0)` caps
+  at 4 threads. 0189 `AlreadyRan` and native edge identity unchanged.
+  No Cargo bump.
+
 - **Init command split (0264):** `commands/init.rs` is a barrel
   (`init/{execute,hooks,print,tests}.rs`). Public path stays
   `execute_init`. Hook names and 0206 dual-brand install unchanged.

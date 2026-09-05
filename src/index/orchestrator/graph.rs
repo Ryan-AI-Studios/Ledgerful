@@ -108,6 +108,7 @@ pub fn run_graph_analysis(
         {
             indexer.infer_services()?;
         }
+        indexer.clear_content_cache();
     }
 
     // SCIP augment after extract-or-skip, before KG + centrality (0095 §2.2b)

@@ -303,6 +303,7 @@ pub(crate) fn map_snapshot_to_packet(
                     runtime_usage: None,
                     analysis_status: FileAnalysisStatus::default(),
                     analysis_warnings: Vec::new(),
+                    content: None,
                 }
             };
 

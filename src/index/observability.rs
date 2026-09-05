@@ -1,8 +1,11 @@
+use crate::index::content_cache::load_source_content;
 use crate::index::languages;
 use crate::state::storage::StorageManager;
 use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing::info;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq)]
@@ -67,13 +70,23 @@ pub struct ObservabilityStats {
 pub struct ObservabilityExtractor<'a> {
     storage: &'a StorageManager,
     repo_path: PathBuf,
+    content_cache: Option<&'a HashMap<String, Arc<str>>>,
 }
 
 const OBSERVABILITY_BATCH_SIZE: usize = 500;
 
 impl<'a> ObservabilityExtractor<'a> {
     pub fn new(storage: &'a StorageManager, repo_path: PathBuf) -> Self {
-        Self { storage, repo_path }
+        Self {
+            storage,
+            repo_path,
+            content_cache: None,
+        }
+    }
+
+    pub fn with_content_cache(mut self, cache: &'a HashMap<String, Arc<str>>) -> Self {
+        self.content_cache = Some(cache);
+        self
     }
 
     pub fn extract(&self) -> Result<ObservabilityStats> {
@@ -120,8 +133,8 @@ impl<'a> ObservabilityExtractor<'a> {
                 continue;
             }
 
-            let full_path = self.repo_path.join(file_path);
-            let content = match std::fs::read_to_string(&full_path) {
+            let content = match load_source_content(self.content_cache, file_path, &self.repo_path)
+            {
                 Ok(c) => c,
                 Err(_) => continue,
             };
@@ -129,14 +142,14 @@ impl<'a> ObservabilityExtractor<'a> {
             let path = PathBuf::from(file_path);
 
             // Extract logging patterns
-            let log_patterns = match languages::extract_logging_patterns(&path, &content) {
+            let log_patterns = match languages::extract_logging_patterns(&path, content.as_ref()) {
                 Ok(p) => p,
                 Err(_) => continue,
             };
 
             // Extract error handling patterns
             let eh_patterns =
-                languages::extract_error_handling(&path, &content).unwrap_or_default();
+                languages::extract_error_handling(&path, content.as_ref()).unwrap_or_default();
 
             // Cap at 1000 total patterns per file (LOG + ERROR_HANDLE combined)
             let log_cap = log_patterns.len().min(1000);
@@ -206,7 +219,7 @@ impl<'a> ObservabilityExtractor<'a> {
 
             // Extract telemetry patterns
             let tel_patterns =
-                languages::extract_telemetry_patterns(&path, &content).unwrap_or_default();
+                languages::extract_telemetry_patterns(&path, content.as_ref()).unwrap_or_default();
 
             // Cap telemetry at remaining budget (up to 1000 total per file)
             let tel_cap = tel_patterns
