@@ -21,6 +21,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Impact file-id map budget (0257):** Non-empty impact loads
+  `project_files` ids only for changed paths (`IN` + not DELETED),
+  chunked at 400. Empty path list skips `prepare`. 0147 empty-tree
+  still returns before the map. `old_path` is not IN-listed. 0221
+  in-memory impact still no `latest-impact.json` rewrite. No Cargo bump.
+
 - **Index extract content cache (0254):** WorkerPool parse captures
   `Arc<str>` once for hash + bindings; extractors reuse a run-scoped
   path-keyed cache (disk fallback on miss). `WorkerPool::new(0)` caps
