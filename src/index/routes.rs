@@ -9,6 +9,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use tracing::{info, warn};
 
+fn file_symbols_slice(map: &HashMap<i64, Vec<Symbol>>, file_id: i64) -> &[Symbol] {
+    map.get(&file_id).map(Vec::as_slice).unwrap_or(&[])
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ExtractedRoute {
     pub method: String,
@@ -189,10 +193,10 @@ impl<'a> RouteExtractor<'a> {
             };
 
             let path = PathBuf::from(file_path);
-            let file_symbols = symbols_by_file.get(file_id).cloned().unwrap_or_default();
+            let file_symbols = file_symbols_slice(&symbols_by_file, *file_id);
 
             let extracted_routes =
-                match languages::extract_routes(&path, content.as_ref(), &file_symbols) {
+                match languages::extract_routes(&path, content.as_ref(), file_symbols) {
                     Ok(r) => r,
                     Err(e) => {
                         files_skipped += 1;
@@ -429,6 +433,32 @@ mod tests {
         let decoded: RouteStats = serde_json::from_str(legacy).unwrap();
         assert_eq!(decoded.files_skipped, 0);
         assert!(!decoded.partial);
+    }
+
+    #[test]
+    fn file_symbols_slice_lookup_is_populated_not_empty() {
+        let mut map = HashMap::new();
+        map.insert(
+            7,
+            vec![Symbol {
+                name: "handler".to_string(),
+                kind: SymbolKind::Function,
+                is_public: true,
+                cognitive_complexity: None,
+                cyclomatic_complexity: None,
+                line_start: None,
+                line_end: None,
+                qualified_name: None,
+                byte_start: None,
+                byte_end: None,
+                entrypoint_kind: None,
+                metadata: Default::default(),
+            }],
+        );
+        let slice = file_symbols_slice(&map, 7);
+        assert_eq!(slice.len(), 1);
+        assert_eq!(slice[0].name, "handler");
+        assert!(file_symbols_slice(&map, 99).is_empty());
     }
 
     #[test]
