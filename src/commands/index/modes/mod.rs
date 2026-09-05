@@ -197,6 +197,8 @@ fn execute_main_mode(
         }
     };
 
+    indexer.clear_content_cache();
+
     // Compute centrality if requested
     let (cent_stats, scip_json) = if args.analyze_graph {
         let (cent, scip_from_graph) = crate::index::run_graph_analysis(

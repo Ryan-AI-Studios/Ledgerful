@@ -16,6 +16,7 @@ pub fn build_call_graph(
         &indexer.storage,
         indexer.repo_path.as_std_path().to_path_buf(),
     )
+    .with_content_cache(indexer.content_cache())
     .build()
 }
 
@@ -24,6 +25,7 @@ pub fn extract_routes(indexer: &ProjectIndexer) -> Result<crate::index::routes::
         &indexer.storage,
         indexer.repo_path.as_std_path().to_path_buf(),
     )
+    .with_content_cache(indexer.content_cache())
     .extract()
 }
 
@@ -42,6 +44,7 @@ pub fn extract_data_models(
         &indexer.storage,
         indexer.repo_path.as_std_path().to_path_buf(),
     )
+    .with_content_cache(indexer.content_cache())
     .extract()
 }
 
@@ -60,6 +63,7 @@ pub fn extract_observability(
         &indexer.storage,
         indexer.repo_path.as_std_path().to_path_buf(),
     )
+    .with_content_cache(indexer.content_cache())
     .extract()
 }
 
@@ -70,6 +74,7 @@ pub fn extract_test_mappings(
         &indexer.storage,
         indexer.repo_path.as_std_path().to_path_buf(),
     )
+    .with_content_cache(indexer.content_cache())
     .extract()
 }
 

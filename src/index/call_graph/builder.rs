@@ -1,3 +1,4 @@
+use crate::index::content_cache::load_source_content;
 use crate::index::languages;
 use crate::index::resolve::{
     ResolveCandidate, ResolveInput, build_resolve_maps, resolve_callee, resolve_candidate_from_row,
@@ -7,6 +8,7 @@ use crate::state::storage::StorageManager;
 use miette::{IntoDiagnostic, Result};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing::info;
 
 use super::persist::{EdgeRow, clear_native_structural_edges, insert_edge_batch};
@@ -15,6 +17,7 @@ use super::types::{CallGraphStats, ResolutionStatus};
 pub struct CallGraphBuilder<'a> {
     storage: &'a StorageManager,
     repo_path: PathBuf,
+    content_cache: Option<&'a HashMap<String, Arc<str>>>,
 }
 
 const EDGE_CAP_PER_FILE: usize = 50_000;
@@ -22,7 +25,16 @@ const EDGE_BATCH_SIZE: usize = 500;
 
 impl<'a> CallGraphBuilder<'a> {
     pub fn new(storage: &'a StorageManager, repo_path: PathBuf) -> Self {
-        Self { storage, repo_path }
+        Self {
+            storage,
+            repo_path,
+            content_cache: None,
+        }
+    }
+
+    pub fn with_content_cache(mut self, cache: &'a HashMap<String, Arc<str>>) -> Self {
+        self.content_cache = Some(cache);
+        self
     }
 
     pub fn build(&self) -> Result<CallGraphStats> {
@@ -151,8 +163,8 @@ impl<'a> CallGraphBuilder<'a> {
         let mut edge_batch: Vec<EdgeRow> = Vec::new();
 
         for (file_id, file_path, _language) in &file_rows {
-            let full_path = self.repo_path.join(file_path);
-            let content = match std::fs::read_to_string(&full_path) {
+            let content = match load_source_content(self.content_cache, file_path, &self.repo_path)
+            {
                 Ok(c) => c,
                 Err(_) => {
                     files_skipped += 1;
@@ -190,7 +202,7 @@ impl<'a> CallGraphBuilder<'a> {
                 })
                 .collect();
 
-            let calls = match languages::extract_calls(&path, &content, &sym_vec) {
+            let calls = match languages::extract_calls(&path, content.as_ref(), &sym_vec) {
                 Ok(c) => c,
                 Err(_) => {
                     files_skipped += 1;

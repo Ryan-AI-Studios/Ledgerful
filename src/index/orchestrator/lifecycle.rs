@@ -50,6 +50,7 @@ pub fn check_status(indexer: &ProjectIndexer) -> Result<super::IndexStatus> {
 }
 
 pub fn full_index(indexer: &mut ProjectIndexer) -> Result<super::IndexStats> {
+    indexer.content_cache.clear();
     let start = Instant::now();
     let files = super::discovery::discover_files(indexer)?;
 
@@ -90,9 +91,9 @@ pub fn full_index(indexer: &mut ProjectIndexer) -> Result<super::IndexStats> {
         };
 
         let mut bindings = Vec::new();
-        if let Ok(content) = crate::util::fs::read_to_string_with_encoding(path.as_std_path()) {
+        if let Some(content) = outcome.content.as_ref() {
             pf.content_hash = Some(blake3::hash(content.as_bytes()).to_hex().to_string());
-            match crate::index::references::extract_file_bindings(path.as_std_path(), &content) {
+            match crate::index::references::extract_file_bindings(path.as_std_path(), content) {
                 Ok(Some(b)) => bindings = b,
                 Ok(None) => {}
                 Err(e) => {
@@ -112,10 +113,11 @@ pub fn full_index(indexer: &mut ProjectIndexer) -> Result<super::IndexStats> {
             file: pf,
             symbols: ps,
             bindings,
+            content: outcome.content,
         })
     })?;
 
-    let stats = collect_results(&mut indexer.storage, rx, true)?;
+    let stats = collect_results(indexer, rx, true)?;
     pb.finish_and_clear();
     store_index_metadata(indexer)?;
     report_indexed_repo_size_for_timing(&indexer.storage);
@@ -129,6 +131,7 @@ pub fn full_index(indexer: &mut ProjectIndexer) -> Result<super::IndexStats> {
 }
 
 pub fn incremental_index(indexer: &mut ProjectIndexer) -> Result<super::IndexStats> {
+    indexer.content_cache.clear();
     let start = Instant::now();
     let current_files = super::discovery::discover_files(indexer)?;
 
@@ -231,9 +234,9 @@ pub fn incremental_index(indexer: &mut ProjectIndexer) -> Result<super::IndexSta
             last_indexed_at: now.clone(),
         };
         let mut bindings = Vec::new();
-        if let Ok(content) = crate::util::fs::read_to_string_with_encoding(path.as_std_path()) {
+        if let Some(content) = outcome.content.as_ref() {
             pf.content_hash = Some(blake3::hash(content.as_bytes()).to_hex().to_string());
-            match crate::index::references::extract_file_bindings(path.as_std_path(), &content) {
+            match crate::index::references::extract_file_bindings(path.as_std_path(), content) {
                 Ok(Some(b)) => bindings = b,
                 Ok(None) => {}
                 Err(e) => {
@@ -251,10 +254,11 @@ pub fn incremental_index(indexer: &mut ProjectIndexer) -> Result<super::IndexSta
             file: pf,
             symbols: ps,
             bindings,
+            content: outcome.content,
         })
     })?;
 
-    let stats = collect_results(&mut indexer.storage, rx, false)?;
+    let stats = collect_results(indexer, rx, false)?;
     pb.finish_and_clear();
     store_index_metadata(indexer)?;
     report_indexed_repo_size_for_timing(&indexer.storage);
@@ -286,7 +290,7 @@ fn report_indexed_repo_size_for_timing(storage: &StorageManager) {
 fn report_indexed_repo_size_for_timing(_storage: &StorageManager) {}
 
 pub fn collect_results(
-    storage: &mut StorageManager,
+    indexer: &mut ProjectIndexer,
     rx: crossbeam::channel::Receiver<JobResult>,
     is_full: bool,
 ) -> Result<super::IndexStats> {
@@ -304,7 +308,11 @@ pub fn collect_results(
                     file: pf,
                     symbols: ps,
                     bindings,
+                    content,
                 } = *job;
+                if let Some(content) = content {
+                    indexer.content_cache.insert(pf.file_path.clone(), content);
+                }
                 if pf.parse_status == "PARSE_FAILED" {
                     parse_failures += 1;
                 } else {
@@ -313,7 +321,7 @@ pub fn collect_results(
                 symbols_indexed += ps.len();
 
                 if !is_full {
-                    let _ = row_helpers::delete_file_symbols(storage, &pf.file_path);
+                    let _ = row_helpers::delete_file_symbols(&mut indexer.storage, &pf.file_path);
                 }
 
                 batch_files.push(pf);
@@ -322,9 +330,19 @@ pub fn collect_results(
 
                 if batch_files.len() >= super::BATCH_SIZE {
                     if is_full {
-                        insert_batch(storage, &batch_files, &batch_symbols, &batch_bindings)?;
+                        insert_batch(
+                            &mut indexer.storage,
+                            &batch_files,
+                            &batch_symbols,
+                            &batch_bindings,
+                        )?;
                     } else {
-                        upsert_batch(storage, &batch_files, &batch_symbols, &batch_bindings)?;
+                        upsert_batch(
+                            &mut indexer.storage,
+                            &batch_files,
+                            &batch_symbols,
+                            &batch_bindings,
+                        )?;
                     }
                     batch_files.clear();
                     batch_symbols.clear();
@@ -341,9 +359,19 @@ pub fn collect_results(
 
     if !batch_files.is_empty() {
         if is_full {
-            insert_batch(storage, &batch_files, &batch_symbols, &batch_bindings)?;
+            insert_batch(
+                &mut indexer.storage,
+                &batch_files,
+                &batch_symbols,
+                &batch_bindings,
+            )?;
         } else {
-            upsert_batch(storage, &batch_files, &batch_symbols, &batch_bindings)?;
+            upsert_batch(
+                &mut indexer.storage,
+                &batch_files,
+                &batch_symbols,
+                &batch_bindings,
+            )?;
         }
     }
 

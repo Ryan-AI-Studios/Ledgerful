@@ -5,6 +5,7 @@ use crate::index::references::extract_import_export;
 use crate::index::runtime_usage::extract_runtime_usage;
 use crate::util::fs::read_to_string_with_encoding;
 use std::path::Path;
+use std::sync::Arc;
 
 pub struct AnalysisOutcome {
     pub symbols: Option<Vec<crate::index::symbols::Symbol>>,
@@ -12,6 +13,8 @@ pub struct AnalysisOutcome {
     pub runtime_usage: Option<crate::index::runtime_usage::RuntimeUsage>,
     pub analysis_status: FileAnalysisStatus,
     pub analysis_warnings: Vec<String>,
+    /// Source text from the encoding-aware read; `None` on early-return paths.
+    pub content: Option<Arc<str>>,
 }
 
 /// Analyzes a single file to extract symbols, imports, and runtime usage patterns.
@@ -34,6 +37,7 @@ pub fn analyze_file(relative_path: &Path, base_dir: &Path) -> AnalysisOutcome {
             runtime_usage: None,
             analysis_status: status,
             analysis_warnings: warnings,
+            content: None,
         };
     };
 
@@ -71,6 +75,7 @@ pub fn analyze_file(relative_path: &Path, base_dir: &Path) -> AnalysisOutcome {
             runtime_usage: None,
             analysis_status: status,
             analysis_warnings: warnings,
+            content: None,
         };
     }
 
@@ -91,11 +96,13 @@ pub fn analyze_file(relative_path: &Path, base_dir: &Path) -> AnalysisOutcome {
                 runtime_usage: None,
                 analysis_status: status,
                 analysis_warnings: warnings,
+                content: None,
             };
         }
     };
+    let content: Arc<str> = Arc::from(content);
 
-    let mut symbols = match parse_symbols(relative_path, &content) {
+    let mut symbols = match parse_symbols(relative_path, content.as_ref()) {
         Ok(symbols) => {
             status.symbols = AnalysisStatus::Ok;
             symbols
@@ -115,7 +122,7 @@ pub fn analyze_file(relative_path: &Path, base_dir: &Path) -> AnalysisOutcome {
     if let (Some(syms), Some(lang)) = (&mut symbols, Language::from_extension(extension)) {
         let scorer = crate::index::metrics::NativeComplexityScorer::new();
         if let Some(path) = camino::Utf8Path::from_path(relative_path) {
-            match scorer.score_file(path, &content, lang) {
+            match scorer.score_file(path, content.as_ref(), lang) {
                 Ok(file_complexity) => {
                     for sym in syms {
                         if let Some(symbol_complexity) = file_complexity
@@ -143,7 +150,7 @@ pub fn analyze_file(relative_path: &Path, base_dir: &Path) -> AnalysisOutcome {
         }
     }
 
-    let imports = match extract_import_export(relative_path, &content) {
+    let imports = match extract_import_export(relative_path, content.as_ref()) {
         Ok(imports) => {
             status.imports = AnalysisStatus::Ok;
             imports
@@ -160,7 +167,7 @@ pub fn analyze_file(relative_path: &Path, base_dir: &Path) -> AnalysisOutcome {
     };
 
     status.runtime_usage = AnalysisStatus::Ok;
-    let runtime_usage = extract_runtime_usage(relative_path, &content);
+    let runtime_usage = extract_runtime_usage(relative_path, content.as_ref());
 
     AnalysisOutcome {
         symbols,
@@ -168,6 +175,7 @@ pub fn analyze_file(relative_path: &Path, base_dir: &Path) -> AnalysisOutcome {
         runtime_usage,
         analysis_status: status,
         analysis_warnings: warnings,
+        content: Some(content),
     }
 }
 

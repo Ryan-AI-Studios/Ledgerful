@@ -1,8 +1,10 @@
+use crate::index::content_cache::load_source_content;
 use crate::state::storage::StorageManager;
 use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing::info;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -30,11 +32,21 @@ const TEST_MAPPING_BATCH_SIZE: usize = 500;
 pub struct TestMapper<'a> {
     storage: &'a StorageManager,
     repo_path: PathBuf,
+    content_cache: Option<&'a HashMap<String, Arc<str>>>,
 }
 
 impl<'a> TestMapper<'a> {
     pub fn new(storage: &'a StorageManager, repo_path: PathBuf) -> Self {
-        Self { storage, repo_path }
+        Self {
+            storage,
+            repo_path,
+            content_cache: None,
+        }
+    }
+
+    pub fn with_content_cache(mut self, cache: &'a HashMap<String, Arc<str>>) -> Self {
+        self.content_cache = Some(cache);
+        self
     }
 
     pub fn extract(&self) -> Result<TestMappingStats> {
@@ -125,18 +137,27 @@ impl<'a> TestMapper<'a> {
         let mut batch: Vec<TestMappingRow> = Vec::new();
         let mut processed_test_files: std::collections::HashSet<i64> =
             std::collections::HashSet::new();
+        let mut content_by_path: HashMap<String, Option<Arc<str>>> = HashMap::new();
 
         for (test_sym_id, test_name, _qualified, test_file_id, test_file_path, _test_lang) in
             &test_functions
         {
             processed_test_files.insert(*test_file_id);
-            let full_path = self.repo_path.join(test_file_path.replace('\\', "/"));
-            let content = match std::fs::read_to_string(&full_path) {
-                Ok(c) => c,
-                Err(_) => continue,
+            let key = test_file_path.replace('\\', "/");
+            let content = match content_by_path.entry(key) {
+                std::collections::hash_map::Entry::Occupied(e) => e.get().clone(),
+                std::collections::hash_map::Entry::Vacant(e) => {
+                    let loaded =
+                        load_source_content(self.content_cache, test_file_path, &self.repo_path)
+                            .ok();
+                    e.insert(loaded).clone()
+                }
+            };
+            let Some(content) = content else {
+                continue;
             };
 
-            let imported_names = extract_imported_names(&content, test_file_path);
+            let imported_names = extract_imported_names(content.as_ref(), test_file_path);
             for imported in &imported_names {
                 if let Some(candidates) = symbol_lookup.get(imported) {
                     for (tested_sym_id, tested_file_id, _qn) in candidates {

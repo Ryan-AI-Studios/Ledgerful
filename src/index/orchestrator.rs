@@ -1,6 +1,8 @@
 use crate::state::storage::StorageManager;
 use camino::Utf8PathBuf;
 use miette::Result;
+use std::collections::HashMap;
+use std::sync::Arc;
 
 pub const MAX_FILES: usize = 10_000;
 pub const BATCH_SIZE: usize = 500;
@@ -47,6 +49,9 @@ pub struct ProjectIndexer {
     storage: StorageManager,
     repo_path: Utf8PathBuf,
     config: Config,
+    /// Run-scoped source text from the WorkerPool parse. Keyed by normalized
+    /// relative path (`/` slashes), never `file_id`. Cleared after extract.
+    content_cache: HashMap<String, Arc<str>>,
 }
 
 // ---------------------------------------------------------------------------
@@ -71,7 +76,16 @@ impl ProjectIndexer {
             storage,
             repo_path,
             config,
+            content_cache: HashMap::new(),
         }
+    }
+
+    pub(crate) fn content_cache(&self) -> &HashMap<String, Arc<str>> {
+        &self.content_cache
+    }
+
+    pub(crate) fn clear_content_cache(&mut self) {
+        self.content_cache.clear();
     }
 
     pub fn cozo(&self) -> Option<&crate::state::storage_cozo::CozoStorage> {
@@ -103,6 +117,7 @@ impl ProjectIndexer {
             ),
             repo_path,
             config: Config::default(),
+            content_cache: HashMap::new(),
         }
     }
 

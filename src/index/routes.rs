@@ -1,3 +1,4 @@
+use crate::index::content_cache::load_source_content;
 use crate::index::languages;
 use crate::index::symbols::{Symbol, SymbolKind};
 use crate::state::storage::StorageManager;
@@ -5,6 +6,7 @@ use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
+use std::sync::Arc;
 use tracing::{info, warn};
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -45,13 +47,23 @@ pub struct RouteStats {
 pub struct RouteExtractor<'a> {
     storage: &'a StorageManager,
     repo_path: PathBuf,
+    content_cache: Option<&'a HashMap<String, Arc<str>>>,
 }
 
 const ROUTE_BATCH_SIZE: usize = 500;
 
 impl<'a> RouteExtractor<'a> {
     pub fn new(storage: &'a StorageManager, repo_path: PathBuf) -> Self {
-        Self { storage, repo_path }
+        Self {
+            storage,
+            repo_path,
+            content_cache: None,
+        }
+    }
+
+    pub fn with_content_cache(mut self, cache: &'a HashMap<String, Arc<str>>) -> Self {
+        self.content_cache = Some(cache);
+        self
     }
 
     pub fn extract(&self) -> Result<RouteStats> {
@@ -162,8 +174,8 @@ impl<'a> RouteExtractor<'a> {
                 continue;
             }
 
-            let full_path = self.repo_path.join(file_path);
-            let content = match std::fs::read_to_string(&full_path) {
+            let content = match load_source_content(self.content_cache, file_path, &self.repo_path)
+            {
                 Ok(c) => c,
                 Err(e) => {
                     files_skipped += 1;
@@ -179,18 +191,19 @@ impl<'a> RouteExtractor<'a> {
             let path = PathBuf::from(file_path);
             let file_symbols = symbols_by_file.get(file_id).cloned().unwrap_or_default();
 
-            let extracted_routes = match languages::extract_routes(&path, &content, &file_symbols) {
-                Ok(r) => r,
-                Err(e) => {
-                    files_skipped += 1;
-                    warn!(
-                        path = %file_path,
-                        error = %e,
-                        "skipping route extract: parse failed"
-                    );
-                    continue;
-                }
-            };
+            let extracted_routes =
+                match languages::extract_routes(&path, content.as_ref(), &file_symbols) {
+                    Ok(r) => r,
+                    Err(e) => {
+                        files_skipped += 1;
+                        warn!(
+                            path = %file_path,
+                            error = %e,
+                            "skipping route extract: parse failed"
+                        );
+                        continue;
+                    }
+                };
 
             files_processed += 1;
 
