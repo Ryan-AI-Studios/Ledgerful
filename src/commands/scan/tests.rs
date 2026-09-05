@@ -85,14 +85,14 @@ fn maybe_auto_analyze_graph_empty_changes_is_noop() {
     let root =
         camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8 temp path");
     let layout = Layout::new(&root);
-    let conn = Connection::open_in_memory().unwrap();
-    let mut conn = conn;
-    get_migrations().to_latest(&mut conn).unwrap();
-    let storage = StorageManager::init_from_conn(conn);
     let config = Config::default();
 
-    maybe_auto_analyze_graph(&[], &storage, tmp.path(), &config, &layout)
+    let opened = maybe_auto_analyze_graph(&[], tmp.path(), &config, &layout)
         .expect("empty changes must be a no-op");
+    assert!(
+        opened.is_none(),
+        "empty changes must not open write storage"
+    );
     assert!(
         !layout.state_subdir().join("ledger.db").exists(),
         "empty changes must not open write storage / create ledger.db"
@@ -231,7 +231,7 @@ fn maybe_auto_analyze_graph_stale_populated_obs_change_runs_once() {
         .finish();
 
     tracing::subscriber::with_default(subscriber, || {
-        maybe_auto_analyze_graph(&changes, &storage, tmp.path(), &config, &layout)
+        maybe_auto_analyze_graph(&changes, tmp.path(), &config, &layout)
             .expect("obs + stale populated must run graph analysis");
     });
     drop(storage);

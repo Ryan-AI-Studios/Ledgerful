@@ -8,6 +8,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Scan auto-graph storage reuse (0259):** Observability auto-graph opens
+  write storage once (skip if `ledger.db` missing) and silent impact reuses
+  that handle. 0180 gitScan and 0189 `Run` unchanged. No Cargo bump.
+
 - **KG seed bind (0258):** Reachability seeds and file_path lookups use
   `run_script_with_params` (`$seeds` / `$fp`); no JSON-in-script interpolation.
   Hop depth unchanged. No Cozo crate bump.
