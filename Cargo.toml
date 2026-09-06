@@ -122,7 +122,7 @@ zip = { version = "8", default-features = false, features = ["deflate"], optiona
 base64 = "0.22"
 dirs = "6.0.0"
 which = "8.0.5"
-jsonc-parser = { version = "0.32.4", features = ["serde", "serde_json"] }
+jsonc-parser = { version = "0.33.1", features = ["serde", "serde_json"] }
 utoipa = { version = "5.5.0", features = ["axum_extras"], optional = true }
 process-wrap = { version = "9.1.0", features = ["std", "job-object", "process-group"] }
 unicode-normalization = "0.1"
