@@ -54,13 +54,13 @@ scoop install ledgerful
 
 ### winget
 
-Package accepted on winget (2026-07-30); community index is live at **0.2.11** (version PR [#423248](https://github.com/microsoft/winget-pkgs/pull/423248) merged 2026-08-26):
+Package accepted on winget (2026-07-30); community index is live at **0.2.12** (version PR [#430322](https://github.com/microsoft/winget-pkgs/pull/430322) merged 2026-09-06):
 
 ```powershell
 winget install Ledgerful.Ledgerful
 ```
 
-The community index can lag a merge by minutes–hours. History: leftover PRs [#415913](https://github.com/microsoft/winget-pkgs/pull/415913) (0.2.8, merged) and [#416853](https://github.com/microsoft/winget-pkgs/pull/416853) (0.2.9, closed-superseded) are not current lag of Latest. Architecture and secrets: [package-distribution.md](package-distribution.md).
+The community index can lag a merge by minutes–hours. History: 0.2.11 was [#423248](https://github.com/microsoft/winget-pkgs/pull/423248) merged 2026-08-26; leftover PRs [#415913](https://github.com/microsoft/winget-pkgs/pull/415913) (0.2.8, merged) and [#416853](https://github.com/microsoft/winget-pkgs/pull/416853) (0.2.9, closed-superseded) are not current lag of Latest. Architecture and secrets: [package-distribution.md](package-distribution.md).
 
 ### macOS Gatekeeper / quarantine (interim)
 
