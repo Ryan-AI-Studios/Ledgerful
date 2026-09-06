@@ -272,22 +272,70 @@ fn test_cli_tests_ergonomics_and_exclusivity() {
     assert!(stdout_flag.contains("src/lib.rs"));
     assert!(stdout_flag.contains("tests/lib_test.rs::test_tested_fn"));
 
-    // 2. Running without arguments shows empty-state help and exits 0 (TA16)
+    // 2. Bare `tests` is a usage error (exit 2); guidance on stderr, stdout empty (0278).
     let out_none = Command::new(ledgerful_bin)
         .args(["tests"])
         .current_dir(root)
         .output()
         .unwrap();
     let stdout_none = String::from_utf8_lossy(&out_none.stdout);
+    let stderr_none = String::from_utf8_lossy(&out_none.stderr);
     assert!(
-        out_none.status.success(),
-        "expected exit 0, got {:?}",
+        !out_none.status.success(),
+        "bare tests must refuse, got {:?}",
+        out_none.status
+    );
+    assert_eq!(
+        out_none.status.code(),
+        Some(2),
+        "expected exit 2, got {:?}; stdout={stdout_none}; stderr={stderr_none}",
         out_none.status
     );
     assert!(
-        stdout_none.contains("No entity specified.")
-            || stdout_none.contains("Knowledge graph is empty."),
-        "expected empty-state message, got: {stdout_none}"
+        stdout_none.trim().is_empty(),
+        "bare tests must keep stdout empty: {stdout_none}"
+    );
+    assert!(
+        !stdout_none.contains("vendor/")
+            && !stdout_none.contains("sqlite3")
+            && !stdout_none.contains("schemaVersion"),
+        "bare tests stdout must not list vendor/sqlite3 or emit schemaVersion: {stdout_none}"
+    );
+    assert!(
+        stderr_none.contains("No entity specified"),
+        "expected missing-entity message on stderr, got: {stderr_none}"
+    );
+    assert!(
+        stderr_none.contains("Usage:"),
+        "expected usage on stderr, got: {stderr_none}"
+    );
+    assert!(
+        stderr_none.contains("[ENTITY]"),
+        "refuse-state usage must match clap optional positional, got: {stderr_none}"
+    );
+    assert!(
+        !stderr_none.contains("[OPTIONS] <ENTITY>"),
+        "refuse-state must not claim a required <ENTITY> while clap parse is optional: {stderr_none}"
+    );
+    assert_no_miette_chrome(&stderr_none);
+
+    let help = Command::new(ledgerful_bin)
+        .args(["tests", "--help"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    let help_out = format!(
+        "{}{}",
+        String::from_utf8_lossy(&help.stdout),
+        String::from_utf8_lossy(&help.stderr)
+    );
+    assert!(
+        help.status.success(),
+        "tests --help should succeed: {help_out}"
+    );
+    assert!(
+        help_out.contains("[ENTITY]"),
+        "tests --help must show optional [ENTITY] positional: {help_out}"
     );
 
     // 3. Running both positional and --entity fails with clap's own conflict error
@@ -300,7 +348,8 @@ fn test_cli_tests_ergonomics_and_exclusivity() {
     let stderr_both = String::from_utf8_lossy(&out_both.stderr);
     assert!(!out_both.status.success());
     assert!(
-        stderr_both.contains("the argument '[POS_ENTITY]' cannot be used with '--entity <ENTITY>'")
+        stderr_both.contains("the argument '[ENTITY]' cannot be used with '--entity <ENTITY>'"),
+        "tests conflict token must follow pos_entity value_name=ENTITY, got: {stderr_both}"
     );
 
     // 4. Running audit with both positional and --entity fails with clap's own conflict error
@@ -368,9 +417,14 @@ fn test_cli_tests_ergonomics_and_exclusivity() {
     assert!(!stderr_ledger_audit_flag.contains("An entity must be specified"));
 
     // 8. Empty-state help must not cite the dead mint path `src/commands/doctor.rs` (0156 B3).
+    let refuse_text = format!("{stdout_none}{stderr_none}");
     assert!(
-        !stdout_none.contains("src/commands/doctor.rs"),
-        "empty-state help must not cite non-indexed doctor.rs: {stdout_none}"
+        !refuse_text.contains("src/commands/doctor.rs"),
+        "empty-state help must not cite non-indexed doctor.rs: {refuse_text}"
+    );
+    assert!(
+        stderr_none.contains("src/commands/doctor/mod.rs"),
+        "0156 examples must keep doctor/mod.rs: {stderr_none}"
     );
 }
 
@@ -486,4 +540,265 @@ fn test_cli_tests_ambiguous_suffix() {
         "Ambiguous must not suggest re-index (M5): {stdout}"
     );
     assert!(!stdout.contains("not a recognized indexed file path"));
+}
+
+fn assert_no_miette_chrome(stderr: &str) {
+    for ch in ['│', '╭', '╰', '╮', '╯', '┌', '└', '┐', '┘', '─', '━', '┃'] {
+        assert!(
+            !stderr.contains(ch),
+            "stderr must not include miette/box-drawing chrome {ch:?}: {stderr}"
+        );
+    }
+}
+
+/// 0278: `--json` without an entity is a usage error, not a mappings envelope.
+#[test]
+fn test_cli_tests_json_missing_entity_is_usage_error() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _cwd_guard = DirGuard::new(root);
+    let state_dir = root.join(".ledgerful").join("state");
+    fs::create_dir_all(&state_dir).unwrap();
+    let storage = StorageManager::init(&state_dir.join("ledger.db")).unwrap();
+    setup_db(&storage);
+
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["tests", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "tests --json without entity must refuse, got {:?}; stdout={stdout}; stderr={stderr}",
+        output.status
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected exit 2, got {:?}; stdout={stdout}; stderr={stderr}",
+        output.status
+    );
+    assert!(
+        stdout.trim().is_empty(),
+        "missing-entity --json must keep stdout empty: {stdout}"
+    );
+    assert!(
+        !stdout.contains("schemaVersion"),
+        "missing-entity --json must not emit a schemaVersion envelope: {stdout}"
+    );
+    let parsed = serde_json::from_str::<serde_json::Value>(stdout.trim());
+    assert!(
+        parsed
+            .as_ref()
+            .ok()
+            .and_then(|v| v.get("schemaVersion"))
+            .is_none(),
+        "stdout must not be a parseable schemaVersion object: {stdout}"
+    );
+    assert!(
+        stderr.contains("No entity specified"),
+        "stderr must include missing-entity text, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Usage:"),
+        "stderr must include usage, got: {stderr}"
+    );
+    assert_no_miette_chrome(&stderr);
+}
+
+/// 0278: empty index is the same refuse path (exit 2, stderr, no envelope).
+#[test]
+fn test_cli_tests_empty_graph_is_usage_error() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _cwd_guard = DirGuard::new(root);
+    let state_dir = root.join(".ledgerful").join("state");
+    fs::create_dir_all(&state_dir).unwrap();
+    StorageManager::init(&state_dir.join("ledger.db")).unwrap();
+
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["tests"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !output.status.success(),
+        "empty-graph tests must refuse, got {:?}; stdout={stdout}; stderr={stderr}",
+        output.status
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(2),
+        "expected exit 2, got {:?}; stdout={stdout}; stderr={stderr}",
+        output.status
+    );
+    assert!(
+        stdout.trim().is_empty(),
+        "empty-graph tests must keep stdout empty: {stdout}"
+    );
+    assert!(
+        !stdout.contains("schemaVersion"),
+        "empty-graph must not emit a JSON envelope: {stdout}"
+    );
+    assert!(
+        stderr.contains("Knowledge graph is empty"),
+        "expected empty-graph message on stderr, got: {stderr}"
+    );
+    assert_no_miette_chrome(&stderr);
+
+    let json = Command::new(ledgerful_bin)
+        .args(["tests", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    let json_stdout = String::from_utf8_lossy(&json.stdout);
+    let json_stderr = String::from_utf8_lossy(&json.stderr);
+    assert!(
+        !json.status.success(),
+        "empty-graph --json must refuse, got {:?}",
+        json.status
+    );
+    assert_eq!(
+        json.status.code(),
+        Some(2),
+        "empty-graph --json expected exit 2, got {:?}; stdout={json_stdout}; stderr={json_stderr}",
+        json.status
+    );
+    assert!(
+        json_stdout.trim().is_empty() && !json_stdout.contains("schemaVersion"),
+        "empty-graph --json must not emit an envelope: {json_stdout}"
+    );
+    assert!(
+        json_stderr.contains("Knowledge graph is empty"),
+        "expected empty-graph message on stderr, got: {json_stderr}"
+    );
+}
+
+/// 0278: picker is mapped product files, never vendor sqlite by symbol count,
+/// never in-crate `*/tests.rs`.
+#[test]
+fn test_cli_tests_bare_picker_excludes_vendor_and_incrate_tests_rs() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _cwd_guard = DirGuard::new(root);
+    let state_dir = root.join(".ledgerful").join("state");
+    fs::create_dir_all(&state_dir).unwrap();
+    let storage = StorageManager::init(&state_dir.join("ledger.db")).unwrap();
+    setup_db(&storage);
+
+    let conn = storage.get_connection();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path, last_indexed_at) VALUES (50, 'vendor/sqlite3-src/source/sqlite3.c', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path, last_indexed_at) VALUES (51, 'tests/sqlite_vendor_test.rs', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    for i in 0..80 {
+        conn.execute(
+            "INSERT INTO project_symbols (id, file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at) \
+             VALUES (?1, 50, ?2, ?2, 'Function', '2026-01-01T00:00:00Z')",
+            (100 + i, format!("sqlite_sym_{i}")),
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "INSERT INTO project_symbols (id, file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at) \
+         VALUES (51, 51, 'test_sqlite_vendor', 'test_sqlite_vendor', 'Function', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id, confidence, mapping_kind, last_indexed_at) \
+         VALUES (51, 51, 100, 50, 1.0, 'MANUAL', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT INTO project_files (id, file_path, last_indexed_at) VALUES (60, 'src/verify/plan/tests.rs', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path, last_indexed_at) VALUES (61, 'tests/plan_tests.rs', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_symbols (id, file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at) \
+         VALUES (60, 60, 'plan_under_test', 'plan_under_test', 'Function', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_symbols (id, file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at) \
+         VALUES (61, 61, 'test_plan_under_test', 'test_plan_under_test', 'Function', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id, confidence, mapping_kind, last_indexed_at) \
+         VALUES (61, 61, 60, 60, 1.0, 'MANUAL', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["tests"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let combined = format!("{stdout}{stderr}");
+    assert!(
+        !output.status.success(),
+        "bare tests must refuse, got {:?}; stdout={stdout}; stderr={stderr}",
+        output.status
+    );
+    assert_eq!(output.status.code(), Some(2));
+    assert!(
+        stdout.trim().is_empty(),
+        "bare tests must keep stdout empty: {stdout}"
+    );
+    assert!(
+        !combined.contains("vendor/") && !combined.contains("sqlite3"),
+        "picker must not list vendor sqlite: {combined}"
+    );
+    assert!(
+        !combined.contains("src/verify/plan/tests.rs"),
+        "picker must not list in-crate tests.rs: {combined}"
+    );
+    assert!(
+        stderr.contains("src/lib.rs"),
+        "picker may list mapped product src/lib.rs, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Files with indexed test mappings (top 10):"),
+        "human picker must use mapping-count header, got: {stderr}"
+    );
+    assert!(
+        stderr.contains(" mappings"),
+        "picker counts must be mappings, not symbols: {stderr}"
+    );
+    assert!(!stderr.contains("Available entities (top 10 by symbol count)"));
+    assert!(!stderr.contains(" symbols"));
+    assert_no_miette_chrome(&stderr);
 }

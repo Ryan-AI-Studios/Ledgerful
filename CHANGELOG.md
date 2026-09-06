@@ -6,6 +6,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Bare `tests` usage error (0278):** `ledgerful tests` without `--entity` or a
+  positional entity refuses with exit 2 and empty stdout. Human picker lists
+  mapped product files (not vendor sqlite by symbol count). `--json` without
+  an entity is not a human dump. `--help` shows optional `[ENTITY]`.
+
 ### Changed
 
 - **Packaging templates pin published v0.2.12:** Homebrew formula and

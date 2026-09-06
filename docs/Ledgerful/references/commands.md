@@ -20,6 +20,10 @@ Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/ch
 |---|---|
 | `ledgerful ledger search "<topic>" [--json]` | Committed-plan / TX FTS. **Quotes required** (clap `query` is one `String` token). Contrast: code `ledgerful search foo bar` stays unquoted multi-word. `--json` is a **bare array** (`Vec<LedgerEntry>`) — 0213 freeze; not a `schemaVersion` object. Empty `[]` is a valid FTS miss. Example: `ledgerful ledger search "0126" --json`. |
 
+## `ledgerful tests`
+
+Requires `-e` / `--entity` or a positional entity. Missing entity is a usage error (exit 2, empty stdout) — not an empty `mappings` envelope.
+
 ## `ledger start --force` vs `ledger commit --force`
 
 - **`ledger start --force`:** bypasses the **pending-entity collision lock** (0223). A PENDING TX whose entity overlaps the new `--entity` or any current dirty path otherwise refuses with `[Ledgerful] Collision:` (exit 2). Owner self-collision is intended — commit/abort first, or pass `--force`.

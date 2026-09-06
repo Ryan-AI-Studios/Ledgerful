@@ -11,7 +11,7 @@ pub struct TestsForEntityArgs {
     #[arg(short, long, conflicts_with = "pos_entity")]
     pub entity: Option<String>,
     /// Entity ID (URN, path, or symbol name) (positional fallback)
-    #[arg(hide = true)]
+    #[arg(value_name = "ENTITY")]
     pub pos_entity: Option<String>,
     /// Output as JSON
     #[arg(long)]
@@ -24,7 +24,7 @@ pub fn execute_tests_for_entity(args: TestsForEntityArgs) -> Result<()> {
     // so it can no longer reach this handler.
     let entity_val = match args.entity.or(args.pos_entity) {
         Some(e) => e,
-        None => return show_tests_empty_state(),
+        None => return refuse_missing_entity(args.json),
     };
 
     let layout = get_layout()?;
@@ -216,19 +216,66 @@ pub fn execute_tests_for_entity(args: TestsForEntityArgs) -> Result<()> {
     Ok(())
 }
 
-fn show_tests_empty_state() -> Result<()> {
+fn refuse_missing_entity(json: bool) -> Result<()> {
     let layout = get_layout()?;
     let storage = StorageManager::open_read_only(&layout)?;
     let conn = storage.get_connection();
 
+    let message = if knowledge_graph_is_empty(conn)? {
+        "Knowledge graph is empty. Run `ledgerful index` first.".to_string()
+    } else {
+        let picker = if json {
+            None
+        } else {
+            Some(format_mapped_product_picker(conn)?)
+        };
+        missing_entity_usage_message(picker.as_deref())
+    };
+
+    crate::output::requested_exit::request_exit(2);
+    Err(miette::miette!("{}", message))
+}
+
+fn knowledge_graph_is_empty(conn: &rusqlite::Connection) -> Result<bool> {
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM project_symbols", [], |row| row.get(0))
+        .into_diagnostic()?;
+    Ok(count == 0)
+}
+
+fn missing_entity_usage_message(picker: Option<&str>) -> String {
+    let mut lines = vec![
+        "No entity specified.".to_string(),
+        String::new(),
+        "Usage: ledgerful tests [OPTIONS] [ENTITY]".to_string(),
+        String::new(),
+        "  -e, --entity <ENTITY>".to_string(),
+        String::new(),
+        "Show tests that validate a specific file or symbol.".to_string(),
+        String::new(),
+        "Examples:".to_string(),
+        "  ledgerful tests src/index/languages/rust/symbols.rs".to_string(),
+        "  ledgerful tests --entity src/commands/doctor/mod.rs".to_string(),
+        "  ledgerful tests --entity src/commands/verify/mod.rs --json".to_string(),
+    ];
+    if let Some(picker) = picker {
+        lines.push(String::new());
+        lines.push(picker.to_string());
+        lines.push(String::new());
+        lines.push("Use `ledgerful tests <entity>` to see matching tests.".to_string());
+    }
+    lines.join("\n")
+}
+
+/// Ranked `tested_file_id` paths (entity / production-file side only).
+fn format_mapped_product_picker(conn: &rusqlite::Connection) -> Result<String> {
     let mut stmt = conn
         .prepare(
-            "SELECT pf.file_path, COUNT(*) as symbol_count \
-             FROM project_symbols ps \
-             JOIN project_files pf ON ps.file_id = pf.id \
+            "SELECT pf.file_path, COUNT(*) as mapping_count \
+             FROM test_mapping tm \
+             JOIN project_files pf ON tm.tested_file_id = pf.id \
              GROUP BY pf.file_path \
-             ORDER BY symbol_count DESC, pf.file_path ASC \
-             LIMIT 10",
+             ORDER BY mapping_count DESC, pf.file_path ASC",
         )
         .into_diagnostic()?;
 
@@ -240,28 +287,81 @@ fn show_tests_empty_state() -> Result<()> {
         .collect::<rusqlite::Result<Vec<_>>>()
         .into_diagnostic()?;
 
-    if rows.is_empty() {
-        println!("Knowledge graph is empty. Run `ledgerful index` first.");
-        return Ok(());
+    let survivors: Vec<(String, i64)> = rows
+        .into_iter()
+        .filter(|(path, _)| is_mapped_product_picker_path(path))
+        .take(10)
+        .collect();
+
+    if survivors.is_empty() {
+        return Ok("No mapped product files to suggest.".to_string());
     }
 
-    println!("No entity specified.");
-    println!();
-    println!("Usage: ledgerful tests [OPTIONS] <ENTITY>");
-    println!();
-    println!("Show tests that validate a specific file or symbol.");
-    println!();
-    println!("Examples:");
-    println!("  ledgerful tests src/index/languages/rust/symbols.rs");
-    println!("  ledgerful tests --entity src/commands/doctor/mod.rs");
-    println!("  ledgerful tests --entity src/commands/verify/mod.rs --json");
-    println!();
-    println!("Available entities (top 10 by symbol count):");
-    for (file_path, count) in &rows {
-        println!("  {:<50} {} symbols", file_path, count);
+    let mut out = String::from("Files with indexed test mappings (top 10):");
+    for (file_path, count) in survivors {
+        out.push('\n');
+        out.push_str(&format!("  {file_path:<50} {count} mappings"));
     }
-    println!();
-    println!("Use `ledgerful tests <entity>` to see matching tests.");
+    Ok(out)
+}
 
-    Ok(())
+/// Local picker filter only — do not reuse from hotspots (0297) or mutate env.rs.
+fn is_mapped_product_picker_path(path: &str) -> bool {
+    let normalized = path.replace('\\', "/");
+    if normalized
+        .split('/')
+        .filter(|seg| !seg.is_empty())
+        .any(|seg| matches!(seg, "vendor" | "deps_src" | "third_party"))
+    {
+        return false;
+    }
+    if crate::commands::config::env::is_test_or_example_path(path) {
+        return false;
+    }
+    let basename = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
+    let stem = basename.strip_suffix(".rs").unwrap_or(basename);
+    stem != "test" && stem != "tests"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_mapped_product_picker_path;
+
+    #[test]
+    fn test_mapping_picker_keeps_product_paths() {
+        assert!(is_mapped_product_picker_path("src/lib.rs"));
+        assert!(is_mapped_product_picker_path(
+            "src/commands/test_mapping.rs"
+        ));
+        assert!(is_mapped_product_picker_path("src/index/test_mapping.rs"));
+        assert!(is_mapped_product_picker_path(
+            "src\\commands\\test_mapping.rs"
+        ));
+    }
+
+    #[test]
+    fn test_mapping_picker_drops_vendor_deps_tests_and_incrate_tests_rs() {
+        assert!(!is_mapped_product_picker_path(
+            "vendor/sqlite3-src/source/sqlite3.c"
+        ));
+        assert!(!is_mapped_product_picker_path("crates/x/vendor/y.rs"));
+        assert!(!is_mapped_product_picker_path("crates\\x\\vendor\\y.rs"));
+        assert!(!is_mapped_product_picker_path("third_party/foo.c"));
+        assert!(!is_mapped_product_picker_path("deps_src/bar.c"));
+        assert!(!is_mapped_product_picker_path(
+            "tests/integration/common/mod.rs"
+        ));
+        assert!(!is_mapped_product_picker_path("src/foo_test.rs"));
+        assert!(!is_mapped_product_picker_path("src/verify/plan/tests.rs"));
+        assert!(!is_mapped_product_picker_path(
+            "src/index/call_graph/tests.rs"
+        ));
+        assert!(!is_mapped_product_picker_path(
+            "src/commands/index/semantic/tests.rs"
+        ));
+        assert!(!is_mapped_product_picker_path(
+            "src\\verify\\plan\\tests.rs"
+        ));
+        assert!(!is_mapped_product_picker_path("src/test.rs"));
+    }
 }

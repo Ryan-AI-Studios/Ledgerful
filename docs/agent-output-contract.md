@@ -679,7 +679,7 @@ field names stay command-specific (`results` / `impacted` / `files` /
 | `data-models impact --json` | `impacted` | |
 | `hotspots --json` (list + `--semantic`) | `files` | List and `--semantic` echo `limit`. No `truncated` (no extra overfetch). CLI default omits test/example/bench paths; `--include tests` is the unfiltered audit view (0222). Item `score` is 0–1 (`f_norm × c_norm`); `displayScore` is `ln_1p(score × 1000)` for humans. AI-T252 must pin `score`, not `displayScore`. No `scoreUnit` key. |
 | `ci diff --json` / `ci list --json` | `gates` | Empty catalog: `gates: []`, `resultCount: 0`, **no** `emptyReason` |
-| `tests --json` (mapped) | `mappings` | Additive `resolvedPath` (omit when none); empty arms use the helper |
+| `tests --json` (mapped) | `mappings` | Additive `resolvedPath` (omit when none); empty arms use the helper. Missing entity (no `--entity` / positional) is a usage error (exit 2, empty stdout), not an empty `mappings` envelope. |
 
 Empty helper arm: `emptyReason` + `message` present. Populated helper arm:
 those keys **omitted** (never JSON `null`). `schemaVersion` stays **1**.
