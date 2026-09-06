@@ -622,6 +622,61 @@ fn test_test_file_to_nextest_stem() {
 }
 
 #[test]
+fn test_query_scoped_test_files_product_path_uses_symbol_name() {
+    let packet = ImpactPacket {
+        changes: vec![ChangedFile {
+            path: PathBuf::from("src/exec/boundary.rs"),
+            ..Default::default()
+        }],
+        ..ImpactPacket::default()
+    };
+    let conn = rusqlite::Connection::open_in_memory().unwrap();
+    conn.execute(
+        "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
+             tested_symbol_id INTEGER, tested_file_id INTEGER)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "CREATE TABLE project_symbols (id INTEGER PRIMARY KEY, symbol_name TEXT, file_id INTEGER)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path) VALUES (1, 'src/exec/boundary.rs')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_symbols (id, symbol_name, file_id) VALUES (10, 'test_basic_execution', 1)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id) \
+             VALUES (10, 1, 20, 1)",
+        [],
+    )
+    .unwrap();
+
+    let stems = query_scoped_test_files(&conn, &packet).expect("stems");
+    assert_eq!(stems, vec!["test_basic_execution".to_string()]);
+    assert!(
+        !stems.iter().any(|s| s == "boundary"),
+        "product-path in-file tests must stem by function name, not file stem: {stems:?}"
+    );
+    assert_eq!(
+        test_file_to_nextest_stem("src/lib.rs"),
+        Some("lib".to_string())
+    );
+}
+
+#[test]
 fn test_build_scoped_nextest_command_single() {
     let cmd = build_scoped_nextest_command(&["cli_scan".to_string()]);
     assert_eq!(

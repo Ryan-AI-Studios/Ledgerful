@@ -802,3 +802,133 @@ fn test_cli_tests_bare_picker_excludes_vendor_and_incrate_tests_rs() {
     assert!(!stderr.contains(" symbols"));
     assert_no_miette_chrome(&stderr);
 }
+
+/// 0279: SAME_FILE seed on a product file is Mapped and lists the in-file test.
+#[test]
+fn test_cli_tests_same_file_in_file_unit_mapped() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _cwd_guard = DirGuard::new(root);
+    let state_dir = root.join(".ledgerful").join("state");
+    fs::create_dir_all(&state_dir).unwrap();
+    let storage = StorageManager::init(&state_dir.join("ledger.db")).unwrap();
+    setup_db(&storage);
+
+    let conn = storage.get_connection();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path, last_indexed_at) VALUES (20, 'src/exec/boundary.rs', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_symbols (id, file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at) \
+         VALUES (20, 20, 'execute', 'execute', 'Function', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_symbols (id, file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at) \
+         VALUES (21, 20, 'test_basic_execution', 'test_basic_execution', 'Function', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id, confidence, mapping_kind, last_indexed_at) \
+         VALUES (21, 20, 20, 20, 0.7, 'SAME_FILE', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["tests", "src/exec/boundary.rs"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "expected Mapped: STDOUT={stdout}\nSTDERR={stderr}"
+    );
+    assert!(
+        stdout.contains("Tests validating"),
+        "expected Mapped header: {stdout}"
+    );
+    assert!(stdout.contains("src/exec/boundary.rs"));
+    assert!(
+        stdout.contains("test_basic_execution"),
+        "expected in-file test name: {stdout}"
+    );
+
+    let json = Command::new(ledgerful_bin)
+        .args(["tests", "--json", "src/exec/boundary.rs"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    let json_stdout = String::from_utf8_lossy(&json.stdout);
+    assert!(
+        json.status.success(),
+        "tests --json Mapped: STDOUT={json_stdout}\nSTDERR={}",
+        String::from_utf8_lossy(&json.stderr)
+    );
+    let mapped: serde_json::Value = serde_json::from_str(json_stdout.trim())
+        .unwrap_or_else(|e| panic!("SAME_FILE tests --json must parse: {e}; {json_stdout}"));
+    assert_eq!(mapped["schemaVersion"], 1, "{json_stdout}");
+    assert!(
+        mapped.get("mappingKind").is_none() && mapped.get("emptyReason").is_none(),
+        "Mapped envelope must not grow mappingKind/emptyReason: {json_stdout}"
+    );
+    let mappings = mapped["mappings"]
+        .as_array()
+        .unwrap_or_else(|| panic!("mappings[]: {json_stdout}"));
+    assert!(
+        mappings.iter().any(|m| {
+            m["test"]
+                .as_str()
+                .is_some_and(|t| t.contains("test_basic_execution"))
+        }),
+        "expected test_basic_execution in mappings: {json_stdout}"
+    );
+}
+
+/// 0279: barrel with no in-file tests stays NoMappings.
+#[test]
+fn test_cli_tests_barrel_mod_rs_still_nomappings() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _cwd_guard = DirGuard::new(root);
+    let state_dir = root.join(".ledgerful").join("state");
+    fs::create_dir_all(&state_dir).unwrap();
+    let storage = StorageManager::init(&state_dir.join("ledger.db")).unwrap();
+    setup_db(&storage);
+
+    let conn = storage.get_connection();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path, last_indexed_at) VALUES (30, 'src/pkg/mod.rs', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["tests", "src/pkg/mod.rs"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "NoMappings is exit 0: STDOUT={stdout}\nSTDERR={stderr}"
+    );
+    assert!(
+        stdout.contains("'src/pkg/mod.rs' is indexed, but no tests currently map to it."),
+        "expected NoMappings: STDOUT={stdout}\nSTDERR={stderr}"
+    );
+    assert!(!stdout.contains("Tests validating"));
+}

@@ -13,6 +13,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   mapped product files (not vendor sqlite by symbol count). `--json` without
   an entity is not a human dump. `--help` shows optional `[ENTITY]`.
 
+- **In-file unit tests map (0279):** `#[test]` / `#[tokio::test]` / `#[rstest]`
+  functions in product files write `SAME_FILE` `test_mapping` rows so
+  `ledgerful tests <file>` is Mapped and verify-fast stems those tests by
+  function name. Structural only — not LCOV. Vendor / `tests.rs` barrels stay
+  unmapped.
+
 ### Changed
 
 - **Packaging templates pin published v0.2.12:** Homebrew formula and
