@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.12] - 2026-09-06
+
 ### Fixed
 
 - **Windows deadlock generator (0273):** `test_large_output_does_not_deadlock`
