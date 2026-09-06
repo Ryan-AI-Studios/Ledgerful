@@ -98,7 +98,7 @@ pulldown-cmark = { version = "0.13", default-features = false }
 dunce = "1.0.5"
 path-clean = "1.0.1"
 fs4 = "=0.13.1"
-ureq = { version = "2", features = ["json"] }
+ureq = { version = "3", features = ["json"] }
 url = "=2.5.8"
 tree-sitter-go = "0.25.0"
 tree-sitter-cpp = "0.23.4"
