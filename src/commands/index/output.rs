@@ -236,6 +236,10 @@ pub(crate) fn print_human_output(output: &IndexOutputStats) {
         "  Naming convention mappings: {}",
         output.tm_stats.naming_convention_mappings
     );
+    println!(
+        "  Same-file mappings: {}",
+        output.tm_stats.same_file_mappings
+    );
     println!("  Files processed: {}", output.tm_stats.files_processed);
     println!();
     println!("CI/CD Gates:");

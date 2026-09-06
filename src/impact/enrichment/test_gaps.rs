@@ -20,7 +20,7 @@ pub const MAPPED_SAMPLE_CAP: usize = 5;
 
 /// Structural honesty note (always emitted when a report is built).
 pub const STRUCTURAL_NOTE: &str =
-    "Structural test_mapping only (IMPORT/NAMING_CONVENTION); not line coverage";
+    "Structural test_mapping only (IMPORT/NAMING_CONVENTION/SAME_FILE); not line coverage";
 /// LCOV ceiling note (always emitted; COVERAGE rows do not persist today).
 pub const LCOV_NOTE: &str =
     "LCOV COVERAGE mapping kind does not currently persist (DDL NOT NULL on test_symbol_id)";

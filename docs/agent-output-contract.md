@@ -878,7 +878,7 @@ structure, doctor readiness, open ledger work, and a budgeted `readSet`.
       }
     ],
     "notes": [
-      "Structural test_mapping only (IMPORT/NAMING_CONVENTION); not line coverage",
+      "Structural test_mapping only (IMPORT/NAMING_CONVENTION/SAME_FILE); not line coverage",
       "LCOV COVERAGE mapping kind does not currently persist (DDL NOT NULL on test_symbol_id)"
     ]
   },

@@ -22,7 +22,7 @@ Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/ch
 
 ## `ledgerful tests`
 
-Requires `-e` / `--entity` or a positional entity. Missing entity is a usage error (exit 2, empty stdout) — not an empty `mappings` envelope.
+Requires `-e` / `--entity` or a positional entity. Missing entity is a usage error (exit 2, empty stdout) — not an empty `mappings` envelope. Structural mapping includes in-file unit tests (`SAME_FILE`); still not LCOV.
 
 ## `ledger start --force` vs `ledger commit --force`
 

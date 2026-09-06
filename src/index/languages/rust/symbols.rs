@@ -176,6 +176,19 @@ pub fn extract_symbols(content: &str) -> Result<Option<Vec<Symbol>>> {
                                             // is not double-counted.
                                             derived.extend(parse_derive_traits(attr_text));
                                         }
+                                        // Persist #[test] / #[tokio::test] / #[rstest]
+                                        // on Function metadata (path before `(`).
+                                        // Copied locally — do not import entrypoint.
+                                        if node.kind() == "function_item" {
+                                            let attr_path = extract_rust_attr_path(attr_text);
+                                            if matches!(
+                                                attr_path.as_str(),
+                                                "test" | "tokio::test" | "rstest"
+                                            ) {
+                                                metadata
+                                                    .insert("test".to_string(), "true".to_string());
+                                            }
+                                        }
                                     }
                                 } else if sibling.kind() != "line_comment"
                                     && sibling.kind() != "block_comment"
@@ -449,6 +462,23 @@ fn first_type_identifier(node: Node<'_>, content: &str) -> Option<String> {
         }
     }
     None
+}
+
+/// Attribute path before `(` / trailing `]`.
+///
+/// Copied from `index::entrypoint::extract_rust_attr_path` — do not import
+/// that module from `languages::rust` (cycle: entrypoint already uses `Symbol`).
+fn extract_rust_attr_path(attr_text: &str) -> String {
+    let trimmed = attr_text
+        .trim()
+        .trim_start_matches("#[")
+        .trim_end_matches(']');
+
+    if let Some(paren_pos) = trimmed.find('(') {
+        trimmed[..paren_pos].to_string()
+    } else {
+        trimmed.to_string()
+    }
 }
 
 fn extract_use_name(node: tree_sitter::Node, content: &str) -> String {
@@ -1002,6 +1032,108 @@ mod tests {
         assert!(
             fsi.child_by_field_name("return_type").is_some(),
             "function_signature_item.return_type"
+        );
+    }
+
+    #[test]
+    fn test_extract_rust_attr_path_before_paren() {
+        assert_eq!(extract_rust_attr_path("#[test]"), "test");
+        assert_eq!(extract_rust_attr_path("#[tokio::test]"), "tokio::test");
+        assert_eq!(
+            extract_rust_attr_path("#[tokio::test(flavor = \"multi_thread\")]"),
+            "tokio::test"
+        );
+        assert_eq!(extract_rust_attr_path("#[rstest(case(1))]"), "rstest");
+        assert_eq!(extract_rust_attr_path("#[test_case(1)]"), "test_case");
+        assert_eq!(extract_rust_attr_path("#[cfg(test)]"), "cfg");
+    }
+
+    #[test]
+    fn test_extract_symbols_plain_test_attr_sets_test_metadata() {
+        let content = r#"
+            #[test]
+            fn foo() {}
+        "#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let foo = symbols
+            .iter()
+            .find(|s| s.name == "foo" && s.kind == SymbolKind::Function)
+            .expect("foo");
+        assert_eq!(foo.metadata.get("test").map(String::as_str), Some("true"));
+    }
+
+    #[test]
+    fn test_extract_symbols_tokio_test_with_args_sets_test_metadata() {
+        let content = r#"
+            #[tokio::test(flavor = "multi_thread")]
+            async fn bar() {}
+        "#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let bar = symbols
+            .iter()
+            .find(|s| s.name == "bar" && s.kind == SymbolKind::Function)
+            .expect("bar");
+        assert_eq!(bar.metadata.get("test").map(String::as_str), Some("true"));
+    }
+
+    #[test]
+    fn test_extract_symbols_rstest_with_args_sets_test_metadata() {
+        let content = r#"
+            #[rstest(case(1))]
+            fn baz() {}
+        "#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let baz = symbols
+            .iter()
+            .find(|s| s.name == "baz" && s.kind == SymbolKind::Function)
+            .expect("baz");
+        assert_eq!(baz.metadata.get("test").map(String::as_str), Some("true"));
+    }
+
+    #[test]
+    fn test_extract_symbols_test_case_attr_is_not_a_test() {
+        let content = r#"
+            #[test_case(1)]
+            fn qux() {}
+        "#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let qux = symbols
+            .iter()
+            .find(|s| s.name == "qux" && s.kind == SymbolKind::Function)
+            .expect("qux");
+        assert!(
+            !qux.metadata.contains_key("test"),
+            "#[test_case] path is test_case, not a test; metadata={:?}",
+            qux.metadata
+        );
+    }
+
+    #[test]
+    fn test_extract_symbols_unattributed_helper_in_cfg_test_mod_is_not_a_test() {
+        let content = r#"
+            #[cfg(test)]
+            mod tests {
+                fn helper() {}
+            }
+        "#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let helper = symbols
+            .iter()
+            .find(|s| s.name == "helper" && s.kind == SymbolKind::Function)
+            .expect("helper");
+        assert!(
+            !helper.metadata.contains_key("test"),
+            "unattributed helper must not get test metadata; metadata={:?}",
+            helper.metadata
+        );
+        let tests_mod = symbols
+            .iter()
+            .find(|s| s.name == "tests" && s.kind == SymbolKind::Module)
+            .expect("tests mod");
+        assert!(
+            !tests_mod.metadata.contains_key("test"),
+            "#[cfg(test)] on a mod is not a test function; metadata={:?}",
+            tests_mod.metadata
         );
     }
 }

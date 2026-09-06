@@ -434,7 +434,7 @@ fn pr_scan_golden_output_matches_fixture() {
             "mappedSample": [],
             "notes": [
                 "LCOV COVERAGE mapping kind does not currently persist (DDL NOT NULL on test_symbol_id)",
-                "Structural test_mapping only (IMPORT/NAMING_CONVENTION); not line coverage"
+                "Structural test_mapping only (IMPORT/NAMING_CONVENTION/SAME_FILE); not line coverage"
             ]
         },
         "affectedFlows": {

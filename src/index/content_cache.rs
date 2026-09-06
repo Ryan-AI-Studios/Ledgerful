@@ -61,6 +61,10 @@ fn caller() {
     tracing::info!("hello");
 }
 
+fn test_inline() {
+    helper();
+}
+
 async fn get_users() {}
 
 fn app() -> Router {
@@ -127,6 +131,32 @@ fn test_helper() {}
         .unwrap();
     }
 
+    /// In-file test Function on a product path so SAME_FILE can fire (hit only).
+    fn seed_same_file_test_symbol(storage: &StorageManager) {
+        let conn = storage.get_connection();
+        let lib_id: i64 = conn
+            .query_row(
+                "SELECT id FROM project_files WHERE file_path = 'src/lib.rs'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, is_public, confidence, last_indexed_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            (
+                lib_id,
+                "test_inline",
+                "test_inline",
+                "Function",
+                1,
+                1.0,
+                "2026-05-01T00:00:00Z",
+            ),
+        )
+        .unwrap();
+    }
+
     /// DoD-1: extractors with a filled cache still extract after the source
     /// files are deleted; a miss (no cache entry, file gone) skips as today.
     #[test]
@@ -149,6 +179,7 @@ fn test_helper() {}
         let repo = dir.path().to_path_buf();
         let hit = in_memory_storage();
         seed_files_and_symbols(&hit);
+        seed_same_file_test_symbol(&hit);
         assert_extractors_succeed_from_cache(&hit, repo.as_path(), &cache);
 
         let miss = in_memory_storage();
@@ -209,7 +240,11 @@ fn test_helper() {}
             .expect("test mapping from cache");
         assert!(
             tm.import_mappings >= 1 || tm.naming_convention_mappings >= 1,
-            "cache hit must still extract test mappings, stats={tm:?}"
+            "cache hit must still extract import/naming mappings, stats={tm:?}"
+        );
+        assert!(
+            tm.same_file_mappings >= 1,
+            "cache hit fixture must include a same-file pair, stats={tm:?}"
         );
     }
 
@@ -262,8 +297,8 @@ fn test_helper() {}
             "miss with deleted files must not invent import mappings"
         );
         assert_eq!(
-            tm.naming_convention_mappings, 0,
-            "miss with deleted files must not invent naming mappings"
+            tm.same_file_mappings, 0,
+            "miss with deleted files must not invent same-file mappings"
         );
     }
 }

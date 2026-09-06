@@ -13,6 +13,7 @@ pub struct TestMappingStats {
     pub total_mappings: usize,
     pub import_mappings: usize,
     pub naming_convention_mappings: usize,
+    pub same_file_mappings: usize,
     pub coverage_mappings: usize,
     pub files_processed: usize,
 }
@@ -25,6 +26,22 @@ struct TestMappingRow {
     confidence: f64,
     mapping_kind: String,
     evidence: Option<String>,
+}
+
+struct IndexedFunction {
+    id: i64,
+    name: String,
+    file_id: i64,
+    path: String,
+    language: Option<String>,
+    metadata: Option<String>,
+}
+
+impl IndexedFunction {
+    fn is_test(&self) -> bool {
+        is_test_function(&self.name, &self.path, self.language.as_deref())
+            || metadata_marks_test(self.metadata.as_deref())
+    }
 }
 
 const TEST_MAPPING_BATCH_SIZE: usize = 500;
@@ -52,10 +69,10 @@ impl<'a> TestMapper<'a> {
     pub fn extract(&self) -> Result<TestMappingStats> {
         let conn = self.storage.get_connection();
 
-        // 1. Query all test symbols
+        // 1. Query all function symbols (test-set SELECT includes metadata).
         let mut test_stmt = conn
             .prepare(
-                "SELECT ps.id, ps.symbol_name, ps.qualified_name, ps.file_id, pf.file_path, pf.language
+                "SELECT ps.id, ps.symbol_name, ps.file_id, pf.file_path, pf.language, ps.metadata
                  FROM project_symbols ps
                  JOIN project_files pf ON ps.file_id = pf.id
                  WHERE ps.symbol_kind = 'Function'
@@ -63,16 +80,16 @@ impl<'a> TestMapper<'a> {
             )
             .into_diagnostic()?;
 
-        let all_function_rows: Vec<(i64, String, String, i64, String, Option<String>)> = test_stmt
+        let all_function_rows: Vec<IndexedFunction> = test_stmt
             .query_map([], |row| {
-                Ok((
-                    row.get::<_, i64>(0)?,
-                    row.get::<_, String>(1)?,
-                    row.get::<_, String>(2)?,
-                    row.get::<_, i64>(3)?,
-                    row.get::<_, String>(4)?,
-                    row.get::<_, Option<String>>(5)?,
-                ))
+                Ok(IndexedFunction {
+                    id: row.get(0)?,
+                    name: row.get(1)?,
+                    file_id: row.get(2)?,
+                    path: row.get(3)?,
+                    language: row.get(4)?,
+                    metadata: row.get(5)?,
+                })
             })
             .into_diagnostic()?
             .collect::<Result<Vec<_>, _>>()
@@ -80,16 +97,15 @@ impl<'a> TestMapper<'a> {
 
         drop(test_stmt);
 
-        let test_functions: Vec<(i64, String, String, i64, String, Option<String>)> =
-            all_function_rows
-                .iter()
-                .filter(|(_, name, _, _, path, language)| {
-                    is_test_function(name, path, language.as_deref())
-                })
-                .cloned()
-                .collect();
+        let test_functions: Vec<&IndexedFunction> =
+            all_function_rows.iter().filter(|f| f.is_test()).collect();
 
-        // 3. Build lookup
+        let mut functions_by_file: HashMap<i64, Vec<&IndexedFunction>> = HashMap::new();
+        for f in &all_function_rows {
+            functions_by_file.entry(f.file_id).or_default().push(f);
+        }
+
+        // 3. Build lookup (narrow SELECT — no metadata).
         let mut symbol_lookup: HashMap<String, Vec<(i64, i64, String)>> = HashMap::new();
         let mut sym_stmt = conn
             .prepare(
@@ -134,71 +150,99 @@ impl<'a> TestMapper<'a> {
         let mut total_mappings = 0usize;
         let mut import_mappings = 0usize;
         let mut naming_convention_mappings = 0usize;
+        let mut same_file_mappings = 0usize;
         let mut batch: Vec<TestMappingRow> = Vec::new();
         let mut processed_test_files: std::collections::HashSet<i64> =
             std::collections::HashSet::new();
         let mut content_by_path: HashMap<String, Option<Arc<str>>> = HashMap::new();
 
-        for (test_sym_id, test_name, _qualified, test_file_id, test_file_path, _test_lang) in
-            &test_functions
-        {
-            processed_test_files.insert(*test_file_id);
-            let key = test_file_path.replace('\\', "/");
+        for test in &test_functions {
+            processed_test_files.insert(test.file_id);
+            let key = test.path.replace('\\', "/");
             let content = match content_by_path.entry(key) {
                 std::collections::hash_map::Entry::Occupied(e) => e.get().clone(),
                 std::collections::hash_map::Entry::Vacant(e) => {
                     let loaded =
-                        load_source_content(self.content_cache, test_file_path, &self.repo_path)
-                            .ok();
+                        load_source_content(self.content_cache, &test.path, &self.repo_path).ok();
                     e.insert(loaded).clone()
                 }
             };
-            let Some(content) = content else {
-                continue;
-            };
 
-            let imported_names = extract_imported_names(content.as_ref(), test_file_path);
-            for imported in &imported_names {
-                if let Some(candidates) = symbol_lookup.get(imported) {
-                    for (tested_sym_id, tested_file_id, _qn) in candidates {
-                        if *tested_sym_id == *test_sym_id {
-                            continue;
-                        }
-                        batch.push(TestMappingRow {
-                            test_symbol_id: Some(*test_sym_id),
-                            test_file_id: *test_file_id,
-                            tested_symbol_id: Some(*tested_sym_id),
-                            tested_file_id: Some(*tested_file_id),
-                            confidence: 1.0,
-                            mapping_kind: "IMPORT".to_string(),
-                            evidence: Some(format!("import: {}", imported)),
-                        });
-                        import_mappings += 1;
-                        if batch.len() >= TEST_MAPPING_BATCH_SIZE {
-                            total_mappings += batch.len();
-                            self.insert_batch(&batch)?;
-                            batch.clear();
+            if let Some(content) = content {
+                let imported_names = extract_imported_names(content.as_ref(), &test.path);
+                for imported in &imported_names {
+                    if let Some(candidates) = symbol_lookup.get(imported) {
+                        for (tested_sym_id, tested_file_id, _qn) in candidates {
+                            if *tested_sym_id == test.id {
+                                continue;
+                            }
+                            batch.push(TestMappingRow {
+                                test_symbol_id: Some(test.id),
+                                test_file_id: test.file_id,
+                                tested_symbol_id: Some(*tested_sym_id),
+                                tested_file_id: Some(*tested_file_id),
+                                confidence: 1.0,
+                                mapping_kind: "IMPORT".to_string(),
+                                evidence: Some(format!("import: {}", imported)),
+                            });
+                            import_mappings += 1;
+                            if batch.len() >= TEST_MAPPING_BATCH_SIZE {
+                                total_mappings += batch.len();
+                                self.insert_batch(&batch)?;
+                                batch.clear();
+                            }
                         }
                     }
                 }
             }
 
-            let stripped_name = strip_test_prefix(test_name);
-            if stripped_name != test_name.as_str()
-                && let Some(candidates) = symbol_lookup.get(stripped_name)
+            if is_same_file_eligible_test_path(&test.path)
+                && let Some(siblings) = functions_by_file.get(&test.file_id)
             {
-                for (tested_sym_id, tested_file_id, _qn) in candidates {
-                    if *tested_sym_id == *test_sym_id {
+                for prod in siblings {
+                    if prod.id == test.id {
+                        continue;
+                    }
+                    if prod.is_test() {
+                        continue;
+                    }
+                    if prod.name == "default" {
                         continue;
                     }
                     batch.push(TestMappingRow {
-                        test_symbol_id: Some(*test_sym_id),
-                        test_file_id: *test_file_id,
+                        test_symbol_id: Some(test.id),
+                        test_file_id: test.file_id,
+                        tested_symbol_id: Some(prod.id),
+                        tested_file_id: Some(test.file_id),
+                        confidence: 0.7,
+                        mapping_kind: "SAME_FILE".to_string(),
+                        evidence: Some(format!("same_file: {} -> {}", test.name, prod.name)),
+                    });
+                    same_file_mappings += 1;
+                    if batch.len() >= TEST_MAPPING_BATCH_SIZE {
+                        total_mappings += batch.len();
+                        self.insert_batch(&batch)?;
+                        batch.clear();
+                    }
+                }
+            }
+
+            let stripped_name = strip_test_prefix(&test.name);
+            if stripped_name != test.name.as_str()
+                && let Some(candidates) = symbol_lookup.get(stripped_name)
+            {
+                for (tested_sym_id, tested_file_id, _qn) in candidates {
+                    if *tested_sym_id == test.id {
+                        continue;
+                    }
+                    batch.push(TestMappingRow {
+                        test_symbol_id: Some(test.id),
+                        test_file_id: test.file_id,
                         tested_symbol_id: Some(*tested_sym_id),
                         tested_file_id: Some(*tested_file_id),
                         confidence: 0.5,
                         mapping_kind: "NAMING_CONVENTION".to_string(),
-                        evidence: Some(format!("naming: {} -> {}", test_name, stripped_name)),
+                        evidence: Some(format!("naming: {} -> {}", test.name, stripped_name)),
                     });
                     naming_convention_mappings += 1;
                     if batch.len() >= TEST_MAPPING_BATCH_SIZE {
@@ -226,6 +270,7 @@ impl<'a> TestMapper<'a> {
             total_mappings,
             import_mappings,
             naming_convention_mappings,
+            same_file_mappings,
             coverage_mappings,
             files_processed: processed_test_files.len(),
         })
@@ -238,6 +283,7 @@ impl<'a> TestMapper<'a> {
                 total_mappings: 0,
                 import_mappings: 0,
                 naming_convention_mappings: 0,
+                same_file_mappings: 0,
                 coverage_mappings: 0,
                 files_processed: 0,
             });
@@ -308,6 +354,7 @@ impl<'a> TestMapper<'a> {
             total_mappings: mappings,
             import_mappings: 0,
             naming_convention_mappings: 0,
+            same_file_mappings: 0,
             coverage_mappings: mappings,
             files_processed: 1,
         })
@@ -397,6 +444,35 @@ pub(crate) fn is_test_symbol(name: &str, _path: &str, _language: Option<&str>) -
 
 fn is_test_function(name: &str, file_path: &str, language: Option<&str>) -> bool {
     is_test_symbol(name, file_path, language) || is_test_path(file_path)
+}
+
+/// Product-path in-file tests only. Local copy of the 0278 picker segment
+/// list — do not import `commands::test_mapping` (index ↛ commands).
+fn is_same_file_eligible_test_path(path: &str) -> bool {
+    if is_test_path(path) {
+        return false;
+    }
+    let normalized = path.replace('\\', "/");
+    if normalized
+        .split('/')
+        .filter(|seg| !seg.is_empty())
+        .any(|seg| matches!(seg, "vendor" | "deps_src" | "third_party"))
+    {
+        return false;
+    }
+    let basename = normalized.rsplit('/').next().unwrap_or(normalized.as_str());
+    let stem = basename.strip_suffix(".rs").unwrap_or(basename);
+    stem != "test" && stem != "tests"
+}
+
+fn metadata_marks_test(raw: Option<&str>) -> bool {
+    let Some(raw) = raw else {
+        return false;
+    };
+    let Ok(value) = serde_json::from_str::<serde_json::Value>(raw) else {
+        return false;
+    };
+    matches!(value.get("test"), Some(v) if v.as_str() == Some("true"))
 }
 
 fn strip_test_prefix(name: &str) -> &str {
@@ -582,5 +658,279 @@ mod tests {
     #[test]
     fn test_strip_test_prefix() {
         assert_eq!(strip_test_prefix("test_foo"), "foo");
+    }
+
+    #[test]
+    fn test_metadata_marks_test_tolerant_parse() {
+        assert!(!metadata_marks_test(None));
+        assert!(!metadata_marks_test(Some("not-json")));
+        assert!(!metadata_marks_test(Some("{}")));
+        assert!(!metadata_marks_test(Some(r#"{"test":true}"#)));
+        assert!(!metadata_marks_test(Some(r#"{"test":"false"}"#)));
+        assert!(metadata_marks_test(Some(r#"{"test":"true"}"#)));
+    }
+
+    #[test]
+    fn test_is_same_file_eligible_test_path_drops_tests_vendor_and_tests_rs() {
+        assert!(is_same_file_eligible_test_path("src/foo.rs"));
+        assert!(is_same_file_eligible_test_path("src/exec/boundary.rs"));
+        assert!(!is_same_file_eligible_test_path("tests/foo.rs"));
+        assert!(!is_same_file_eligible_test_path("src/verify/plan/tests.rs"));
+        assert!(!is_same_file_eligible_test_path("src/test.rs"));
+        assert!(!is_same_file_eligible_test_path(
+            "vendor/sqlite3-src/source/sqlite3.c"
+        ));
+        assert!(!is_same_file_eligible_test_path("deps_src/foo.c"));
+        assert!(!is_same_file_eligible_test_path("third_party/bar.c"));
+        assert!(!is_same_file_eligible_test_path(
+            r"vendor\sqlite3-src\source\sqlite3.c"
+        ));
+    }
+
+    fn mapper_storage() -> crate::state::storage::StorageManager {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let mut conn = conn;
+        crate::state::migrations::get_migrations()
+            .to_latest(&mut conn)
+            .unwrap();
+        crate::state::storage::StorageManager::init_from_conn(conn)
+    }
+
+    fn insert_file(conn: &rusqlite::Connection, path: &str) -> i64 {
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at)
+             VALUES (?1, 'Rust', 'h', 100, 'OK', '2026-05-01T00:00:00Z')",
+            [path],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn insert_fn(
+        conn: &rusqlite::Connection,
+        file_id: i64,
+        name: &str,
+        metadata: Option<&str>,
+    ) -> i64 {
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, is_public, confidence, last_indexed_at, metadata)
+             VALUES (?1, ?2, ?3, 'Function', 1, 1.0, '2026-05-01T00:00:00Z', ?4)",
+            rusqlite::params![file_id, name, name, metadata],
+        )
+        .unwrap();
+        conn.last_insert_rowid()
+    }
+
+    fn extract_mapper(storage: &crate::state::storage::StorageManager) -> TestMappingStats {
+        TestMapper::new(storage, PathBuf::from("."))
+            .extract()
+            .expect("extract")
+    }
+
+    fn same_file_rows(
+        storage: &crate::state::storage::StorageManager,
+    ) -> Vec<(String, f64, String, String)> {
+        let conn = storage.get_connection();
+        let mut stmt = conn
+            .prepare(
+                "SELECT tm.mapping_kind, tm.confidence, t.symbol_name, p.symbol_name
+                 FROM test_mapping tm
+                 JOIN project_symbols t ON tm.test_symbol_id = t.id
+                 JOIN project_symbols p ON tm.tested_symbol_id = p.id
+                 WHERE tm.mapping_kind = 'SAME_FILE'
+                 ORDER BY t.symbol_name, p.symbol_name",
+            )
+            .unwrap();
+        stmt.query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, f64>(1)?,
+                row.get::<_, String>(2)?,
+                row.get::<_, String>(3)?,
+            ))
+        })
+        .unwrap()
+        .collect::<Result<Vec<_>, _>>()
+        .unwrap()
+    }
+
+    #[test]
+    fn test_same_file_maps_in_file_unit_and_skips_default() {
+        let storage = mapper_storage();
+        let conn = storage.get_connection();
+        let file_id = insert_file(conn, "src/foo.rs");
+        insert_fn(conn, file_id, "execute", None);
+        insert_fn(conn, file_id, "default", None);
+        insert_fn(conn, file_id, "test_basic_execution", None);
+
+        let stats = extract_mapper(&storage);
+        assert!(stats.same_file_mappings >= 1, "stats={stats:?}");
+
+        let rows = same_file_rows(&storage);
+        assert!(
+            rows.iter()
+                .any(|(_, _, test, prod)| test == "test_basic_execution" && prod == "execute"),
+            "expected SAME_FILE test_basic_execution -> execute, got {rows:?}"
+        );
+        assert!(
+            rows.iter().all(|(_, _, _, prod)| prod != "default"),
+            "Function default must not be a tested_symbol_id: {rows:?}"
+        );
+        let conn = storage.get_connection();
+        let tested_file: i64 = conn
+            .query_row(
+                "SELECT tested_file_id FROM test_mapping WHERE mapping_kind = 'SAME_FILE' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tested_file, file_id);
+        let null_tested: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM test_mapping \
+                 WHERE mapping_kind = 'SAME_FILE' AND tested_symbol_id IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            null_tested, 0,
+            "SAME_FILE must never store NULL tested_symbol_id"
+        );
+    }
+
+    #[test]
+    fn test_same_file_skipped_for_tests_path_tests_rs_stem_and_vendor() {
+        let storage = mapper_storage();
+        let conn = storage.get_connection();
+
+        let tests_id = insert_file(conn, "tests/foo.rs");
+        insert_fn(conn, tests_id, "execute", None);
+        insert_fn(conn, tests_id, "test_basic_execution", None);
+
+        let tests_rs_id = insert_file(conn, "src/verify/plan/tests.rs");
+        insert_fn(conn, tests_rs_id, "execute", None);
+        insert_fn(conn, tests_rs_id, "test_basic_execution", None);
+
+        let vendor_id = insert_file(conn, "vendor/sqlite3-src/source/sqlite3.c");
+        insert_fn(conn, vendor_id, "test_addop_breakpoint", None);
+        insert_fn(conn, vendor_id, "test_trace_breakpoint", None);
+        insert_fn(conn, vendor_id, "sqlite3_exec", None);
+        insert_fn(conn, vendor_id, "sqlite3_close", None);
+        insert_fn(conn, vendor_id, "sqlite3_open", None);
+
+        let stats = extract_mapper(&storage);
+        assert_eq!(
+            stats.same_file_mappings, 0,
+            "tests/ path, tests.rs stem, and vendor must not SAME_FILE; stats={stats:?}"
+        );
+        assert!(
+            same_file_rows(&storage).is_empty(),
+            "expected zero SAME_FILE rows"
+        );
+    }
+
+    #[test]
+    fn test_same_file_wins_over_naming_convention_for_test_execute() {
+        let storage = mapper_storage();
+        let conn = storage.get_connection();
+        let file_id = insert_file(conn, "src/foo.rs");
+        insert_fn(conn, file_id, "execute", None);
+        insert_fn(conn, file_id, "test_execute", None);
+
+        extract_mapper(&storage);
+
+        let conn = storage.get_connection();
+        let (kind, confidence): (String, f64) = conn
+            .query_row(
+                "SELECT tm.mapping_kind, tm.confidence
+                 FROM test_mapping tm
+                 JOIN project_symbols t ON tm.test_symbol_id = t.id
+                 JOIN project_symbols p ON tm.tested_symbol_id = p.id
+                 WHERE t.symbol_name = 'test_execute' AND p.symbol_name = 'execute'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("row test_execute -> execute");
+        assert_eq!(kind, "SAME_FILE");
+        assert!(
+            (confidence - 0.7).abs() < f64::EPSILON,
+            "confidence={confidence}"
+        );
+        let naming: i64 = conn
+            .query_row(
+                "SELECT count(*) FROM test_mapping WHERE mapping_kind = 'NAMING_CONVENTION'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            naming, 0,
+            "NAMING must lose first-wins UNIQUE to SAME_FILE for the same pair"
+        );
+    }
+
+    #[test]
+    fn test_same_file_maps_metadata_test_without_test_prefix() {
+        let storage = mapper_storage();
+        let conn = storage.get_connection();
+        let file_id = insert_file(conn, "src/dto.rs");
+        insert_fn(conn, file_id, "run_report", None);
+        insert_fn(
+            conn,
+            file_id,
+            "covers_from_report",
+            Some(r#"{"test":"true"}"#),
+        );
+        insert_fn(conn, file_id, "plain_helper", None);
+
+        extract_mapper(&storage);
+
+        let rows = same_file_rows(&storage);
+        assert!(
+            rows.iter()
+                .any(|(_, _, test, prod)| test == "covers_from_report" && prod == "run_report"),
+            "#[test] fn without test_ prefix must SAME_FILE-map; got {rows:?}"
+        );
+        assert!(
+            rows.iter().all(|(_, _, test, _)| test != "plain_helper"),
+            "unattributed counterpart must not be a test: {rows:?}"
+        );
+        assert!(
+            rows.iter()
+                .any(|(_, _, test, prod)| test == "covers_from_report" && prod == "plain_helper"),
+            "plain sibling Function is an eligible SAME_FILE target; got {rows:?}"
+        );
+    }
+
+    #[test]
+    fn test_same_file_zero_when_only_test_functions() {
+        let storage = mapper_storage();
+        let conn = storage.get_connection();
+        let file_id = insert_file(conn, "src/config/model.rs");
+        insert_fn(conn, file_id, "test_schema_roundtrip", None);
+        insert_fn(
+            conn,
+            file_id,
+            "covers_from_report",
+            Some(r#"{"test":"true"}"#),
+        );
+
+        let stats = extract_mapper(&storage);
+        assert_eq!(
+            stats.same_file_mappings, 0,
+            "tests with zero eligible production Functions must not SAME_FILE; stats={stats:?}"
+        );
+        assert!(same_file_rows(&storage).is_empty());
+        let null_tested: i64 = storage
+            .get_connection()
+            .query_row(
+                "SELECT count(*) FROM test_mapping \
+                 WHERE mapping_kind = 'SAME_FILE' AND tested_symbol_id IS NULL",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(null_tested, 0);
     }
 }

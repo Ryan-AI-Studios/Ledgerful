@@ -16,9 +16,10 @@ use super::shared_infra::touches_shared_infra;
 const BUMP_MANIFESTS_STEM: &str = "bump_manifests";
 
 /// Query `test_mapping` for the test files that cover the changed source
-/// files. Returns a sorted, deduplicated list of test file stems suitable for
-/// nextest filterset predicates (e.g. `cli_scan` from
-/// `tests/integration/cli_scan.rs`).
+/// files. Returns a sorted, deduplicated list of nextest `test()` stems.
+/// Integration-test paths keep the filename stem (`cli_scan` from
+/// `tests/integration/cli_scan.rs`); in-file product-path tests use the
+/// test function name so `test(boundary)` is not an empty filter.
 ///
 /// Returns `None` (meaning "cannot scope") when:
 /// - the connection is not available
@@ -26,7 +27,7 @@ const BUMP_MANIFESTS_STEM: &str = "bump_manifests";
 /// - no mappings are found for any changed file
 ///
 /// Callers decide refuse vs allow-full-fallback; this helper only selects stems.
-fn query_scoped_test_files(
+pub(crate) fn query_scoped_test_files(
     conn: &rusqlite::Connection,
     packet: &ImpactPacket,
 ) -> Option<Vec<String>> {
@@ -37,12 +38,9 @@ fn query_scoped_test_files(
         return None;
     }
 
-    // Collect the file_path of every test file that covers any changed file.
     let mut test_files: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for change in &packet.changes {
         let path_str = change.path.to_string_lossy().replace('\\', "/");
-        // Resolve the changed file to its project_files id, then query
-        // test_mapping for covering test files.
         let file_id: Option<i64> = conn
             .query_row(
                 "SELECT id FROM project_files WHERE file_path = ?1",
@@ -53,20 +51,14 @@ fn query_scoped_test_files(
         let Some(fid) = file_id else {
             continue;
         };
-        let mut stmt = conn
-            .prepare(
-                "SELECT DISTINCT pf.file_path \
-                 FROM test_mapping tm \
-                 JOIN project_files pf ON tm.test_file_id = pf.id \
-                 WHERE tm.tested_file_id = ?1",
-            )
-            .ok()?;
-        let rows = stmt.query_map([fid], |row| row.get::<_, String>(0)).ok()?;
-        for row in rows.flatten() {
-            // Normalize the test file path to a nextest test name stem.
-            // tests/integration/cli_scan.rs -> cli_scan
-            if let Some(stem) = test_file_to_nextest_stem(&row) {
-                test_files.insert(stem);
+        let rows = scoped_test_file_rows(conn, fid)?;
+        for (file_path, symbol_name) in rows {
+            if crate::index::test_mapping::is_test_path(&file_path) {
+                if let Some(stem) = test_file_to_nextest_stem(&file_path) {
+                    test_files.insert(stem);
+                }
+            } else if let Some(name) = symbol_name.filter(|s| !s.is_empty()) {
+                test_files.insert(name);
             }
         }
     }
@@ -76,6 +68,43 @@ fn query_scoped_test_files(
     } else {
         Some(test_files.into_iter().collect())
     }
+}
+
+/// `(file_path, test symbol_name)`. Falls back to path-only when hermetic
+/// fixtures omit `project_symbols` (LEFT JOIN would fail to prepare).
+fn scoped_test_file_rows(
+    conn: &rusqlite::Connection,
+    tested_file_id: i64,
+) -> Option<Vec<(String, Option<String>)>> {
+    let mut joined = match conn.prepare(
+        "SELECT pf.file_path, ps.symbol_name \
+         FROM test_mapping tm \
+         JOIN project_files pf ON tm.test_file_id = pf.id \
+         LEFT JOIN project_symbols ps ON tm.test_symbol_id = ps.id \
+         WHERE tm.tested_file_id = ?1",
+    ) {
+        Ok(stmt) => stmt,
+        Err(_) => {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT pf.file_path \
+                     FROM test_mapping tm \
+                     JOIN project_files pf ON tm.test_file_id = pf.id \
+                     WHERE tm.tested_file_id = ?1",
+                )
+                .ok()?;
+            let rows = stmt
+                .query_map([tested_file_id], |row| row.get::<_, String>(0))
+                .ok()?;
+            return Some(rows.flatten().map(|p| (p, None)).collect());
+        }
+    };
+    let rows = joined
+        .query_map([tested_file_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })
+        .ok()?;
+    Some(rows.flatten().collect())
 }
 
 /// Convert a test file path (e.g. `tests/integration/cli_scan.rs`) to a

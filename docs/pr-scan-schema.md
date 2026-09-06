@@ -65,7 +65,7 @@ ledgerful scan --pr main...HEAD --format text
     "unmapped": [],
     "mappedSample": [],
     "notes": [
-      "Structural test_mapping only (IMPORT/NAMING_CONVENTION); not line coverage",
+      "Structural test_mapping only (IMPORT/NAMING_CONVENTION/SAME_FILE); not line coverage",
       "LCOV COVERAGE mapping kind does not currently persist (DDL NOT NULL on test_symbol_id)"
     ]
   },
