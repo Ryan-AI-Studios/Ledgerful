@@ -191,6 +191,9 @@ path = "tests/ci/install_docs_truth.rs"
 name = "ledgerful"
 path = "src/main.rs"
 
+[profile.test]
+debug = "line-tables-only"
+
 [profile.mutants]
 inherits = "test"
 debug = 0
