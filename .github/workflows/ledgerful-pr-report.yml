@@ -26,8 +26,8 @@ jobs:
           github-token: ${{ github.token }}
 
       - name: Post risk summary
-        # Same action pin as Workflow A (2142ced7092a9b3e41cb842255272df979ed4b87).
-        uses: Ryan-AI-Studios/ledgerful-action@2142ced7092a9b3e41cb842255272df979ed4b87
+        # Same action pin as Workflow A (678e00b9360e889d30215f344b21ef808d5109a8).
+        uses: Ryan-AI-Studios/ledgerful-action@678e00b9360e889d30215f344b21ef808d5109a8
         with:
           github-token: ${{ github.token }}
           report-path: ledgerful-pr-report.json

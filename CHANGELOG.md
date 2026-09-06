@@ -15,7 +15,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **Engine dogfood v0.2.12:** Workflow A `ledgerful-version` + Linux gnu
   sidecar checksum track published **v0.2.12**. Action `uses:` SHA
-  unchanged until the Action-repo default pin PR lands. No Cargo bump.
+  follow-up is 0277 (this track). No Cargo bump.
+
+- **Winget live at 0.2.12 + dogfood uses: SHA (0277):** Community index is
+  **0.2.12**; microsoft/winget-pkgs #430322 merged. Installation and
+  package-distribution present-tense floors. Both dogfood workflows `uses:`
+  and header comments pin Action #15 squash
+  `678e00b9360e889d30215f344b21ef808d5109a8`. Version/checksum already
+  **v0.2.12** from #294. No Cargo bump.
 
 ## [0.2.12] - 2026-09-06
 
