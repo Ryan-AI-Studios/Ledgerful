@@ -34,6 +34,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Test profile debuginfo (0275):** `[profile.test] debug = "line-tables-only"`
+  (named form; not integer `1` / `"limited"`). `[profile.mutants]` still
+  inherits test then sets `debug = 0`. No Cargo bump.
+
 - **PR CI graph shrink (0271):** Drop the `ai-reviewed` gate workflow.
   PR matrices are Ubuntu fmt and Ubuntu+Windows clippy/test (no macOS).
   Single `deny` job (`cargo deny check`); `audit` job removed. Windows
