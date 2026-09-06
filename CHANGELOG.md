@@ -13,6 +13,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   hashes. Live tap/bucket remotes already auto-bumped on the release; this
   syncs in-engine templates. No Cargo bump.
 
+- **Engine dogfood v0.2.12:** Workflow A `ledgerful-version` + Linux gnu
+  sidecar checksum track published **v0.2.12**. Action `uses:` SHA
+  unchanged until the Action-repo default pin PR lands. No Cargo bump.
+
 ## [0.2.12] - 2026-09-06
 
 ### Fixed
