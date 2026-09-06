@@ -8,6 +8,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Windows deadlock generator (0273):** `test_large_output_does_not_deadlock`
+  Windows arm writes ≥256 KiB in one shot (`[Console]::Out.Write` + `Flush`)
+  instead of a 20k-item `ForEach-Object` loop. Truncation/cap asserts and
+  10s timeout unchanged. No Cargo bump.
+
 - **Scan auto-graph storage reuse (0259):** Observability auto-graph opens
   write storage once (skip if `ledger.db` missing) and silent impact reuses
   that handle. 0180 gitScan and 0189 `Run` unchanged. No Cargo bump.

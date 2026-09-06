@@ -167,7 +167,7 @@ mod tests {
             c.args([
                 "-NoProfile",
                 "-Command",
-                "1..20000 | ForEach-Object { 'A' * 200 }",
+                "$s = 'A' * 262144; [Console]::Out.Write($s); [Console]::Out.Flush()",
             ]);
             c
         } else {
