@@ -55,6 +55,7 @@ jobs:
         with:
           # Pin exact 1.98.1 (not floating `stable`). Bump = manual PR when we
           # want a new compiler; not Dependabot (it bumps action SHAs, not rustc).
+          # dtolnay uses rustup --profile minimal; fmt/clippy must request components.
           toolchain: 1.98.1
           components: rustfmt
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
