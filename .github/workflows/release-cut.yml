@@ -1,8 +1,8 @@
 # 0104 — Scheduled Tier-2 release cut (0098 Part B); cadence revised 0218.
 #
 # Proposes a release PR when [Unreleased] has content; tags on merge of a
-# release-cut-labelled PR. Does NOT auto-merge and cannot set ai-reviewed
-# (token lacks commit_statuses: write by design).
+# release-cut-labelled PR. Does NOT auto-merge. Token lacks
+# commit_statuses: write by design (credential fact, not a required check).
 #
 # Cadence: Thursday mid-morning America/New_York, non-top-of-hour (GitHub
 # high-load includes the start of every hour; delivery can still lag 15m–2h).
@@ -207,8 +207,8 @@ jobs:
           - Do not add commits under \`.github/\` on this branch (PAT cannot push them; do not try).
 
           ### Still required before merge
-          - **\`ai-reviewed\`** is still required. This automation cannot set it (by design — token has no commit-statuses write). Follow [docs/AI-CODE-REVIEW-PROTOCOL.md](../blob/main/docs/AI-CODE-REVIEW-PROTOCOL.md).
-          - Required checks must pass; merge is a human decision.
+          - Live required status checks (see [docs/AI-CODE-REVIEW-PROTOCOL.md](../blob/main/docs/AI-CODE-REVIEW-PROTOCOL.md) Enforcement). **\`gh pr merge --auto\` is forbidden** until Codex is clean of findings above low.
+          - \`RELEASE_CUT_TOKEN\` has **no commit-statuses write** (credential fact). Merge is a human decision.
 
           ### After merge
           The tag job creates \`v${version}\` on the **merge commit** (not the PR head), which starts \`release.yml\`.

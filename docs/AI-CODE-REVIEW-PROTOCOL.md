@@ -63,43 +63,37 @@
 
 ## Enforcement (CI gate)
 
-Live `main` branch protection (`required_status_checks.contexts`, re-verified 2026-09-03)
-requires a pull request plus these seven checks before merge:
+Live `main` branch protection (`required_status_checks.contexts`, re-verified 2026-09-06)
+requires a pull request plus these five checks before merge:
 
-- `ai-reviewed`
 - `fmt (ubuntu-latest)`
 - `clippy (ubuntu-latest)`
 - `test (ubuntu-latest)`
 - `test (windows-latest)`
-- `audit`
 - `deny`
 
-Human code-review approvals are not required (`required_approving_review_count = 0`); independent
-adversarial AI review is the default technical approval gate. The owner retains the product,
-risk-acceptance, and final merge decision.
+Human code-review approvals are not required (`required_approving_review_count = 0`).
+Cross-model review is **process** (`codex-review` / `review_workflow`), not a required
+GitHub status check. The owner retains the product, risk-acceptance, and final merge
+decision.
+
+**`gh pr merge --auto` is forbidden** until Codex is clean of findings above low.
+GitHub will treat a PR as mergeable as soon as the five CI checks pass; that is not
+authorization to merge.
 
 `.github/workflows/security.yml` still runs on pull_request, push to `main`, and the weekly
 schedule. Job names include `Secret scan` and `Semgrep SAST` (plus display names
 `Cargo audit` / `Cargo deny`). Those jobs do not gate merge unless branch protection is
 updated to include them.
 
-Contexts `audit` and `deny` in the live list are the CI workflow jobs, not the Security
-workflow display names.
+Context `deny` in the live list is the CI workflow job (`cargo deny check`), not the
+Security workflow display name.
 
 HITL names if protection is updated: `Secret scan`, `Semgrep SAST`. Default is honesty
 against live protection; this track does not flip GitHub settings.
 
-The `ai-reviewed` check is set by the orchestrator **only after** the cross-model review subagent
-passes. The gate is:
-
-- **Status check name:** `ai-reviewed`
-- **Set by:** the orchestrator (manager agent) after the review subagent reports clean.
-- **Implementation:** a GitHub Action workflow (`ai-review-gate.yml`) that creates a
-  `pending` status on PR open, and the orchestrator pushes a `success` status via
-  `gh api` when the review passes.
-
-Passing AI review does not merge a PR. It confirms the technical review gate; the owner still
-chooses whether and when the change is merged.
+Passing process review does not merge a PR. It confirms the technical review gate; the
+owner still chooses whether and when the change is merged.
 
 ## Standing rules (every PR)
 
