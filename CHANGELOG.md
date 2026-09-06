@@ -34,6 +34,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **PR-path rustc pin (0272):** PR-path CI uses exact `toolchain: 1.98.1`
+  instead of floating `stable` (`ci.yml` fmt/clippy/test/test-slow/deny/
+  coverage/mutation, `windows-path-tests.yml`, `security.yml` cargo-audit
+  and cargo-deny). `release.yml` stays `stable`. No `rust-toolchain.toml`.
+  Bump is a manual PR, not Dependabot. fmt/clippy jobs pass `components:
+  rustfmt` / `clippy` because dtolnay installs `--profile minimal`.
+  No Cargo bump.
+
 - **Test profile debuginfo (0275):** `[profile.test] debug = "line-tables-only"`
   (named form; not integer `1` / `"limited"`). `[profile.mutants]` still
   inherits test then sets `debug = 0`. No Cargo bump.
