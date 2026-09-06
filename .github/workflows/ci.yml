@@ -103,7 +103,7 @@ jobs:
         # Pin mainline v2 release SHA (not per-tool tags). Dependabot shallow-
         # clones cannot resolve diverged nextest/cargo-llvm-cov/cargo-mutants
         # convenience commits (error: no such commit).
-        uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
         with:
           tool: nextest
 
@@ -148,7 +148,7 @@ jobs:
           toolchain: 1.98.1
       - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
       - name: Install cargo-nextest
-        uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
+        uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
         with:
           tool: nextest
 
@@ -221,7 +221,7 @@ jobs:
         with:
           toolchain: 1.98.1
           components: llvm-tools-preview
-      - uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
+      - uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
         with:
           tool: cargo-llvm-cov,nextest
       - run: cargo llvm-cov nextest --workspace --all-features --html --output-dir coverage/
@@ -239,7 +239,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
         with:
           toolchain: 1.98.1
-      - uses: taiki-e/install-action@7f4eb899022d8fe70b20c4f3de697aa85c309026 # v2.85.11
+      - uses: taiki-e/install-action@1ed6d7be6168f6c9046541087ff549b6bc581fdf # v2.87.2
         with:
           tool: cargo-mutants,nextest
       - run: cargo mutants --workspace --in-place --file 'src/ledger/**' --file 'src/impact/**' --file 'src/verify/**'
