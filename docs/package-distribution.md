@@ -110,7 +110,8 @@ to pins) diffs GitHub Latest tag + archive `assets[].digest` against in-tree
 ### Scheduled release cut (0104) — proposes, does not merge
 
 Workflow: `release-cut.yml` (`Release cut`). This is **0098 Part B**: automation **proposes** a
-Tier-2 cut when there is work; a human still merges after `ai-reviewed` and the other required checks.
+Tier-2 cut when there is work; a human still merges after the required CI checks are green
+and Codex is clean of findings above low.
 
 | | Value |
 |---|---|
@@ -135,11 +136,14 @@ Tier-2 cut when there is work; a human still merges after `ai-reviewed` and the 
 
 **On merge** of a PR with label `release-cut`: tag job tags **`merge_commit_sha`** (not `github.sha`, not the PR head), asserts it is an ancestor of `origin/main`, pushes `vX.Y.Z` with the PAT so `release.yml` fires.
 
-**Still required before merge:** `ai-reviewed` and the other required checks. This automation **cannot** set `ai-reviewed` (token has no commit-statuses write — load-bearing). See `docs/AI-CODE-REVIEW-PROTOCOL.md`.
+**Still required before merge:** the live required status checks (see
+`docs/AI-CODE-REVIEW-PROTOCOL.md` Enforcement). **`gh pr merge --auto` is forbidden**
+until Codex is clean of findings above low. `RELEASE_CUT_TOKEN` has **no
+commit-statuses write** (load-bearing credential fact).
 
 **Schedule operational facts** (same class as Gate B): delivery can lag under load (15 min–2 h reported under high load); a missed week is harmless (next Thursday sees a larger `[Unreleased]`); public-repo schedules auto-disable after ~60 days of inactivity.
 
-**Credential inventory:** `RELEASE_CUT_TOKEN` is a fine-grained PAT with **no expiration** (a fact, not a missing date). Nothing forces a periodic review of whether it is still needed or correctly scoped — that is prose, not a mechanism. Revocation path: github.com/settings/personal-access-tokens → Delete. Do not grant it `workflows: write` or `commit statuses: write` (those absences enforce "never commit `.github/`" and "cannot set ai-reviewed").
+**Credential inventory:** `RELEASE_CUT_TOKEN` is a fine-grained PAT with **no expiration** (a fact, not a missing date). Nothing forces a periodic review of whether it is still needed or correctly scoped — that is prose, not a mechanism. Revocation path: github.com/settings/personal-access-tokens → Delete. Do not grant it `workflows: write` or `commit statuses: write` (those absences enforce "never commit `.github/`" and keep the token from posting commit statuses).
 
 **Ops recovery — release cut**
 

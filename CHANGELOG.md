@@ -34,6 +34,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **PR CI graph shrink (0271):** Drop the `ai-reviewed` gate workflow.
+  PR matrices are Ubuntu fmt and Ubuntu+Windows clippy/test (no macOS).
+  Single `deny` job (`cargo deny check`); `audit` job removed. Windows
+  `test` skips `--doc`. `test-slow` needs `clippy` only. `gh pr merge
+  --auto` is forbidden until Codex is clean of findings above low. No
+  Cargo bump.
+
 - **Hook commit-msg extract (0270):** `execute_hook_commit_msg` is split
   into `hook_commit_msg/{execute,gc,staged,sot,intent,record}.rs`. Never-gate
   runs before GC. `GcOutcome` distinguishes proceed vs amend/orphan early
