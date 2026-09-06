@@ -601,8 +601,12 @@ fn test_cli_tests_json_missing_entity_is_usage_error() {
         "stdout must not be a parseable schemaVersion object: {stdout}"
     );
     assert!(
-        stderr.contains("No entity specified") || stderr.contains("Usage:"),
-        "stderr must use stable usage substrings, got: {stderr}"
+        stderr.contains("No entity specified"),
+        "stderr must include missing-entity text, got: {stderr}"
+    );
+    assert!(
+        stderr.contains("Usage:"),
+        "stderr must include usage, got: {stderr}"
     );
     assert_no_miette_chrome(&stderr);
 }
@@ -662,6 +666,12 @@ fn test_cli_tests_empty_graph_is_usage_error() {
     assert!(
         !json.status.success(),
         "empty-graph --json must refuse, got {:?}",
+        json.status
+    );
+    assert_eq!(
+        json.status.code(),
+        Some(2),
+        "empty-graph --json expected exit 2, got {:?}; stdout={json_stdout}; stderr={json_stderr}",
         json.status
     );
     assert!(
@@ -781,10 +791,14 @@ fn test_cli_tests_bare_picker_excludes_vendor_and_incrate_tests_rs() {
         "picker may list mapped product src/lib.rs, got: {stderr}"
     );
     assert!(
-        stderr.contains("Files with indexed test mappings")
-            || stderr.contains("No mapped product files"),
-        "human picker header or empty-product line, got: {stderr}"
+        stderr.contains("Files with indexed test mappings (top 10):"),
+        "human picker must use mapping-count header, got: {stderr}"
+    );
+    assert!(
+        stderr.contains(" mappings"),
+        "picker counts must be mappings, not symbols: {stderr}"
     );
     assert!(!stderr.contains("Available entities (top 10 by symbol count)"));
+    assert!(!stderr.contains(" symbols"));
     assert_no_miette_chrome(&stderr);
 }
