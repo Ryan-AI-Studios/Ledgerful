@@ -127,6 +127,19 @@ pub enum RegisterCommands {
     },
 }
 
+const STACK_AFTER_HELP: &str = "\
+Sections: TECH STACK RULES, COMMIT VALIDATORS, CATEGORY MAPPINGS.
+
+Empty next:
+  ledgerful ledger register rule
+  ledgerful ledger register validator
+
+SQLite inspect of commit-path enforcement — not verify auto-policy, not \
+.ledgerful/rules.toml, not policy check. ledger.enforcement_enabled defaults \
+off (rules at start_change); validators still run at commit. No ledger \
+register mapping CLI.
+";
+
 #[derive(Subcommand, Debug)]
 #[command(after_help = "\
 Tips:
@@ -260,11 +273,15 @@ pub enum LedgerCommands {
         #[command(subcommand)]
         command: RegisterCommands,
     },
-    /// Show active tech stack enforcement rules
+    /// SQLite inspect of commit-path stack rules, validators, and mappings
+    #[command(after_help = STACK_AFTER_HELP)]
     Stack {
         /// Optional ledger category filter (positional; same aliases as --category)
         #[arg(value_parser = CategoryValueParser, long_help = CATEGORY_LONG_HELP)]
         category: Option<Category>,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
     /// Architectural Decision Records (MADR format)
     Adr {

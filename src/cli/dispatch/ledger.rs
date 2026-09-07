@@ -122,8 +122,11 @@ pub(super) fn dispatch_ledger(command: LedgerCommands) -> Result<()> {
                 &name, &command, &category, timeout,
             ),
         },
-        LedgerCommands::Stack { category } => {
-            crate::commands::ledger_stack::execute_ledger_stack(category.map(|c| c.to_string()))
+        LedgerCommands::Stack { category, json } => {
+            crate::commands::ledger_stack::execute_ledger_stack(
+                category.map(|c| c.to_string()),
+                json,
+            )
         }
         LedgerCommands::Adr { command } => crate::commands::ledger_adr::execute_ledger_adr(command),
         LedgerCommands::Validator { command } => {

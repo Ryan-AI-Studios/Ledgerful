@@ -31,6 +31,7 @@ on stderr.
 | `change-context --json` | yes | yes | impact-shaped packet |
 | `session --json` | yes (0224) | yes | schemaVersion 1 object `kind: "session"`; human default is **not** JSON. Does not rewrite `latest-impact.json`. `collisions[]` lives here (not status v1). No `warnAction`. CLI-only |
 | `ledger status --json` | yes | yes | schemaVersion 1 |
+| `ledger stack --json` | yes (0281) | yes | schemaVersion 1 object `kind: "ledgerStack"`; `empty` true iff filtered rules/validators/mappings are all empty; `next` is the two clap register commands only when empty; `enforcementEnabled` from live config; item structs stay snake_case. No `emptyReason`. Not Daily 5 |
 | `status --json` | yes (0149) | yes | **same payload** as `ledger status --json` |
 | `search --json` | yes | yes | 0136 envelope; empty results OK |
 | `verify --json` | yes | yes* | plan-execution payload; see rejected combos |
@@ -52,6 +53,32 @@ on stderr.
 
 \* Non-essential progress INFO suppressed under machine mode; hard failures still
 use stderr.
+
+### `ledger stack --json` schema (0281)
+
+Pure stdout. New envelope for this command (it had no `--json` before). Freeze
+`schemaVersion` **1**. Item arrays reuse existing serde (`TechStackRule`,
+`CommitValidator`, `CategoryStackMapping` — snake_case). Do **not** wrap as
+0213 bare array or an `emptyReason` list envelope.
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "ledgerStack",
+  "empty": true,
+  "enforcementEnabled": false,
+  "rules": [],
+  "validators": [],
+  "mappings": [],
+  "next": [
+    "ledgerful ledger register rule",
+    "ledgerful ledger register validator"
+  ]
+}
+```
+
+`empty` is computed on the optional positional `[CATEGORY]` filter. `next` is
+non-empty only when `empty` is true.
 
 ### `release pins --json` schema (0201)
 

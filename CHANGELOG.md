@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Empty `ledger stack` next-action (0281):** `ledgerful ledger stack` stays
+  valid when SQLite has no rules. Human names `ledgerful ledger register rule`
+  / `ledgerful ledger register validator`, identifies a SQLite commit-path
+  inspect (not verify auto-policy, not `.ledgerful/rules.toml`, not `policy
+  check`), and does not invent a mapping CLI. `--json` is a new
+  `kind: ledgerStack` schemaVersion-1 object (`empty` + `next`).
+  `enforcement_enabled` defaults off; validators still run at commit.
+
 - **Security boundaries operator view (0280):** `ledgerful security boundaries`
   lists Cedar `@id` → indexed route (not `Policy: permit N` + URN dump).
   Populated human states this is not a live PDP and daemon auth is Bearer.
