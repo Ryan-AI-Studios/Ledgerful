@@ -29,6 +29,10 @@ Requires `-e` / `--entity` or a positional entity. Missing entity is a usage err
 - **`ledger start --force`:** bypasses the **pending-entity collision lock** (0223). A PENDING TX whose entity overlaps the new `--entity` or any current dirty path otherwise refuses with `[Ledgerful] Collision:` (exit 2). Owner self-collision is intended — commit/abort first, or pass `--force`.
 - **`ledger commit --force`:** bypasses the **verification gate**. Unrelated to the start collision lock. Do not treat these flags as interchangeable.
 
+## `ledgerful status`
+
+Pending/drift slice of `ledger status` (`--json` / `--compact` only). Bare `ledgerful status` is valid human pending/drift. Ledger-only flags (`--entity`, `--exit-code`, `--global`, `--all`, `--strict-observe-signal`, `--verify-signatures`, and `--repo`/`--reindex`/`--opt-in`/`--opt-out` which require `--global`) live on `ledgerful ledger status`. Daily 5 stays `ledger status --compact` / `--json`. Git hooks stay `ledger status --compact --exit-code`.
+
 ## `ledgerful ledger stack`
 
 SQLite inspect of commit-path stack rules / validators / mappings — not verify auto-policy, not `.ledgerful/rules.toml`, not `policy check`. Empty next: `ledgerful ledger register rule` and `ledgerful ledger register validator` (no mapping CLI; no `config set`). `--json`: schemaVersion 1 object `kind: "ledgerStack"` (`empty` + `next`; snake_case item structs).

@@ -298,6 +298,25 @@ pub struct VerifyArgs {
     pub json: bool,
 }
 
+/// Unique after_help marker for top-level `status` (0282). Must not appear
+/// in the about line — tests isolate Options between `"Options:"` and this.
+pub(crate) const STATUS_AFTER_HELP: &str = "\
+This command owns --json and --compact only.
+
+Ledger-only flags:
+  Use `ledgerful ledger status` for:
+  --entity / -e
+  --exit-code
+  --strict-observe-signal
+  --verify-signatures
+  --all / -a
+  --global
+  --repo <PATH> / --reindex / --opt-in / --opt-out  (require --global)
+
+Git hooks use `ledger status --compact --exit-code`.
+Daily 5 uses `ledger status --compact` or `--json`.
+";
+
 /// Ledger pending/drift JSON (`--json`) and compact (`--compact`).
 /// Not a full alias of `ledger status`.
 #[derive(Args, Debug)]
