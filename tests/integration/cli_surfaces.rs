@@ -252,7 +252,10 @@ fn test_security_boundaries_human() {
     execute_init(false, false).unwrap();
 
     let args = SecurityArgs {
-        command: SecuritySubcommands::Boundaries { json: false },
+        command: SecuritySubcommands::Boundaries {
+            json: false,
+            verbose: false,
+        },
     };
     let result = execute_security(args);
     assert!(result.is_ok());

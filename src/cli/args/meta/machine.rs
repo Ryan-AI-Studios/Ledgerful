@@ -91,7 +91,7 @@ impl Commands {
             },
             Commands::Security(args) => match &args.command {
                 SecuritySubcommands::Impact { json, .. } => *json,
-                SecuritySubcommands::Boundaries { json } => *json,
+                SecuritySubcommands::Boundaries { json, .. } => *json,
             },
             Commands::Tests(args) => args.json,
             Commands::Bridge { subcommand } => match subcommand {

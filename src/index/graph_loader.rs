@@ -1082,16 +1082,23 @@ fn phase_security(ctx: &mut GraphLoadContext) -> Result<()> {
                     let rel_path = path.strip_prefix(ctx.storage.root_path()).unwrap_or(&path);
                     let rel_path_str = rel_path.to_string_lossy().replace('\\', "/");
                     let urn = format!("urn:ledgerful:policy:{}:{}", path.to_string_lossy(), i);
+                    let label = if policy.cedar_id.is_empty() {
+                        format!("Policy: {} {}", policy.effect, i)
+                    } else {
+                        policy.cedar_id.clone()
+                    };
                     policy_nodes.push(GraphNode {
                         id: urn.clone(),
-                        label: format!("Policy: {} {}", policy.effect, i),
+                        label,
                         category: NodeKind::Policy,
                         risk_score: 0.0,
                         metadata: Some(json!({
                             "effect": policy.effect,
+                            "action": policy.action,
                             "raw": policy.raw,
                             "conditions": policy.conditions,
                             "annotations": policy.annotations,
+                            "cedar_id": policy.cedar_id,
                             "is_template": policy.is_template,
                             "template_id": policy.template_id,
                             "source_file": rel_path_str,
@@ -1338,28 +1345,47 @@ fn phase_security(ctx: &mut GraphLoadContext) -> Result<()> {
     // 9d. Cross-surface security links
     let mut cross_edges = Vec::new();
 
-    for (method, path, _, _, _, _, _) in ctx.route_rows.iter() {
-        let endpoint_id = format!("urn:ledgerful:endpoint:{}:{}", method, path);
-        for p_node in policy_nodes
-            .iter()
-            .filter(|n| n.category == NodeKind::Policy)
-        {
-            let has_path_ref = p_node
-                .metadata
-                .as_ref()
-                .and_then(|m| m.get("raw"))
-                .and_then(|r| r.as_str())
-                .map(|raw| raw.contains(path.as_str()))
-                .unwrap_or(false);
-            if has_path_ref {
-                cross_edges.push(GraphEdge {
-                    source: p_node.id.clone(),
-                    target: endpoint_id.clone(),
-                    relation: EdgeKind::ProtectedBy,
-                    confidence: 0.7,
-                    provenance_id: ctx.provenance_id.to_string(),
-                });
+    for p_node in policy_nodes
+        .iter()
+        .filter(|n| n.category == NodeKind::Policy)
+    {
+        let action = p_node
+            .metadata
+            .as_ref()
+            .and_then(|m| m.get("action"))
+            .and_then(|v| v.as_str())
+            // List-form / unparseable constraints (e.g. `in [Action::…]`)
+            // fall through to raw-source extraction rather than matching
+            // against a garbage (method, path) split.
+            .filter(|a| crate::policy::cedar::parse_cedar_action(a).is_some())
+            .map(str::to_string)
+            .or_else(|| {
+                p_node.metadata.as_ref().and_then(|m| {
+                    m.get("raw")
+                        .and_then(|r| r.as_str())
+                        .and_then(crate::policy::cedar::parse_action_from_policy_raw)
+                        .map(|(method, path)| format!("Action::\"{method} {path}\""))
+                })
+            })
+            .unwrap_or_default();
+        if action.is_empty() {
+            continue;
+        }
+        let mut hits: Vec<(String, String)> = Vec::new();
+        for (method, path, _, _, _, _, _) in ctx.route_rows.iter() {
+            if crate::policy::cedar::cedar_action_matches_route(&action, method, path) {
+                hits.push((method.clone(), path.clone()));
             }
+        }
+        for (method, path) in crate::policy::cedar::prefer_api_endpoint_paths(&hits) {
+            let endpoint_id = format!("urn:ledgerful:endpoint:{}:{}", method, path);
+            cross_edges.push(GraphEdge {
+                source: p_node.id.clone(),
+                target: endpoint_id,
+                relation: EdgeKind::ProtectedBy,
+                confidence: 0.7,
+                provenance_id: ctx.provenance_id.to_string(),
+            });
         }
     }
 

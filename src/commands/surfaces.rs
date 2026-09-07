@@ -244,7 +244,7 @@ fn classify_security(probes: &SurfaceProbes) -> SurfaceItem {
     let (status, reason, next) = if probes.cedar_auth_nodes > 0 {
         (
             SurfaceStatus::Ready,
-            "Cedar/auth nodes present",
+            "Cedar permits listed as @id → route",
             "ledgerful security boundaries",
         )
     } else if probes.policies_cedar_on_disk {

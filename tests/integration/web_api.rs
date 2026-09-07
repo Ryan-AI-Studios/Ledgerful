@@ -1008,6 +1008,183 @@ async fn test_security_boundaries_returns_json() {
     handle.abort();
 }
 
+/// 0280 B4: populated REST mirrors CLI label+dedupe values (DTO unchanged).
+#[tokio::test]
+async fn test_security_boundaries_populated_parity_with_cli() {
+    use ledgerful::state::graph_kinds::{EdgeKind, NodeKind};
+    use ledgerful::state::storage::StorageManager;
+    use ledgerful::state::storage_cozo::{GraphEdge, GraphNode};
+
+    let guard = temp_layout();
+    let layout = guard.layout();
+    layout.ensure_state_dir().unwrap();
+    let db_path = layout.state_subdir().join("ledger.db");
+    let storage = StorageManager::init(db_path.as_std_path()).unwrap();
+    {
+        let conn = storage.get_connection();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, last_indexed_at) \
+             VALUES ('src/lib.rs', 'Rust', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let file_id: i64 = conn
+            .query_row(
+                "SELECT id FROM project_files WHERE file_path = 'src/lib.rs'",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        // Exchange has both spellings; the /api form must win.
+        conn.execute(
+            "INSERT INTO api_routes (method, path_pattern, framework, handler_file_id, last_indexed_at) \
+             VALUES ('POST', '/session/exchange', 'Axum', ?1, '2026-01-01T00:00:00Z')",
+            [file_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO api_routes (method, path_pattern, framework, handler_file_id, last_indexed_at) \
+             VALUES ('POST', '/api/session/exchange', 'Axum', ?1, '2026-01-01T00:00:00Z')",
+            [file_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO api_routes (method, path_pattern, framework, handler_file_id, last_indexed_at) \
+             VALUES ('GET', '/session', 'Axum', ?1, '2026-01-01T00:00:00Z')",
+            [file_id],
+        )
+        .unwrap();
+    }
+    // Seed Cozo graph the way build_native_graph would: policy node carries a
+    // stale 'Policy: permit N' label + metadata with @id (display helper must
+    // override), action node, endpoints, and a method-blind stale edge
+    // (exchange -> GET /session) the emit-time filter must drop.
+    let cozo = storage.cozo().expect("CozoDB available");
+    let policy_raw = r#"@id("route_post_api_session_exchange")
+permit (
+    principal,
+    action == Action::"POST /api/session/exchange",
+    resource
+);"#;
+    let policy_meta = serde_json::json!({
+        "effect": "permit",
+        "action": "Action::\"POST /api/session/exchange\"",
+        "raw": policy_raw,
+        "annotations": { "id": "route_post_api_session_exchange" },
+        "cedar_id": "route_post_api_session_exchange",
+        "schema_version": "v1",
+    });
+    let nodes = vec![
+        GraphNode {
+            id: "urn:ledgerful:policy:policies/daemon-api.cedar:2".to_string(),
+            label: "Policy: permit 2".to_string(),
+            category: NodeKind::Policy,
+            risk_score: 0.0,
+            metadata: Some(policy_meta),
+        },
+        GraphNode {
+            id: "urn:ledgerful:action:Action::\"POST /api/session/exchange\"".to_string(),
+            label: "Action: Action::\"POST /api/session/exchange\"".to_string(),
+            category: NodeKind::Action,
+            risk_score: 0.0,
+            metadata: Some(serde_json::json!({"schema_version": "v1"})),
+        },
+        GraphNode {
+            id: "urn:ledgerful:endpoint:POST:/session/exchange".to_string(),
+            label: "POST /session/exchange".to_string(),
+            category: NodeKind::Endpoint,
+            risk_score: 0.0,
+            metadata: Some(
+                serde_json::json!({"method": "POST", "path": "/session/exchange", "schema_version": "v1"}),
+            ),
+        },
+        GraphNode {
+            id: "urn:ledgerful:endpoint:POST:/api/session/exchange".to_string(),
+            label: "POST /api/session/exchange".to_string(),
+            category: NodeKind::Endpoint,
+            risk_score: 0.0,
+            metadata: Some(
+                serde_json::json!({"method": "POST", "path": "/api/session/exchange", "schema_version": "v1"}),
+            ),
+        },
+        GraphNode {
+            id: "urn:ledgerful:endpoint:GET:/session".to_string(),
+            label: "GET /session".to_string(),
+            category: NodeKind::Endpoint,
+            risk_score: 0.0,
+            metadata: Some(
+                serde_json::json!({"method": "GET", "path": "/session", "schema_version": "v1"}),
+            ),
+        },
+    ];
+    cozo.insert_nodes(&nodes).unwrap();
+    cozo.insert_edges(&[
+        GraphEdge {
+            source: nodes[0].id.clone(),
+            target: "urn:ledgerful:endpoint:GET:/session".to_string(),
+            relation: EdgeKind::ProtectedBy,
+            confidence: 0.7,
+            provenance_id: "seed".to_string(),
+        },
+        GraphEdge {
+            source: nodes[0].id.clone(),
+            target: "urn:ledgerful:endpoint:POST:/session/exchange".to_string(),
+            relation: EdgeKind::ProtectedBy,
+            confidence: 0.7,
+            provenance_id: "seed".to_string(),
+        },
+        GraphEdge {
+            source: nodes[0].id.clone(),
+            target: "urn:ledgerful:endpoint:POST:/api/session/exchange".to_string(),
+            relation: EdgeKind::ProtectedBy,
+            confidence: 0.7,
+            provenance_id: "seed".to_string(),
+        },
+    ])
+    .unwrap();
+    drop(storage);
+
+    let (url, token, handle) = spawn_server(layout.clone()).await;
+
+    let body = tokio::task::spawn_blocking(move || {
+        authed_get(&url, &token, "/api/security/boundaries")
+            .call()
+            .unwrap()
+            .into_string()
+            .unwrap()
+    })
+    .await
+    .unwrap();
+
+    let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+    // DTO unchanged (no pdp field on REST).
+    assert!(json.get("meta").is_some());
+    assert!(json.get("boundaries").is_some());
+    assert!(
+        json.get("pdp").is_none(),
+        "REST DTO stays meta/boundaries without pdp: {json}"
+    );
+    let edges = json["boundaries"]["boundary_edges"]
+        .as_array()
+        .expect("boundary_edges");
+    assert_eq!(
+        edges.len(),
+        1,
+        "emit-time dedupe keeps exactly one exchange edge: {json}"
+    );
+    assert_eq!(
+        edges[0]["target_label"].as_str(),
+        Some("POST /api/session/exchange"),
+        "REST keeps the /api spelling: {json}"
+    );
+    let policy_label = edges[0]["policy_label"].as_str().unwrap_or_default();
+    assert_eq!(
+        policy_label, "route_post_api_session_exchange",
+        "REST resolves @id over the stale stored label: {json}"
+    );
+    handle.abort();
+}
+
 #[tokio::test]
 async fn test_knowledge_graph_returns_json() {
     let guard = temp_layout();
@@ -1139,7 +1316,7 @@ async fn test_spa_index_served_at_root() {
     )
     .unwrap();
 
-    // Temp SPAs usually sit under $HOME — inject allow-root covering the SPA
+    // Temp SPAs usually sit under $HOME â€” inject allow-root covering the SPA
     // so containment matches production LEDGERFUL_SPA_ROOT operator path.
     let allow_root = spa_dir.clone();
     let validated =
@@ -1379,11 +1556,11 @@ async fn test_api_ledger_detail_reads_verification_enrichment() {
 
     // Insert one passing verification_run and one failing
     // verification_run (so flakes == 1). Then insert three
-    // verification_results (test/build commands) â€” two on the passing
+    // verification_results (test/build commands) Ã¢â‚¬â€ two on the passing
     // run, one on the failing run. Per M8 opencode-review L1,
     // `tests_run` counts `verification_results` (3) and `flakes`
     // counts failing `verification_runs` (1). The 1:many
-    // runâ†’results ratio is what makes the distinction observable
+    // runÃ¢â€ â€™results ratio is what makes the distinction observable
     // (the old test seeded 2 runs + 2 results 1:1, so a mis-keyed
     // JOIN could not be detected).
     conn.execute(
@@ -1495,7 +1672,7 @@ async fn test_api_ledger_detail_reads_verification_enrichment() {
     );
     // `src/foo.rs` is in `hotspot_history`; `src/bar.rs` is not.
     // Expected: 1 hotspot crossed (not 0 or 2). This pins the
-    // `count_hotspots_crossed` JOIN â€” a regression that broke the
+    // `count_hotspots_crossed` JOIN Ã¢â‚¬â€ a regression that broke the
     // intersection logic or read from the wrong snapshot would produce
     // 0 or 2 instead of 1.
     assert_eq!(
@@ -1580,8 +1757,8 @@ async fn test_api_projects_reflect_impact_report() {
     let health_score = first["health_score"].as_u64().expect("health_score is u64");
     // Per M8 opencode-review L3: pin the value. With `riskLevel: "high"`
     // and no doctor file, the formula is `100 - 60 (high) - 0 (no
-    // doctor) = 40`. A regression that mapped Highâ†’30 (score 70) or
-    // Highâ†’10 (score 90) would not be caught by the `health_score < 80`
+    // doctor) = 40`. A regression that mapped HighÃ¢â€ â€™30 (score 70) or
+    // HighÃ¢â€ â€™10 (score 90) would not be caught by the `health_score < 80`
     // threshold alone.
     assert_eq!(
         health_score, 40,
@@ -1608,7 +1785,7 @@ async fn test_api_sync_status_when_never_synced() {
     let guard = temp_layout();
     let layout = guard.layout();
 
-    // No sync_state row in the DB â†’ "never synced" case.
+    // No sync_state row in the DB Ã¢â€ â€™ "never synced" case.
     let (url, token, handle) = spawn_server(layout.clone()).await;
     let body = tokio::task::spawn_blocking(move || {
         authed_get(&url, &token, "/api/sync/status")
@@ -1723,11 +1900,11 @@ async fn test_api_sync_status_after_init() {
 }
 
 /// Track 0013 DoD-1: when built **without** `sync`, `/api/sync/status`
-/// returns a clean `501 Not Implemented` (schema/runtime consistency â€” the
+/// returns a clean `501 Not Implemented` (schema/runtime consistency Ã¢â‚¬â€ the
 /// route is always registered, but the handler returns 501 when the
 /// feature is off).
 ///
-/// This test is `#[cfg(not(feature = "sync"))]` â€” it only compiles/runs
+/// This test is `#[cfg(not(feature = "sync"))]` Ã¢â‚¬â€ it only compiles/runs
 /// in a no-sync build. In the default CI run (which uses `--features sync`),
 /// it is skipped.
 #[cfg(not(feature = "sync"))]
@@ -1761,14 +1938,14 @@ async fn test_api_sync_status_returns_501_without_sync_feature() {
 /// zero.
 ///
 /// The test seeds the doctor-results file directly (which is the
-/// exact file `execute_doctor` writes â€” see
+/// exact file `execute_doctor` writes Ã¢â‚¬â€ see
 /// `src/commands/doctor.rs::write_doctor_results`) with a known
 /// failure count, then fetches `/api/projects` and asserts the
 /// `health_score` reflects the term. We seed the file rather than
 /// running the full `execute_doctor` because the doctor command is
 /// heavy (it probes embedding / completion model endpoints, the
 /// native graph, the Tantivy index, etc.) and depends on process CWD
-/// â€” the file format and writer logic are covered by the
+/// Ã¢â‚¬â€ the file format and writer logic are covered by the
 /// `count_doctor_failures` and `write_doctor_results` unit tests in
 /// `src/commands/doctor.rs`.
 #[tokio::test]
@@ -1778,7 +1955,7 @@ async fn test_api_projects_health_score_reflects_doctor_results() {
 
     // Write a valid impact report (low risk) so the only penalty in
     // the score is the doctor term. `100 - 5 (low) - 2*20 (doctor) = 55`
-    // â†’ status "warning" (50 <= 55 < 80).
+    // Ã¢â€ â€™ status "warning" (50 <= 55 < 80).
     let reports_dir = layout.reports_dir();
     std::fs::create_dir_all(&reports_dir).unwrap();
     let report = serde_json::json!({
@@ -1851,7 +2028,7 @@ async fn test_api_projects_health_score_reflects_doctor_results() {
 
 /// Per M8 opencode-review H1 (negative case): without a
 /// `doctor-results.json` file present, the `doctor_failures` term is
-/// 0 â€” the existing behavior â€” and the health_score reflects the
+/// 0 Ã¢â‚¬â€ the existing behavior Ã¢â‚¬â€ and the health_score reflects the
 /// risk term only.
 #[tokio::test]
 async fn test_api_projects_health_score_no_doctor_file_is_clean() {
@@ -1901,7 +2078,7 @@ async fn test_api_projects_health_score_no_doctor_file_is_clean() {
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
     let first = &json.as_array().unwrap()[0];
     let health_score = first["health_score"].as_u64().expect("health_score is u64");
-    // 100 - 5 (low) - 0 (no doctor file) = 95 â†’ healthy
+    // 100 - 5 (low) - 0 (no doctor file) = 95 Ã¢â€ â€™ healthy
     assert_eq!(
         health_score, 95,
         "no doctor file with low risk must produce health_score=95; got {health_score}"
@@ -1997,7 +2174,7 @@ async fn test_api_projects_health_score_corrupt_report_penalized() {
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
     let first = &json.as_array().unwrap()[0];
     let health_score = first["health_score"].as_u64().expect("health_score is u64");
-    // 100 - 40 (corrupt-report penalty) - 0 (no doctor) = 60 â†’ warning
+    // 100 - 40 (corrupt-report penalty) - 0 (no doctor) = 60 Ã¢â€ â€™ warning
     assert_eq!(
         health_score, 60,
         "corrupt impact report must produce health_score=60 (M1 fix); got {health_score}"
@@ -2025,7 +2202,7 @@ async fn test_federated_schema_pre_m8_imports_unknown_author() {
 
     // Build a pre-M8-style FederatedSchema JSON. The key
     // characteristic is that `ledger` entries are serialized
-    // *without* an `author` field â€” simulating what a pre-M8 binary
+    // *without* an `author` field Ã¢â‚¬â€ simulating what a pre-M8 binary
     // using `with_ledger(...)` would have written.
     let pre_m8_json = r#"{
         "schema_version": "1.0",
@@ -2048,7 +2225,7 @@ async fn test_federated_schema_pre_m8_imports_unknown_author() {
         ]
     }"#;
 
-    // Deserialize â€” must succeed even though `author` is missing.
+    // Deserialize Ã¢â‚¬â€ must succeed even though `author` is missing.
     let parsed: FederatedSchema =
         serde_json::from_str(pre_m8_json).expect("pre-M8 schema must deserialize");
     assert_eq!(parsed.schema_version, "1.0");
@@ -2168,7 +2345,7 @@ fn seed_verification_runs(layout: &Layout) {
     // Run 3 (2026-06-18, pass): cargo test 400ms pass, cargo clippy 500ms pass.
     //
     // `plan_json` is a serialized `VerificationPlan` (camelCase) carrying a
-    // friendly `description` per step â€” `/api/verify/steps` reads this to
+    // friendly `description` per step Ã¢â‚¬â€ `/api/verify/steps` reads this to
     // populate `name` (falling back to `command`).
     let plan_json = r#"{"steps":[{"command":"cargo test","timeoutSecs":120,"description":"Run the test suite"},{"command":"cargo clippy","timeoutSecs":120,"description":"Lint with clippy"}]}"#;
     conn.execute(
@@ -2228,7 +2405,7 @@ async fn test_verify_health_no_runs_is_degraded() {
     let json: serde_json::Value = serde_json::from_str(&body).unwrap();
     assert_eq!(json["status"].as_str(), Some("DEGRADED"));
     // The field MUST be present as `null` (not omitted) so the frontend
-    // contract `lastRunAt: string | null` is satisfied â€” the dashboard empty
+    // contract `lastRunAt: string | null` is satisfied Ã¢â‚¬â€ the dashboard empty
     // state depends on a present key, not a missing one. serde emits no
     // space after the colon, so match the compact form.
     let body_compact = body.replace(' ', "");
@@ -2430,7 +2607,7 @@ async fn test_verify_steps_empty_when_no_db() {
 #[tokio::test]
 async fn test_verify_steps_name_falls_back_to_command_without_plan_json() {
     // When `plan_json` is absent/empty, `name` must fall back to `command`
-    // (graceful degradation â€” no parse failure can break the endpoint).
+    // (graceful degradation Ã¢â‚¬â€ no parse failure can break the endpoint).
     let guard = temp_layout();
     {
         use ledgerful::state::storage::StorageManager;
@@ -2439,7 +2616,7 @@ async fn test_verify_steps_name_falls_back_to_command_without_plan_json() {
         let db_path = layout.state_subdir().join("ledger.db");
         let storage = StorageManager::init(db_path.as_std_path()).unwrap();
         let conn = storage.get_connection();
-        // No plan_json (NULL) and a malformed plan_json row â€” both must be
+        // No plan_json (NULL) and a malformed plan_json row Ã¢â‚¬â€ both must be
         // skipped without failing the endpoint.
         conn.execute(
             "INSERT INTO verification_runs (timestamp, plan_json, overall_pass) \
@@ -2483,7 +2660,7 @@ async fn test_verify_steps_name_falls_back_to_command_without_plan_json() {
     let steps = json.as_array().expect("steps is an array");
     assert_eq!(steps.len(), 1);
     assert_eq!(steps[0]["id"].as_str(), Some("cargo fmt --check"));
-    // No usable plan_json â†’ name falls back to command.
+    // No usable plan_json Ã¢â€ â€™ name falls back to command.
     assert_eq!(steps[0]["name"].as_str(), Some("cargo fmt --check"));
     handle.abort();
 }
@@ -2558,7 +2735,7 @@ async fn test_verify_steps_name_strips_predicted_impact_traceability() {
             .contains("Predicted impact"),
         "predicted-impact annotations must not leak into the dashboard name"
     );
-    // No friendly prefix â†’ fall back to the command.
+    // No friendly prefix Ã¢â€ â€™ fall back to the command.
     assert_eq!(
         steps[1]["name"].as_str(),
         Some("cargo test --test integration -- --test-threads=1")
@@ -2665,7 +2842,7 @@ async fn test_compliance_valid_signature() {
 }
 
 /// INVALID (tampered): seed a row with a real signature but a DIFFERENT
-/// summary than was signed. `verify_signature` must fail â†’ `INVALID` and
+/// summary than was signed. `verify_signature` must fail Ã¢â€ â€™ `INVALID` and
 /// `validityPercent < 100`.
 #[tokio::test]
 async fn test_compliance_tampered_signature_is_invalid() {
@@ -2705,12 +2882,12 @@ async fn test_compliance_tampered_signature_is_invalid() {
 
     let (url, token, handle) = spawn_server(layout).await;
     let summary_json = fetch_compliance_summary(&url, &token).await;
-    // Signed but does not verify â†’ counts toward totalSigned but NOT valid.
+    // Signed but does not verify Ã¢â€ â€™ counts toward totalSigned but NOT valid.
     assert_eq!(summary_json["totalSigned"].as_u64(), Some(1));
     assert_eq!(summary_json["validityPercent"].as_f64(), Some(0.0));
     assert!(
         summary_json["lastAuditAt"].is_null(),
-        "no VALID entries â†’ lastAuditAt must be null"
+        "no VALID entries Ã¢â€ â€™ lastAuditAt must be null"
     );
 
     let sigs = fetch_compliance_signatures(&url, &token).await;
@@ -2721,7 +2898,7 @@ async fn test_compliance_tampered_signature_is_invalid() {
 }
 
 /// SKIPPED: unsigned row (`signature=None, public_key=None`) with the default
-/// config (`intent.require_signing=false`) â†’ `SKIPPED`, and does NOT count as
+/// config (`intent.require_signing=false`) Ã¢â€ â€™ `SKIPPED`, and does NOT count as
 /// invalid.
 #[tokio::test]
 async fn test_compliance_unsigned_skipped_when_not_required() {
@@ -2752,7 +2929,7 @@ async fn test_compliance_unsigned_skipped_when_not_required() {
     handle.abort();
 }
 
-/// UNSIGNED â†’ INVALID when `intent.require_signing=true`: an unsigned row
+/// UNSIGNED Ã¢â€ â€™ INVALID when `intent.require_signing=true`: an unsigned row
 /// with signing required must classify as `INVALID`.
 #[tokio::test]
 async fn test_compliance_unsigned_invalid_when_required() {
@@ -2806,7 +2983,7 @@ async fn test_compliance_empty_state_no_db() {
 }
 
 /// `lastAuditAt` must serialize as `null` (present, not omitted) in the empty
-/// state â€” the frontend contract is `lastAuditAt: string | null`.
+/// state Ã¢â‚¬â€ the frontend contract is `lastAuditAt: string | null`.
 #[tokio::test]
 async fn test_compliance_summary_last_audit_at_serializes_as_null_in_empty_state() {
     let guard = temp_layout();
@@ -2848,7 +3025,7 @@ async fn test_compliance_hotspot_delta_percent(
     let layout = guard.layout();
     // Use `StorageManager::init` (full migrations) rather than
     // `seed_ledger_entry_with_ts` (minimal raw tables) so the `hotspot_history`
-    // table is created by its migration. No ledger entry is needed â€” the
+    // table is created by its migration. No ledger entry is needed Ã¢â‚¬â€ the
     // summary endpoint reads hotspot delta independently of the ledger.
     layout.ensure_state_dir().unwrap();
     let db_path = layout.state_subdir().join("ledger.db");
@@ -3187,7 +3364,7 @@ async fn test_soc2_export_empty_state_no_db() {
 /// Tamper detection (negative): take a valid export, flip one byte in
 /// `ledger.csv` within the archive, and re-serialize a new zip with the
 /// ORIGINAL manifest.json/manifest.sig/manifest.pub. Re-hashing the
-/// tampered `ledger.csv` must NOT match the manifest's `sha256` â€” i.e. the
+/// tampered `ledger.csv` must NOT match the manifest's `sha256` Ã¢â‚¬â€ i.e. the
 /// manifest would detect the tamper. This proves the tamper-evidence
 /// contract actually catches modification.
 #[tokio::test]
@@ -3281,7 +3458,7 @@ async fn test_soc2_export_tamper_detection() {
 /// one byte in `manifest.json` while leaving `manifest.sig`, `manifest.pub`,
 /// and all data files untouched, then prove the Ed25519 signature over the
 /// ORIGINAL `manifest.json` does NOT verify against the tampered manifest
-/// bytes â€” i.e. `verifying_key.verify(&tampered_manifest, &signature)` is
+/// bytes Ã¢â‚¬â€ i.e. `verifying_key.verify(&tampered_manifest, &signature)` is
 /// `Err`. This complements `test_soc2_export_tamper_detection` (which proves
 /// the file-HASH leg catches a modified data file) by locking in the
 /// signature-rejection leg: any alteration to `manifest.json` itself is
@@ -3348,7 +3525,7 @@ async fn test_soc2_export_tampered_manifest_fails_signature_verification() {
     tampered_manifest[0] ^= 0xFF;
 
     // The signature over the ORIGINAL manifest.json must NOT verify against
-    // the tampered manifest bytes â€” the Ed25519 verifier must reject it.
+    // the tampered manifest bytes Ã¢â‚¬â€ the Ed25519 verifier must reject it.
     assert!(
         verifying_key
             .verify(&tampered_manifest, &signature)
@@ -3359,7 +3536,7 @@ async fn test_soc2_export_tampered_manifest_fails_signature_verification() {
 }
 
 // ---------------------------------------------------------------------------
-// Track 0085 — GET /api/events (SSE) DoD-1 / DoD-3 / DoD-5 / DoD-6
+// Track 0085 â€” GET /api/events (SSE) DoD-1 / DoD-3 / DoD-5 / DoD-6
 // ---------------------------------------------------------------------------
 
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -3490,7 +3667,7 @@ fn insert_pending_separate_connection(layout: &Layout, tx_id: &str) {
 /// Insert a PENDING transaction from a **separate OS process** (DoD-5).
 ///
 /// Uses a short-lived Python child (`sqlite3` stdlib) so the writer is a real
-/// process boundary — not merely a second in-process `rusqlite::Connection`.
+/// process boundary â€” not merely a second in-process `rusqlite::Connection`.
 fn insert_pending_separate_process(layout: &Layout, tx_id: &str) {
     use std::process::Command;
 
@@ -3553,16 +3730,16 @@ async fn test_events_requires_auth_dod1() {
     let guard = temp_layout();
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
-    // No token → 403
+    // No token â†’ 403
     let (_s, status, _h, _b) = sse_handshake(&url, None).await;
     assert_eq!(status, 403, "missing token must not open SSE stream");
 
-    // Bad token → 403
+    // Bad token â†’ 403
     let (_s, status, _h, _b) =
         sse_handshake(&url, Some("not-the-real-token-value-xxxxxxxxxxxx")).await;
     assert_eq!(status, 403, "invalid token must not open SSE stream");
 
-    // Valid token → 200 + text/event-stream + at least one data: snapshot
+    // Valid token â†’ 200 + text/event-stream + at least one data: snapshot
     let (mut stream, status, headers, prefix) = sse_handshake(&url, Some(&token)).await;
     assert_eq!(status, 200, "valid token must open SSE: headers={headers}");
     assert!(
@@ -3615,7 +3792,7 @@ async fn test_events_detects_cross_connection_commit_dod5() {
     .await;
     assert!(body.contains("data:"), "expected snapshot, body={body:?}");
 
-    // Separate connection commit — SQLite-correct isolation unit for data_version.
+    // Separate connection commit â€” SQLite-correct isolation unit for data_version.
     insert_pending_separate_connection(&layout, "sse-detect-tx-1");
 
     let body2 = read_sse_body_until(
@@ -3682,7 +3859,7 @@ async fn test_events_idle_no_spurious_data_dod5() {
     ensure_ledger_db(&guard.layout());
     let (url, token, handle) = spawn_server(guard.layout()).await;
 
-    // Open SSE immediately — no pre-baseline sleep. A buggy "always publish on
+    // Open SSE immediately â€” no pre-baseline sleep. A buggy "always publish on
     // first pragma success" would emit a second data: ~500ms later with no write.
     let (mut stream, status, _headers, prefix) = sse_handshake(&url, Some(&token)).await;
     assert_eq!(status, 200);
@@ -3700,7 +3877,7 @@ async fn test_events_idle_no_spurious_data_dod5() {
         "connect must yield exactly one data: snapshot before idle wait; body={body:?}"
     );
 
-    // Wait ≥ 4 detector ticks with no DB writes (covers cold-start first tick).
+    // Wait â‰¥ 4 detector ticks with no DB writes (covers cold-start first tick).
     let idle = DETECTOR_TICK.saturating_mul(4) + Duration::from_millis(200);
     let after =
         read_sse_body_until(&mut stream, &body, |b| count_sse_data_lines(b) > 1, idle).await;
@@ -3717,7 +3894,7 @@ async fn test_events_idle_no_spurious_data_dod5() {
 #[tokio::test]
 async fn test_events_first_availability_publishes_dod5() {
     let guard = temp_layout();
-    // No ledger.db yet — connect snapshot is zeros; detector has no baseline.
+    // No ledger.db yet â€” connect snapshot is zeros; detector has no baseline.
     let layout = guard.layout();
     let (url, token, handle) = spawn_server(layout.clone()).await;
 

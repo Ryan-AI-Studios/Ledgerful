@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Security boundaries operator view (0280):** `ledgerful security boundaries`
+  lists Cedar `@id` → indexed route (not `Policy: permit N` + URN dump).
+  Populated human states this is not a live PDP and daemon auth is Bearer.
+  Cross-method `/session` false-hits are dropped; nest-relative vs `/api`
+  pairs keep the `/api` spelling. `--verbose` shows the URN table and
+  shadows global logging `--verbose` on this subcommand. `--json` adds
+  `pdp: false` (no schemaVersion). No invented principals.
+
 - **Bare `tests` usage error (0278):** `ledgerful tests` without `--entity` or a
   positional entity refuses with exit 2 and empty stdout. Human picker lists
   mapped product files (not vendor sqlite by symbol count). `--json` without
