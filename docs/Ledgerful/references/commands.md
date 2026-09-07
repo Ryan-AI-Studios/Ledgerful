@@ -37,6 +37,10 @@ Pending/drift slice of `ledger status` (`--json` / `--compact` only). Bare `ledg
 
 SQLite inspect of commit-path stack rules / validators / mappings — not verify auto-policy, not `.ledgerful/rules.toml`, not `policy check`. Empty next: `ledgerful ledger register rule` and `ledgerful ledger register validator` (no mapping CLI; no `config set`). `--json`: schemaVersion 1 object `kind: "ledgerStack"` (`empty` + `next`; snake_case item structs).
 
+## `ledgerful audit`
+
+Global TOP CHURNED FILES (human + `--json` `churn[]`) are unique **file paths**. ` (+N more)` labels collapse to the first path; directories and track slugs are dropped unless a TX `snapshot_id` expands via `changed_files`. `count` is distinct LOCAL ledger TXs. JSON is a bare `ProjectAuditReport` object (**no** `schemaVersion`). Velocity / CI trend / recent TXs are unchanged. Entity-scoped `audit <path>` is a different history view.
+
 ## `ledgerful security boundaries`
 
 Operator `@id` → indexed endpoint (not a live PDP; daemon auth is Bearer). `--verbose` after this subcommand: URN / authorization-node table (does **not** enable tracing). `-v` after this subcommand is a usage error (clap same-id skip). Leading `ledgerful -v security boundaries` is logging, not the URN table. `--json`: unwrapped object + additive `pdp:false`, no `schemaVersion` (0207 freeze); `security impact` (0208) is a different command.
