@@ -63,14 +63,15 @@
 
 ## Enforcement (CI gate)
 
-Live `main` branch protection (`required_status_checks.contexts`, re-verified 2026-09-06)
-requires a pull request plus these five checks before merge:
+Live `main` branch protection (`required_status_checks.contexts`, re-verified 2026-09-07)
+requires a pull request plus these six checks before merge:
 
 - `fmt (ubuntu-latest)`
 - `clippy (ubuntu-latest)`
 - `test (ubuntu-latest)`
 - `test (windows-latest)`
 - `deny`
+- `Semgrep SAST`
 
 Human code-review approvals are not required (`required_approving_review_count = 0`).
 Cross-model review is **process** (`codex-review` / `review_workflow`), not a required
@@ -78,19 +79,19 @@ GitHub status check. The owner retains the product, risk-acceptance, and final m
 decision.
 
 **`gh pr merge --auto` is forbidden** until Codex is clean of findings above low.
-GitHub will treat a PR as mergeable as soon as the five CI checks pass; that is not
+GitHub will treat a PR as mergeable as soon as the six required checks pass; that is not
 authorization to merge.
 
 `.github/workflows/security.yml` still runs on pull_request, push to `main`, and the weekly
-schedule. Job names include `Secret scan` and `Semgrep SAST` (plus display names
-`Cargo audit` / `Cargo deny`). Those jobs do not gate merge unless branch protection is
-updated to include them.
+schedule. **`Semgrep SAST` is a required merge check** (added 2026-09-07 after the 0280
+`UNSTABLE` stall; false positives use line-adjacent `// nosemgrep: <rule-id>`).
+`Secret scan` still runs and does **not** gate merge. Display names `Cargo audit` /
+`Cargo deny` are Security workflow jobs.
 
 Context `deny` in the live list is the CI workflow job (`cargo deny check`), not the
 Security workflow display name.
 
-HITL names if protection is updated: `Secret scan`, `Semgrep SAST`. Default is honesty
-against live protection; this track does not flip GitHub settings.
+HITL name if protection is updated further: `Secret scan`.
 
 Passing process review does not merge a PR. It confirms the technical review gate; the
 owner still chooses whether and when the change is merged.
