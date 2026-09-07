@@ -86,8 +86,16 @@ pub(crate) fn format_embedding_backend_availability(
         .unwrap_or(&display_config.base_url);
 
     // Clone into 'static probe closure (abandoned-thread hard deadline, 0143).
+    // Optional embed miss is not a flap — one attempt (0285). Completion keeps
+    // `probe_with_retry` / `PROBE_MAX_RETRIES`.
     let probe_config = probe_config.clone();
-    match probe_with_retry(move || crate::embed::client::check_local_model(&probe_config)) {
+    match probe_with_retry_budgeted(
+        move || crate::embed::client::check_local_model(&probe_config),
+        RETRY_BUDGET,
+        RETRY_DELAY,
+        PROBE_PER_ATTEMPT_DEADLINE,
+        0,
+    ) {
         ProbeResult::Healthy(dims) if dims.active => BackendAvailabilityReport {
             display: format!(
                 "{} ({} dims) @ {}",

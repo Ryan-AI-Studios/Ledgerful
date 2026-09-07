@@ -13,6 +13,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use tracing::warn;
 
+/// Optional verify-prediction embed budget (0285). Must not be 6s — TCP-open
+/// HTTP-dead would hang `embed_long_text` on a down backend.
+const OPTIONAL_PREDICT_EMBED_TIMEOUT_SECS: u64 = 1;
+
 pub struct OutcomePredictor;
 
 impl OutcomePredictor {
@@ -108,11 +112,14 @@ impl OutcomePredictor {
         {
             let diff_text = semantic_predictor::build_diff_text(&packet);
             let mut embed_config = ctx.config.local_model.clone();
-            embed_config.timeout_secs = 6;
+            // Optional prediction must not use a 6s ureq budget (0285).
+            embed_config.timeout_secs = OPTIONAL_PREDICT_EMBED_TIMEOUT_SECS;
             let conn = storage.get_connection();
             let history_count = crate::verify::predict::count_history_rows(conn).unwrap_or(0);
 
-            if !embed_config.base_url.is_empty() && !diff_text.is_empty() {
+            if !crate::embed::client::optional_embed_tcp_down(&embed_config)
+                && !diff_text.is_empty()
+            {
                 let mut semantic_warnings = Vec::new();
                 use crate::verify::predict::SEMANTIC_COLD_START_THRESHOLD;
                 let cold_start = history_count < SEMANTIC_COLD_START_THRESHOLD;
@@ -164,9 +171,11 @@ impl OutcomePredictor {
         {
             let diff_text = semantic_predictor::build_diff_text(&packet);
             let mut embed_config = ctx.config.local_model.clone();
-            embed_config.timeout_secs = 6;
+            embed_config.timeout_secs = OPTIONAL_PREDICT_EMBED_TIMEOUT_SECS;
 
-            if !embed_config.base_url.is_empty() && !diff_text.is_empty() {
+            if !crate::embed::client::optional_embed_tcp_down(&embed_config)
+                && !diff_text.is_empty()
+            {
                 let conn = storage.get_connection();
                 match crate::verify::ci_predictor::query_similar_ci_outcomes(
                     conn,
@@ -442,6 +451,11 @@ mod tests {
 
     fn is_truncate_warning(warning: &str) -> bool {
         warning.contains("packet history truncated")
+    }
+
+    #[test]
+    fn optional_predict_embed_timeout_is_one_second() {
+        assert_eq!(OPTIONAL_PREDICT_EMBED_TIMEOUT_SECS, 1);
     }
 
     #[test]
