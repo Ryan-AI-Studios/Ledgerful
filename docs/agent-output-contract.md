@@ -387,7 +387,9 @@ ledgerful verify --json --quiet   # quiet is redundant for agents; machine mode 
 Top-level `status --json` (track **0149**) routes into the **same**
 `execute_ledger_status` path as `ledger status --json` — identical field set,
 no second DTO. Top-level `status` accepts `--json` and `--compact` (not a full
-alias of `ledger status`; no `--global` / `--all`). Track **0200** adds
+alias of `ledger status`; no `--global` / `--all`). Combined `--help`
+`after_help` names the ledger-only flags and points at
+`ledgerful ledger status` (0282; envelope unchanged). Track **0200** adds
 `workRoot` and `stateDir` (schemaVersion stays **1**). Linked worktree
 (**0108**): `workRoot` is this worktree; `stateDir` is the main `.ledgerful`.
 

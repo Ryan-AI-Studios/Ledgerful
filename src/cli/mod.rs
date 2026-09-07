@@ -925,14 +925,84 @@ mod tests {
             err.contains("--json"),
             "status help must mention --json; got {err}"
         );
+        // Unique after_help marker (0282). Do not split on "not a full alias"
+        // or "ledger status" — those already appear in about.
+        const MARKER: &str = "Ledger-only flags:";
+        let options_start = err
+            .find("Options:")
+            .unwrap_or_else(|| panic!("status help must have Options:; got {err}"));
+        let marker_pos = err
+            .find(MARKER)
+            .unwrap_or_else(|| panic!("status after_help must contain {MARKER:?}; got {err}"));
         assert!(
-            !err.contains("--global"),
-            "top-level status is not --global; got {err}"
+            marker_pos > options_start,
+            "Ledger-only flags: must follow Options:; got {err}"
         );
+        let options = &err[options_start..marker_pos];
+        let after = &err[marker_pos..];
+        for flag in ["--exit-code", "--entity", "--global", "--all"] {
+            assert!(
+                !options.contains(flag),
+                "Options must not own {flag}; options={options:?}"
+            );
+            assert!(
+                after.contains(flag),
+                "after_help must name {flag}; after={after:?}"
+            );
+        }
         assert!(
-            !err.contains("--all"),
-            "top-level status is not --all; got {err}"
+            after.contains("ledgerful ledger status"),
+            "after_help must point at ledgerful ledger status; after={after:?}"
         );
+        for flag in [
+            "--strict-observe-signal",
+            "--verify-signatures",
+            "--repo",
+            "--reindex",
+            "--opt-in",
+            "--opt-out",
+        ] {
+            assert!(
+                after.contains(flag),
+                "after_help must name {flag}; after={after:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn top_level_status_short_help_names_ledger_only_flags() {
+        let result = Cli::try_parse_from(["ledgerful", "status", "-h"]);
+        assert!(result.is_err(), "-h should trigger clap's special error");
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Ledger-only flags:"),
+            "short help must include after_help marker; got {err}"
+        );
+    }
+
+    #[test]
+    fn top_level_status_rejects_ledger_only_args() {
+        let cases: &[&[&str]] = &[
+            &["ledgerful", "status", "--exit-code"],
+            &["ledgerful", "status", "--global"],
+            &["ledgerful", "status", "--all"],
+            &["ledgerful", "status", "--entity", "src/foo.rs"],
+            &["ledgerful", "status", "--verify-signatures"],
+            &["ledgerful", "status", "--strict-observe-signal"],
+            &["ledgerful", "status", "--repo", "X"],
+            &["ledgerful", "status", "--reindex"],
+            &["ledgerful", "status", "--opt-in"],
+            &["ledgerful", "status", "--opt-out"],
+            &["ledgerful", "status", "-c"],
+            &["ledgerful", "status", "foo"],
+        ];
+        for argv in cases {
+            let result = Cli::try_parse_from(*argv);
+            assert!(
+                result.is_err(),
+                "top-level status must reject {argv:?}; parsed {result:?}"
+            );
+        }
     }
 
     /// Compile-time/API contract test: prove all key facade exports remain public.

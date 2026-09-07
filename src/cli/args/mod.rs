@@ -222,6 +222,8 @@ Tips:
     /// Health check for Ledgerful and local model stack
     Doctor(DoctorArgs),
     /// Ledger pending/drift status (`--json` / `--compact`; not a full alias of `ledger status`)
+    // after_help is alias honesty (0282), not a 0100 spray — Status is a leaf.
+    #[command(after_help = STATUS_AFTER_HELP)]
     Status(StatusArgs),
     /// Configuration management
     // after_help only on Config (0100 DoD-8): clap auto-help is insufficient for

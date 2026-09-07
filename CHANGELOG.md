@@ -8,6 +8,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Top-level `status` alias honesty (0282):** `ledgerful status` stays the
+  pending/drift slice of `ledger status` (`--json` / `--compact` only).
+  `--help` `after_help` names the ledger-only flags and points at
+  `ledgerful ledger status`. Compact and JSON payloads are unchanged.
+
 - **Empty `ledger stack` next-action (0281):** `ledgerful ledger stack` stays
   valid when SQLite has no rules. Human names `ledgerful ledger register rule`
   / `ledgerful ledger register validator`, identifies a SQLite commit-path
