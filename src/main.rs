@@ -109,8 +109,8 @@ fn run() -> Result<()> {
     // skip also sets `Cli.verbose`); do not treat that as logging-verbose.
     // A leading `-v` before `boundaries` still enables logging.
     let boundaries_local_verbose = {
-        // nosemgrep: rust.lang.security.args.args
         // CLI flag detection only (URN table vs tracing); not an auth check.
+        // nosemgrep: rust.lang.security.args.args
         let raw: Vec<String> = std::env::args().collect();
         raw.iter()
             .position(|a| a == "boundaries")
