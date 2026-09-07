@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Prospective `--paths` public-API presence (0284):**
+  `change-context` / `impact` / `scan --impact` `--paths` no longer treat
+  public types in a seeded file as `Public symbol modified` (30×N → HIGH).
+  Prospective `riskReasons` use `Public API present (prospective):` at
+  weight 0. Working-tree verbs and weights are unchanged. JSON keys and
+  `schemaVersion` are unchanged. `--paths` still does not rewrite
+  `latest-impact.json`.
+
 - **Audit TOP CHURNED FILES ranks files (0283):** `ledgerful audit` human
   table and `--json` `churn[]` list unique file paths. ` (+N more)` labels
   collapse; directories expand from `changed_files` or are dropped; track

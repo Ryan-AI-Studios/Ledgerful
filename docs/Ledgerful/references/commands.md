@@ -7,7 +7,7 @@ Short flags only. Humans: `ledgerful --help`.
 | Command | Role |
 |---|---|
 | `ledgerful doctor --json` | Env readiness. Standing observe-signing warns: ack via `[doctor] acknowledged_codes` or `doctor --fix --yes` (pin only). |
-| `ledgerful change-context --json` | Default pre-edit packet (does not rewrite `latest-impact.json`) |
+| `ledgerful change-context --json` | Default pre-edit packet (does not rewrite `latest-impact.json`). `--paths` is presence / blast-if-edit, not “public types modified”. |
 | `ledgerful ledger status --compact` or `--json` | Pending / drift; names `workRoot` |
 | `ledgerful search …` | Discovery (`--auto-index` when stale). Code FTS; unquoted multi-word OK. Not `ledger search`. |
 | `ledgerful verify --scope fast` | Local gate |
