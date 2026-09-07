@@ -1124,5 +1124,14 @@ mod tests {
         let cli = Cli::try_parse_from(["ledgerful", "-v", "security", "boundaries"])
             .expect("global -v before subcommand");
         assert!(cli.verbose, "leading -v is global logging verbose");
+        match cli.command {
+            Commands::Security(SecurityArgs {
+                command: SecuritySubcommands::Boundaries { verbose, .. },
+            }) => assert!(
+                verbose,
+                "clap same-id skip copies -v onto local verbose; execute ignores via argv"
+            ),
+            other => panic!("expected Security, got {other:?}"),
+        }
     }
 }

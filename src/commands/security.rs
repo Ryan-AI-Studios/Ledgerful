@@ -620,6 +620,8 @@ fn execute_boundaries(
 /// URN table only when `--verbose` appears after `boundaries`. Clap same-id
 /// skip copies a leading `-v` onto the local field; that must not dump URNs.
 fn urn_table_from_argv(parsed_verbose: bool) -> bool {
+    // nosemgrep: rust.lang.security.args.args
+    // CLI flag detection only (URN table vs tracing); not an auth check.
     let args: Vec<String> = std::env::args().collect();
     urn_table_from_args(parsed_verbose, &args)
 }
