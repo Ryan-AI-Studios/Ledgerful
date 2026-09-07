@@ -28,6 +28,9 @@ fn run_cli(dir: &Path, args: &[&str]) -> (String, String, i32) {
         .args(args)
         .current_dir(dir)
         .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .env("NO_COLOR", "1")
+        .env_remove("FORCE_COLOR")
+        .env_remove("CLICOLOR_FORCE")
         .output()
         .expect("failed to run ledgerful");
     (
@@ -176,6 +179,41 @@ fn daemon_api_cedar_analyze_graph_makes_security_ready() {
     let src = cargo_root().join("policies").join("daemon-api.cedar");
     fs::create_dir_all(root.join("policies")).unwrap();
     fs::copy(&src, root.join("policies").join("daemon-api.cedar")).unwrap();
+    // Mirror live `api_routes`: Axum builder routes are nest-relative (the
+    // extractor has no `.nest(` arm), and both exchange spellings exist —
+    // the `/api` one with a closure handler (handler `unknown`), as on the
+    // real daemon (router.rs + middleware.rs test route).
+    let routes_src = r#"
+use axum::routing::{get, post};
+use axum::Router;
+
+pub fn build_router() -> Router {
+    let api_router = Router::new()
+        .route("/session", get(session_handler))
+        .route("/status", get(status_handler))
+        .route("/snapshot", get(snapshot_handler))
+        .route("/ledger", get(ledger_handler))
+        .route("/hotspots", get(hotspots_handler))
+        .route("/config", get(config_handler))
+        .route("/security/boundaries", get(security_boundaries_handler))
+        .route("/session/exchange", post(session_exchange_handler));
+    Router::new().nest("/api", api_router)
+}
+
+pub fn test_router() -> Router {
+    Router::new().route("/api/session/exchange", post(|| async { "ok" }))
+}
+
+async fn session_handler() {}
+async fn status_handler() {}
+async fn snapshot_handler() {}
+async fn ledger_handler() {}
+async fn hotspots_handler() {}
+async fn config_handler() {}
+async fn security_boundaries_handler() {}
+async fn session_exchange_handler() {}
+"#;
+    fs::write(root.join("src").join("router.rs"), routes_src).unwrap();
     git_add_and_commit(root, "add cedar pack");
 
     let (stdout, stderr, code) = run_cli(root, &["index", "--analyze-graph"]);
@@ -198,6 +236,133 @@ fn daemon_api_cedar_analyze_graph_makes_security_ready() {
     let action_n = auth.iter().filter(|n| n["category"] == "action").count();
     assert_eq!(policy_n, 8, "expected 8 policy nodes: {stdout}");
     assert_eq!(action_n, 8, "expected 8 action nodes: {stdout}");
+    assert_eq!(v["pdp"], false, "additive pdp:false: {stdout}");
+    let expected_ids: [&str; 8] = [
+        "route_get_api_status",
+        "route_get_api_session",
+        "route_post_api_session_exchange",
+        "route_get_api_snapshot",
+        "route_get_api_ledger",
+        "route_get_api_hotspots",
+        "route_get_api_config",
+        "route_get_api_security_boundaries",
+    ];
+    let policy_labels: Vec<&str> = auth
+        .iter()
+        .filter(|n| n["category"] == "policy")
+        .filter_map(|n| n["label"].as_str())
+        .collect();
+    assert_eq!(
+        policy_labels.len(),
+        8,
+        "exactly 8 policy labels: {policy_labels:?} stdout={stdout}"
+    );
+    assert!(
+        policy_labels.iter().all(|l| l.starts_with("route_")),
+        "all 8 labels must be @id: {policy_labels:?}"
+    );
+    for want in expected_ids {
+        assert!(
+            policy_labels.contains(&want),
+            "policy labels must include every @id (missing {want}): {stdout}"
+        );
+    }
+    assert!(
+        auth.iter().all(|n| !n["label"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("Policy: permit")),
+        "no Policy: permit labels: {stdout}"
+    );
+    let edges = v["boundaries"]["boundary_edges"]
+        .as_array()
+        .expect("boundary_edges");
+    let exchange_edges: Vec<_> = edges
+        .iter()
+        .filter(|e| {
+            e["policy_label"]
+                .as_str()
+                .unwrap_or_default()
+                .contains("session_exchange")
+        })
+        .collect();
+    assert_eq!(
+        exchange_edges.len(),
+        1,
+        "exactly one exchange edge expected: {stdout}"
+    );
+    assert_eq!(
+        exchange_edges[0]["target_label"].as_str(),
+        Some("POST /api/session/exchange"),
+        "prefer /api spelling for exchange: {stdout}"
+    );
+    let get_targets: Vec<&str> = edges
+        .iter()
+        .filter_map(|e| e["target_label"].as_str())
+        .filter(|t| t.starts_with("GET "))
+        .collect();
+    for want in [
+        "GET /status",
+        "GET /session",
+        "GET /snapshot",
+        "GET /ledger",
+        "GET /hotspots",
+        "GET /config",
+        "GET /security/boundaries",
+    ] {
+        assert!(
+            get_targets.contains(&want),
+            "missing nest-relative {want} after re-index; targets={get_targets:?} stdout={stdout}"
+        );
+    }
+
+    let (human, stderr, code) = run_cli(root, &["security", "boundaries"]);
+    assert_eq!(code, 0, "security boundaries human; stderr={stderr}");
+    assert!(
+        human.contains("not a live PDP") && human.contains("Bearer"),
+        "PDP/Bearer line: {human}"
+    );
+    for want in expected_ids {
+        assert!(
+            human.contains(want),
+            "default human must show each @id (missing {want}): {human}"
+        );
+    }
+    assert!(
+        !human.contains("Policy: permit"),
+        "no Policy: permit: {human}"
+    );
+    assert!(
+        !human.contains("Authorization Nodes"),
+        "URN table default-off: {human}"
+    );
+    assert!(
+        !human.contains("urn:ledgerful:"),
+        "default human must not dump URNs: {human}"
+    );
+    assert!(
+        human.contains("GET /session"),
+        "Target column is endpoint tlabel GET /session: {human}"
+    );
+
+    let (verbose, stderr, code) = run_cli(root, &["security", "boundaries", "--verbose"]);
+    assert_eq!(code, 0, "security boundaries --verbose; stderr={stderr}");
+    assert!(
+        verbose.contains("Authorization Nodes"),
+        "verbose URN table: {verbose}"
+    );
+    assert!(
+        verbose.contains("urn:ledgerful:policy") || verbose.contains("urn:ledgerful:action"),
+        "verbose URNs: {verbose}"
+    );
+    let link_idx = verbose
+        .find("Cross-Surface Boundary Links")
+        .expect("links heading");
+    let auth_idx = verbose.find("Authorization Nodes").expect("auth heading");
+    assert!(
+        auth_idx > link_idx,
+        "Authorization Nodes must appear after Cross-Surface Boundary Links"
+    );
 
     let (surfaces, stderr, code) = run_cli(root, &["surfaces", "--json"]);
     assert_eq!(code, 0, "surfaces --json; stderr={stderr}");
@@ -241,6 +406,10 @@ fn fixture_only_under_tests_fixtures_leaves_security_empty() {
     assert!(
         v.get("emptyReason").is_some(),
         "fixture-only must stay empty (0185-A), got: {stdout}"
+    );
+    assert_eq!(
+        v["pdp"], false,
+        "empty graph must include pdp: false: {stdout}"
     );
 
     let (surfaces, stderr, code) = run_cli(root, &["surfaces", "--json"]);

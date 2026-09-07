@@ -105,7 +105,17 @@ fn run() -> Result<()> {
 
     // TA19: the global `-v` flag must not enable debug-level tracing for
     // `config diff` output. It still controls tracing for every other command.
+    // 0280: `security boundaries --verbose` is the URN table (clap same-id
+    // skip also sets `Cli.verbose`); do not treat that as logging-verbose.
+    // A leading `-v` before `boundaries` still enables logging.
+    let boundaries_local_verbose = {
+        let raw: Vec<String> = std::env::args().collect();
+        raw.iter()
+            .position(|a| a == "boundaries")
+            .is_some_and(|i| raw.iter().skip(i + 1).any(|a| a == "--verbose"))
+    };
     let effective_verbose = cli_args.verbose
+        && !boundaries_local_verbose
         && !matches!(
             &cli_args.command,
             ledgerful::cli::args::Commands::Config {

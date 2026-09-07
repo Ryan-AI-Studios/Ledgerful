@@ -31,6 +31,12 @@ pub enum SecuritySubcommands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Include the URN / authorization-node table (long only).
+        /// Clap same-id skip hides global `--verbose`/`-v` on this subcommand;
+        /// execute still keys the table off argv `--verbose` after `boundaries`
+        /// so a leading `-v` cannot leak URNs.
+        #[arg(long)]
+        verbose: bool,
     },
 }
 
@@ -285,23 +291,40 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
     Ok(())
 }
 
-fn execute_boundaries(json: bool, layout: &crate::state::layout::Layout) -> Result<()> {
-    // Open the full StorageManager so we can reach both the CozoDB knowledge
-    // graph (for the policy-node + graph-populated checks) and the SQLite
-    // `api_routes` table (to count detected HTTP routes for the DX1 Cedar
-    // template bootstrap offer).
-    let storage = StorageManager::open_read_only(layout)?;
-    let cozo = storage
-        .cozo()
-        .ok_or_else(|| miette::miette!("CozoDB not available"))?;
+fn datavalue_as_str(v: &cozo::DataValue) -> Option<&str> {
+    match v {
+        cozo::DataValue::Str(s) => Some(s.as_ref()),
+        _ => None,
+    }
+}
 
-    // Query 1: policy + principal/action/resource authorisation nodes
+fn datavalue_json(v: &cozo::DataValue) -> Option<serde_json::Value> {
+    match v {
+        cozo::DataValue::Json(j) => serde_json::to_value(j).ok(),
+        _ => None,
+    }
+}
+
+fn annotations_id(meta: &serde_json::Value) -> Option<&str> {
+    meta.get("annotations")
+        .and_then(|a| a.get("id"))
+        .and_then(|v| v.as_str())
+}
+
+/// Shared CLI/REST assembly: resolved `@id` labels + method-safe, `/api`-preferred edges.
+pub(crate) type BoundaryAssembly = (
+    std::collections::BTreeMap<String, usize>,
+    Vec<serde_json::Value>,
+    Vec<serde_json::Value>,
+);
+
+pub(crate) fn assemble_security_boundaries(
+    cozo: &crate::state::storage_cozo::CozoStorage,
+) -> Result<BoundaryAssembly> {
     let auth_res = cozo.run_script(
-        "?[id, label, category] := *node{id, label, category}, \
+        "?[id, label, category, metadata] := *node{id, label, category, metadata}, \
          category in ['policy', 'principal', 'action', 'resource']",
     )?;
-
-    // Query 2: cross-surface boundary edges — policy → service/endpoint/config/deploy/adr
     let boundary_res = cozo.run_script(
         "?[policy_id, policy_label, relation, target_id, target_label, target_cat] := \
          *node{id: policy_id, label: policy_label, category: 'policy'}, \
@@ -311,53 +334,133 @@ fn execute_boundaries(json: bool, layout: &crate::state::layout::Layout) -> Resu
          relation = rel",
     )?;
 
-    // Build category counts
-    let mut counts: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut policy_actions: std::collections::HashMap<String, (String, String)> =
+        std::collections::HashMap::new();
+    let mut auth_nodes = Vec::new();
     for row in &auth_res.rows {
-        if let Some(cozo::DataValue::Str(cat)) = row.get(2) {
-            *counts.entry(cat.to_string()).or_insert(0) += 1;
+        let (Some(id), Some(label), Some(cat)) = (
+            row.first().and_then(datavalue_as_str),
+            row.get(1).and_then(datavalue_as_str),
+            row.get(2).and_then(datavalue_as_str),
+        ) else {
+            continue;
+        };
+        *counts.entry(cat.to_string()).or_insert(0) += 1;
+        let meta = row.get(3).and_then(datavalue_json);
+        let resolved = if cat == "policy" {
+            let cedar_id = meta
+                .as_ref()
+                .and_then(|m| m.get("cedar_id"))
+                .and_then(|v| v.as_str());
+            let raw = meta
+                .as_ref()
+                .and_then(|m| m.get("raw"))
+                .and_then(|v| v.as_str());
+            let ann_id = meta.as_ref().and_then(annotations_id);
+            crate::policy::cedar::policy_operator_label(label, cedar_id, ann_id, raw)
+        } else {
+            label.to_string()
+        };
+        if cat == "policy" {
+            if let Some(action) = meta
+                .as_ref()
+                .and_then(|m| m.get("action"))
+                .and_then(|v| v.as_str())
+                .and_then(crate::policy::cedar::parse_cedar_action)
+            {
+                policy_actions.insert(id.to_string(), action);
+            } else if let Some(action) = meta
+                .as_ref()
+                .and_then(|m| m.get("raw"))
+                .and_then(|v| v.as_str())
+                .and_then(crate::policy::cedar::parse_action_from_policy_raw)
+            {
+                policy_actions.insert(id.to_string(), action);
+            }
         }
+        auth_nodes.push(serde_json::json!({
+            "id": id,
+            "label": resolved,
+            "category": cat,
+        }));
     }
+    auth_nodes.sort_by(|a, b| {
+        (
+            a["category"].as_str().unwrap_or(""),
+            a["label"].as_str().unwrap_or(""),
+            a["id"].as_str().unwrap_or(""),
+        )
+            .cmp(&(
+                b["category"].as_str().unwrap_or(""),
+                b["label"].as_str().unwrap_or(""),
+                b["id"].as_str().unwrap_or(""),
+            ))
+    });
+
+    let mut links = Vec::new();
+    for row in &boundary_res.rows {
+        let (Some(pid), Some(plabel), Some(rel), Some(tid), Some(tlabel), Some(tcat)) = (
+            row.first().and_then(datavalue_as_str),
+            row.get(1).and_then(datavalue_as_str),
+            row.get(2).and_then(datavalue_as_str),
+            row.get(3).and_then(datavalue_as_str),
+            row.get(4).and_then(datavalue_as_str),
+            row.get(5).and_then(datavalue_as_str),
+        ) else {
+            continue;
+        };
+        let policy_label = auth_nodes
+            .iter()
+            .find(|n| n["id"].as_str() == Some(pid))
+            .and_then(|n| n["label"].as_str())
+            .unwrap_or(plabel)
+            .to_string();
+        links.push(crate::policy::cedar::BoundaryLink {
+            policy_id: pid.to_string(),
+            policy_label,
+            relation: rel.to_string(),
+            target_id: tid.to_string(),
+            target_label: tlabel.to_string(),
+            target_category: tcat.to_string(),
+        });
+    }
+    let links = crate::policy::cedar::refine_boundary_links(links, &policy_actions);
+    let boundary_edges: Vec<serde_json::Value> = links
+        .into_iter()
+        .map(|l| {
+            serde_json::json!({
+                "policy_id": l.policy_id,
+                "policy_label": l.policy_label,
+                "relation": l.relation,
+                "target_id": l.target_id,
+                "target_label": l.target_label,
+                "target_category": l.target_category,
+            })
+        })
+        .collect();
+
+    Ok((counts, auth_nodes, boundary_edges))
+}
+
+fn execute_boundaries(
+    json: bool,
+    verbose: bool,
+    layout: &crate::state::layout::Layout,
+) -> Result<()> {
+    // Open the full StorageManager so we can reach both the CozoDB knowledge
+    // graph (for the policy-node + graph-populated checks) and the SQLite
+    // `api_routes` table (to count detected HTTP routes for the DX1 Cedar
+    // template bootstrap offer).
+    let storage = StorageManager::open_read_only(layout)?;
+    let cozo = storage
+        .cozo()
+        .ok_or_else(|| miette::miette!("CozoDB not available"))?;
+
+    let (counts, auth_nodes, boundary_edges) = assemble_security_boundaries(cozo)?;
 
     if json {
-        let mut auth_nodes = Vec::new();
-        for row in &auth_res.rows {
-            if let (
-                Some(cozo::DataValue::Str(id)),
-                Some(cozo::DataValue::Str(label)),
-                Some(cozo::DataValue::Str(cat)),
-            ) = (row.first(), row.get(1), row.get(2))
-            {
-                auth_nodes.push(serde_json::json!({
-                    "id": id, "label": label, "category": cat,
-                }));
-            }
-        }
-        let mut boundary_edges = Vec::new();
-        for row in &boundary_res.rows {
-            if let (
-                Some(cozo::DataValue::Str(pid)),
-                Some(cozo::DataValue::Str(plabel)),
-                Some(cozo::DataValue::Str(rel)),
-                Some(cozo::DataValue::Str(tid)),
-                Some(cozo::DataValue::Str(tlabel)),
-                Some(cozo::DataValue::Str(tcat)),
-            ) = (
-                row.first(),
-                row.get(1),
-                row.get(2),
-                row.get(3),
-                row.get(4),
-                row.get(5),
-            ) {
-                boundary_edges.push(serde_json::json!({
-                    "policy_id": pid, "policy_label": plabel,
-                    "relation": rel,
-                    "target_id": tid, "target_label": tlabel, "target_category": tcat,
-                }));
-            }
-        }
-        let json_out = if auth_res.rows.is_empty() {
+        let mut json_out = if auth_nodes.is_empty() {
             let (reason, message) = if graph_has_any_nodes(cozo)? {
                 (
                     crate::output::empty::EmptyReason::NoMatches,
@@ -390,154 +493,142 @@ fn execute_boundaries(json: bool, layout: &crate::state::layout::Layout) -> Resu
                 },
             })
         };
+        if let Some(map) = json_out.as_object_mut() {
+            map.insert("pdp".to_string(), serde_json::json!(false));
+        }
         crate::output::json::emit(&json_out)?;
-    } else {
-        // --- Summary counts header ---
-        if auth_res.rows.is_empty() {
-            // CG-F35 (requirement #2): distinguish "surface available but not
-            // populated" (graph built, zero Cedar nodes — a config/policy-file
-            // gap) from "surface unavailable" (graph never built — an indexing
-            // prerequisite gap), each with its own one-step next action,
-            // matching the established taxonomy in `hotspots trend` and
-            // `doctor`'s graph-state check.
-            if graph_has_any_nodes(cozo)? {
-                // DX1: when the graph is populated but no Cedar policy data
-                // exists, check whether any HTTP routes were detected. If so,
-                // offer to generate a permissive Cedar template from them
-                // (default YES). Non-interactive environments decline without
-                // touching stdin and fall through to the existing static
-                // read-only guidance (no side effects).
-                let routes = collect_detected_routes(storage.get_connection())?;
-                if !routes.is_empty()
-                    && prompt_yes_no(&format!(
-                        "No Cedar policy data found. Would you like to generate a template policy for your {} detected routes? [Y/n] ",
-                        routes.len()
-                    ))
-                {
-                    let written = write_cedar_template(&layout.root, &routes)?;
-                    let display_path = written
-                        .strip_prefix(&layout.root)
-                        .map(|p| p.to_string())
-                        .unwrap_or_else(|_| written.to_string());
-                    println!(
-                        "Generated {} permissive Cedar permit policies at {} — edit to scope principal/resource, then run ledgerful index --analyze-graph.",
-                        routes.len(),
-                        display_path
-                    );
-                } else {
-                    println!(
-                        "{}",
-                        "Knowledge graph is populated, but no Cedar policy data was found."
-                            .if_supports_color(Stream::Stdout, |s| s.yellow())
-                    );
-                    println!(
-                        "  This repo has no Cedar policy files configured. Add them under 'policies/' \
-                         and run {} to populate this surface.",
-                        "ledgerful index --analyze-graph".if_supports_color(Stream::Stdout, |s| s
-                            .style(Style::new().cyan().bold()))
-                    );
-                }
+    } else if auth_nodes.is_empty() {
+        // CG-F35: empty taxonomy + DX1 prompt unchanged (no PDP one-liner).
+        if graph_has_any_nodes(cozo)? {
+            let routes = collect_detected_routes(storage.get_connection())?;
+            if !routes.is_empty()
+                && prompt_yes_no(&format!(
+                    "No Cedar policy data found. Would you like to generate a template policy for your {} detected routes? [Y/n] ",
+                    routes.len()
+                ))
+            {
+                let written = write_cedar_template(&layout.root, &routes)?;
+                let display_path = written
+                    .strip_prefix(&layout.root)
+                    .map(|p| p.to_string())
+                    .unwrap_or_else(|_| written.to_string());
+                println!(
+                    "Generated {} permissive Cedar permit policies at {} — edit to scope principal/resource, then run ledgerful index --analyze-graph.",
+                    routes.len(),
+                    display_path
+                );
             } else {
                 println!(
                     "{}",
-                    "No security boundary data found — the knowledge graph has not been built yet."
+                    "Knowledge graph is populated, but no Cedar policy data was found."
                         .if_supports_color(Stream::Stdout, |s| s.yellow())
                 );
                 println!(
-                    "  Run {} first, then add Cedar policy files to 'policies/' if this repo uses Cedar.",
+                    "  This repo has no Cedar policy files configured. Add them under 'policies/' \
+                     and run {} to populate this surface.",
                     "ledgerful index --analyze-graph"
                         .if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold()))
                 );
             }
         } else {
-            let summary = ["policy", "principal", "action", "resource"]
-                .iter()
-                .map(|k| format!("{} {}", counts.get(*k).copied().unwrap_or(0), k))
-                .collect::<Vec<_>>()
-                .join(" | ");
             println!(
                 "{}",
-                format!("Security Boundaries  [{}]", summary)
-                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().green()))
+                "No security boundary data found — the knowledge graph has not been built yet."
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
             );
+            println!(
+                "  Run {} first, then add Cedar policy files to 'policies/' if this repo uses Cedar.",
+                "ledgerful index --analyze-graph"
+                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold()))
+            );
+        }
+    } else {
+        let summary = ["policy", "principal", "action", "resource"]
+            .iter()
+            .map(|k| format!("{} {}", counts.get(*k).copied().unwrap_or(0), k))
+            .collect::<Vec<_>>()
+            .join(" | ");
+        println!(
+            "{}",
+            format!("Security Boundaries  [{summary}]")
+                .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().green()))
+        );
+        println!(
+            "{}",
+            "not a live PDP — daemon auth is Bearer (0090)."
+                .if_supports_color(Stream::Stdout, |s| s.dimmed())
+        );
 
-            // --- Auth nodes table ---
-            let auth_count = auth_res.rows.len();
+        println!(
+            "\n{} ({} total)",
+            "Cross-Surface Boundary Links (policy → protected entity):"
+                .if_supports_color(Stream::Stdout, |s| s.bold()),
+            boundary_edges
+                .len()
+                .to_string()
+                .if_supports_color(Stream::Stdout, |s| s.bold()),
+        );
+        if boundary_edges.is_empty() {
+            println!(
+                "{}",
+                "  No cross-surface links found. Run `ledgerful index --incremental` to refresh."
+                    .if_supports_color(Stream::Stdout, |s| s.dimmed())
+            );
+        } else {
+            let mut boundary_table = Table::new();
+            boundary_table.set_header(vec!["Policy", "Relation", "Target", "Target Category"]);
+            for edge in &boundary_edges {
+                boundary_table.add_row(vec![
+                    truncate(edge["policy_label"].as_str().unwrap_or_default(), 50),
+                    edge["relation"].as_str().unwrap_or_default().to_string(),
+                    truncate(edge["target_label"].as_str().unwrap_or_default(), 50),
+                    edge["target_category"]
+                        .as_str()
+                        .unwrap_or_default()
+                        .to_string(),
+                ]);
+            }
+            println!("{}", boundary_table);
+        }
+
+        if verbose {
             println!(
                 "\n{} ({} total)",
                 "Authorization Nodes (policy/principal/action/resource):"
                     .if_supports_color(Stream::Stdout, |s| s.bold()),
-                auth_count
+                auth_nodes
+                    .len()
                     .to_string()
                     .if_supports_color(Stream::Stdout, |s| s.bold()),
             );
             let mut auth_table = Table::new();
             auth_table.set_header(vec!["Category", "Label", "ID"]);
-            for row in auth_res.rows {
-                if let (
-                    Some(cozo::DataValue::Str(id)),
-                    Some(cozo::DataValue::Str(label)),
-                    Some(cozo::DataValue::Str(cat)),
-                ) = (row.first(), row.get(1), row.get(2))
-                {
-                    auth_table.add_row(vec![
-                        cat.to_string(),
-                        truncate(label, 60),
-                        truncate(id, 80),
-                    ]);
-                }
+            for node in &auth_nodes {
+                auth_table.add_row(vec![
+                    node["category"].as_str().unwrap_or_default().to_string(),
+                    truncate(node["label"].as_str().unwrap_or_default(), 60),
+                    truncate(node["id"].as_str().unwrap_or_default(), 80),
+                ]);
             }
             println!("{}", auth_table);
-
-            // --- Boundary links table ---
-            let boundary_count = boundary_res.rows.len();
-            println!(
-                "\n{} ({} total)",
-                "Cross-Surface Boundary Links (policy → protected entity):"
-                    .if_supports_color(Stream::Stdout, |s| s.bold()),
-                boundary_count
-                    .to_string()
-                    .if_supports_color(Stream::Stdout, |s| s.bold()),
-            );
-            if boundary_res.rows.is_empty() {
-                println!(
-                    "{}",
-                    "  No cross-surface links found. Run `ledgerful index --incremental` to refresh.".if_supports_color(Stream::Stdout, |s| s.dimmed())
-
-                );
-            } else {
-                let mut boundary_table = Table::new();
-                boundary_table.set_header(vec!["Policy", "Relation", "Target", "Target Category"]);
-                for row in boundary_res.rows {
-                    if let (
-                        Some(cozo::DataValue::Str(_pid)),
-                        Some(cozo::DataValue::Str(plabel)),
-                        Some(cozo::DataValue::Str(rel)),
-                        Some(cozo::DataValue::Str(_tid)),
-                        Some(cozo::DataValue::Str(tlabel)),
-                        Some(cozo::DataValue::Str(tcat)),
-                    ) = (
-                        row.first(),
-                        row.get(1),
-                        row.get(2),
-                        row.get(3),
-                        row.get(4),
-                        row.get(5),
-                    ) {
-                        boundary_table.add_row(vec![
-                            truncate(plabel, 50),
-                            rel.to_string(),
-                            truncate(tlabel, 50),
-                            tcat.to_string(),
-                        ]);
-                    }
-                }
-                println!("{}", boundary_table);
-            }
         }
     }
 
     Ok(())
+}
+
+/// URN table only when `--verbose` appears after `boundaries`. Clap same-id
+/// skip copies a leading `-v` onto the local field; that must not dump URNs.
+fn urn_table_from_argv(parsed_verbose: bool) -> bool {
+    let args: Vec<String> = std::env::args().collect();
+    urn_table_from_args(parsed_verbose, &args)
+}
+
+fn urn_table_from_args(parsed_verbose: bool, args: &[String]) -> bool {
+    match args.iter().position(|a| a == "boundaries") {
+        Some(idx) => args.iter().skip(idx + 1).any(|a| a == "--verbose"),
+        None => parsed_verbose,
+    }
 }
 
 pub fn execute_security(args: SecurityArgs) -> Result<()> {
@@ -545,6 +636,40 @@ pub fn execute_security(args: SecurityArgs) -> Result<()> {
 
     match args.command {
         SecuritySubcommands::Impact { changed, json } => execute_impact(changed, json, &layout),
-        SecuritySubcommands::Boundaries { json } => execute_boundaries(json, &layout),
+        SecuritySubcommands::Boundaries { json, verbose } => {
+            execute_boundaries(json, urn_table_from_argv(verbose), &layout)
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::urn_table_from_args;
+
+    #[test]
+    fn urn_table_only_when_verbose_follows_boundaries() {
+        let after = ["ledgerful", "security", "boundaries", "--verbose"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert!(urn_table_from_args(true, &after));
+        let leading_v = ["ledgerful", "-v", "security", "boundaries"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert!(
+            !urn_table_from_args(true, &leading_v),
+            "leading -v must not dump URNs"
+        );
+        let none = ["ledgerful", "security", "boundaries"]
+            .into_iter()
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        assert!(!urn_table_from_args(false, &none));
+        let lib_call: Vec<String> = vec!["integration".into()];
+        assert!(
+            urn_table_from_args(true, &lib_call),
+            "library callers without argv `boundaries` keep the parsed flag"
+        );
     }
 }

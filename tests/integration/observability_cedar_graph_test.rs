@@ -511,14 +511,15 @@ fn test_policy_endpoint_cross_link() {
     fs::create_dir_all(root.join("src")).unwrap();
     fs::write(root.join("src").join("lib.rs"), "pub fn main() {}").unwrap();
 
-    // Cedar policy that mentions the /api/users endpoint in its raw text
+    // Cedar policy whose action names the /api/users endpoint
+    // (method-safe `Action::"METHOD path"` form — no method-blind substring match)
     let policy_dir = root.join("policies");
     fs::create_dir_all(&policy_dir).unwrap();
     let cedar_policy = r#"
 // protects /api/users resource
 permit(
     principal == User::"alice",
-    action == Action::"GET",
+    action == Action::"GET /api/users",
     resource == Resource::"/api/users"
 );
 "#;

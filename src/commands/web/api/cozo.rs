@@ -37,67 +37,8 @@ pub(crate) fn fetch_security_boundaries(layout: &Layout) -> Result<SecurityBound
         }
     };
 
-    // Authorisation nodes: policy, principal, action, resource.
-    let auth_res = cozo.run_script(
-        "?[id, label, category] := *node{id, label, category}, \
-         category in ['policy', 'principal', 'action', 'resource']",
-    )?;
-
-    let mut counts: HashMap<String, usize> = HashMap::new();
-    let mut auth_nodes = Vec::new();
-    for row in &auth_res.rows {
-        if let (
-            Some(cozo::DataValue::Str(id)),
-            Some(cozo::DataValue::Str(label)),
-            Some(cozo::DataValue::Str(cat)),
-        ) = (row.first(), row.get(1), row.get(2))
-        {
-            *counts.entry(cat.to_string()).or_insert(0) += 1;
-            auth_nodes.push(json!({
-                "id": id.to_string(),
-                "label": label.to_string(),
-                "category": cat.to_string(),
-            }));
-        }
-    }
-
-    // Cross-surface boundary edges: policy -> protected entity.
-    let boundary_res = cozo.run_script(
-        "?[policy_id, policy_label, relation, target_id, target_label, target_cat] := \
-         *node{id: policy_id, label: policy_label, category: 'policy'}, \
-         *edge{source: policy_id, target: target_id, relation: rel}, \
-         *node{id: target_id, label: target_label, category: target_cat}, \
-         target_cat in ['service', 'endpoint', 'config_key', 'deploy_surface', 'adr'], \
-         relation = rel",
-    )?;
-
-    let mut boundary_edges = Vec::new();
-    for row in &boundary_res.rows {
-        if let (
-            Some(cozo::DataValue::Str(pid)),
-            Some(cozo::DataValue::Str(plabel)),
-            Some(cozo::DataValue::Str(rel)),
-            Some(cozo::DataValue::Str(tid)),
-            Some(cozo::DataValue::Str(tlabel)),
-            Some(cozo::DataValue::Str(tcat)),
-        ) = (
-            row.first(),
-            row.get(1),
-            row.get(2),
-            row.get(3),
-            row.get(4),
-            row.get(5),
-        ) {
-            boundary_edges.push(json!({
-                "policy_id": pid.to_string(),
-                "policy_label": plabel.to_string(),
-                "relation": rel.to_string(),
-                "target_id": tid.to_string(),
-                "target_label": tlabel.to_string(),
-                "target_category": tcat.to_string(),
-            }));
-        }
-    }
+    let (counts, auth_nodes, boundary_edges) =
+        crate::commands::security::assemble_security_boundaries(cozo)?;
 
     Ok(SecurityBoundariesResponse {
         meta: json!({ "counts": counts }),

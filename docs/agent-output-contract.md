@@ -674,6 +674,7 @@ field names stay command-specific (`results` / `impacted` / `files` /
 | `endpoints --json` | `results` | Empty keeps `emptyReason`/`message` |
 | `config schema --json` | `results` | Empty keeps `emptyReason`/`message` |
 | `security impact --json` | `impacted` | `indexedCount` (unfiltered denominator); empty and populated |
+| `security boundaries --json` | `boundaries` | Unwrapped object (`meta` + `boundaries`); **no** `schemaVersion`. Additive top-level `"pdp": false` on empty and populated. Empty keeps `emptyReason`/`message`. MCP `security_boundaries` shells this CLI. **0208** `security impact --changed` is a different command. |
 | `observability coverage --json` | `results` | Item `slo_count` / `metric_count` stay snake |
 | `data-models list --json` | `models` | Item `file_path` stays snake |
 | `data-models impact --json` | `impacted` | |

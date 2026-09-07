@@ -1286,9 +1286,12 @@ impl Commands {
                         f.push("json");
                     }
                 }
-                SecuritySubcommands::Boundaries { json } => {
+                SecuritySubcommands::Boundaries { json, verbose } => {
                     if *json {
                         f.push("json");
+                    }
+                    if *verbose {
+                        f.push("verbose");
                     }
                 }
             },

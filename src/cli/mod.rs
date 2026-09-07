@@ -1082,4 +1082,47 @@ mod tests {
             _ => panic!("expected Internal command"),
         }
     }
+
+    #[test]
+    fn security_boundaries_verbose_long_sets_local_flag() {
+        use crate::commands::security::{SecurityArgs, SecuritySubcommands};
+        let cli = Cli::try_parse_from(["ledgerful", "security", "boundaries", "--verbose"])
+            .expect("security boundaries --verbose");
+        match cli.command {
+            Commands::Security(SecurityArgs {
+                command:
+                    SecuritySubcommands::Boundaries {
+                        json: false,
+                        verbose: true,
+                    },
+            }) => {}
+            other => panic!("expected Boundaries verbose, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn security_boundaries_short_v_is_not_local_verbose() {
+        use crate::commands::security::{SecurityArgs, SecuritySubcommands};
+        // Clap 4.6.6 same-id skip: local `--verbose` hides global `--verbose`/`-v`
+        // on this subcommand, so trailing `-v` is UnknownArgument. Execute keys
+        // the URN table off argv `--verbose` after `boundaries` so a leading
+        // `-v` cannot leak URNs even though clap copies the same-id value.
+        let err = Cli::try_parse_from(["ledgerful", "security", "boundaries", "-v"])
+            .expect_err("trailing -v is unexpected (local flag is long-only)");
+        assert!(
+            err.to_string().contains("-v"),
+            "pin -v unexpected-argument text: {err}"
+        );
+        let cli = Cli::try_parse_from(["ledgerful", "security", "boundaries", "--verbose"])
+            .expect("long --verbose parses");
+        match cli.command {
+            Commands::Security(SecurityArgs {
+                command: SecuritySubcommands::Boundaries { verbose, .. },
+            }) => assert!(verbose, "long --verbose sets the local flag"),
+            other => panic!("expected Security, got {other:?}"),
+        }
+        let cli = Cli::try_parse_from(["ledgerful", "-v", "security", "boundaries"])
+            .expect("global -v before subcommand");
+        assert!(cli.verbose, "leading -v is global logging verbose");
+    }
 }
