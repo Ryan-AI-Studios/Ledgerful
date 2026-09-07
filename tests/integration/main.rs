@@ -39,6 +39,7 @@ mod cli_index;
 mod cli_init;
 mod cli_json_list_envelope;
 mod cli_ledger_graph;
+mod cli_ledger_stack;
 mod cli_migration_prompt;
 mod cli_release;
 mod cli_reset;

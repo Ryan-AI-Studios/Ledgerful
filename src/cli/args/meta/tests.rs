@@ -1,6 +1,7 @@
 use crate::cli::args::{
     ChangeContextArgs, Cli, Commands, DoctorArgs, ImpactArgs, LedgerCommands, ScanArgs,
 };
+use crate::ledger::types::Category;
 use clap::Parser;
 
 fn parse(args: &[&str]) -> Commands {
@@ -235,6 +236,55 @@ fn quiet_does_not_imply_machine() {
     let cli_json = Cli::try_parse_from(["ledgerful", "--quiet", "verify", "--json"]).unwrap();
     assert!(cli_json.quiet);
     assert!(cli_json.command.is_machine_output());
+}
+
+#[test]
+fn ledger_stack_json_is_machine_and_argv_shape() {
+    assert!(parse(&["ledger", "stack", "--json"]).is_machine_output());
+    assert!(!parse(&["ledger", "stack"]).is_machine_output());
+    assert_eq!(parse(&["ledger", "stack"]).argv_shape(), "ledger_stack");
+    assert_eq!(
+        parse(&["ledger", "stack", "--json"]).argv_shape(),
+        "ledger_stack|json"
+    );
+    match parse(&["ledger", "stack", "--json"]) {
+        Commands::Ledger {
+            command: LedgerCommands::Stack { json, category },
+        } => {
+            assert!(json);
+            assert!(category.is_none());
+        }
+        other => panic!("expected ledger stack --json, got {other:?}"),
+    }
+}
+
+#[test]
+fn ledger_stack_json_parses_before_or_after_category() {
+    match parse(&["ledger", "stack", "BUGFIX", "--json"]) {
+        Commands::Ledger {
+            command: LedgerCommands::Stack { json, category },
+        } => {
+            assert!(json);
+            assert_eq!(category, Some(Category::Bugfix));
+        }
+        other => panic!("expected stack BUGFIX --json, got {other:?}"),
+    }
+    match parse(&["ledger", "stack", "--json", "BUGFIX"]) {
+        Commands::Ledger {
+            command: LedgerCommands::Stack { json, category },
+        } => {
+            assert!(json);
+            assert_eq!(category, Some(Category::Bugfix));
+        }
+        other => panic!("expected stack --json BUGFIX, got {other:?}"),
+    }
+}
+
+#[test]
+fn ledger_stack_quiet_does_not_imply_machine() {
+    let cli = Cli::try_parse_from(["ledgerful", "--quiet", "ledger", "stack"]).unwrap();
+    assert!(cli.quiet);
+    assert!(!cli.command.is_machine_output());
 }
 
 /// 0174-B: doctor --full parses; argv_shape includes full.

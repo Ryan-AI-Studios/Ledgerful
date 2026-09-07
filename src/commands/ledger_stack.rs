@@ -1,23 +1,77 @@
-use crate::commands::helpers::get_layout;
+use crate::commands::helpers::{get_layout, load_ledger_config};
 use crate::ledger::*;
+use crate::output::json;
 use crate::state::storage::StorageManager;
 use miette::Result;
 use owo_colors::{OwoColorize, Stream, Style};
+use serde::Serialize;
 
-pub fn execute_ledger_stack(category: Option<String>) -> Result<()> {
+const NEXT_REGISTER_RULE: &str = "ledgerful ledger register rule";
+const NEXT_REGISTER_VALIDATOR: &str = "ledgerful ledger register validator";
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct LedgerStackJson {
+    schema_version: u32,
+    kind: &'static str,
+    empty: bool,
+    enforcement_enabled: bool,
+    rules: Vec<TechStackRule>,
+    validators: Vec<CommitValidator>,
+    mappings: Vec<CategoryStackMapping>,
+    next: Vec<String>,
+}
+
+pub fn execute_ledger_stack(category: Option<String>, json_mode: bool) -> Result<()> {
     let layout = get_layout()?;
+    let config = load_ledger_config(&layout)?;
     let storage = StorageManager::open_read_only_sqlite_only(&layout)?;
     let db = LedgerDb::new(storage.get_connection());
-
-    println!(
-        "{}",
-        "Ledgerful Tech Stack & Validators"
-            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
-    );
 
     let rules = db
         .get_tech_stack_rules(category.as_deref())
         .map_err(|e| miette::miette!("{}", e))?;
+    let validators = db
+        .get_commit_validators(category.as_deref())
+        .map_err(|e| miette::miette!("{}", e))?;
+    let mappings = db
+        .get_category_mappings(category.as_deref())
+        .map_err(|e| miette::miette!("{}", e))?;
+
+    let empty = rules.is_empty() && validators.is_empty() && mappings.is_empty();
+    let next = if empty {
+        vec![
+            NEXT_REGISTER_RULE.to_string(),
+            NEXT_REGISTER_VALIDATOR.to_string(),
+        ]
+    } else {
+        Vec::new()
+    };
+
+    if json_mode {
+        return json::emit(&LedgerStackJson {
+            schema_version: 1,
+            kind: "ledgerStack",
+            empty,
+            enforcement_enabled: config.ledger.enforcement_enabled,
+            rules,
+            validators,
+            mappings,
+            next,
+        });
+    }
+
+    println!(
+        "{}",
+        "Commit-path stack inspect (SQLite)"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
+    );
+    println!(
+        "SQLite inspect of commit-path enforcement. Not verify auto-policy, \
+not .ledgerful/rules.toml, not policy check. ledger.enforcement_enabled \
+defaults off (rules at start_change); validators still run at commit."
+    );
+
     println!(
         "\n{}",
         "TECH STACK RULES"
@@ -48,9 +102,6 @@ pub fn execute_ledger_stack(category: Option<String>) -> Result<()> {
         }
     }
 
-    let validators = db
-        .get_commit_validators(category.as_deref())
-        .map_err(|e| miette::miette!("{}", e))?;
     println!(
         "\n{}",
         "COMMIT VALIDATORS"
@@ -87,9 +138,6 @@ pub fn execute_ledger_stack(category: Option<String>) -> Result<()> {
         }
     }
 
-    let mappings = db
-        .get_category_mappings(category.as_deref())
-        .map_err(|e| miette::miette!("{}", e))?;
     println!(
         "\n{}",
         "CATEGORY MAPPINGS"
@@ -97,6 +145,10 @@ pub fn execute_ledger_stack(category: Option<String>) -> Result<()> {
     );
     if mappings.is_empty() {
         println!("  None.");
+        println!(
+            "  Optional TX category → stack-rule category join; none in the ledger DB. \
+Not config [[ledger.category_mappings]]."
+        );
     } else {
         for m in mappings {
             println!(
@@ -113,6 +165,12 @@ pub fn execute_ledger_stack(category: Option<String>) -> Result<()> {
                 );
             }
         }
+    }
+
+    if empty {
+        println!("\nNext:");
+        println!("  {}", NEXT_REGISTER_RULE);
+        println!("  {}", NEXT_REGISTER_VALIDATOR);
     }
 
     Ok(())

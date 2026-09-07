@@ -814,7 +814,11 @@ impl Commands {
                     }
                 },
                 // Optional category is positional (not a long flag).
-                LedgerCommands::Stack { .. } => {}
+                LedgerCommands::Stack { json, .. } => {
+                    if *json {
+                        f.push("json");
+                    }
+                }
                 LedgerCommands::Adr { command } => match command {
                     AdrSubcommands::Export { output: _, days } => {
                         // output always has a default path — record presence of days only
