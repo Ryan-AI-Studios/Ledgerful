@@ -66,6 +66,7 @@ jobs:
       - run: cargo deny check advisories bans licenses sources
 
   semgrep:
+    # Required merge context on main (exact name). Do not rename this job.
     name: Semgrep SAST
     runs-on: ubuntu-latest
     permissions:

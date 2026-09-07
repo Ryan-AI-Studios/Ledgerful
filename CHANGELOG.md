@@ -29,6 +29,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **`Semgrep SAST` is a required merge check:** `main` branch protection
+  now includes the Security workflow job alongside fmt/clippy/test×2/deny.
+  Line-adjacent `// nosemgrep: <rule-id>` remains the false-positive path.
+  `Secret scan` stays advisory. No Cargo bump.
+
 - **Packaging templates pin published v0.2.12:** Homebrew formula and
   Scoop manifest templates match GitHub Latest with published sidecar sha256
   hashes. Live tap/bucket remotes already auto-bumped on the release; this
