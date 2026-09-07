@@ -332,6 +332,11 @@ fn audit_global(
     Ok(())
 }
 
+/// Uncolored TOP CHURNED FILES row (count word is `entries`, not `commits`).
+pub(crate) fn format_churn_line(entity: &str, count: i64) -> String {
+    format!("  {entity:<40} {count} entries")
+}
+
 fn ci_trend_human_placeholder(ci_trend_corrupt: bool) -> &'static str {
     if ci_trend_corrupt {
         "CI trend unreadable (ciTrendCorrupt)."
@@ -402,11 +407,9 @@ fn render_project_audit_human(
     } else {
         for c in &report.churn {
             println!(
-                "  {:<40} {} commits",
-                c.entity.if_supports_color(Stream::Stdout, |s| s.cyan()),
-                c.count
-                    .to_string()
-                    .if_supports_color(Stream::Stdout, |s| s.yellow())
+                "{}",
+                format_churn_line(&c.entity, c.count)
+                    .if_supports_color(Stream::Stdout, |s| s.cyan())
             );
         }
     }
@@ -777,5 +780,20 @@ mod tests {
     fn verify_history_ci_trend_corrupt_true_is_serialized() {
         let json = serde_json::to_value(empty_audit_report(true)).unwrap();
         assert_eq!(json["ciTrendCorrupt"], true);
+    }
+
+    #[test]
+    fn format_churn_line_uses_entries_not_commits() {
+        let line = format_churn_line("CHANGELOG.md", 12);
+        assert!(
+            line.contains("entries"),
+            "churn unit must be entries: {line}"
+        );
+        assert!(
+            !line.contains("commits"),
+            "churn unit must not be commits: {line}"
+        );
+        assert!(line.contains("CHANGELOG.md"));
+        assert!(line.contains("12"));
     }
 }

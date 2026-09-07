@@ -50,6 +50,7 @@ on stderr.
 | `scan --impact --json` | yes | yes | impact packet (`schemaVersion` string `"v1"`; no top-level `kind`) |
 | `scan --json` / `scan --out` (no `--impact`) | yes (0180) | yes | **gitScan** envelope: numeric `schemaVersion` **1** + top-level **`kind: "gitScan"`** + ScanReport fields; **not** auto-impact |
 | `scan --pr <range> --format json` | via `--format` | yes | PR-range machine output (not impact packet) |
+| `audit --json` | yes | yes | Bare `ProjectAuditReport` object, **no** `schemaVersion`. `churn[].entity` is a unique file path; `count` is distinct LOCAL TXs. Not Daily 5 |
 
 \* Non-essential progress INFO suppressed under machine mode; hard failures still
 use stderr.

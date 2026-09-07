@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Audit TOP CHURNED FILES ranks files (0283):** `ledgerful audit` human
+  table and `--json` `churn[]` list unique file paths. ` (+N more)` labels
+  collapse; directories expand from `changed_files` or are dropped; track
+  slugs are omitted. `count` is distinct LOCAL TXs. JSON keys and the
+  envelope (no `schemaVersion`) are unchanged. Human count word is
+  `entries` (velocity `Total Commits:` stays).
+
 - **Top-level `status` alias honesty (0282):** `ledgerful status` stays the
   pending/drift slice of `ledger status` (`--json` / `--compact` only).
   `--help` `after_help` names the ledger-only flags and points at
