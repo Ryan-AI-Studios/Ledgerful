@@ -32,9 +32,9 @@ pub enum SecuritySubcommands {
         #[arg(long)]
         json: bool,
         /// Include the URN / authorization-node table (long only).
-        /// Clap same-id skip hides global `--verbose`/`-v` on this subcommand;
-        /// execute still keys the table off argv `--verbose` after `boundaries`
-        /// so a leading `-v` cannot leak URNs.
+        /// Clap same-id skip hides global `--verbose`/`-v` on this subcommand
+        /// and copies a leading `-v` onto this field; execute keys the table
+        /// off argv `--verbose` after `boundaries` so `-v` cannot leak URNs.
         #[arg(long)]
         verbose: bool,
     },

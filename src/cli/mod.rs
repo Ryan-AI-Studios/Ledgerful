@@ -1103,10 +1103,10 @@ mod tests {
     #[test]
     fn security_boundaries_short_v_is_not_local_verbose() {
         use crate::commands::security::{SecurityArgs, SecuritySubcommands};
-        // Clap 4.6.6 same-id skip: local `--verbose` hides global `--verbose`/`-v`
-        // on this subcommand, so trailing `-v` is UnknownArgument. Execute keys
-        // the URN table off argv `--verbose` after `boundaries` so a leading
-        // `-v` cannot leak URNs even though clap copies the same-id value.
+        // Clap 4.6.6 same-id skip: local `--verbose` shares id with global
+        // `--verbose`/`-v`. Trailing `-v` is UnknownArgument. Leading `-v`
+        // copies onto the local field; execute keys the URN table off argv
+        // `--verbose` after `boundaries` so that copy cannot leak URNs.
         let err = Cli::try_parse_from(["ledgerful", "security", "boundaries", "-v"])
             .expect_err("trailing -v is unexpected (local flag is long-only)");
         assert!(

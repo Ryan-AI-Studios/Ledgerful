@@ -270,9 +270,8 @@ pub fn extract_at_id(raw: &str) -> Option<String> {
     }
 }
 
-/// Operator policy label: explicit `@id` annotation wins, then stored
-/// `cedar_id`, then raw `@id`, then the stored label. Never `Policy: permit N`
-/// when an id exists (spec B3.4: annotations → raw → non-legacy label).
+/// Operator policy label: annotations → raw `@id` → stored `cedar_id` →
+/// stored label. Never `Policy: permit N` when an id exists (spec B3.4).
 pub fn policy_operator_label(
     stored_label: &str,
     cedar_id: Option<&str>,
@@ -282,11 +281,11 @@ pub fn policy_operator_label(
     if let Some(id) = annotations_id.map(str::trim).filter(|s| !s.is_empty()) {
         return id.to_string();
     }
-    if let Some(id) = cedar_id.map(str::trim).filter(|s| !s.is_empty()) {
-        return id.to_string();
-    }
     if let Some(id) = raw.and_then(extract_at_id) {
         return id;
+    }
+    if let Some(id) = cedar_id.map(str::trim).filter(|s| !s.is_empty()) {
+        return id.to_string();
     }
     stored_label.to_string()
 }
@@ -606,6 +605,12 @@ permit (
         assert_eq!(ann_over_cedar, "route_get_api_config");
         let empty_ann = policy_operator_label("Policy: permit 6", Some("policy0"), Some(""), None);
         assert_eq!(empty_ann, "policy0", "empty @id is missing");
+        let raw_over_cedar =
+            policy_operator_label("Policy: permit 6", Some("stale_auto_id"), None, Some(raw));
+        assert_eq!(
+            raw_over_cedar, "route_get_api_config",
+            "raw @id wins over stored cedar_id (B3.4)"
+        );
     }
 
     #[test]
