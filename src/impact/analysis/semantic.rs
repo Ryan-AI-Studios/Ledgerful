@@ -36,6 +36,21 @@ impl ImpactProvider for SemanticImpactProvider {
         // 2. Entrypoint and Public Symbol Changes
         for change in &packet.changes {
             if let Some(ref symbols) = change.symbols {
+                // Prospective --paths (0284): presence is not "modified".
+                // File-level continue skips the whole per-symbol loop
+                // (`is_public` and sibling `entrypoint_kind`).
+                if packet.analysis_mode == "prospective" {
+                    let n = symbols.iter().filter(|s| s.is_public).count();
+                    if n > 0 {
+                        let path = crate::impact::path_class::normalize_path(
+                            &change.path.to_string_lossy(),
+                        );
+                        reasons.push(format!(
+                            "Public API present (prospective): {path} ({n} public symbol(s))"
+                        ));
+                    }
+                    continue;
+                }
                 let weight_mult = _config.impact.get_path_weight(&change.path);
                 for sym in symbols {
                     if sym.is_public {
@@ -88,7 +103,7 @@ impl ImpactProvider for SemanticImpactProvider {
 #[cfg(test)]
 mod public_symbol_verb_tests {
     use super::*;
-    use crate::impact::packet::ChangedFile;
+    use crate::impact::packet::{CentralityRisk, ChangedFile};
     use crate::index::symbols::{Symbol, SymbolKind};
     use std::path::PathBuf;
 
@@ -106,6 +121,36 @@ mod public_symbol_verb_tests {
             byte_end: None,
             entrypoint_kind: None,
             metadata: Default::default(),
+        }
+    }
+
+    fn private_sym(name: &str) -> Symbol {
+        let mut s = public_sym(name);
+        s.is_public = false;
+        s
+    }
+
+    fn prospective_packet() -> ImpactPacket {
+        ImpactPacket {
+            analysis_mode: "prospective".to_string(),
+            ..ImpactPacket::default()
+        }
+    }
+
+    fn file_with_symbols(path: &str, status: &str, symbols: Vec<Symbol>) -> ChangedFile {
+        ChangedFile {
+            path: PathBuf::from(path),
+            status: status.to_string(),
+            old_path: None,
+            is_staged: false,
+            symbols: Some(symbols),
+            imports: None,
+            runtime_usage: None,
+            analysis_status: Default::default(),
+            analysis_warnings: Vec::new(),
+            api_routes: Vec::new(),
+            data_models: Vec::new(),
+            ci_gates: Vec::new(),
         }
     }
 
@@ -187,6 +232,188 @@ mod public_symbol_verb_tests {
             );
             assert!(impact.weight >= 30);
         }
+    }
+
+    #[test]
+    fn prospective_two_public_symbols_presence_weight_zero() {
+        let mut packet = prospective_packet();
+        packet.changes.push(file_with_symbols(
+            "src/lib.rs",
+            "Modified",
+            vec![public_sym("a"), public_sym("b")],
+        ));
+        let impact = SemanticImpactProvider
+            .analyze(&packet, &Rules::default(), &Config::default())
+            .unwrap();
+        assert_eq!(
+            impact.reasons,
+            vec!["Public API present (prospective): src/lib.rs (2 public symbol(s))".to_string()]
+        );
+        assert!(
+            impact
+                .reasons
+                .iter()
+                .all(|r| !r.starts_with("Public symbol modified:")),
+            "prospective must not say modified: {:?}",
+            impact.reasons
+        );
+        assert_eq!(impact.weight, 0);
+    }
+
+    #[test]
+    fn prospective_entrypoint_kind_does_not_emit_changed() {
+        let mut packet = prospective_packet();
+        let mut ep = public_sym("main_entry");
+        ep.entrypoint_kind = Some("ENTRYPOINT".to_string());
+        packet
+            .changes
+            .push(file_with_symbols("src/main.rs", "Modified", vec![ep]));
+        let impact = SemanticImpactProvider
+            .analyze(&packet, &Rules::default(), &Config::default())
+            .unwrap();
+        assert!(
+            impact
+                .reasons
+                .iter()
+                .all(|r| !r.starts_with("Entry point changed:")),
+            "prospective must not say Entry point changed: {:?}",
+            impact.reasons
+        );
+        assert_eq!(impact.weight, 0);
+        assert!(
+            impact
+                .reasons
+                .iter()
+                .any(|r| r == "Public API present (prospective): src/main.rs (1 public symbol(s))")
+        );
+    }
+
+    #[test]
+    fn prospective_zero_public_symbols_no_presence_reason() {
+        let mut packet = prospective_packet();
+        packet.changes.push(file_with_symbols(
+            "src/internal.rs",
+            "Modified",
+            vec![private_sym("hidden")],
+        ));
+        let impact = SemanticImpactProvider
+            .analyze(&packet, &Rules::default(), &Config::default())
+            .unwrap();
+        assert!(
+            impact
+                .reasons
+                .iter()
+                .all(|r| !r.starts_with("Public API present (prospective):")),
+            "no public symbols: {:?}",
+            impact.reasons
+        );
+        assert_eq!(impact.weight, 0);
+    }
+
+    #[test]
+    fn prospective_backslash_path_normalized_in_presence() {
+        let mut packet = prospective_packet();
+        packet.changes.push(file_with_symbols(
+            r"src\foo.rs",
+            "Modified",
+            vec![public_sym("x")],
+        ));
+        let impact = SemanticImpactProvider
+            .analyze(&packet, &Rules::default(), &Config::default())
+            .unwrap();
+        assert!(
+            impact
+                .reasons
+                .iter()
+                .any(|r| r == "Public API present (prospective): src/foo.rs (1 public symbol(s))"),
+            "expected / path, got {:?}",
+            impact.reasons
+        );
+        assert!(
+            impact.reasons.iter().all(|r| !r.contains(r"src\foo.rs")),
+            "must not emit backslash path: {:?}",
+            impact.reasons
+        );
+    }
+
+    #[test]
+    fn prospective_multi_file_presence_set() {
+        let mut packet = prospective_packet();
+        packet.changes.push(file_with_symbols(
+            "src/a.rs",
+            "Modified",
+            vec![public_sym("a1"), public_sym("a2")],
+        ));
+        packet.changes.push(file_with_symbols(
+            "src/b.rs",
+            "Modified",
+            vec![private_sym("b1")],
+        ));
+        packet.changes.push(file_with_symbols(
+            "src/c.rs",
+            "Modified",
+            vec![public_sym("c1")],
+        ));
+        let impact = SemanticImpactProvider
+            .analyze(&packet, &Rules::default(), &Config::default())
+            .unwrap();
+        let presence: Vec<&String> = impact
+            .reasons
+            .iter()
+            .filter(|r| r.starts_with("Public API present (prospective):"))
+            .collect();
+        assert_eq!(presence.len(), 2, "got {:?}", impact.reasons);
+        assert!(
+            presence.iter().any(|r| {
+                *r == "Public API present (prospective): src/a.rs (2 public symbol(s))"
+            })
+        );
+        assert!(
+            presence.iter().any(|r| {
+                *r == "Public API present (prospective): src/c.rs (1 public symbol(s))"
+            })
+        );
+        assert!(
+            impact.reasons.iter().all(|r| !r.contains("src/b.rs")),
+            "zero-public file must not appear: {:?}",
+            impact.reasons
+        );
+        assert_eq!(impact.weight, 0);
+    }
+
+    #[test]
+    fn prospective_keeps_centrality_blast() {
+        let mut packet = packet_with_status("Modified", "existing");
+        packet.analysis_mode = "prospective".to_string();
+        packet.centrality_risks.push(CentralityRisk {
+            symbol_name: "existing".to_string(),
+            entrypoints_reachable: 5,
+        });
+        let impact = SemanticImpactProvider
+            .analyze(&packet, &Rules::default(), &Config::default())
+            .unwrap();
+        assert!(
+            impact
+                .reasons
+                .iter()
+                .any(|r| r.starts_with("High centrality:")),
+            "expected High centrality, got {:?}",
+            impact.reasons
+        );
+        assert!(
+            impact.reasons.iter().any(|r| {
+                r == "Public API present (prospective): src/lib.rs (1 public symbol(s))"
+            })
+        );
+        assert!(
+            impact
+                .reasons
+                .iter()
+                .all(|r| !r.starts_with("Public symbol modified:")),
+            "got {:?}",
+            impact.reasons
+        );
+        assert_eq!(impact.weight, 15);
     }
 }
 

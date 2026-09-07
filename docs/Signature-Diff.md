@@ -89,9 +89,14 @@ Public-symbol risk reasons use a **status-aware verb** (0129) from
 | `Modified` / other | `Public symbol modified: {name}` |
 
 The reason still fires for **every public symbol in a touched file** (not only
-symbols whose body actually changed). Signature shape risk sits **beside** it
-with distinct wording (`Signature changed: …`). Filtering to symbols that
-actually changed remains deferred (0088 residual — risk weight distribution).
+symbols whose body actually changed) when `analysisMode` is `working_tree` or
+`base_ref`. On **prospective** `--paths` (`analysisMode=prospective`), the
+semantic provider emits one file-level
+`Public API present (prospective): {path} ({n} public symbol(s))` at weight 0
+instead of the status-aware verbs (0284). Signature shape risk sits **beside**
+it with distinct wording (`Signature changed: …`). Filtering working-tree
+reasons to symbols that actually changed remains deferred (0088 residual —
+risk weight distribution).
 
 ## See also
 

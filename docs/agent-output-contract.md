@@ -1033,6 +1033,11 @@ ledgerful scan --impact --json --paths src/foo.rs
 - Mutually exclusive with `--base-ref`. Cap ≤ 50. Empty/whitespace → usage error.
 - **Write policy:** prospective does **not** rewrite `latest-impact.json`
   (in-memory only). Working-tree impact without `--paths` keeps current write.
+- **Risk honesty (0284):** prospective `riskReasons` use
+  `Public API present (prospective): {path} ({n} public symbol(s))`
+  (not `Public symbol modified:`). Per-symbol 30×N does not apply.
+  HIGH still possible from protected path / centrality / volume /
+  temporal. `schemaVersion` unchanged.
 
 ### Docs-mode impact lead — 0227
 
