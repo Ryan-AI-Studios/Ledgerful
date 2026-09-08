@@ -153,6 +153,9 @@ impl NativeComplexityScorer {
             }
 
             for child in current.children(&mut cursor) {
+                if matches!(language, Language::Cpp) && child.kind() == "function_definition" {
+                    continue;
+                }
                 stack.push(child);
             }
         }
@@ -260,6 +263,9 @@ impl NativeComplexityScorer {
 
         let mut cursor = node.walk();
         for child in node.children(&mut cursor) {
+            if matches!(language, Language::Cpp) && child.kind() == "function_definition" {
+                continue;
+            }
             let (child_score, _) =
                 self.calculate_cognitive_recursive(child, current_nesting, language);
             score += child_score;
@@ -357,10 +363,16 @@ impl ComplexityScorer for NativeComplexityScorer {
                         .unwrap_or_else(|| "anonymous".to_string())
                 };
 
+                let score_root =
+                    if kind == "function_definition" && matches!(language, Language::Cpp) {
+                        node.child_by_field_name("body").unwrap_or(node)
+                    } else {
+                        node
+                    };
                 functions.push(SymbolComplexity {
                     name,
-                    cognitive: self.calculate_cognitive(node, language),
-                    cyclomatic: self.calculate_cyclomatic(node, language),
+                    cognitive: self.calculate_cognitive(score_root, language),
+                    cyclomatic: self.calculate_cyclomatic(score_root, language),
                 });
             }
 
@@ -421,6 +433,82 @@ int branched(int n) {
                 .all(|f| f.name != "anonymous" || f.name == "lambda"),
             "function_definition names via declarator; got {:?}",
             result.functions
+        );
+    }
+
+    #[test]
+    fn cpp_function_definition_body_excludes_default_arg_ternary() {
+        // Declarator ternary is outside `body`. Scoring the whole
+        // function_definition counts it (cyc 3); body-scope is 2 (base + if).
+        let source = r#"
+int f(int x = (a ? 1 : 0)) {
+    if (b) {
+        return x;
+    }
+    return 0;
+}
+"#;
+        let scorer = NativeComplexityScorer::new();
+        let result = scorer
+            .score_file(Utf8Path::new("main.cpp"), source, Language::Cpp)
+            .expect("score cpp file");
+        let f = result
+            .functions
+            .iter()
+            .find(|fn_row| fn_row.name == "f")
+            .expect("function f");
+        assert_eq!(
+            f.cyclomatic, 2,
+            "body-scope excludes default-arg ternary; got {f:?}"
+        );
+    }
+
+    #[test]
+    fn cpp_nested_function_definition_is_not_counted_on_outer() {
+        let source = r#"
+int outer() {
+    class Local {
+    public:
+        int inner() {
+            if (1) {
+                for (;;) {
+                    if (2) {
+                        return 1;
+                    }
+                }
+            }
+            return 0;
+        }
+    };
+    return 0;
+}
+"#;
+        let scorer = NativeComplexityScorer::new();
+        let result = scorer
+            .score_file(Utf8Path::new("main.cpp"), source, Language::Cpp)
+            .expect("score cpp nested");
+        let names: Vec<&str> = result.functions.iter().map(|f| f.name.as_str()).collect();
+        assert!(
+            names.contains(&"outer") && names.contains(&"inner"),
+            "score_file must still discover nested function_definition; got {names:?}"
+        );
+        let outer = result
+            .functions
+            .iter()
+            .find(|f| f.name == "outer")
+            .expect("outer");
+        let inner = result
+            .functions
+            .iter()
+            .find(|f| f.name == "inner")
+            .expect("inner");
+        assert_eq!(
+            outer.cyclomatic, 1,
+            "outer must not include inner body's branches; got {outer:?} inner={inner:?}"
+        );
+        assert!(
+            inner.cyclomatic > outer.cyclomatic,
+            "inner keeps its own branches; outer={outer:?} inner={inner:?}"
         );
     }
 

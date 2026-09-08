@@ -711,7 +711,7 @@ field names stay command-specific (`results` / `impacted` / `files` /
 | `observability coverage --json` | `results` | Item `slo_count` / `metric_count` stay snake |
 | `data-models list --json` | `models` | Item `file_path` stays snake |
 | `data-models impact --json` | `impacted` | |
-| `hotspots --json` (list + `--semantic`) | `files` | List and `--semantic` echo `limit`. No `truncated` (no extra overfetch). CLI default omits test/example/bench paths; `--include tests` is the unfiltered audit view (0222, includes vendor). CLI default also omits `.md`; `--include docs` ranks markdown by frequency (`score` = `f_norm`, `complexity` 0). CLI default also omits vendored `deps_src`/`vendor`/`third_party`; `--include vendor` restores `f×c` (tests + docs still omitted). `--entity` into a vendored subtree needs `--include vendor`. `--semantic` ignores `--include`. Default and `--include tests` / `--include vendor` item `score` is 0–1 (`f_norm × c_norm`); `displayScore` is `ln_1p(score × 1000)` for humans. AI-T252 must pin `score`, not `displayScore`. No `scoreUnit` key. |
+| `hotspots --json` (list + `--semantic`) | `files` | List and `--semantic` echo `limit`. No `truncated` (no extra overfetch). CLI default omits test/example/bench paths; `--include tests` is the unfiltered audit view (0222, includes vendor). CLI default also omits `.md`; `--include docs` ranks markdown by frequency (`score` = `f_norm`, `complexity` 0). CLI default also omits vendored `deps_src`/`vendor`/`third_party`; `--include vendor` restores `f×c` (tests + docs still omitted). `--entity` into a vendored subtree needs `--include vendor`. `--semantic` ignores `--include`. Default and `--include tests` / `--include vendor` item `score` is 0–1 (`f_norm × c_norm`); `displayScore` is `ln_1p(score × 1000)` for humans. Item `complexity` is `MAX(MAX(cognitive, cyclomatic))` across current-index symbols (`project_symbols`; impact `symbols` only if the file is unindexed). C++ `function_definition` is scored on its `body`. AI-T252 must pin `score`, not `displayScore`. No `scoreUnit` key. |
 | `ci list --json` / `ci diff --json` (alias) | `gates` | Empty catalog: `gates: []`, `resultCount: 0`, **no** `emptyReason`. `list` is primary. |
 | `services list --json` / `services diff --json` (alias) | `results` | Gated empty keeps `emptyReason: "disabledByConfig"` + `message`. `list` is primary. |
 | `tests --json` (mapped) | `mappings` | Additive `resolvedPath` (omit when none); empty arms use the helper. Missing entity (no `--entity` / positional) is a usage error (exit 2, empty stdout), not an empty `mappings` envelope. |
@@ -726,12 +726,13 @@ hotspot array** — do not parse it as `{files:[…]}`. MCP and `/api/hotspots`
 stay **unfiltered** (0222); only the CLI list/JSON list default excludes
 tests/examples/benches, markdown, and vendored trees (`deps_src`/`vendor`/…).
 
-### `hotspots --json` `files[]` score units (0222 / 0293 / 0297)
+### `hotspots --json` `files[]` score units (0222 / 0293 / 0297 / 0299)
 
 | Field | Unit | Consumer |
 |---|---|---|
 | `score` | 0–1 (`f_norm × c_norm` on default / `--include tests` / `--include vendor`; `f_norm` on `--include docs`) | Agents — pin this (AI-T252) |
 | `displayScore` | ln display (`ln_1p(score × 1000)`) | Human table / dashboard |
+| `complexity` | max across symbols (`MAX(MAX(cognitive, cyclomatic))` on current index); C++ functions are body-scoped | Ranking input `c_norm`; not an arbitrary first symbol |
 
 Do **not** add a third score field. SchemaVersion stays 1. Human CLI tables print `displayScore` under the **Display** column (not a bare `Score` header). Session `files[]` uses the same two fields; adding `displayScore` there is not a third field.
 

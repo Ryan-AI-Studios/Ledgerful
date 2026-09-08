@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Hotspots file `complexity` is max across symbols; C++ scores `body` (0299):**
+  List/JSON `complexity` is `MAX(MAX(cognitive, cyclomatic))` on the
+  current index (`project_symbols`; impact `symbols` only if the file
+  is unindexed). C++ `function_definition` is scored on its `body`
+  so an error-recovered node cannot swallow the rest of the file.
+  `score = f_norm × c_norm` is unchanged. schemaVersion 1 is unchanged.
+
 - **Search `--json` path `/`, mid-ident snippet trim, pretty emit (0298):**
   `results[].path` is slash-normalized on Windows. Snippets that end
   mid-identifier walk back (complete tokens stay). Envelope emit uses
