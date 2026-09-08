@@ -404,3 +404,71 @@ fn session_git_unavailable_warns_in_next() {
     assert_eq!(envelope.git.dirty_count, 0);
     let _ = storage.shutdown();
 }
+
+#[test]
+fn session_hotspots_exclude_vendor_paths() {
+    let tmp = tempdir().unwrap();
+    let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+    let dir = tmp.path();
+    init_git_repo(dir);
+
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::create_dir_all(dir.join("vendor")).unwrap();
+    fs::write(dir.join("src/lib.rs"), "pub fn a() {}\n").unwrap();
+    fs::write(dir.join("vendor/lib.rs"), "pub fn v() {}\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(dir)
+        .output()
+        .expect("git add vendor");
+    std::process::Command::new("git")
+        .args(["commit", "-m", "src and vendor"])
+        .current_dir(dir)
+        .output()
+        .expect("git commit vendor");
+
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    storage
+        .get_connection()
+        .execute(
+            "INSERT INTO snapshots (id, timestamp, is_clean, packet_json) VALUES (1, '2026-01-01T00:00:00Z', 0, '{}')",
+            [],
+        )
+        .unwrap();
+    storage
+        .get_connection()
+        .execute(
+            "INSERT INTO symbols (snapshot_id, file_path, symbol_name, symbol_kind, is_public, cognitive_complexity, cyclomatic_complexity)
+             VALUES (1, 'src/lib.rs', 'a', 'Function', 1, 3, 3)",
+            [],
+        )
+        .unwrap();
+    storage
+        .get_connection()
+        .execute(
+            "INSERT INTO symbols (snapshot_id, file_path, symbol_name, symbol_kind, is_public, cognitive_complexity, cyclomatic_complexity)
+             VALUES (1, 'vendor/lib.rs', 'v', 'Function', 1, 204, 204)",
+            [],
+        )
+        .unwrap();
+
+    let envelope = build_session(&layout, &storage, &Config::default()).unwrap();
+    let paths: Vec<&str> = envelope
+        .hotspots
+        .files
+        .iter()
+        .map(|f| f.path.as_str())
+        .collect();
+    assert!(
+        paths.contains(&"src/lib.rs"),
+        "session must still list first-party src/lib.rs: {paths:?}"
+    );
+    assert!(
+        paths.iter().all(|p| !p.contains("vendor/")),
+        "session must omit vendor/: {paths:?}"
+    );
+    let _ = storage.shutdown();
+}

@@ -58,11 +58,13 @@ pub(super) fn execute_hotspots_list(
     }
 
     let history_provider = GixHistoryProvider::new(repo);
-    let (exclude_test_paths, exclude_docs_paths, docs_frequency_lane) = match args.include {
-        Some(HotspotIncludeScope::Tests) => (false, false, false),
-        Some(HotspotIncludeScope::Docs) => (false, false, true),
-        None => (true, true, false),
-    };
+    let (exclude_test_paths, exclude_docs_paths, docs_frequency_lane, exclude_vendor_paths) =
+        match args.include {
+            Some(HotspotIncludeScope::Tests) => (false, false, false, false),
+            Some(HotspotIncludeScope::Docs) => (false, false, true, false),
+            Some(HotspotIncludeScope::Vendor) => (true, true, false, false),
+            None => (true, true, false, true),
+        };
     let query = HotspotQuery {
         limit: args.limit.unwrap_or(config.hotspots.limit),
         commits: args.commits.unwrap_or(config.hotspots.max_commits),
@@ -73,6 +75,7 @@ pub(super) fn execute_hotspots_list(
         exclude_test_paths,
         exclude_docs_paths,
         docs_frequency_lane,
+        exclude_vendor_paths,
         ..Default::default()
     };
 
@@ -105,6 +108,7 @@ pub(super) fn execute_hotspots_list(
         print_omit_footers(
             calculated.omitted_test_paths,
             calculated.omitted_docs_paths,
+            calculated.omitted_vendor_paths,
             docs_frequency_lane,
         );
     } else {
@@ -112,6 +116,7 @@ pub(super) fn execute_hotspots_list(
         print_omit_footers(
             calculated.omitted_test_paths,
             calculated.omitted_docs_paths,
+            calculated.omitted_vendor_paths,
             docs_frequency_lane,
         );
     }
@@ -119,11 +124,19 @@ pub(super) fn execute_hotspots_list(
     Ok(())
 }
 
-fn print_omit_footers(omitted_tests: usize, omitted_docs: usize, docs_lane: bool) {
+fn print_omit_footers(
+    omitted_tests: usize,
+    omitted_docs: usize,
+    omitted_vendor: usize,
+    docs_lane: bool,
+) {
     if !docs_lane && let Some(footer) = omitted_hotspots_footer(omitted_tests) {
         println!("{footer}");
     }
     if let Some(footer) = omitted_docs_footer(omitted_docs) {
+        println!("{footer}");
+    }
+    if !docs_lane && let Some(footer) = omitted_vendor_hotspots_footer(omitted_vendor) {
         println!("{footer}");
     }
 }
@@ -144,6 +157,16 @@ pub(super) fn omitted_docs_footer(omitted: usize) -> Option<String> {
     } else {
         Some(format!(
             "{omitted} documentation files omitted; --include docs"
+        ))
+    }
+}
+
+pub(super) fn omitted_vendor_hotspots_footer(omitted: usize) -> Option<String> {
+    if omitted == 0 {
+        None
+    } else {
+        Some(format!(
+            "{omitted} vendored files omitted; --include vendor"
         ))
     }
 }

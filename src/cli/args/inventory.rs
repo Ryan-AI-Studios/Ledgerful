@@ -7,6 +7,8 @@ pub enum HotspotIncludeScope {
     Tests,
     /// Markdown / CHANGELOG ranked by frequency (complexity is 0)
     Docs,
+    /// Vendored trees (`deps_src`, `vendor`, `third_party`, …) on the `f×c` list
+    Vendor,
 }
 
 #[derive(Args, Debug)]
@@ -58,7 +60,7 @@ pub struct HotspotArgs {
     #[arg(long)]
     pub snapshot: bool,
 
-    /// Include tests/examples/benches, or markdown (default CLI list omits both)
+    /// Include tests/examples/benches, markdown, or vendored code (default CLI list omits all three)
     #[arg(long, value_enum, value_name = "SCOPE")]
     pub include: Option<HotspotIncludeScope>,
 }

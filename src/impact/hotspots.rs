@@ -121,15 +121,21 @@ pub struct HotspotQuery {
     /// When true, retain markdown paths only and rank by `f_norm` (`complexity`
     /// forced to 0). CLI `--include docs`. Default false.
     pub docs_frequency_lane: bool,
+    /// When true, drop vendored directory components from the candidate map
+    /// before `max_freq` / `max_comp`. Default false so MCP, `/api/hotspots`,
+    /// packet enrich, hooks, trend, and explain stay unfiltered (0222).
+    pub exclude_vendor_paths: bool,
 }
 
 /// Ranked hotspot list plus how many candidate paths were omitted when
-/// `HotspotQuery::exclude_test_paths` / `exclude_docs_paths` is set (0 otherwise).
+/// `HotspotQuery::exclude_test_paths` / `exclude_docs_paths` /
+/// `exclude_vendor_paths` is set (0 otherwise).
 #[derive(Debug, Clone, Default)]
 pub struct HotspotCalculation {
     pub hotspots: Vec<Hotspot>,
     pub omitted_test_paths: usize,
     pub omitted_docs_paths: usize,
+    pub omitted_vendor_paths: usize,
 }
 
 /// Directory components excluded in addition to topology `TEST_PATTERNS`.
@@ -190,6 +196,41 @@ pub(crate) fn is_docs_hotspot_path(path: &str) -> bool {
         .rsplit('/')
         .next()
         .is_some_and(|filename| filename.ends_with(".md"))
+}
+
+/// Directory components treated as vendored for CLI hotspot exclusion.
+/// `target` is **not** in this list — it matches only as the leading component.
+const HOTSPOT_VENDOR_DIR_COMPONENTS: &[&str] = &[
+    "vendor",
+    "deps_src",
+    "third_party",
+    "thirdparty",
+    "node_modules",
+];
+
+/// Whether `path` is a vendored tree for CLI hotspot exclusion.
+///
+/// Slash-normalized, case-insensitive, **exact** directory-component match
+/// (filename is never a vendor hit). `vendor` / `deps_src` / `third_party` /
+/// `thirdparty` / `node_modules` match any directory component. `target`
+/// matches only as the first component so `src/target/x86.rs` stays
+/// first-party. Does not reuse topology `VENDOR_PATTERNS` or SCIP skip lists.
+pub(crate) fn is_vendor_hotspot_path(path: &str) -> bool {
+    let lower = path.replace('\\', "/").to_ascii_lowercase();
+    let parts: Vec<&str> = lower.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.is_empty() {
+        return false;
+    }
+    // Git history sometimes emits a tree path with no file (`deps_src`).
+    if parts.len() == 1 {
+        return HOTSPOT_VENDOR_DIR_COMPONENTS.contains(&parts[0]) || parts[0] == "target";
+    }
+    let dirs = &parts[..parts.len() - 1];
+    if dirs.first().is_some_and(|p| *p == "target") {
+        return true;
+    }
+    dirs.iter()
+        .any(|part| HOTSPOT_VENDOR_DIR_COMPONENTS.contains(part))
 }
 
 pub fn calculate_hotspots(
@@ -266,6 +307,7 @@ pub fn calculate_hotspots_detailed(
 
     let mut omitted_test_paths = 0;
     let mut omitted_docs_paths = 0;
+    let mut omitted_vendor_paths = 0;
     if query.docs_frequency_lane {
         frequency_map.retain(|path, _| is_docs_hotspot_path(path.as_str()));
     } else {
@@ -283,6 +325,16 @@ pub fn calculate_hotspots_detailed(
             frequency_map.retain(|path, _| {
                 if is_docs_hotspot_path(path.as_str()) {
                     omitted_docs_paths += 1;
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        if query.exclude_vendor_paths {
+            frequency_map.retain(|path, _| {
+                if is_vendor_hotspot_path(path.as_str()) {
+                    omitted_vendor_paths += 1;
                     false
                 } else {
                     true
@@ -359,6 +411,7 @@ pub fn calculate_hotspots_detailed(
         hotspots,
         omitted_test_paths,
         omitted_docs_paths,
+        omitted_vendor_paths,
     })
 }
 
@@ -647,6 +700,35 @@ mod tests {
     fn hotspot_query_default_does_not_exclude_docs_paths() {
         assert!(!HotspotQuery::default().exclude_docs_paths);
         assert!(!HotspotQuery::default().docs_frequency_lane);
+    }
+
+    #[test]
+    fn hotspot_query_default_does_not_exclude_vendor_paths() {
+        assert!(!HotspotQuery::default().exclude_vendor_paths);
+    }
+
+    #[test]
+    fn is_vendor_hotspot_path_deps_src_and_vendor() {
+        assert!(is_vendor_hotspot_path(
+            "deps_src/libigl/igl/cut_to_disk.cpp"
+        ));
+        assert!(is_vendor_hotspot_path("vendor/sqlite3-src/build.rs"));
+        assert!(is_vendor_hotspot_path(r"vendor\sqlite3-src\build.rs"));
+        assert!(is_vendor_hotspot_path("third_party/foo.c"));
+        assert!(is_vendor_hotspot_path("thirdparty/bar.c"));
+        assert!(is_vendor_hotspot_path("node_modules/x/index.js"));
+        assert!(is_vendor_hotspot_path("target/debug/foo.rs"));
+        assert!(is_vendor_hotspot_path("crates/foo/vendor/bar.rs"));
+        assert!(!is_vendor_hotspot_path("src/lib.rs"));
+        assert!(!is_vendor_hotspot_path("src/vendor_api/foo.rs"));
+        assert!(!is_vendor_hotspot_path("src/deps.rs"));
+        assert!(!is_vendor_hotspot_path("external/api.rs"));
+        assert!(!is_vendor_hotspot_path("src/test_utils/h.rs"));
+        assert!(!is_vendor_hotspot_path("src/target/x86.rs"));
+        assert!(!is_vendor_hotspot_path("vendor.rs"));
+        assert!(is_vendor_hotspot_path("deps_src"));
+        assert!(is_vendor_hotspot_path("vendor"));
+        assert!(!is_vendor_hotspot_path("src"));
     }
 
     #[test]

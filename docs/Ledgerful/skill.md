@@ -109,7 +109,7 @@ Example that finds 0126-class hits: `ledgerful ledger search "0126" --json`.
 
 ## Hotspots
 
-Default CLI `hotspots` / `hotspots --json` exclude tests/examples/benches **and** markdown (`.md`); `--include tests` restores the unfiltered `f×c` audit view; `--include docs` is a markdown **frequency** lane (`score` = `f_norm`, `complexity` 0). Pin JSON `score` (0–1), not `displayScore` (ln). Human tables and `audit` TOP HOTSPOTS label ln as **Display** / `display:`. MCP and `/api/hotspots` stay unfiltered.
+Default CLI `hotspots` / `hotspots --json` exclude tests/examples/benches **and** markdown (`.md`) **and** vendored `deps_src`/`vendor`/…; `--include tests` restores the unfiltered `f×c` audit view (includes vendor); `--include docs` is a markdown **frequency** lane (`score` = `f_norm`, `complexity` 0); `--include vendor` restores vendored trees on the `f×c` list. Pin JSON `score` (0–1), not `displayScore` (ln). Default rank is first-party `f×c`, not “most edited”; `frequency` is the churn axis. `--entity` into a vendored subtree needs `--include vendor`. `--semantic` ignores `--include`. Human tables and `audit` TOP HOTSPOTS label ln as **Display** / `display:`. MCP and `/api/hotspots` stay unfiltered.
 
 ## Windows
 
