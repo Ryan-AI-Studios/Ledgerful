@@ -80,7 +80,7 @@ The following fields are intentionally redacted because they carry internal-only
 * `entity` and `entity_normalized` — the affected file path or symbol; too granular for a public broadcast.
 * `change_type`, `is_breaking`, `entry_type` — internal change taxonomy.
 * `outcome_notes` — developer-level verification commentary that may reference internal systems.
-* `origin`, `trace_id`, `related_tickets` — internal provenance links.
+* `origin`, `trace_id`, `related_tickets` — internal provenance links (`related_tickets` are ticket ids on new rows, not file paths; still redacted here).
 * `author` (raw) — replaced by `author_pseudonym` to protect identity while preserving per-author correlation.
 * `observed` — internal observe-mode bookkeeping, not part of the signed basis.
 * `prev_hash` — internal chain linkage; only the entry-specific `entry_hash` is published.

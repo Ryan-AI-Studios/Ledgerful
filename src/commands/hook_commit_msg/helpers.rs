@@ -78,6 +78,65 @@ pub(super) fn are_files_trivial(files: &[String]) -> bool {
         .all(|f| f.ends_with(".md") || f.contains(".ledgerful/") || f.contains("ignore_patterns"))
 }
 
+/// True when a related / issue_ref token looks like a filesystem path.
+///
+/// Slash-only is not enough: live dogfood writes `CHANGELOG.md` (no slash).
+/// Dotted ids such as `TICKET-1.2` also match — named 0287 trade.
+fn is_path_shaped(item: &str) -> bool {
+    item.contains('/') || item.contains('\\') || std::path::Path::new(item).extension().is_some()
+}
+
+/// Four-digit conductor slug prefix (`0272-ci-…` → `0272`).
+///
+/// Infallible byte-slice equivalent of `^(\d{4})-[A-Za-z]`. Rejects
+/// `2026-09-06` (digit after hyphen) and any `/` or `\\`.
+fn ticket_from_entity(entity: &str) -> Option<&str> {
+    let s = entity.trim();
+    if s.contains('/') || s.contains('\\') {
+        return None;
+    }
+    let b = s.as_bytes();
+    if b.len() >= 6
+        && b[..4].iter().all(u8::is_ascii_digit)
+        && b[4] == b'-'
+        && b[5].is_ascii_alphabetic()
+    {
+        Some(&s[..4])
+    } else {
+        None
+    }
+}
+
+/// Ticket ids for the hook sidecar / v2 sign input. Never takes file lists.
+///
+/// Order: remaining explicit `related` (unique, sorted, `", "` join) →
+/// entity slug → non-path `issue_ref` → `None`.
+pub(crate) fn related_tickets_value(
+    related: &[String],
+    entity: &str,
+    issue_ref: Option<&str>,
+) -> Option<String> {
+    let mut tickets: Vec<String> = related
+        .iter()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty() && !is_path_shaped(s))
+        .collect();
+    tickets.sort();
+    tickets.dedup();
+    if !tickets.is_empty() {
+        return Some(tickets.join(", "));
+    }
+    if let Some(id) = ticket_from_entity(entity) {
+        return Some(id.to_string());
+    }
+    let issue = issue_ref.map(str::trim).filter(|s| !s.is_empty())?;
+    if is_path_shaped(issue) {
+        None
+    } else {
+        Some(issue.to_string())
+    }
+}
+
 pub(super) fn load_skip_history(path: &camino::Utf8Path) -> SkipHistory {
     if path.exists()
         && let Ok(data) = fs::read_to_string(path.as_std_path())

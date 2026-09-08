@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`related_tickets` store ticket ids (0287):** new hook-bound commits write
+  ticket ids (conductor slug `####-…` or explicit LLM/TUI related) into
+  `related_tickets`, not staged file paths. Files stay on snapshot /
+  `changed_files`. Historical signed rows are unchanged. Search `--json`
+  stays a bare array (0213); the `related_tickets` key is frozen.
+
 - **Hotspot score vs displayScore (0286):** `session --json` `hotspots.files[]`
   keeps `score` as 0–1 and adds named `displayScore` (ln). Human `hotspots` /
   `hotspots trend` / `audit` TOP HOTSPOTS / `impact --summary` label the ln

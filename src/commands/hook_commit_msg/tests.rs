@@ -179,3 +179,136 @@ fn classify_provenance_sot_fallback_missing_ref() {
     // Missing ref does not invent link even when a single pending exists.
     assert_eq!(class, ProvenanceSotClass::Fallback);
 }
+
+// --- related_tickets_value (0287) ---
+
+#[test]
+fn related_tickets_value_slug_entity_0286() {
+    assert_eq!(
+        super::helpers::related_tickets_value(&[], "0286-HotspotsScoreDisplaySsot", None)
+            .as_deref(),
+        Some("0286")
+    );
+}
+
+#[test]
+fn related_tickets_value_slug_entity_0272() {
+    assert_eq!(
+        super::helpers::related_tickets_value(&[], "0272-ci-rustc-pin", None).as_deref(),
+        Some("0272")
+    );
+}
+
+#[test]
+fn related_tickets_value_path_entity_is_none() {
+    assert_eq!(
+        super::helpers::related_tickets_value(&[], "src/commands/hook_commit_msg", None),
+        None
+    );
+}
+
+#[test]
+fn related_tickets_value_date_entity_is_none() {
+    assert_eq!(
+        super::helpers::related_tickets_value(&[], "2026-09-06", None),
+        None
+    );
+}
+
+#[test]
+fn related_tickets_value_explicit_related_sorted() {
+    let related = ["TICKET-123".into(), "ADR-45".into()];
+    assert_eq!(
+        super::helpers::related_tickets_value(&related, "0287-RelatedTicketsTicketIds", None)
+            .as_deref(),
+        Some("ADR-45, TICKET-123")
+    );
+}
+
+#[test]
+fn related_tickets_value_mixed_explicit_keeps_ticket() {
+    let related = ["TICKET-123".into(), "src/foo.rs".into()];
+    assert_eq!(
+        super::helpers::related_tickets_value(&related, "0287-RelatedTicketsTicketIds", None)
+            .as_deref(),
+        Some("TICKET-123")
+    );
+}
+
+#[test]
+fn related_tickets_value_path_shaped_related_dropped() {
+    let related = ["src/foo.rs".into(), "CHANGELOG.md".into()];
+    let got = super::helpers::related_tickets_value(&related, "0287-RelatedTicketsTicketIds", None);
+    assert_eq!(got.as_deref(), Some("0287"));
+    let s = got.expect("slug");
+    assert!(!s.contains("CHANGELOG"));
+    assert!(!s.contains('/'));
+    assert!(!s.contains('\\'));
+    assert!(!s.contains(".github"));
+}
+
+#[test]
+fn related_tickets_value_duplicates_collapse() {
+    let related = ["TICKET-1".into(), "TICKET-1".into()];
+    assert_eq!(
+        super::helpers::related_tickets_value(&related, "0287-RelatedTicketsTicketIds", None)
+            .as_deref(),
+        Some("TICKET-1")
+    );
+}
+
+#[test]
+fn related_tickets_value_whitespace_falls_through() {
+    let related = ["".into(), "   ".into()];
+    assert_eq!(
+        super::helpers::related_tickets_value(&related, "0287-RelatedTicketsTicketIds", None)
+            .as_deref(),
+        Some("0287")
+    );
+}
+
+#[test]
+fn related_tickets_value_issue_ref_fallback() {
+    assert_eq!(
+        super::helpers::related_tickets_value(&[], "src/foo.rs", Some("ENG-101")).as_deref(),
+        Some("ENG-101")
+    );
+}
+
+#[test]
+fn related_tickets_value_path_shaped_issue_ref_rejected() {
+    assert_eq!(
+        super::helpers::related_tickets_value(&[], "src/foo.rs", Some("src/foo.rs")),
+        None
+    );
+    assert_eq!(
+        super::helpers::related_tickets_value(&[], "src/foo.rs", Some("CHANGELOG.md")),
+        None
+    );
+}
+
+#[test]
+fn related_tickets_value_dotted_ticket_id_dropped() {
+    let related = ["TICKET-1.2".into()];
+    assert_eq!(
+        super::helpers::related_tickets_value(&related, "0287-RelatedTicketsTicketIds", None)
+            .as_deref(),
+        Some("0287")
+    );
+}
+
+#[test]
+fn related_tickets_value_slug_never_contains_changelog() {
+    let related = [
+        "CHANGELOG.md".into(),
+        ".github/workflows/ci.yml".into(),
+        "src/foo.rs".into(),
+    ];
+    let got = super::helpers::related_tickets_value(&related, "0287-RelatedTicketsTicketIds", None)
+        .expect("slug");
+    assert_eq!(got, "0287");
+    assert!(!got.contains("CHANGELOG"));
+    assert!(!got.contains(".github"));
+    assert!(!got.contains('/'));
+    assert!(!got.contains('\\'));
+}

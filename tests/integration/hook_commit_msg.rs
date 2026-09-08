@@ -802,6 +802,139 @@ fn provenance_sot_link_pending_single_open() {
     );
 }
 
+/// 0287: LinkPending sidecar + promoted row store the entity slug ticket id, not staged files.
+#[test]
+fn link_pending_related_tickets_are_ticket_ids() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    crate::common::setup_git_repo(root);
+
+    let ledgerful_bin = std::env!("CARGO_BIN_EXE_ledgerful");
+
+    let init = std::process::Command::new(ledgerful_bin)
+        .arg("init")
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let start = std::process::Command::new(ledgerful_bin)
+        .args([
+            "ledger",
+            "start",
+            "0287-RelatedTicketsTicketIds",
+            "--category",
+            "BUGFIX",
+            "--message",
+            "related_tickets store ticket ids not staged files",
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "ledger start failed: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+
+    let status_out = std::process::Command::new(ledgerful_bin)
+        .args(["ledger", "status", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    let status_json: serde_json::Value = serde_json::from_slice(&status_out.stdout).unwrap();
+    let pending_tx = status_json["pendingTxIds"][0]
+        .as_str()
+        .expect("pending tx")
+        .to_string();
+
+    std::fs::write(root.join("CHANGELOG.md"), "# changelog\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "CHANGELOG.md"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    let msg_file = root.join(".git").join("COMMIT_EDITMSG");
+    std::fs::write(
+        &msg_file,
+        "fix: store ticket ids in related_tickets\n\nBody for conventional well-formed path.",
+    )
+    .unwrap();
+
+    let hook_output = std::process::Command::new(ledgerful_bin)
+        .args(["internal", "hook-commit-msg", msg_file.to_str().unwrap()])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        hook_output.status.success(),
+        "hook-commit-msg failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&hook_output.stdout),
+        String::from_utf8_lossy(&hook_output.stderr)
+    );
+
+    let sidecar_path = root
+        .join(".ledgerful")
+        .join("state")
+        .join("pending_hook_tx");
+    let sidecar: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&sidecar_path).unwrap()).unwrap();
+    let sidecar_tickets = sidecar["related_tickets"].as_str().unwrap_or("");
+    assert_eq!(sidecar_tickets, "0287");
+    assert!(!sidecar_tickets.contains("CHANGELOG"));
+    assert!(!sidecar_tickets.contains('/'));
+    assert!(!sidecar_tickets.contains('\\'));
+
+    let empty_hooks = root.join("empty-hooks");
+    std::fs::create_dir_all(&empty_hooks).unwrap();
+    let commit = std::process::Command::new("git")
+        .args([
+            "-c",
+            &format!("core.hooksPath={}", empty_hooks.display()),
+            "commit",
+            "-F",
+            msg_file.to_str().unwrap(),
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        commit.status.success(),
+        "git commit (no hooks) failed: {}",
+        String::from_utf8_lossy(&commit.stderr)
+    );
+
+    let promote = std::process::Command::new(ledgerful_bin)
+        .args(["internal", "hook-post-commit"])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        promote.status.success(),
+        "post-commit promote failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&promote.stdout),
+        String::from_utf8_lossy(&promote.stderr)
+    );
+
+    let db_path = root.join(".ledgerful").join("state").join("ledger.db");
+    let db = rusqlite::Connection::open(&db_path).unwrap();
+    let stored: Option<String> = db
+        .query_row(
+            "SELECT related_tickets FROM ledger_entries WHERE tx_id = ?1",
+            rusqlite::params![&pending_tx],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(stored.as_deref(), Some("0287"));
+}
+
 /// HookFallback regression: zero pending, no Ledger line, conventional still creates pending_hook_tx.
 #[test]
 fn provenance_sot_hook_fallback_creates_pending_when_no_sot() {

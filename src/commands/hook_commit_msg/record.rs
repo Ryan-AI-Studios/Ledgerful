@@ -1,4 +1,4 @@
-use super::helpers::{parse_category_from_message, risk_from_category};
+use super::helpers::{parse_category_from_message, related_tickets_value, risk_from_category};
 use crate::commands::helpers::get_layout;
 use crate::commands::hook_sidecar::{PendingHookTx, hash_message, write_pending_sidecar};
 use crate::config::model::Config;
@@ -15,7 +15,6 @@ pub(super) struct SilentRecordArgs<'a> {
     pub why: &'a str,
     pub risk: &'a str,
     pub related: Vec<String>,
-    pub related_files: &'a str,
     pub raw_commit_msg: &'a str,
     pub snapshot_id: Option<i64>,
     /// When true, summary is already `[SKIPPED]`-prefixed; observed=false under enforce.
@@ -39,7 +38,6 @@ pub fn skipped_coverage_summary(subject_line: &str) -> String {
 pub(crate) struct RecordEnforceSkippedArgs<'a> {
     pub config: &'a Config,
     pub entity: &'a str,
-    pub related_files: &'a str,
     pub raw_commit_msg: &'a str,
     pub why: &'a str,
     pub snapshot_id: Option<i64>,
@@ -63,7 +61,6 @@ pub(crate) fn record_enforce_skipped(args: RecordEnforceSkippedArgs<'_>) -> Resu
         why: args.why,
         risk: SKIPPED_COVERAGE_RISK,
         related: Vec::new(),
-        related_files: args.related_files,
         raw_commit_msg: args.raw_commit_msg,
         snapshot_id: args.snapshot_id,
         skipped: true,
@@ -73,7 +70,6 @@ pub(crate) fn record_enforce_skipped(args: RecordEnforceSkippedArgs<'_>) -> Resu
 pub(super) struct LinkPendingArgs<'a> {
     pub config: &'a Config,
     pub tx_id: &'a str,
-    pub related_files: &'a str,
     pub raw_commit_msg: &'a str,
     pub snapshot_id: Option<i64>,
 }
@@ -157,7 +153,7 @@ pub(super) fn link_pending_provenance(args: LinkPendingArgs<'_>) -> Result<()> {
         why: &reason,
         risk: &risk,
         related: Vec::new(),
-        related_files: args.related_files,
+        issue_ref: tx.issue_ref.as_deref(),
         raw_commit_msg: args.raw_commit_msg,
         snapshot_id: args.snapshot_id,
         skipped: false,
@@ -176,7 +172,7 @@ struct WriteSidecarArgs<'a> {
     why: &'a str,
     risk: &'a str,
     related: Vec<String>,
-    related_files: &'a str,
+    issue_ref: Option<&'a str>,
     raw_commit_msg: &'a str,
     snapshot_id: Option<i64>,
     skipped: bool,
@@ -189,12 +185,7 @@ struct WriteSidecarArgs<'a> {
 fn write_signed_sidecar_for_tx(args: WriteSidecarArgs<'_>) -> Result<()> {
     let committed_at = chrono::Utc::now().to_rfc3339();
 
-    let tickets = args.related.join(", ");
-    let combined_related = if tickets.is_empty() {
-        args.related_files.to_string()
-    } else {
-        format!("{} | {}", tickets, args.related_files)
-    };
+    let related_tickets = related_tickets_value(&args.related, args.entity, args.issue_ref);
 
     // Match commit_change basis: author from git, origin LOCAL, entry_type from category.
     let author = {
@@ -237,7 +228,7 @@ fn write_signed_sidecar_for_tx(args: WriteSidecarArgs<'_>) -> Result<()> {
         &author,
         Some(args.risk),
         false,
-        Some(&combined_related),
+        related_tickets.as_deref(),
         "LOCAL",
     );
     let sign_result = sign_ledger_entry_v2(&sign_input);
@@ -279,7 +270,7 @@ fn write_signed_sidecar_for_tx(args: WriteSidecarArgs<'_>) -> Result<()> {
         reason: args.why.to_string(),
         committed_at: Some(committed_at),
         risk: Some(args.risk.to_string()),
-        related_tickets: Some(combined_related),
+        related_tickets: related_tickets.clone(),
         signature,
         public_key: pub_key,
         snapshot_id: args.snapshot_id,
@@ -335,7 +326,7 @@ pub(super) fn silently_record_ledger(args: SilentRecordArgs<'_>) -> Result<()> {
         why: args.why,
         risk: args.risk,
         related: args.related,
-        related_files: args.related_files,
+        issue_ref: None,
         raw_commit_msg: args.raw_commit_msg,
         snapshot_id: args.snapshot_id,
         skipped: args.skipped,
