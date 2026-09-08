@@ -513,6 +513,14 @@ fn test_build_command_corpus_includes_known_health_commands() {
         !names.contains(&"help"),
         "synthetic help subcommand must not leak into corpus"
     );
+    for hidden in ["services", "deploy", "observability"] {
+        assert!(
+            !names
+                .iter()
+                .any(|n| *n == hidden || n.starts_with(&format!("{hidden} "))),
+            "gated {hidden} must not appear in ask corpus after clap hide; names={names:?}"
+        );
+    }
 }
 
 #[test]

@@ -18,11 +18,20 @@ pub use ledger::*;
 pub use lifecycle::*;
 pub use ops::*;
 
+/// Unique after_help marker for gated/empty advanced commands (0289).
+/// Must not appear in about / Daily 5 `before_help` — tests isolate Commands
+/// between `"Commands:"` and `"Options:"`, then this marker. Not a 0100 spray.
+pub(crate) const GATED_SURFACES_AFTER_HELP: &str = "\
+Gated or empty:
+  services, deploy, and observability stay callable. Inventory: ledgerful surfaces
+";
+
 #[derive(Parser, Debug)]
 #[command(
     about = "Ledgerful change intelligence and transactional provenance for software engineering",
     long_about = None,
-    before_help = "Agent default path (Daily 5): doctor --json · change-context --json · ledger status · search · verify --scope fast — see skill Daily 5."
+    before_help = "Agent default path (Daily 5): doctor --json · change-context --json · ledger status · search · verify --scope fast — see skill Daily 5.",
+    after_help = GATED_SURFACES_AFTER_HELP
 )]
 // Short `-V` = package version only; long `--version` may include build SHA (0137).
 #[command(version, long_version = env!("LEDGERFUL_VERSION_LONG"))]
@@ -154,7 +163,7 @@ or add content. Alias: tour."
         command: Option<FederateCommands>,
     },
     /// Service boundary and topology commands
-    #[command(after_help = "Default when omitted: diff.")]
+    #[command(hide = true, after_help = "Default when omitted: diff.")]
     Services {
         #[command(subcommand)]
         command: Option<ServiceSubcommands>,
@@ -165,10 +174,12 @@ or add content. Alias: tour."
     /// CI configuration and gate commands
     Ci(crate::commands::deploy::CiArgs),
     /// Deployment manifest and surface commands
+    #[command(hide = true)]
     Deploy(crate::commands::deploy::DeployArgs),
     /// Manage project dependencies and security advisories
     Dependencies(crate::commands::dependencies::DependenciesArgs),
     /// Manage runtime observability and SLOs
+    #[command(hide = true)]
     Observability(crate::commands::observability::ObservabilityArgs),
     /// Manage security boundaries and policies
     Security(crate::commands::security::SecurityArgs),
