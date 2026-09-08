@@ -415,6 +415,22 @@ pub fn calculate_hotspots_detailed(
     })
 }
 
+/// SQLite 2-arg `MAX(a,b)` is scalar (per row). Wrap it in aggregate `MAX(...)`
+/// or `GROUP BY file_path` returns an arbitrary symbol (0210 leftover / 0299).
+const FILE_COMPLEXITY_PAIR: &str =
+    "MAX(IFNULL({prefix}cognitive_complexity, 0), IFNULL({prefix}cyclomatic_complexity, 0))";
+
+fn table_has_column(conn: &rusqlite::Connection, table: &str, column: &str) -> Result<bool> {
+    let n: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM pragma_table_info(?1) WHERE name = ?2",
+            rusqlite::params![table, column],
+            |row| row.get(0),
+        )
+        .into_diagnostic()?;
+    Ok(n > 0)
+}
+
 pub(crate) fn query_file_complexities(
     storage: &StorageManager,
     file_paths: &[String],
@@ -422,18 +438,20 @@ pub(crate) fn query_file_complexities(
     let mut file_complexities = HashMap::new();
     let conn = storage.get_connection();
 
-    // 1. Primary Lookup: symbols table (impact-time data)
-    if storage.table_exists("symbols")? {
+    // 1. Primary: current index. `ledgerful index` writes `project_symbols`.
+    // Impact `symbols` is `save_packet` / `persist_symbols` only (agy-B-01).
+    if storage.table_exists("project_symbols")? && storage.table_exists("project_files")? {
         for chunk in file_paths.chunks(999) {
             let placeholders = std::iter::repeat_n("?", chunk.len())
                 .collect::<Vec<_>>()
                 .join(",");
+            let pair = FILE_COMPLEXITY_PAIR.replace("{prefix}", "ps.");
             let query = format!(
-                "SELECT file_path, MAX(IFNULL(cognitive_complexity, 0), IFNULL(cyclomatic_complexity, 0)) as max_comp
-                 FROM symbols
-                 WHERE file_path IN ({})
-                 GROUP BY file_path",
-                placeholders
+                "SELECT pf.file_path, MAX({pair}) as max_comp
+                 FROM project_symbols ps
+                 JOIN project_files pf ON ps.file_id = pf.id
+                 WHERE pf.file_path IN ({placeholders})
+                 GROUP BY pf.file_path"
             );
 
             let mut stmt = conn.prepare(&query).into_diagnostic()?;
@@ -450,9 +468,7 @@ pub(crate) fn query_file_complexities(
         }
     }
 
-    // 2. Identify gaps (missing from primary)
-    // NOTE: Primary data takes precedence. If a file is in the symbols table but has 0 complexity,
-    // we respect that measurement and do NOT fall back to background index data.
+    // 2. Gaps: no project_symbols row. Do not fall back when primary hit is 0.
     let gaps: Vec<String> = file_paths
         .iter()
         .filter(|path| !file_complexities.contains_key(*path))
@@ -463,26 +479,27 @@ pub(crate) fn query_file_complexities(
         return Ok(file_complexities);
     }
 
-    // 3. Fallback: project_symbols (background index data)
-    // We must ensure BOTH project_symbols and project_files exist before joining.
-    if !storage.table_exists("project_symbols")? || !storage.table_exists("project_files")? {
-        tracing::debug!("Background index tables not available, skipping fallback");
+    if !storage.table_exists("symbols")? {
+        tracing::debug!("Impact symbols table not available, skipping complexity fallback");
         return Ok(file_complexities);
     }
 
-    // Batch query gaps from project_symbols.
-    // Formula: MAX(cognitive_complexity, cyclomatic_complexity) to match primary formula.
+    let snapshot_filter = if table_has_column(conn, "symbols", "snapshot_id")? {
+        " AND snapshot_id = (SELECT MAX(s2.snapshot_id) FROM symbols s2 WHERE s2.file_path = symbols.file_path)"
+    } else {
+        ""
+    };
+
+    let pair = FILE_COMPLEXITY_PAIR.replace("{prefix}", "");
     for chunk in gaps.chunks(999) {
         let placeholders = std::iter::repeat_n("?", chunk.len())
             .collect::<Vec<_>>()
             .join(",");
         let query = format!(
-            "SELECT pf.file_path, MAX(IFNULL(ps.cognitive_complexity, 0), IFNULL(ps.cyclomatic_complexity, 0)) as max_comp
-             FROM project_symbols ps
-             JOIN project_files pf ON ps.file_id = pf.id
-             WHERE pf.file_path IN ({})
-             GROUP BY pf.file_path",
-            placeholders
+            "SELECT file_path, MAX({pair}) as max_comp
+             FROM symbols
+             WHERE file_path IN ({placeholders}){snapshot_filter}
+             GROUP BY file_path"
         );
 
         let mut stmt = conn.prepare(&query).into_diagnostic()?;
@@ -494,9 +511,7 @@ pub(crate) fn query_file_complexities(
 
         for row in fallback_rows {
             let (path, comp) = row.into_diagnostic()?;
-            if comp > 0 {
-                file_complexities.insert(path, comp);
-            }
+            file_complexities.insert(path, comp);
         }
     }
 
@@ -595,7 +610,72 @@ mod tests {
     }
 
     #[test]
-    fn test_hotspots_prefers_symbols_over_project_symbols() {
+    fn query_file_complexities_two_symbols_uses_max() {
+        // Fallback arm: no project_files row for this path (agy-B-01).
+        // Seed order is load-bearing: 3 first would win on scalar MAX + GROUP BY.
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE symbols (file_path TEXT, cognitive_complexity INTEGER, cyclomatic_complexity INTEGER)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO symbols (file_path, cognitive_complexity, cyclomatic_complexity) VALUES ('a.rs', 3, 3)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO symbols (file_path, cognitive_complexity, cyclomatic_complexity) VALUES ('a.rs', 12, 8)",
+            [],
+        )
+        .unwrap();
+
+        let storage = StorageManager::init_from_conn(conn);
+        let result = query_file_complexities(&storage, &["a.rs".to_string()]).unwrap();
+        assert_eq!(result.get("a.rs"), Some(&12));
+    }
+
+    #[test]
+    fn query_file_complexities_project_symbols_two_symbols() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute(
+            "CREATE TABLE symbols (file_path TEXT, cognitive_complexity INTEGER, cyclomatic_complexity INTEGER)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE TABLE project_files (id INTEGER PRIMARY KEY, file_path TEXT, parse_status TEXT, last_indexed_at TEXT)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "CREATE TABLE project_symbols (file_id INTEGER, cognitive_complexity INTEGER, cyclomatic_complexity INTEGER)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_files (id, file_path) VALUES (1, 'a.rs')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, cognitive_complexity, cyclomatic_complexity) VALUES (1, 3, 3)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, cognitive_complexity, cyclomatic_complexity) VALUES (1, 12, 8)",
+            [],
+        )
+        .unwrap();
+
+        let storage = StorageManager::init_from_conn(conn);
+        let result = query_file_complexities(&storage, &["a.rs".to_string()]).unwrap();
+        assert_eq!(result.get("a.rs"), Some(&12));
+    }
+
+    #[test]
+    fn test_hotspots_prefers_project_symbols_over_symbols() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute(
             "CREATE TABLE symbols (file_path TEXT, cognitive_complexity INTEGER, cyclomatic_complexity INTEGER)",
@@ -629,7 +709,7 @@ mod tests {
 
         let storage = StorageManager::init_from_conn(conn);
         let result = query_file_complexities(&storage, &["a.rs".to_string()]).unwrap();
-        assert_eq!(result.get("a.rs"), Some(&5));
+        assert_eq!(result.get("a.rs"), Some(&10));
     }
 
     #[test]
@@ -649,9 +729,9 @@ mod tests {
         )
         .unwrap();
 
-        // Primary has the file but complexity is 0
+        // Impact snapshot is stale/high; current index says 0.
         conn.execute(
-            "INSERT INTO symbols (file_path, cognitive_complexity) VALUES ('a.rs', 0)",
+            "INSERT INTO symbols (file_path, cognitive_complexity) VALUES ('a.rs', 10)",
             [],
         )
         .unwrap();
@@ -661,14 +741,13 @@ mod tests {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO project_symbols (file_id, cognitive_complexity) VALUES (1, 10)",
+            "INSERT INTO project_symbols (file_id, cognitive_complexity) VALUES (1, 0)",
             [],
         )
         .unwrap();
 
         let storage = StorageManager::init_from_conn(conn);
         let result = query_file_complexities(&storage, &["a.rs".to_string()]).unwrap();
-        // Should be 0, because it was FOUND in primary (precedence rule)
         assert_eq!(result.get("a.rs"), Some(&0));
     }
 
