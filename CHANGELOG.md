@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Doctor SCIP hints only for languages in the tree (0296):**
+  `doctor --json` emits `scip-*-missing` / `scip-*-available` /
+  `scip-*-not-wired` only when that **product** language is
+  present. Test fixtures and `vendor/` do not count. schemaVersion
+  1 is unchanged.
+
 - **Optional doctor findings are `sessionPriority: later` (0295):**
   Hygiene findings (`is_hygiene`: Warn+Optional, or Info any
   category) emit `sessionPriority: later` on observe and

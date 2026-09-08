@@ -55,6 +55,8 @@ Optional call-edge augment: `ledgerful index --auto-scip --json` (off by default
 
 Requires a capable indexer. Adds `structural_edges` with `evidence=scip:ref` onto native symbols only.
 
+Install hints only if that language is in the tree. Doctor omits `scip-*-missing` / `scip-*-not-wired` when that language is absent from product paths (test fixtures and `vendor/` do not count).
+
 On `--json` Success read `scip.status`, `edges_added`, `references_seen`, and skip/recovery tallies `edges_skipped_enclosing_disagreement`, `edges_recovered_nest_prefer`. Rate remaining disagreement: `edges_skipped_enclosing_disagreement` / `references_seen`.
 
 O(1) WARN on stderr when disagreements or invalid ranges are > 0.
