@@ -400,6 +400,122 @@ fn print_doctor_report_later_trailer_and_full_expand() {
     assert!(!full.contains("hygiene finding(s) collapsed"), "{full}");
 }
 
+/// 0295: later_count is signing codes only — mixed optional later does not inflate.
+#[test]
+fn signing_deferred_trailer_counts_only_signing_later() {
+    use crate::commands::doctor::{DoctorCategory, DoctorFinding, SessionPriority, summarize};
+
+    fn later_signing(code: &str, msg: &str) -> DoctorFinding {
+        let mut f = DoctorFinding::warn(code, DoctorCategory::Signing, msg);
+        f.session_priority = SessionPriority::Later;
+        f
+    }
+    let mut optional = DoctorFinding::info("sccache-hint", DoctorCategory::Optional, "sccache");
+    optional.session_priority = SessionPriority::Later;
+    let findings = vec![
+        later_signing("PHANTOM_PROMOTED_WITHOUT_VERIFY", "phantoms"),
+        later_signing("sig-pin", "no keys"),
+        later_signing("sig-version", "v1 rows"),
+        optional,
+    ];
+    let tools: Vec<(String, ExecutableStatus)> = Vec::new();
+    let report = DoctorReport {
+        platform: "test",
+        shell: "test",
+        tools: &tools,
+        path_display: "test",
+        path_kind: "test",
+        work_root: "test",
+        state_dir: "test/.ledgerful",
+        is_wsl_mounted: false,
+        embedding_model_status: "OK".to_string(),
+        embedding_model_failed: false,
+        completion_model_status: "OK".to_string(),
+        native_graph_status: "Ready".to_string(),
+        active_ask_backend: "test".to_string(),
+        index_health: vec!["Search index: OK (1 documents)".to_string()],
+        target_triple: "test",
+    };
+    let counts = summarize(&findings);
+    let summary = DoctorSummaryCounts {
+        block: counts.block,
+        warn: counts.warn,
+        info: counts.info,
+    };
+    let mut buf = Vec::new();
+    print_doctor_report_to(
+        &mut buf,
+        &report,
+        &summary,
+        &findings,
+        DoctorHumanProfile {
+            full: false,
+            quiet: true,
+        },
+    )
+    .expect("write");
+    let text = String::from_utf8(buf).expect("utf8");
+    assert!(
+        text.contains("3 signing finding(s) deferred (observe) — run doctor --full"),
+        "{text}"
+    );
+    assert!(!text.contains("4 signing"), "{text}");
+}
+
+/// 0295 agy-01: zero signing-later + optional later omits the signing trailer.
+#[test]
+fn signing_deferred_trailer_omits_when_only_optional_later() {
+    use crate::commands::doctor::{DoctorCategory, DoctorFinding, SessionPriority, summarize};
+
+    fn later_optional(code: &str, msg: &str) -> DoctorFinding {
+        let mut f = DoctorFinding::info(code, DoctorCategory::Optional, msg);
+        f.session_priority = SessionPriority::Later;
+        f
+    }
+    let findings = vec![
+        later_optional("sccache-hint", "sccache"),
+        later_optional("tool-gemini", "gemini"),
+    ];
+    let tools: Vec<(String, ExecutableStatus)> = Vec::new();
+    let report = DoctorReport {
+        platform: "test",
+        shell: "test",
+        tools: &tools,
+        path_display: "test",
+        path_kind: "test",
+        work_root: "test",
+        state_dir: "test/.ledgerful",
+        is_wsl_mounted: false,
+        embedding_model_status: "OK".to_string(),
+        embedding_model_failed: false,
+        completion_model_status: "OK".to_string(),
+        native_graph_status: "Ready".to_string(),
+        active_ask_backend: "test".to_string(),
+        index_health: vec!["Search index: OK (1 documents)".to_string()],
+        target_triple: "test",
+    };
+    let counts = summarize(&findings);
+    let summary = DoctorSummaryCounts {
+        block: counts.block,
+        warn: counts.warn,
+        info: counts.info,
+    };
+    let mut buf = Vec::new();
+    print_doctor_report_to(
+        &mut buf,
+        &report,
+        &summary,
+        &findings,
+        DoctorHumanProfile {
+            full: false,
+            quiet: true,
+        },
+    )
+    .expect("write");
+    let text = String::from_utf8(buf).expect("utf8");
+    assert!(!text.contains("signing finding(s) deferred"), "{text}");
+}
+
 #[test]
 fn print_doctor_report_hygiene_only_trailer_byte_stable_without_later() {
     use crate::commands::doctor::{DoctorCategory, DoctorFinding, summarize};

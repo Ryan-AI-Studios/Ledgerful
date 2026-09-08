@@ -8,6 +8,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Optional doctor findings are `sessionPriority: later` (0295):**
+  Hygiene findings (`is_hygiene`: Warn+Optional, or Info any
+  category) emit `sessionPriority: later` on observe and
+  enforce so `now` means this session’s attention. 0225
+  signing trio stays later-on-observe. `binary-behind-tree`
+  and `hook-template-stale` stay `now`. The human signing
+  trailer counts only the three 0225 codes. schemaVersion 1
+  is unchanged.
+
 - **`ci`/`services` inventory is `list` (alias `diff`); `gate mode` show says warn/block (0294):**
   Clap documented name for the indexed CI-gate and service-topology
   catalogs is `list`; `diff` stays a visible alias. `services` about

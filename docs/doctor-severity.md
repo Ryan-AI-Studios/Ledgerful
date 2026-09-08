@@ -67,7 +67,7 @@ Pure stdout schema v1 (`schemaVersion` is integer `1`):
       "severity": "warn",
       "category": "optional",
       "message": "Completion model unreachable (connection refused)",
-      "sessionPriority": "now"
+      "sessionPriority": "later"
     }
   ],
   "environment": {
@@ -144,7 +144,7 @@ VRAM section: shown under default and `--full`; **suppressed under quiet**.
 
 ### `sessionPriority` (0225)
 
-On **observe** + `intent.require_signing = false`, `PHANTOM_PROMOTED_WITHOUT_VERIFY`, `sig-pin`, and `sig-version` are assigned `sessionPriority: later` at emission (CLI `doctor --json` only; omitted from sidecar `doctor-results.json` / change-context `topFindings`). Human default omits those bodies and prints `{n} signing finding(s) deferred (observe) — run doctor --full` — **not** the 0174 hygiene line (`hygiene_count` / Index Health expand stay `is_hygiene` only). Header `warnAction` still counts them (0209); `--full` expands later bodies. Enforce or `require_signing` keeps `now`. `binary-behind-tree` stays `now`. Category / `is_action_critical` / 0138 B7 unchanged.
+On **observe** + `intent.require_signing = false`, `PHANTOM_PROMOTED_WITHOUT_VERIFY`, `sig-pin`, and `sig-version` are assigned `sessionPriority: later` at emission (CLI `doctor --json` only; omitted from sidecar `doctor-results.json` / change-context `topFindings`). Hygiene findings (`is_hygiene`: Warn+Optional, or Info any category) are also `later` on observe **and** enforce (0295). Human default omits 0225 signing bodies and prints `{n} signing finding(s) deferred (observe) — run doctor --full` — **not** the 0174 hygiene line. The signing trailer counts **only** those three codes (zero signing-later omits it). `hygiene_count` stays `is_hygiene` only. Default Index Health still expands action-critical warns; the `is_later() && !full` omit is for 0225 signing warns (hygiene-later never reach that list). Header `warnAction` still counts signing later (0209); `--full` expands later bodies. Enforce or `require_signing` keeps the signing trio `now`. `binary-behind-tree` / `hook-template-stale` stay `now`. Category / `is_action_critical` / 0138 B7 unchanged.
 
 ### Acknowledged standing warnings (0226)
 

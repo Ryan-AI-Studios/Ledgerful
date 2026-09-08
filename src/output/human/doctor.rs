@@ -1,3 +1,4 @@
+use crate::commands::doctor::is_observe_signing_later_code;
 use crate::platform::env::ExecutableStatus;
 use owo_colors::{OwoColorize, Stream, Style};
 use std::io::{self, Write};
@@ -306,7 +307,11 @@ pub(crate) fn print_doctor_report_to(
     if !profile.full {
         let later_count = findings
             .iter()
-            .filter(|f| f.session_priority.is_later() && !f.acknowledged)
+            .filter(|f| {
+                is_observe_signing_later_code(&f.code)
+                    && f.session_priority.is_later()
+                    && !f.acknowledged
+            })
             .count();
         if later_count > 0 {
             writeln!(out, "\n{}", format_signing_deferred_trailer(later_count))?;
