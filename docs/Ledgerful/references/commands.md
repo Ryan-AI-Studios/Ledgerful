@@ -9,7 +9,7 @@ Short flags only. Humans: `ledgerful --help`.
 | `ledgerful doctor --json` | Env readiness. Standing observe-signing warns: ack via `[doctor] acknowledged_codes` or `doctor --fix --yes` (pin only). Optional embed miss is fail-fast (`embed-unreachable`); not ERROR stderr. |
 | `ledgerful change-context --json` | Default pre-edit packet (does not rewrite `latest-impact.json`). `--paths` is presence / blast-if-edit, not “public types modified”. |
 | `ledgerful ledger status --compact` or `--json` | Pending / drift; names `workRoot` |
-| `ledgerful search …` | Discovery (`--auto-index` when stale). Code FTS; unquoted multi-word OK. Not `ledger search`. |
+| `ledgerful search …` | Discovery (`--auto-index` when stale). Code FTS; unquoted multi-word OK. Not `ledger search`. `--json` agents pin `path` + `line`; `content` is a preview (`/` paths). |
 | `ledgerful verify --scope fast` | Local gate |
 
 `ledgerful verify --dry-run` without `--scope` previews the pre-push **fast** plan (executed `verify` without flags stays **full**; `--scope full --dry-run` is the full preview; `--json --dry-run` is refused). Fully-clean auto-policy dry-run skips prediction.

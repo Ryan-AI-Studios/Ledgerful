@@ -91,7 +91,7 @@ This engine, not a generic tutorial:
 ledgerful search execute_change_context --auto-index
 ```
 
-Unquoted multi-word joins; `--` for hyphen-leading queries. Daily 5 step 4 stays this code FTS — not `ledger search`.
+Unquoted multi-word joins; `--` for hyphen-leading queries. Daily 5 step 4 stays this code FTS — not `ledger search`. `--json` agents pin `results[].path` + `line`; `content` is a plain preview (paths use `/`).
 
 ## Provenance
 

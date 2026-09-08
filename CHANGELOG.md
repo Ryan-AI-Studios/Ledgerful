@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Search `--json` path `/`, mid-ident snippet trim, pretty emit (0298):**
+  `results[].path` is slash-normalized on Windows. Snippets that end
+  mid-identifier walk back (complete tokens stay). Envelope emit uses
+  `output::json::emit` (pretty). schemaVersion 1 is unchanged.
+  `--json-lines` stays compact NDJSON.
+
 - **Default CLI hotspots omit vendored trees (0297):**
   `hotspots` / `hotspots --json` drop `deps_src` / `vendor` /
   `third_party` (and leading `target/`) before `max_freq`.

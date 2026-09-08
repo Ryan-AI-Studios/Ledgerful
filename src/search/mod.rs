@@ -13,4 +13,5 @@ pub use regex_filter::{
     REGEX_CANDIDATE_CAP, RegexCandidateSource, RegexFilter, RegexMatch, RegexSearchResult,
 };
 pub use stream_indexer::StreamIndexer;
+pub(crate) use tantivy_engine::normalize_search_path;
 pub use tantivy_engine::{SearchResult, TantivySearchEngine};

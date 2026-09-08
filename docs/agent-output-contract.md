@@ -811,10 +811,10 @@ multi-hit output.
 | `resultCount` | number | `results.len()` |
 | `results` | array | Match hits only — **not** status/readiness meta |
 | `results[].kind` | string | `bm25_match` \| `regex_match` \| `fuzzy_match` \| `insight` |
-| `results[].path` | string | Repo-relative path |
+| `results[].path` | string | Repo-relative path with `/` (Windows `\\` is normalized on emit) |
 | `results[].line` | number \| **omitted** | Present only when known — never JSON `null` |
 | `results[].score` | number \| **omitted** | Same omit policy as `line` |
-| `results[].content` | string | **Plain** snippet |
+| `results[].content` | string | **Plain** preview snippet. When the window is cut mid-identifier, the dangling ident is walked back. Agents pin `path` + `line`; `content` is not the source of truth. |
 | `searchIndexStatus` | object \| **omitted** | Empty-index / FTS-rebuild honesty (`state`, `documentCount`, optional `remediation` / `error`) |
 | `semantic` | object \| **omitted** | On `--semantic` paths: readiness fields + optional `error` |
 | `fallbackUsed` | string \| **omitted** | When hybrid empty path used identifier-literal AllPaths fallback and produced ≥1 hit: `"identifier_literal"`. `schemaVersion` stays **1**; kind vocabulary unchanged (`regex_match` for those hits) |
@@ -849,6 +849,10 @@ string as `search --json "foo bar"`. Flags may appear before or after words.
 Keep `--` for hyphen-leading tokens (`search -- --json`). Shell quotes do not
 hide a leading hyphen from clap. Envelope `query` remains one string
 (schemaVersion 1; no `queryTokens`).
+
+`--json` stdout is pretty (`output::json::emit` / `to_string_pretty`) with a
+trailing newline. Whole-document parse still required. `--json-lines` stays
+compact NDJSON (one BridgeRecord per line).
 
 MCP tool `search` spawns `search --json` (envelope; never `--json-lines`).
 

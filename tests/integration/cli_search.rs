@@ -834,3 +834,81 @@ fn search_json_lines_fatal_auto_index_no_stdout() {
         "fatal auto-index must leave no machine stdout under --json-lines; stdout={stdout}; stderr={stderr}"
     );
 }
+
+/// 0298: JSON paths use `/` even when the OS would store `\`.
+#[test]
+fn search_json_path_uses_forward_slashes() {
+    use crate::common::git_add_and_commit;
+
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _guard = DirGuard::new(root);
+
+    let nested = root.join("src").join("nested");
+    fs::create_dir_all(&nested).unwrap();
+    fs::write(nested.join("mod.rs"), "pub fn slash_path_token_0298() {}\n").unwrap();
+    git_add_and_commit(root, "src/nested/mod.rs");
+
+    let (stdout, stderr, code) = run_cli(
+        root,
+        &[
+            "search",
+            "slash_path_token_0298",
+            "--index",
+            "--json",
+            "--limit",
+            "5",
+        ],
+    );
+    assert_eq!(code, 0, "stderr={stderr}; stdout={stdout}");
+    let env: serde_json::Value = serde_json::from_str(stdout.trim()).expect("envelope");
+    assert_eq!(env["schemaVersion"], 1);
+    let results = env["results"].as_array().expect("results");
+    assert!(!results.is_empty(), "expected a hit: {stdout}");
+    for hit in results {
+        let path = hit["path"].as_str().expect("path");
+        assert!(path.contains('/'), "JSON path must use /: {path}");
+        assert!(
+            !path.contains('\\'),
+            "JSON path must not contain backslash: {path}"
+        );
+    }
+}
+
+/// 0298: `--json` is pretty (internal newlines); still one object.
+#[test]
+fn search_json_pretty_has_internal_newlines() {
+    use crate::common::git_add_and_commit;
+
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let _guard = DirGuard::new(root);
+
+    fs::write(
+        root.join("pretty.rs"),
+        "pub fn pretty_json_token_0298() {}\n",
+    )
+    .unwrap();
+    git_add_and_commit(root, "pretty.rs");
+
+    let (stdout, stderr, code) = run_cli(
+        root,
+        &[
+            "search",
+            "pretty_json_token_0298",
+            "--index",
+            "--json",
+            "--limit",
+            "5",
+        ],
+    );
+    assert_eq!(code, 0, "stderr={stderr}; stdout={stdout}");
+    assert!(
+        stdout.contains('\n'),
+        "pretty JSON must contain internal newlines: {stdout}"
+    );
+    let env: serde_json::Value = serde_json::from_str(stdout.trim()).expect("pretty parse");
+    assert_eq!(env["schemaVersion"], 1);
+}

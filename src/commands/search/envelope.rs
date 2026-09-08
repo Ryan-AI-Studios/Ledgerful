@@ -219,7 +219,7 @@ impl SearchCollector {
             SearchJsonMode::Envelope => {
                 self.results.push(SearchHit {
                     kind: hit.kind.to_string(),
-                    path: hit.path,
+                    path: crate::search::normalize_search_path(&hit.path),
                     line: hit.line,
                     score: hit.score,
                     content: hit.content,
@@ -409,12 +409,8 @@ impl SearchCollector {
             semantic: self.semantic,
             fallback_used: self.fallback_used,
         };
-        match serde_json::to_string(&envelope) {
-            Ok(s) => println!("{s}"),
-            Err(e) => {
-                // Never leave agents with partial multi-doc output; stderr only.
-                eprintln!("search --json: failed to serialize envelope: {e}");
-            }
+        if let Err(e) = crate::output::json::emit(&envelope) {
+            eprintln!("search --json: failed to serialize envelope: {e}");
         }
     }
 
