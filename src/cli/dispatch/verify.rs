@@ -55,7 +55,7 @@ pub(super) fn dispatch_verify(
             entity,
             health,
             dry_run,
-            scope,
+            scope: crate::verify::plan::resolve_verify_scope(scope, dry_run),
             auto_index,
             allow_full_fallback,
             json,

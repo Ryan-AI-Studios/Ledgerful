@@ -271,14 +271,15 @@ pub struct VerifyArgs {
     /// Show the verification plan without executing any commands
     #[arg(long)]
     pub dry_run: bool,
-    /// Verification scope: `fast` or `full` (default: `full`).
-    /// `fast` always runs fmt + clippy; only test selection is scoped via
-    /// `test_mapping`. When mapping cannot scope, refuses (exit ≠ 0) rather
-    /// than surprise-running full — use `--allow-full-fallback` for the
-    /// old full path, or `--scope full` / SharedInfra. Pre-push uses
-    /// `fast`. See `docs/verify-performance.md`.
-    #[arg(long, default_value = "full")]
-    pub scope: crate::verify::plan::VerifyScope,
+    /// Verification scope: `fast` or `full`.
+    /// Executed `verify` defaults to `full`. `--dry-run` without `--scope`
+    /// uses `fast` (pre-push). `fast` always runs fmt + clippy; only test
+    /// selection is scoped via `test_mapping`. When mapping cannot scope,
+    /// refuses (exit ≠ 0) rather than surprise-running full — use
+    /// `--allow-full-fallback` for the old full path, or `--scope full` /
+    /// SharedInfra. Pre-push uses `fast`. See `docs/verify-performance.md`.
+    #[arg(long, value_name = "SCOPE")]
+    pub scope: Option<crate::verify::plan::VerifyScope>,
     /// Refresh empty / unverifiable `test_mapping` before scoped selection
     /// on `--scope fast`. Head-lag (index head behind packet/HEAD) auto-
     /// repairs once without this flag — see `docs/verify-performance.md`.

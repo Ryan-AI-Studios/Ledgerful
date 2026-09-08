@@ -81,7 +81,7 @@ fn test_fast_dry_run_dirty_changelog_docs_no_snapshot_is_cheap() {
 }
 
 #[test]
-fn test_default_verify_dry_run_first_line_names_full_scope() {
+fn test_default_verify_dry_run_first_line_names_fast_scope() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     init_committed_rust_repo(root);
@@ -90,12 +90,24 @@ fn test_default_verify_dry_run_first_line_names_full_scope() {
     let stdout = stdout_text(&out);
     assert_eq!(
         first_nonempty_line(&stdout),
-        "scope: full (pre-push uses --scope fast)",
-        "default dry-run first line: {stdout:?}"
+        "scope: fast",
+        "omitted --scope --dry-run first line: {stdout:?}"
     );
     assert!(
         !stdout.contains("CLI default"),
         "must not claim CLI default: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("nextest") && !stdout.to_ascii_lowercase().contains("cargo test"),
+        "clean omitted dry-run must not schedule nextest/cargo test: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("cargo fmt") && stdout.contains("clippy"),
+        "fmt+clippy must be present: {stdout:?}"
+    );
+    assert!(
+        !stdout.contains("Predicted Impacts"),
+        "fully-clean auto-policy dry-run skips predict: {stdout:?}"
     );
 }
 
@@ -113,6 +125,14 @@ fn test_explicit_full_dry_run_same_static_scope_line() {
         "explicit --scope full dry-run: {stdout:?}"
     );
     assert!(!stdout.contains("CLI default"));
+    assert!(
+        stdout.contains("cargo fmt") && stdout.contains("clippy"),
+        "full dry-run must include fmt+clippy: {stdout:?}"
+    );
+    assert!(
+        stdout.contains("nextest") && stdout.to_ascii_lowercase().contains("cargo test"),
+        "full dry-run must list nextest and doctest cargo test: {stdout:?}"
+    );
 }
 
 #[test]
@@ -162,8 +182,8 @@ fn test_command_dry_run_first_line_is_scope() {
     );
     assert_eq!(
         first_nonempty_line(&stdout),
-        "scope: full (pre-push uses --scope fast)",
-        "manual command --dry-run first line: {stdout:?}"
+        "scope: fast",
+        "omitted-scope manual command --dry-run first line: {stdout:?}"
     );
 
     let out_fast = spawn_verify(
@@ -181,6 +201,23 @@ fn test_command_dry_run_first_line_is_scope() {
         "scope: fast",
         "--scope fast manual command --dry-run first line: {stdout_fast:?}"
     );
+
+    let out_full = spawn_verify(
+        root,
+        &["verify", "--scope", "full", "echo hello", "--dry-run"],
+    );
+    let stdout_full = stdout_text(&out_full);
+    let stderr_full = String::from_utf8_lossy(&out_full.stderr);
+    assert!(
+        out_full.status.success(),
+        "full manual command dry-run must exit 0; stdout={stdout_full:?} stderr={stderr_full:?}"
+    );
+    assert_eq!(
+        first_nonempty_line(&stdout_full),
+        "scope: full (pre-push uses --scope fast)",
+        "explicit --scope full manual command --dry-run: {stdout_full:?}"
+    );
+    assert!(!stdout_full.contains("CLI default"));
 }
 
 #[test]
@@ -195,8 +232,8 @@ fn test_verify_json_dry_run_still_errors() {
     let stderr = String::from_utf8_lossy(&out.stderr);
     let combined = format!("{stdout}{stderr}");
     assert!(
-        combined.contains("cannot be combined") || combined.contains("dry-run"),
-        "reject message; combined={combined:?}"
+        combined.contains("verify --json cannot be combined with --dry-run"),
+        "exact refuse string; combined={combined:?}"
     );
     if !stdout.trim().is_empty() {
         assert!(

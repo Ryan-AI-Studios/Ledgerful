@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`verify --dry-run` omitted `--scope` is pre-push fast (0288):**
+  `ledgerful verify --dry-run` without `--scope` prints the fast plan
+  (`scope: fast`; fmt+clippy on a clean tree). Executed `verify` without
+  flags stays **full**. `--scope full --dry-run` keeps
+  `scope: full (pre-push uses --scope fast)`. Fully-clean auto-policy
+  dry-run skips `OutcomePredictor`. `--json --dry-run` stays refused;
+  schemaVersion 1 unchanged.
+
 - **`related_tickets` store ticket ids (0287):** new hook-bound commits write
   ticket ids (conductor slug `####-…` or explicit LLM/TUI related) into
   `related_tickets`, not staged file paths. Files stay on snapshot /

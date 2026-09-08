@@ -55,6 +55,19 @@ impl std::str::FromStr for VerifyScope {
     }
 }
 
+/// Resolve clap `--scope` for `verify`.
+///
+/// Explicit `--scope` always wins. Omitted `--scope` on `--dry-run` is
+/// **fast** (pre-push / Daily 5). Omitted `--scope` on executed `verify`
+/// stays **full** (0203). Do not use clap `ValueSource`.
+pub(crate) fn resolve_verify_scope(scope: Option<VerifyScope>, dry_run: bool) -> VerifyScope {
+    match scope {
+        Some(s) => s,
+        None if dry_run => VerifyScope::Fast,
+        None => VerifyScope::Full,
+    }
+}
+
 mod full;
 mod non_code;
 mod scoped;

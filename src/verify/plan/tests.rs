@@ -2341,3 +2341,39 @@ fn test_apply_probability_ordering_zero_matches_preserves_order() {
         "vacuous apply must not alphabetical-sort: was {original:?}, now {after:?}"
     );
 }
+
+#[test]
+fn resolve_verify_scope_omitted_dry_run_is_fast() {
+    assert_eq!(
+        resolve_verify_scope(None, true),
+        VerifyScope::Fast,
+        "omitted --scope on --dry-run is pre-push fast"
+    );
+}
+
+#[test]
+fn resolve_verify_scope_omitted_live_is_full() {
+    assert_eq!(
+        resolve_verify_scope(None, false),
+        VerifyScope::Full,
+        "executed verify without --scope stays full"
+    );
+}
+
+#[test]
+fn resolve_verify_scope_explicit_full_dry_run_stays_full() {
+    assert_eq!(
+        resolve_verify_scope(Some(VerifyScope::Full), true),
+        VerifyScope::Full,
+        "explicit --scope full always wins"
+    );
+}
+
+#[test]
+fn resolve_verify_scope_explicit_fast_live_stays_fast() {
+    assert_eq!(
+        resolve_verify_scope(Some(VerifyScope::Fast), false),
+        VerifyScope::Fast,
+        "explicit --scope fast always wins"
+    );
+}
