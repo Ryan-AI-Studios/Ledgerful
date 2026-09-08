@@ -1485,6 +1485,78 @@ fn assign_session_priorities_resets_later_when_enforce() {
     assert_eq!(findings[0].session_priority, SessionPriority::Now);
 }
 
+/// 0295: hygiene (Warn+Optional or Info) is later; Tools warn stays now.
+#[test]
+fn assign_session_priorities_hygiene_optional_and_info_are_later() {
+    let config = crate::config::model::Config::default();
+    assert!(config.gate.is_observe());
+    let mut findings = vec![
+        DoctorFinding::info("sccache-hint", DoctorCategory::Optional, "sccache hint"),
+        DoctorFinding::warn("embed-unreachable", DoctorCategory::Optional, "embed down"),
+        DoctorFinding::info(
+            "binary-ahead-of-latest",
+            DoctorCategory::Tools,
+            "ahead of GitHub Latest",
+        ),
+        DoctorFinding::info("surfaces-gated", DoctorCategory::Optional, "gated"),
+        DoctorFinding::warn(
+            "binary-behind-latest",
+            DoctorCategory::Tools,
+            "behind GitHub Latest",
+        ),
+    ];
+    assign_session_priorities(&mut findings, &config);
+    let later: Vec<&str> = findings
+        .iter()
+        .filter(|f| f.session_priority == SessionPriority::Later)
+        .map(|f| f.code.as_str())
+        .collect();
+    assert_eq!(
+        later,
+        vec![
+            "sccache-hint",
+            "embed-unreachable",
+            "binary-ahead-of-latest",
+            "surfaces-gated",
+        ]
+    );
+    let behind = findings
+        .iter()
+        .find(|f| f.code == "binary-behind-latest")
+        .expect("behind-latest");
+    assert_eq!(behind.session_priority, SessionPriority::Now);
+}
+
+/// 0295: optional later even on enforce; 0225 signing trio stays now.
+#[test]
+fn assign_session_priorities_optional_later_on_enforce() {
+    let mut config = crate::config::model::Config::default();
+    config.gate.mode = "enforce".to_string();
+    let mut findings = vec![
+        DoctorFinding::warn("embed-unreachable", DoctorCategory::Optional, "embed down"),
+        DoctorFinding::info("sccache-hint", DoctorCategory::Optional, "sccache hint"),
+        DoctorFinding::warn("sig-pin", DoctorCategory::Signing, "pin"),
+    ];
+    assign_session_priorities(&mut findings, &config);
+    assert_eq!(findings[0].session_priority, SessionPriority::Later);
+    assert_eq!(findings[1].session_priority, SessionPriority::Later);
+    assert_eq!(findings[2].session_priority, SessionPriority::Now);
+}
+
+/// 0295: block always now, even if pre-set later (agy-02).
+#[test]
+fn assign_session_priorities_block_stays_now() {
+    let config = crate::config::model::Config::default();
+    let mut findings = vec![DoctorFinding::block(
+        "optional-block",
+        DoctorCategory::Optional,
+        "optional block",
+    )];
+    findings[0].session_priority = SessionPriority::Later;
+    assign_session_priorities(&mut findings, &config);
+    assert_eq!(findings[0].session_priority, SessionPriority::Now);
+}
+
 #[test]
 fn doctor_fix_without_yes_or_dry_run_is_miette() {
     let err = execute_doctor(DoctorRunOpts {

@@ -439,21 +439,25 @@ pub fn execute_doctor(opts: DoctorRunOpts) -> Result<()> {
     Ok(())
 }
 
-/// Derive `sessionPriority` from live gate/intent (0225).
+/// Derive `sessionPriority` from live gate/intent (0225) and hygiene (0295).
 ///
-/// `later` only when observe AND `intent.require_signing == false` AND the
-/// code is one of the three signing-hygiene codes. Enforce or require_signing
-/// keeps `now`. Config-relative — do not persist on the sidecar.
+/// Signing-trio `later` only when observe AND `intent.require_signing == false`
+/// AND `is_observe_signing_later_code`. Hygiene (`is_hygiene`: Warn+Optional or
+/// Info any category) is `later` on observe **and** enforce. Block is always
+/// `now`. Config-relative — do not persist on the sidecar.
 pub(crate) fn assign_session_priorities(
     findings: &mut [DoctorFinding],
     config: &crate::config::model::Config,
 ) {
-    let later_eligible = config.gate.is_observe() && !config.intent.require_signing;
+    let signing_later = config.gate.is_observe() && !config.intent.require_signing;
     for f in findings.iter_mut() {
-        f.session_priority = if later_eligible && is_observe_signing_later_code(&f.code) {
-            SessionPriority::Later
-        } else {
+        // Signing-trio later-on-observe (0225) or hygiene (0295). Combined
+        // so the two Later arms are not clippy::if_same_then_else.
+        let later = (signing_later && is_observe_signing_later_code(&f.code)) || is_hygiene(f);
+        f.session_priority = if f.severity == DoctorSeverity::Block || !later {
             SessionPriority::Now
+        } else {
+            SessionPriority::Later
         };
     }
 }
