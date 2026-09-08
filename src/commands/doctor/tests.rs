@@ -2,7 +2,9 @@ use super::*;
 use crate::output::human::DoctorReport;
 use crate::platform::env::ExecutableStatus;
 use camino::{Utf8Path, Utf8PathBuf};
+use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 fn sample_report<'a>(tools: &'a Vec<(String, ExecutableStatus)>) -> DoctorReport<'a> {
     DoctorReport {
@@ -381,39 +383,127 @@ fn format_embedding_default_config_is_not_configured() {
     );
 }
 
-/// 0095 DoD-13 / 0109: SCIP findings are info/optional; never block or dashboard.
-#[test]
-fn scip_findings_sorted_and_mention_go_unwired() {
-    let config = crate::config::model::Config::default();
-    let findings = collect_scip_findings(&config);
-    assert!(!findings.is_empty(), "expected at least Go unwired line");
-    let mut sorted = findings.clone();
+fn write_src_file(dir: &std::path::Path, rel: &str, body: &str) {
+    let path = dir.join(rel);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent).expect("mkdir");
+    }
+    fs::write(&path, body).expect("write");
+}
+
+fn utf8_temp_root(dir: &tempfile::TempDir) -> &Utf8Path {
+    Utf8Path::from_path(dir.path()).expect("utf8 tempdir")
+}
+
+fn assert_scip_info_optional_no_dashboard(findings: &[DoctorFinding]) {
+    for f in findings {
+        assert_eq!(f.severity, DoctorSeverity::Info, "{}", f.code);
+        assert_eq!(f.category, DoctorCategory::Optional, "{}", f.code);
+    }
+    assert_eq!(dashboard_failures(findings), 0);
+    assert!(ready_for_publish(findings));
+    let mut sorted = findings.to_vec();
     sorted.sort_by(|a, b| a.code.cmp(&b.code).then(a.message.cmp(&b.message)));
-    assert_eq!(findings, sorted, "findings must be sorted");
+    assert_eq!(findings, &sorted, "findings must be sorted");
+}
+
+fn assert_no_other_lang_scip(findings: &[DoctorFinding]) {
+    for code in [
+        "scip-python-missing",
+        "scip-typescript-missing",
+        "scip-go-not-wired",
+        "scip-clang-not-wired",
+    ] {
+        assert!(
+            findings.iter().all(|f| f.code != code),
+            "unexpected {code} in {findings:?}"
+        );
+    }
     assert!(
-        findings
-            .iter()
-            .any(|f| f.code == "scip-go-not-wired" || f.message.contains("not wired")),
-        "must report Go as upstream/not wired: {findings:?}"
+        findings.iter().any(|f| f.code.starts_with("scip-rust-")),
+        "expected some scip-rust-* in {findings:?}"
     );
+}
+
+/// 0296: rust-only tree (WalkBuilder; no git) omits python/ts/go/clang SCIP.
+#[test]
+fn scip_findings_rust_only_tree_omits_other_langs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_src_file(dir.path(), "src/lib.rs", "fn x() {}\n");
+    let config = crate::config::model::Config::default();
+    let findings = collect_scip_findings(&config, utf8_temp_root(&dir));
+    assert_scip_info_optional_no_dashboard(&findings);
+    assert_no_other_lang_scip(&findings);
+}
+
+/// 0296: product Go file emits scip-go-not-wired.
+#[test]
+fn scip_findings_go_tree_emits_go_not_wired() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_src_file(dir.path(), "src/lib.rs", "fn x() {}\n");
+    write_src_file(dir.path(), "src/main.go", "package main\n");
+    let config = crate::config::model::Config::default();
+    let findings = collect_scip_findings(&config, utf8_temp_root(&dir));
+    assert_scip_info_optional_no_dashboard(&findings);
+    assert!(
+        findings.iter().any(|f| f.code == "scip-go-not-wired"),
+        "{findings:?}"
+    );
+    assert!(findings.iter().all(|f| f.code != "scip-python-missing"));
+    assert!(findings.iter().all(|f| f.code != "scip-typescript-missing"));
+    assert!(findings.iter().all(|f| f.code != "scip-clang-not-wired"));
+}
+
+/// 0296 agy-03: product C file emits scip-clang-not-wired.
+#[test]
+fn scip_findings_cpp_tree_emits_clang_not_wired() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_src_file(dir.path(), "src/lib.rs", "fn x() {}\n");
+    write_src_file(dir.path(), "src/native.c", "int x;\n");
+    let config = crate::config::model::Config::default();
+    let findings = collect_scip_findings(&config, utf8_temp_root(&dir));
+    assert_scip_info_optional_no_dashboard(&findings);
     assert!(
         findings.iter().any(|f| f.code == "scip-clang-not-wired"),
-        "must report scip-clang as not wired: {findings:?}"
+        "{findings:?}"
     );
-    for f in &findings {
-        assert_eq!(f.severity, DoctorSeverity::Info);
-        assert_eq!(f.category, DoctorCategory::Optional);
-    }
-    assert_eq!(dashboard_failures(&findings), 0);
-    assert!(ready_for_publish(&findings));
+    assert!(findings.iter().all(|f| f.code != "scip-go-not-wired"));
+    assert!(findings.iter().all(|f| f.code != "scip-python-missing"));
+    assert!(findings.iter().all(|f| f.code != "scip-typescript-missing"));
+}
+
+/// 0296 agy-01: gix index path (git add, no commit) still rust-only omit.
+/// Untracked `src/main.go` must stay silent until `git add` (index-primary ceiling).
+#[test]
+fn scip_findings_rust_only_gix_index_omits_other_langs() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    gix::init(dir.path()).expect("gix init");
+    write_src_file(dir.path(), "src/lib.rs", "fn x() {}\n");
+    write_src_file(dir.path(), "src/main.go", "package main\n");
+    let add = Command::new("git")
+        .args(["add", "src/lib.rs"])
+        .current_dir(dir.path())
+        .status()
+        .expect("git add");
+    assert!(add.success(), "git add failed: {add}");
+    let config = crate::config::model::Config::default();
+    let findings = collect_scip_findings(&config, utf8_temp_root(&dir));
+    assert_scip_info_optional_no_dashboard(&findings);
+    assert_no_other_lang_scip(&findings);
+    assert!(
+        findings.iter().all(|f| f.code != "scip-go-not-wired"),
+        "untracked Go must not emit scip-go-not-wired: {findings:?}"
+    );
 }
 
 /// Doctor must not advertise SCIP as runnable when process policy denies it.
 #[test]
 fn scip_findings_report_policy_block_when_denied() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_src_file(dir.path(), "src/lib.rs", "fn x() {}\n");
     let mut config = crate::config::model::Config::default();
     config.verify.denied_commands = vec!["rust-analyzer".to_string()];
-    let findings = collect_scip_findings(&config);
+    let findings = collect_scip_findings(&config, utf8_temp_root(&dir));
     for f in &findings {
         if f.message.contains("rust-analyzer") || f.message.contains("Rust") {
             assert!(
@@ -428,7 +518,7 @@ fn scip_findings_report_policy_block_when_denied() {
             .iter()
             .any(|f| f.message.contains("blocked by process policy")
                 || f.message.contains("not available")
-                || f.code == "scip-go-not-wired"),
+                || f.code.starts_with("scip-rust-")),
         "expected policy or probe messaging: {findings:?}"
     );
 }
@@ -446,8 +536,12 @@ fn doctor_zero_dashboard_failures_without_scip_indexers_in_tools() {
             .iter()
             .any(|(n, _)| n.contains("scip") || n.contains("rust-analyzer"))
     );
-    // SCIP absence alone is not a dashboard failure.
-    let scip = collect_scip_findings(&crate::config::model::Config::default());
+    let dir = tempfile::tempdir().expect("tempdir");
+    write_src_file(dir.path(), "src/lib.rs", "fn x() {}\n");
+    let scip = collect_scip_findings(
+        &crate::config::model::Config::default(),
+        utf8_temp_root(&dir),
+    );
     assert_eq!(dashboard_failures(&scip), 0);
 }
 

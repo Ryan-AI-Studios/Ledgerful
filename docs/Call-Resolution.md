@@ -153,7 +153,8 @@ where the native-span resolver hits; stdlib/external symbols must not appear as 
 
 **scip-clang:** not wired into `--auto-scip` (no Windows binary on official releases; needs
 `compile_commands.json`). Manual path: run scip-clang externally →
-`ledgerful index --scip path/to/index.scip`. Doctor reports `scip-clang-not-wired` (info).
+`ledgerful index --scip path/to/index.scip`. Doctor reports `scip-clang-not-wired` (info)
+when C/C++ **product** sources are present (not test fixtures or `vendor/`).
 
 A prior native index is **no longer required** for `--auto-scip`: native indexing always runs first.
 
