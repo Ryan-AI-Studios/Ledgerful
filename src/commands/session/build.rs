@@ -223,6 +223,7 @@ fn collect_hotspots(
         limit: SESSION_HOTSPOT_LIMIT,
         decay_half_life: config.hotspots.decay_half_life,
         exclude_test_paths: true,
+        exclude_vendor_paths: true,
         ..HotspotQuery::default()
     };
     let provider = GixHistoryProvider::new(&repo);

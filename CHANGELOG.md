@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Default CLI hotspots omit vendored trees (0297):**
+  `hotspots` / `hotspots --json` drop `deps_src` / `vendor` /
+  `third_party` (and leading `target/`) before `max_freq`.
+  `--include vendor` restores the `f×c` list. `--include tests`
+  stays unfiltered. MCP / `/api/hotspots` stay unfiltered.
+  schemaVersion 1 is unchanged.
+
 - **Doctor SCIP hints only for languages in the tree (0296):**
   `doctor --json` emits `scip-*-missing` / `scip-*-available` /
   `scip-*-not-wired` only when that **product** language is

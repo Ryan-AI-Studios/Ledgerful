@@ -427,6 +427,66 @@ fn exclude_docs_paths_does_not_let_changelog_set_max_freq() {
 }
 
 #[test]
+fn exclude_vendor_paths_omits_libigl_style_path() {
+    let tmp = tempdir().unwrap();
+    let storage = StorageManager::init(&tmp.path().join("ledger.db")).unwrap();
+    insert_snapshot(&storage);
+    insert_complexity(&storage, "deps_src/libigl/igl/cut_to_disk.cpp", 204);
+    insert_complexity(&storage, "src/slic3r/GUI/MainFrame.cpp", 3);
+
+    let history = MockHistoryProvider {
+        history: vec![
+            commit(&[
+                "deps_src/libigl/igl/cut_to_disk.cpp",
+                "src/slic3r/GUI/MainFrame.cpp",
+            ]),
+            commit(&["src/slic3r/GUI/MainFrame.cpp"]),
+            commit(&["src/slic3r/GUI/MainFrame.cpp"]),
+            commit(&["src/slic3r/GUI/MainFrame.cpp"]),
+        ],
+    };
+
+    let default_cli = HotspotQuery {
+        commits: 10,
+        limit: 10,
+        exclude_test_paths: true,
+        exclude_docs_paths: true,
+        exclude_vendor_paths: true,
+        ..Default::default()
+    };
+    let filtered = calculate_hotspots_detailed(&storage, &history, &default_cli).unwrap();
+    let paths = filtered
+        .hotspots
+        .iter()
+        .map(|h| h.path.to_string_lossy().replace('\\', "/"))
+        .collect::<Vec<_>>();
+    assert_eq!(paths, vec!["src/slic3r/GUI/MainFrame.cpp".to_string()]);
+    assert_eq!(filtered.omitted_vendor_paths, 1);
+
+    let include_vendor = HotspotQuery {
+        commits: 10,
+        limit: 10,
+        exclude_test_paths: true,
+        exclude_docs_paths: true,
+        exclude_vendor_paths: false,
+        ..Default::default()
+    };
+    let restored = calculate_hotspots_detailed(&storage, &history, &include_vendor).unwrap();
+    let restored_paths = restored
+        .hotspots
+        .iter()
+        .map(|h| h.path.to_string_lossy().replace('\\', "/"))
+        .collect::<Vec<_>>();
+    assert!(
+        restored_paths
+            .iter()
+            .any(|p| p == "deps_src/libigl/igl/cut_to_disk.cpp"),
+        "include vendor must list libigl: {restored_paths:?}"
+    );
+    assert_eq!(restored.omitted_vendor_paths, 0);
+}
+
+#[test]
 fn test_hotspot_score_null_deserializes_as_zero_for_backward_compat() {
     // Regression: packets written before the NaN fix have "score":null.
     // The custom deserializer should read null as 0.0 so verify doesn't crash.

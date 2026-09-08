@@ -1,5 +1,8 @@
 use super::explain::complexity_for_entity_path;
-use super::list::{omitted_docs_footer, omitted_hotspots_footer, wrap_hotspots_list_json};
+use super::list::{
+    omitted_docs_footer, omitted_hotspots_footer, omitted_vendor_hotspots_footer,
+    wrap_hotspots_list_json,
+};
 use super::trend::{
     TrendMode, TrendRow, build_trend_summary, compute_history_available, format_trend_ts,
     render_hotspot_trend_table, render_trend_summary_table, resolve_trend_mode, trend_file_json,
@@ -38,6 +41,19 @@ fn omitted_docs_footer_n_names_include_docs_flag() {
     assert_eq!(
         omitted_docs_footer(2).as_deref(),
         Some("2 documentation files omitted; --include docs")
+    );
+}
+
+#[test]
+fn omitted_vendor_hotspots_footer_zero_is_none() {
+    assert_eq!(omitted_vendor_hotspots_footer(0), None);
+}
+
+#[test]
+fn omitted_vendor_hotspots_footer_n_names_include_vendor_flag() {
+    assert_eq!(
+        omitted_vendor_hotspots_footer(3).as_deref(),
+        Some("3 vendored files omitted; --include vendor")
     );
 }
 

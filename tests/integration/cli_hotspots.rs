@@ -702,6 +702,57 @@ fn setup_docs_churn_repo() -> tempfile::TempDir {
     tmp
 }
 
+/// Two files: first-party `src/lib.rs` (many commits) and a `deps_src/libigl`
+/// rust file (one commit, high branching). `--limit 10` > file count.
+fn setup_vendor_churn_repo() -> tempfile::TempDir {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+
+    setup_git_repo(root);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::create_dir_all(root.join("deps_src/libigl/igl")).unwrap();
+    fs::write(
+        root.join("src/lib.rs"),
+        "pub fn add(a: i32, b: i32) -> i32 {\n    if a > 0 { a + b } else { b - a }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("deps_src/libigl/igl/cut_to_disk.rs"),
+        r#"pub fn cut(n: i32) -> i32 {
+    let mut x = n;
+    if x > 0 { x += 1; }
+    if x > 1 { x += 2; }
+    if x > 2 { x += 3; }
+    if x > 3 { x += 4; }
+    if x > 4 { x += 5; }
+    if x > 5 { x += 6; }
+    if x > 6 { x += 7; }
+    if x > 7 { x += 8; }
+    x
+}
+"#,
+    )
+    .unwrap();
+    git_add_and_commit(root, "initial mixed vendor");
+
+    for i in 1..=8 {
+        fs::write(
+            root.join("src/lib.rs"),
+            format!(
+                "pub fn add(a: i32, b: i32) -> i32 {{\n    if a > {i} {{ a + b }} else {{ b - a }}\n}}\n"
+            ),
+        )
+        .unwrap();
+        git_add_and_commit(root, &format!("churn src {i}"));
+    }
+
+    let _guard = DirGuard::new(root);
+    execute_init(false, false).unwrap();
+    execute_index(IndexArgs::default()).unwrap();
+
+    tmp
+}
+
 #[test]
 fn cli_hotspots_default_json_omits_tests_and_examples() {
     let tmp = setup_mixed_hotspot_repo();
@@ -983,5 +1034,159 @@ fn cli_hotspots_include_docs_human_omits_tests_footer() {
     assert!(
         stdout.contains("CHANGELOG.md") || stdout.contains("changelog.md"),
         "docs lane human table must list CHANGELOG.md: {stdout}"
+    );
+}
+
+#[test]
+fn cli_hotspots_default_json_omits_vendor() {
+    let tmp = setup_vendor_churn_repo();
+    let root = tmp.path();
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["hotspots", "--limit", "10", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "CLI failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let files = json["files"].as_array().expect("files array");
+    assert!(
+        files
+            .iter()
+            .any(|f| { f["path"].as_str().unwrap_or("").replace('\\', "/") == "src/lib.rs" }),
+        "default list must include src/lib.rs: {stdout}"
+    );
+    assert!(
+        files.iter().all(|f| {
+            let path = f["path"].as_str().unwrap_or("").replace('\\', "/");
+            path != "deps_src"
+                && path != "vendor"
+                && !path.contains("deps_src/")
+                && !path.contains("vendor/")
+        }),
+        "limit 10 > fixture size; vendor paths must be excluded from the map: {stdout}"
+    );
+    assert!(files.iter().all(|f| f.get("scoreUnit").is_none()));
+}
+
+#[test]
+fn cli_hotspots_include_vendor_json_lists_vendor() {
+    let tmp = setup_vendor_churn_repo();
+    let root = tmp.path();
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["hotspots", "--include", "vendor", "--limit", "10", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "CLI failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(json["schemaVersion"], 1);
+    let files = json["files"].as_array().expect("files array");
+    let vendor = files.iter().find(|f| {
+        f["path"]
+            .as_str()
+            .unwrap_or("")
+            .replace('\\', "/")
+            .contains("deps_src/")
+    });
+    assert!(
+        vendor.is_some(),
+        "include vendor must list deps_src: {stdout}"
+    );
+    let score = vendor.unwrap()["score"].as_f64().unwrap();
+    assert!(
+        score > 0.0 && score <= 1.0,
+        "vendor restore score is f×c in (0,1]: {stdout}"
+    );
+    assert!(files.iter().all(|f| f.get("scoreUnit").is_none()));
+}
+
+#[test]
+fn cli_hotspots_human_default_omits_vendor_footer() {
+    let tmp = setup_vendor_churn_repo();
+    let root = tmp.path();
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["hotspots", "--limit", "10"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "CLI failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("vendored files omitted; --include vendor"),
+        "human default must print vendor omit footer: {stdout}"
+    );
+    assert!(
+        !stdout.contains("deps_src/"),
+        "human default must not list deps_src: {stdout}"
+    );
+}
+
+#[test]
+fn cli_hotspots_include_vendor_human_lists_vendor() {
+    let tmp = setup_vendor_churn_repo();
+    let root = tmp.path();
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["hotspots", "--include", "vendor", "--limit", "10"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "CLI failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("deps_src/") || stdout.contains("cut_to_disk"),
+        "include vendor human table must list vendored file: {stdout}"
+    );
+    assert!(
+        !stdout.contains("vendored files omitted; --include vendor"),
+        "include vendor must not print the vendor omit footer: {stdout}"
+    );
+}
+
+#[test]
+fn cli_hotspots_include_vendor_snapshot_is_allowed() {
+    let tmp = setup_vendor_churn_repo();
+    let root = tmp.path();
+    let before = hotspot_history_count(root);
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["hotspots", "--include", "vendor", "--snapshot"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        output.status.success(),
+        "include vendor --snapshot must be allowed: {stderr}{stdout}"
+    );
+    assert!(
+        !stderr.contains("--include docs") && !stdout.contains("--include docs"),
+        "must not emit the docs-lane snapshot error: {stderr}{stdout}"
+    );
+    assert!(
+        hotspot_history_count(root) > before,
+        "vendor snapshot must persist hotspot_history rows"
     );
 }

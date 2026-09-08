@@ -29,13 +29,14 @@ pub fn execute_hotspots(args: HotspotArgs) -> Result<()> {
     let need_cozo = args.semantic || args.centrality;
     // Trend --bootstrap inserts snapshots; must open write storage (true RO
     // open fails with "attempt to write a readonly database").
-    let need_write = matches!(
-        &args.command,
-        Some(HotspotSubcommands::Trend {
-            bootstrap: true,
-            ..
-        })
-    );
+    let need_write = args.snapshot
+        || matches!(
+            &args.command,
+            Some(HotspotSubcommands::Trend {
+                bootstrap: true,
+                ..
+            })
+        );
     let storage = if need_write {
         layout.ensure_state_dir()?;
         let storage = StorageManager::init_with_layout(&layout)?;
