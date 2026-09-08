@@ -45,7 +45,6 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
         return Ok(()); // Nothing staged, nothing to record
     }
     let entity = canonical_entity(&staged_files);
-    let related_files = staged_files.join(", ");
 
     // 3. Read current commit message
     if !msg_file.exists() {
@@ -75,7 +74,6 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
             link_pending_provenance(LinkPendingArgs {
                 config: &config,
                 tx_id: &tx_id,
-                related_files: &related_files,
                 raw_commit_msg: &raw_commit_msg,
                 snapshot_id: snapshot_capture.as_ref().map(|s| s.snapshot_id),
             })?;
@@ -108,7 +106,6 @@ pub fn execute_hook_commit_msg(msg_file: &Path) -> Result<()> {
         repo_root,
         msg_file,
         entity: &entity,
-        related_files: &related_files,
         staged_files: &staged_files,
         raw_commit_msg: &raw_commit_msg,
         snapshot_id: snapshot_capture.as_ref().map(|s| s.snapshot_id),

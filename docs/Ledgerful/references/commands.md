@@ -18,7 +18,7 @@ Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/ch
 
 | Command | Role |
 |---|---|
-| `ledgerful ledger search "<topic>" [--json]` | Committed-plan / TX FTS. **Quotes required** (clap `query` is one `String` token). Contrast: code `ledgerful search foo bar` stays unquoted multi-word. `--json` is a **bare array** (`Vec<LedgerEntry>`) — 0213 freeze; not a `schemaVersion` object. Empty `[]` is a valid FTS miss. Example: `ledgerful ledger search "0126" --json`. |
+| `ledgerful ledger search "<topic>" [--json]` | Committed-plan / TX FTS. **Quotes required** (clap `query` is one `String` token). Contrast: code `ledgerful search foo bar` stays unquoted multi-word. `--json` is a **bare array** (`Vec<LedgerEntry>`) — 0213 freeze; not a `schemaVersion` object. Key `related_tickets` frozen; **new** row values are ticket ids (or null), not staged file paths (files live on snapshot/`changed_files`). Empty `[]` is a valid FTS miss. Example: `ledgerful ledger search "0126" --json`. |
 
 ## `ledgerful tests`
 

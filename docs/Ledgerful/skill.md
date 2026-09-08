@@ -93,7 +93,7 @@ ledgerful ledger search "<topic>" [--json]
 
 **Quotes required** — clap `query` is one `String` token. Contrast: code FTS `ledgerful search foo bar` stays unquoted multi-word.
 
-`--json` is a **bare array** (`Vec<LedgerEntry>`) — 0213 freeze; do **not** wrap in `schemaVersion`. Empty `[]` is a valid FTS miss, not proof of missing provenance.
+`--json` is a **bare array** (`Vec<LedgerEntry>`) — 0213 freeze; do **not** wrap in `schemaVersion`. Key `related_tickets` frozen; **new** row values are ticket ids (or null) — files live on snapshot/`changed_files`. Empty `[]` is a valid FTS miss, not proof of missing provenance.
 
 Example that finds 0126-class hits: `ledgerful ledger search "0126" --json`.
 
