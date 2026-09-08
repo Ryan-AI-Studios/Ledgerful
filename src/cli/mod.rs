@@ -865,6 +865,65 @@ mod tests {
         }
     }
 
+    fn resolved_verify_scope(argv: &[&str]) -> crate::verify::plan::VerifyScope {
+        let cli = Cli::try_parse_from(argv).unwrap();
+        match cli.command {
+            Commands::Verify(VerifyArgs { scope, dry_run, .. }) => {
+                crate::verify::plan::resolve_verify_scope(scope, dry_run)
+            }
+            _ => panic!("expected Verify command"),
+        }
+    }
+
+    #[test]
+    fn verify_help_scope_split_default() {
+        let result = Cli::try_parse_from(["ledgerful", "verify", "--help"]);
+        assert!(
+            result.is_err(),
+            "--help should trigger clap's special error"
+        );
+        let err = result.unwrap_err().to_string();
+        assert!(
+            err.contains("Executed `verify` defaults to `full`")
+                || err.contains("Executed verify defaults to `full`"),
+            "help must name executed default full: {err}"
+        );
+        assert!(
+            err.contains("`--dry-run` without `--scope`")
+                || err.contains("--dry-run without --scope"),
+            "help must name omitted dry-run fast: {err}"
+        );
+        assert!(
+            !err.contains("[default: full]"),
+            "clap must not show a single [default: full]: {err}"
+        );
+    }
+
+    #[test]
+    fn verify_dry_run_omitted_scope() {
+        use crate::verify::plan::VerifyScope;
+        assert_eq!(
+            resolved_verify_scope(&["ledgerful", "verify", "--dry-run"]),
+            VerifyScope::Fast,
+            "omitted --scope on --dry-run resolves fast"
+        );
+        assert_eq!(
+            resolved_verify_scope(&["ledgerful", "verify"]),
+            VerifyScope::Full,
+            "executed verify without --scope stays full"
+        );
+        assert_eq!(
+            resolved_verify_scope(&["ledgerful", "verify", "--scope", "full", "--dry-run"]),
+            VerifyScope::Full,
+            "explicit --scope full --dry-run stays full"
+        );
+        assert_eq!(
+            resolved_verify_scope(&["ledgerful", "verify", "--scope", "fast"]),
+            VerifyScope::Fast,
+            "explicit --scope fast stays fast"
+        );
+    }
+
     #[test]
     fn index_help_contains_fast() {
         let result = Cli::try_parse_from(["ledgerful", "index", "--help"]);

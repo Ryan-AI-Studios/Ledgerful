@@ -37,7 +37,7 @@ Optional step 0: `ledgerful session --json` (one-shot briefing; does not replace
 | 2 | `ledgerful change-context --json` | Default pre-edit packet. Does **not** rewrite `latest-impact.json`. Plan: `--paths src/foo.rs`. |
 | 3 | `ledgerful ledger status --compact` or `--json` | Pending / drift; names `workRoot`. Other repo: `-C` / `--directory`. |
 | 4 | `ledgerful search …` (prefer `--auto-index` when stale) | Discovery, not full impact. |
-| 5 | `ledgerful verify --scope fast` | Local gate (≠ full CI). |
+| 5 | `ledgerful verify --scope fast` | Local gate (≠ full CI). `verify --dry-run` without `--scope` previews this fast plan; executed `verify` stays full. |
 
 Escalate `scan --impact --json` only on B2: `readSetCapped`, high risk + multi-module, unclear public API, user/DoD requires full impact, change-context `not_ready` (not merely `empty`).
 

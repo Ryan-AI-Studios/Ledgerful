@@ -54,7 +54,12 @@ the same overlay. The rest lives in `build_plan_scoped_with_options`:
 | Pre-push | `verify --scope fast` **without** allow — benefits from LiveEmpty + head-lag auto-repair; empty mapping still blocks until index fixed |
 
 Human dry-run first product line is always `scope:` (`scope: fast` or
-`scope: full (pre-push uses --scope fast)`). On MappingRefuse `--dry-run`,
+`scope: full (pre-push uses --scope fast)`). Omitted `--scope` on
+`--dry-run` is **fast** (pre-push / Daily 5). Executed `verify` without
+`--scope` stays **full**. Explicit `--scope full --dry-run` keeps the
+full line. Fully-clean auto-policy dry-run skips `OutcomePredictor`
+(no stale Predicted Impacts). Docs-only dirty trees (CHANGELOG / `*.md`)
+are material and still predict. On MappingRefuse `--dry-run`,
 that line is **above** the greppable ℹ reason:
 
 ```text

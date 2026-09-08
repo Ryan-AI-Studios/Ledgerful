@@ -238,8 +238,8 @@ impl Commands {
                 auto_index,
                 allow_full_fallback,
                 json,
-                // `scope` always present (default full) — include name only when not default
-                // would leak value; we record the flag name always when user would care.
+                // `scope` is Option after 0288 (omitted vs explicit). Record the
+                // flag *name* unconditionally; values are stripped from the hash.
                 // Values are stripped: record "scope" unconditionally so fast/full group
                 // separately only if we include the enum discriminant without user paths.
                 // Spec: flag *names* only. Recording "scope" for every verify run is fine

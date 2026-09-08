@@ -61,8 +61,10 @@ pub fn parse_predicted_impacts(steps: &[VerificationStep]) -> BTreeMap<String, V
 
 /// First product line of every human dry-run (plan, refuse, `--command`).
 ///
-/// Static phrasing: omitted `--scope` and explicit `--scope full` both print
-/// the `full` line. Do not mention `CLI default` (clap `ValueSource` is not used).
+/// `Fast` prints `scope: fast` (omitted `--scope` on `--dry-run` resolves
+/// Fast — 0288). `Full` prints the static
+/// `scope: full (pre-push uses --scope fast)` line (explicit `--scope full`).
+/// Do not mention `CLI default` (clap `ValueSource` is not used).
 pub fn dry_run_scope_line(scope: VerifyScope) -> String {
     match scope {
         VerifyScope::Fast => "scope: fast".to_string(),

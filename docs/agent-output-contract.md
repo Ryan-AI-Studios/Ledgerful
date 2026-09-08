@@ -266,7 +266,9 @@ surface (other numeric-schema envelopes omit `kind`).
 ## Default human `verify` contract (hooks / binary-first, 0121)
 
 Installed pre-push shells call `ledgerful verify --scope fast` **without**
-`--json`. After a PATH upgrade alone:
+`--json`. Human `verify --dry-run` without `--scope` previews that same
+fast plan (executed `verify` stays full; `--json --dry-run` stays
+refused). After a PATH upgrade alone:
 
 | Outcome | Default (non-verbose) stdout |
 |---|---|

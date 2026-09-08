@@ -98,6 +98,8 @@ fn test_verify_node_fixture_invokes_only_eligible_scripts() {
 
     let output = Command::new(ledgerful_bin)
         .arg("verify")
+        .arg("--scope")
+        .arg("full")
         .arg("--dry-run")
         .current_dir(root)
         .output()
@@ -151,6 +153,8 @@ fn test_verify_deno_non_workspace_built_in_fallback() {
 
     let output = Command::new(ledgerful_bin)
         .arg("verify")
+        .arg("--scope")
+        .arg("full")
         .arg("--dry-run")
         .current_dir(root)
         .output()
@@ -198,6 +202,8 @@ fn test_verify_deno_workspace_no_built_in_fallback() {
 
     let output = Command::new(ledgerful_bin)
         .arg("verify")
+        .arg("--scope")
+        .arg("full")
         .arg("--dry-run")
         .current_dir(root)
         .output()
@@ -247,6 +253,8 @@ fn test_verify_ambiguous_manager_evidence_runs_neutral_checks() {
 
     let output = Command::new(ledgerful_bin)
         .arg("verify")
+        .arg("--scope")
+        .arg("full")
         .arg("--dry-run")
         .current_dir(root)
         .output()

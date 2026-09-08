@@ -177,7 +177,16 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                 }
                 (Some(config_plan.clone()), config_plan.steps)
             } else {
-                let prediction = OutcomePredictor::predict(&mut ctx)?;
+                // 0288: fully-clean auto-policy dry-run skips OutcomePredictor
+                // (stale Temporal dump / optional-embed 10060). Do not set
+                // ctx.no_predict — that also gates storage/packet warnings.
+                // Manual --command and [[verify.steps]] never reach here.
+                let prediction =
+                    if dry_run && !working_tree_has_material_changes(layout.root.as_std_path()) {
+                        crate::verify::predict::PredictionResult::default()
+                    } else {
+                        OutcomePredictor::predict(&mut ctx)?
+                    };
                 let rules = crate::policy::load::load_rules(&layout)?;
 
                 let mut plan = match &ctx.packet {
@@ -1262,6 +1271,40 @@ mod execute_verify_json_gate_tests {
         assert!(
             gated_sites >= 2,
             "expected both config_plan and plan print_verify_plan sites; found {gated_sites}"
+        );
+    }
+
+    /// 0288 DoD-3: auto-policy dry-run on a fully-clean tree must skip
+    /// `OutcomePredictor::predict` via the material-changes gate — not by
+    /// assigning `ctx.no_predict`. Bayesian `extract_dataset` stays after.
+    #[test]
+    fn execute_verify_clean_dry_run_skips_predict_not_no_predict_flag() {
+        let src = include_str!("execute.rs");
+        let prod = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production body before unit tests");
+        assert!(
+            !prod.contains("ctx.no_predict ="),
+            "DoD-3: do not set ctx.no_predict (storage/packet warning gates)"
+        );
+        let predict_at = prod
+            .find("OutcomePredictor::predict(&mut ctx)")
+            .expect("predict call");
+        let window_start = predict_at.saturating_sub(280);
+        let gate = &prod[window_start..predict_at];
+        assert!(
+            gate.contains("dry_run")
+                && gate.contains("working_tree_has_material_changes")
+                && gate.contains("as_std_path()"),
+            "clean dry-run must gate predict with dry_run + as_std_path material check; nearby: {gate:?}"
+        );
+        let extract_at = prod
+            .find("probability::extract_dataset")
+            .expect("Bayesian extract_dataset");
+        assert!(
+            predict_at < extract_at,
+            "extract_dataset must remain after the predict arm"
         );
     }
 }
