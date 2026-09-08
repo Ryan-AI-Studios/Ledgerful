@@ -68,8 +68,12 @@ fn render_hotspot_trend_table_uses_premium_framing() {
         "expected premium table border (utf8 rounded or ascii +), got:\n{rendered}"
     );
     assert!(
-        rendered.contains("Timestamp") && rendered.contains("File") && rendered.contains("Score"),
-        "expected headers, got:\n{rendered}"
+        rendered.contains("Timestamp") && rendered.contains("File") && rendered.contains("Display"),
+        "expected Display header, got:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("Score"),
+        "bare Score header is the honesty bug: {rendered}"
     );
     assert!(
         rendered.contains("src/lib.rs"),
@@ -240,15 +244,19 @@ fn resolve_trend_mode_precedence_entity_over_all_over_summary() {
 }
 
 #[test]
-fn render_trend_summary_table_has_score_header_and_em_dash_prior() {
+fn render_trend_summary_table_has_display_header_and_em_dash_prior() {
     let summary = build_trend_summary(
         &[row("solo.rs", "2026-06-21T15:00:00+00:00", 1.0, "abc")],
         20,
     );
     let rendered = render_trend_summary_table(&summary);
     assert!(
-        rendered.contains("Score") && rendered.contains("Prior"),
+        rendered.contains("Display") && rendered.contains("Prior"),
         "expected summary headers, got:\n{rendered}"
+    );
+    assert!(
+        !rendered.contains("Score"),
+        "bare Score header is the honesty bug: {rendered}"
     );
     // Style-aware: Utf8 uses Δ / —; Ascii uses Delta / -
     assert!(

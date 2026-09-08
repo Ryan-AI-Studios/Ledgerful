@@ -3,6 +3,9 @@ use crate::output::table::{apply_table_style, resolve_table_style};
 use comfy_table::{Cell, Table};
 use owo_colors::{OwoColorize, Stream};
 
+/// Human table header for ln `displayScore` (0222). Not the 0–1 JSON `score`.
+pub const HOTSPOT_DISPLAY_HEADER: &str = "Display";
+
 pub fn print_hotspots(hotspots: &[Hotspot]) {
     println!(
         "\n{}",
@@ -10,7 +13,13 @@ pub fn print_hotspots(hotspots: &[Hotspot]) {
     );
     let mut table = Table::new();
     apply_table_style(&mut table, resolve_table_style());
-    table.set_header(vec!["Rank", "Score", "Freq", "Comp", "File Path"]);
+    table.set_header(vec![
+        "Rank",
+        HOTSPOT_DISPLAY_HEADER,
+        "Freq",
+        "Comp",
+        "File Path",
+    ]);
 
     for (i, h) in hotspots.iter().enumerate() {
         table.add_row(vec![
@@ -35,7 +44,14 @@ pub fn print_hotspots_table_with_centrality(hotspots: &[Hotspot]) {
     );
     let mut table = Table::new();
     apply_table_style(&mut table, resolve_table_style());
-    table.set_header(vec!["Rank", "Score", "Freq", "Comp", "Cent", "File Path"]);
+    table.set_header(vec![
+        "Rank",
+        HOTSPOT_DISPLAY_HEADER,
+        "Freq",
+        "Comp",
+        "Cent",
+        "File Path",
+    ]);
 
     for (i, h) in hotspots.iter().enumerate() {
         let cent = h

@@ -2,7 +2,7 @@ use super::emit::format_human;
 use super::packet::*;
 use super::*;
 use crate::config::model::Config;
-use crate::impact::packet::ImpactPacket;
+use crate::impact::packet::{Hotspot, ImpactPacket};
 use crate::state::layout::Layout;
 use crate::state::reports::{
     CleanTreeTombstone, LATEST_IMPACT_REPORT, LatestImpactReport, write_clean_tree_tombstone,
@@ -126,6 +126,50 @@ fn envelope_json_has_frozen_fields_no_warn_action() {
     assert!(v["doctor"].get("warnAction").is_none());
     assert!(v["ledger"]["collisions"].is_array());
     assert_eq!(v["hotspots"]["excludedTests"], true);
+}
+
+#[test]
+fn session_hotspot_file_from_copies_stored_display_score_not_recomputed_ln() {
+    let hotspot = Hotspot {
+        path: std::path::PathBuf::from("src\\lib.rs"),
+        score: 0.02,
+        display_score: 9.99,
+        complexity: 1,
+        frequency: 1.0,
+        centrality: None,
+    };
+    let file = session_hotspot_file_from(&hotspot);
+    assert_eq!(file.path, "src/lib.rs");
+    assert!((file.score - 0.02).abs() < 1e-5);
+    assert!(
+        (file.display_score - 9.99).abs() < 1e-5,
+        "must copy stored display_score, not normalize_score(score): {}",
+        file.display_score
+    );
+    assert!((file.score - file.display_score).abs() > 1.0);
+    let v = serde_json::to_value(&file).expect("serialize");
+    assert!(v.get("scoreUnit").is_none(), "no scoreUnit: {v}");
+    assert!(
+        v.get("displayScore").is_some(),
+        "additive displayScore: {v}"
+    );
+    let score = v["score"].as_f64().expect("score f64");
+    assert!(
+        (0.0..=1.0).contains(&score),
+        "session score is 0-1: {score}"
+    );
+}
+
+#[test]
+fn session_hotspot_file_deserializes_missing_display_score_to_zero() {
+    let file: SessionHotspotFile = serde_json::from_value(serde_json::json!({
+        "path": "a.rs",
+        "score": 0.02
+    }))
+    .expect("older envelope without displayScore");
+    assert_eq!(file.path, "a.rs");
+    assert!((file.score - 0.02).abs() < 1e-5);
+    assert_eq!(file.display_score, 0.0);
 }
 
 #[test]

@@ -1,6 +1,7 @@
 //! Session briefing envelope (track 0224).
 
 use crate::commands::change_context::ReadSetEntry;
+use crate::impact::packet::Hotspot;
 use crate::ledger::pending_entity_overlap::CollisionHit;
 use crate::state::reports::LatestImpactReport;
 use serde::{Deserialize, Serialize};
@@ -122,6 +123,19 @@ pub struct SessionHotspots {
 pub struct SessionHotspotFile {
     pub path: String,
     pub score: f32,
+    /// Human ln display. Additive; older envelopes without the key default to 0.0.
+    #[serde(default)]
+    pub display_score: f32,
+}
+
+/// Map a hotspot into the session briefing item. Copies stored `display_score`
+/// (do not recompute `normalize_score(score)` — centrality may have boosted it).
+pub(crate) fn session_hotspot_file_from(h: &Hotspot) -> SessionHotspotFile {
+    SessionHotspotFile {
+        path: h.path.to_string_lossy().replace('\\', "/"),
+        score: h.score,
+        display_score: h.display_score,
+    }
 }
 
 /// HEAD-validity of on-disk `latest-impact.json` (not `reports.rs` shape alone).

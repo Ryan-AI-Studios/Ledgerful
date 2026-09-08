@@ -2,6 +2,7 @@ use super::list::persist_hotspots_and_couplings;
 use crate::commands::hook_post_commit::insert_hotspot_trends_with_retry;
 use crate::impact::hotspots::{HotspotQuery, calculate_hotspots, normalize_score};
 use crate::impact::temporal::GixHistoryProvider;
+use crate::output::human::HOTSPOT_DISPLAY_HEADER;
 use crate::output::table::build_premium_table;
 use crate::state::storage::StorageManager;
 use crate::util::term::prompt_yes_no;
@@ -85,7 +86,7 @@ pub(super) fn format_trend_ts(ts: &str) -> String {
 
 /// Render full/entity hotspot trend rows as a premium-styled `comfy-table`.
 pub(super) fn render_hotspot_trend_table(rows: &[TrendRow]) -> String {
-    let mut table = build_premium_table(["Timestamp", "File", "Score"]);
+    let mut table = build_premium_table(["Timestamp", "File", HOTSPOT_DISPLAY_HEADER]);
     for row in rows {
         table.add_row(vec![
             format_trend_ts(&row.recorded_at),
@@ -112,7 +113,7 @@ pub(super) fn render_trend_summary_table(summary: &TrendSummary) -> String {
     };
     let mut table = build_premium_table([
         "File",
-        "Score",
+        HOTSPOT_DISPLAY_HEADER,
         "Prior",
         delta_hdr,
         "Samples",

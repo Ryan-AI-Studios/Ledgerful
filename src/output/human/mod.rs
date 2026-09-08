@@ -21,8 +21,8 @@ pub use doctor::{
     partition_doctor_findings_for_human, print_doctor_report, wsl_support_line,
 };
 pub use hotspots::{
-    print_hotspots, print_hotspots_table, print_hotspots_table_with_centrality,
-    print_semantic_hotspots,
+    HOTSPOT_DISPLAY_HEADER, print_hotspots, print_hotspots_table,
+    print_hotspots_table_with_centrality, print_semantic_hotspots,
 };
 pub use impact::{print_impact_brief, print_impact_summary, print_impact_summary_with_full};
 pub use scan::print_scan_summary;

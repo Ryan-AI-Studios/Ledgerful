@@ -300,8 +300,12 @@ fn test_trend_bootstrap_on_empty_history_creates_one_snapshot_and_reports_availa
         "expected a premium table border (utf8 ┼ or ascii +) in human output, got: {stdout_human}"
     );
     assert!(
-        stdout_human.contains("Score"),
-        "expected tabular 'Score' header in human output, got: {stdout_human}"
+        stdout_human.contains("Display"),
+        "expected tabular 'Display' header in human output, got: {stdout_human}"
+    );
+    assert!(
+        !stdout_human.contains("Score"),
+        "bare Score header is the honesty bug: {stdout_human}"
     );
 }
 
@@ -441,8 +445,12 @@ fn test_trend_bootstrap_succeeds_on_young_repo_with_insufficient_coupling_histor
         "expected a premium table border (utf8 ┼ or ascii +) in human output, got: {stdout_human}"
     );
     assert!(
-        stdout_human.contains("Score"),
-        "expected tabular 'Score' header in human output, got: {stdout_human}"
+        stdout_human.contains("Display"),
+        "expected tabular 'Display' header in human output, got: {stdout_human}"
+    );
+    assert!(
+        !stdout_human.contains("Score"),
+        "bare Score header is the honesty bug: {stdout_human}"
     );
 }
 
@@ -763,6 +771,14 @@ fn cli_hotspots_human_default_footer_when_omitted() {
     assert!(
         stdout.contains("test/example files omitted; --include tests"),
         "human default must print omit footer: {stdout}"
+    );
+    assert!(
+        stdout.contains("Display"),
+        "human list header is Display (ln), not Score: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Score"),
+        "bare Score header is the honesty bug: {stdout}"
     );
     assert!(
         !stdout.contains("tests/foo.rs"),
