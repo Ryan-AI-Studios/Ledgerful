@@ -294,6 +294,66 @@ fn session_pending_and_dirty_emits_collisions() {
 }
 
 #[test]
+fn session_watch_ignored_claude_file_is_not_dirty() {
+    let tmp = tempdir().unwrap();
+    let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+    let dir = tmp.path();
+    init_git_repo(dir);
+
+    fs::write(dir.join(".gitignore"), ".claude/\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", ".gitignore"])
+        .current_dir(dir)
+        .output()
+        .expect("git add gitignore");
+    std::process::Command::new("git")
+        .args(["commit", "-m", "gitignore"])
+        .current_dir(dir)
+        .output()
+        .expect("git commit gitignore");
+
+    // Untracked *file* named .claude (not a directory — a populated dir
+    // matching gitignore `.claude/` is ignored at the gix walk).
+    fs::write(dir.join(".claude"), "shim\n").unwrap();
+
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    let envelope = build_session(&layout, &storage, &Config::default()).unwrap();
+    assert_eq!(
+        envelope.git.dirty_count, 0,
+        "watch-ignored .claude file must not count as session dirt: {:?}",
+        envelope.git
+    );
+    assert!(
+        envelope.git.dirty_paths.is_empty(),
+        "dirtyPaths must be empty: {:?}",
+        envelope.git.dirty_paths
+    );
+
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(dir.join("src").join("foo.rs"), "pub fn x() {}\n").unwrap();
+    let envelope = build_session(&layout, &storage, &Config::default()).unwrap();
+    assert!(
+        envelope.git.dirty_count >= 1,
+        "src dirt must still count: {:?}",
+        envelope.git
+    );
+    assert!(
+        envelope.git.dirty_paths.iter().any(|p| p == "src/foo.rs"),
+        "dirtyPaths must contain src/foo.rs: {:?}",
+        envelope.git.dirty_paths
+    );
+    assert!(
+        !envelope.git.dirty_paths.iter().any(|p| p == ".claude"),
+        ".claude must stay omitted: {:?}",
+        envelope.git.dirty_paths
+    );
+    let _ = storage.shutdown();
+}
+
+#[test]
 fn session_max_files_passthrough_is_honest() {
     let tmp = tempdir().unwrap();
     let root = camino::Utf8Path::from_path(tmp.path()).unwrap();

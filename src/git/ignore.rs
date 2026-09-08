@@ -237,4 +237,51 @@ mod tests {
         assert_eq!(normalize_gitignore_pattern("/.ledgerful/"), ".ledgerful");
         assert_eq!(normalize_gitignore_pattern("/.ledgerful"), ".ledgerful");
     }
+
+    #[test]
+    fn filter_ignored_changes_drops_claude_keeps_src() {
+        use crate::config::model::Config;
+        let changes = vec![
+            FileChange {
+                path: std::path::PathBuf::from(".claude"),
+                change_type: ChangeType::Added,
+                is_staged: false,
+            },
+            FileChange {
+                path: std::path::PathBuf::from("src/lib.rs"),
+                change_type: ChangeType::Added,
+                is_staged: false,
+            },
+        ];
+        let patterns = Config::default().watch.ignore_patterns;
+        let filtered = filter_ignored_changes(changes, &patterns, true).expect("filter");
+        let paths: Vec<String> = filtered
+            .iter()
+            .map(|c| c.path.to_string_lossy().replace('\\', "/"))
+            .collect();
+        assert!(
+            !paths.iter().any(|p| p == ".claude"),
+            ".claude must be dropped: {paths:?}"
+        );
+        assert!(
+            paths.iter().any(|p| p == "src/lib.rs"),
+            "src/lib.rs must be kept: {paths:?}"
+        );
+    }
+
+    #[test]
+    fn filter_ignored_changes_invalid_glob_is_err() {
+        let changes = vec![FileChange {
+            path: std::path::PathBuf::from("src/lib.rs"),
+            change_type: ChangeType::Added,
+            is_staged: false,
+        }];
+        let err = filter_ignored_changes(changes, &["[".to_string()], true)
+            .expect_err("invalid glob must Err");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("Invalid glob pattern"),
+            "must fail on invalid glob: {msg}"
+        );
+    }
 }
