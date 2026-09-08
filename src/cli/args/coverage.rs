@@ -18,10 +18,8 @@ pub enum FederateCommands {
 }
 
 #[derive(Subcommand, Debug)]
-#[command(after_help = "\
-There is no `services list` inventory subcommand. Use `services diff` for boundary/topology changes. Service symbols remain searchable via `search` / graph surfaces.
-")]
 pub enum ServiceSubcommands {
-    /// Show service boundary changes and topology
+    /// List current service topology from the index (inventory; not a working-tree diff)
+    #[command(name = "list", visible_alias = "diff")]
     Diff(crate::commands::services_diff::ServicesDiffArgs),
 }

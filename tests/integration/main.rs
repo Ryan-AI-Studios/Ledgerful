@@ -31,6 +31,7 @@ mod cli_dogfood_0186;
 mod cli_dx1_prompts;
 mod cli_dx7_config_hints;
 mod cli_federate;
+mod cli_gate;
 mod cli_hook_repair;
 mod cli_hotspots;
 mod cli_hotspots_explain;

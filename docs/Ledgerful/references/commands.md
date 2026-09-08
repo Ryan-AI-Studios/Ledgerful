@@ -58,6 +58,18 @@ Global TOP CHURNED FILES (human + `--json` `churn[]`) are unique **file paths**.
 
 Read-only inventory of six advanced surfaces (ready / empty / gated). Alias: `tour`. Root `--help` statically omits `services`, `deploy`, and `observability` (live status is this inventory; help does not un-hide when a surface becomes ready). Those commands stay callable (`services --help`, `deploy --help`, `observability coverage` / `diff`). Do not `config set coverage.enabled=true` from help. `--json`: schemaVersion 1 object `kind: "surfaces"` (0185 freeze).
 
+## `ledgerful ci list`
+
+Indexed CI-gate catalog (not a working-tree workflow diff). Alias: `diff`. Bare `ci` is the same inventory. `--json`: schemaVersion 1 object, collection `gates` (0207/0214 freeze).
+
+## `ledgerful services list`
+
+Index topology inventory (gated empty when `coverage.enabled` is false). Alias: `diff`. Keep `hide` on root `--help` (0289). `--json`: schemaVersion 1 object, collection `results`; gated empty keeps `emptyReason: "disabledByConfig"`.
+
+## `ledgerful gate mode`
+
+Show prints `Gate mode: <observe|enforce>` then a warn/block + how-to-set line. Set with a positional: `ledgerful gate mode enforce`. Do not flip EXEC `gate.mode` unattended.
+
 ## `ledgerful security boundaries`
 
 Operator `@id` → indexed endpoint (not a live PDP; daemon auth is Bearer). `--verbose` after this subcommand: URN / authorization-node table (does **not** enable tracing). `-v` after this subcommand is a usage error (clap same-id skip). Leading `ledgerful -v security boundaries` is logging, not the URN table. `--json`: unwrapped object + additive `pdp:false`, no `schemaVersion` (0207 freeze); `security impact` (0208) is a different command.

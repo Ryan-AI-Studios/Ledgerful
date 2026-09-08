@@ -42,7 +42,7 @@ pub(super) fn federate_or_default(command: Option<FederateCommands>) -> Federate
     command.unwrap_or(FederateCommands::Status)
 }
 
-/// Bare `services` → `diff` with default flags (soft optional 0179).
+/// Bare `services` → list (alias: diff) with default flags (soft optional 0179).
 pub(super) fn services_or_default(command: Option<ServiceSubcommands>) -> ServiceSubcommands {
     command.unwrap_or(ServiceSubcommands::Diff(
         crate::commands::services_diff::ServicesDiffArgs::default(),
@@ -86,7 +86,7 @@ pub(super) fn dispatch_gate(command: GateCommands) -> Result<()> {
                 println!("Gate mode changed: {} → {}", old_mode, mode);
             } else {
                 let config = crate::config::load::load_config(&layout).unwrap_or_default();
-                println!("Gate mode: {}", config.gate.mode);
+                crate::commands::gate::print_gate_mode_show(&config.gate.mode);
             }
             Ok(())
         }

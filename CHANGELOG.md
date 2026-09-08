@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **`ci`/`services` inventory is `list` (alias `diff`); `gate mode` show says warn/block (0294):**
+  Clap documented name for the indexed CI-gate and service-topology
+  catalogs is `list`; `diff` stays a visible alias. `services` about
+  no longer claims “boundary changes”. `ledgerful gate mode` (show)
+  still prints `Gate mode: <enum>` then a second line: observe warns
+  / enforce blocks and how to set. JSON envelopes are unchanged.
+
 - **Default `hotspots` omit markdown; `--include docs` is a frequency lane (0293):**
   CLI `hotspots` / `hotspots --json` drop `.md` from the candidate map
   before `max_freq` / `max_comp` (same reason as 0222 tests).

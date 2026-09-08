@@ -163,7 +163,7 @@ or add content. Alias: tour."
         command: Option<FederateCommands>,
     },
     /// Service boundary and topology commands
-    #[command(hide = true, after_help = "Default when omitted: diff.")]
+    #[command(hide = true, after_help = "Default when omitted: list (alias: diff).")]
     Services {
         #[command(subcommand)]
         command: Option<ServiceSubcommands>,

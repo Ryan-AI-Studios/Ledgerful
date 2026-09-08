@@ -203,3 +203,34 @@ fn ci_diff_json_is_object_envelope() {
     let tmp = init_indexed_repo();
     assert_ci_json_envelope(tmp.path(), "diff");
 }
+
+fn assert_services_json_envelope(root: &std::path::Path, sub: &str) {
+    let (stdout, stderr, code) = run_cli(root, &["services", sub, "--json"]);
+    assert_eq!(code, 0, "services {sub} --json; stderr={stderr}");
+    let v = parse_object(&stdout, &format!("services {sub} --json"));
+    let results = v["results"]
+        .as_array()
+        .unwrap_or_else(|| panic!("services {sub} --json must expose results[], got: {stdout}"));
+    assert_eq!(
+        v["resultCount"].as_u64().unwrap_or(u64::MAX),
+        results.len() as u64,
+        "services {sub} --json resultCount must match results length: {stdout}"
+    );
+    assert_eq!(
+        v["emptyReason"].as_str(),
+        Some("disabledByConfig"),
+        "gated empty catalog must keep emptyReason disabledByConfig: {stdout}"
+    );
+}
+
+#[test]
+fn services_diff_json_is_object_envelope() {
+    let tmp = init_indexed_repo();
+    assert_services_json_envelope(tmp.path(), "diff");
+}
+
+#[test]
+fn services_list_json_is_object_envelope() {
+    let tmp = init_indexed_repo();
+    assert_services_json_envelope(tmp.path(), "list");
+}
