@@ -115,14 +115,21 @@ pub struct HotspotQuery {
     /// `max_freq` / `max_comp`. Default false so MCP, `/api/hotspots`, packet
     /// enrich, hooks, and other existing callers stay unfiltered.
     pub exclude_test_paths: bool,
+    /// When true, drop markdown (`.md`) paths from the candidate map before
+    /// `max_freq` / `max_comp`. Default false so non-CLI callers stay unfiltered.
+    pub exclude_docs_paths: bool,
+    /// When true, retain markdown paths only and rank by `f_norm` (`complexity`
+    /// forced to 0). CLI `--include docs`. Default false.
+    pub docs_frequency_lane: bool,
 }
 
 /// Ranked hotspot list plus how many candidate paths were omitted when
-/// `HotspotQuery::exclude_test_paths` is set (0 otherwise).
+/// `HotspotQuery::exclude_test_paths` / `exclude_docs_paths` is set (0 otherwise).
 #[derive(Debug, Clone, Default)]
 pub struct HotspotCalculation {
     pub hotspots: Vec<Hotspot>,
     pub omitted_test_paths: usize,
+    pub omitted_docs_paths: usize,
 }
 
 /// Directory components excluded in addition to topology `TEST_PATTERNS`.
@@ -171,6 +178,18 @@ pub(crate) fn is_excluded_hotspot_path(path: &str) -> bool {
             .iter()
             .any(|suffix| filename.ends_with(suffix))
     })
+}
+
+/// Whether `path` is markdown for CLI hotspot docs exclusion / `--include docs`.
+///
+/// Slash-normalized, case-insensitive. True iff the last path component ends
+/// with `.md`. Does not treat `docs/` as a directory match for non-markdown.
+pub(crate) fn is_docs_hotspot_path(path: &str) -> bool {
+    let lower = path.replace('\\', "/").to_ascii_lowercase();
+    lower
+        .rsplit('/')
+        .next()
+        .is_some_and(|filename| filename.ends_with(".md"))
 }
 
 pub fn calculate_hotspots(
@@ -246,15 +265,30 @@ pub fn calculate_hotspots_detailed(
     }
 
     let mut omitted_test_paths = 0;
-    if query.exclude_test_paths {
-        frequency_map.retain(|path, _| {
-            if is_excluded_hotspot_path(path.as_str()) {
-                omitted_test_paths += 1;
-                false
-            } else {
-                true
-            }
-        });
+    let mut omitted_docs_paths = 0;
+    if query.docs_frequency_lane {
+        frequency_map.retain(|path, _| is_docs_hotspot_path(path.as_str()));
+    } else {
+        if query.exclude_test_paths {
+            frequency_map.retain(|path, _| {
+                if is_excluded_hotspot_path(path.as_str()) {
+                    omitted_test_paths += 1;
+                    false
+                } else {
+                    true
+                }
+            });
+        }
+        if query.exclude_docs_paths {
+            frequency_map.retain(|path, _| {
+                if is_docs_hotspot_path(path.as_str()) {
+                    omitted_docs_paths += 1;
+                    false
+                } else {
+                    true
+                }
+            });
+        }
     }
 
     let file_paths: Vec<String> = frequency_map.keys().map(|p| p.to_string()).collect();
@@ -278,15 +312,24 @@ pub fn calculate_hotspots_detailed(
 
     for (path, freq) in frequency_map {
         let path_str = path.to_string();
-        let complexity = file_complexities.get(&path_str).cloned().unwrap_or(0);
+        let complexity = if query.docs_frequency_lane {
+            0
+        } else {
+            file_complexities.get(&path_str).cloned().unwrap_or(0)
+        };
 
         // Scoring:
         // Normalized Frequency (0-1) * Normalized Complexity (0-1)
         // Multiplication surfaces the "worst of both worlds" more effectively than addition.
+        // `--include docs` ranks markdown by frequency only (`f_norm`); complexity is 0.
         let f_norm = freq as f32 / max_freq;
         let c_norm = complexity as f32 / max_comp;
 
-        let score = f_norm * c_norm;
+        let score = if query.docs_frequency_lane {
+            f_norm
+        } else {
+            f_norm * c_norm
+        };
 
         let display_score = normalize_score(score as f64) as f32;
         hotspots.push(Hotspot {
@@ -315,6 +358,7 @@ pub fn calculate_hotspots_detailed(
     Ok(HotspotCalculation {
         hotspots,
         omitted_test_paths,
+        omitted_docs_paths,
     })
 }
 
@@ -597,6 +641,30 @@ mod tests {
     #[test]
     fn hotspot_query_default_does_not_exclude_test_paths() {
         assert!(!HotspotQuery::default().exclude_test_paths);
+    }
+
+    #[test]
+    fn hotspot_query_default_does_not_exclude_docs_paths() {
+        assert!(!HotspotQuery::default().exclude_docs_paths);
+        assert!(!HotspotQuery::default().docs_frequency_lane);
+    }
+
+    #[test]
+    fn is_docs_hotspot_path_markdown_and_changelog() {
+        assert!(is_docs_hotspot_path("CHANGELOG.md"));
+        assert!(is_docs_hotspot_path("changelog.md"));
+        assert!(is_docs_hotspot_path("docs/guide.md"));
+        assert!(is_docs_hotspot_path("README.md"));
+        assert!(is_docs_hotspot_path("AGENTS.md"));
+        assert!(is_docs_hotspot_path("src/notes.md"));
+        assert!(is_docs_hotspot_path(r"docs\guide.md"));
+        assert!(!is_docs_hotspot_path("src/lib.rs"));
+        assert!(!is_docs_hotspot_path("tests/foo.rs"));
+        assert!(!is_docs_hotspot_path("docs/api/openapi.json"));
+        assert!(!is_docs_hotspot_path("Cargo.toml"));
+        assert!(!is_docs_hotspot_path("src/notes.md.bak"));
+        assert!(!is_docs_hotspot_path("src/format_md.rs"));
+        assert!(!is_docs_hotspot_path("crates/docs.md/lib.rs"));
     }
 
     #[test]

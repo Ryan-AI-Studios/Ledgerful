@@ -5,6 +5,8 @@ use clap::{Args, Subcommand, ValueEnum};
 pub enum HotspotIncludeScope {
     /// Tests, examples, and benches (audit view; default CLI list omits these)
     Tests,
+    /// Markdown / CHANGELOG ranked by frequency (complexity is 0)
+    Docs,
 }
 
 #[derive(Args, Debug)]
@@ -56,7 +58,7 @@ pub struct HotspotArgs {
     #[arg(long)]
     pub snapshot: bool,
 
-    /// Include test, example, and bench paths (default CLI list omits them)
+    /// Include tests/examples/benches, or markdown (default CLI list omits both)
     #[arg(long, value_enum, value_name = "SCOPE")]
     pub include: Option<HotspotIncludeScope>,
 }

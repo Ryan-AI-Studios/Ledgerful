@@ -1,5 +1,5 @@
 use super::explain::complexity_for_entity_path;
-use super::list::{omitted_hotspots_footer, wrap_hotspots_list_json};
+use super::list::{omitted_docs_footer, omitted_hotspots_footer, wrap_hotspots_list_json};
 use super::trend::{
     TrendMode, TrendRow, build_trend_summary, compute_history_available, format_trend_ts,
     render_hotspot_trend_table, render_trend_summary_table, resolve_trend_mode, trend_file_json,
@@ -29,6 +29,19 @@ fn omitted_hotspots_footer_n_names_include_tests_flag() {
 }
 
 #[test]
+fn omitted_docs_footer_zero_is_none() {
+    assert_eq!(omitted_docs_footer(0), None);
+}
+
+#[test]
+fn omitted_docs_footer_n_names_include_docs_flag() {
+    assert_eq!(
+        omitted_docs_footer(2).as_deref(),
+        Some("2 documentation files omitted; --include docs")
+    );
+}
+
+#[test]
 fn wrap_hotspots_list_json_truncates_and_echoes_limit() {
     let items: Vec<serde_json::Value> = (0..5).map(|i| serde_json::json!({ "i": i })).collect();
     let output = wrap_hotspots_list_json(items, 3);
@@ -39,6 +52,14 @@ fn wrap_hotspots_list_json_truncates_and_echoes_limit() {
         output.get("emptyReason").is_none(),
         "envelope must not invent emptyReason: {output}"
     );
+}
+
+#[test]
+fn wrap_hotspots_list_json_empty_files_is_schema_version_1() {
+    let output = wrap_hotspots_list_json(Vec::<serde_json::Value>::new(), 10);
+    assert_eq!(output["schemaVersion"], 1);
+    assert_eq!(output["limit"], 10);
+    assert_eq!(output["files"].as_array().map(Vec::len), Some(0));
 }
 
 #[test]

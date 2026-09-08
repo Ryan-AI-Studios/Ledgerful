@@ -46,6 +46,10 @@ flag is `--format json` (not `--json`). `passed` is no-violations. Synthesized
 + idle (no bound verify) is human `IDLE (synthesized; not a merge gate)` with
 JSON `idle: true`; it is not a merge-gate pass. Observe still exit 0.
 
+## `ledgerful hotspots`
+
+Default list omits tests/examples/benches **and** `.md`. `--include tests` is the unfiltered `f×c` audit view. `--include docs` ranks markdown by frequency (`score` = `f_norm`, `complexity` 0). Pin JSON `score` (0–1), not `displayScore`. `--include docs --snapshot` is refused (`hotspot_history` stores `f×c`). MCP / `/api/hotspots` stay unfiltered.
+
 ## `ledgerful audit`
 
 Global TOP CHURNED FILES (human + `--json` `churn[]`) are unique **file paths**. ` (+N more)` labels collapse to the first path; directories and track slugs are dropped unless a TX `snapshot_id` expands via `changed_files`. `count` is distinct LOCAL ledger TXs. JSON is a bare `ProjectAuditReport` object (**no** `schemaVersion`). Velocity / CI trend / recent TXs are unchanged. Entity-scoped `audit <path>` is a different history view.

@@ -58,7 +58,11 @@ pub(super) fn execute_hotspots_list(
     }
 
     let history_provider = GixHistoryProvider::new(repo);
-    let exclude_test_paths = !matches!(args.include, Some(HotspotIncludeScope::Tests));
+    let (exclude_test_paths, exclude_docs_paths, docs_frequency_lane) = match args.include {
+        Some(HotspotIncludeScope::Tests) => (false, false, false),
+        Some(HotspotIncludeScope::Docs) => (false, false, true),
+        None => (true, true, false),
+    };
     let query = HotspotQuery {
         limit: args.limit.unwrap_or(config.hotspots.limit),
         commits: args.commits.unwrap_or(config.hotspots.max_commits),
@@ -67,6 +71,8 @@ pub(super) fn execute_hotspots_list(
         dir_filter: args.entity.clone(),
         centrality: args.centrality,
         exclude_test_paths,
+        exclude_docs_paths,
+        docs_frequency_lane,
         ..Default::default()
     };
 
@@ -74,6 +80,11 @@ pub(super) fn execute_hotspots_list(
     let hotspots = calculated.hotspots;
 
     if args.snapshot {
+        if matches!(args.include, Some(HotspotIncludeScope::Docs)) {
+            return Err(miette::miette!(
+                "--snapshot cannot be combined with --include docs (docs lane score is frequency-only; hotspot_history stores f×c)"
+            ));
+        }
         let couplings_persisted = persist_hotspots_and_couplings(storage, repo, &hotspots, config)?;
         if !args.json {
             if couplings_persisted {
@@ -91,17 +102,30 @@ pub(super) fn execute_hotspots_list(
         crate::output::json::emit(&output).map_err(|e| miette::miette!("{}", e))?;
     } else if args.centrality {
         crate::output::human::print_hotspots_table_with_centrality(&hotspots);
-        if let Some(footer) = omitted_hotspots_footer(calculated.omitted_test_paths) {
-            println!("{footer}");
-        }
+        print_omit_footers(
+            calculated.omitted_test_paths,
+            calculated.omitted_docs_paths,
+            docs_frequency_lane,
+        );
     } else {
         crate::output::human::print_hotspots_table(&hotspots);
-        if let Some(footer) = omitted_hotspots_footer(calculated.omitted_test_paths) {
-            println!("{footer}");
-        }
+        print_omit_footers(
+            calculated.omitted_test_paths,
+            calculated.omitted_docs_paths,
+            docs_frequency_lane,
+        );
     }
 
     Ok(())
+}
+
+fn print_omit_footers(omitted_tests: usize, omitted_docs: usize, docs_lane: bool) {
+    if !docs_lane && let Some(footer) = omitted_hotspots_footer(omitted_tests) {
+        println!("{footer}");
+    }
+    if let Some(footer) = omitted_docs_footer(omitted_docs) {
+        println!("{footer}");
+    }
 }
 
 pub(super) fn omitted_hotspots_footer(omitted: usize) -> Option<String> {
@@ -110,6 +134,16 @@ pub(super) fn omitted_hotspots_footer(omitted: usize) -> Option<String> {
     } else {
         Some(format!(
             "{omitted} test/example files omitted; --include tests"
+        ))
+    }
+}
+
+pub(super) fn omitted_docs_footer(omitted: usize) -> Option<String> {
+    if omitted == 0 {
+        None
+    } else {
+        Some(format!(
+            "{omitted} documentation files omitted; --include docs"
         ))
     }
 }

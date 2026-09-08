@@ -31,9 +31,15 @@ fn machine_mode_selected_for_json_flags() {
         }
         other => panic!("expected hotspots, got {other:?}"),
     }
+    match parse(&["hotspots", "--include", "docs"]) {
+        Commands::Hotspots { args } => {
+            assert_eq!(args.include, Some(crate::cli::HotspotIncludeScope::Docs));
+        }
+        other => panic!("expected hotspots, got {other:?}"),
+    }
     assert!(
         Cli::try_parse_from(["ledgerful", "hotspots", "--include", "nope"]).is_err(),
-        "--include must only accept tests"
+        "--include must only accept tests or docs"
     );
     assert!(parse(&["symbols", "--json"]).is_machine_output());
     assert!(!parse(&["symbols"]).is_machine_output());
