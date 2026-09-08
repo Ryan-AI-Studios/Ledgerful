@@ -44,7 +44,7 @@ on stderr.
 | `endpoints --json` | yes | yes | schemaVersion 1 object; collection `results` (0207). MCP `endpoints_changed` re-execs CLI and rides this envelope |
 | `symbols --json` | yes (0163) | yes | schemaVersion **1** inventory; path/changed/kind/pub filters; COUNT-backed `totalMatching`; optional `indexStatus`; see schema below |
 | `data-models list --json` | yes | yes | schemaVersion 1 object; collection `models` (0207); item `file_path` stays snake (0155); one row per logical model identity |
-| `ci diff --json` / `ci list --json` | yes | yes | schemaVersion 1 object; collection `gates` (0207). Empty catalog is `gates: []`, `resultCount: 0`, no fake `emptyReason` |
+| `ci list --json` / `ci diff --json` (alias) | yes | yes | schemaVersion 1 object; collection `gates` (0207). `list` is the documented name; `diff` is a visible alias. Empty catalog is `gates: []`, `resultCount: 0`, no fake `emptyReason` |
 | `policy check --format json` | via `--format json` (not `--json`) | yes | schemaVersion 1 object; `passed` is no-violations; `policySource`; additive `notes` omit-empty; additive `idle: true` omit-false (synthesized idle is not a merge-gate pass). Human Result is `IDLE (synthesized; not a merge gate)` in that case. |
 | `config schema --json` | yes | yes | schemaVersion 1 object; collection `results` (0207). Empty keeps `emptyReason`/`message` |
 | `dependencies list --json` | yes (0153) | yes | schemaVersion **1** envelope; `mode`: `direct` (default) \| `all`; live Cargo.toml+lock — not Cozo; see schema below |
@@ -712,7 +712,8 @@ field names stay command-specific (`results` / `impacted` / `files` /
 | `data-models list --json` | `models` | Item `file_path` stays snake |
 | `data-models impact --json` | `impacted` | |
 | `hotspots --json` (list + `--semantic`) | `files` | List and `--semantic` echo `limit`. No `truncated` (no extra overfetch). CLI default omits test/example/bench paths; `--include tests` is the unfiltered audit view (0222). CLI default also omits `.md`; `--include docs` ranks markdown by frequency (`score` = `f_norm`, `complexity` 0). Default and `--include tests` item `score` is 0–1 (`f_norm × c_norm`); `displayScore` is `ln_1p(score × 1000)` for humans. AI-T252 must pin `score`, not `displayScore`. No `scoreUnit` key. |
-| `ci diff --json` / `ci list --json` | `gates` | Empty catalog: `gates: []`, `resultCount: 0`, **no** `emptyReason` |
+| `ci list --json` / `ci diff --json` (alias) | `gates` | Empty catalog: `gates: []`, `resultCount: 0`, **no** `emptyReason`. `list` is primary. |
+| `services list --json` / `services diff --json` (alias) | `results` | Gated empty keeps `emptyReason: "disabledByConfig"` + `message`. `list` is primary. |
 | `tests --json` (mapped) | `mappings` | Additive `resolvedPath` (omit when none); empty arms use the helper. Missing entity (no `--entity` / positional) is a usage error (exit 2, empty stdout), not an empty `mappings` envelope. |
 
 Empty helper arm: `emptyReason` + `message` present. Populated helper arm:

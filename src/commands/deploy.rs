@@ -252,14 +252,14 @@ pub fn deploy_empty_state_message(config: &crate::config::model::Config) -> (Emp
 }
 
 #[derive(Args, Debug)]
-#[command(after_help = "Default when omitted: diff.")]
+#[command(after_help = "Default when omitted: list (alias: diff).")]
 pub struct CiArgs {
     #[command(subcommand)]
     pub command: Option<CiSubcommands>,
 }
 
 impl CiArgs {
-    /// Resolve bare `ci` to read-only diff with default flags.
+    /// Resolve bare `ci` to read-only list (alias: diff) with default flags.
     pub fn command_or_default(self) -> CiSubcommands {
         self.command.unwrap_or(CiSubcommands::Diff { json: false })
     }
@@ -268,7 +268,7 @@ impl CiArgs {
 #[derive(Subcommand, Debug)]
 pub enum CiSubcommands {
     /// List indexed CI gates (inventory; not a working-tree diff)
-    #[command(visible_alias = "list")]
+    #[command(name = "list", visible_alias = "diff")]
     Diff {
         /// Output as JSON
         #[arg(long)]

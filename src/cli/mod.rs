@@ -512,6 +512,125 @@ mod tests {
     }
 
     #[test]
+    fn ci_list_and_diff_parse_as_diff_variant() {
+        for argv in [["ledgerful", "ci", "list"], ["ledgerful", "ci", "diff"]] {
+            let cli = Cli::try_parse_from(argv)
+                .unwrap_or_else(|e| panic!("ci {} must parse: {e}", argv[2]));
+            match cli.command {
+                Commands::Ci(args) => match args.command {
+                    Some(crate::commands::deploy::CiSubcommands::Diff { .. }) => {}
+                    other => panic!("expected Some(Diff) for ci {}, got {other:?}", argv[2]),
+                },
+                other => panic!("expected Ci for ci {}, got {other:?}", argv[2]),
+            }
+        }
+    }
+
+    #[test]
+    fn services_list_and_diff_parse_as_diff_variant() {
+        for argv in [
+            ["ledgerful", "services", "list"],
+            ["ledgerful", "services", "diff"],
+        ] {
+            let cli = Cli::try_parse_from(argv)
+                .unwrap_or_else(|e| panic!("services {} must parse: {e}", argv[2]));
+            match cli.command {
+                Commands::Services {
+                    command: Some(ServiceSubcommands::Diff(_)),
+                } => {}
+                other => panic!(
+                    "expected Services {{ Some(Diff) }} for services {}, got {other:?}",
+                    argv[2]
+                ),
+            }
+        }
+    }
+
+    fn write_subcommand_help(name: &str) -> String {
+        on_large_stack({
+            let name = name.to_string();
+            move || {
+                let mut cmd = Cli::command();
+                let sub = cmd
+                    .find_subcommand_mut(&name)
+                    .unwrap_or_else(|| panic!("missing subcommand {name}"));
+                let mut buf = Vec::new();
+                sub.write_help(&mut buf).unwrap();
+                String::from_utf8(buf).unwrap()
+            }
+        })
+    }
+
+    fn first_listed_subcommand(help: &str) -> &str {
+        let block = root_help_commands_block(help);
+        for line in block.lines() {
+            let Some(name) = root_help_command_row_name(line) else {
+                continue;
+            };
+            if name.ends_with(':') {
+                continue;
+            }
+            return name;
+        }
+        panic!("no subcommand row in Commands block; help={help}")
+    }
+
+    #[test]
+    fn ci_list_help_leads_with_list_alias_diff() {
+        let help = write_subcommand_help("ci");
+        assert_eq!(
+            first_listed_subcommand(&help),
+            "list",
+            "ci --help Commands row must be list; got {help}"
+        );
+        let commands = root_help_commands_block(&help);
+        assert!(
+            commands.contains("diff"),
+            "ci --help must show visible alias diff; commands={commands:?}"
+        );
+        on_large_stack(|| {
+            let list_help = Cli::try_parse_from(["ledgerful", "ci", "list", "--help"])
+                .expect_err("ci list --help should DisplayHelp")
+                .to_string();
+            let usage = list_help
+                .lines()
+                .find(|line| line.starts_with("Usage:"))
+                .unwrap_or_else(|| panic!("ci list --help must have Usage:; got {list_help}"));
+            assert!(
+                usage.contains("list"),
+                "canonical Usage must name list; got {usage}"
+            );
+            assert!(
+                !usage.contains("diff"),
+                "canonical Usage must not name diff; got {usage}"
+            );
+        });
+    }
+
+    #[test]
+    fn services_list_help_is_inventory_not_changes() {
+        let help = write_subcommand_help("services");
+        assert_eq!(
+            first_listed_subcommand(&help),
+            "list",
+            "services --help Commands row must be list; got {help}"
+        );
+        let commands = root_help_commands_block(&help);
+        assert!(
+            commands.contains("diff"),
+            "services --help must show visible alias diff; commands={commands:?}"
+        );
+        assert!(
+            !help.contains("boundary changes"),
+            "services --help must not claim boundary changes; got {help}"
+        );
+        assert!(
+            help.contains("inventory"),
+            "services --help must say inventory; got {help}"
+        );
+    }
+
+    #[test]
     fn clap_release_defaults_to_pins() {
         let cli = Cli::try_parse_from(["ledgerful", "release"]).expect("bare release parses");
         match &cli.command {
