@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Session dirt omits watch-ignored harness junctions (0291):**
+  `ledgerful session --json` `git.dirtyPaths` / `dirtyCount` now apply
+  `watch.ignore_patterns` the same way change-context does. `.claude` /
+  `.agents` skill junctions are not product dirt; untracked or modified
+  `src/**` still counts. schemaVersion 1 is unchanged.
+
 - **Root `--help` omits gated/empty surfaces (0289):**
   `ledgerful --help` no longer lists `services`, `deploy`, or
   `observability` as Daily 5 peers. They stay callable. After_help

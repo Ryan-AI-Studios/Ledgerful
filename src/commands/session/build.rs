@@ -30,7 +30,7 @@ pub fn build_session(
     let project_root = layout.root.as_std_path();
     let work_root = layout.root.to_string();
 
-    let (branch, head, dirty_paths_all, git_warnings) = collect_git(project_root);
+    let (branch, head, dirty_paths_all, git_warnings) = collect_git(project_root, config);
     let (dirty_paths, dirty_count) = cap_dirty_paths(dirty_paths_all.clone());
 
     let opts = ChangeContextOpts {
@@ -131,7 +131,7 @@ fn session_doctor(section: &DoctorSection) -> SessionDoctor {
     }
 }
 
-fn collect_git(project_root: &Path) -> (String, String, Vec<String>, Vec<String>) {
+fn collect_git(project_root: &Path, config: &Config) -> (String, String, Vec<String>, Vec<String>) {
     let mut warnings = Vec::new();
     let repo = match open_repo(project_root) {
         Ok(r) => r,
@@ -149,6 +149,17 @@ fn collect_git(project_root: &Path) -> (String, String, Vec<String>, Vec<String>
     };
     let dirty = match get_repo_status(&repo) {
         Ok(changes) => {
+            let changes = match crate::git::ignore::filter_ignored_changes(
+                changes.clone(),
+                &config.watch.ignore_patterns,
+                true,
+            ) {
+                Ok(filtered) => filtered,
+                Err(e) => {
+                    warnings.push(format!("git ignore filter failed: {e}"));
+                    changes
+                }
+            };
             let mut paths: Vec<String> = changes
                 .into_iter()
                 .map(|c| c.path.to_string_lossy().replace('\\', "/"))

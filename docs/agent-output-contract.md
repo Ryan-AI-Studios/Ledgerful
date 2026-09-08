@@ -1129,7 +1129,7 @@ rewrite `latest-impact.json`. CLI-only (MCP registry is not one-file additive).
 |---|---|
 | `schemaVersion` | number **1** |
 | `kind` | `"session"` |
-| `git.dirtyPaths` | cap 5; `dirtyCount` is the true total |
+| `git.dirtyPaths` | cap 5; `dirtyCount` is the true total. Omits `watch.ignore_patterns` (same set as change-context); harness junctions such as `.claude` / `.agents` are not product dirt |
 | `ledger.collisions` | 0223 `pending_entity_overlap` vs dirty paths; `[]` when none. **Not** on status v1 |
 | `doctor` | sidecar `block`/`warn`/`info` + `readyForPublish`. **No** `warnAction`. Per-finding `sessionPriority` / `acknowledged` stay on `doctor --json` |
 | `changeContext.readSetCapped` / `readSetTotalCandidates` | pass-through from `build_change_context` with `max_files=5` (not a post-slice of a 20-file packet) |
