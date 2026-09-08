@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Optional embed miss is fail-fast (0285):** `doctor --json` no longer
+  retries a down embedding URL or prints `ERROR ledgerful::embed::client`
+  (Windows TCP 10060). Finding `embed-unreachable` stays optional warn;
+  `readyForPublish` and schemaVersion 1 are unchanged. Verify prediction
+  skips a TCP-closed embed endpoint (`embedding_url`, not completions
+  `base_url`) and does not use a 6s ureq budget.
+
 - **Prospective `--paths` public-API presence (0284):**
   `change-context` / `impact` / `scan --impact` `--paths` no longer treat
   public types in a seeded file as `Public symbol modified` (30×N → HIGH).

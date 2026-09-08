@@ -32,6 +32,28 @@ pub fn is_embedding_backend_configured(config: &LocalModelConfig) -> bool {
     has_base || has_embed_url
 }
 
+/// Embed HTTP endpoint: `embedding_url` when set, else `base_url`.
+/// Completions `base_url` (8081) is not the embed port when `embedding_url` (8083) is set.
+pub fn embedding_endpoint_url(config: &LocalModelConfig) -> Option<&str> {
+    if !is_embedding_backend_configured(config) {
+        return None;
+    }
+    let url = config
+        .embedding_url
+        .as_deref()
+        .unwrap_or(&config.base_url)
+        .trim();
+    if url.is_empty() { None } else { Some(url) }
+}
+
+/// Optional embed callers skip HTTP when the embed URL is unset or TCP-closed (0285).
+pub fn optional_embed_tcp_down(config: &LocalModelConfig) -> bool {
+    match embedding_endpoint_url(config) {
+        None => true,
+        Some(url) => !crate::util::network::is_url_reachable(url, Duration::from_millis(500)),
+    }
+}
+
 pub fn check_local_model(config: &LocalModelConfig) -> Result<Dimensions, String> {
     if !is_embedding_backend_configured(config) {
         return Ok(Dimensions {
@@ -54,7 +76,7 @@ pub fn check_local_model(config: &LocalModelConfig) -> Result<Dimensions, String
     let vectors = match embed_batch(url, &config.embedding_model, &["ping"], config.timeout_secs) {
         Ok(v) => v,
         Err(e) => {
-            tracing::error!("Probe failed at {}: {}", url, e);
+            tracing::debug!("Probe failed at {}: {}", url, e);
             return Err(e);
         }
     };
@@ -285,8 +307,78 @@ mod tests {
             timeout_secs: 1,
             ..LocalModelConfig::default()
         };
+        let start = std::time::Instant::now();
         let result = check_local_model(&config);
         assert!(result.is_err());
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "TCP-closed embed probe must fail in <1s, took {:?}",
+            start.elapsed()
+        );
+    }
+
+    #[test]
+    fn check_local_model_http_fail_does_not_emit_error() {
+        use std::sync::atomic::{AtomicBool, Ordering};
+        use tracing::Level;
+        use tracing_subscriber::Layer;
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::util::SubscriberInitExt;
+
+        struct ErrorFlag(std::sync::Arc<AtomicBool>);
+        impl<S: tracing::Subscriber> Layer<S> for ErrorFlag {
+            fn on_event(
+                &self,
+                event: &tracing::Event<'_>,
+                _ctx: tracing_subscriber::layer::Context<'_, S>,
+            ) {
+                if *event.metadata().level() == Level::ERROR {
+                    self.0.store(true, Ordering::SeqCst);
+                }
+            }
+        }
+
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/v1/embeddings");
+            then.status(500)
+                .header("Content-Type", "application/json")
+                .body("nope");
+        });
+
+        let saw_error = std::sync::Arc::new(AtomicBool::new(false));
+        let _guard = tracing_subscriber::registry()
+            .with(ErrorFlag(std::sync::Arc::clone(&saw_error)))
+            .set_default();
+
+        let config = LocalModelConfig {
+            base_url: server.base_url(),
+            embedding_url: None,
+            generation_url: None,
+            embedding_model: "test-model".to_string(),
+            timeout_secs: 1,
+            ..LocalModelConfig::default()
+        };
+        let result = check_local_model(&config);
+        assert!(result.is_err(), "HTTP 500 probe must be Err");
+        assert!(
+            !saw_error.load(Ordering::SeqCst),
+            "optional embed probe miss must not emit ERROR"
+        );
+    }
+
+    #[test]
+    fn optional_embed_tcp_down_uses_embedding_url_not_completions_base() {
+        let config = LocalModelConfig {
+            base_url: "http://127.0.0.1:9".to_string(),
+            embedding_url: Some("http://127.0.0.1:1".to_string()),
+            generation_url: None,
+            embedding_model: "test-model".to_string(),
+            timeout_secs: 1,
+            ..LocalModelConfig::default()
+        };
+        assert_eq!(embedding_endpoint_url(&config), Some("http://127.0.0.1:1"));
+        assert!(optional_embed_tcp_down(&config));
     }
 
     #[test]

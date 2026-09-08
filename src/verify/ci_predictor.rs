@@ -1,5 +1,5 @@
 use crate::config::model::LocalModelConfig;
-use crate::embed::client::embed_long_text;
+use crate::embed::client::{embed_long_text, optional_embed_tcp_down};
 use crate::embed::embed_and_store;
 use crate::verify::semantic_predictor::TestStatus;
 use rusqlite::Connection;
@@ -126,7 +126,7 @@ pub fn query_similar_ci_outcomes(
     diff_text: &str,
     top_k: usize,
 ) -> Result<Vec<(CIJobOutcome, f32)>, String> {
-    if embed_config.base_url.is_empty() {
+    if optional_embed_tcp_down(embed_config) {
         return Ok(Vec::new());
     }
 
@@ -237,4 +237,104 @@ pub fn compute_ci_failure_scores(similar_outcomes: &[(CIJobOutcome, f32)]) -> Ha
         .into_iter()
         .map(|(job, (sum, count))| (job, sum / count as f64))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::config::model::LocalModelConfig;
+    use crate::state::migrations::get_migrations;
+    use httpmock::prelude::*;
+    use rusqlite::Connection;
+
+    fn setup_db() -> Connection {
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        conn
+    }
+
+    #[test]
+    fn query_similar_ci_outcomes_skips_tcp_closed_embed_url_not_completions_base() {
+        let conn = setup_db();
+        let server = MockServer::start();
+        let mock = server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/v1/embeddings");
+            then.status(200)
+                .header("Content-Type", "application/json")
+                .json_body(serde_json::json!({
+                    "data": [{"embedding": [1.0, 0.0, 0.0]}]
+                }));
+        });
+
+        let stored_vec: Vec<f32> = vec![1.0, 0.0, 0.0];
+        let stored_blob: Vec<u8> = stored_vec.iter().flat_map(|f| f.to_le_bytes()).collect();
+        conn.execute(
+            "INSERT INTO embeddings (entity_type, entity_id, content_hash, model_name, dimensions, vector)
+             VALUES ('ci_diff', 'commit-1', 'hash1', 'test-model', 3, ?1)",
+            rusqlite::params![stored_blob],
+        )
+        .unwrap();
+
+        let config = LocalModelConfig {
+            base_url: server.base_url(),
+            embedding_url: Some("http://127.0.0.1:1".to_string()),
+            generation_url: None,
+            embedding_model: "test-model".to_string(),
+            dimensions: 3,
+            timeout_secs: 6,
+            ..LocalModelConfig::default()
+        };
+        let start = std::time::Instant::now();
+        let result = query_similar_ci_outcomes(&conn, &config, "similar change", 10).unwrap();
+        assert!(result.is_empty());
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(1),
+            "TCP-closed embed URL must skip without 6s ureq, took {:?}",
+            start.elapsed()
+        );
+        mock.assert_calls(0);
+    }
+
+    #[test]
+    fn query_similar_ci_outcomes_http_dead_respects_short_timeout() {
+        let conn = setup_db();
+        let server = MockServer::start();
+        server.mock(|when, then| {
+            when.method(httpmock::Method::POST).path("/v1/embeddings");
+            then.status(200)
+                .header("Content-Type", "application/json")
+                .delay(std::time::Duration::from_secs(5))
+                .json_body(serde_json::json!({
+                    "data": [{"embedding": [1.0, 0.0, 0.0]}]
+                }));
+        });
+
+        let stored_vec: Vec<f32> = vec![1.0, 0.0, 0.0];
+        let stored_blob: Vec<u8> = stored_vec.iter().flat_map(|f| f.to_le_bytes()).collect();
+        conn.execute(
+            "INSERT INTO embeddings (entity_type, entity_id, content_hash, model_name, dimensions, vector)
+             VALUES ('ci_diff', 'commit-1', 'hash1', 'test-model', 3, ?1)",
+            rusqlite::params![stored_blob],
+        )
+        .unwrap();
+
+        let config = LocalModelConfig {
+            base_url: server.base_url(),
+            embedding_url: None,
+            generation_url: None,
+            embedding_model: "test-model".to_string(),
+            dimensions: 3,
+            timeout_secs: 1,
+            context_window: 8192,
+            ..LocalModelConfig::default()
+        };
+        let start = std::time::Instant::now();
+        let result = query_similar_ci_outcomes(&conn, &config, "similar change", 10);
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(3),
+            "TCP-open HTTP-dead must not wait 6s, took {:?}",
+            start.elapsed()
+        );
+        assert!(result.is_err() || result.map(|v| v.is_empty()).unwrap_or(true));
+    }
 }

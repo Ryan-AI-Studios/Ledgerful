@@ -332,6 +332,38 @@ fn format_embedding_partial_config_is_not_configured_failure() {
     assert!(ready_for_publish(std::slice::from_ref(&finding)));
 }
 
+#[test]
+fn format_embedding_unreachable_url_one_attempt_optional_finding() {
+    use crate::config::model::LocalModelConfig;
+    use crate::semantic::BackendStatus;
+
+    let config = LocalModelConfig {
+        base_url: "http://127.0.0.1:1".to_string(),
+        embedding_url: None,
+        embedding_model: "test-model".to_string(),
+        timeout_secs: 1,
+        ..Default::default()
+    };
+    let start = std::time::Instant::now();
+    let report = format_embedding_backend_availability(&config, &config);
+    assert!(
+        start.elapsed() < std::time::Duration::from_secs(1),
+        "TCP-closed doctor embed probe must finish in <1s, took {:?}",
+        start.elapsed()
+    );
+    assert_eq!(report.status, BackendStatus::Unreachable);
+    assert!(
+        !report.display.contains("retries"),
+        "embed miss must not show retry suffix, got: {}",
+        report.display
+    );
+    let finding = embedding_finding(&config, &report).expect("unreachable finding");
+    assert_eq!(finding.code, "embed-unreachable");
+    assert_eq!(finding.severity, DoctorSeverity::Warn);
+    assert_eq!(finding.category, DoctorCategory::Optional);
+    assert!(ready_for_publish(std::slice::from_ref(&finding)));
+}
+
 /// DoD-6: fully empty config (default install) is also Not configured.
 #[test]
 fn format_embedding_default_config_is_not_configured() {

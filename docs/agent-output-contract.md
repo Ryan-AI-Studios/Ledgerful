@@ -26,7 +26,7 @@ on stderr.
 
 | Command | Has `--json` | Pure success stderr | Notes |
 |---|---|---|---|
-| `doctor --json` | yes | yes | schemaVersion 1 findings; additive `environment.githubLatest` (0205); additive per-finding `sessionPriority` `now`\|`later` (0225, emission-only); additive per-finding `acknowledged` / `acknowledgedAt` (0226). schemaVersion stays 1. Sidecar `doctor-results.json` does **not** include `githubLatest`, `sessionPriority`, `acknowledged`, or `acknowledgedAt` |
+| `doctor --json` | yes | yes | schemaVersion 1 findings; additive `environment.githubLatest` (0205); additive per-finding `sessionPriority` `now`\|`later` (0225, emission-only); additive per-finding `acknowledged` / `acknowledgedAt` (0226). schemaVersion stays 1. Sidecar `doctor-results.json` does **not** include `githubLatest`, `sessionPriority`, `acknowledged`, or `acknowledgedAt`. Optional embed miss is `embed-unreachable` (optional warn), not `ERROR ledgerful::embed::client` (0285). |
 | `release pins --json` (bare `release --json`) | yes (0201) | yes | schemaVersion 1 object `kind: "releasePins"`; exit **0** match / **1** drift / **2** skipped or unverified. Parent `--json` (T18). Not Daily 5 |
 | `change-context --json` | yes | yes | impact-shaped packet |
 | `session --json` | yes (0224) | yes | schemaVersion 1 object `kind: "session"`; human default is **not** JSON. Does not rewrite `latest-impact.json`. `collisions[]` lives here (not status v1). No `warnAction`. CLI-only |
