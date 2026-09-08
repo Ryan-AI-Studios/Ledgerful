@@ -24,6 +24,13 @@ pub const POLICY_CHECK_SCHEMA_VERSION: u32 = 1;
 /// Idle `verification_must_pass` note (no bound run; not a current-change fail).
 pub const VERIFICATION_MUST_PASS_IDLE_NOTE: &str = "verification_must_pass: idle evaluation target; no bound verification run (unbound verifies do not satisfy). Not a current-change fail.";
 
+/// Human Result when synthesized defaults are idle — not a merge-gate pass (0292).
+pub const SYNTHESIZED_IDLE_RESULT: &str = "IDLE (synthesized; not a merge gate)";
+
+/// Human footer when synthesized defaults are idle (0292). Uncolored; not the green pass line.
+pub const SYNTHESIZED_IDLE_FOOTER: &str =
+    "No declared policy.toml; idle synthesized defaults are not a merge gate.";
+
 const DEFAULT_POLICY_REL: &str = ".ledgerful/policy.toml";
 
 // ---------------------------------------------------------------------------
@@ -45,6 +52,10 @@ pub struct PolicyCheckReport {
     /// Omitted from JSON when empty (schemaVersion stays 1; additive optional field).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
+    /// True when `verification_must_pass` was an idle note (no bound run).
+    /// Omitted from JSON when false (schemaVersion stays 1; additive optional field).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub idle: bool,
 }
 
 /// A single policy violation.
@@ -561,6 +572,10 @@ impl EvalContext {
         let passed = self.violations.is_empty();
         // Deterministic notes ordering for stable JSON.
         self.notes.sort();
+        let idle = self
+            .notes
+            .iter()
+            .any(|n| n == VERIFICATION_MUST_PASS_IDLE_NOTE);
         Ok(PolicyCheckReport {
             schema_version: POLICY_CHECK_SCHEMA_VERSION,
             violations: self.violations,
@@ -568,6 +583,7 @@ impl EvalContext {
             mode: self.mode.as_str().to_string(),
             policy_source: self.policy_source.as_str().to_string(),
             notes: self.notes,
+            idle,
         })
     }
 
@@ -1119,6 +1135,38 @@ fn file_changes_to_paths(changes: &[crate::git::FileChange]) -> Vec<String> {
 // Human report
 // ---------------------------------------------------------------------------
 
+fn is_synthesized_idle_pass(report: &PolicyCheckReport) -> bool {
+    report.passed
+        && report.policy_source == PolicySource::Synthesized.as_str()
+        && report
+            .notes
+            .iter()
+            .any(|n| n == VERIFICATION_MUST_PASS_IDLE_NOTE)
+}
+
+fn human_result_label(report: &PolicyCheckReport) -> &'static str {
+    if is_synthesized_idle_pass(report) {
+        SYNTHESIZED_IDLE_RESULT
+    } else if report.passed {
+        "PASSED"
+    } else if report.mode == PolicyMode::Observe.as_str() {
+        "WARNINGS (observe — not blocking)"
+    } else {
+        "FAILED"
+    }
+}
+
+fn human_footer_line(report: &PolicyCheckReport) -> Option<&'static str> {
+    if !report.violations.is_empty() {
+        return None;
+    }
+    if is_synthesized_idle_pass(report) {
+        Some(SYNTHESIZED_IDLE_FOOTER)
+    } else {
+        Some("No policy violations.")
+    }
+}
+
 fn print_human_report(report: &PolicyCheckReport) {
     use owo_colors::{OwoColorize, Stream, Style};
 
@@ -1137,22 +1185,26 @@ fn print_human_report(report: &PolicyCheckReport) {
         "Policy source:".if_supports_color(Stream::Stdout, |s| s.bold()),
         report.policy_source
     );
+    let label = human_result_label(report);
+    let rendered = if is_synthesized_idle_pass(report) {
+        label.to_string()
+    } else if report.passed {
+        label
+            .if_supports_color(Stream::Stdout, |s| s.green())
+            .to_string()
+    } else if report.mode == PolicyMode::Observe.as_str() {
+        label
+            .if_supports_color(Stream::Stdout, |s| s.yellow())
+            .to_string()
+    } else {
+        label
+            .if_supports_color(Stream::Stdout, |s| s.red())
+            .to_string()
+    };
     println!(
         "{:<16} {}",
         "Result:".if_supports_color(Stream::Stdout, |s| s.bold()),
-        if report.passed {
-            "PASSED"
-                .if_supports_color(Stream::Stdout, |s| s.green())
-                .to_string()
-        } else if report.mode == "observe" {
-            "WARNINGS (observe — not blocking)"
-                .if_supports_color(Stream::Stdout, |s| s.yellow())
-                .to_string()
-        } else {
-            "FAILED"
-                .if_supports_color(Stream::Stdout, |s| s.red())
-                .to_string()
-        }
+        rendered
     );
 
     if !report.notes.is_empty() {
@@ -1168,11 +1220,15 @@ fn print_human_report(report: &PolicyCheckReport) {
         }
     }
 
-    if report.violations.is_empty() {
-        println!(
-            "\n{}",
-            "No policy violations.".if_supports_color(Stream::Stdout, |s| s.green())
-        );
+    if let Some(footer) = human_footer_line(report) {
+        if is_synthesized_idle_pass(report) {
+            println!("\n{footer}");
+        } else {
+            println!(
+                "\n{}",
+                footer.if_supports_color(Stream::Stdout, |s| s.green())
+            );
+        }
         return;
     }
 
@@ -1365,6 +1421,7 @@ fail_on = "critical"
             mode: "enforce".into(),
             policy_source: "local".into(),
             notes: vec![],
+            idle: false,
         };
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["schemaVersion"], 1);
@@ -1373,6 +1430,7 @@ fail_on = "critical"
         assert_eq!(json["policySource"], "local");
         // Empty notes omitted from JSON (additive optional field).
         assert!(json.get("notes").is_none());
+        assert!(json.get("idle").is_none());
         let v = &json["violations"][0];
         assert_eq!(v["ruleId"], "no_pending_tx");
         assert_eq!(v["file"], ".ledgerful/state/ledger.db");
@@ -1390,9 +1448,164 @@ fail_on = "critical"
             mode: "observe".into(),
             policy_source: "local".into(),
             notes: vec!["risk rules skipped: risk not evaluable".into()],
+            idle: false,
         };
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["notes"][0], "risk rules skipped: risk not evaluable");
+        assert!(json.get("idle").is_none());
+    }
+
+    fn sample_report(
+        passed: bool,
+        mode: &str,
+        policy_source: &str,
+        notes: Vec<String>,
+        idle: bool,
+    ) -> PolicyCheckReport {
+        let violations = if passed {
+            vec![]
+        } else {
+            vec![PolicyViolation {
+                rule_id: "no_pending_tx".into(),
+                file: ".ledgerful/state/ledger.db".into(),
+                line: None,
+                message: "pending".into(),
+                severity: "warn".into(),
+            }]
+        };
+        PolicyCheckReport {
+            schema_version: 1,
+            violations,
+            passed,
+            mode: mode.into(),
+            policy_source: policy_source.into(),
+            notes,
+            idle,
+        }
+    }
+
+    #[test]
+    fn human_result_label_synthesized_idle_pass_is_idle() {
+        let idle_note = vec![VERIFICATION_MUST_PASS_IDLE_NOTE.to_string()];
+        let synthesized_idle =
+            sample_report(true, "observe", "synthesized", idle_note.clone(), false);
+        assert_eq!(
+            human_result_label(&synthesized_idle),
+            SYNTHESIZED_IDLE_RESULT
+        );
+
+        assert_eq!(
+            human_result_label(&sample_report(
+                true,
+                "observe",
+                "local",
+                idle_note.clone(),
+                true
+            )),
+            "PASSED"
+        );
+        assert_eq!(
+            human_result_label(&sample_report(
+                true,
+                "observe",
+                "trusted-path",
+                idle_note.clone(),
+                true
+            )),
+            "PASSED"
+        );
+        assert_eq!(
+            human_result_label(&sample_report(
+                true,
+                "enforce",
+                "base-branch",
+                idle_note,
+                true
+            )),
+            "PASSED"
+        );
+        assert_eq!(
+            human_result_label(&sample_report(
+                false,
+                "observe",
+                "synthesized",
+                vec![],
+                false
+            )),
+            "WARNINGS (observe — not blocking)"
+        );
+        assert_eq!(
+            human_result_label(&sample_report(
+                false,
+                "enforce",
+                "synthesized",
+                vec![],
+                false
+            )),
+            "FAILED"
+        );
+        assert_eq!(
+            human_result_label(&sample_report(
+                true,
+                "observe",
+                "synthesized",
+                vec![],
+                false
+            )),
+            "PASSED"
+        );
+    }
+
+    #[test]
+    fn human_footer_line_synthesized_idle_pass() {
+        let idle_note = vec![VERIFICATION_MUST_PASS_IDLE_NOTE.to_string()];
+        assert_eq!(
+            human_footer_line(&sample_report(
+                true,
+                "observe",
+                "synthesized",
+                idle_note.clone(),
+                false
+            )),
+            Some(SYNTHESIZED_IDLE_FOOTER)
+        );
+        assert_eq!(
+            human_footer_line(&sample_report(true, "observe", "local", idle_note, true)),
+            Some("No policy violations.")
+        );
+        assert_eq!(
+            human_footer_line(&sample_report(
+                false,
+                "observe",
+                "synthesized",
+                vec![],
+                false
+            )),
+            None
+        );
+    }
+
+    #[test]
+    fn json_idle_additive_omit_false() {
+        let omitted = sample_report(true, "observe", "local", vec![], false);
+        let json = serde_json::to_value(&omitted).unwrap();
+        assert!(json.get("idle").is_none());
+
+        let included = sample_report(
+            true,
+            "observe",
+            "synthesized",
+            vec![VERIFICATION_MUST_PASS_IDLE_NOTE.to_string()],
+            true,
+        );
+        let json_true = serde_json::to_value(&included).unwrap();
+        assert_eq!(json_true["idle"], true);
+
+        let legacy = r#"{"schemaVersion":1,"violations":[],"passed":true,"mode":"observe","policySource":"local"}"#;
+        let back: PolicyCheckReport = serde_json::from_str(legacy).unwrap();
+        assert!(!back.idle);
+        assert!(back.passed);
+        assert_eq!(back.policy_source, "local");
     }
 
     /// DoD-5 (0072): v2 signing basis binds provenance fields; policy/mode never enter.

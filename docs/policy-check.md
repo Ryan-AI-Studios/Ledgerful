@@ -207,6 +207,16 @@ Risk thresholds compare inclusively: `fail_on = medium` fires on medium **and** 
 
 JSON `passed` is `true` only when there are zero violations (independent of mode).
 
+Human **Result** is `PASSED` when `passed` is true **except** when the
+policy was **synthesized** (no `policy.toml`) **and** the idle
+`verification_must_pass` note is present: then Result is
+`IDLE (synthesized; not a merge gate)` (not green) and the footer is
+`No declared policy.toml; idle synthesized defaults are not a merge gate.`
+instead of `No policy violations.` Declared sources (`local` /
+`base-branch` / `trusted-path`) still print `PASSED` on idle. JSON
+`passed` stays `true` (no violations). Additive `idle: true` is
+emitted when that idle note was pushed (omitted when false).
+
 ## JSON machine contract (`--format json`)
 
 Versioned, camelCase (matches 0047 `PrScanReport` discipline). Breaking changes
@@ -233,7 +243,26 @@ bump `schemaVersion`.
 `notes` is an additive optional array of non-blocking evaluation messages
 (e.g. risk rules skipped when risk is not evaluable). It is omitted from JSON
 when empty (`skip_serializing_if`); when present it looks like
-`"notes": ["risk not evaluable: ..."]`. `schemaVersion` stays 1.
+`"notes": ["risk not evaluable: ..."]`. `idle` is an additive optional
+boolean: `true` when `verification_must_pass` was an idle note (no bound
+run); omitted when false. `schemaVersion` stays 1.
+
+Idle synthesized example (no declared `policy.toml`, clean tree, no bound
+verify):
+
+```json
+{
+  "schemaVersion": 1,
+  "violations": [],
+  "passed": true,
+  "mode": "observe",
+  "policySource": "synthesized",
+  "notes": [
+    "verification_must_pass: idle evaluation target; no bound verification run (unbound verifies do not satisfy). Not a current-change fail."
+  ],
+  "idle": true
+}
+```
 
 Violations are sorted deterministically by `(ruleId, file, message)`.
 

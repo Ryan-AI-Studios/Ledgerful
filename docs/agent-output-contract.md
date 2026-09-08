@@ -45,6 +45,7 @@ on stderr.
 | `symbols --json` | yes (0163) | yes | schemaVersion **1** inventory; path/changed/kind/pub filters; COUNT-backed `totalMatching`; optional `indexStatus`; see schema below |
 | `data-models list --json` | yes | yes | schemaVersion 1 object; collection `models` (0207); item `file_path` stays snake (0155); one row per logical model identity |
 | `ci diff --json` / `ci list --json` | yes | yes | schemaVersion 1 object; collection `gates` (0207). Empty catalog is `gates: []`, `resultCount: 0`, no fake `emptyReason` |
+| `policy check --format json` | via `--format json` (not `--json`) | yes | schemaVersion 1 object; `passed` is no-violations; `policySource`; additive `notes` omit-empty; additive `idle: true` omit-false (synthesized idle is not a merge-gate pass). Human Result is `IDLE (synthesized; not a merge gate)` in that case. |
 | `config schema --json` | yes | yes | schemaVersion 1 object; collection `results` (0207). Empty keeps `emptyReason`/`message` |
 | `dependencies list --json` | yes (0153) | yes | schemaVersion **1** envelope; `mode`: `direct` (default) \| `all`; live Cargo.toml+lock — not Cozo; see schema below |
 | `scan --impact --json` | yes | yes | impact packet (`schemaVersion` string `"v1"`; no top-level `kind`) |
