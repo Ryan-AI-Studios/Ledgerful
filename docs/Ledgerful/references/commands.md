@@ -12,7 +12,7 @@ Short flags only. Humans: `ledgerful --help`.
 | `ledgerful search …` | Discovery (`--auto-index` when stale). Code FTS; unquoted multi-word OK. Not `ledger search`. |
 | `ledgerful verify --scope fast` | Local gate |
 
-Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/change-context/hotspots/`impactCache`). Does **not** replace Daily 5. Does not rewrite `latest-impact.json`. Human `session` is a 10-line summary, not JSON.
+Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/change-context/hotspots/`impactCache`). Does **not** replace Daily 5. Does not rewrite `latest-impact.json`. Human `session` is a 10-line summary, not JSON. Session `hotspots.files[]` `score` is 0–1; additive `displayScore` is ln (same units as `hotspots --json`). Human hotspot tables use **Display**, not a bare Score column.
 
 ## Provenance (not Daily 5)
 

@@ -29,7 +29,7 @@ on stderr.
 | `doctor --json` | yes | yes | schemaVersion 1 findings; additive `environment.githubLatest` (0205); additive per-finding `sessionPriority` `now`\|`later` (0225, emission-only); additive per-finding `acknowledged` / `acknowledgedAt` (0226). schemaVersion stays 1. Sidecar `doctor-results.json` does **not** include `githubLatest`, `sessionPriority`, `acknowledged`, or `acknowledgedAt`. Optional embed miss is `embed-unreachable` (optional warn), not `ERROR ledgerful::embed::client` (0285). |
 | `release pins --json` (bare `release --json`) | yes (0201) | yes | schemaVersion 1 object `kind: "releasePins"`; exit **0** match / **1** drift / **2** skipped or unverified. Parent `--json` (T18). Not Daily 5 |
 | `change-context --json` | yes | yes | impact-shaped packet |
-| `session --json` | yes (0224) | yes | schemaVersion 1 object `kind: "session"`; human default is **not** JSON. Does not rewrite `latest-impact.json`. `collisions[]` lives here (not status v1). No `warnAction`. CLI-only |
+| `session --json` | yes (0224) | yes | schemaVersion 1 object `kind: "session"`; human default is **not** JSON. Does not rewrite `latest-impact.json`. `collisions[]` lives here (not status v1). No `warnAction`. CLI-only. `hotspots.files[]` item keys `path` / `score` (0–1) / additive `displayScore` (ln). Human hotspot tables use column **Display** = `displayScore` |
 | `ledger status --json` | yes | yes | schemaVersion 1 |
 | `ledger stack --json` | yes (0281) | yes | schemaVersion 1 object `kind: "ledgerStack"`; `empty` true iff filtered rules/validators/mappings are all empty; `next` is the two clap register commands only when empty; `enforcementEnabled` from live config; item structs stay snake_case. No `emptyReason`. Not Daily 5 |
 | `status --json` | yes (0149) | yes | **same payload** as `ledger status --json` |
@@ -729,7 +729,7 @@ tests/examples/benches.
 | `score` | 0–1 (`f_norm × c_norm`) | Agents — pin this (AI-T252) |
 | `displayScore` | ln display (`ln_1p(score × 1000)`) | Human table / dashboard |
 
-Do **not** add a third score field. SchemaVersion stays 1.
+Do **not** add a third score field. SchemaVersion stays 1. Human CLI tables print `displayScore` under the **Display** column (not a bare `Score` header). Session `files[]` uses the same two fields; adding `displayScore` there is not a third field.
 
 ---
 
@@ -1131,7 +1131,7 @@ rewrite `latest-impact.json`. CLI-only (MCP registry is not one-file additive).
 | `ledger.collisions` | 0223 `pending_entity_overlap` vs dirty paths; `[]` when none. **Not** on status v1 |
 | `doctor` | sidecar `block`/`warn`/`info` + `readyForPublish`. **No** `warnAction`. Per-finding `sessionPriority` / `acknowledged` stay on `doctor --json` |
 | `changeContext.readSetCapped` / `readSetTotalCandidates` | pass-through from `build_change_context` with `max_files=5` (not a post-slice of a 20-file packet) |
-| `hotspots.files` | limit 5, `exclude_test_paths: true`, git walk `commits ≤ min(config, 50)`, `days: 30` |
+| `hotspots.files` | limit 5, `exclude_test_paths: true`, git walk `commits ≤ min(config, 50)`, `days: 30`. Item keys: `path`, `score` (0–1, pin this), additive `displayScore` (ln). This is the **second** field on the session item (parity with `hotspots --json`), not a third field on either surface. No `scoreUnit` |
 | `impactCache` | new HEAD comparator: None → all false; Packet → `present`, `treeClean=false`, `validForHead` iff packet head equals live HEAD; CleanTree → `present`, `treeClean=true`, `validForHead` iff tombstone head equals live HEAD |
 | `next` | sorted deterministic strings (change-context `next_actions` idiom plus cache/collision notes) |
 

@@ -220,10 +220,7 @@ fn collect_hotspots(
             let files = hotspots
                 .into_iter()
                 .take(SESSION_HOTSPOT_LIMIT)
-                .map(|h| SessionHotspotFile {
-                    path: h.path.to_string_lossy().replace('\\', "/"),
-                    score: h.score,
-                })
+                .map(|h| session_hotspot_file_from(&h))
                 .collect();
             (files, None)
         }

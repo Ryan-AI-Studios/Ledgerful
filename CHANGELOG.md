@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Hotspot score vs displayScore (0286):** `session --json` `hotspots.files[]`
+  keeps `score` as 0–1 and adds named `displayScore` (ln). Human `hotspots` /
+  `hotspots trend` / `audit` TOP HOTSPOTS / `impact --summary` label the ln
+  value **Display** / `display:`, not a bare Score. No `scoreUnit`. schemaVersion
+  1 unchanged.
+
 - **Optional embed miss is fail-fast (0285):** `doctor --json` no longer
   retries a down embedding URL or prints `ERROR ledgerful::embed::client`
   (Windows TCP 10060). Finding `embed-unreachable` stays optional warn;

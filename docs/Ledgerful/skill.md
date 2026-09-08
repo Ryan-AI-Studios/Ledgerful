@@ -99,7 +99,7 @@ Example that finds 0126-class hits: `ledgerful ledger search "0126" --json`.
 
 ## Hotspots
 
-Default CLI `hotspots` / `hotspots --json` exclude tests/examples/benches; `--include tests` restores the audit view. Pin JSON `score` (0–1), not `displayScore` (ln). MCP and `/api/hotspots` stay unfiltered.
+Default CLI `hotspots` / `hotspots --json` exclude tests/examples/benches; `--include tests` restores the audit view. Pin JSON `score` (0–1), not `displayScore` (ln). Human tables and `audit` TOP HOTSPOTS label ln as **Display** / `display:`. MCP and `/api/hotspots` stay unfiltered.
 
 ## Windows
 
