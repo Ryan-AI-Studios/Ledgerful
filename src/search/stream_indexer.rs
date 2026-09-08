@@ -82,7 +82,10 @@ impl StreamIndexer {
                     let trigrams_str = trigrams.into_iter().collect::<Vec<String>>().join(" ");
 
                     let mut doc = TantivyDocument::default();
-                    doc.add_text(path_field, job.path.as_str());
+                    doc.add_text(
+                        path_field,
+                        crate::search::normalize_search_path(job.path.as_str()),
+                    );
                     doc.add_text(content_field, &clean_content);
                     doc.add_u64(line_count_field, line_count as u64);
                     doc.add_text(trigrams_field, &trigrams_str);

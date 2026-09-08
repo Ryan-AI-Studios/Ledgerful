@@ -24,8 +24,50 @@ pub struct SearchResult {
 }
 
 /// Max plain-snippet bytes kept after our own truncation arithmetic.
-/// Width/ellipsis policy is a separate track; this only prevents mid-char slices.
+/// Mid-identifier trim (0298) walks back after this cap; do not raise Tantivy
+/// `set_max_num_chars` as a substitute.
 const SNIPPET_MAX_BYTES: usize = 240;
+
+/// Repo-relative search path for JSON (and newly stored FTS keys).
+pub(crate) fn normalize_search_path(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+fn is_ident_continue(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// Walk back a truncated snippet so it does not end mid-identifier.
+///
+/// `idx` is where the raw Tantivy fragment was found in `full`. `fragment` is
+/// already char-boundary truncated. Walk-back runs only when the next char in
+/// `full` continues an identifier. Empty walk-back keeps `fragment`.
+pub(crate) fn trim_mid_identifier(fragment: &str, full: &str, idx: usize) -> String {
+    let next = full
+        .get(idx.saturating_add(fragment.len())..)
+        .and_then(|s| s.chars().next());
+    let last = fragment.chars().next_back();
+    let cut = last.is_some_and(is_ident_continue) && next.is_some_and(is_ident_continue);
+    if !cut {
+        return fragment.to_string();
+    }
+    let mut end = fragment.len();
+    while end > 0 {
+        let Some(c) = fragment[..end].chars().next_back() else {
+            break;
+        };
+        if !is_ident_continue(c) {
+            break;
+        }
+        end -= c.len_utf8();
+    }
+    let trimmed = fragment[..end].trim_end();
+    if trimmed.is_empty() {
+        fragment.to_string()
+    } else {
+        trimmed.to_string()
+    }
+}
 
 /// Plain fragment plus byte highlight ranges into that fragment.
 struct BuiltSnippet {
@@ -49,15 +91,31 @@ pub(crate) fn truncate_at_char_boundary(s: &str, max_bytes: usize) -> &str {
 
 /// Build a plain fragment + byte highlight ranges from a tantivy Snippet.
 /// Uses `fragment()` + `highlighted()` ranges only — no HTML round-trip.
-/// Ranges are already aligned to the fragment (byte offsets).
+/// Locate `raw_fragment` in `content` **before** trim (0298 line-number / next-char).
 fn build_snippet(snippet: &tantivy::snippet::Snippet, content: &str) -> Option<BuiltSnippet> {
     let raw_fragment = snippet.fragment();
     if raw_fragment.is_empty() {
         return None;
     }
 
-    // Track-owned truncation: never slice mid-character (DoD-6).
-    let fragment = truncate_at_char_boundary(raw_fragment, SNIPPET_MAX_BYTES).to_string();
+    let idx = content.find(raw_fragment);
+    let line_number = if let Some(idx) = idx {
+        if content.is_char_boundary(idx) {
+            let lines_before = content[..idx].chars().filter(|&c| c == '\n').count();
+            Some(lines_before + 1)
+        } else {
+            Some(1)
+        }
+    } else {
+        Some(1)
+    };
+
+    let truncated = truncate_at_char_boundary(raw_fragment, SNIPPET_MAX_BYTES);
+    let fragment = if let Some(idx) = idx {
+        trim_mid_identifier(truncated, content, idx)
+    } else {
+        truncated.to_string()
+    };
     let frag_len = fragment.len();
 
     let mut ranges: Vec<(usize, usize)> = snippet
@@ -69,34 +127,13 @@ fn build_snippet(snippet: &tantivy::snippet::Snippet, content: &str) -> Option<B
             if start > end || end > frag_len {
                 return None;
             }
-            // Defensive: tantivy ranges are byte-aligned, but guard our slices.
             if !fragment.is_char_boundary(start) || !fragment.is_char_boundary(end) {
                 return None;
             }
             Some((start, end))
         })
         .collect();
-    // Deterministic order for same repo state.
     ranges.sort_by_key(|(s, e)| (*s, *e));
-
-    let line_number = if let Some(idx) = content.find(&fragment) {
-        if content.is_char_boundary(idx) {
-            let lines_before = content[..idx].chars().filter(|&c| c == '\n').count();
-            Some(lines_before + 1)
-        } else {
-            Some(1)
-        }
-    } else if let Some(idx) = content.find(raw_fragment) {
-        // Fragment may have been truncated; locate via the full raw fragment.
-        if content.is_char_boundary(idx) {
-            let lines_before = content[..idx].chars().filter(|&c| c == '\n').count();
-            Some(lines_before + 1)
-        } else {
-            Some(1)
-        }
-    } else {
-        Some(1)
-    };
 
     Some(BuiltSnippet {
         fragment,
@@ -760,6 +797,59 @@ mod tests {
     fn truncate_at_char_boundary_ascii() {
         assert_eq!(truncate_at_char_boundary("hello world", 5), "hello");
         assert_eq!(truncate_at_char_boundary("short", 100), "short");
+    }
+
+    #[test]
+    fn normalize_search_path_backslash_to_slash() {
+        assert_eq!(
+            normalize_search_path("src\\commands\\foo.rs"),
+            "src/commands/foo.rs"
+        );
+        assert_eq!(
+            normalize_search_path("src/commands/foo.rs"),
+            "src/commands/foo.rs"
+        );
+        assert_eq!(normalize_search_path("src\\foo/bar.rs"), "src/foo/bar.rs");
+    }
+
+    #[test]
+    fn trim_mid_identifier_packet_opts_walks_back() {
+        let full = "fn emit_packet(packet_opts: &Pkt)";
+        let fragment = "emit_packet(packet";
+        let idx = full.find(fragment).expect("fragment in full");
+        assert_eq!(trim_mid_identifier(fragment, full, idx), "emit_packet(");
+    }
+
+    #[test]
+    fn trim_mid_identifier_packet_colon_preserves() {
+        let full = "fn emit_packet(packet: &Pkt)";
+        let fragment = "emit_packet(packet";
+        let idx = full.find(fragment).expect("fragment in full");
+        assert_eq!(
+            trim_mid_identifier(fragment, full, idx),
+            "emit_packet(packet"
+        );
+    }
+
+    #[test]
+    fn trim_mid_identifier_eof_complete_ident_stays() {
+        let full = "hello ChangedClass";
+        assert_eq!(trim_mid_identifier(full, full, 0), full);
+    }
+
+    #[test]
+    fn trim_mid_identifier_json_flag_stays() {
+        let full = "agents use --json for envelopes";
+        let fragment = "agents use --json";
+        let idx = full.find(fragment).expect("in full");
+        assert_eq!(trim_mid_identifier(fragment, full, idx), fragment);
+    }
+
+    #[test]
+    fn trim_mid_identifier_empty_walk_back_keeps_slice() {
+        let full = "ChangedClassCounts";
+        let fragment = "ChangedClass";
+        assert_eq!(trim_mid_identifier(fragment, full, 0), fragment);
     }
 
     #[test]
