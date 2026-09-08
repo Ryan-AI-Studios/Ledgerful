@@ -18,6 +18,32 @@ fn binary_shows_ledgerful_help() {
         stdout.contains("reset"),
         "{binary} --help should list reset command"
     );
+
+    let start = stdout
+        .find("Commands:")
+        .expect("--help must contain Commands:");
+    let rest = &stdout[start..];
+    let options = rest
+        .find("Options:")
+        .expect("--help must contain Options: after Commands:");
+    let commands = &rest[..options];
+    for hidden in ["services", "deploy", "observability"] {
+        let listed = commands
+            .lines()
+            .any(|line| line.split_whitespace().next() == Some(hidden));
+        assert!(
+            !listed,
+            "Commands block must omit {hidden}; commands={commands}"
+        );
+    }
+    assert!(
+        stdout.contains("Gated or empty:"),
+        "--help after_help must include Gated or empty: marker"
+    );
+    assert!(
+        stdout.contains("ledgerful surfaces"),
+        "--help after_help must point at ledgerful surfaces"
+    );
 }
 
 #[test]

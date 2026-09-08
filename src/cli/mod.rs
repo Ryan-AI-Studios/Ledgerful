@@ -99,6 +99,117 @@ mod tests {
         });
     }
 
+    fn root_help_commands_block(help: &str) -> &str {
+        let start = help
+            .find("Commands:")
+            .unwrap_or_else(|| panic!("root help must contain Commands:; got {help}"));
+        let rest = &help[start..];
+        let options = rest.find("Options:").unwrap_or_else(|| {
+            panic!("root help must contain Options: after Commands:; got {help}")
+        });
+        &rest[..options]
+    }
+
+    fn root_help_command_row_name(line: &str) -> Option<&str> {
+        line.split_whitespace().next()
+    }
+
+    fn assert_gated_surfaces_omitted_from_commands(help: &str) {
+        let commands = root_help_commands_block(help);
+        for hidden in ["services", "deploy", "observability"] {
+            let listed = commands
+                .lines()
+                .any(|line| root_help_command_row_name(line) == Some(hidden));
+            assert!(
+                !listed,
+                "Commands block must omit {hidden}; commands={commands:?}"
+            );
+        }
+        for visible in [
+            "surfaces",
+            "security",
+            "data-models",
+            "status",
+            "doctor",
+            "search",
+        ] {
+            let listed = commands
+                .lines()
+                .any(|line| root_help_command_row_name(line) == Some(visible));
+            assert!(
+                listed,
+                "Commands block must still list {visible}; commands={commands:?}"
+            );
+        }
+        const MARKER: &str = "Gated or empty:";
+        let options_start = help
+            .find("Options:")
+            .unwrap_or_else(|| panic!("root help must have Options:; got {help}"));
+        let marker_pos = help
+            .find(MARKER)
+            .unwrap_or_else(|| panic!("root after_help must contain {MARKER:?}; got {help}"));
+        assert!(
+            marker_pos > options_start,
+            "{MARKER} must follow Options:; got {help}"
+        );
+        let after = &help[marker_pos..];
+        for name in ["services", "deploy", "observability"] {
+            assert!(
+                after.contains(name),
+                "after_help must name {name}; after={after:?}"
+            );
+        }
+        assert!(
+            after.contains("ledgerful surfaces"),
+            "after_help must point at ledgerful surfaces; after={after:?}"
+        );
+    }
+
+    #[test]
+    fn gated_surfaces_hidden_from_root_help() {
+        on_large_stack(|| {
+            let err = Cli::try_parse_from(["ledgerful", "--help"])
+                .expect_err("--help should trigger clap DisplayHelp")
+                .to_string();
+            assert_gated_surfaces_omitted_from_commands(&err);
+
+            let cmd = Cli::command();
+            for (name, hidden) in [
+                ("services", true),
+                ("deploy", true),
+                ("observability", true),
+                ("surfaces", false),
+                ("security", false),
+                ("data-models", false),
+                ("status", false),
+            ] {
+                let sub = cmd
+                    .get_subcommands()
+                    .find(|c| c.get_name() == name)
+                    .unwrap_or_else(|| panic!("missing subcommand {name}"));
+                assert_eq!(
+                    sub.is_hide_set(),
+                    hidden,
+                    "is_hide_set({name}) expected {hidden}"
+                );
+            }
+        });
+    }
+
+    #[test]
+    fn gated_surfaces_hidden_from_root_help_short() {
+        on_large_stack(|| {
+            let err = Cli::try_parse_from(["ledgerful", "-h"])
+                .expect_err("-h should trigger clap DisplayHelp")
+                .to_string();
+            assert!(
+                err.contains("Gated or empty:"),
+                "short help must include after_help marker; got {err}"
+            );
+            assert_gated_surfaces_omitted_from_commands(&err);
+        });
+    }
+
     #[test]
     fn scan_help_is_valid() {
         let result = Cli::try_parse_from(["ledgerful", "scan", "--help"]);

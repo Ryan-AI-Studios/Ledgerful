@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Root `--help` omits gated/empty surfaces (0289):**
+  `ledgerful --help` no longer lists `services`, `deploy`, or
+  `observability` as Daily 5 peers. They stay callable. After_help
+  `Gated or empty:` points at `ledgerful surfaces`. Surfaces JSON
+  (schemaVersion 1) is unchanged.
+
 - **`verify --dry-run` omitted `--scope` is pre-push fast (0288):**
   `ledgerful verify --dry-run` without `--scope` prints the fast plan
   (`scope: fast`; fmt+clippy on a clean tree). Executed `verify` without
