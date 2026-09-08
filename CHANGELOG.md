@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Default `hotspots` omit markdown; `--include docs` is a frequency lane (0293):**
+  CLI `hotspots` / `hotspots --json` drop `.md` from the candidate map
+  before `max_freq` / `max_comp` (same reason as 0222 tests).
+  `--include docs` lists markdown ranked by frequency (`score` =
+  `f_norm`, `complexity` 0). `--include tests` stays unfiltered `f×c`.
+  `--include docs --snapshot` is refused. schemaVersion 1 is unchanged.
+
 - **Synthesized idle `policy check` is not a merge-gate pass (0292):**
   `ledgerful policy check` with no `policy.toml` and an idle evaluation
   target prints `IDLE (synthesized; not a merge gate)` instead of green

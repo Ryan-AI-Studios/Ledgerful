@@ -297,6 +297,136 @@ fn hotspots_exclude_before_max_comp_does_not_crush_production_c_norm() {
 }
 
 #[test]
+fn docs_frequency_lane_ranks_changelog_by_frequency() {
+    let tmp = tempdir().unwrap();
+    let storage = StorageManager::init(&tmp.path().join("ledger.db")).unwrap();
+    insert_snapshot(&storage);
+    insert_complexity(&storage, "src/lib.rs", 20);
+
+    let history = MockHistoryProvider {
+        history: vec![
+            commit(&["CHANGELOG.md", "src/lib.rs"]),
+            commit(&["CHANGELOG.md"]),
+            commit(&["CHANGELOG.md"]),
+            commit(&["CHANGELOG.md"]),
+            commit(&["CHANGELOG.md"]),
+        ],
+    };
+
+    let docs_lane = HotspotQuery {
+        commits: 10,
+        limit: 10,
+        docs_frequency_lane: true,
+        ..Default::default()
+    };
+    let docs = calculate_hotspots_detailed(&storage, &history, &docs_lane).unwrap();
+    assert_eq!(docs.hotspots.len(), 1);
+    assert_eq!(
+        docs.hotspots[0].path.to_string_lossy().replace('\\', "/"),
+        "CHANGELOG.md"
+    );
+    assert_eq!(docs.hotspots[0].complexity, 0);
+    assert_eq!(docs.hotspots[0].score, 1.0);
+    assert!(docs.hotspots[0].score > 0.0 && docs.hotspots[0].score <= 1.0);
+
+    let default_cli = HotspotQuery {
+        commits: 10,
+        limit: 10,
+        exclude_test_paths: true,
+        exclude_docs_paths: true,
+        ..Default::default()
+    };
+    let filtered = calculate_hotspots_detailed(&storage, &history, &default_cli).unwrap();
+    assert_eq!(filtered.hotspots.len(), 1);
+    assert_eq!(
+        filtered.hotspots[0]
+            .path
+            .to_string_lossy()
+            .replace('\\', "/"),
+        "src/lib.rs"
+    );
+    assert_eq!(filtered.hotspots[0].score, 1.0);
+    assert_eq!(filtered.omitted_docs_paths, 1);
+}
+
+#[test]
+fn docs_frequency_lane_empty_history_is_empty() {
+    let tmp = tempdir().unwrap();
+    let storage = StorageManager::init(&tmp.path().join("ledger.db")).unwrap();
+    insert_snapshot(&storage);
+    insert_complexity(&storage, "src/lib.rs", 10);
+
+    let history = MockHistoryProvider {
+        history: vec![commit(&["src/lib.rs"])],
+    };
+    let docs_lane = HotspotQuery {
+        commits: 10,
+        limit: 10,
+        docs_frequency_lane: true,
+        ..Default::default()
+    };
+    let calculated = calculate_hotspots_detailed(&storage, &history, &docs_lane).unwrap();
+    assert!(calculated.hotspots.is_empty());
+    assert_eq!(calculated.omitted_docs_paths, 0);
+}
+
+#[test]
+fn exclude_docs_paths_does_not_let_changelog_set_max_freq() {
+    let tmp = tempdir().unwrap();
+    let storage = StorageManager::init(&tmp.path().join("ledger.db")).unwrap();
+    insert_snapshot(&storage);
+    insert_complexity(&storage, "src/lib.rs", 20);
+
+    let history = MockHistoryProvider {
+        history: vec![
+            commit(&["CHANGELOG.md", "src/lib.rs"]),
+            commit(&["CHANGELOG.md"]),
+            commit(&["CHANGELOG.md"]),
+            commit(&["CHANGELOG.md"]),
+            commit(&["CHANGELOG.md"]),
+        ],
+    };
+
+    let unfiltered = calculate_hotspots(
+        &storage,
+        &history,
+        &HotspotQuery {
+            commits: 10,
+            limit: 10,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let lib = unfiltered
+        .iter()
+        .find(|h| h.path.to_string_lossy().replace('\\', "/") == "src/lib.rs")
+        .expect("lib.rs in unfiltered");
+    assert!(
+        lib.score < 1.0,
+        "CHANGELOG in the map must pull lib.rs f_norm below 1, got {}",
+        lib.score
+    );
+
+    let filtered = calculate_hotspots(
+        &storage,
+        &history,
+        &HotspotQuery {
+            commits: 10,
+            limit: 10,
+            exclude_docs_paths: true,
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    assert_eq!(filtered.len(), 1);
+    assert_eq!(
+        filtered[0].path.to_string_lossy().replace('\\', "/"),
+        "src/lib.rs"
+    );
+    assert_eq!(filtered[0].score, 1.0);
+}
+
+#[test]
 fn test_hotspot_score_null_deserializes_as_zero_for_backward_compat() {
     // Regression: packets written before the NaN fix have "score":null.
     // The custom deserializer should read null as 0.0 so verify doesn't crash.

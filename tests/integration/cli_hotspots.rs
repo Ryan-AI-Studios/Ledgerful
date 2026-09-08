@@ -666,6 +666,42 @@ fn setup_mixed_hotspot_repo() -> tempfile::TempDir {
     tmp
 }
 
+/// Indexed repo with a production Rust file and a higher-frequency CHANGELOG.
+/// Two files total so `--limit 10` cannot hide CHANGELOG by truncation.
+fn setup_docs_churn_repo() -> tempfile::TempDir {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+
+    setup_git_repo(root);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("src/lib.rs"),
+        "pub fn add(a: i32, b: i32) -> i32 {\n    if a > 0 { a + b } else { b - a }\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("CHANGELOG.md"),
+        "# changelog\n\n## 0.1.0\n\n- start\n",
+    )
+    .unwrap();
+    git_add_and_commit(root, "initial mixed");
+
+    for i in 1..=8 {
+        fs::write(
+            root.join("CHANGELOG.md"),
+            format!("# changelog\n\n## 0.1.{i}\n\n- touch {i}\n"),
+        )
+        .unwrap();
+        git_add_and_commit(root, &format!("churn changelog {i}"));
+    }
+
+    let _guard = DirGuard::new(root);
+    execute_init(false, false).unwrap();
+    execute_index(IndexArgs::default()).unwrap();
+
+    tmp
+}
+
 #[test]
 fn cli_hotspots_default_json_omits_tests_and_examples() {
     let tmp = setup_mixed_hotspot_repo();
@@ -783,5 +819,169 @@ fn cli_hotspots_human_default_footer_when_omitted() {
     assert!(
         !stdout.contains("tests/foo.rs"),
         "human default must not list tests/foo.rs: {stdout}"
+    );
+}
+
+#[test]
+fn cli_hotspots_default_json_omits_changelog() {
+    let tmp = setup_docs_churn_repo();
+    let root = tmp.path();
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["hotspots", "--limit", "10", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "CLI failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    let files = json["files"].as_array().expect("files array");
+    assert!(
+        !files.is_empty(),
+        "default list must still rank production code: {stdout}"
+    );
+    assert!(
+        files
+            .iter()
+            .any(|f| { f["path"].as_str().unwrap_or("").replace('\\', "/") == "src/lib.rs" }),
+        "default list must include src/lib.rs: {stdout}"
+    );
+    assert!(
+        files.iter().all(|f| {
+            let path = f["path"].as_str().unwrap_or("").replace('\\', "/");
+            !path.to_ascii_lowercase().ends_with(".md")
+        }),
+        "limit 10 > fixture size; CHANGELOG must be excluded from the map, not truncated: {stdout}"
+    );
+    assert!(
+        files.iter().all(|f| f.get("scoreUnit").is_none()),
+        "must not add scoreUnit: {stdout}"
+    );
+}
+
+#[test]
+fn cli_hotspots_include_docs_json_lists_changelog() {
+    let tmp = setup_docs_churn_repo();
+    let root = tmp.path();
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["hotspots", "--include", "docs", "--limit", "10", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "CLI failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert_eq!(json["schemaVersion"], 1);
+    let files = json["files"].as_array().expect("files array");
+    assert!(
+        files.iter().any(|f| {
+            f["path"]
+                .as_str()
+                .unwrap_or("")
+                .replace('\\', "/")
+                .eq_ignore_ascii_case("changelog.md")
+        }),
+        "include docs must list CHANGELOG.md: {stdout}"
+    );
+    for f in files {
+        let path = f["path"].as_str().unwrap_or("").replace('\\', "/");
+        if path.eq_ignore_ascii_case("changelog.md") {
+            assert_eq!(f["complexity"].as_i64().unwrap_or(-1), 0);
+            let score = f["score"].as_f64().unwrap();
+            assert!(
+                score > 0.0 && score <= 1.0,
+                "docs lane score is f_norm in (0,1]: {stdout}"
+            );
+        }
+        assert!(f.get("scoreUnit").is_none());
+    }
+}
+
+#[test]
+fn cli_hotspots_include_docs_snapshot_is_error() {
+    let tmp = setup_docs_churn_repo();
+    let root = tmp.path();
+    let before = hotspot_history_count(root);
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["hotspots", "--include", "docs", "--snapshot"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        !output.status.success(),
+        "docs lane must not persist: {}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("--snapshot") && stderr.contains("--include docs"),
+        "usage-style error must name both flags: {stderr}"
+    );
+    assert_eq!(hotspot_history_count(root), before);
+}
+
+#[test]
+fn cli_hotspots_human_default_omits_docs_footer() {
+    let tmp = setup_docs_churn_repo();
+    let root = tmp.path();
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["hotspots", "--limit", "10"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "CLI failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("documentation files omitted; --include docs"),
+        "human default must print docs omit footer: {stdout}"
+    );
+    assert!(
+        stdout.contains("Display"),
+        "human list header is Display (ln), not Score: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Score"),
+        "bare Score header is the honesty bug: {stdout}"
+    );
+}
+
+#[test]
+fn cli_hotspots_include_docs_human_omits_tests_footer() {
+    let tmp = setup_docs_churn_repo();
+    let root = tmp.path();
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["hotspots", "--include", "docs", "--limit", "10"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "CLI failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        !stdout.contains("test/example files omitted; --include tests"),
+        "docs lane must not print the tests omit footer: {stdout}"
+    );
+    assert!(
+        stdout.contains("CHANGELOG.md") || stdout.contains("changelog.md"),
+        "docs lane human table must list CHANGELOG.md: {stdout}"
     );
 }
