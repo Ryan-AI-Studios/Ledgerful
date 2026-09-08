@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Synthesized idle `policy check` is not a merge-gate pass (0292):**
+  `ledgerful policy check` with no `policy.toml` and an idle evaluation
+  target prints `IDLE (synthesized; not a merge gate)` instead of green
+  `PASSED`. JSON `passed` stays true (no violations); additive `idle:
+  true` is omitted when false. schemaVersion 1 is unchanged.
+
 - **Session dirt omits watch-ignored harness junctions (0291):**
   `ledgerful session --json` `git.dirtyPaths` / `dirtyCount` now apply
   `watch.ignore_patterns` the same way change-context does. `.claude` /

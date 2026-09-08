@@ -631,6 +631,51 @@ fail_on = "off"
     );
 }
 
+/// 0292: synthesized idle (no policy.toml) is idle JSON, not a merge-gate pass.
+#[test]
+#[serial(env, cwd)]
+fn verification_must_pass_synthesized_idle_is_idle_pass() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "base\n").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let _ni = non_interactive();
+    let _guard = DirGuard::new(root);
+    execute_init(false, false).unwrap();
+    git_add_and_commit_if_dirty(root, "commit init artifacts");
+    // Defense only: init does not write policy.toml (verify auto-policy ≠ this file).
+    let _ = fs::remove_file(root.join(".ledgerful").join("policy.toml"));
+    fs::create_dir_all(root.join("target")).unwrap();
+    fs::write(root.join("target/junk"), "build artifact\n").unwrap();
+
+    let report = evaluate_policy_check(None, None, None).unwrap();
+    assert_eq!(report.policy_source, "synthesized");
+    assert!(
+        report.passed,
+        "synthesized idle must pass: {:?}",
+        report.violations
+    );
+    assert!(
+        !report
+            .violations
+            .iter()
+            .any(|v| v.rule_id == "verification_must_pass"),
+        "synthesized idle must not emit verification_must_pass: {:?}",
+        report.violations
+    );
+    assert!(
+        report
+            .notes
+            .iter()
+            .any(|n| n == VERIFICATION_MUST_PASS_IDLE_NOTE),
+        "expected idle note, got {:?}",
+        report.notes
+    );
+    assert!(report.idle, "synthesized idle must set idle: true");
+}
+
 /// 0214-A: idle local target + unbound-only passing run is still a note.
 #[test]
 #[serial(env, cwd)]
@@ -2024,18 +2069,35 @@ fn policy_check_report_roundtrip() {
         mode: "observe".into(),
         policy_source: "local".into(),
         notes: vec![],
+        idle: false,
     };
     let json = serde_json::to_string(&report).unwrap();
     let back: PolicyCheckReport = serde_json::from_str(&json).unwrap();
     assert_eq!(report, back);
+    assert!(!json.contains("\"idle\""));
 
     // Non-empty notes round-trip too.
     let with_notes = PolicyCheckReport {
         notes: vec!["partial evaluation note".into()],
-        ..report
+        ..report.clone()
     };
     let json2 = serde_json::to_string(&with_notes).unwrap();
     let back2: PolicyCheckReport = serde_json::from_str(&json2).unwrap();
     assert_eq!(with_notes, back2);
     assert!(json2.contains("\"notes\""));
+
+    let with_idle = PolicyCheckReport {
+        idle: true,
+        notes: vec![VERIFICATION_MUST_PASS_IDLE_NOTE.to_string()],
+        policy_source: "synthesized".into(),
+        ..report
+    };
+    let json3 = serde_json::to_string(&with_idle).unwrap();
+    let back3: PolicyCheckReport = serde_json::from_str(&json3).unwrap();
+    assert_eq!(with_idle, back3);
+    assert!(json3.contains("\"idle\":true"));
+
+    let legacy = r#"{"schemaVersion":1,"violations":[],"passed":true,"mode":"observe","policySource":"local"}"#;
+    let from_legacy: PolicyCheckReport = serde_json::from_str(legacy).unwrap();
+    assert!(!from_legacy.idle);
 }
