@@ -61,6 +61,22 @@ impl Commands {
                     f.push("apply");
                 }
             }
+            Commands::Review(ReviewArgs {
+                json,
+                requirements,
+                id,
+                ..
+            }) => {
+                if *json {
+                    f.push("json");
+                }
+                if !requirements.is_empty() {
+                    f.push("requirements");
+                }
+                if id.is_some() {
+                    f.push("id");
+                }
+            }
             Commands::Scan(ScanArgs {
                 impact,
                 summary,

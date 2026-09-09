@@ -77,6 +77,23 @@ threshold_days = 365
 # Do not treat coverage.deploy.enabled as an 0186 DoD.
 # config set cannot write array-of-tables; hand-edit these rows.
 
+# Optional review backends (0304). Omit the table for git+impact join only.
+# expected_path_globs uses globset full-path match: * does not cross /.
+# Nested sources need **/*.rs (*.rs matches only repo-root files).
+# [review]
+# requirements_files = []
+# expected_path_globs = ["**/*.rs"]
+#
+# [review.github]
+# enabled = false
+# repo = ""
+#
+# [review.conductor]
+# root = ""
+#
+# [review.ci]
+# github_checks = false
+
 [[services.definitions]]
 name = "ledgerful"
 root = "src"

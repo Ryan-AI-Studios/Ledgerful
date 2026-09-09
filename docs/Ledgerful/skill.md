@@ -17,6 +17,8 @@ No product file modifications this session (plan audit, DoD audit, diff review).
 
 **Required** (writable review): `ledgerful ledger status --compact` (or `--json`); git status/diff.
 
+When the user asked to review a **git range**, run `ledgerful review <RANGE> --json` instead of assembling change-context / `scan --impact`. Empty `[review]` is valid. Daily 5 for **edits** is unchanged.
+
 **Not required:** `change-context --json`, `scan --impact`, `audit`. B2 escalate presupposes an edit session; review-only does not run change-context, so it cannot trigger B2.
 
 **Optional:** `ledgerful session --json` (one-shot briefing; does not replace Edit/Daily 5). `ledgerful doctor --json` when the tree is writable and signing/env matters — skip in pure read-only filesystem sandboxes.

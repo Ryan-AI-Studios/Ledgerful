@@ -51,6 +51,8 @@ pub struct Config {
     #[serde(default)]
     pub doctor: super::doctor::DoctorConfig,
     #[serde(default)]
+    pub review: super::review::ReviewConfig,
+    #[serde(default)]
     pub bridge: super::bridge::BridgeConfig,
     #[serde(default)]
     pub global_rollup: super::rollup::GlobalRollupConfig,

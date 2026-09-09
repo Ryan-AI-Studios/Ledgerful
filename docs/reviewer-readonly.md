@@ -12,9 +12,10 @@ This doc is the **sandbox RO sibling**, not the writable review-only path.
 **Writable review-only ≠ Codex `-s read-only`.** A reviewer on a writable tree
 who will not modify product files follows skill **Review-only**: `ledger
 status --compact` required; do **not** mandate `change-context`, `audit`, or
-`scan --impact`. Optional: `session --json` (Class-C-adjacent: soft-open;
-skip on pure-RO write-fail). Optional `doctor --json` only when the tree is
-writable and signing/env matters.
+`scan --impact`. For a **git range**, prefer `ledgerful review <RANGE> --json`
+on a writable tree (Class C/D when it opens state). Optional: `session --json`
+(Class-C-adjacent: soft-open; skip on pure-RO write-fail). Optional
+`doctor --json` only when the tree is writable and signing/env matters.
 
 **Pure RO** (Codex `-s read-only`): this matrix. Class C `doctor` stays
 **skip**. Class B already prefers `ledger status` when the DB is readable —

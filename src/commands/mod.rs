@@ -46,6 +46,7 @@ pub mod pid;
 pub mod policy_check;
 pub mod release;
 pub mod reset;
+pub mod review;
 pub mod scan;
 pub mod scan_pr;
 pub mod schedule;
