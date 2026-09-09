@@ -336,3 +336,60 @@ fn session_notice_env_id_isolates() {
     assert!(layout.cli_session_file_for_id("agent-a").is_file());
     assert!(layout.cli_session_file_for_id("agent-b").is_file());
 }
+
+fn insert_http_route(root: &Path) {
+    let layout = Layout::new(root.to_string_lossy().as_ref());
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    let conn = storage.get_connection();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path, last_indexed_at) VALUES (1, 'src/api.rs', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO api_routes (method, path_pattern, handler_symbol_name, handler_file_id, framework, last_indexed_at) \
+         VALUES ('GET', '/api/probe', 'handler', 1, 'axum', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    storage.shutdown().unwrap();
+}
+
+#[test]
+#[serial(cwd)]
+fn session_human_does_not_write_cookie_when_gaps() {
+    let tmp = init_repo();
+    let root = tmp.path();
+    insert_http_route(root);
+    let layout = Layout::new(root.to_string_lossy().as_ref());
+    let _guard = DirGuard::new(root);
+
+    let (stdout, stderr, code) = run_cli(root, &["session"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let lines: Vec<&str> = stdout.lines().collect();
+    assert_eq!(
+        lines.len(),
+        10,
+        "human session must stay 10 lines, got {}: {stdout}",
+        lines.len()
+    );
+    assert!(
+        !layout.cli_session_file().exists(),
+        "human session must not write cli-session.json on a gap fixture"
+    );
+
+    let (stdout, stderr, code) = run_cli(root, &["session", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let json = parse_json(&stdout);
+    assert_eq!(json["kind"], "session");
+    let checklist = json["configChecklist"].as_array().expect("configChecklist");
+    assert!(
+        checklist.iter().any(|i| i["id"] == "coverage.global"),
+        "gap fixture must include coverage.global: {checklist:?}"
+    );
+    assert!(
+        layout.cli_session_file().exists(),
+        "session --json may persist the cookie when gaps exist"
+    );
+}

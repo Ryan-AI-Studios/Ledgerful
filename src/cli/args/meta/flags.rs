@@ -53,6 +53,14 @@ impl Commands {
                     f.push("json");
                 }
             }
+            Commands::Configure(ConfigureArgs { json, apply }) => {
+                if *json {
+                    f.push("json");
+                }
+                if !apply.is_empty() {
+                    f.push("apply");
+                }
+            }
             Commands::Scan(ScanArgs {
                 impact,
                 summary,

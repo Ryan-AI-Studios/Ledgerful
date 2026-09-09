@@ -126,6 +126,18 @@ pub struct SessionArgs {
     pub json: bool,
 }
 
+/// Agent config-completeness catalog and named `--apply` (0302). Not `setup`.
+#[derive(Args, Debug)]
+pub struct ConfigureArgs {
+    /// Emit schema-v1 JSON envelope (`kind: configure`) on stdout (0093 machine mode)
+    #[arg(long)]
+    pub json: bool,
+    /// Explicit catalog ids to apply after HITL. Comma list and/or repeated.
+    /// Only ids with `applyArg` are accepted. No star / `--yes`.
+    #[arg(long, value_delimiter = ',', num_args = 1..)]
+    pub apply: Vec<String>,
+}
+
 /// Clap bag for `search` (query tokens + flags). Not
 /// [`crate::commands::search::SearchArgs`] (execution DTO).
 #[derive(Args, Debug)]

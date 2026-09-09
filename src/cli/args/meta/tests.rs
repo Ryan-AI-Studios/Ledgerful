@@ -186,6 +186,21 @@ fn session_json_is_machine_output() {
 }
 
 #[test]
+fn configure_json_is_machine_output() {
+    assert!(parse(&["configure", "--json"]).is_machine_output());
+    assert!(!parse(&["configure"]).is_machine_output());
+    assert_eq!(parse(&["configure"]).command_name(), "configure");
+    assert_eq!(parse(&["configure", "--json"]).command_name(), "configure");
+    assert_eq!(
+        parse(&["configure", "--json"]).argv_shape(),
+        "configure|json"
+    );
+    let with_apply = parse(&["configure", "--json", "--apply", "coverage.global"]);
+    assert!(with_apply.is_machine_output());
+    assert_eq!(with_apply.command_name(), "configure");
+}
+
+#[test]
 fn paths_comma_and_repeated_parse() {
     // Comma form
     let cli = Cli::try_parse_from([

@@ -4,7 +4,7 @@ use super::packet::*;
 use crate::commands::change_context::{
     ChangeContextOpts, ChangeContextPacket, DoctorSection, build_change_context,
 };
-use crate::config::checklist::{apply_checklist_cookie, build_config_checklist};
+use crate::config::checklist::build_config_checklist;
 use crate::config::model::Config;
 use crate::git::repo::{get_head_info, open_repo};
 use crate::git::status::get_repo_status;
@@ -98,7 +98,7 @@ pub fn build_session(
         cache_warning.as_deref(),
     );
 
-    let mut cli_session = CliSession::load(layout, env_session_id().as_deref(), Utc::now());
+    let cli_session = CliSession::load(layout, env_session_id().as_deref(), Utc::now());
     let config_checklist = match build_config_checklist(layout, storage, config, &cli_session) {
         Ok(items) => items,
         Err(e) => {
@@ -106,7 +106,6 @@ pub fn build_session(
             Vec::new()
         }
     };
-    apply_checklist_cookie(&mut cli_session, &config_checklist);
 
     Ok(SessionEnvelope {
         schema_version: SESSION_SCHEMA_VERSION,
