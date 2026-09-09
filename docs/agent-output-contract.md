@@ -30,6 +30,7 @@ on stderr.
 | `release pins --json` (bare `release --json`) | yes (0201) | yes | schemaVersion 1 object `kind: "releasePins"`; exit **0** match / **1** drift / **2** skipped or unverified. Parent `--json` (T18). Not Daily 5 |
 | `change-context --json` | yes | yes | impact-shaped packet |
 | `session --json` | yes (0224) | yes | schemaVersion 1 object `kind: "session"`; human default is **not** JSON. Does not rewrite `latest-impact.json`. `collisions[]` lives here (not status v1). No `warnAction`. Additive `configChecklist[]` (0301; applicable gaps; may be `[]`). No `sessionNotices` on this envelope. CLI-only. `hotspots.files[]` item keys `path` / `score` (0–1) / additive `displayScore` (ln). Human hotspot tables use column **Display** = `displayScore` |
+| `configure --json` | yes (0302) | yes | schemaVersion 1 object `kind: "configure"`; `items[]` is the 0301 `ConfigChecklistItem` shape; optional `applied[]` only when `--apply` was used. Not `setup --json`. CLI-only. Human path is a table (no Confirm). `--apply` refuse: empty stdout, stderr diagnostic, no cookie |
 | `ledger status --json` | yes | yes | schemaVersion 1 |
 | `ledger stack --json` | yes (0281) | yes | schemaVersion 1 object `kind: "ledgerStack"`; `empty` true iff filtered rules/validators/mappings are all empty; `next` is the two clap register commands only when empty; `enforcementEnabled` from live config; item structs stay snake_case. No `emptyReason`. Not Daily 5 |
 | `status --json` | yes (0149) | yes | **same payload** as `ledger status --json` |
@@ -68,8 +69,10 @@ already been shown. Keys are closed v1 ids (`coverage.global`,
 `coverage.services`, `coverage.deploy`, `observability.empty`); values are the
 string `"already_shown"`. Item `next` / empty `message` stay. Human collapse is
 `Already shown this session.` `session --json` does **not** grow `sessionNotices`.
-It **may** write `.ledgerful/cli-session.json` when `configChecklist[]` has
-`gated` or `empty` rows (0301; marks mapped 0300 notice ids + `config.checklist`).
+Human `session` does **not** write `.ledgerful/cli-session.json`.
+`session --json` and `configure` (human or `--json`) **may** write the
+cookie when `configChecklist[]` / configure `items[]` has `gated` or
+`empty` rows (0301/0302; marks mapped 0300 notice ids + `config.checklist`).
 `doctor --json` still neither grows `sessionNotices` nor writes the cookie.
 
 ```json
@@ -83,6 +86,42 @@ It **may** write `.ledgerful/cli-session.json` when `configChecklist[]` has
 
 First emit in a session omits `sessionNotices`. Later emits keep frozen
 `next` / `message` and add only the ids already shown.
+
+### `configure --json` schema (0302)
+
+Pure stdout. New envelope (`kind: "configure"`). Item shape is the same
+`ConfigChecklistItem` as session `configChecklist[]` (camelCase; `applyArg`
+omitted when none). `applied` is present only when `--apply` was used
+(`skip_serializing_if` empty). Session envelope is unchanged.
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "configure",
+  "items": [
+    {
+      "id": "coverage.global",
+      "status": "gated",
+      "applicable": true,
+      "next": "ledgerful config set coverage.enabled=true",
+      "alreadyShown": false,
+      "applyArg": "coverage.global"
+    }
+  ],
+  "applied": [
+    {
+      "id": "coverage.global",
+      "ok": true,
+      "message": ""
+    }
+  ]
+}
+```
+
+`--apply` is explicit ids only (three `applyArg` tokens). Refuse unknown /
+inapplicable / no-`applyArg` / apply-all / empty-after-trim with no writes,
+empty stdout, and no cookie. Ready applyArg rows are idempotent
+(`message: "already enabled"`).
 
 ### `ledger stack --json` schema (0281)
 

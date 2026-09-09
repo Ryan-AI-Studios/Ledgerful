@@ -29,7 +29,7 @@ Use this ladder when the session **will** modify product files (code, config, po
 
 Prefer `--json` when parsing. Packet schema: `docs/agent-output-contract.md`. Command sheet: `references/commands.md`.
 
-Optional step 0: `ledgerful session --json` (one-shot briefing; does not replace 1–5; does not rewrite `latest-impact.json`). On first `session --json` / Daily 5 step 0 this CLI session: if `configChecklist[]` has any `gated` or `empty` row with `alreadyShown == false`, quote `id` + `status` + `next` and ask once. If every row is `ready` or `optional`, do **not** prompt. Honor `alreadyShown` and later `sessionNotices`. Never `config set` / `index --analyze-graph` / SCIP install / `federate scan` unless the human named the id.
+Optional step 0: `ledgerful configure --json` is the config-HITL catalog (does not replace 1–5). `ledgerful session --json` remains the optional structural briefing (still lists `configChecklist[]`; does not rewrite `latest-impact.json`). On first `configure --json` / `session --json` this CLI session: if items have any `gated` or `empty` row with `alreadyShown == false`, quote `id` + `status` + `next` and ask once. If every row is `ready` or `optional`, do **not** prompt. Honor `alreadyShown`. After the human names apply-able ids: `configure --json --apply <id>[,<id>]` only for tokens that have `applyArg`. Never `config set` / `index --analyze-graph` / SCIP install / `federate scan` unless the human named the id.
 
 | # | Command | Role |
 |---|---|---|

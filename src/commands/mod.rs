@@ -4,6 +4,7 @@ pub mod bridge;
 pub mod change_context;
 pub mod config;
 pub mod config_verify;
+pub mod configure;
 #[cfg(feature = "daemon")]
 pub mod daemon;
 pub mod data_models;

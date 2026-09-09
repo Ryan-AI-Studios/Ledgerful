@@ -16,11 +16,15 @@ pub use packet::{
 };
 
 use crate::commands::change_context::open_storage_for_change_context;
+use crate::config::checklist::apply_checklist_cookie;
+use crate::state::cli_session::{CliSession, env_session_id};
+use chrono::Utc;
 use miette::Result;
 
 /// CLI entrypoint: resolve layout/storage/config, build envelope, print human or JSON.
 ///
 /// Layout and storage failures are hard errors (not a zeroed success envelope).
+/// Cookie persist is catalog-emit only: `--json` may write; human `session` does not.
 pub fn execute_session(json: bool) -> Result<()> {
     let layout = crate::commands::helpers::get_layout()
         .map_err(|e| miette::miette!("session: layout unavailable: {e}"))?;
@@ -34,7 +38,12 @@ pub fn execute_session(json: bool) -> Result<()> {
 
     let envelope = build_session(&layout, &storage, &config)?;
     let _ = storage.shutdown();
-    emit::emit_session(&envelope, json)
+    emit::emit_session(&envelope, json)?;
+    if json {
+        let mut cli_session = CliSession::load(&layout, env_session_id().as_deref(), Utc::now());
+        apply_checklist_cookie(&mut cli_session, &envelope.config_checklist);
+    }
+    Ok(())
 }
 
 #[cfg(test)]

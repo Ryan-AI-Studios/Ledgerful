@@ -1,9 +1,9 @@
 //! Session config checklist (0301). Closed catalog of applicable gaps.
 //!
 //! Fact assembly only — no config writes, no SCIP install, no cookie persist
-//! inside the builder. [`build_session`](crate::commands::session::build_session)
-//! loads the 0300 cookie, calls [`build_config_checklist`], then
-//! [`apply_checklist_cookie`]. Track 0302 will import the same builder.
+//! inside the builder. Catalog-emitting entrypoints (`session --json`,
+//! `configure`) call [`apply_checklist_cookie`] after the catalog is shown.
+//! Human `session` does not persist.
 
 use crate::commands::doctor::{collect_scip_findings, skip_scip_rel_path};
 use crate::commands::policy_check::{PolicySource, resolve_policy};
@@ -113,8 +113,8 @@ pub fn build_config_checklist(
 }
 
 /// Mark mapped 0300 notice ids + `config.checklist` when any row is gated/empty.
-/// Optional-only / empty catalog does not write the cookie.
-pub fn apply_checklist_cookie(session: &mut CliSession, items: &[ConfigChecklistItem]) {
+/// Does not persist — callers persist after the catalog is shown.
+pub fn mark_checklist_cookie(session: &mut CliSession, items: &[ConfigChecklistItem]) {
     if !items.iter().any(|i| i.status.is_gap()) {
         return;
     }
@@ -126,6 +126,12 @@ pub fn apply_checklist_cookie(session: &mut CliSession, items: &[ConfigChecklist
             session.mark_shown(id);
         }
     }
+}
+
+/// Mark mapped 0300 notice ids + `config.checklist` when any row is gated/empty.
+/// Optional-only / empty catalog does not write the cookie.
+pub fn apply_checklist_cookie(session: &mut CliSession, items: &[ConfigChecklistItem]) {
+    mark_checklist_cookie(session, items);
     session.persist();
 }
 

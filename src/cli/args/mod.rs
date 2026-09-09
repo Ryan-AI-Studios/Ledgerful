@@ -104,6 +104,8 @@ Examples:
     ChangeContext(ChangeContextArgs),
     /// One-shot agent session briefing (git + ledger + doctor + change-context + hotspots)
     Session(SessionArgs),
+    /// Applicable config gaps and named `--apply` after HITL (no TUI)
+    Configure(ConfigureArgs),
     /// Index the project for search and discovery
     Index(IndexArgs),
     /// Search the codebase using high-performance regex or semantic search
