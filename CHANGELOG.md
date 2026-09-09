@@ -38,6 +38,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Installation docs honesty (0305):** Replaced present-tense
+  legacy product name with pre-rename hook-gate marker wording
+  in `docs/installation.md`.
+
 - **Hotspots file `complexity` is max across symbols; C++ scores `body` (0299):**
   List/JSON `complexity` is `MAX(MAX(cognitive, cyclomatic))` on the
   current index (`project_symbols`; impact `symbols` only if the file
