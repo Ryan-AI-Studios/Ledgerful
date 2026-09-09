@@ -1,4 +1,4 @@
-use crate::impact::packet::DeadCodeFinding;
+use crate::impact::packet::{ConfidenceFactor, DeadCodeFinding};
 use crate::output::table::{apply_table_style, resolve_table_style};
 use comfy_table::{Cell, Table};
 use owo_colors::{OwoColorize, Stream};
@@ -8,6 +8,42 @@ pub const DEAD_CODE_HONESTY_FOOTER: &str = "Heuristic evidence — not proof of 
 
 /// Empty-state copy when no findings pass the confidence threshold.
 pub const DEAD_CODE_EMPTY_STATE: &str = "No findings above threshold (heuristic analysis).";
+
+/// File-level Kind: first match Unreachable > Untested > GitInactive > Unknown.
+pub(crate) fn grouped_file_kind<'a>(
+    findings: impl IntoIterator<Item = &'a DeadCodeFinding>,
+) -> &'static str {
+    let mut unreachable = false;
+    let mut untested = false;
+    let mut git_inactive = false;
+    for f in findings {
+        for fac in &f.factors {
+            match fac {
+                ConfidenceFactor::UnreachableFromEntrypoints => unreachable = true,
+                ConfidenceFactor::NoTestCoverage => untested = true,
+                ConfidenceFactor::GitInactive { .. } => git_inactive = true,
+            }
+        }
+    }
+    if unreachable {
+        "Unreachable"
+    } else if untested {
+        "Untested"
+    } else if git_inactive {
+        "GitInactive"
+    } else {
+        "Unknown"
+    }
+}
+
+/// Human factor label for `--expand` / `--explain` (not Debug).
+pub(crate) fn human_factor_label(fac: &ConfidenceFactor) -> &'static str {
+    match fac {
+        ConfidenceFactor::UnreachableFromEntrypoints => "Unreachable",
+        ConfidenceFactor::NoTestCoverage => "Untested",
+        ConfidenceFactor::GitInactive { .. } => "GitInactive",
+    }
+}
 
 pub fn print_dead_code_summary(
     findings: &[DeadCodeFinding],
@@ -29,7 +65,7 @@ pub fn print_dead_code_summary(
             let factors_str = f
                 .factors
                 .iter()
-                .map(|fac| format!("{:?}", fac))
+                .map(human_factor_label)
                 .collect::<Vec<_>>()
                 .join(", ");
 
@@ -54,49 +90,42 @@ pub fn print_dead_code_summary(
 }
 
 pub fn print_dead_code_grouped(findings: &[DeadCodeFinding]) {
-    use std::collections::BTreeMap;
+    let mut out = std::io::stdout();
+    super::print_dead_code_grouped_to(&mut out, findings);
+}
 
-    println!(
+pub(crate) fn print_dead_code_grouped_to(
+    w: &mut impl std::io::Write,
+    findings: &[DeadCodeFinding],
+) {
+    let _ = writeln!(
+        w,
         "\n{}",
         "Dead Code Analysis (grouped by file)".if_supports_color(Stream::Stdout, |s| s.bold())
     );
 
     if findings.is_empty() {
-        println!("  {DEAD_CODE_EMPTY_STATE}");
-        println!("  {DEAD_CODE_HONESTY_FOOTER}");
+        let _ = writeln!(w, "  {DEAD_CODE_EMPTY_STATE}");
+        let _ = writeln!(w, "  {DEAD_CODE_HONESTY_FOOTER}");
         return;
     }
 
-    // Group by file path, computing avg confidence, symbol count, top factor.
-    let mut groups: BTreeMap<String, Vec<&DeadCodeFinding>> = BTreeMap::new();
+    // Group by file path, computing avg confidence, symbol count, Kind.
+    let mut groups: std::collections::BTreeMap<String, Vec<&DeadCodeFinding>> =
+        std::collections::BTreeMap::new();
     for f in findings {
         let path = f.file_path.display().to_string();
         groups.entry(path).or_default().push(f);
     }
 
-    // Build rows: (file, symbols, avg_confidence, top_factor)
-    let mut rows: Vec<(String, usize, f64, String)> = groups
+    // Build rows: (file, symbols, avg_confidence, kind)
+    let mut rows: Vec<(String, usize, f64, &'static str)> = groups
         .iter()
         .map(|(file, finds)| {
             let count = finds.len();
             let avg: f64 = finds.iter().map(|f| f.confidence).sum::<f64>() / count as f64;
-            // Top factor = most common factor across symbols in this file.
-            // Use BTreeMap for deterministic iteration order on ties.
-            let mut factor_counts: std::collections::BTreeMap<
-                &crate::impact::packet::ConfidenceFactor,
-                usize,
-            > = std::collections::BTreeMap::new();
-            for f in finds.iter() {
-                for fac in &f.factors {
-                    *factor_counts.entry(fac).or_default() += 1;
-                }
-            }
-            let top_factor = factor_counts
-                .into_iter()
-                .max_by_key(|(_, c)| *c)
-                .map(|(fac, _)| format!("{:?}", fac))
-                .unwrap_or_else(|| "Unknown".to_string());
-            (file.clone(), count, avg, top_factor)
+            let kind = grouped_file_kind(finds.iter().copied());
+            (file.clone(), count, avg, kind)
         })
         .collect();
 
@@ -109,18 +138,18 @@ pub fn print_dead_code_grouped(findings: &[DeadCodeFinding]) {
 
     let mut table = Table::new();
     apply_table_style(&mut table, resolve_table_style());
-    table.set_header(vec!["File", "Symbols", "Avg Confidence", "Top Factor"]);
+    table.set_header(vec!["File", "Symbols", "Avg Confidence", "Kind"]);
 
-    for (file, count, avg, factor) in &rows {
+    for (file, count, avg, kind) in &rows {
         table.add_row(vec![
             Cell::new(file),
             Cell::new(count),
             Cell::new(format!("{:.0}%", avg * 100.0)),
-            Cell::new(factor),
+            Cell::new(*kind),
         ]);
     }
-    println!("{table}");
-    println!("  {DEAD_CODE_HONESTY_FOOTER}");
+    let _ = writeln!(w, "{table}");
+    let _ = writeln!(w, "  {DEAD_CODE_HONESTY_FOOTER}");
 }
 
 pub fn print_dead_code_explanation(findings: &[DeadCodeFinding], file_path: &str) {
@@ -155,13 +184,7 @@ pub fn print_dead_code_explanation_struct(
             symbol.confidence * 100.0
         );
         for factor in &symbol.factors {
-            let name = match &factor.kind {
-                crate::impact::packet::ConfidenceFactor::UnreachableFromEntrypoints => {
-                    "UnreachableFromEntrypoints"
-                }
-                crate::impact::packet::ConfidenceFactor::GitInactive { .. } => "GitInactive",
-                crate::impact::packet::ConfidenceFactor::NoTestCoverage => "NoTestCoverage",
-            };
+            let name = human_factor_label(&factor.kind);
             println!("    {}: {}", name, factor.description);
         }
         println!();

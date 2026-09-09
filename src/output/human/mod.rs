@@ -9,6 +9,7 @@ mod impact;
 mod scan;
 mod verify;
 
+pub(crate) use dead_code::print_dead_code_grouped_to;
 pub use dead_code::{
     DEAD_CODE_EMPTY_STATE, DEAD_CODE_HONESTY_FOOTER, print_dead_code_explanation,
     print_dead_code_explanation_struct, print_dead_code_grouped, print_dead_code_summary,

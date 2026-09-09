@@ -38,6 +38,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Dead-code grouped Kind (0303):** Default table Kind is
+  Unreachable / Untested / GitInactive (priority, not
+  NoTestCoverage frequency). 0100 footer unchanged.
+
 - **Installation docs honesty (0305):** Replaced present-tense
   legacy product name with pre-rename hook-gate marker wording
   in `docs/installation.md`.
