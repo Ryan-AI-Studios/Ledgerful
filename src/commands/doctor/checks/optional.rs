@@ -145,7 +145,7 @@ fn normalize_rel_path(rel: &str) -> String {
     rel.replace('\\', "/")
 }
 
-fn skip_scip_rel_path(rel: &str) -> bool {
+pub(crate) fn skip_scip_rel_path(rel: &str) -> bool {
     normalize_rel_path(rel)
         .to_ascii_lowercase()
         .split('/')
@@ -223,7 +223,7 @@ fn paths_from_walk(work_root: &Utf8Path) -> Option<Vec<String>> {
     Some(out)
 }
 
-fn list_scip_rel_paths(work_root: &Utf8Path) -> Option<Vec<String>> {
+pub(crate) fn list_scip_rel_paths(work_root: &Utf8Path) -> Option<Vec<String>> {
     match crate::git::repo::open_repo(work_root.as_std_path()) {
         Ok(repo) => match repo.index() {
             Ok(index) => Some(paths_from_gix_index(&index)),

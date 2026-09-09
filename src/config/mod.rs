@@ -1,3 +1,4 @@
+pub mod checklist;
 pub mod defaults;
 pub mod error;
 pub mod load;

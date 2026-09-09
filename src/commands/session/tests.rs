@@ -111,6 +111,25 @@ fn human_summary_is_ten_lines_and_not_json() {
 }
 
 #[test]
+fn config_checklist_human_session_stays_ten_lines() {
+    use crate::config::checklist::{ChecklistStatus, ConfigChecklistItem};
+    let mut envelope = SessionEnvelope::default();
+    envelope.config_checklist.push(ConfigChecklistItem {
+        id: "coverage.global".to_string(),
+        status: ChecklistStatus::Gated,
+        applicable: true,
+        next: "ledgerful config set coverage.enabled=true".to_string(),
+        already_shown: false,
+        apply_arg: Some("coverage.global".to_string()),
+    });
+    let text = format_human(&envelope);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 10, "human summary must stay 10 lines: {text}");
+    assert!(!text.contains("configChecklist"));
+    assert!(!text.contains("coverage.global"));
+}
+
+#[test]
 fn envelope_json_has_frozen_fields_no_warn_action() {
     let envelope = SessionEnvelope::default();
     let v = serde_json::to_value(&envelope).expect("serialize");
@@ -123,6 +142,9 @@ fn envelope_json_has_frozen_fields_no_warn_action() {
     assert!(v.get("hotspots").is_some());
     assert!(v.get("impactCache").is_some());
     assert!(v.get("next").is_some());
+    assert!(v["configChecklist"].is_array());
+    assert!(v.get("sessionNotices").is_none());
+    assert!(v.get("warnAction").is_none());
     assert!(v["doctor"].get("warnAction").is_none());
     assert!(v["ledger"]["collisions"].is_array());
     assert_eq!(v["hotspots"]["excludedTests"], true);
@@ -210,6 +232,74 @@ fn session_does_not_rewrite_latest_impact() {
 
     let after = fs::read_to_string(report_path.as_std_path()).unwrap();
     assert_eq!(before, after, "session must not rewrite latest-impact.json");
+    assert!(
+        envelope
+            .next
+            .iter()
+            .all(|n| !n.contains("config set") && !n.contains("configChecklist")),
+        "session.next must stay structural: {:?}",
+        envelope.next
+    );
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn config_checklist_does_not_mutate_session_next() {
+    let tmp = tempdir().unwrap();
+    let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+    let dir = tmp.path();
+    init_git_repo(dir);
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(dir.join("src").join("api.rs"), "fn handler() {}\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(dir)
+        .output()
+        .expect("git add");
+    std::process::Command::new("git")
+        .args(["commit", "-m", "api"])
+        .current_dir(dir)
+        .output()
+        .expect("git commit");
+
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    let conn = storage.get_connection();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path, last_indexed_at) VALUES \
+         (1, 'src/api.rs', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO api_routes (method, path_pattern, handler_symbol_name, handler_file_id, framework, last_indexed_at) \
+         VALUES ('GET', '/api/probe', 'handler', 1, 'axum', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    let envelope = build_session(&layout, &storage, &Config::default()).unwrap();
+    assert!(
+        envelope
+            .config_checklist
+            .iter()
+            .any(|i| i.id == "coverage.global"),
+        "product route must emit coverage.global: {:?}",
+        envelope
+            .config_checklist
+            .iter()
+            .map(|i| i.id.as_str())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        envelope
+            .next
+            .iter()
+            .all(|n| !n.contains("config set") && !n.contains("Declare [services]")),
+        "checklist must not mutate session.next: {:?}",
+        envelope.next
+    );
     let _ = storage.shutdown();
 }
 

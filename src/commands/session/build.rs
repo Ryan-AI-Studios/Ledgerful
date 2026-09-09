@@ -4,6 +4,7 @@ use super::packet::*;
 use crate::commands::change_context::{
     ChangeContextOpts, ChangeContextPacket, DoctorSection, build_change_context,
 };
+use crate::config::checklist::{apply_checklist_cookie, build_config_checklist};
 use crate::config::model::Config;
 use crate::git::repo::{get_head_info, open_repo};
 use crate::git::status::get_repo_status;
@@ -12,9 +13,11 @@ use crate::impact::temporal::GixHistoryProvider;
 use crate::ledger::Transaction;
 use crate::ledger::db::LedgerDb;
 use crate::ledger::find_start_collisions;
+use crate::state::cli_session::{CliSession, env_session_id};
 use crate::state::layout::Layout;
 use crate::state::reports::read_latest_impact_report;
 use crate::state::storage::StorageManager;
+use chrono::Utc;
 use miette::Result;
 use std::path::Path;
 
@@ -95,6 +98,16 @@ pub fn build_session(
         cache_warning.as_deref(),
     );
 
+    let mut cli_session = CliSession::load(layout, env_session_id().as_deref(), Utc::now());
+    let config_checklist = match build_config_checklist(layout, storage, config, &cli_session) {
+        Ok(items) => items,
+        Err(e) => {
+            tracing::debug!(error = %e, "session: config checklist omitted");
+            Vec::new()
+        }
+    };
+    apply_checklist_cookie(&mut cli_session, &config_checklist);
+
     Ok(SessionEnvelope {
         schema_version: SESSION_SCHEMA_VERSION,
         kind: SESSION_KIND.to_string(),
@@ -119,6 +132,7 @@ pub fn build_session(
         },
         impact_cache,
         next,
+        config_checklist,
     })
 }
 

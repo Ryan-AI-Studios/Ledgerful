@@ -1,6 +1,7 @@
 //! Session briefing envelope (track 0224).
 
 use crate::commands::change_context::ReadSetEntry;
+use crate::config::checklist::ConfigChecklistItem;
 use crate::impact::packet::Hotspot;
 use crate::ledger::pending_entity_overlap::CollisionHit;
 use crate::state::reports::LatestImpactReport;
@@ -40,6 +41,9 @@ pub struct SessionEnvelope {
     pub hotspots: SessionHotspots,
     pub impact_cache: SessionImpactCache,
     pub next: Vec<String>,
+    /// Applicable config gaps (0301). Always present; may be empty.
+    #[serde(default)]
+    pub config_checklist: Vec<ConfigChecklistItem>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -231,6 +235,7 @@ impl Default for SessionEnvelope {
                 tree_clean: false,
             },
             next: Vec::new(),
+            config_checklist: Vec::new(),
         }
     }
 }

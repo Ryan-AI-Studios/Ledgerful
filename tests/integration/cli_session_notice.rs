@@ -1,5 +1,6 @@
 //! Track 0300: session-once notices. Printer tests bind §8 names to real CLI
-//! empty arms (agy-B-01 / agy-M-03). Session/doctor must not write the cookie.
+//! empty arms (agy-B-01 / agy-M-03). Doctor never writes the cookie. Session
+//! writes only when `configChecklist` has gated/empty rows (0301).
 
 use crate::common::{DirGuard, git_add_and_commit, non_interactive, run_cli, setup_git_repo};
 use ledgerful::commands::init::execute_init;
@@ -80,7 +81,7 @@ fn session_notice_not_written_by_session() {
     }
     assert!(
         !layout.cli_session_file().exists(),
-        "session --json must not create cli-session.json"
+        "session --json on a no-gap fixture must not create cli-session.json"
     );
 }
 

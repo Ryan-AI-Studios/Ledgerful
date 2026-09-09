@@ -322,7 +322,7 @@ pub fn evaluate_policy_check(
 /// 3. Local mode → working-tree `.ledgerful/policy.toml` or synthesize from
 ///    `gate.mode` with full rule set on. Source = `local` when a file is loaded,
 ///    `synthesized` when not.
-fn resolve_policy(
+pub(crate) fn resolve_policy(
     layout: &Layout,
     policy_path: Option<&Path>,
     pr_base: Option<&str>,

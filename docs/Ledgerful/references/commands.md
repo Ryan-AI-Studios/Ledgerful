@@ -14,7 +14,7 @@ Short flags only. Humans: `ledgerful --help`.
 
 `ledgerful verify --dry-run` without `--scope` previews the pre-push **fast** plan (executed `verify` without flags stays **full**; `--scope full --dry-run` is the full preview; `--json --dry-run` is refused). Fully-clean auto-policy dry-run skips prediction.
 
-Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/change-context/hotspots/`impactCache`). Does **not** replace Daily 5. Does not rewrite `latest-impact.json`. Human `session` is a 10-line summary, not JSON. Session `git.dirtyPaths` omits `watch.ignore_patterns` (change-context parity); harness junctions are not product dirt. Session `hotspots.files[]` `score` is 0–1; additive `displayScore` is ln (same units as `hotspots --json`). Human hotspot tables use **Display**, not a bare Score column.
+Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/change-context/hotspots/`impactCache` + additive `configChecklist[]` of applicable gaps). Does **not** replace Daily 5. Does not rewrite `latest-impact.json`. Human `session` is a 10-line summary, not JSON. `session.next` stays structural (no `config set`). Session `git.dirtyPaths` omits `watch.ignore_patterns` (change-context parity); harness junctions are not product dirt. Session `hotspots.files[]` `score` is 0–1; additive `displayScore` is ln (same units as `hotspots --json`). Human hotspot tables use **Display**, not a bare Score column. First session this CLI cookie: quote gated/empty checklist rows once (`alreadyShown`); never `config set` unless the human named the id.
 
 ## Provenance (not Daily 5)
 
