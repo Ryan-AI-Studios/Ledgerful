@@ -590,7 +590,7 @@ pub fn execute_scan_with_opts(
 /// - Missing `ledger.db` → `unavailable` without creating any state.
 /// - Open via `open_read_only_sqlite_only` only (never `init_with_layout`).
 /// - File-level path only (no `resolve_seeds`).
-pub(super) fn compute_pr_scan_test_gaps(
+pub(crate) fn compute_pr_scan_test_gaps(
     layout: &Layout,
     snapshot: &RepoSnapshot,
 ) -> crate::impact::enrichment::test_gaps::TestGapsReport {
@@ -625,7 +625,7 @@ pub(super) fn compute_pr_scan_test_gaps(
 /// - Missing `ledger.db` → `unavailable` without creating any state.
 /// - Open via `open_read_only_sqlite_only` only (never `init_with_layout`).
 /// - File-path seeds only (no symbol resolution / no blast on this path).
-pub(super) fn compute_pr_scan_affected_flows(
+pub(crate) fn compute_pr_scan_affected_flows(
     layout: &Layout,
     snapshot: &RepoSnapshot,
 ) -> crate::impact::enrichment::affected_flows::AffectedFlowsReport {

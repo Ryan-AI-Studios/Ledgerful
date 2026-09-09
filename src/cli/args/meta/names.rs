@@ -36,6 +36,7 @@ impl Commands {
             Commands::ChangeContext(ChangeContextArgs { .. }) => "change_context",
             Commands::Session(SessionArgs { .. }) => "session",
             Commands::Configure(ConfigureArgs { .. }) => "configure",
+            Commands::Review(ReviewArgs { .. }) => "review",
             Commands::Index(IndexArgs { .. }) => "index",
             Commands::Search(SearchCliArgs { .. }) => "search",
             Commands::Hotspots { args } => match &args.command {

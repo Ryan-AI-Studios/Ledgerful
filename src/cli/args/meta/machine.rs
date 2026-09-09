@@ -36,6 +36,7 @@ impl Commands {
             Commands::ChangeContext(ChangeContextArgs { json, .. }) => *json,
             Commands::Session(SessionArgs { json }) => *json,
             Commands::Configure(ConfigureArgs { json, .. }) => *json,
+            Commands::Review(ReviewArgs { json, .. }) => *json,
             Commands::Index(IndexArgs { json, .. }) => *json,
             Commands::Search(SearchCliArgs {
                 json, json_lines, ..

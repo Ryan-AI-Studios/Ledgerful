@@ -138,6 +138,23 @@ pub struct ConfigureArgs {
     pub apply: Vec<String>,
 }
 
+/// Range review packet (`kind: review`) — compose git + impact counts.
+#[derive(Args, Debug)]
+pub struct ReviewArgs {
+    /// Git range (`base..head`, `base...head`, or bare `base`)
+    #[arg(value_name = "RANGE")]
+    pub range: String,
+    /// Emit schema-v1 JSON envelope (`kind: review`) on stdout (0093 machine mode)
+    #[arg(long)]
+    pub json: bool,
+    /// Extra requirement files (repeatable and/or comma-separated). First 8 used.
+    #[arg(long, value_name = "PATH", value_delimiter = ',', num_args = 1..)]
+    pub requirements: Vec<String>,
+    /// Opaque backend id (PR number or conductor track). Never implies `--track`.
+    #[arg(long, value_name = "ID")]
+    pub id: Option<String>,
+}
+
 /// Clap bag for `search` (query tokens + flags). Not
 /// [`crate::commands::search::SearchArgs`] (execution DTO).
 #[derive(Args, Debug)]

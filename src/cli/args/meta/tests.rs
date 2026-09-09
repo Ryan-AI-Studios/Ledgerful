@@ -53,6 +53,12 @@ fn machine_mode_selected_for_json_flags() {
     assert!(parse(&["surfaces", "--json"]).is_machine_output());
     assert!(!parse(&["surfaces"]).is_machine_output());
     assert_eq!(parse(&["surfaces"]).command_name(), "surfaces");
+    assert!(parse(&["review", "HEAD~1..HEAD", "--json"]).is_machine_output());
+    assert!(!parse(&["review", "HEAD~1..HEAD"]).is_machine_output());
+    assert_eq!(
+        parse(&["review", "HEAD~1..HEAD", "--json"]).command_name(),
+        "review"
+    );
     assert!(parse(&["tour", "--json"]).is_machine_output());
     assert!(!parse(&["tour"]).is_machine_output());
     assert_eq!(parse(&["tour"]).command_name(), "surfaces");

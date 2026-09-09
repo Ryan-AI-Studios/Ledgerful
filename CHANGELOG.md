@@ -8,6 +8,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Agent review packet (0304):** `ledgerful review <range> --json`
+  joins git + impact counts + bounded ledger search (`kind: review`).
+  Conductor off unless `[review.conductor].root` is set.
+
 - **`configure --json` / `--apply` (0302):** Non-interactive config catalog
   (`schemaVersion` 1, `kind: configure`) imported from the 0301
   `configChecklist` classifier. `--apply` mutates only the three

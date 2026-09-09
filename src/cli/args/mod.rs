@@ -106,6 +106,8 @@ Examples:
     Session(SessionArgs),
     /// Applicable config gaps and named `--apply` after HITL (no TUI)
     Configure(ConfigureArgs),
+    /// Range review packet for agents (`kind: review`)
+    Review(ReviewArgs),
     /// Index the project for search and discovery
     Index(IndexArgs),
     /// Search the codebase using high-performance regex or semantic search
