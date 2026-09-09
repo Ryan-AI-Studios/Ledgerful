@@ -780,6 +780,172 @@ fn dead_code_honesty_strings_present() {
     assert!(!DEAD_CODE_EMPTY_STATE.contains("No dead code found"));
 }
 
+fn dead_code_finding(
+    path: &str,
+    factors: Vec<crate::impact::packet::ConfidenceFactor>,
+) -> crate::impact::packet::DeadCodeFinding {
+    crate::impact::packet::DeadCodeFinding {
+        symbol_name: "sym".into(),
+        file_path: std::path::PathBuf::from(path),
+        confidence: 0.8,
+        factors,
+        recommendation: "review".into(),
+        line_start: None,
+        line_end: None,
+    }
+}
+
+#[test]
+fn grouped_file_kind_priority_unreachable_over_untested() {
+    use super::dead_code::grouped_file_kind;
+    use crate::impact::packet::ConfidenceFactor;
+
+    let finding = dead_code_finding(
+        "src/commands/verify/mapping.rs",
+        vec![
+            ConfidenceFactor::UnreachableFromEntrypoints,
+            ConfidenceFactor::GitInactive {
+                days_since_last_commit: 23,
+            },
+            ConfidenceFactor::NoTestCoverage,
+        ],
+    );
+    assert_eq!(grouped_file_kind([&finding]), "Unreachable");
+}
+
+#[test]
+fn grouped_file_kind_untested_only_not_dropped() {
+    use super::dead_code::grouped_file_kind;
+    use crate::impact::packet::ConfidenceFactor;
+
+    let finding = dead_code_finding(
+        "src/only_untested.rs",
+        vec![ConfidenceFactor::NoTestCoverage],
+    );
+    assert_eq!(grouped_file_kind([&finding]), "Untested");
+}
+
+#[test]
+fn grouped_file_kind_untested_over_gitinactive() {
+    use super::dead_code::grouped_file_kind;
+    use crate::impact::packet::ConfidenceFactor;
+
+    let finding = dead_code_finding(
+        "src/untested_and_git.rs",
+        vec![
+            ConfidenceFactor::NoTestCoverage,
+            ConfidenceFactor::GitInactive {
+                days_since_last_commit: 10,
+            },
+        ],
+    );
+    assert_eq!(grouped_file_kind([&finding]), "Untested");
+}
+
+#[test]
+fn grouped_file_kind_gitinactive_only() {
+    use super::dead_code::grouped_file_kind;
+    use crate::impact::packet::ConfidenceFactor;
+
+    let finding = dead_code_finding(
+        "src/only_git.rs",
+        vec![ConfidenceFactor::GitInactive {
+            days_since_last_commit: 10,
+        }],
+    );
+    assert_eq!(grouped_file_kind([&finding]), "GitInactive");
+}
+
+#[test]
+fn grouped_file_kind_unknown_on_empty_factors() {
+    use super::dead_code::grouped_file_kind;
+
+    assert_eq!(
+        grouped_file_kind(std::iter::empty::<&crate::impact::packet::DeadCodeFinding>()),
+        "Unknown"
+    );
+    let finding = dead_code_finding("src/empty.rs", vec![]);
+    assert_eq!(grouped_file_kind([&finding]), "Unknown");
+}
+
+#[test]
+fn human_factor_label_never_debug_names() {
+    use super::dead_code::human_factor_label;
+    use crate::impact::packet::ConfidenceFactor;
+
+    let unreachable = ConfidenceFactor::UnreachableFromEntrypoints;
+    let untested = ConfidenceFactor::NoTestCoverage;
+    let git = ConfidenceFactor::GitInactive {
+        days_since_last_commit: 42,
+    };
+    assert_eq!(human_factor_label(&unreachable), "Unreachable");
+    assert_eq!(human_factor_label(&untested), "Untested");
+    assert_eq!(human_factor_label(&git), "GitInactive");
+    assert_ne!(human_factor_label(&unreachable), format!("{unreachable:?}"));
+    assert_ne!(human_factor_label(&untested), format!("{untested:?}"));
+    assert_ne!(human_factor_label(&git), format!("{git:?}"));
+    assert!(!human_factor_label(&git).contains("days_since_last_commit"));
+}
+
+#[test]
+fn grouped_file_kind_table_header_has_kind_column() {
+    use super::print_dead_code_grouped_to;
+    use crate::impact::packet::ConfidenceFactor;
+
+    let finding = dead_code_finding(
+        "src/commands/verify/mapping.rs",
+        vec![
+            ConfidenceFactor::UnreachableFromEntrypoints,
+            ConfidenceFactor::NoTestCoverage,
+        ],
+    );
+    let mut buf = Vec::new();
+    print_dead_code_grouped_to(&mut buf, &[finding]);
+    let table = String::from_utf8(buf).expect("grouped table is UTF-8");
+    assert!(
+        table.contains("Kind"),
+        "grouped header must use Kind, got {table}"
+    );
+    assert!(
+        !table.contains("Top Factor"),
+        "grouped header must not keep Top Factor, got {table}"
+    );
+    assert!(
+        table.contains("Unreachable"),
+        "multi-factor file must print Unreachable, got {table}"
+    );
+    assert!(
+        !table.contains("NoTestCoverage"),
+        "Kind must not use Debug NoTestCoverage, got {table}"
+    );
+}
+
+#[test]
+fn grouped_file_kind_untested_only_table_emits_kind() {
+    use super::print_dead_code_grouped_to;
+    use crate::impact::packet::ConfidenceFactor;
+
+    let finding = dead_code_finding(
+        "src/only_untested.rs",
+        vec![ConfidenceFactor::NoTestCoverage],
+    );
+    let mut buf = Vec::new();
+    print_dead_code_grouped_to(&mut buf, &[finding]);
+    let table = String::from_utf8(buf).expect("grouped table is UTF-8");
+    assert!(
+        table.contains("src/only_untested.rs"),
+        "Untested-only row must still print, got {table}"
+    );
+    assert!(
+        table.contains("Untested"),
+        "NoTestCoverage-only file must print Kind Untested, got {table}"
+    );
+    assert!(
+        !table.contains("NoTestCoverage"),
+        "Kind must not use Debug NoTestCoverage, got {table}"
+    );
+}
+
 #[test]
 fn wsl_support_line_mounted_and_unmounted() {
     assert_eq!(
