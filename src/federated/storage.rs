@@ -216,11 +216,16 @@ mod tests {
     #[test]
     fn after_rename_migrate_impact_query_finds_entries_under_new_basename() {
         use crate::ledger::db::LedgerDb;
+        use chrono::Utc;
 
         let peer = tempdir().unwrap();
         write_schema(peer.path());
         let path = peer.path().to_str().unwrap();
         let conn = open_migrated();
+        // Lookback is SQLite `'now', '-30 days'` — pin inside the window (absolute
+        // 2026-08-10 expired on 2026-09-09).
+        let committed_at = (Utc::now() - chrono::Duration::days(2))
+            .to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
         update_federated_link(&conn, "oldname", path, "2026-01-01T00:00:00Z").unwrap();
         conn.execute(
@@ -236,8 +241,8 @@ mod tests {
                 change_type, summary, reason, is_breaking, committed_at,
                 origin, trace_id, author
              ) VALUES ('tx-impact', 'FEATURE', 'IMPLEMENTATION', 'src/lib.rs', 'src/lib.rs', 'MODIFY',
-                       'sibling change', 'r', 0, '2026-08-10T00:00:00Z', 'SIBLING', 'oldname', 'unknown')",
-            [],
+                       'sibling change', 'r', 0, ?1, 'SIBLING', 'oldname', 'unknown')",
+            rusqlite::params![committed_at],
         )
         .unwrap();
 

@@ -52,9 +52,35 @@ on stderr.
 | `scan --json` / `scan --out` (no `--impact`) | yes (0180) | yes | **gitScan** envelope: numeric `schemaVersion` **1** + top-level **`kind: "gitScan"`** + ScanReport fields; **not** auto-impact |
 | `scan --pr <range> --format json` | via `--format` | yes | PR-range machine output (not impact packet) |
 | `audit --json` | yes | yes | Bare `ProjectAuditReport` object, **no** `schemaVersion`. `churn[].entity` is a unique file path; `count` is distinct LOCAL TXs. Not Daily 5 |
+| `surfaces --json` | yes (0185) | yes | schemaVersion 1 object `kind: "surfaces"`. Item keys `id`/`name`/`command`/`status`/`gate`/`reason`/`next` stay. Additive `sessionNotices` object (0300; skip empty): notice id → `"already_shown"`. `next` strings stay on later emits |
+| `services list --json` / `services diff --json` | yes | yes | schemaVersion 1 object, collection `results`. Gated empty keeps `emptyReason`/`message`. Additive `sessionNotices` (0300; skip empty) |
+| `deploy impact --json` | yes | yes | schemaVersion 1 object, collection `results`. Gated empty keeps `emptyReason`/`message`. Additive `sessionNotices` (0300; skip empty). Flag is on `impact`, not parent `deploy` |
+| `observability coverage --json` | yes | yes | schemaVersion 1 object, collection `results`. Empty keeps `emptyReason`/`message`. Additive `sessionNotices` (0300; skip empty). `observability diff` does **not** participate |
 
 \* Non-essential progress INFO suppressed under machine mode; hard failures still
 use stderr.
+
+### `sessionNotices` (0300)
+
+Additive object on `surfaces --json` and gated/empty `services` / `deploy impact`
+/ `observability coverage` envelopes. Omitted when nothing in this session has
+already been shown. Keys are closed v1 ids (`coverage.global`,
+`coverage.services`, `coverage.deploy`, `observability.empty`); values are the
+string `"already_shown"`. Item `next` / empty `message` stay. Human collapse is
+`Already shown this session.` `session --json` and `doctor --json` do not grow
+this key and do not write `.ledgerful/cli-session.json`.
+
+```json
+{
+  "schemaVersion": 1,
+  "sessionNotices": {
+    "coverage.global": "already_shown"
+  }
+}
+```
+
+First emit in a session omits `sessionNotices`. Later emits keep frozen
+`next` / `message` and add only the ids already shown.
 
 ### `ledger stack --json` schema (0281)
 

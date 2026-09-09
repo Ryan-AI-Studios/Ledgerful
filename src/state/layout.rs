@@ -18,6 +18,7 @@ pub const SEARCH_INDEX_DIR: &str = "search_index";
 pub const DOCS_DIR: &str = "docs";
 pub const CONFIG_FILE: &str = "config.toml";
 pub const RULES_FILE: &str = "rules.toml";
+pub const CLI_SESSION_FILE: &str = "cli-session.json";
 
 #[derive(Debug, Clone)]
 pub struct Layout {
@@ -72,6 +73,16 @@ impl Layout {
 
     pub fn config_file(&self) -> Utf8PathBuf {
         self.state_dir.join(CONFIG_FILE)
+    }
+
+    pub fn cli_session_file(&self) -> Utf8PathBuf {
+        self.state_dir.join(CLI_SESSION_FILE)
+    }
+
+    /// Per-id cookie when `LEDGERFUL_SESSION_ID` is set (0300). `id` must already
+    /// be sanitized (`[A-Za-z0-9._-]{1,64}`).
+    pub fn cli_session_file_for_id(&self, id: &str) -> Utf8PathBuf {
+        self.state_dir.join(format!("cli-session-{id}.json"))
     }
 
     pub fn rules_file(&self) -> Utf8PathBuf {

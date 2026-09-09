@@ -2,9 +2,12 @@ use crate::commands::helpers::get_layout;
 use crate::config::load::load_config;
 use crate::impact::packet::{DeployManifestChange, ManifestType};
 use crate::output::empty::{EmptyReason, config_enable_hint, format_json_empty_state};
+use crate::output::session_notice::{apply_empty_notice, notice_id_for_deploy};
 use crate::output::table::Table;
+use crate::state::cli_session::{CliSession, env_session_id};
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
+use chrono::Utc;
 use clap::{Args, Subcommand};
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
@@ -122,11 +125,26 @@ pub fn execute_deploy(args: DeployArgs) -> Result<()> {
                 };
 
                 if !json && manifests.is_empty() {
-                    let (_, msg) = deploy_empty_state_message(&config);
+                    let (_, full) = deploy_empty_state_message(&config);
+                    let (msg, pending_session) = if let Some(id) = notice_id_for_deploy(
+                        config.coverage.enabled,
+                        config.coverage.deploy.enabled,
+                    ) {
+                        let mut session =
+                            CliSession::load(&layout, env_session_id().as_deref(), Utc::now());
+                        let applied =
+                            apply_empty_notice(&mut session, id, &full, serde_json::json!({}));
+                        (applied.human, Some(session))
+                    } else {
+                        (full, None)
+                    };
                     println!(
                         "  {}",
                         msg.if_supports_color(Stream::Stdout, |s| s.yellow())
                     );
+                    if let Some(session) = pending_session {
+                        session.persist();
+                    }
                     return Ok(());
                 }
 
@@ -143,13 +161,30 @@ pub fn execute_deploy(args: DeployArgs) -> Result<()> {
                             })
                         })
                         .collect();
-                    let output = format_json_empty_state(results, "results", || {
+                    let mut output = format_json_empty_state(results, "results", || {
                         deploy_empty_state_message(&config)
                     });
+                    let pending_session = if output.get("emptyReason").is_some()
+                        && let Some(id) = notice_id_for_deploy(
+                            config.coverage.enabled,
+                            config.coverage.deploy.enabled,
+                        ) {
+                        let (_, full) = deploy_empty_state_message(&config);
+                        let mut session =
+                            CliSession::load(&layout, env_session_id().as_deref(), Utc::now());
+                        let applied = apply_empty_notice(&mut session, id, &full, output);
+                        output = applied.json;
+                        Some(session)
+                    } else {
+                        None
+                    };
                     println!(
                         "{}",
                         serde_json::to_string_pretty(&output).into_diagnostic()?
                     );
+                    if let Some(session) = pending_session {
+                        session.persist();
+                    }
                 } else {
                     println!(
                         "{}",

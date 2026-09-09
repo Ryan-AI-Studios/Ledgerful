@@ -10,6 +10,7 @@ use ledgerful::commands::security::{SecurityArgs, SecuritySubcommands};
 use ledgerful::commands::services_diff::ServicesDiffArgs;
 use ledgerful::commands::services_diff::execute_services_diff;
 use ledgerful::config::model::Config;
+use ledgerful::state::layout::Layout;
 use std::fs;
 use tempfile::tempdir;
 
@@ -378,6 +379,11 @@ fn tour_alias_matches_surfaces_json() {
     let tmp = setup_surfaces_mint_repo();
     let root = tmp.path();
     let (surfaces, _, c1) = run_cli(root, &["surfaces", "--json"]);
+    let layout = Layout::new(root.to_string_lossy().as_ref());
+    let cookie = layout.cli_session_file();
+    if cookie.exists() {
+        fs::remove_file(&cookie).expect("reset session cookie so tour is also first-show");
+    }
     let (tour, _, c2) = run_cli(root, &["tour", "--json"]);
     assert_eq!(c1, 0);
     assert_eq!(c2, 0);
