@@ -51,6 +51,7 @@ mod cli_semantic_honesty;
 mod cli_semantic_progress_0161;
 mod cli_services_diff_messaging;
 mod cli_session;
+mod cli_session_notice;
 mod cli_setup;
 mod cli_sparse_empty_states;
 mod cli_surfaces;

@@ -6,6 +6,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Session-once gated / empty notices (0300):** First `services` /
+  `deploy impact` / `surfaces` / `observability coverage` emit in a
+  CLI session prints the full enable/empty hint. Later emits collapse
+  **human** to `Already shown this session.` JSON keeps `next` /
+  `message` and adds `sessionNotices.<id> = "already_shown"`. Cookie
+  is gitignored `.ledgerful/cli-session.json` (8h TTL;
+  `LEDGERFUL_SESSION_ID` uses a separate file). schemaVersion 1 is
+  unchanged. Doctor / `session --json` do not write the cookie.
+
 ### Fixed
 
 - **Hotspots file `complexity` is max across symbols; C++ scores `body` (0299):**

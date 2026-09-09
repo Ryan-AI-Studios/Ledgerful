@@ -1,7 +1,10 @@
 use crate::commands::helpers::get_layout;
 use crate::config::model::ServiceInferenceState;
+use crate::output::session_notice::{apply_empty_notice, notice_id_for_services};
 use crate::output::table::Table;
+use crate::state::cli_session::{CliSession, env_session_id};
 use crate::state::storage::StorageManager;
+use chrono::Utc;
 use clap::Args;
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
@@ -55,13 +58,27 @@ pub fn execute_services_diff(
                 "route_count": routes,
             }));
         }
-        let output = crate::output::empty::format_json_empty_state(results, "results", || {
+        let mut output = crate::output::empty::format_json_empty_state(results, "results", || {
             empty_state_message(&storage, config)
         });
+        let pending_session = if output.get("emptyReason").is_some()
+            && let Some(id) = notice_id_for_services(config.coverage.service_inference_state())
+        {
+            let (_, full) = empty_state_message(&storage, config);
+            let mut session = CliSession::load(&layout, env_session_id().as_deref(), Utc::now());
+            let applied = apply_empty_notice(&mut session, id, &full, output);
+            output = applied.json;
+            Some(session)
+        } else {
+            None
+        };
         println!(
             "{}",
             serde_json::to_string_pretty(&output).into_diagnostic()?
         );
+        if let Some(session) = pending_session {
+            session.persist();
+        }
     } else {
         println!(
             "{}",
@@ -97,8 +114,21 @@ pub fn execute_services_diff(
             ]);
         }
         if row_count == 0 {
-            let (_, msg) = empty_state_message(&storage, config);
+            let (_, full) = empty_state_message(&storage, config);
+            let (msg, pending_session) = if let Some(id) =
+                notice_id_for_services(config.coverage.service_inference_state())
+            {
+                let mut session =
+                    CliSession::load(&layout, env_session_id().as_deref(), Utc::now());
+                let applied = apply_empty_notice(&mut session, id, &full, serde_json::json!({}));
+                (applied.human, Some(session))
+            } else {
+                (full, None)
+            };
             println!("{}", msg.if_supports_color(Stream::Stdout, |s| s.dimmed()));
+            if let Some(session) = pending_session {
+                session.persist();
+            }
         }
         println!("{}", table);
     }

@@ -1,3 +1,4 @@
+pub mod cli_session;
 pub mod cozo;
 pub mod delta;
 pub mod graph_kinds;

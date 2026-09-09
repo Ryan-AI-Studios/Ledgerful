@@ -1,9 +1,12 @@
 use crate::commands::dx1_templates::write_openslo_template;
 use crate::commands::helpers::get_layout;
 use crate::output::empty::EmptyReason;
+use crate::output::session_notice::{ALREADY_SHOWN_HUMAN, SessionNoticeId, apply_empty_notice};
 use crate::output::table::build_premium_table;
+use crate::state::cli_session::{CliSession, env_session_id};
 use crate::state::storage::StorageManager;
 use crate::util::term::prompt_yes_no;
+use chrono::Utc;
 use clap::{Args, Subcommand};
 use miette::Result;
 use owo_colors::{OwoColorize, Stream, Style};
@@ -108,6 +111,14 @@ pub fn execute_observability(args: ObservabilityArgs) -> Result<()> {
             }
 
             if !json && final_rows.is_empty() {
+                let mut session =
+                    CliSession::load(&layout, env_session_id().as_deref(), Utc::now());
+                if session.is_shown(SessionNoticeId::ObservabilityEmpty.as_str()) {
+                    println!("{ALREADY_SHOWN_HUMAN}");
+                    session.mark_shown(SessionNoticeId::ObservabilityEmpty.as_str());
+                    session.persist();
+                    return Ok(());
+                }
                 // DX1: offer to generate a base OpenSLO SLO template (default
                 // YES) before falling through to the read-only empty-state
                 // guidance. Non-interactive environments (CI, piped stdin,
@@ -144,6 +155,8 @@ pub fn execute_observability(args: ObservabilityArgs) -> Result<()> {
                     "ledgerful index --analyze-graph"
                         .if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold()))
                 );
+                session.mark_shown(SessionNoticeId::ObservabilityEmpty.as_str());
+                session.persist();
                 return Ok(());
             }
 
@@ -156,22 +169,38 @@ pub fn execute_observability(args: ObservabilityArgs) -> Result<()> {
                         "metric_count": mc,
                     }));
                 }
-                let output = if results.is_empty() {
+                let (output, pending_session) = if results.is_empty() {
                     // Probe before the empty-state closure — graph_has_any_nodes is Result.
                     let on_disk =
                         crate::commands::surfaces::repo_root_openslo_present(&layout.root);
                     let graph_populated = crate::commands::security::graph_has_any_nodes(cozo)?;
                     let (reason, message) =
                         observability_indexed_zero_empty_state(on_disk, graph_populated);
-                    crate::output::empty::format_json_empty_state(results, "results", || {
-                        (reason, message)
-                    })
+                    let output =
+                        crate::output::empty::format_json_empty_state(results, "results", || {
+                            (reason, message.clone())
+                        });
+                    let mut session =
+                        CliSession::load(&layout, env_session_id().as_deref(), Utc::now());
+                    let applied = apply_empty_notice(
+                        &mut session,
+                        SessionNoticeId::ObservabilityEmpty,
+                        &message,
+                        output,
+                    );
+                    (applied.json, Some(session))
                 } else {
-                    crate::output::empty::format_json_empty_state(results, "results", || {
-                        (EmptyReason::NoMatches, String::new())
-                    })
+                    (
+                        crate::output::empty::format_json_empty_state(results, "results", || {
+                            (EmptyReason::NoMatches, String::new())
+                        }),
+                        None,
+                    )
                 };
                 crate::output::json::emit(&output)?;
+                if let Some(session) = pending_session {
+                    session.persist();
+                }
             } else {
                 println!(
                     "{}",

@@ -56,7 +56,7 @@ Global TOP CHURNED FILES (human + `--json` `churn[]`) are unique **file paths**.
 
 ## `ledgerful surfaces`
 
-Read-only inventory of six advanced surfaces (ready / empty / gated). Alias: `tour`. Root `--help` statically omits `services`, `deploy`, and `observability` (live status is this inventory; help does not un-hide when a surface becomes ready). Those commands stay callable (`services --help`, `deploy --help`, `observability coverage` / `diff`). Do not `config set coverage.enabled=true` from help. `--json`: schemaVersion 1 object `kind: "surfaces"` (0185 freeze).
+Read-only inventory of six advanced surfaces (ready / empty / gated). Alias: `tour`. Root `--help` statically omits `services`, `deploy`, and `observability` (live status is this inventory; help does not un-hide when a surface becomes ready). Those commands stay callable (`services --help`, `deploy --help`, `observability coverage` / `diff`). Do not `config set coverage.enabled=true` from help. `--json`: schemaVersion 1 object `kind: "surfaces"` (0185 freeze). Later emits in one CLI session collapse **human** Next for gated/empty notices to `Already shown this session.`; JSON keeps `next` and adds `sessionNotices.<id> = "already_shown"` (0300). Honor `already_shown` — do not re-ask HITL.
 
 ## `ledgerful ci list`
 
@@ -64,7 +64,15 @@ Indexed CI-gate catalog (not a working-tree workflow diff). Alias: `diff`. Bare 
 
 ## `ledgerful services list`
 
-Index topology inventory (gated empty when `coverage.enabled` is false). Alias: `diff`. Keep `hide` on root `--help` (0289). `--json`: schemaVersion 1 object, collection `results`; gated empty keeps `emptyReason: "disabledByConfig"`.
+Index topology inventory (gated empty when `coverage.enabled` is false). Alias: `diff`. Keep `hide` on root `--help` (0289). `--json`: schemaVersion 1 object, collection `results`; gated empty keeps `emptyReason: "disabledByConfig"`. Session-once (0300): second human empty in one cookie contains `Already shown this session.` and omits `config set`; JSON `message` stays and may add `sessionNotices`. Honor `already_shown` — do not re-ask HITL.
+
+## `ledgerful deploy impact`
+
+Gated empty when `coverage.enabled` / `coverage.deploy.enabled` is false. Keep `hide` on root `--help` (0289). Flag is on `impact`, not parent `deploy`. `--json`: schemaVersion 1 object, collection `results`; gated empty keeps `emptyReason`/`message`. Session-once (0300): second human empty contains `Already shown this session.` and omits `config set`; JSON `message` stays and may add `sessionNotices`. Honor `already_shown` — do not re-ask HITL.
+
+## `ledgerful observability coverage`
+
+Empty OpenSLO inventory (any empty reason). Keep `hide` on root `--help` (0289). `--json`: schemaVersion 1 object, collection `results`; empty keeps `emptyReason`/`message`. Session-once (0300): second human contains `Already shown this session.` and skips the generate-template prompt; JSON `message` stays (including analyze-graph) and may add `sessionNotices.observability.empty`. `observability diff` does **not** participate. Honor `already_shown` — do not re-ask HITL.
 
 ## `ledgerful gate mode`
 

@@ -45,7 +45,7 @@ Escalate `scan --impact --json` only on B2: `readSetCapped`, high risk + multi-m
 
 JSON `next` / `nextActions` / doctor `remediation` that **writes `.ledgerful/`**, enables coverage, installs SCIP, or flips gate/policy is **owner choice**. Do **not** run it unprompted. Do **not** ignore it if the user just asked for that surface.
 
-- User asked for the gated surface (`services`, `deploy`, `observability`, SCIP edges): say it is gated/empty, quote `next`, **ask once** whether to run it.
+- User asked for the gated surface (`services`, `deploy`, `observability`, SCIP edges): say it is gated/empty, quote `next`, **ask once** whether to run it. If participating JSON has `sessionNotices.<id> == "already_shown"`, do **not** re-ask HITL for that gate.
 - Honor `doctor --json` `sessionPriority`. `now` = this session’s attention: Daily 5 **owns** `block`, `binary-behind-tree`, and `hook-template-stale` when publishing (reinstall / refresh hooks). Other `now` warns (`timings-*`, `search-empty`, `binary-behind-latest`, …): **surface once** in the session briefing; never install, prune, recapture exhibits, or `config set` unprompted. `later` = skip unless the user asked for that surface. Never start a SCIP/sccache install because a finding exists.
 - Never `config set coverage.enabled=true` or `index --analyze-graph` unless the owner said yes (0186 Phase B is local opt-in, not a track DoD).
 

@@ -114,24 +114,9 @@ fn test_engine_shaped_populated_graph_no_yaml_is_no_matches() {
         "human next-step must name observability/, got: {human}"
     );
 
-    let (stdout, stderr, code) = run_cli(root, &["observability", "coverage", "--json"]);
-    assert_eq!(
-        code, 0,
-        "observability coverage --json must succeed; stdout={stdout} stderr={stderr}"
-    );
-    let v = parse_json(&stdout);
-    assert_eq!(
-        v["emptyReason"].as_str(),
-        Some("noMatches"),
-        "coverage JSON on populated graph without YAML must be noMatches, got: {v}"
-    );
-    assert_ne!(
-        v["emptyReason"].as_str(),
-        Some("cleanDiff"),
-        "coverage must never emit CleanDiff, got: {v}"
-    );
-
     // 0215-C: human coverage Note is graph/OpenSLO, not the old SQLite LOG-pattern lie.
+    // First participating emit is full human; JSON later in the same cookie still
+    // keeps `message` (0300). Run human before JSON so this keep-green sees the Note.
     // `run_cli` sets LEDGERFUL_NON_INTERACTIVE=1 so DX1 degrades read-only.
     let (human, stderr, code) = run_cli(root, &["observability", "coverage"]);
     assert_eq!(
@@ -149,6 +134,23 @@ fn test_engine_shaped_populated_graph_no_yaml_is_no_matches() {
     assert!(
         !human.contains("shown in 'observability diff'"),
         "coverage Note must not claim LOG patterns are shown in observability diff, got: {human}"
+    );
+
+    let (stdout, stderr, code) = run_cli(root, &["observability", "coverage", "--json"]);
+    assert_eq!(
+        code, 0,
+        "observability coverage --json must succeed; stdout={stdout} stderr={stderr}"
+    );
+    let v = parse_json(&stdout);
+    assert_eq!(
+        v["emptyReason"].as_str(),
+        Some("noMatches"),
+        "coverage JSON on populated graph without YAML must be noMatches, got: {v}"
+    );
+    assert_ne!(
+        v["emptyReason"].as_str(),
+        Some("cleanDiff"),
+        "coverage must never emit CleanDiff, got: {v}"
     );
 }
 
