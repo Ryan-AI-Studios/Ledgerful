@@ -8,6 +8,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Session `configChecklist[]` (0301):** `session --json` always includes
+  an additive `configChecklist` array of applicable config gaps (coverage,
+  services, OpenSLO, Cedar, policy, gate, SCIP, federate freshness).
+  Inapplicable rows are omitted. Human `session` stays 10 lines.
+  `session.next` is unchanged (no `config set`). schemaVersion 1 is
+  unchanged. Skill HITL quotes gated/empty rows once per CLI session.
+  Session may write the 0300 `cli-session.json` cookie only when a
+  gated/empty row exists; doctor still never writes.
+
 - **Session-once gated / empty notices (0300):** First `services` /
   `deploy impact` / `surfaces` / `observability coverage` emit in a
   CLI session prints the full enable/empty hint. Later emits collapse
@@ -15,7 +24,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `message` and adds `sessionNotices.<id> = "already_shown"`. Cookie
   is gitignored `.ledgerful/cli-session.json` (8h TTL;
   `LEDGERFUL_SESSION_ID` uses a separate file). schemaVersion 1 is
-  unchanged. Doctor / `session --json` do not write the cookie.
+  unchanged. Doctor does not write the cookie. Session may write
+  it when `configChecklist` has gated/empty rows (0301).
 
 ### Fixed
 

@@ -1,6 +1,6 @@
 mod binary_currency;
 mod binary_latest;
-mod checks;
+pub(crate) mod checks;
 mod finding;
 mod fix;
 mod remediation;
@@ -61,7 +61,8 @@ pub(crate) use checks::llm::{
     format_active_ask_backend_with, parse_url_host, probe_with_retry, probe_with_retry_budgeted,
 };
 #[cfg(test)]
-pub(crate) use checks::optional::{chain_checkpoint_practice_finding, collect_scip_findings};
+pub(crate) use checks::optional::chain_checkpoint_practice_finding;
+pub(crate) use checks::optional::{collect_scip_findings, skip_scip_rel_path};
 
 /// Options for [`execute_doctor`] (mapped from clap `DoctorArgs`).
 #[derive(Debug, Clone, Copy, Default)]

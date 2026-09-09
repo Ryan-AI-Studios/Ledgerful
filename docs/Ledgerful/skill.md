@@ -29,7 +29,7 @@ Use this ladder when the session **will** modify product files (code, config, po
 
 Prefer `--json` when parsing. Packet schema: `docs/agent-output-contract.md`. Command sheet: `references/commands.md`.
 
-Optional step 0: `ledgerful session --json` (one-shot briefing; does not replace 1–5; does not rewrite `latest-impact.json`).
+Optional step 0: `ledgerful session --json` (one-shot briefing; does not replace 1–5; does not rewrite `latest-impact.json`). On first `session --json` / Daily 5 step 0 this CLI session: if `configChecklist[]` has any `gated` or `empty` row with `alreadyShown == false`, quote `id` + `status` + `next` and ask once. If every row is `ready` or `optional`, do **not** prompt. Honor `alreadyShown` and later `sessionNotices`. Never `config set` / `index --analyze-graph` / SCIP install / `federate scan` unless the human named the id.
 
 | # | Command | Role |
 |---|---|---|
@@ -47,7 +47,7 @@ JSON `next` / `nextActions` / doctor `remediation` that **writes `.ledgerful/`**
 
 - User asked for the gated surface (`services`, `deploy`, `observability`, SCIP edges): say it is gated/empty, quote `next`, **ask once** whether to run it. If participating JSON has `sessionNotices.<id> == "already_shown"`, do **not** re-ask HITL for that gate.
 - Honor `doctor --json` `sessionPriority`. `now` = this session’s attention: Daily 5 **owns** `block`, `binary-behind-tree`, and `hook-template-stale` when publishing (reinstall / refresh hooks). Other `now` warns (`timings-*`, `search-empty`, `binary-behind-latest`, …): **surface once** in the session briefing; never install, prune, recapture exhibits, or `config set` unprompted. `later` = skip unless the user asked for that surface. Never start a SCIP/sccache install because a finding exists.
-- Never `config set coverage.enabled=true` or `index --analyze-graph` unless the owner said yes (0186 Phase B is local opt-in, not a track DoD).
+- Never `config set coverage.enabled=true` or `index --analyze-graph` unless the owner said yes (0186 Phase B is local opt-in, not a track DoD). Same for SCIP install and `federate scan` — only if the human named that checklist id.
 
 ## SCIP honesty
 
