@@ -350,7 +350,7 @@ fn execute_release_archive(ctx: &BinaryUpdateCtx) -> Result<String> {
         ));
     }
 
-    let payload = extract_release_payload(archive, &archive_bytes)?;
+    let payload = extract_release_payload(archive, &archive_bytes, &dest)?;
     replace_dest_bytes(&dest, &payload)?;
 
     Ok(format!(
@@ -452,11 +452,11 @@ fn sha256_hex(bytes: &[u8]) -> String {
     hex::encode(hasher.finalize())
 }
 
-fn extract_release_payload(archive: &str, bytes: &[u8]) -> Result<Vec<u8>> {
+fn extract_release_payload(archive: &str, bytes: &[u8], dest: &Path) -> Result<Vec<u8>> {
     if archive.ends_with(".zip") {
         extract_zip_root_exe(bytes)
     } else if archive.ends_with(".tar.gz") {
-        extract_unix_tarball(archive, bytes)
+        extract_unix_tarball(archive, bytes, dest)
     } else {
         Err(miette!(
             "Unsupported archive name {archive}.\nSee {}",
@@ -500,11 +500,11 @@ fn extract_zip_root_exe(_bytes: &[u8]) -> Result<Vec<u8>> {
     ))
 }
 
-fn extract_unix_tarball(archive: &str, bytes: &[u8]) -> Result<Vec<u8>> {
+fn extract_unix_tarball(archive: &str, bytes: &[u8], dest: &Path) -> Result<Vec<u8>> {
     let stem = archive
         .strip_suffix(".tar.gz")
         .ok_or_else(|| miette!("Invalid tarball name {archive}"))?;
-    let staging = unique_staging_dir();
+    let staging = unique_staging_dir(dest)?;
     fs::create_dir_all(&staging).into_diagnostic()?;
     let archive_path = staging.join("archive.tar.gz");
     let write_result = (|| -> Result<Vec<u8>> {
@@ -538,12 +538,18 @@ fn extract_unix_tarball(archive: &str, bytes: &[u8]) -> Result<Vec<u8>> {
     write_result
 }
 
-fn unique_staging_dir() -> PathBuf {
+fn unique_staging_dir(dest: &Path) -> Result<PathBuf> {
+    let parent = dest.parent().ok_or_else(|| {
+        miette!(
+            "Destination path has no parent directory for extract staging.\nSee {}",
+            latest_page_url()
+        )
+    })?;
     let nanos = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_nanos())
         .unwrap_or(0);
-    env::temp_dir().join(format!("ledgerful-upd-{}-{nanos}", std::process::id()))
+    Ok(parent.join(format!(".ledgerful-upd-{}-{nanos}", std::process::id())))
 }
 
 fn replace_dest_bytes(dest: &Path, payload: &[u8]) -> Result<()> {
