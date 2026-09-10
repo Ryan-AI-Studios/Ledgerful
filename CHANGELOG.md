@@ -42,6 +42,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Unix `update --binary` extract hygiene (0307):** Latest
+  `.tar.gz` extract takes only `{stem}/ledgerful` (POSIX `/`),
+  refuses a symlink or non-file at that path, and caps the
+  extracted payload at 150 MiB. The 80 MiB download cap is
+  unchanged. Extra archive members (`web/`, README, LICENSE) are
+  not a failure.
+
 - **Review packet parser hygiene (0306):** Conductor finding rows
   use exact status-cell matches after markdown unwrap. A closed
   token (`verified_fixed`, `agree — fold`, …) wins over a leftover
