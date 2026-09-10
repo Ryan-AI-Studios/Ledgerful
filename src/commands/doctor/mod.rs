@@ -1,5 +1,5 @@
 mod binary_currency;
-mod binary_latest;
+pub(crate) mod binary_latest;
 pub(crate) mod checks;
 mod finding;
 mod fix;

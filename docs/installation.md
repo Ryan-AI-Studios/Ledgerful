@@ -74,6 +74,10 @@ The durable fix is codesign + notarize in the release pipeline; the `xattr` path
 
 ## Fleet / hooks upgrade (existing Ledgerful installs)
 
+Release installs can refresh PATH with `ledgerful update --binary` (GitHub Latest
+archive). Engine checkouts may still cargo-install this tree. Channel upgrades
+stay on the same channel you installed.
+
 After upgrading the `ledgerful` binary on PATH, existing repos that already call
 `ledgerful verify --scope fast` from pre-push get **quiet success**, a
 **structured fail block**, and **formatter path lists** with no shell rewrite
@@ -353,9 +357,7 @@ close the process and retry:
 ledgerful update --binary
 ```
 
-`ledgerful init` treats alias repair as best-effort. An explicit
-`ledgerful update --binary` returns a failure if canonical installation
-succeeds but the alias still cannot be repaired.
+`ledgerful init` treats alias repair as best-effort.
 
 ## Release Assets
 

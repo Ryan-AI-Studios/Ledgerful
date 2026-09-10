@@ -15,8 +15,9 @@ pub const BINARY_BEHIND_TREE_CODE: &str = "binary-behind-tree";
 
 /// Remediation lines always include `--force` for same-version reinstall (B3).
 pub const BINARY_BEHIND_TREE_REMEDIATION: &str = "\
-cargo install --path . --force
 ledgerful update --binary
+https://github.com/Ryan-AI-Studios/Ledgerful/releases/latest
+cargo install --path . --force
 ledgerful --version";
 
 /// Arms that fired for a single `binary-behind-tree` finding.
@@ -421,6 +422,12 @@ mod tests {
             "must include update --binary: {rem}"
         );
         assert!(rem.contains("ledgerful --version"));
+        let first = rem.lines().next().unwrap_or("");
+        assert_eq!(
+            first, "ledgerful update --binary",
+            "cargo must not be the first remediation line: {rem}"
+        );
+        assert_ne!(first, "cargo install --path . --force");
     }
 
     #[test]

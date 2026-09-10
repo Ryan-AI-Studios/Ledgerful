@@ -219,7 +219,10 @@ fn release_tag_url(tag: &str) -> String {
 }
 
 fn behind_latest_remediation(tag: &str) -> String {
-    format!("{}\nledgerful --version", release_tag_url(tag))
+    format!(
+        "{}\nledgerful update --binary\nledgerful --version",
+        release_tag_url(tag)
+    )
 }
 
 fn ahead_of_latest_remediation(tag: &str, sha12: &str) -> String {

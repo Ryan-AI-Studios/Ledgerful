@@ -42,6 +42,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Release `update --binary` (0290):** Non-engine installs fetch
+  GitHub Latest archive (hash from the published `*.sha256` body).
+  Doctor remediations no longer lead with `cargo install --path .`.
+  Engine checkout may still cargo-install this tree.
+
 - **Dead-code grouped Kind (0303):** Default table Kind is
   Unreachable / Untested / GitInactive (priority, not
   NoTestCoverage frequency). 0100 footer unchanged.
