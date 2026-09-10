@@ -332,7 +332,16 @@ pub fn execute_review_in(
         merge_promised(&mut promised_out, items);
     }
 
-    let github_bits = load_github(work_dir, review_cfg, opts.id.as_deref());
+    let suppress_github = suppress_github_http(coordinated.is_some(), &findings.status);
+    let github_bits = if suppress_github {
+        GithubBits {
+            attempted: false,
+            requirements: None,
+            findings: Vec::new(),
+        }
+    } else {
+        load_github(work_dir, review_cfg, opts.id.as_deref())
+    };
     if let Some(items) = github_bits.requirements {
         merge_promised(&mut promised_out, items);
     }
@@ -350,7 +359,13 @@ pub fn execute_review_in(
         }
     }
 
-    let ci_evidence = load_ci_evidence(layout, review_cfg, work_dir, opts.id.as_deref());
+    let ci_evidence = load_ci_evidence(
+        layout,
+        review_cfg,
+        work_dir,
+        opts.id.as_deref(),
+        suppress_github,
+    );
 
     let envelope = ReviewEnvelope {
         schema_version: REVIEW_SCHEMA_VERSION,
@@ -810,7 +825,7 @@ fn load_conductor(
     cfg: &ReviewConfig,
     id: Option<&str>,
 ) -> (ReviewFindings, Option<ReviewCoordinated>) {
-    if !conductor_backend_on(cfg) || id.is_none() {
+    if !conductor_backend_on(cfg) {
         return (
             ReviewFindings {
                 status: "none".to_string(),
@@ -841,18 +856,32 @@ fn load_conductor(
                 }),
             )
         }
-        Err(reason) => (
-            ReviewFindings {
-                status: "unavailable".to_string(),
-                items: vec![ReviewFindingItem {
-                    source: "conductor".to_string(),
-                    title: reason,
-                    severity: Some("unavailable".to_string()),
-                }],
-                truncated: false,
-            },
-            None,
-        ),
+        Err(reason) => {
+            let genuine_miss = reason.contains("no conductor track matching");
+            if id.parse::<u64>().is_ok() && cfg.github.enabled && genuine_miss {
+                (
+                    ReviewFindings {
+                        status: "none".to_string(),
+                        items: Vec::new(),
+                        truncated: false,
+                    },
+                    None,
+                )
+            } else {
+                (
+                    ReviewFindings {
+                        status: "unavailable".to_string(),
+                        items: vec![ReviewFindingItem {
+                            source: "conductor".to_string(),
+                            title: reason,
+                            severity: Some("unavailable".to_string()),
+                        }],
+                        truncated: false,
+                    },
+                    None,
+                )
+            }
+        }
     }
 }
 
@@ -1008,18 +1037,46 @@ fn conductor_findings(track_dir: &Path) -> ReviewFindings {
     }
 }
 
+const CONDUCTOR_CLOSED_CELLS: &[&str] = &[
+    "closed",
+    "folded",
+    "declined",
+    "verified_fixed",
+    "agree — fold",
+    "agree - fold",
+    "resolved",
+];
+
+fn normalize_conductor_cell(c: &str) -> String {
+    c.trim()
+        .trim_matches(|ch| ch == '*' || ch == '`' || ch == '_')
+        .to_ascii_lowercase()
+}
+
 fn conductor_finding_row_is_open(t: &str) -> bool {
-    let lower = t.to_ascii_lowercase();
-    if lower.contains("agree — fold")
-        || lower.contains("agree - fold")
-        || lower.contains("verified_fixed")
-        || lower.contains("closed")
-        || lower.contains("declined")
-        || lower.contains("folded")
+    let cells: Vec<String> = t
+        .split('|')
+        .map(normalize_conductor_cell)
+        .filter(|c| !c.is_empty())
+        .collect();
+    if cells
+        .iter()
+        .any(|c| CONDUCTOR_CLOSED_CELLS.contains(&c.as_str()))
     {
         return false;
     }
-    t.contains("- [ ]") || t.contains("UNRESOLVED") || lower.contains("| open |")
+    t.contains("- [ ]") || t.contains("UNRESOLVED") || cells.iter().any(|c| c == "open")
+}
+
+fn should_fetch_github_checks(cfg: &ReviewConfig) -> bool {
+    cfg.github.enabled && cfg.ci.github_checks
+}
+
+/// Skip GitHub findings *and* check-run HTTP when conductor already owns
+/// the `--id` (resolved track) or reported a real failure (ambiguous /
+/// slug miss). Genuine numeric miss stays `status: none` so GitHub may run.
+fn suppress_github_http(coordinated: bool, findings_status: &str) -> bool {
+    coordinated || findings_status == "unavailable"
 }
 
 struct GithubBits {
@@ -1030,6 +1087,20 @@ struct GithubBits {
 
 fn load_github(work_dir: &Path, cfg: &ReviewConfig, id: Option<&str>) -> GithubBits {
     if !cfg.github.enabled {
+        return GithubBits {
+            attempted: false,
+            requirements: None,
+            findings: Vec::new(),
+        };
+    }
+    let Some(id) = id else {
+        return GithubBits {
+            attempted: false,
+            requirements: None,
+            findings: Vec::new(),
+        };
+    };
+    if id.parse::<u64>().is_err() {
         return GithubBits {
             attempted: false,
             requirements: None,
@@ -1050,28 +1121,6 @@ fn load_github(work_dir: &Path, cfg: &ReviewConfig, id: Option<&str>) -> GithubB
             }],
         };
     };
-    let Some(id) = id else {
-        return GithubBits {
-            attempted: true,
-            requirements: None,
-            findings: vec![ReviewFindingItem {
-                source: "github".to_string(),
-                title: "--id must be a numeric pull number".to_string(),
-                severity: Some("unavailable".to_string()),
-            }],
-        };
-    };
-    if id.parse::<u64>().is_err() {
-        return GithubBits {
-            attempted: true,
-            requirements: None,
-            findings: vec![ReviewFindingItem {
-                source: "github".to_string(),
-                title: "--id must be a numeric pull number".to_string(),
-                severity: Some("unavailable".to_string()),
-            }],
-        };
-    }
     let repo = resolve_github_repo(work_dir, &cfg.github.repo);
     let Some(repo) = repo else {
         return GithubBits {
@@ -1213,6 +1262,7 @@ fn load_ci_evidence(
     cfg: &ReviewConfig,
     work_dir: &Path,
     id: Option<&str>,
+    suppress_github: bool,
 ) -> ReviewCiEvidence {
     let mut items = Vec::new();
     let history_path = layout.reports_dir().join(VERIFY_HISTORY);
@@ -1249,7 +1299,8 @@ fn load_ci_evidence(
         }
     }
 
-    if cfg.ci.github_checks
+    if !suppress_github
+        && should_fetch_github_checks(cfg)
         && let Some(extra) = fetch_github_checks(work_dir, cfg, id)
     {
         items.extend(extra);
@@ -1342,6 +1393,14 @@ mod tests {
     use std::fs;
     use std::process::Command;
     use tempfile::tempdir;
+
+    mod env_guard {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/integration/common/env_guard.rs"
+        ));
+    }
+    use env_guard::TempEnv;
 
     fn parse_cli(args: &[&str]) -> std::result::Result<Cli, clap::Error> {
         let mut full = vec!["ledgerful"];
@@ -1863,6 +1922,461 @@ mod tests {
                 .any(|i| i.source == "AI-review.md" || i.title.contains("Agree — fold")),
             "{:?}",
             env.unresolved_findings.items
+        );
+    }
+
+    #[test]
+    fn review_conductor_row_disclosed_stays_open() {
+        assert!(conductor_finding_row_is_open(
+            "| M-01 | Medium | open | disclosed later |"
+        ));
+    }
+
+    #[test]
+    fn review_conductor_row_unfolded_stays_open() {
+        assert!(conductor_finding_row_is_open(
+            "| M-01 | Medium | open | unfolded |"
+        ));
+    }
+
+    #[test]
+    fn review_conductor_row_closed_cell_is_closed() {
+        assert!(!conductor_finding_row_is_open(
+            "| M-01 | Medium | closed | done |"
+        ));
+        assert!(!conductor_finding_row_is_open(
+            "| agy-M-01 | Major | historical | Agree — fold |"
+        ));
+        assert!(!conductor_finding_row_is_open(
+            "| P1 | verified_fixed | leftover |"
+        ));
+        assert!(!conductor_finding_row_is_open(
+            "| M-01 | Medium | open | Agree — fold |"
+        ));
+        assert!(!conductor_finding_row_is_open(
+            "| - [ ] | Blocker | closed | done |"
+        ));
+        assert!(!conductor_finding_row_is_open(
+            "| M-02 | Medium | declined | leftover |"
+        ));
+        assert!(!conductor_finding_row_is_open(
+            "| M-03 | Medium | resolved | leftover |"
+        ));
+        assert!(!conductor_finding_row_is_open(
+            "| M-04 | Medium | open | agree - fold |"
+        ));
+    }
+
+    #[test]
+    fn review_conductor_row_markdown_formatted_closed_is_closed() {
+        assert!(!conductor_finding_row_is_open(
+            "| R1-01 | medium | open | **verified_fixed** |"
+        ));
+        assert!(conductor_finding_row_is_open(
+            "| R1-02 | medium | **open** | leftover |"
+        ));
+    }
+
+    #[test]
+    fn review_conductor_row_separator_and_unknown_status_dropped() {
+        assert!(!conductor_finding_row_is_open("|---|---|"));
+        assert!(!conductor_finding_row_is_open(
+            "| M-01 | Medium | wontfix |"
+        ));
+        assert!(!conductor_finding_row_is_open("| ID | Sev | Status |"));
+    }
+
+    #[test]
+    fn review_conductor_row_description_closed_stays_open() {
+        assert!(conductor_finding_row_is_open(
+            "| M-01 | Medium | open | Handle socket that was closed abruptly |"
+        ));
+    }
+
+    #[test]
+    fn review_github_omitted_id_not_attempted() {
+        let (_tmp, layout, work, mut config) = harness();
+        config.review.github.enabled = true;
+        let (result, stdout) = run(
+            &layout,
+            &work,
+            &config,
+            ReviewOpts {
+                range: "HEAD~1..HEAD".to_string(),
+                json: true,
+                requirements: Vec::new(),
+                id: None,
+            },
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let env = parse_env(&stdout);
+        assert!(
+            !env.unresolved_findings
+                .items
+                .iter()
+                .any(|i| i.source == "github"),
+            "{:?}",
+            env.unresolved_findings.items
+        );
+        assert!(
+            !stdout.contains("must be a numeric pull number"),
+            "{stdout}"
+        );
+    }
+
+    #[test]
+    fn review_github_slug_id_not_attempted_when_conductor_ok() {
+        let (tmp, layout, work, mut config) = harness();
+        let root = tmp.path().join("conductor");
+        let track = root.join("0304-AgentReviewPacket");
+        fs::create_dir_all(&track).unwrap();
+        fs::write(track.join("spec.md"), "## Objective\n\nShip.\n").unwrap();
+        config.review.conductor.root = root.to_string_lossy().into_owned();
+        config.review.github.enabled = true;
+        let (result, stdout) = run(
+            &layout,
+            &work,
+            &config,
+            ReviewOpts {
+                range: "HEAD~1..HEAD".to_string(),
+                json: true,
+                requirements: Vec::new(),
+                id: Some("0304-AgentReviewPacket".to_string()),
+            },
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let env = parse_env(&stdout);
+        assert_eq!(
+            env.coordinated.as_ref().map(|c| c.track_id.as_str()),
+            Some("0304-AgentReviewPacket")
+        );
+        assert!(
+            !env.unresolved_findings
+                .items
+                .iter()
+                .any(|i| i.source == "github" || i.title.contains("must be a numeric")),
+            "{:?}",
+            env.unresolved_findings.items
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn review_github_leading_zero_id_skips_github_when_conductor_resolves() {
+        let _token = TempEnv::set("GITHUB_TOKEN", "dummy-not-used");
+        let _gh = TempEnv::remove("GH_TOKEN");
+        let (tmp, layout, work, mut config) = harness();
+        let root = tmp.path().join("conductor");
+        let track = root.join("0304-AgentReviewPacket");
+        fs::create_dir_all(&track).unwrap();
+        fs::write(track.join("spec.md"), "## Objective\n\nShip.\n").unwrap();
+        config.review.conductor.root = root.to_string_lossy().into_owned();
+        config.review.github.enabled = true;
+        config.review.github.repo.clear();
+        config.review.ci.github_checks = true;
+        assert_eq!("0304".parse::<u64>().ok(), Some(304));
+        assert!(should_fetch_github_checks(&config.review));
+        assert!(suppress_github_http(true, "ok"));
+        let (result, stdout) = run(
+            &layout,
+            &work,
+            &config,
+            ReviewOpts {
+                range: "HEAD~1..HEAD".to_string(),
+                json: true,
+                requirements: Vec::new(),
+                id: Some("0304".to_string()),
+            },
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let env = parse_env(&stdout);
+        assert_eq!(
+            env.coordinated.as_ref().map(|c| c.track_id.as_str()),
+            Some("0304-AgentReviewPacket")
+        );
+        assert!(
+            !env.unresolved_findings
+                .items
+                .iter()
+                .any(|i| { i.source == "github" || i.title.contains("github repo unparseable") }),
+            "{:?}",
+            env.unresolved_findings.items
+        );
+        assert!(
+            !env.ci_evidence
+                .items
+                .iter()
+                .any(|i| matches!(i, ReviewCiItem::GithubCheck { .. })),
+            "{:?}",
+            env.ci_evidence.items
+        );
+    }
+
+    #[test]
+    fn review_conductor_numeric_pr_miss_is_none_when_github_on() {
+        let (tmp, layout, work, mut config) = harness();
+        let root = tmp.path().join("conductor");
+        fs::create_dir_all(&root).unwrap();
+        config.review.conductor.root = root.to_string_lossy().into_owned();
+        config.review.github.enabled = true;
+        let (result, stdout) = run(
+            &layout,
+            &work,
+            &config,
+            ReviewOpts {
+                range: "HEAD~1..HEAD".to_string(),
+                json: true,
+                requirements: Vec::new(),
+                id: Some("323".to_string()),
+            },
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let env = parse_env(&stdout);
+        assert!(env.coordinated.is_none());
+        assert!(
+            !env.unresolved_findings
+                .items
+                .iter()
+                .any(|i| i.source == "conductor"),
+            "{:?}",
+            env.unresolved_findings.items
+        );
+    }
+
+    #[test]
+    fn review_conductor_numeric_miss_unavailable_when_github_off() {
+        let (tmp, layout, work, mut config) = harness();
+        let root = tmp.path().join("conductor");
+        fs::create_dir_all(&root).unwrap();
+        config.review.conductor.root = root.to_string_lossy().into_owned();
+        config.review.github.enabled = false;
+        let (result, stdout) = run(
+            &layout,
+            &work,
+            &config,
+            ReviewOpts {
+                range: "HEAD~1..HEAD".to_string(),
+                json: true,
+                requirements: Vec::new(),
+                id: Some("323".to_string()),
+            },
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let env = parse_env(&stdout);
+        assert_eq!(env.unresolved_findings.status, "unavailable");
+        assert!(
+            env.unresolved_findings
+                .items
+                .iter()
+                .any(|i| i.source == "conductor" && i.severity.as_deref() == Some("unavailable")),
+            "{:?}",
+            env.unresolved_findings.items
+        );
+    }
+
+    #[test]
+    fn review_github_slug_id_not_attempted_when_conductor_misses() {
+        let (tmp, layout, work, mut config) = harness();
+        let root = tmp.path().join("conductor");
+        fs::create_dir_all(&root).unwrap();
+        config.review.conductor.root = root.to_string_lossy().into_owned();
+        config.review.github.enabled = true;
+        let (result, stdout) = run(
+            &layout,
+            &work,
+            &config,
+            ReviewOpts {
+                range: "HEAD~1..HEAD".to_string(),
+                json: true,
+                requirements: Vec::new(),
+                id: Some("0999-NoSuch".to_string()),
+            },
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let env = parse_env(&stdout);
+        assert!(env.coordinated.is_none());
+        assert_eq!(env.unresolved_findings.status, "unavailable");
+        assert!(
+            env.unresolved_findings
+                .items
+                .iter()
+                .any(|i| i.source == "conductor" && i.title.contains("no conductor track matching")),
+            "{:?}",
+            env.unresolved_findings.items
+        );
+        assert!(
+            !env.unresolved_findings
+                .items
+                .iter()
+                .any(|i| i.source == "github" || i.title.contains("must be a numeric")),
+            "{:?}",
+            env.unresolved_findings.items
+        );
+        assert!(
+            !stdout.contains("must be a numeric pull number"),
+            "{stdout}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn review_conductor_ambiguous_prefix_is_unavailable_even_when_github_on() {
+        let _token = TempEnv::set("GITHUB_TOKEN", "dummy-not-used");
+        let _gh = TempEnv::remove("GH_TOKEN");
+        let (tmp, layout, work, mut config) = harness();
+        let root = tmp.path().join("conductor");
+        let first = root.join("0304-AgentReviewPacket");
+        let second = root.join("0304-OtherTrack");
+        fs::create_dir_all(&first).unwrap();
+        fs::create_dir_all(&second).unwrap();
+        fs::write(first.join("spec.md"), "## Objective\n\nShip.\n").unwrap();
+        fs::write(second.join("spec.md"), "## Objective\n\nOther.\n").unwrap();
+        config.review.conductor.root = root.to_string_lossy().into_owned();
+        config.review.github.enabled = true;
+        config.review.github.repo.clear();
+        config.review.ci.github_checks = true;
+        assert!(should_fetch_github_checks(&config.review));
+        assert!(suppress_github_http(false, "unavailable"));
+        let (result, stdout) = run(
+            &layout,
+            &work,
+            &config,
+            ReviewOpts {
+                range: "HEAD~1..HEAD".to_string(),
+                json: true,
+                requirements: Vec::new(),
+                id: Some("0304".to_string()),
+            },
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let env = parse_env(&stdout);
+        assert!(env.coordinated.is_none());
+        assert_eq!(env.unresolved_findings.status, "unavailable");
+        assert!(
+            env.unresolved_findings.items.iter().any(|i| {
+                i.source == "conductor"
+                    && i.severity.as_deref() == Some("unavailable")
+                    && i.title.contains("ambiguous conductor track prefix")
+            }),
+            "{:?}",
+            env.unresolved_findings.items
+        );
+        assert!(
+            !env.unresolved_findings
+                .items
+                .iter()
+                .any(|i| { i.source == "github" || i.title.contains("github repo unparseable") }),
+            "{:?}",
+            env.unresolved_findings.items
+        );
+        assert!(
+            !env.ci_evidence
+                .items
+                .iter()
+                .any(|i| matches!(i, ReviewCiItem::GithubCheck { .. })),
+            "{:?}",
+            env.ci_evidence.items
+        );
+    }
+
+    #[test]
+    fn review_github_http_suppressed_for_resolved_or_unavailable() {
+        assert!(suppress_github_http(true, "ok"));
+        assert!(suppress_github_http(true, "none"));
+        assert!(suppress_github_http(false, "unavailable"));
+        assert!(!suppress_github_http(false, "none"));
+        assert!(!suppress_github_http(false, "ok"));
+    }
+
+    #[test]
+    fn review_ci_github_checks_ignored_when_github_disabled() {
+        let (tmp, layout, work, mut config) = harness();
+        let root = tmp.path().join("conductor");
+        fs::create_dir_all(&root).unwrap();
+        config.review.conductor.root = root.to_string_lossy().into_owned();
+        config.review.github.enabled = false;
+        config.review.github.repo = "owner/repo".to_string();
+        config.review.ci.github_checks = true;
+        assert!(!should_fetch_github_checks(&config.review));
+        fs::create_dir_all(layout.reports_dir().as_std_path()).unwrap();
+        fs::write(
+            layout.reports_dir().join(VERIFY_HISTORY).as_std_path(),
+            r#"[{"timestamp":"2026-09-09T00:00:00Z","passed":true,"duration_secs":3,"tx_id":"abc"}]"#,
+        )
+        .unwrap();
+        let (result, stdout) = run(
+            &layout,
+            &work,
+            &config,
+            ReviewOpts {
+                range: "HEAD~1..HEAD".to_string(),
+                json: true,
+                requirements: Vec::new(),
+                id: Some("1".to_string()),
+            },
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let env = parse_env(&stdout);
+        assert_eq!(env.ci_evidence.status, "ok");
+        assert!(
+            env.ci_evidence
+                .items
+                .iter()
+                .any(|i| matches!(i, ReviewCiItem::VerifyHistory { passed: true, .. }))
+        );
+        assert!(
+            !env.ci_evidence
+                .items
+                .iter()
+                .any(|i| matches!(i, ReviewCiItem::GithubCheck { .. })),
+            "{:?}",
+            env.ci_evidence.items
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn review_ci_github_checks_skipped_when_no_token() {
+        let _token = TempEnv::remove("GITHUB_TOKEN");
+        let _gh = TempEnv::remove("GH_TOKEN");
+        let (_tmp, layout, work, mut config) = harness();
+        config.review.github.enabled = true;
+        config.review.github.repo = "owner/repo".to_string();
+        config.review.ci.github_checks = true;
+        assert!(should_fetch_github_checks(&config.review));
+        fs::create_dir_all(layout.reports_dir().as_std_path()).unwrap();
+        fs::write(
+            layout.reports_dir().join(VERIFY_HISTORY).as_std_path(),
+            r#"[{"timestamp":"2026-09-09T00:00:00Z","passed":true,"duration_secs":3,"tx_id":"abc"}]"#,
+        )
+        .unwrap();
+        let (result, stdout) = run(
+            &layout,
+            &work,
+            &config,
+            ReviewOpts {
+                range: "HEAD~1..HEAD".to_string(),
+                json: true,
+                requirements: Vec::new(),
+                id: Some("1".to_string()),
+            },
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let env = parse_env(&stdout);
+        assert_eq!(env.ci_evidence.status, "ok");
+        assert!(
+            env.ci_evidence
+                .items
+                .iter()
+                .any(|i| matches!(i, ReviewCiItem::VerifyHistory { passed: true, .. }))
+        );
+        assert!(
+            !env.ci_evidence
+                .items
+                .iter()
+                .any(|i| matches!(i, ReviewCiItem::GithubCheck { .. })),
+            "{:?}",
+            env.ci_evidence.items
         );
     }
 
