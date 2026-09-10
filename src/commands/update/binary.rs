@@ -563,7 +563,7 @@ fn replace_dest_bytes(dest: &Path, payload: &[u8]) -> Result<()> {
         fs::write(&sibling, payload).into_diagnostic()?;
         fs::set_permissions(&sibling, fs::Permissions::from_mode(0o755)).into_diagnostic()?;
         fs::rename(&sibling, dest).into_diagnostic()?;
-        return Ok(());
+        Ok(())
     }
     #[cfg(not(unix))]
     {
