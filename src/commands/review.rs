@@ -332,7 +332,8 @@ pub fn execute_review_in(
         merge_promised(&mut promised_out, items);
     }
 
-    let github_bits = if coordinated.is_some() {
+    let suppress_github = suppress_github_http(coordinated.is_some(), &findings.status);
+    let github_bits = if suppress_github {
         GithubBits {
             attempted: false,
             requirements: None,
@@ -358,7 +359,13 @@ pub fn execute_review_in(
         }
     }
 
-    let ci_evidence = load_ci_evidence(layout, review_cfg, work_dir, opts.id.as_deref());
+    let ci_evidence = load_ci_evidence(
+        layout,
+        review_cfg,
+        work_dir,
+        opts.id.as_deref(),
+        suppress_github,
+    );
 
     let envelope = ReviewEnvelope {
         schema_version: REVIEW_SCHEMA_VERSION,
@@ -1065,6 +1072,13 @@ fn should_fetch_github_checks(cfg: &ReviewConfig) -> bool {
     cfg.github.enabled && cfg.ci.github_checks
 }
 
+/// Skip GitHub findings *and* check-run HTTP when conductor already owns
+/// the `--id` (resolved track) or reported a real failure (ambiguous /
+/// slug miss). Genuine numeric miss stays `status: none` so GitHub may run.
+fn suppress_github_http(coordinated: bool, findings_status: &str) -> bool {
+    coordinated || findings_status == "unavailable"
+}
+
 struct GithubBits {
     attempted: bool,
     requirements: Option<Vec<ReviewRequirementItem>>,
@@ -1248,6 +1262,7 @@ fn load_ci_evidence(
     cfg: &ReviewConfig,
     work_dir: &Path,
     id: Option<&str>,
+    suppress_github: bool,
 ) -> ReviewCiEvidence {
     let mut items = Vec::new();
     let history_path = layout.reports_dir().join(VERIFY_HISTORY);
@@ -1284,7 +1299,8 @@ fn load_ci_evidence(
         }
     }
 
-    if should_fetch_github_checks(cfg)
+    if !suppress_github
+        && should_fetch_github_checks(cfg)
         && let Some(extra) = fetch_github_checks(work_dir, cfg, id)
     {
         items.extend(extra);
@@ -2045,7 +2061,10 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn review_github_leading_zero_id_skips_github_when_conductor_resolves() {
+        let _token = TempEnv::set("GITHUB_TOKEN", "dummy-not-used");
+        let _gh = TempEnv::remove("GH_TOKEN");
         let (tmp, layout, work, mut config) = harness();
         let root = tmp.path().join("conductor");
         let track = root.join("0304-AgentReviewPacket");
@@ -2053,7 +2072,11 @@ mod tests {
         fs::write(track.join("spec.md"), "## Objective\n\nShip.\n").unwrap();
         config.review.conductor.root = root.to_string_lossy().into_owned();
         config.review.github.enabled = true;
+        config.review.github.repo.clear();
+        config.review.ci.github_checks = true;
         assert_eq!("0304".parse::<u64>().ok(), Some(304));
+        assert!(should_fetch_github_checks(&config.review));
+        assert!(suppress_github_http(true, "ok"));
         let (result, stdout) = run(
             &layout,
             &work,
@@ -2075,9 +2098,17 @@ mod tests {
             !env.unresolved_findings
                 .items
                 .iter()
-                .any(|i| i.source == "github"),
+                .any(|i| { i.source == "github" || i.title.contains("github repo unparseable") }),
             "{:?}",
             env.unresolved_findings.items
+        );
+        assert!(
+            !env.ci_evidence
+                .items
+                .iter()
+                .any(|i| matches!(i, ReviewCiItem::GithubCheck { .. })),
+            "{:?}",
+            env.ci_evidence.items
         );
     }
 
@@ -2188,7 +2219,10 @@ mod tests {
     }
 
     #[test]
+    #[serial_test::serial(env)]
     fn review_conductor_ambiguous_prefix_is_unavailable_even_when_github_on() {
+        let _token = TempEnv::set("GITHUB_TOKEN", "dummy-not-used");
+        let _gh = TempEnv::remove("GH_TOKEN");
         let (tmp, layout, work, mut config) = harness();
         let root = tmp.path().join("conductor");
         let first = root.join("0304-AgentReviewPacket");
@@ -2199,6 +2233,10 @@ mod tests {
         fs::write(second.join("spec.md"), "## Objective\n\nOther.\n").unwrap();
         config.review.conductor.root = root.to_string_lossy().into_owned();
         config.review.github.enabled = true;
+        config.review.github.repo.clear();
+        config.review.ci.github_checks = true;
+        assert!(should_fetch_github_checks(&config.review));
+        assert!(suppress_github_http(false, "unavailable"));
         let (result, stdout) = run(
             &layout,
             &work,
@@ -2223,6 +2261,31 @@ mod tests {
             "{:?}",
             env.unresolved_findings.items
         );
+        assert!(
+            !env.unresolved_findings
+                .items
+                .iter()
+                .any(|i| { i.source == "github" || i.title.contains("github repo unparseable") }),
+            "{:?}",
+            env.unresolved_findings.items
+        );
+        assert!(
+            !env.ci_evidence
+                .items
+                .iter()
+                .any(|i| matches!(i, ReviewCiItem::GithubCheck { .. })),
+            "{:?}",
+            env.ci_evidence.items
+        );
+    }
+
+    #[test]
+    fn review_github_http_suppressed_for_resolved_or_unavailable() {
+        assert!(suppress_github_http(true, "ok"));
+        assert!(suppress_github_http(true, "none"));
+        assert!(suppress_github_http(false, "unavailable"));
+        assert!(!suppress_github_http(false, "none"));
+        assert!(!suppress_github_http(false, "ok"));
     }
 
     #[test]
