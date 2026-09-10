@@ -1160,6 +1160,22 @@ mod tests {
         )
     }
 
+    fn compact_diagnostic_debug(raw: &str) -> String {
+        raw.chars()
+            .map(|c| if c.is_ascii_alphanumeric() { c } else { ' ' })
+            .collect::<String>()
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ")
+    }
+
+    #[test]
+    fn update_binary_unix_diagnostic_words_ignore_miette_box_drawing() {
+        let raw = "is not │ a regular file.";
+        let msg = compact_diagnostic_debug(raw);
+        assert!(msg.contains("not a regular file"), "{msg}");
+    }
+
     /// Prebuilt ustar+gzip: `{ARCHIVE_LINUX stem}/ledgerful` is a symlink to `/etc/passwd`.
     /// Host `tar` lists this without needing Windows symlink privilege.
     const SYMLINK_MEMBER_TAR_GZ: &[u8] = &[
@@ -1283,11 +1299,7 @@ mod tests {
         fs::write(&dest, b"keep").unwrap();
         let err = extract_unix_tarball(ARCHIVE_LINUX, SYMLINK_MEMBER_TAR_GZ, &dest)
             .expect_err("symlink member");
-        // miette Debug wraps long lines; GNU tar CI split "not a regular file".
-        let msg = format!("{err:?}")
-            .split_whitespace()
-            .collect::<Vec<_>>()
-            .join(" ");
+        let msg = compact_diagnostic_debug(&format!("{err:?}"));
         assert!(
             msg.contains("not a regular file") || msg.contains("missing"),
             "symlink member must be refused (regular-file or missing after tar cannot lay the link): {msg}"
