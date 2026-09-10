@@ -42,6 +42,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Review packet parser hygiene (0306):** Conductor finding rows
+  use exact status-cell matches after markdown unwrap. A closed
+  token (`verified_fixed`, `agree — fold`, …) wins over a leftover
+  `open` cell; description words like `disclosed` / `closed` do
+  not. Omitted or slug `--id` no longer marks GitHub
+  `unavailable`; a resolved conductor track skips GitHub even when
+  `--id` parses as a PR number. Genuine numeric conductor misses
+  stay silent when GitHub is enabled; an ambiguous track prefix
+  stays `unavailable`. Check-run fetch requires
+  `review.github.enabled` and `review.ci.github_checks`.
+
 - **Release `update --binary` (0290):** Non-engine installs fetch
   GitHub Latest archive (hash from the published `*.sha256` body).
   Doctor remediations no longer lead with `cargo install --path .`.
