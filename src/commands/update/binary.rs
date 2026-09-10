@@ -1283,7 +1283,11 @@ mod tests {
         fs::write(&dest, b"keep").unwrap();
         let err = extract_unix_tarball(ARCHIVE_LINUX, SYMLINK_MEMBER_TAR_GZ, &dest)
             .expect_err("symlink member");
-        let msg = format!("{err:?}");
+        // miette Debug wraps long lines; GNU tar CI split "not a regular file".
+        let msg = format!("{err:?}")
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
         assert!(
             msg.contains("not a regular file") || msg.contains("missing"),
             "symlink member must be refused (regular-file or missing after tar cannot lay the link): {msg}"
