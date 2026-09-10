@@ -6,6 +6,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+## [0.2.13] - 2026-09-10
+
 ### Added
 
 - **Agent review packet (0304):** `ledgerful review <range> --json`
