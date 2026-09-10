@@ -172,7 +172,7 @@ Agents may use it to spot session-start regressions; not a SLI contract.
 | When | **Engine worktree only** (`Cargo.toml` package name exactly `ledgerful` **and** `src/cli/args/mod.rs` exists). Version string lag and/or embedded build short-SHA ≠ worktree HEAD (gix). |
 | Not | Consumer repos; matching version+SHA; embed `unknown` + equal version (no commit false positive). |
 | `readyForPublish` | **Not** blocked (warn only). Counts in `dashboard_failures` (category ≠ optional). |
-| `remediation` | Always: `cargo install --path . --force` then `ledgerful update --binary` then `ledgerful --version`. **No** auto-install from doctor. |
+| `remediation` | Always: `ledgerful update --binary` then the GitHub Latest page then `cargo install --path . --force` then `ledgerful --version`. Cargo is **not** the first line. **No** auto-install from doctor. |
 
 Agents may also read currency from `environment.binaryVersion` + `environment.buildSha` (schemaVersion stays **1**).
 
@@ -186,9 +186,9 @@ Agents may also read currency from `environment.binaryVersion` + `environment.bu
 | When | **Engine worktree only.** GitHub Latest is known and the **running** binary version is older than Latest (`X.Y.Z`, tag may have a leading `v`) — including when running SHA is `unknown`/`empty`. |
 | Not | Consumer repos (`githubLatest.status=skipped`, zero HTTP); `LEDGERFUL_NO_NETWORK` / fetch failure (`status=unverified`, **no finding**); cargo tip at the same version as Latest (that is `binary-ahead-of-latest`). |
 | `readyForPublish` | **Not** blocked (warn only). Counts in `dashboard_failures` / Index Health (category ≠ optional). |
-| `remediation` | Published tag URL `https://github.com/Ryan-AI-Studios/Ledgerful/releases/tag/{tag}` then `ledgerful --version`. **Must not** say `cargo install --path .` / `--force` (that installs cargo tip). |
+| `remediation` | Published tag URL `https://github.com/Ryan-AI-Studios/Ledgerful/releases/tag/{tag}` then `ledgerful update --binary` then `ledgerful --version`. **Must not** say `cargo install --path .` / `--force` (that installs cargo tip). |
 
-0137 `binary-behind-tree` is PATH vs **this worktree** (reinstall from `.` if you want this tree). `binary-behind-latest` is running version older than **published** Latest. When both fire (T7: old PATH + cargo-tip tree), remediations **coexist unmerged** — do not concatenate into one “install `.` and the tag” sentence.
+0137 `binary-behind-tree` is PATH vs **this worktree** (reinstall from `.` if you want this tree). `binary-behind-latest` is running version older than **published** Latest. When both fire (T7: old PATH + cargo-tip tree), remediations **coexist unmerged** — do not concatenate into one “install `.` and the tag” sentence. Engine-cwd `update --binary` may cargo-install a tree **ahead** of Latest (T7); remediations stay unmerged.
 
 ### `binary-ahead-of-latest` (0205)
 
