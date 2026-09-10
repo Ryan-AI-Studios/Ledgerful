@@ -3,6 +3,7 @@
 use crate::commands::doctor::binary_latest::{GITHUB_OWNER_REPO, parse_release_tag_name};
 use crate::commands::doctor::is_ledgerful_engine_worktree;
 use crate::util::network::network_disabled_from_env;
+use crate::util::path::ensure_path_within_root;
 use miette::{IntoDiagnostic, Result, miette};
 use owo_colors::{OwoColorize, Stream, Style};
 use sha2::{Digest, Sha256};
@@ -25,6 +26,7 @@ const METADATA_TIMEOUT: Duration = Duration::from_secs(2);
 const DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(60);
 const MAX_SIDECAR_BYTES: u64 = 8 * 1024;
 const MAX_ARCHIVE_BYTES: u64 = 80 * 1024 * 1024;
+const MAX_EXTRACTED_BYTES: u64 = 150 * 1024 * 1024;
 const GITHUB_DOWNLOAD_BASE: &str = "https://github.com";
 
 const ZIP_FEATURES: bool = cfg!(any(feature = "export", feature = "web", feature = "sync"));
@@ -500,10 +502,24 @@ fn extract_zip_root_exe(_bytes: &[u8]) -> Result<Vec<u8>> {
     ))
 }
 
+fn unix_tar_member(stem: &str) -> String {
+    format!("{stem}/ledgerful")
+}
+
 fn extract_unix_tarball(archive: &str, bytes: &[u8], dest: &Path) -> Result<Vec<u8>> {
+    extract_unix_tarball_with_cap(archive, bytes, dest, MAX_EXTRACTED_BYTES)
+}
+
+fn extract_unix_tarball_with_cap(
+    archive: &str,
+    bytes: &[u8],
+    dest: &Path,
+    max_extracted: u64,
+) -> Result<Vec<u8>> {
     let stem = archive
         .strip_suffix(".tar.gz")
         .ok_or_else(|| miette!("Invalid tarball name {archive}"))?;
+    let member = unix_tar_member(stem);
     let staging = unique_staging_dir(dest)?;
     fs::create_dir_all(&staging).into_diagnostic()?;
     let archive_path = staging.join("archive.tar.gz");
@@ -512,6 +528,7 @@ fn extract_unix_tarball(archive: &str, bytes: &[u8], dest: &Path) -> Result<Vec<
         let status = Command::new("tar")
             .arg("-xzf")
             .arg(&archive_path)
+            .arg(&member)
             .current_dir(&staging)
             .status()
             .map_err(|_| {
@@ -520,19 +537,58 @@ fn extract_unix_tarball(archive: &str, bytes: &[u8], dest: &Path) -> Result<Vec<
                     latest_page_url()
                 )
             })?;
+        let nested = staging.join(stem).join("ledgerful");
+        let meta = match fs::symlink_metadata(&nested) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                return Err(miette!(
+                    "Latest tarball is missing {member}.\nSee {}",
+                    latest_page_url()
+                ));
+            }
+            Err(e) => return Err(e).into_diagnostic(),
+            Ok(m) => m,
+        };
         if !status.success() {
             return Err(miette!(
                 "tar failed to extract {archive}.\nSee {}",
                 latest_page_url()
             ));
         }
-        let nested = staging.join(stem).join("ledgerful");
-        fs::read(&nested).map_err(|_| {
-            miette!(
-                "Latest tarball is missing {stem}/ledgerful.\nSee {}",
+        let stem_dir = staging.join(stem);
+        if let Ok(stem_meta) = fs::symlink_metadata(&stem_dir)
+            && stem_meta.file_type().is_symlink()
+        {
+            return Err(miette!(
+                "Latest tarball member {member} is not a regular file.\nSee {}",
                 latest_page_url()
-            )
-        })
+            ));
+        }
+        if meta.file_type().is_symlink() || !meta.file_type().is_file() {
+            return Err(miette!(
+                "Latest tarball member {member} is not a regular file.\nSee {}",
+                latest_page_url()
+            ));
+        }
+        if let Err(e) = ensure_path_within_root(&staging, &nested) {
+            return Err(miette!("{e}"));
+        }
+        if meta.len() > max_extracted {
+            return Err(miette!(
+                "ledgerful in Latest tarball exceeds the extracted size cap.\nSee {}",
+                latest_page_url()
+            ));
+        }
+        let file = fs::File::open(&nested).into_diagnostic()?;
+        let mut limited = file.take(max_extracted.saturating_add(1));
+        let mut payload = Vec::new();
+        limited.read_to_end(&mut payload).into_diagnostic()?;
+        if payload.len() as u64 > max_extracted {
+            return Err(miette!(
+                "ledgerful in Latest tarball exceeds the extracted size cap.\nSee {}",
+                latest_page_url()
+            ));
+        }
+        Ok(payload)
     })();
     let _ = fs::remove_dir_all(&staging);
     write_result
@@ -1058,5 +1114,197 @@ mod tests {
         );
         assert!(parse_sha256_sidecar_body("not-a-hash").is_none());
         assert!(parse_sha256_sidecar_body("").is_none());
+    }
+
+    fn linux_release_ctx(tmp: &Path, dest: &Path, api: &str, download: &str) -> BinaryUpdateCtx {
+        let mut ctx = release_ctx(tmp, dest, api, download);
+        ctx.target_triple = Some("x86_64-unknown-linux-gnu".to_string());
+        ctx
+    }
+
+    fn fixture_tar_gz(stem: &str, files: &[(&str, &[u8])]) -> Vec<u8> {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path().join(stem);
+        fs::create_dir_all(&root).unwrap();
+        for (rel, bytes) in files {
+            let path = root.join(rel);
+            if let Some(parent) = path.parent() {
+                fs::create_dir_all(parent).unwrap();
+            }
+            fs::write(path, bytes).unwrap();
+        }
+        let archive = tmp.path().join("archive.tar.gz");
+        let status = Command::new("tar")
+            .arg("-czf")
+            .arg(&archive)
+            .arg(stem)
+            .current_dir(tmp.path())
+            .status()
+            .expect("spawn tar");
+        assert!(status.success(), "tar -czf fixture failed");
+        fs::read(&archive).expect("read fixture archive")
+    }
+
+    fn fixture_linux_release_tar_gz(payload: &[u8]) -> Vec<u8> {
+        let stem = ARCHIVE_LINUX
+            .strip_suffix(".tar.gz")
+            .expect("linux archive suffix");
+        fixture_tar_gz(
+            stem,
+            &[
+                ("ledgerful", payload),
+                ("README.md", b"readme"),
+                ("LICENSE", b"license"),
+                ("web/index.html", b"<html></html>"),
+            ],
+        )
+    }
+
+    /// Prebuilt ustar+gzip: `{ARCHIVE_LINUX stem}/ledgerful` is a symlink to `/etc/passwd`.
+    /// Host `tar` lists this without needing Windows symlink privilege.
+    const SYMLINK_MEMBER_TAR_GZ: &[u8] = &[
+        0x1f, 0x8b, 0x08, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x0a, 0xcb, 0x49, 0x4d, 0x49, 0x4f,
+        0x2d, 0x4a, 0x2b, 0xcd, 0xd1, 0xad, 0xb0, 0x30, 0x8b, 0x37, 0x33, 0xd1, 0x2d, 0xcd, 0xcb,
+        0xce, 0xcb, 0x2f, 0xcf, 0xd3, 0xcd, 0xc9, 0xcc, 0x2b, 0xad, 0xd0, 0x4d, 0xcf, 0x2b, 0xd5,
+        0xcf, 0x81, 0x29, 0x61, 0x20, 0x13, 0x18, 0x18, 0x18, 0x18, 0x98, 0x9b, 0x9b, 0x83, 0x69,
+        0x03, 0x03, 0x03, 0x74, 0x1a, 0x93, 0x6d, 0x64, 0x60, 0x64, 0x62, 0xc4, 0xa0, 0x60, 0xa4,
+        0x9f, 0x5a, 0x92, 0xac, 0x5f, 0x90, 0x58, 0x5c, 0x5c, 0x9e, 0xc2, 0x40, 0x2b, 0x50, 0x5a,
+        0x5c, 0x92, 0x58, 0xa4, 0xa0, 0xa0, 0x40, 0x33, 0x0b, 0x46, 0xc1, 0x28, 0x18, 0x05, 0xa3,
+        0x80, 0x61, 0x50, 0x02, 0x00, 0x7e, 0x23, 0x33, 0x51, 0x00, 0x06, 0x00, 0x00,
+    ];
+
+    #[test]
+    fn update_binary_unix_member_path_uses_posix_slash() {
+        let stem = ARCHIVE_LINUX
+            .strip_suffix(".tar.gz")
+            .expect("linux archive suffix");
+        let member = unix_tar_member(stem);
+        assert_eq!(member, format!("{stem}/ledgerful"));
+        assert!(member.contains('/'), "{member}");
+        assert!(!member.contains('\\'), "{member}");
+    }
+
+    #[test]
+    #[serial(env)]
+    fn update_binary_unix_extract_reads_nested_binary_when_archive_has_legit_extras() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+        fs::write(&dest, b"old-bytes").unwrap();
+        let payload = b"fresh-linux-ledgerful";
+        let tarball = fixture_linux_release_tar_gz(payload);
+        let hash = sha256_hex(&tarball);
+        let sidecar = format!("{hash}  {ARCHIVE_LINUX}\n");
+        let api = httpmock::MockServer::start();
+        let download = httpmock::MockServer::start();
+        let latest = mock_latest(&api, "v0.2.12");
+        download.mock(|when, then| {
+            when.method(httpmock::Method::GET).path(format!(
+                "/Ryan-AI-Studios/Ledgerful/releases/download/v0.2.12/{ARCHIVE_LINUX}.sha256"
+            ));
+            then.status(200).body(sidecar);
+        });
+        download.mock(|when, then| {
+            when.method(httpmock::Method::GET).path(format!(
+                "/Ryan-AI-Studios/Ledgerful/releases/download/v0.2.12/{ARCHIVE_LINUX}"
+            ));
+            then.status(200).body(tarball);
+        });
+        let ctx = linux_release_ctx(tmp.path(), &dest, &api.base_url(), &download.base_url());
+        let out = execute_binary_update_impl(&ctx).expect("unix extract with extras");
+        assert!(out.contains("v0.2.12"), "{out}");
+        assert_eq!(fs::read(&dest).unwrap(), payload);
+        latest.assert_calls(1);
+    }
+
+    #[test]
+    #[serial(env)]
+    fn update_binary_unix_extract_refuses_hash_mismatch() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+        fs::write(&dest, b"untouched").unwrap();
+        let tarball = fixture_linux_release_tar_gz(b"payload");
+        let server = httpmock::MockServer::start();
+        let _latest = mock_latest(&server, "v0.2.12");
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET).path(format!(
+                "/Ryan-AI-Studios/Ledgerful/releases/download/v0.2.12/{ARCHIVE_LINUX}.sha256"
+            ));
+            then.status(200).body(
+                "0000000000000000000000000000000000000000000000000000000000000000  archive.tar.gz\n",
+            );
+        });
+        server.mock(|when, then| {
+            when.method(httpmock::Method::GET).path(format!(
+                "/Ryan-AI-Studios/Ledgerful/releases/download/v0.2.12/{ARCHIVE_LINUX}"
+            ));
+            then.status(200).body(tarball);
+        });
+        let (stub, sentinel) = cargo_sentinel(tmp.path());
+        let _cargo = TempEnv::set(
+            "LEDGERFUL_TEST_CARGO_COMMAND",
+            stub.to_str().expect("utf8 stub"),
+        );
+        let ctx = linux_release_ctx(tmp.path(), &dest, &server.base_url(), &server.base_url());
+        let err = execute_binary_update_impl(&ctx).expect_err("mismatch");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("unchanged"),
+            "mismatch must refuse replace: {msg}"
+        );
+        assert_eq!(fs::read(&dest).unwrap(), b"untouched");
+        assert!(!sentinel.exists(), "hash mismatch must not invoke cargo");
+    }
+
+    #[test]
+    fn update_binary_unix_extract_missing_member_names_stem() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+        let stem = ARCHIVE_LINUX
+            .strip_suffix(".tar.gz")
+            .expect("linux archive suffix");
+        let tarball = fixture_tar_gz(stem, &[("README.md", b"only extras")]);
+        let err = extract_unix_tarball(ARCHIVE_LINUX, &tarball, &dest)
+            .expect_err("missing nested binary");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains(&format!("{stem}/ledgerful")),
+            "missing member must name stem path: {msg}"
+        );
+        assert!(
+            !msg.contains("tar failed to extract"),
+            "missing member must not be generic tar failed: {msg}"
+        );
+    }
+
+    #[test]
+    fn update_binary_unix_extract_refuses_symlink_member() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+        fs::write(&dest, b"keep").unwrap();
+        let err = extract_unix_tarball(ARCHIVE_LINUX, SYMLINK_MEMBER_TAR_GZ, &dest)
+            .expect_err("symlink member");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("not a regular file") || msg.contains("missing"),
+            "symlink member must be refused (regular-file or missing after tar cannot lay the link): {msg}"
+        );
+        assert_eq!(fs::read(&dest).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn update_binary_unix_extract_refuses_oversize_payload() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+        let stem = ARCHIVE_LINUX
+            .strip_suffix(".tar.gz")
+            .expect("linux archive suffix");
+        let tarball = fixture_tar_gz(stem, &[("ledgerful", b"0123456789abcdef")]);
+        let err =
+            extract_unix_tarball_with_cap(ARCHIVE_LINUX, &tarball, &dest, 8).expect_err("oversize");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("extracted size cap"),
+            "oversize must name the cap: {msg}"
+        );
     }
 }
