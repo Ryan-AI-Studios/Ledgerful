@@ -393,7 +393,8 @@ pub(super) fn handle_dead_code(params: Value) -> Value {
         &config.dead_code,
         layout.root.as_std_path(),
         false,
-    );
+    )
+    .with_path_include(true, true);
 
     let limit = params["limit"].as_u64().unwrap_or(50) as usize;
     let findings = match scorer.scan_repo(limit) {

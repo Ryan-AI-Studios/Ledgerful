@@ -75,8 +75,17 @@ pub struct ConfidenceScorer<'a> {
     /// When `false` (default), standard trait symbols are excluded from results.
     /// Set to `true` via `--include-traits` to see all findings.
     pub(super) include_traits: bool,
+    /// When `false` (CLI default), `is_test_path` files are omitted.
+    pub(super) include_tests: bool,
+    /// When `false` (CLI default), vendored trees are omitted.
+    pub(super) include_vendor: bool,
     pub(super) git_activity_cache:
         std::cell::RefCell<std::collections::HashMap<std::path::PathBuf, Option<u32>>>,
+    pub(super) omitted_test_paths: std::cell::RefCell<HashSet<String>>,
+    pub(super) omitted_vendor_paths: std::cell::RefCell<HashSet<String>>,
+    pub(super) extension_has_edges: std::cell::RefCell<Option<HashSet<String>>>,
+    pub(super) test_mapping_nonempty: std::cell::RefCell<Option<bool>>,
+    pub(super) entrypoints_present: std::cell::RefCell<Option<bool>>,
     pub(super) precomputed_reachable_symbols: Option<HashSet<i64>>,
     pub(super) precomputed_tested_symbols: Option<HashSet<i64>>,
     pub(super) precomputed_symbol_ids: Option<HashMap<(String, String, String), i64>>,
@@ -97,12 +106,35 @@ impl<'a> ConfidenceScorer<'a> {
             config,
             repo_path,
             include_traits,
+            include_tests: false,
+            include_vendor: false,
             git_activity_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
+            omitted_test_paths: std::cell::RefCell::new(HashSet::new()),
+            omitted_vendor_paths: std::cell::RefCell::new(HashSet::new()),
+            extension_has_edges: std::cell::RefCell::new(None),
+            test_mapping_nonempty: std::cell::RefCell::new(None),
+            entrypoints_present: std::cell::RefCell::new(None),
             precomputed_reachable_symbols: None,
             precomputed_tested_symbols: None,
             precomputed_symbol_ids: None,
             precomputed_git_activity: None,
         }
+    }
+
+    /// CLI/MCP path-omit override. Defaults from [`Self::new`] omit test and
+    /// vendor paths (CLI + `scan --impact` enrichment). MCP passes `(true, true)`.
+    pub fn with_path_include(mut self, include_tests: bool, include_vendor: bool) -> Self {
+        self.include_tests = include_tests;
+        self.include_vendor = include_vendor;
+        self
+    }
+
+    pub fn omitted_test_path_count(&self) -> usize {
+        self.omitted_test_paths.borrow().len()
+    }
+
+    pub fn omitted_vendor_path_count(&self) -> usize {
+        self.omitted_vendor_paths.borrow().len()
     }
 
     /// Precomputes the per-run evidence caches (reachability, test coverage,
@@ -438,13 +470,13 @@ mod tests {
         let score = scorer
             .reachability_score(&helper, Path::new("src/lib.rs"))
             .unwrap();
-        assert_eq!(score, 0.0);
+        assert_eq!(score, Some(0.0));
 
         let unused = make_symbol("unused", Some("crate::unused"), None);
         let score = scorer
             .reachability_score(&unused, Path::new("src/lib.rs"))
             .unwrap();
-        assert_eq!(score, 1.0);
+        assert_eq!(score, Some(1.0));
     }
 
     #[test]
@@ -486,6 +518,25 @@ mod tests {
             "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'crate::main', 'main', 'Function', 'ENTRYPOINT', '2026-01-01')",
             [main_file],
         ).unwrap();
+        let main_sym = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('src/lib.rs', 'Rust', 'h2', 100, 'OK', '2026-01-01')",
+            [],
+        ).unwrap();
+        let lib_file = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'crate::helper', 'helper', 'Function', 'INTERNAL', '2026-01-01')",
+            [lib_file],
+        ).unwrap();
+        let helper_sym = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'crate::unused', 'unused', 'Function', 'INTERNAL', '2026-01-01')",
+            [lib_file],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO structural_edges (caller_symbol_id, caller_file_id, callee_symbol_id, callee_file_id, call_kind, resolution_status) VALUES (?1, ?2, ?3, ?4, 'DIRECT', 'RESOLVED')",
+            [main_sym, main_file, helper_sym, lib_file],
+        ).unwrap();
 
         let config = default_config();
         let scorer = ConfidenceScorer::new(Some(&cozo), &storage, &config, Path::new("."), false);
@@ -494,13 +545,13 @@ mod tests {
         let score = scorer
             .reachability_score(&helper, Path::new("src/lib.rs"))
             .unwrap();
-        assert_eq!(score, 0.0);
+        assert_eq!(score, Some(0.0));
 
         let unused = make_symbol("unused", Some("crate::unused"), None);
         let score = scorer
             .reachability_score(&unused, Path::new("src/lib.rs"))
             .unwrap();
-        assert_eq!(score, 1.0);
+        assert_eq!(score, Some(1.0));
     }
 
     #[test]
@@ -513,7 +564,7 @@ mod tests {
         let score = scorer
             .test_coverage_score(&symbol, Path::new("src/lib.rs"))
             .unwrap();
-        assert_eq!(score, 1.0);
+        assert_eq!(score, None);
     }
 
     #[test]
@@ -551,7 +602,7 @@ mod tests {
         let score = scorer
             .test_coverage_score(&symbol, Path::new("src/lib.rs"))
             .unwrap();
-        assert_eq!(score, 0.0);
+        assert_eq!(score, Some(0.0));
     }
 
     #[test]
@@ -560,7 +611,7 @@ mod tests {
         let config = default_config();
         let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
 
-        let confidence = scorer.blend(1.0, 0.5, 0.0);
+        let confidence = scorer.blend(Some(1.0), 0.5, Some(0.0));
         assert!((confidence - 0.5).abs() < 1e-6);
     }
 
@@ -576,7 +627,7 @@ mod tests {
             test_coverage_weight: 0.0,
         };
         let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
-        let confidence = scorer.blend(1.0, 1.0, 1.0);
+        let confidence = scorer.blend(Some(1.0), 1.0, Some(1.0));
         assert_eq!(confidence, 0.0);
     }
 
@@ -649,6 +700,37 @@ mod tests {
     }
 
     /// DX4: helper to build a Symbol with explicit kind + metadata.
+    fn seed_rs_edge_and_mapping(conn: &rusqlite::Connection) {
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('src/entry.rs', 'Rust', 'hedge', 50, 'OK', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'crate::entry_main', 'entry_main', 'Function', 'ENTRYPOINT', '2026-01-01')",
+            [file_id],
+        )
+        .unwrap();
+        let main_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'crate::live_helper', 'live_helper', 'Function', 'INTERNAL', '2026-01-01')",
+            [file_id],
+        )
+        .unwrap();
+        let helper_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO structural_edges (caller_symbol_id, caller_file_id, callee_symbol_id, callee_file_id, call_kind, resolution_status) VALUES (?1, ?2, ?3, ?4, 'DIRECT', 'RESOLVED')",
+            [main_id, file_id, helper_id, file_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id, mapping_kind, last_indexed_at) VALUES (?1, ?2, ?3, ?4, 'IMPORT', '2026-01-01')",
+            [main_id, file_id, helper_id, file_id],
+        )
+        .unwrap();
+    }
+
     fn make_symbol_with_kind(name: &str, kind: SymbolKind, metadata: Vec<(&str, &str)>) -> Symbol {
         let mut map = std::collections::BTreeMap::new();
         for (k, v) in metadata {
@@ -708,12 +790,10 @@ mod tests {
             .score_symbol(&plain, Path::new("src/models.rs"))
             .unwrap();
         assert!(
-            result.is_some(),
-            "plain struct with no derives and raw confidence 1.0 must be flagged"
+            result.is_none(),
+            "0314: Struct is not callable; score_symbol returns None"
         );
-        if let Some(f) = result {
-            assert!((f.confidence - 1.0).abs() < 1e-6);
-        }
+        assert_eq!(super::filters::derive_penalty(&plain), 0.0);
     }
 
     /// DX4: `--include-traits` must NOT re-enable derived-struct suppression.
@@ -758,9 +838,10 @@ mod tests {
             .score_symbol(&widget, Path::new("src/models.rs"))
             .unwrap();
         assert!(
-            result.is_some(),
-            "struct with only a non-implicit derive must NOT be suppressed"
+            result.is_none(),
+            "0314: Struct is not callable; score_symbol returns None"
         );
+        assert_eq!(super::filters::derive_penalty(&widget), 0.0);
     }
 
     /// DX4 (codex Finding 1): a DB model struct carrying only a reflection
@@ -882,17 +963,11 @@ mod tests {
             .score_symbol(&control, Path::new("src/models.rs"))
             .unwrap();
         assert!(
-            control_result.is_some(),
-            "control struct without derived_traits must be flagged after round-trip; got {:?}",
+            control_result.is_none(),
+            "0314: Struct is not callable; score_symbol returns None after round-trip; got {:?}",
             control_result
         );
-        if let Some(f) = control_result {
-            assert!(
-                (f.confidence - 1.0).abs() < 1e-6,
-                "control struct confidence must be 1.0, got {}",
-                f.confidence
-            );
-        }
+        assert_eq!(super::filters::derive_penalty(&control), 0.0);
     }
 
     fn git(dir: &std::path::Path, args: &[&str]) {
@@ -993,6 +1068,7 @@ mod tests {
             "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'crate::unused_fn', 'unused_fn', 'Function', 'INTERNAL', '2026-01-01')",
             [file_id],
         ).unwrap();
+        seed_rs_edge_and_mapping(conn);
 
         let config = default_config();
         let tmp = tempfile::tempdir().unwrap();
@@ -1036,6 +1112,7 @@ mod tests {
             "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'crate::unused_fn', 'unused_fn', 'Function', 'INTERNAL', '2026-01-01')",
             [file_id],
         ).unwrap();
+        seed_rs_edge_and_mapping(conn);
 
         let config = default_config();
         let tmp = tempfile::tempdir().unwrap();
@@ -1079,6 +1156,7 @@ mod tests {
                 [file_id],
             ).unwrap();
         }
+        seed_rs_edge_and_mapping(conn);
 
         let config = default_config();
         let tmp = tempfile::tempdir().unwrap();
@@ -1147,6 +1225,7 @@ mod tests {
                 rusqlite::params![file_id, format!("crate::fn_{i}"), format!("fn_{i}")],
             ).unwrap();
         }
+        seed_rs_edge_and_mapping(conn);
 
         let config = default_config();
         let tmp = tempfile::tempdir().unwrap();
@@ -1351,6 +1430,7 @@ mod tests {
                 rusqlite::params![file_id, format!("crate::fn_{i}"), format!("fn_{i}")],
             ).unwrap();
         }
+        seed_rs_edge_and_mapping(conn);
 
         let config = default_config();
         let tmp = tempfile::tempdir().unwrap();
@@ -1365,6 +1445,254 @@ mod tests {
             elapsed.as_millis() < 200,
             "explain_file took {} ms, target is <200 ms",
             elapsed.as_millis()
+        );
+    }
+
+    #[test]
+    fn score_symbol_skips_module_kind() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        seed_rs_edge_and_mapping(conn);
+        let config = default_config();
+        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
+        let module = make_symbol_with_kind("calls", SymbolKind::Module, Vec::new());
+        assert!(
+            scorer
+                .score_symbol(&module, Path::new("src/lib.rs"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn score_symbol_skips_reexport_metadata() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        seed_rs_edge_and_mapping(conn);
+        let config = default_config();
+        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
+        let reexport = make_symbol_with_kind("calls", SymbolKind::Type, vec![("reexport", "true")]);
+        assert!(
+            scorer
+                .score_symbol(&reexport, Path::new("src/lib.rs"))
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn score_symbol_skips_bin_main() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        seed_rs_edge_and_mapping(conn);
+        let config = default_config();
+        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
+        let main_fn = make_symbol("main", Some("main"), None);
+        for path in [
+            "mcp-server/bin/x.js",
+            "mcp-server\\bin\\x.js",
+            "src/main.rs",
+        ] {
+            assert!(
+                scorer
+                    .score_symbol(&main_fn, Path::new(path))
+                    .unwrap()
+                    .is_none(),
+                "expected skip for {path}"
+            );
+        }
+    }
+
+    #[test]
+    fn score_symbol_keeps_isolated_function_when_language_has_edges() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        seed_rs_edge_and_mapping(conn);
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('src/gen_1.rs', 'Rust', 'hiso', 40, 'OK', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'crate::isolated', 'isolated', 'Function', 'INTERNAL', '2026-01-01')",
+            [file_id],
+        )
+        .unwrap();
+        let config = default_config();
+        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
+        let isolated = make_symbol("isolated", Some("crate::isolated"), None);
+        let finding = scorer
+            .score_symbol(&isolated, Path::new("src/gen_1.rs"))
+            .unwrap()
+            .expect("isolated Function must remain a finding");
+        assert!(finding.factors.iter().any(|f| matches!(
+            f,
+            crate::impact::packet::ConfidenceFactor::UnreachableFromEntrypoints
+        )));
+    }
+
+    #[test]
+    fn reachability_missing_symbol_id_is_unknown() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        seed_rs_edge_and_mapping(conn);
+        let config = default_config();
+        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
+        let ghost = make_symbol("ghost", Some("crate::ghost"), None);
+        let score = scorer
+            .reachability_score(&ghost, Path::new("src/missing.rs"))
+            .unwrap();
+        assert_eq!(score, None);
+        let finding = scorer
+            .score_symbol(&ghost, Path::new("src/missing.rs"))
+            .unwrap();
+        if let Some(f) = finding {
+            assert!(!f.factors.iter().any(|fac| matches!(
+                fac,
+                crate::impact::packet::ConfidenceFactor::UnreachableFromEntrypoints
+            )));
+        }
+        let none_blend = scorer.blend(None, 1.0, None);
+        assert!((none_blend - (1.0 / 3.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn reachability_unknown_when_extension_has_no_edges() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        seed_rs_edge_and_mapping(conn);
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('pkg/a.js', 'JavaScript', 'hjs', 20, 'OK', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'cacheRoot', 'cacheRoot', 'Function', 'INTERNAL', '2026-01-01')",
+            [file_id],
+        )
+        .unwrap();
+        let config = default_config();
+        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
+        let js_fn = make_symbol("cacheRoot", Some("cacheRoot"), None);
+        assert_eq!(
+            scorer
+                .reachability_score(&js_fn, Path::new("pkg/a.js"))
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn no_test_coverage_unknown_when_mapping_table_empty() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('src/lib.rs', 'Rust', 'h1', 100, 'OK', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'crate::foo', 'foo', 'Function', 'INTERNAL', '2026-01-01')",
+            [file_id],
+        )
+        .unwrap();
+        let foo_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO embeddings (entity_id, entity_type, model, vector, created_at) VALUES (?1, 'symbol', 'test', x'00', '2026-01-01')",
+            [foo_id.to_string()],
+        )
+        .ok();
+        let config = default_config();
+        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
+        let symbol = make_symbol("foo", Some("crate::foo"), None);
+        let score = scorer
+            .test_coverage_score(&symbol, Path::new("src/lib.rs"))
+            .unwrap();
+        assert_eq!(score, None);
+        if let Some(finding) = scorer
+            .score_symbol(&symbol, Path::new("src/lib.rs"))
+            .unwrap()
+        {
+            assert!(
+                !finding
+                    .factors
+                    .iter()
+                    .any(|f| matches!(f, crate::impact::packet::ConfidenceFactor::NoTestCoverage))
+            );
+        }
+    }
+
+    fn seed_isolated_fn(conn: &rusqlite::Connection, path: &str, name: &str) {
+        seed_rs_edge_and_mapping(conn);
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES (?1, 'Rust', 'hiso', 40, 'OK', '2026-01-01')",
+            [path],
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, ?2, ?2, 'Function', 'INTERNAL', '2026-01-01')",
+            rusqlite::params![file_id, name],
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn dead_code_include_tests_restores_test_path() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        seed_isolated_fn(conn, "tests/foo.rs", "test_only");
+        let config = default_config();
+        let default = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
+        let included = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false)
+            .with_path_include(true, false);
+        let symbol = make_symbol("test_only", Some("test_only"), None);
+        assert!(
+            default
+                .score_symbol(&symbol, Path::new("tests/foo.rs"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            included
+                .score_symbol(&symbol, Path::new("tests/foo.rs"))
+                .unwrap()
+                .is_some()
+        );
+        let mut explainer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
+        let explanation = explainer.explain_file(Path::new("tests/foo.rs")).unwrap();
+        assert!(
+            explanation
+                .symbols
+                .iter()
+                .any(|s| s.symbol_name == "test_only")
+        );
+    }
+
+    #[test]
+    fn dead_code_include_vendor_restores_vendor_path() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        seed_isolated_fn(conn, "vendor/x.rs", "vendored");
+        let config = default_config();
+        let default = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
+        let included = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false)
+            .with_path_include(false, true);
+        let symbol = make_symbol("vendored", Some("vendored"), None);
+        assert!(
+            default
+                .score_symbol(&symbol, Path::new("vendor/x.rs"))
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            included
+                .score_symbol(&symbol, Path::new("vendor/x.rs"))
+                .unwrap()
+                .is_some()
         );
     }
 }

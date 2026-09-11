@@ -159,10 +159,16 @@ pub struct DeadCodeArgs {
     #[arg(long)]
     pub auto_index: bool,
     /// Include standard trait implementations (Eq, Ord, Clone, Debug, etc.) in
-    /// results. By default these are suppressed because they are typically used
-    /// implicitly via derive macros or blanket impls.
+    /// results. Retained for CLI/JSON echo; callable-only scoring makes this a
+    /// no-op (Function/Method only).
     #[arg(long)]
     pub include_traits: bool,
+    /// Include test/fixture paths that are omitted by default
+    #[arg(long)]
+    pub include_tests: bool,
+    /// Include vendored paths that are omitted by default
+    #[arg(long)]
+    pub include_vendor: bool,
     /// Interactively prompt to remove high-confidence dead code and record the
     /// deletions as a pending ledger transaction.
     #[arg(long)]

@@ -5,19 +5,40 @@ impl<'a> ConfidenceScorer<'a> {
     // Reachability
     // ------------------------------------------------------------------
 
-    pub(super) fn reachability_score(&self, symbol: &Symbol, file_path: &Path) -> Result<f64> {
-        let symbol_id = self.find_symbol_id(symbol, file_path)?;
+    pub(super) fn reachability_score(
+        &self,
+        symbol: &Symbol,
+        file_path: &Path,
+    ) -> Result<Option<f64>> {
+        if !crate::index::resolve::is_callable_kind(symbol.kind.as_str()) {
+            return Ok(None);
+        }
+
+        let symbol_id = match self.find_symbol_id(symbol, file_path) {
+            Ok(Some(id)) => id,
+            Ok(None) => return Ok(None),
+            Err(e) => {
+                warn!("Symbol id lookup failed for {}: {}", symbol.name, e);
+                return Ok(None);
+            }
+        };
+
+        if !self.repo_has_entrypoints()? {
+            return Ok(None);
+        }
+
+        let Some(ext) = path_file_extension(file_path) else {
+            return Ok(None);
+        };
+        if !self.extensions_with_resolved_edges()?.contains(&ext) {
+            return Ok(None);
+        }
 
         if let Some(ref cache) = self.precomputed_reachable_symbols {
-            if let Some(id) = symbol_id {
-                if cache.contains(&id) {
-                    return Ok(0.0);
-                } else {
-                    return Ok(1.0);
-                }
-            } else {
-                return Ok(1.0);
+            if cache.contains(&symbol_id) {
+                return Ok(Some(0.0));
             }
+            return Ok(Some(1.0));
         }
 
         let reachable = match self.cozo {
@@ -26,11 +47,11 @@ impl<'a> ConfidenceScorer<'a> {
         };
 
         match reachable {
-            Ok(true) => Ok(0.0),
-            Ok(false) => Ok(1.0),
+            Ok(true) => Ok(Some(0.0)),
+            Ok(false) => Ok(Some(1.0)),
             Err(e) => {
                 warn!("Reachability query failed for {}: {}", symbol.name, e);
-                Ok(0.0)
+                Ok(None)
             }
         }
     }
@@ -567,32 +588,47 @@ impl<'a> ConfidenceScorer<'a> {
     // Test Coverage
     // ------------------------------------------------------------------
 
-    pub(super) fn test_coverage_score(&self, symbol: &Symbol, file_path: &Path) -> Result<f64> {
-        let symbol_id = match self.find_symbol_id(symbol, file_path)? {
-            Some(id) => id,
-            None => return Ok(1.0),
+    pub(super) fn test_coverage_score(
+        &self,
+        symbol: &Symbol,
+        file_path: &Path,
+    ) -> Result<Option<f64>> {
+        let symbol_id = match self.find_symbol_id(symbol, file_path) {
+            Ok(Some(id)) => id,
+            Ok(None) => return Ok(None),
+            Err(e) => {
+                warn!("Symbol id lookup failed for {}: {}", symbol.name, e);
+                return Ok(None);
+            }
         };
+
+        if !self.mapping_table_nonempty()? {
+            return Ok(None);
+        }
 
         if let Some(ref cache) = self.precomputed_tested_symbols {
             if cache.contains(&symbol_id) {
-                return Ok(0.0);
-            } else {
-                return Ok(1.0);
+                return Ok(Some(0.0));
             }
+            return Ok(Some(1.0));
         }
 
         let conn = self.storage.get_connection();
 
-        let count: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM test_mapping WHERE tested_symbol_id = ?1",
-                [symbol_id],
-                |row| row.get(0),
-            )
-            .into_diagnostic()?;
+        let count: i64 = match conn.query_row(
+            "SELECT COUNT(*) FROM test_mapping WHERE tested_symbol_id = ?1",
+            [symbol_id],
+            |row| row.get(0),
+        ) {
+            Ok(c) => c,
+            Err(e) => {
+                warn!("test_mapping query failed for {}: {}", symbol.name, e);
+                return Ok(None);
+            }
+        };
 
         if count > 0 {
-            return Ok(0.0);
+            return Ok(Some(0.0));
         }
 
         let fallback_count: i64 = conn
@@ -604,10 +640,10 @@ impl<'a> ConfidenceScorer<'a> {
             .unwrap_or(0);
 
         if fallback_count > 0 {
-            return Ok(0.0);
+            return Ok(Some(0.0));
         }
 
-        Ok(1.0)
+        Ok(Some(1.0))
     }
 
     pub(super) fn precompute_test_coverage(&self) -> Result<HashSet<i64>> {
@@ -757,6 +793,72 @@ impl<'a> ConfidenceScorer<'a> {
         }
 
         Ok(reachable)
+    }
+
+    fn repo_has_entrypoints(&self) -> Result<bool> {
+        if let Some(present) = *self.entrypoints_present.borrow() {
+            return Ok(present);
+        }
+        let conn = self.storage.get_connection();
+        let count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM project_symbols WHERE entrypoint_kind IN ('ENTRYPOINT', 'HANDLER', 'PUBLIC_API')",
+                [],
+                |row| row.get(0),
+            )
+            .into_diagnostic()?;
+        let present = count > 0;
+        *self.entrypoints_present.borrow_mut() = Some(present);
+        Ok(present)
+    }
+
+    fn mapping_table_nonempty(&self) -> Result<bool> {
+        if let Some(present) = *self.test_mapping_nonempty.borrow() {
+            return Ok(present);
+        }
+        let conn = self.storage.get_connection();
+        let count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM test_mapping", [], |row| row.get(0))
+            .into_diagnostic()?;
+        let nonempty = count > 0;
+        *self.test_mapping_nonempty.borrow_mut() = Some(nonempty);
+        Ok(nonempty)
+    }
+
+    fn extensions_with_resolved_edges(&self) -> Result<HashSet<String>> {
+        if let Some(cached) = self.extension_has_edges.borrow().as_ref() {
+            return Ok(cached.clone());
+        }
+        let computed = self.compute_extensions_with_resolved_edges()?;
+        *self.extension_has_edges.borrow_mut() = Some(computed.clone());
+        Ok(computed)
+    }
+
+    fn compute_extensions_with_resolved_edges(&self) -> Result<HashSet<String>> {
+        let conn = self.storage.get_connection();
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT pf.file_path
+                 FROM project_files pf
+                 WHERE pf.id IN (
+                   SELECT caller_file_id FROM structural_edges WHERE callee_symbol_id IS NOT NULL
+                   UNION
+                   SELECT callee_file_id FROM structural_edges
+                   WHERE callee_symbol_id IS NOT NULL AND callee_file_id IS NOT NULL
+                 )",
+            )
+            .into_diagnostic()?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .into_diagnostic()?;
+        let mut extensions = HashSet::new();
+        for row in rows {
+            let path = row.into_diagnostic()?;
+            if let Some(ext) = path_file_extension(Path::new(&path)) {
+                extensions.insert(ext);
+            }
+        }
+        Ok(extensions)
     }
 
     // ------------------------------------------------------------------
@@ -1039,6 +1141,17 @@ impl<'a> ConfidenceScorer<'a> {
             symbols.push(row.into_diagnostic()?);
         }
         Ok(symbols)
+    }
+}
+
+fn path_file_extension(path: &Path) -> Option<String> {
+    let normalized = path.to_string_lossy().replace('\\', "/");
+    let name = normalized.rsplit('/').next().filter(|n| !n.is_empty())?;
+    let ext = name.rsplit_once('.')?.1;
+    if ext.is_empty() {
+        None
+    } else {
+        Some(ext.to_ascii_lowercase())
     }
 }
 

@@ -228,6 +228,9 @@ fn test_dead_code_filtering() {
 
         #[cfg(feature = "hidden")]
         pub fn feature_gated() {}
+
+        fn live_helper() {}
+        fn calls_live() { live_helper(); }
     "#;
     fs::write(dir.path().join("main.rs"), code).unwrap();
     // 0279 SAME_FILE maps in-file #[test] onto sibling Functions. Keep the

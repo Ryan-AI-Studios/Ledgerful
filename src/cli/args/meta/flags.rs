@@ -614,6 +614,8 @@ impl Commands {
                 limit,
                 auto_index,
                 include_traits,
+                include_tests,
+                include_vendor,
                 prune,
                 expand,
                 explain,
@@ -630,6 +632,12 @@ impl Commands {
                 }
                 if *include_traits {
                     f.push("include_traits");
+                }
+                if *include_tests {
+                    f.push("include_tests");
+                }
+                if *include_vendor {
+                    f.push("include_vendor");
                 }
                 if *prune {
                     f.push("prune");

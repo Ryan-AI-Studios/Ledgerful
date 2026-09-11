@@ -40,8 +40,9 @@ fn test_prune_removes_lines_and_records_pending_transaction() {
     // to it) then blend to 1.0.
     write_dead_code_config(root_utf8);
 
-    let result =
-        execute_dead_code_with_prompt(0.75, 50, false, false, true, false, None, false, &AlwaysYes);
+    let result = execute_dead_code_with_prompt(
+        0.75, 50, false, false, false, false, true, false, None, false, &AlwaysYes,
+    );
     assert!(result.is_ok(), "prune command failed: {result:?}");
 
     let content = std::fs::read_to_string(&file).unwrap();
@@ -120,6 +121,25 @@ fn seed_dead_code_fixture(root: &Path, _symbol_count: usize) {
     conn.execute(
         "INSERT OR IGNORE INTO project_symbols (id, file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, line_start, line_end, last_indexed_at) \
          VALUES (1, 1, 'dead', 'dead', 'Function', 'INTERNAL', 1, 1, '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    conn.execute(
+        "INSERT OR IGNORE INTO project_symbols (id, file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) \
+         VALUES (2, 0, 'live_helper', 'live_helper', 'Function', 'INTERNAL', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO structural_edges (caller_symbol_id, caller_file_id, callee_symbol_id, callee_file_id) \
+         VALUES (0, 0, 2, 0)",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id, mapping_kind, last_indexed_at) \
+         VALUES (0, 0, 2, 0, 'IMPORT', '2026-01-01T00:00:00Z')",
         [],
     )
     .unwrap();

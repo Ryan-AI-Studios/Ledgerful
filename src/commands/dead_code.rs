@@ -24,6 +24,8 @@ pub struct DeadCodeJsonEnvelope {
     pub threshold: f64,
     pub limit: usize,
     pub include_traits: bool,
+    pub include_tests: bool,
+    pub include_vendor: bool,
     pub truncated: bool,
     pub finding_count: usize,
     pub findings: Vec<DeadCodeFinding>,
@@ -79,6 +81,8 @@ pub fn execute_dead_code(
     limit: usize,
     auto_index: bool,
     include_traits: bool,
+    include_tests: bool,
+    include_vendor: bool,
     prune: bool,
     expand: bool,
     explain: Option<String>,
@@ -89,6 +93,8 @@ pub fn execute_dead_code(
         limit,
         auto_index,
         include_traits,
+        include_tests,
+        include_vendor,
         prune,
         expand,
         explain,
@@ -105,6 +111,8 @@ pub fn execute_dead_code_with_prompt(
     limit: usize,
     auto_index: bool,
     include_traits: bool,
+    include_tests: bool,
+    include_vendor: bool,
     prune: bool,
     expand: bool,
     explain: Option<String>,
@@ -156,7 +164,8 @@ pub fn execute_dead_code_with_prompt(
     let repo_path = layout.root.as_std_path();
 
     let mut scorer =
-        ConfidenceScorer::new(cozo, &storage, &config.dead_code, repo_path, include_traits);
+        ConfidenceScorer::new(cozo, &storage, &config.dead_code, repo_path, include_traits)
+            .with_path_include(include_tests, include_vendor);
 
     // R1: `dead-code --explain <file>` short-circuits the full-repo scan and
     // only scores symbols for the requested file. Path normalization and
@@ -190,6 +199,7 @@ pub fn execute_dead_code_with_prompt(
         }
 
         crate::output::human::print_dead_code_explanation_struct(&explanation);
+        crate::output::human::print_dead_code_scope_line();
         return Ok(());
     }
 
@@ -209,6 +219,8 @@ pub fn execute_dead_code_with_prompt(
             threshold,
             limit,
             include_traits,
+            include_tests,
+            include_vendor,
             truncated,
             finding_count: all_findings.len(),
             findings: all_findings,
@@ -247,6 +259,11 @@ pub fn execute_dead_code_with_prompt(
     } else {
         crate::output::human::print_dead_code_grouped(&display_findings);
     }
+    crate::output::human::print_dead_code_scope_line();
+    crate::output::human::print_dead_code_omit_footer(
+        scorer.omitted_test_path_count(),
+        scorer.omitted_vendor_path_count(),
+    );
 
     // `open_read_only` returns a read-only StorageManager. Pruning writes a
     // ledger transaction, so re-open storage in read/write mode when needed.
@@ -262,7 +279,8 @@ pub fn execute_dead_code_with_prompt(
         let prune_findings = if original_scan_was_capped {
             let prune_limit = limit.saturating_mul(10).max(limit).min(10_000);
             let mut scorer =
-                ConfidenceScorer::new(cozo, &storage, &config.dead_code, repo_path, include_traits);
+                ConfidenceScorer::new(cozo, &storage, &config.dead_code, repo_path, include_traits)
+                    .with_path_include(include_tests, include_vendor);
             scorer.precompute()?;
             scorer.scan_repo(prune_limit)?
         } else {
@@ -586,6 +604,8 @@ mod tests {
             threshold: 0.75,
             limit: 50,
             include_traits: false,
+            include_tests: false,
+            include_vendor: false,
             truncated: false,
             finding_count: 0,
             findings: vec![],
@@ -594,6 +614,8 @@ mod tests {
         let text = serde_json::to_string_pretty(&envelope).expect("serialize");
         let v: serde_json::Value = serde_json::from_str(&text).expect("parse");
         assert_eq!(v["schemaVersion"], 1);
+        assert_eq!(v["includeTests"], false);
+        assert_eq!(v["includeVendor"], false);
         assert_eq!(v["findingCount"], 0);
         assert_eq!(v["truncated"], false);
         assert!(v["findings"].as_array().expect("array").is_empty());
@@ -627,6 +649,8 @@ mod tests {
             threshold: 0.75,
             limit,
             include_traits: false,
+            include_tests: false,
+            include_vendor: false,
             truncated,
             finding_count: findings.len(),
             findings,
@@ -663,6 +687,8 @@ mod tests {
             threshold: 0.75,
             limit: 50,
             include_traits: false,
+            include_tests: false,
+            include_vendor: false,
             truncated: false,
             finding_count: findings.len(),
             findings,
@@ -692,9 +718,11 @@ mod tests {
     #[test]
     fn json_prune_rejected_before_storage() {
         // Early reject must not depend on repo layout / index.
-        let err = execute_dead_code(0.75, 50, false, false, true, false, None, true)
-            .unwrap_err()
-            .to_string();
+        let err = execute_dead_code(
+            0.75, 50, false, false, false, false, true, false, None, true,
+        )
+        .unwrap_err()
+        .to_string();
         assert!(
             err.contains("--prune") || err.contains("prune"),
             "expected prune reject, got {err}"
@@ -706,6 +734,8 @@ mod tests {
         let err = execute_dead_code(
             0.75,
             50,
+            false,
+            false,
             false,
             false,
             false,

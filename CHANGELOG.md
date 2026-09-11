@@ -39,6 +39,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Dead-code evidence (0314):** Score Function/Method only;
+  missing graph/test rows no longer count as dead; default omit
+  test/vendor paths. 0303 Kind and 0100 footer unchanged.
+
 - **Hotspot budget units (0310):** `hotspots budget` compares persisted
   `hotspot_history.score` (0–1) to an explicit threshold (informational
   default 0.5; `[hotspots] budget_threshold`; CLI `--threshold`). Empty

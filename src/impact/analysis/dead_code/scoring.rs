@@ -9,8 +9,41 @@ impl<'a> ConfidenceScorer<'a> {
         symbol: &Symbol,
         file_path: &Path,
     ) -> Result<Option<DeadCodeFinding>> {
+        self.score_symbol_inner(symbol, file_path, true)
+    }
+
+    fn score_symbol_inner(
+        &self,
+        symbol: &Symbol,
+        file_path: &Path,
+        omit_paths: bool,
+    ) -> Result<Option<DeadCodeFinding>> {
         if filters::is_entrypoint(symbol) {
             return Ok(None);
+        }
+
+        if filters::is_bin_or_crate_main(symbol, file_path) {
+            return Ok(None);
+        }
+
+        if !crate::index::resolve::is_callable_kind(symbol.kind.as_str()) {
+            return Ok(None);
+        }
+
+        if filters::is_reexport(symbol) {
+            return Ok(None);
+        }
+
+        if omit_paths {
+            let path_key = file_path.to_string_lossy().replace('\\', "/");
+            if !self.include_tests && crate::index::test_mapping::is_test_path(&path_key) {
+                self.omitted_test_paths.borrow_mut().insert(path_key);
+                return Ok(None);
+            }
+            if !self.include_vendor && crate::impact::hotspots::is_vendor_hotspot_path(&path_key) {
+                self.omitted_vendor_paths.borrow_mut().insert(path_key);
+                return Ok(None);
+            }
         }
 
         if !self.include_traits && filters::is_standard_trait(symbol) {
@@ -36,7 +69,7 @@ impl<'a> ConfidenceScorer<'a> {
         }
 
         let mut factors = Vec::new();
-        if reachability >= 1.0 {
+        if reachability.is_some_and(|v| v >= 1.0) {
             factors.push(ConfidenceFactor::UnreachableFromEntrypoints);
         }
         if git_activity > 0.0 {
@@ -47,7 +80,7 @@ impl<'a> ConfidenceScorer<'a> {
                 days_since_last_commit: days,
             });
         }
-        if test_coverage >= 1.0 {
+        if test_coverage.is_some_and(|v| v >= 1.0) {
             factors.push(ConfidenceFactor::NoTestCoverage);
         }
 
@@ -85,10 +118,18 @@ impl<'a> ConfidenceScorer<'a> {
         &self,
         resolved: &FileSymbols,
     ) -> Result<Vec<DeadCodeFinding>> {
+        self.score_resolved_symbols_inner(resolved, true)
+    }
+
+    fn score_resolved_symbols_inner(
+        &self,
+        resolved: &FileSymbols,
+        omit_paths: bool,
+    ) -> Result<Vec<DeadCodeFinding>> {
         let stored_path = Path::new(&resolved.stored_path);
         let mut findings = Vec::new();
         for symbol in &resolved.symbols {
-            if let Some(finding) = self.score_symbol(symbol, stored_path)? {
+            if let Some(finding) = self.score_symbol_inner(symbol, stored_path, omit_paths)? {
                 findings.push(finding);
             }
         }
@@ -105,7 +146,7 @@ impl<'a> ConfidenceScorer<'a> {
     pub fn explain_file(&mut self, file_path: &Path) -> Result<DeadCodeExplanation> {
         let resolved = self.get_symbols_for_file(file_path)?;
         self.precompute_for_file_with_symbols(&resolved)?;
-        let findings = self.score_resolved_symbols(&resolved)?;
+        let findings = self.score_resolved_symbols_inner(&resolved, false)?;
         let file_str = file_path.display().to_string();
         Ok(crate::impact::analysis::dead_code::compute_dead_code_explanation(&file_str, &findings))
     }
@@ -137,16 +178,21 @@ impl<'a> ConfidenceScorer<'a> {
         Ok(findings)
     }
 
-    pub(super) fn blend(&self, reachability: f64, git_activity: f64, test_coverage: f64) -> f64 {
+    pub(super) fn blend(
+        &self,
+        reachability: Option<f64>,
+        git_activity: f64,
+        test_coverage: Option<f64>,
+    ) -> f64 {
         let sum = self.config.reachability_weight
             + self.config.git_activity_weight
             + self.config.test_coverage_weight;
         if sum <= 0.0 {
             return 0.0;
         }
-        (self.config.reachability_weight * reachability
+        (self.config.reachability_weight * reachability.unwrap_or(0.0)
             + self.config.git_activity_weight * git_activity
-            + self.config.test_coverage_weight * test_coverage)
+            + self.config.test_coverage_weight * test_coverage.unwrap_or(0.0))
             / sum
     }
 }
