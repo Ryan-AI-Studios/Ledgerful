@@ -1,7 +1,7 @@
 use super::explain::complexity_for_entity_path;
 use super::list::{
     omitted_docs_footer, omitted_hotspots_footer, omitted_vendor_hotspots_footer,
-    wrap_hotspots_list_json,
+    wrap_hotspots_list_json, wrap_hotspots_list_json_with_completeness,
 };
 use super::trend::{
     TrendMode, TrendRow, build_trend_summary, compute_history_available, format_trend_ts,
@@ -76,6 +76,62 @@ fn wrap_hotspots_list_json_empty_files_is_schema_version_1() {
     assert_eq!(output["schemaVersion"], 1);
     assert_eq!(output["limit"], 10);
     assert_eq!(output["files"].as_array().map(Vec::len), Some(0));
+}
+
+#[test]
+fn history_walk_complete_omits_completeness() {
+    let output = wrap_hotspots_list_json(vec![serde_json::json!({"path": "src/a.rs"})], 10);
+    assert_eq!(output["schemaVersion"], 1);
+    assert!(
+        output.get("completeness").is_none(),
+        "complete walk must omit completeness: {output}"
+    );
+}
+
+#[test]
+fn hotspots_json_budget_emits_one_document() {
+    use crate::impact::budget::{CompletenessFilter, HistoryWalkStop, completeness_for_walk};
+
+    let completeness = completeness_for_walk(
+        HistoryWalkStop::Budget,
+        500,
+        3,
+        None,
+        CompletenessFilter::Default,
+        Some("abc".to_string()),
+        Some(45),
+    )
+    .expect("budget completeness");
+    let output = wrap_hotspots_list_json_with_completeness(
+        vec![serde_json::json!({"path": "src/a.rs"})],
+        10,
+        Some(&completeness),
+    );
+    assert_eq!(output["schemaVersion"], 1);
+    assert_eq!(output["limit"], 10);
+    assert!(output.get("files").is_some(), "{output}");
+    assert_eq!(output["completeness"]["stop"], "budget");
+    assert!(
+        output["completeness"]["commitsWalked"].as_u64().unwrap()
+            < output["completeness"]["commitsRequested"].as_u64().unwrap()
+    );
+    let encoded = serde_json::to_string(&output).expect("one document");
+    let parsed: serde_json::Value = serde_json::from_str(&encoded).expect("single JSON value");
+    assert!(
+        parsed.is_object(),
+        "stdout must be one JSON object: {parsed}"
+    );
+}
+
+#[test]
+fn same_state_complete_walks_are_byte_identical() {
+    let files = vec![
+        serde_json::json!({"path": "src/b.rs", "score": 0.2}),
+        serde_json::json!({"path": "src/a.rs", "score": 0.9}),
+    ];
+    let a = serde_json::to_string(&wrap_hotspots_list_json(files.clone(), 10)).unwrap();
+    let b = serde_json::to_string(&wrap_hotspots_list_json(files, 10)).unwrap();
+    assert_eq!(a, b, "complete same-key wraps must be byte-identical");
 }
 
 #[test]

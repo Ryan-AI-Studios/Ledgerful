@@ -328,6 +328,7 @@ fn test_schema_stability_golden() {
         }],
         service_impact: Vec::new(),
         analysis_warnings: vec!["w".to_string()],
+        completeness: None,
         dead_code_findings: vec![DeadCodeFinding {
             symbol_name: "unused".to_string(),
             file_path: PathBuf::from("u.rs"),
@@ -3132,4 +3133,41 @@ fn test_public_facade_imports_work() {
         artifacts: vec![],
         release_gates: vec![],
     };
+}
+
+#[test]
+fn impact_packet_budget_emits_completeness() {
+    let mut packet = ImpactPacket {
+        schema_version: "v1".to_string(),
+        ..Default::default()
+    };
+    packet
+        .analysis_warnings
+        .push("history walk stopped (budget): walked 2 of 500 commits".into());
+    packet.completeness = crate::impact::budget::completeness_for_walk(
+        crate::impact::budget::HistoryWalkStop::Budget,
+        500,
+        2,
+        None,
+        crate::impact::budget::CompletenessFilter::Unfiltered,
+        Some("abc".into()),
+        Some(45),
+    );
+    let json = serde_json::to_value(&packet).expect("json");
+    assert_eq!(json["schemaVersion"], "v1");
+    assert_eq!(json["completeness"]["stop"], "budget");
+    assert!(
+        json["analysisWarnings"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .any(|w| w.as_str().unwrap_or("").contains("history walk stopped")),
+        "{json}"
+    );
+    let complete = ImpactPacket::default();
+    let complete_json = serde_json::to_value(&complete).expect("json");
+    assert!(
+        complete_json.get("completeness").is_none(),
+        "complete walk omits completeness: {complete_json}"
+    );
 }

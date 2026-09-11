@@ -178,12 +178,14 @@ pub(super) fn dispatch_ledger(command: LedgerCommands) -> Result<()> {
             limit,
             offset,
             json,
+            timeout,
         } => crate::commands::ledger_audit::execute_ledger_audit(
             entity.or(pos_entity),
             include_unaudited,
             limit,
             offset,
             json,
+            timeout,
         ),
         LedgerCommands::Note {
             entity,

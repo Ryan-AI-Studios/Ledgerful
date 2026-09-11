@@ -18,7 +18,7 @@ use crate::commands::web::types::{
 };
 use crate::config::model::Config;
 use crate::git::repo::open_repo;
-use crate::impact::hotspots::{HotspotQuery, calculate_hotspots};
+use crate::impact::hotspots::HotspotQuery;
 use crate::impact::packet::Hotspot;
 use crate::impact::temporal::GixHistoryProvider;
 use crate::ledger::db::LedgerDb;
@@ -873,24 +873,38 @@ fn fetch_hotspots(
         }
     };
 
-    let config = match load_ledger_config(layout) {
+    let mut config = match load_ledger_config(layout) {
         Ok(c) => c,
         Err(e) => {
             tracing::warn!("Failed to load config for /api/hotspots: {}", e);
             Config::default()
         }
     };
+    crate::impact::budget::apply_resolved_history_budget(&mut config, None);
 
     let history_provider = GixHistoryProvider::new(&repo);
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let query = HotspotQuery {
         limit: limit.unwrap_or(config.hotspots.limit),
         commits: config.hotspots.max_commits,
         days,
         decay_half_life: config.hotspots.decay_half_life,
+        budget: Some(crate::impact::budget::AnalysisBudget::from_secs(
+            config.hotspots.history_budget_secs,
+            cancel,
+        )),
         ..Default::default()
     };
-    calculate_hotspots(&storage, &history_provider, &query)
-        .map_err(|e| miette!("Failed to calculate hotspots: {}", e))
+    let calc =
+        crate::impact::hotspots::calculate_hotspots_detailed(&storage, &history_provider, &query)
+            .map_err(|e| miette!("Failed to calculate hotspots: {}", e))?;
+    crate::impact::budget::warn_history_truncated(
+        "/api/hotspots",
+        calc.walk_stop,
+        calc.commits_walked,
+        query.commits,
+    );
+    Ok(calc.hotspots)
 }
 
 /// Fetch hotspots and map to `HotspotResponse` DTOs with git metadata

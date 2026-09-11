@@ -1,8 +1,7 @@
 use camino::Utf8PathBuf;
 use miette::Result;
 use owo_colors::{OwoColorize, Stream, Style};
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use crate::bridge::notify::push_risk_alert;
@@ -44,13 +43,7 @@ pub fn execute_watch(interval_ms: u64, json_output: bool, no_graph_sync: bool) -
     let layout = crate::commands::helpers::get_layout()?;
     let path = layout.root.clone();
     let config = load_config(&layout)?;
-    let running = Arc::new(AtomicBool::new(true));
-    let signal = running.clone();
-
-    ctrlc::set_handler(move || {
-        signal.store(false, Ordering::SeqCst);
-    })
-    .map_err(|e| miette::miette!("Failed to install Ctrl+C handler: {}", e))?;
+    let stop = crate::impact::budget::install_cancel_flag();
 
     if !json_output {
         println!(
@@ -196,7 +189,7 @@ pub fn execute_watch(interval_ms: u64, json_output: bool, no_graph_sync: bool) -
     )
     .map_err(|e| miette::miette!("Failed to start watcher: {}", e))?;
 
-    while running.load(Ordering::SeqCst) {
+    while !stop.load(Ordering::SeqCst) {
         std::thread::sleep(Duration::from_secs(1));
     }
 

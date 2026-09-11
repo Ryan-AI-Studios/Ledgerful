@@ -49,7 +49,8 @@ pub fn execute_change_context(opts: ChangeContextOpts, json: bool) -> Result<()>
         }
     };
 
-    let config = crate::config::load::load_config(&layout).unwrap_or_default();
+    let mut config = crate::config::load::load_config_or_default_warn(&layout);
+    crate::impact::budget::apply_resolved_history_budget(&mut config, None);
     let storage = match open_storage_for_change_context(&layout) {
         Ok(s) => s,
         Err((e, class)) => {
@@ -67,6 +68,8 @@ pub fn execute_change_context(opts: ChangeContextOpts, json: bool) -> Result<()>
         }
     };
 
+    let mut opts = opts;
+    opts.cancel = crate::impact::budget::install_cancel_flag();
     let packet = build_change_context(&opts, &layout, &storage, &config)?;
     let _ = storage.shutdown();
     emit_packet(&packet, json)

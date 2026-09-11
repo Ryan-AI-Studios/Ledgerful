@@ -46,6 +46,7 @@ pub struct ReviewOpts {
     pub json: bool,
     pub requirements: Vec<String>,
     pub id: Option<String>,
+    pub timeout: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -222,16 +223,19 @@ pub fn execute_review(
     json: bool,
     requirements: Vec<String>,
     id: Option<String>,
+    timeout: Option<u64>,
 ) -> Result<()> {
     let layout = crate::commands::helpers::get_layout()
         .map_err(|e| miette::miette!("review: layout unavailable: {e}"))?;
-    let config = crate::config::load::load_config(&layout).unwrap_or_default();
+    let mut config = crate::config::load::load_config_or_default_warn(&layout);
+    crate::impact::budget::apply_resolved_history_budget(&mut config, timeout);
     let work_dir = layout.root.as_std_path().to_path_buf();
     let opts = ReviewOpts {
         range,
         json,
         requirements,
         id,
+        timeout,
     };
     let mut out = std::io::stdout();
     execute_review_in(&layout, &work_dir, &config, &opts, &mut out)
@@ -480,7 +484,8 @@ fn compose_impact(
     files_changed_truncated: bool,
 ) -> (ReviewBlast, Vec<String>, ReviewTests, ReviewContracts) {
     let files_scanned = snapshot.changes.len();
-    let impact = crate::commands::impact::compute_impact_from_snapshot_in_memory_with_mode(
+    let cancel = crate::impact::budget::install_cancel_flag();
+    let impact = crate::commands::impact::compute_impact_from_snapshot_in_memory_with_history(
         storage,
         config,
         work_dir,
@@ -488,6 +493,10 @@ fn compose_impact(
         false,
         REVIEW_ANALYSIS_MODE,
         Vec::new(),
+        crate::impact::orchestrator::ImpactHistoryOpts {
+            skip_git_history_enrichment: false,
+            cancel,
+        },
     );
     let (blast, symbols) = match impact {
         Ok(packet) => {
@@ -503,6 +512,16 @@ fn compose_impact(
                 .unwrap_or(0);
             let mut symbols = top_symbols_from_packet(&packet);
             symbols.truncate(MAX_AFFECTED_SYMBOLS);
+            let reason = packet.completeness.as_ref().map(|c| {
+                format!(
+                    "history walk stopped ({})",
+                    match c.stop {
+                        crate::impact::budget::CompletenessStop::Budget => "budget",
+                        crate::impact::budget::CompletenessStop::Cancelled => "cancelled",
+                        crate::impact::budget::CompletenessStop::Error => "error",
+                    }
+                )
+            });
             (
                 ReviewBlast {
                     status: "ok".to_string(),
@@ -511,7 +530,7 @@ fn compose_impact(
                     files_capped: files_changed_truncated,
                     nodes,
                     edges,
-                    reason: None,
+                    reason,
                 },
                 symbols,
             )
@@ -1514,6 +1533,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: Some("0304".to_string()),
+                timeout: None,
             },
         );
         assert!(result.is_err(), "{result:?}");
@@ -1534,6 +1554,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: None,
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -1556,6 +1577,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: None,
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -1583,6 +1605,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: None,
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}");
@@ -1602,6 +1625,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: None,
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -1633,6 +1657,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: None,
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -1670,6 +1695,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: None,
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -1704,6 +1730,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: Some("0304".to_string()),
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -1744,6 +1771,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: None,
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -1781,6 +1809,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: None,
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -1833,6 +1862,7 @@ mod tests {
                 json: true,
                 requirements: vec![padded],
                 id: None,
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -1863,6 +1893,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: Some("0304".to_string()),
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -1902,6 +1933,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: Some("0304".to_string()),
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2006,6 +2038,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: None,
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2042,6 +2075,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: Some("0304-AgentReviewPacket".to_string()),
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2086,6 +2120,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: Some("0304".to_string()),
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2128,6 +2163,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: Some("323".to_string()),
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2159,6 +2195,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: Some("323".to_string()),
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2190,6 +2227,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: Some("0999-NoSuch".to_string()),
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2246,6 +2284,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: Some("0304".to_string()),
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2313,6 +2352,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: Some("1".to_string()),
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2359,6 +2399,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: Some("1".to_string()),
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2395,6 +2436,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: None,
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2433,6 +2475,7 @@ mod tests {
                 json: true,
                 requirements: Vec::new(),
                 id: None,
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2475,6 +2518,7 @@ mod tests {
                 json: true,
                 requirements: reqs,
                 id: None,
+                timeout: None,
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2543,6 +2587,81 @@ mod tests {
         assert!(
             !omitted.contains("Truncated"),
             "false *Truncated must omit: {omitted}"
+        );
+    }
+
+    #[test]
+    fn review_timeout_bounds_walk() {
+        let mut env = ReviewEnvelope {
+            schema_version: 1,
+            kind: "review".into(),
+            analysis_mode: "range".into(),
+            range: "HEAD~1...HEAD".into(),
+            base_ref: "HEAD~1".into(),
+            head_ref: "HEAD".into(),
+            files_changed: vec![],
+            files_changed_truncated: false,
+            blast: ReviewBlast {
+                status: "ok".into(),
+                files_scanned: 1,
+                files_total: 1,
+                files_capped: false,
+                nodes: 0,
+                edges: 0,
+                reason: Some("history walk stopped (budget)".into()),
+            },
+            affected_symbols: vec![],
+            tests: ReviewTests {
+                status: "unavailable".into(),
+                exercising: vec![],
+                untested: vec![],
+                notes: None,
+            },
+            contracts: ReviewContracts {
+                status: "unavailable".into(),
+                items: vec![],
+                truncated: false,
+            },
+            promised_requirements: ReviewRequirements {
+                status: "none".into(),
+                items: vec![],
+                truncated: false,
+            },
+            requirements_files_truncated: false,
+            files_intended: None,
+            files_unexpected: None,
+            files_intended_truncated: false,
+            files_unexpected_truncated: false,
+            prior_decisions: vec![],
+            prior_decisions_truncated: false,
+            implementation_claims: vec![],
+            implementation_claims_truncated: false,
+            unresolved_findings: ReviewFindings {
+                status: "none".into(),
+                items: vec![],
+                truncated: false,
+            },
+            ci_evidence: ReviewCiEvidence {
+                status: "unavailable".into(),
+                items: vec![],
+                truncated: false,
+            },
+            coordinated: None,
+        };
+        env.blast.reason = Some("history walk stopped (budget)".into());
+        let json = serde_json::to_value(&env).expect("json");
+        assert_eq!(json["kind"], "review");
+        assert_eq!(json["schemaVersion"], 1);
+        assert!(
+            json["blast"]["reason"]
+                .as_str()
+                .unwrap_or("")
+                .contains("budget"),
+            "{json}"
+        );
+        assert!(
+            json.get("completeness").is_none(),
+            "review envelope must not grow a completeness key: {json}"
         );
     }
 }

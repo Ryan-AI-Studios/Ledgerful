@@ -81,6 +81,9 @@ pub struct ImpactPacket {
     pub service_impact: Vec<super::ServiceImpact>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub analysis_warnings: Vec<String>,
+    /// Additive history-walk honesty (0308). Omitted when the walk completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completeness: Option<crate::impact::budget::AnalysisCompleteness>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub dead_code_findings: Vec<super::DeadCodeFinding>,
     /// Path mode for temporal demotion: `"code"` (default) or `"all"` (0173).
@@ -271,6 +274,7 @@ impl Default for ImpactPacket {
             knowledge_graph: Vec::new(),
             service_impact: Vec::new(),
             analysis_warnings: Vec::new(),
+            completeness: None,
             dead_code_findings: Vec::new(),
             path_mode: default_path_mode(),
             demoted_temporal_count: 0,

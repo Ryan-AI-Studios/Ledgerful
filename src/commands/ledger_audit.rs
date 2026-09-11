@@ -4,7 +4,11 @@ use owo_colors::{OwoColorize, Stream, Style};
 use serde::Serialize;
 
 use crate::commands::helpers::{get_layout, load_ledger_config};
-use crate::impact::hotspots::calculate_hotspots;
+use crate::impact::budget::{
+    AnalysisBudget, CompletenessFilter, apply_resolved_history_budget, completeness_for_error,
+    completeness_for_walk, eprint_walk_stop,
+};
+use crate::impact::hotspots::calculate_hotspots_detailed;
 use crate::impact::packet::Hotspot;
 use crate::impact::temporal::GixHistoryProvider;
 use crate::ledger::db::LedgerDb;
@@ -27,6 +31,8 @@ pub struct ProjectAuditReport {
     pub churn: Vec<ChurnEntry>,
     pub unaudited_drift: Vec<DriftEntry>,
     pub hotspots: Vec<Hotspot>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completeness: Option<crate::impact::budget::AnalysisCompleteness>,
     pub ci_trend: Vec<bool>,
     /// True when `VERIFY_HISTORY` exists but JSON parse failed. Omitted when false.
     #[serde(default, skip_serializing_if = "is_false")]
@@ -93,6 +99,7 @@ pub fn execute_ledger_audit(
     limit: usize,
     offset: usize,
     json: bool,
+    timeout: Option<u64>,
 ) -> Result<()> {
     let layout = get_layout()?;
     let mut storage = StorageManager::open_read_only_sqlite_only(&layout)?;
@@ -123,7 +130,7 @@ pub fn execute_ledger_audit(
             json,
         )?;
     } else {
-        audit_global(&storage, include_unaudited, limit, offset, json)?;
+        audit_global(&storage, include_unaudited, limit, offset, json, timeout)?;
     }
 
     Ok(())
@@ -152,14 +159,17 @@ fn gather_audit_data(
     include_unaudited: bool,
     limit: usize,
     offset: usize,
+    timeout: Option<u64>,
 ) -> Result<ProjectAuditReport> {
     let layout = get_layout()?;
     let db = LedgerDb::new(storage.get_connection());
-    let config = load_ledger_config(&layout)?;
+    let mut config = load_ledger_config(&layout)?;
+    apply_resolved_history_budget(&mut config, timeout);
 
     // Opening a second connection for the manager avoids borrow conflicts
     let mut storage_mut = StorageManager::open_read_only_sqlite_only(&layout)?;
-    let manager = TransactionManager::new(&mut storage_mut, layout.root.clone().into(), config);
+    let manager =
+        TransactionManager::new(&mut storage_mut, layout.root.clone().into(), config.clone());
 
     let v_7 = db
         .get_transaction_velocity(7)
@@ -216,17 +226,47 @@ fn gather_audit_data(
 
     let discovered = gix::discover(&layout.root).into_diagnostic()?;
     let history_provider = GixHistoryProvider::new(&discovered);
-    let hotspots = calculate_hotspots(
-        storage,
-        &history_provider,
-        &crate::impact::hotspots::HotspotQuery {
-            commits: 500,
-            limit,
-            decay_half_life: 100,
-            ..Default::default()
-        },
-    )
-    .unwrap_or_default();
+    let cancel = crate::impact::budget::install_cancel_flag();
+    let commits = config.hotspots.max_commits;
+    let query = crate::impact::hotspots::HotspotQuery {
+        commits,
+        limit,
+        decay_half_life: config.hotspots.decay_half_life,
+        budget: Some(AnalysisBudget::from_secs(
+            config.hotspots.history_budget_secs,
+            cancel,
+        )),
+        ..Default::default()
+    };
+    let (hotspots, completeness) =
+        match calculate_hotspots_detailed(storage, &history_provider, &query) {
+            Ok(calc) => {
+                eprint_walk_stop(calc.walk_stop, calc.commits_walked, commits);
+                let completeness = completeness_for_walk(
+                    calc.walk_stop,
+                    commits as u64,
+                    calc.commits_walked as u64,
+                    query.days,
+                    CompletenessFilter::Unfiltered,
+                    calc.head,
+                    Some(config.hotspots.history_budget_secs).filter(|s| *s > 0),
+                );
+                (calc.hotspots, completeness)
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "audit hotspots history failed");
+                eprintln!("warning: audit hotspots unavailable: {e}");
+                (
+                    Vec::new(),
+                    Some(completeness_for_error(
+                        commits as u64,
+                        query.days,
+                        CompletenessFilter::Unfiltered,
+                        Some(config.hotspots.history_budget_secs).filter(|s| *s > 0),
+                    )),
+                )
+            }
+        };
 
     let history_path = layout.reports_dir().join(VERIFY_HISTORY);
     let mut ci_trend_corrupt = false;
@@ -264,6 +304,7 @@ fn gather_audit_data(
         churn,
         unaudited_drift,
         hotspots,
+        completeness,
         ci_trend,
         ci_trend_corrupt,
         recent_entries,
@@ -318,8 +359,9 @@ fn audit_global(
     limit: usize,
     offset: usize,
     json: bool,
+    timeout: Option<u64>,
 ) -> Result<()> {
-    let report = gather_audit_data(storage, include_unaudited, limit, offset)?;
+    let report = gather_audit_data(storage, include_unaudited, limit, offset, timeout)?;
 
     if json {
         println!(
@@ -745,6 +787,7 @@ mod tests {
             churn: vec![],
             unaudited_drift: vec![],
             hotspots: vec![],
+            completeness: None,
             ci_trend: vec![],
             ci_trend_corrupt,
             recent_entries: vec![],
@@ -778,6 +821,45 @@ mod tests {
     fn verify_history_ci_trend_corrupt_true_is_serialized() {
         let json = serde_json::to_value(empty_audit_report(true)).unwrap();
         assert_eq!(json["ciTrendCorrupt"], true);
+    }
+
+    #[test]
+    fn audit_history_error_is_not_silent_empty() {
+        let mut report = empty_audit_report(false);
+        report.completeness = Some(crate::impact::budget::completeness_for_error(
+            500,
+            None,
+            crate::impact::budget::CompletenessFilter::Unfiltered,
+            Some(45),
+        ));
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["hotspots"].as_array().map(Vec::len), Some(0));
+        assert_eq!(json["completeness"]["stop"], "error");
+        assert!(
+            json["completeness"].get("commitsWalked").is_none(),
+            "error must omit commitsWalked: {json}"
+        );
+    }
+
+    #[test]
+    fn audit_budget_emits_completeness() {
+        let mut report = empty_audit_report(false);
+        report.completeness = crate::impact::budget::completeness_for_walk(
+            crate::impact::budget::HistoryWalkStop::Budget,
+            500,
+            4,
+            None,
+            crate::impact::budget::CompletenessFilter::Unfiltered,
+            Some("deadbeef".to_string()),
+            Some(45),
+        );
+        let json = serde_json::to_value(&report).unwrap();
+        assert_eq!(json["completeness"]["stop"], "budget");
+        assert!(
+            json["completeness"]["commitsWalked"].as_u64().unwrap()
+                < json["completeness"]["commitsRequested"].as_u64().unwrap()
+        );
+        assert!(json.get("hotspots").is_some(), "hotspots sibling required");
     }
 
     #[test]

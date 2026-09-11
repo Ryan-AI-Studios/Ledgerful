@@ -1,6 +1,7 @@
 use crate::git::repo::open_repo;
+use crate::impact::budget::{CompletenessFilter, completeness_for_walk};
 use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
-use crate::impact::hotspots::calculate_hotspots;
+use crate::impact::hotspots::calculate_hotspots_detailed;
 use crate::impact::packet::ImpactPacket;
 use crate::impact::temporal::GixHistoryProvider;
 use miette::Result;
@@ -14,6 +15,10 @@ impl EnrichmentProvider for HotspotProvider {
     }
 
     fn enrich(&self, context: &EnrichmentContext, packet: &mut ImpactPacket) -> Result<()> {
+        if context.skip_git_history_enrichment {
+            debug!("Skipping hotspot git-history enrichment (session opts)");
+            return Ok(());
+        }
         debug!("Calculating hotspots...");
 
         let repo = open_repo(&context.project_root)
@@ -21,19 +26,39 @@ impl EnrichmentProvider for HotspotProvider {
 
         let history_provider = GixHistoryProvider::new(&repo);
 
-        match calculate_hotspots(
-            context.storage,
-            &history_provider,
-            &crate::impact::hotspots::HotspotQuery {
-                commits: context.config.hotspots.max_commits,
-                limit: context.config.hotspots.limit,
-                all_parents: context.config.temporal.all_parents,
-                decay_half_life: context.config.hotspots.decay_half_life,
-                ..Default::default()
-            },
-        ) {
-            Ok(hotspots) => {
-                packet.set_hotspots(hotspots);
+        let query = crate::impact::hotspots::HotspotQuery {
+            commits: context.config.hotspots.max_commits,
+            limit: context.config.hotspots.limit,
+            all_parents: context.config.temporal.all_parents,
+            decay_half_life: context.config.hotspots.decay_half_life,
+            budget: context.history_budget.clone(),
+            ..Default::default()
+        };
+        match calculate_hotspots_detailed(context.storage, &history_provider, &query) {
+            Ok(calc) => {
+                if let Some(c) = completeness_for_walk(
+                    calc.walk_stop,
+                    query.commits as u64,
+                    calc.commits_walked as u64,
+                    query.days,
+                    CompletenessFilter::Unfiltered,
+                    calc.head.clone(),
+                    Some(context.config.hotspots.history_budget_secs).filter(|s| *s > 0),
+                ) {
+                    let msg = format!(
+                        "history walk stopped ({}): walked {} of {} commits",
+                        match c.stop {
+                            crate::impact::budget::CompletenessStop::Budget => "budget",
+                            crate::impact::budget::CompletenessStop::Cancelled => "cancelled",
+                            crate::impact::budget::CompletenessStop::Error => "error",
+                        },
+                        calc.commits_walked,
+                        query.commits
+                    );
+                    context.add_warning(msg);
+                    packet.completeness = Some(c);
+                }
+                packet.set_hotspots(calc.hotspots);
             }
             Err(e) => {
                 warn!("Hotspot analysis failed: {e}");
@@ -69,6 +94,8 @@ mod tests {
                 .unwrap_or_else(|_| PathBuf::from(r"C:\dev\ledgerful")),
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
         };
         let mut packet = ImpactPacket::default();
 

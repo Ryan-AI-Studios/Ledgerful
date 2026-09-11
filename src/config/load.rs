@@ -18,6 +18,20 @@ pub fn load_config(layout: &Layout) -> Result<Config> {
     Ok(config)
 }
 
+/// Greppable 0243 absorb: warn and continue with defaults (do not hide history errors).
+pub const CONFIG_LOAD_WARN: &str = "config load failed; using defaults";
+
+pub fn load_config_or_default_warn(layout: &Layout) -> Config {
+    match load_config(layout) {
+        Ok(c) => c,
+        Err(e) => {
+            warn!(error = %e, "{CONFIG_LOAD_WARN}");
+            eprintln!("warning: {CONFIG_LOAD_WARN}");
+            Config::default()
+        }
+    }
+}
+
 /// Like [`load_config`], but also returns sorted unknown/ignored key paths
 /// discovered via `serde_ignored` (DoD-8). Empty when the file is missing or
 /// fully understood.
@@ -285,5 +299,24 @@ x = 1
         layout.ensure_state_dir().unwrap();
         fs::write(layout.config_file(), "not = [ valid toml").unwrap();
         assert!(load_config(&layout).is_err());
+    }
+
+    #[test]
+    fn hotspots_config_load_failure_warns() {
+        let tmp = tempdir().unwrap();
+        let root = Utf8Path::from_path(tmp.path()).unwrap();
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().unwrap();
+        fs::write(layout.config_file(), "not = [ valid toml").unwrap();
+        assert!(load_config(&layout).is_err());
+        let config = load_config_or_default_warn(&layout);
+        assert_eq!(
+            config.hotspots.history_budget_secs,
+            Config::default().hotspots.history_budget_secs
+        );
+        assert!(
+            CONFIG_LOAD_WARN.contains("config load"),
+            "warn string must stay greppable: {CONFIG_LOAD_WARN}"
+        );
     }
 }

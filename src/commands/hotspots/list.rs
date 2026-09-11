@@ -1,4 +1,7 @@
 use crate::cli::{HotspotArgs, HotspotIncludeScope};
+use crate::impact::budget::{
+    AnalysisBudget, completeness_for_walk, eprint_walk_stop, filter_for_cli_include,
+};
 use crate::impact::hotspots::{HotspotQuery, calculate_hotspots_detailed};
 use crate::impact::temporal::{GixHistoryProvider, TemporalEngine};
 use crate::state::layout::Layout;
@@ -10,13 +13,26 @@ use serde::Serialize;
 /// Truncate to `limit`, wrap as the hotspots list envelope, and echo `limit`.
 /// Shared by list and `--semantic` JSON printers so the two arms cannot drift.
 pub(super) fn wrap_hotspots_list_json<T: Serialize>(
+    items: Vec<T>,
+    limit: usize,
+) -> serde_json::Value {
+    wrap_hotspots_list_json_with_completeness(items, limit, None)
+}
+
+pub(super) fn wrap_hotspots_list_json_with_completeness<T: Serialize>(
     mut items: Vec<T>,
     limit: usize,
+    completeness: Option<&crate::impact::budget::AnalysisCompleteness>,
 ) -> serde_json::Value {
     items.truncate(limit);
     let mut output = crate::output::empty::format_json_list_envelope(items, "files");
     if let Some(map) = output.as_object_mut() {
         map.insert("limit".to_string(), serde_json::json!(limit));
+        if let Some(c) = completeness
+            && let Ok(v) = serde_json::to_value(c)
+        {
+            map.insert("completeness".to_string(), v);
+        }
     }
     output
 }
@@ -65,6 +81,7 @@ pub(super) fn execute_hotspots_list(
             Some(HotspotIncludeScope::Vendor) => (true, true, false, false),
             None => (true, true, false, true),
         };
+    let cancel = crate::impact::budget::install_cancel_flag();
     let query = HotspotQuery {
         limit: args.limit.unwrap_or(config.hotspots.limit),
         commits: args.commits.unwrap_or(config.hotspots.max_commits),
@@ -76,11 +93,29 @@ pub(super) fn execute_hotspots_list(
         exclude_docs_paths,
         docs_frequency_lane,
         exclude_vendor_paths,
+        budget: Some(AnalysisBudget::from_secs(
+            config.hotspots.history_budget_secs,
+            cancel,
+        )),
         ..Default::default()
     };
 
     let calculated = calculate_hotspots_detailed(storage, &history_provider, &query)?;
     let hotspots = calculated.hotspots;
+    let completeness = completeness_for_walk(
+        calculated.walk_stop,
+        query.commits as u64,
+        calculated.commits_walked as u64,
+        query.days,
+        filter_for_cli_include(args.include),
+        calculated.head.clone(),
+        Some(config.hotspots.history_budget_secs).filter(|s| *s > 0),
+    );
+    eprint_walk_stop(
+        calculated.walk_stop,
+        calculated.commits_walked,
+        query.commits,
+    );
 
     if args.snapshot {
         if matches!(args.include, Some(HotspotIncludeScope::Docs)) {
@@ -101,7 +136,8 @@ pub(super) fn execute_hotspots_list(
     }
 
     if args.json {
-        let output = wrap_hotspots_list_json(hotspots, query.limit);
+        let output =
+            wrap_hotspots_list_json_with_completeness(hotspots, query.limit, completeness.as_ref());
         crate::output::json::emit(&output).map_err(|e| miette::miette!("{}", e))?;
     } else if args.centrality {
         crate::output::human::print_hotspots_table_with_centrality(&hotspots);

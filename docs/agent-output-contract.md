@@ -41,7 +41,7 @@ on stderr.
 | `index --semantic --json` | yes (0161) | yes | One final JSON object (`schemaVersion`, `mode`, `reason`, counts, `upToDate`); zero human mid-run lines on stdout |
 | `index --json` (main / `--auto-scip` / `--scip`) | yes | yes* | Merged index stats object; top-level **`scip`** (0157/0166): `status`, `edges_added`/`edges_updated`, `definitions_mapped`/`definitions_seen`, `files_skipped`, skip/recovery tallies (`edges_skipped_enclosing_disagreement`, `edges_recovered_nest_prefer`, `edges_skipped_unmapped`, `edges_skipped_invalid_occ_range`, `edges_skipped_duplicate`, `definitions_skipped_invalid_range`, `invalid_enclosing_fallback`), `references_seen`, optional `message`. On Success skip/recovery fields are always present (incl. 0). WARN summary for disagreement/invalid-range is **stderr** only (O(1)); not part of the JSON payload |
 | `dead-code --json` | yes (0149) | yes | schemaVersion 1 envelope; see rejected combos |
-| `hotspots --json` | yes | yes | schemaVersion 1 object; collection `files`; list and `--semantic` echo `limit` (0207). CLI default list omits test/example/bench paths (0222; `--include tests` restores) **and** markdown (0293; `--include docs` is a frequency lane) **and** vendored `deps_src`/`vendor`/… (0297; `--include vendor` restores `f×c`). **`score` is 0–1**; `displayScore` is ln display. No `scoreUnit`. **MCP `hotspots` stays an in-process array** and stays unfiltered. `--semantic` ignores `--include`. |
+| `hotspots --json` | yes | yes | schemaVersion 1 object; collection `files`; list and `--semantic` echo `limit` (0207). Additive `completeness` (0308) only when the history walk stops early (`stop`: `budget`\|`cancelled`\|`error`); omitted on a complete window. CLI default list omits test/example/bench paths (0222; `--include tests` restores) **and** markdown (0293; `--include docs` is a frequency lane) **and** vendored `deps_src`/`vendor`/… (0297; `--include vendor` restores `f×c`). **`score` is 0–1**; `displayScore` is ln display. No `scoreUnit`. **MCP `hotspots` stays an in-process array** and stays unfiltered. `--semantic` ignores `--include`. `--timeout` bounds the walk (config `[hotspots] history_budget_secs`, default 45; `0` disables the clock). |
 | `hotspots trend --json` | yes (0151) | yes | schemaVersion 1; modes summary/full/entity; see schema below |
 | `endpoints --json` | yes | yes | schemaVersion 1 object; collection `results` (0207). MCP `endpoints_changed` re-execs CLI and rides this envelope |
 | `symbols --json` | yes (0163) | yes | schemaVersion **1** inventory; path/changed/kind/pub filters; COUNT-backed `totalMatching`; optional `indexStatus`; see schema below |
@@ -53,7 +53,7 @@ on stderr.
 | `scan --impact --json` | yes | yes | impact packet (`schemaVersion` string `"v1"`; no top-level `kind`) |
 | `scan --json` / `scan --out` (no `--impact`) | yes (0180) | yes | **gitScan** envelope: numeric `schemaVersion` **1** + top-level **`kind: "gitScan"`** + ScanReport fields; **not** auto-impact |
 | `scan --pr <range> --format json` | via `--format` | yes | PR-range machine output (not impact packet) |
-| `audit --json` | yes | yes | Bare `ProjectAuditReport` object, **no** `schemaVersion`. `churn[].entity` is a unique file path; `count` is distinct LOCAL TXs. Not Daily 5 |
+| `audit --json` | yes | yes | Bare `ProjectAuditReport` object, **no** `schemaVersion`. Additive `completeness` (0308) sibling of `hotspots` when the walk stops early or history `Err` (`stop=error` omits `commitsWalked`). `churn[].entity` is a unique file path; `count` is distinct LOCAL TXs. `--timeout` bounds the walk. Not Daily 5 |
 | `surfaces --json` | yes (0185) | yes | schemaVersion 1 object `kind: "surfaces"`. Item keys `id`/`name`/`command`/`status`/`gate`/`reason`/`next` stay. Additive `sessionNotices` object (0300; skip empty): notice id → `"already_shown"`. `next` strings stay on later emits |
 | `services list --json` / `services diff --json` | yes | yes | schemaVersion 1 object, collection `results`. Gated empty keeps `emptyReason`/`message`. Additive `sessionNotices` (0300; skip empty) |
 | `deploy impact --json` | yes | yes | schemaVersion 1 object, collection `results`. Gated empty keeps `emptyReason`/`message`. Additive `sessionNotices` (0300; skip empty). Flag is on `impact`, not parent `deploy` |
@@ -1201,6 +1201,8 @@ rewrite `latest-impact.json`. CLI-only (MCP registry is not one-file additive).
 }
 ```
 
+Session `hotspots.completeness` (0308) is omitted when the 50/30/5 walk finished the requested window; present with `filter: "session"` when the walk stopped early.
+
 | Field | Notes |
 |---|---|
 | `schemaVersion` | number **1** |
@@ -1209,7 +1211,7 @@ rewrite `latest-impact.json`. CLI-only (MCP registry is not one-file additive).
 | `ledger.collisions` | 0223 `pending_entity_overlap` vs dirty paths; `[]` when none. **Not** on status v1 |
 | `doctor` | sidecar `block`/`warn`/`info` + `readyForPublish`. **No** `warnAction`. Per-finding `sessionPriority` / `acknowledged` stay on `doctor --json` |
 | `changeContext.readSetCapped` / `readSetTotalCandidates` | pass-through from `build_change_context` with `max_files=5` (not a post-slice of a 20-file packet) |
-| `hotspots.files` | limit 5, `exclude_test_paths: true`, `exclude_vendor_paths: true` (0297; vendor ranks unlike markdown), git walk `commits ≤ min(config, 50)`, `days: 30`. Item keys: `path`, `score` (0–1, pin this), additive `displayScore` (ln). This is the **second** field on the session item (parity with `hotspots --json`), not a third field on either surface. No `scoreUnit`. No `excludedVendor` key (`excludedTests` stays). MCP `hotspots` stays unfiltered |
+| `hotspots.files` | limit 5, `exclude_test_paths: true`, `exclude_vendor_paths: true` (0297; vendor ranks unlike markdown), git walk `commits ≤ min(config, 50)`, `days: 30`. Item keys: `path`, `score` (0–1, pin this), additive `displayScore` (ln). This is the **second** field on the session item (parity with `hotspots --json`), not a third field on either surface. No `scoreUnit`. No `excludedVendor` key (`excludedTests` stays). Additive `hotspots.completeness` (0308) only when the walk stops early (`filter: "session"`). MCP `hotspots` stays unfiltered |
 | `impactCache` | new HEAD comparator: None → all false; Packet → `present`, `treeClean=false`, `validForHead` iff packet head equals live HEAD; CleanTree → `present`, `treeClean=true`, `validForHead` iff tombstone head equals live HEAD |
 | `next` | sorted deterministic strings (change-context `next_actions` idiom plus cache/collision notes). **Must not** gain `config set` from the checklist |
 | `configChecklist` | always present (may be `[]`). Applicable rows only, sorted by `id`. Keys: `id`, `status` (`ready`\|`gated`\|`empty`\|`optional`), `applicable` (always true), `next` (always a string; `""` when ready except 0185 reuse rows), `alreadyShown`, optional `applyArg`. No `sessionNotices` on this envelope |

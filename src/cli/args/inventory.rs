@@ -63,6 +63,10 @@ pub struct HotspotArgs {
     /// Include tests/examples/benches, markdown, or vendored code (default CLI list omits all three)
     #[arg(long, value_enum, value_name = "SCOPE")]
     pub include: Option<HotspotIncludeScope>,
+
+    /// History-walk wall-clock seconds. `0` disables the clock (Ctrl-C still works).
+    #[arg(long, value_name = "SECS")]
+    pub timeout: Option<u64>,
 }
 
 #[derive(Subcommand, Debug)]

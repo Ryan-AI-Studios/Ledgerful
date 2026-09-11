@@ -144,6 +144,10 @@ impl CouplingProvider {
         context: &EnrichmentContext,
         packet: &mut ImpactPacket,
     ) -> Result<()> {
+        if context.skip_git_history_enrichment {
+            debug!("Skipping temporal git-history enrichment (session opts)");
+            return Ok(());
+        }
         debug!("Running temporal coupling analysis...");
 
         let repo = open_repo(&context.project_root)
@@ -153,7 +157,7 @@ impl CouplingProvider {
         let temporal_engine =
             TemporalEngine::new(history_provider, context.config.temporal.clone());
 
-        match temporal_engine.calculate_couplings() {
+        match temporal_engine.calculate_couplings_budgeted(context.history_budget.as_ref()) {
             Ok(mut couplings) => {
                 // Filter: at least one file must be in packet.changes
                 let change_paths: std::collections::HashSet<_> =
@@ -276,6 +280,8 @@ mod tests {
                 .unwrap_or_else(|_| PathBuf::from(r"C:\dev\ledgerful")),
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![ChangedFile {
@@ -389,6 +395,8 @@ mod tests {
             project_root,
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
         };
         // Changed symbol that does not exist in the index
         let mut packet = ImpactPacket {
@@ -440,6 +448,8 @@ mod tests {
             project_root: PathBuf::from("."),
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
         };
 
         let _packet = ImpactPacket {
@@ -532,6 +542,8 @@ mod tests {
                 .unwrap_or_else(|_| PathBuf::from(r"C:\dev\ledgerful")),
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![ChangedFile {
@@ -633,6 +645,8 @@ mod tests {
                 .unwrap_or_else(|_| PathBuf::from(r"C:\dev\ledgerful")),
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![ChangedFile {

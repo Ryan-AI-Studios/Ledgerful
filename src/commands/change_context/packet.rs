@@ -62,6 +62,10 @@ pub struct ChangeContextOpts {
     pub paths: Vec<String>,
     /// When true, pathMode=all — restore pre-0173 governance temporal risk/readSet.
     pub include_governance: bool,
+    /// Session (0308): skip HotspotProvider and CouplingProvider git walks.
+    pub skip_git_history_enrichment: bool,
+    /// Cooperative Ctrl-C flag. Tests inject; CLI installs via `install_cancel_flag`.
+    pub cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
 }
 
 impl Default for ChangeContextOpts {
@@ -73,6 +77,8 @@ impl Default for ChangeContextOpts {
             blast_depth: None,
             paths: Vec::new(),
             include_governance: false,
+            skip_git_history_enrichment: false,
+            cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 }
@@ -251,6 +257,7 @@ impl ChangeContextOpts {
             blast_depth,
             paths,
             include_governance,
+            ..Self::default()
         })
     }
 }

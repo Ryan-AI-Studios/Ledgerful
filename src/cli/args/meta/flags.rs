@@ -65,6 +65,7 @@ impl Commands {
                 json,
                 requirements,
                 id,
+                timeout,
                 ..
             }) => {
                 if *json {
@@ -75,6 +76,9 @@ impl Commands {
                 }
                 if id.is_some() {
                     f.push("id");
+                }
+                if timeout.is_some() {
+                    f.push("timeout");
                 }
             }
             Commands::Scan(ScanArgs {
@@ -449,6 +453,9 @@ impl Commands {
                 }
                 if args.include.is_some() {
                     f.push("include");
+                }
+                if args.timeout.is_some() {
+                    f.push("timeout");
                 }
                 match &args.command {
                     Some(HotspotSubcommands::Trend {
@@ -887,6 +894,7 @@ impl Commands {
                     limit,
                     offset,
                     json,
+                    timeout,
                 } => {
                     if entity.is_some() {
                         f.push("entity");
@@ -902,6 +910,9 @@ impl Commands {
                     }
                     if *json {
                         f.push("json");
+                    }
+                    if timeout.is_some() {
+                        f.push("timeout");
                     }
                 }
                 LedgerCommands::Note { message, .. } => {
@@ -1019,6 +1030,7 @@ impl Commands {
                 limit,
                 offset,
                 json,
+                timeout,
             }) => {
                 if entity.is_some() {
                     f.push("entity");
@@ -1034,6 +1046,9 @@ impl Commands {
                 }
                 if *json {
                     f.push("json");
+                }
+                if timeout.is_some() {
+                    f.push("timeout");
                 }
             }
             Commands::Doctor(DoctorArgs {

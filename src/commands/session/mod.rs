@@ -28,7 +28,8 @@ use miette::Result;
 pub fn execute_session(json: bool) -> Result<()> {
     let layout = crate::commands::helpers::get_layout()
         .map_err(|e| miette::miette!("session: layout unavailable: {e}"))?;
-    let config = crate::config::load::load_config(&layout).unwrap_or_default();
+    let mut config = crate::config::load::load_config_or_default_warn(&layout);
+    crate::impact::budget::apply_resolved_history_budget(&mut config, None);
     let storage = match open_storage_for_change_context(&layout) {
         Ok(s) => s,
         Err((e, _)) => {

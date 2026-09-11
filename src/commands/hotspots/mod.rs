@@ -1,6 +1,5 @@
 use crate::cli::{HotspotArgs, HotspotSubcommands};
 use crate::commands::helpers::get_layout;
-use crate::config::load_config;
 use crate::git::repo::open_repo;
 use crate::index::warn_if_stale;
 use crate::state::storage::StorageManager;
@@ -24,7 +23,8 @@ pub fn execute_hotspots(args: HotspotArgs) -> Result<()> {
     let layout = get_layout()?;
 
     // --- Staleness check ---
-    let config = load_config(&layout).unwrap_or_default();
+    let mut config = crate::config::load::load_config_or_default_warn(&layout);
+    crate::impact::budget::apply_resolved_history_budget(&mut config, args.timeout);
     let threshold_days = config.index.stale_threshold_days;
     let need_cozo = args.semantic || args.centrality;
     // Trend --bootstrap inserts snapshots; must open write storage (true RO

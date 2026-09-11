@@ -26,6 +26,7 @@ pub mod runtime_usage;
 pub mod services;
 pub mod signature_delta;
 pub mod test_gaps;
+use crate::impact::budget::AnalysisBudget;
 use crate::state::storage::StorageManager;
 use miette::Result;
 use std::collections::HashMap;
@@ -45,6 +46,10 @@ pub struct EnrichmentContext<'a> {
     /// their subprocess/walk so a multi-sibling federated run shares one
     /// deadline instead of each walk getting a fresh budget.
     pub deadline: Instant,
+    /// Session (0308): skip HotspotProvider and CouplingProvider::enrich_temporal.
+    pub skip_git_history_enrichment: bool,
+    /// Resolved history-walk budget (0308). Distinct from the 0034 federation backstop.
+    pub history_budget: Option<AnalysisBudget>,
 }
 
 impl<'a> EnrichmentContext<'a> {

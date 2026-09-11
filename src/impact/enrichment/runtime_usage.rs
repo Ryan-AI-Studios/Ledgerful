@@ -102,6 +102,8 @@ mod tests {
             project_root: PathBuf::from(r"C:\dev\ledgerful"),
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
         };
         let mut packet = ImpactPacket::default();
 
@@ -123,6 +125,8 @@ mod tests {
             project_root: PathBuf::from(r"C:\dev\ledgerful"),
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![ChangedFile {

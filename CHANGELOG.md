@@ -6,6 +6,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **History-walk budget (0308):** Cooperative `AnalysisBudget` (default
+  45s via `[hotspots] history_budget_secs`, CLI `--timeout` on
+  `hotspots` / `audit` / `review`, env `LEDGERFUL_HISTORY_BUDGET_SECS`).
+  `0` disables the wall clock; Ctrl-C still stops the walk. Dirty
+  `session` performs exactly one git history walk. Additive CLI
+  `completeness` when a walk stops early (`schemaVersion` stays 1).
+  MCP `hotspots` and `GET /api/hotspots` stay arrays.
+
 ## [0.2.13] - 2026-09-10
 
 ### Added

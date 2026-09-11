@@ -1016,6 +1016,91 @@ mod tests {
     /// 0158 M7: argv fingerprint marks `timeout` only when the flag is present
     /// (not via a hardcoded default of 15).
     #[test]
+    fn hotspots_timeout_is_machine_flag() {
+        let without = Cli::try_parse_from(["ledgerful", "hotspots", "--json"]).unwrap();
+        match &without.command {
+            Commands::Hotspots { args } => {
+                assert_eq!(args.timeout, None, "omitted --timeout must be None");
+            }
+            _ => panic!("expected Hotspots"),
+        }
+        assert!(
+            !without.command.argv_shape().contains("timeout"),
+            "omitted timeout must not appear in argv shape: {}",
+            without.command.argv_shape()
+        );
+        let with = Cli::try_parse_from(["ledgerful", "hotspots", "--timeout", "45"]).unwrap();
+        match &with.command {
+            Commands::Hotspots { args } => {
+                assert_eq!(args.timeout, Some(45));
+            }
+            _ => panic!("expected Hotspots"),
+        }
+        assert!(
+            with.command.argv_shape().contains("timeout"),
+            "explicit --timeout must appear in argv shape: {}",
+            with.command.argv_shape()
+        );
+    }
+
+    #[test]
+    fn audit_timeout_is_machine_flag() {
+        let without = Cli::try_parse_from(["ledgerful", "audit"]).unwrap();
+        match &without.command {
+            Commands::Audit(args) => {
+                assert_eq!(args.timeout, None);
+            }
+            _ => panic!("expected Audit"),
+        }
+        assert!(
+            !without.command.argv_shape().contains("timeout"),
+            "{}",
+            without.command.argv_shape()
+        );
+        let with = Cli::try_parse_from(["ledgerful", "audit", "--timeout", "10"]).unwrap();
+        match &with.command {
+            Commands::Audit(args) => {
+                assert_eq!(args.timeout, Some(10));
+            }
+            _ => panic!("expected Audit"),
+        }
+        assert!(
+            with.command.argv_shape().contains("timeout"),
+            "{}",
+            with.command.argv_shape()
+        );
+    }
+
+    #[test]
+    fn review_timeout_is_machine_flag() {
+        let without = Cli::try_parse_from(["ledgerful", "review", "HEAD~1..HEAD"]).unwrap();
+        match &without.command {
+            Commands::Review(args) => {
+                assert_eq!(args.timeout, None);
+            }
+            _ => panic!("expected Review"),
+        }
+        assert!(
+            !without.command.argv_shape().contains("timeout"),
+            "{}",
+            without.command.argv_shape()
+        );
+        let with =
+            Cli::try_parse_from(["ledgerful", "review", "HEAD~1..HEAD", "--timeout", "8"]).unwrap();
+        match &with.command {
+            Commands::Review(args) => {
+                assert_eq!(args.timeout, Some(8));
+            }
+            _ => panic!("expected Review"),
+        }
+        assert!(
+            with.command.argv_shape().contains("timeout"),
+            "{}",
+            with.command.argv_shape()
+        );
+    }
+
+    #[test]
     fn ask_timeout_fingerprint_only_when_flag_present() {
         let without = Cli::try_parse_from(["ledgerful", "ask", "hello"]).unwrap();
         match &without.command {

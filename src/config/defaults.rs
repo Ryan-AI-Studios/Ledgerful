@@ -25,6 +25,7 @@ decay_half_life = 100
 [hotspots]
 max_commits = 500
 limit = 10
+history_budget_secs = 45
 
 [verify]
 mode = "auto"

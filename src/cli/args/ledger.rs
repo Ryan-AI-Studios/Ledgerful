@@ -24,6 +24,9 @@ pub struct AuditArgs {
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
+    /// History-walk wall-clock seconds. `0` disables the clock (Ctrl-C still works).
+    #[arg(long, value_name = "SECS")]
+    pub timeout: Option<u64>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -375,6 +378,9 @@ pub enum LedgerCommands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// History-walk wall-clock seconds. `0` disables the clock (Ctrl-C still works).
+        #[arg(long, value_name = "SECS")]
+        timeout: Option<u64>,
     },
     /// Add a lightweight note/lesson to a transaction for an entity
     Note {
