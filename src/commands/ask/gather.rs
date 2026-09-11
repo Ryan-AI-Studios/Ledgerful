@@ -37,6 +37,24 @@ pub(crate) struct GatherResult {
     pub query_string: String,
     pub relevant_chunks: Vec<RankedChunk>,
     pub semantic_gather_kind: SemanticGatherKind,
+    pub evidence: EvidenceCounts,
+}
+
+/// Pinned stderr evidence tokens (0312).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct EvidenceCounts {
+    pub semantic: usize,
+    pub bm25: usize,
+    pub kg: usize,
+    pub snippets: usize,
+    pub read_failed: usize,
+}
+
+pub(crate) fn format_evidence_line(counts: &EvidenceCounts) -> String {
+    format!(
+        "[Evidence] semantic={} bm25={} kg={} snippets={}",
+        counts.semantic, counts.bm25, counts.kg, counts.snippets
+    )
 }
 
 /// Auto-scan / latest packet / prune / QueryIntent / stale-warn / bridge
@@ -200,6 +218,7 @@ pub(crate) fn gather_impact_and_bridge(
         query_string,
         relevant_chunks: Vec::new(),
         semantic_gather_kind: SemanticGatherKind::Skipped,
+        evidence: EvidenceCounts::default(),
     })
 }
 
@@ -252,6 +271,7 @@ pub(crate) fn gather_semantic_and_kg(
 
     // DoD-4/8: never treat embed/query Err as "no semantic matches".
     // Track gather kind (without holding chunks) for honest KG-fallback notes.
+    let mut evidence = EvidenceCounts::default();
     let (mut relevant_chunks, semantic_gather_kind) = match gather_semantic_chunks(
         storage,
         layout.root.as_std_path(),
@@ -260,7 +280,18 @@ pub(crate) fn gather_semantic_and_kg(
         &config.local_model,
         gathered.is_global,
     ) {
-        SemanticGather::Chunks(chunks) => (chunks, SemanticGatherKind::Succeeded),
+        SemanticGather::Chunks {
+            chunks,
+            read_failed,
+        } => {
+            evidence.read_failed = read_failed;
+            evidence.semantic = chunks
+                .iter()
+                .filter(|c| !c.source.starts_with("Knowledge Graph"))
+                .count();
+            evidence.kg = chunks.len().saturating_sub(evidence.semantic);
+            (chunks, SemanticGatherKind::Succeeded)
+        }
         SemanticGather::Skipped { reason } => {
             tracing::warn!("Semantic context skipped: {reason}");
             // Readiness messages already cover NotConfigured; keep a debug trail only.
@@ -290,6 +321,7 @@ pub(crate) fn gather_semantic_and_kg(
             tracing::warn!("Chunk retrieval failed: {e}, proceeding without chunks");
             Vec::new()
         });
+        evidence.bm25 = relevant_chunks.len();
 
         // KG Fallback logic — wording must not claim "index empty" on failure/skip.
         if gathered.is_global
@@ -315,6 +347,7 @@ pub(crate) fn gather_semantic_and_kg(
                 content: kg_bm25_context,
                 score: 1.0,
             });
+            evidence.kg += 1;
         }
 
         // CR7: Apply KG neighborhood to pruner fallback chunks as well.
@@ -332,12 +365,16 @@ pub(crate) fn gather_semantic_and_kg(
                     content: kg_ctx,
                     score: 1.0,
                 });
+                evidence.kg += 1;
             }
         }
     }
 
+    evidence.snippets = relevant_chunks.len();
+    eprintln!("{}", format_evidence_line(&evidence));
     gathered.relevant_chunks = relevant_chunks;
     gathered.semantic_gather_kind = semantic_gather_kind;
+    gathered.evidence = evidence;
 }
 
 #[cfg(test)]
@@ -414,6 +451,18 @@ mod tests {
         .expect("gather");
         storage.shutdown().expect("shutdown");
         gathered
+    }
+
+    #[test]
+    fn format_evidence_line_pins_tokens() {
+        let line = format_evidence_line(&EvidenceCounts {
+            semantic: 1,
+            bm25: 2,
+            kg: 3,
+            snippets: 4,
+            read_failed: 0,
+        });
+        assert_eq!(line, "[Evidence] semantic=1 bm25=2 kg=3 snippets=4");
     }
 
     #[test]

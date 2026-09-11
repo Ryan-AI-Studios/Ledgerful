@@ -1,14 +1,30 @@
 use ledgerful::commands::ask::{ExecuteAskOpts, execute_ask};
 use ledgerful::gemini::modes::GeminiMode;
-use ledgerful::impact::packet::ImpactPacket;
+use ledgerful::impact::packet::{ChangedFile, ImpactPacket};
 use ledgerful::state::layout::Layout;
 use ledgerful::state::storage::StorageManager;
 use serial_test::serial;
 use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
 use tempfile::tempdir;
 
 use crate::common::{DirGuard, TempEnv, non_interactive};
+
+/// Dirty tree + non-empty packet so `is_global` stays false (0312 refuse).
+fn plant_dirty_diff(root: &std::path::Path, layout: &Layout) {
+    fs::write(root.join("dirty.rs"), "fn planted() {}\n").unwrap();
+    let mut packet = ImpactPacket::default();
+    packet.changes.push(ChangedFile {
+        path: PathBuf::from("dirty.rs"),
+        status: "Added".to_string(),
+        ..Default::default()
+    });
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    storage.save_packet(&packet).unwrap();
+    storage.shutdown().unwrap();
+}
 
 #[test]
 #[serial(env, cwd)]
@@ -285,6 +301,9 @@ fn test_ask_degrades_gracefully_when_local_model_unreachable() {
     let storage = StorageManager::init(&state_dir.join("ledger.db")).unwrap();
     storage.shutdown().unwrap();
 
+    let layout = Layout::new(camino::Utf8Path::from_path(root).unwrap());
+    plant_dirty_diff(root, &layout);
+
     // Configure ONLY a local model, pointed at an unreachable port. No Gemini
     // key, no Ollama Cloud, no OpenRouter — so degrade_to_context must fire.
     fs::write(
@@ -360,6 +379,7 @@ fn test_ask_does_not_degrade_on_rate_limit() {
 
     let layout = Layout::new(root);
     layout.ensure_state_dir().unwrap();
+    plant_dirty_diff(tmp.path(), &layout);
 
     // Point the local model at the mocked 429 endpoint. No cloud fallback keys.
     fs::write(
@@ -409,7 +429,7 @@ fn test_ask_degrades_on_503_service_unavailable() {
     let _env_openrouter = TempEnv::remove("OPENROUTER_API_KEY");
 
     let server = httpmock::MockServer::start();
-    server.mock(|when, then| {
+    let completions = server.mock(|when, then| {
         when.method(httpmock::Method::POST)
             .path("/v1/chat/completions");
         then.status(503).body("Service Unavailable");
@@ -427,6 +447,8 @@ fn test_ask_degrades_on_503_service_unavailable() {
 
     let layout = Layout::new(root);
     layout.ensure_state_dir().unwrap();
+
+    plant_dirty_diff(tmp.path(), &layout);
 
     // Point the local model at the mocked 503 endpoint. No cloud fallback keys.
     fs::write(
@@ -454,6 +476,10 @@ fn test_ask_degrades_on_503_service_unavailable() {
     assert!(
         result.is_ok(),
         "503 service-unavailable must degrade to Ok(()) — got: {result:?}"
+    );
+    assert!(
+        completions.calls() > 0,
+        "503 degrade must POST completions (not empty-evidence refuse)"
     );
 }
 
@@ -487,6 +513,8 @@ fn test_ask_does_not_degrade_on_401_unauthorized() {
     let layout = Layout::new(root);
     layout.ensure_state_dir().unwrap();
 
+    plant_dirty_diff(tmp.path(), &layout);
+
     // Point the local model at the mocked 401 endpoint. No cloud fallback keys.
     fs::write(
         layout.config_file(),
@@ -519,4 +547,114 @@ fn test_ask_does_not_degrade_on_401_unauthorized() {
         err.contains("401") || err.contains("unauthorized"),
         "expected 401/unauthorized signal in error, got: {err}"
     );
+}
+
+#[test]
+#[serial(env, cwd)]
+fn test_ask_empty_global_does_not_call_llm() {
+    let _env_non_interactive = non_interactive();
+    let _env_gemini = TempEnv::remove("GEMINI_API_KEY");
+    let _env_openrouter = TempEnv::remove("OPENROUTER_API_KEY");
+
+    let server = httpmock::MockServer::start();
+    let completions = server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/chat/completions");
+        then.status(200)
+            .json_body(serde_json::json!({"choices":[{"message":{"content":"generic"}}]}));
+    });
+
+    let tmp = tempdir().unwrap();
+    let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+    let _guard = DirGuard::from_utf8(root);
+    std::process::Command::new("git")
+        .arg("init")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    fs::write(
+        layout.config_file(),
+        format!(
+            "[local_model]\nbase_url = \"{}\"\ngeneration_model = \"test-model\"\nprefer_local = true\ntimeout_secs = 5\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+
+    let result = execute_ask(ExecuteAskOpts {
+        query: Some("What is Ledgerful?".into()),
+        semantic: true,
+        limit: 10,
+        mode: GeminiMode::Analyze,
+        narrative: false,
+        backend: None,
+        auto_index: false,
+        timeout_secs: Some(5),
+        no_kg_fallback: true,
+        auto_scan: false,
+    });
+
+    assert!(
+        result.is_ok(),
+        "empty-evidence refuse must exit 0 without credentials: {result:?}"
+    );
+    completions.assert_calls(0);
+}
+
+#[test]
+#[serial(env, cwd)]
+fn test_ask_empty_refuse_gates_provider_priority() {
+    let _env_non_interactive = non_interactive();
+    let _env_gemini = TempEnv::remove("GEMINI_API_KEY");
+    let _env_openrouter = TempEnv::remove("OPENROUTER_API_KEY");
+
+    let server = httpmock::MockServer::start();
+    let completions = server.mock(|when, then| {
+        when.method(httpmock::Method::POST)
+            .path("/v1/chat/completions");
+        then.status(200)
+            .json_body(serde_json::json!({"choices":[{"message":{"content":"generic"}}]}));
+    });
+
+    let tmp = tempdir().unwrap();
+    let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+    let _guard = DirGuard::from_utf8(root);
+    std::process::Command::new("git")
+        .arg("init")
+        .current_dir(tmp.path())
+        .output()
+        .unwrap();
+
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    fs::write(
+        layout.config_file(),
+        format!(
+            "[local_model]\nbase_url = \"{}\"\ngeneration_model = \"test-model\"\nprefer_local = true\ntimeout_secs = 5\n[ask.providers]\n[[ask.providers.priority]]\nbackend = \"local\"\n",
+            server.base_url()
+        ),
+    )
+    .unwrap();
+
+    let result = execute_ask(ExecuteAskOpts {
+        query: Some("What is Ledgerful?".into()),
+        semantic: true,
+        limit: 10,
+        mode: GeminiMode::Analyze,
+        narrative: false,
+        backend: None,
+        auto_index: false,
+        timeout_secs: Some(5),
+        no_kg_fallback: true,
+        auto_scan: false,
+    });
+
+    assert!(
+        result.is_ok(),
+        "provider-priority refuse must be Ok: {result:?}"
+    );
+    completions.assert_calls(0);
 }

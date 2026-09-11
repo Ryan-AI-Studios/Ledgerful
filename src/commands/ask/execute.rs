@@ -63,9 +63,6 @@ pub fn execute_ask(opts: ExecuteAskOpts) -> Result<()> {
 
     let mut gathered = gather_impact_and_bridge(&storage, &layout, &config, &query, auto_scan)?;
 
-    let resolved_backend = resolve_backend(&config, backend);
-    validate_backend_configured(&config, backend, resolved_backend)?;
-
     let semantic = semantic || gathered.is_global;
     gather_semantic_and_kg(
         &mut gathered,
@@ -77,6 +74,20 @@ pub fn execute_ask(opts: ExecuteAskOpts) -> Result<()> {
         limit,
         no_kg_fallback,
     );
+
+    if gathered.relevant_chunks.is_empty() && (gathered.is_global || semantic) {
+        println!("Note: no retrieved snippets for this query.");
+        if gathered.evidence.read_failed > 0 {
+            eprintln!(
+                "Note: {} source file(s) could not be read.",
+                gathered.evidence.read_failed
+            );
+        }
+        return Ok(());
+    }
+
+    let resolved_backend = resolve_backend(&config, backend);
+    validate_backend_configured(&config, backend, resolved_backend)?;
 
     let adaptive_mode = if semantic {
         crate::local_model::context::AdaptiveMode::CodebaseFocus
@@ -103,11 +114,7 @@ pub fn execute_ask(opts: ExecuteAskOpts) -> Result<()> {
     );
 
     let base_system_prompt = if gathered.is_global {
-        let mut base = "You are Ledgerful, an expert software engineering assistant. You act as a codebase oracle answering architectural and implementation questions based on retrieved knowledge graph and semantic context snippets. Provide direct, technical, and accurate answers citing the retrieved snippets where relevant.".to_string();
-        if gathered.relevant_chunks.is_empty() {
-            base.push_str("\n\nNote: no retrieved snippets for this query.");
-        }
-        base
+        "You are Ledgerful, an expert software engineering assistant. You act as a codebase oracle answering architectural and implementation questions based on retrieved knowledge graph and semantic context snippets. Provide direct, technical, and accurate answers citing the retrieved snippets where relevant.".to_string()
     } else {
         crate::local_model::context::get_system_prompt(&mode.to_string())
     };

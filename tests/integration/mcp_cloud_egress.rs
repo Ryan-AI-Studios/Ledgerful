@@ -7,6 +7,7 @@
 //! - stdout/stderr name `cloud_policy_forbidden` + `LEDGERFUL_MCP_ALLOW_CLOUD_EGRESS`
 //! - mock cloud server receives zero HTTP hits
 
+use ledgerful::impact::packet::{ChangedFile, ImpactPacket};
 use ledgerful::local_model::cloud_policy::{
     CLOUD_POLICY_ENV, CLOUD_POLICY_FORBIDDEN_CODE, MCP_ALLOW_CLOUD_EGRESS_ENV, mcp_tool_spawn_env,
     mcp_tool_spawn_env_removes,
@@ -14,6 +15,7 @@ use ledgerful::local_model::cloud_policy::{
 use ledgerful::state::storage::StorageManager;
 use serial_test::serial;
 use std::fs;
+use std::path::PathBuf;
 use std::process::Command;
 use tempfile::tempdir;
 
@@ -41,6 +43,14 @@ fn mcp_spawn_env_ask_child_forbidden_cloud_only_zero_http() {
     let state_dir = root.join(".ledgerful/state");
     fs::create_dir_all(&state_dir).unwrap();
     let storage = StorageManager::init(&state_dir.join("ledger.db")).unwrap();
+    fs::write(root.join("dirty.rs"), "fn planted() {}\n").unwrap();
+    let mut packet = ImpactPacket::default();
+    packet.changes.push(ChangedFile {
+        path: PathBuf::from("dirty.rs"),
+        status: "Added".to_string(),
+        ..Default::default()
+    });
+    storage.save_packet(&packet).unwrap();
     storage.shutdown().unwrap();
 
     // Cloud-only local_model (omit base_url → empty default) + ollama cloud at mock.
@@ -141,6 +151,14 @@ fn mcp_spawn_env_ask_child_forbidden_priority_chain_zero_http() {
     let state_dir = root.join(".ledgerful/state");
     fs::create_dir_all(&state_dir).unwrap();
     let storage = StorageManager::init(&state_dir.join("ledger.db")).unwrap();
+    fs::write(root.join("dirty.rs"), "fn planted() {}\n").unwrap();
+    let mut packet = ImpactPacket::default();
+    packet.changes.push(ChangedFile {
+        path: PathBuf::from("dirty.rs"),
+        status: "Added".to_string(),
+        ..Default::default()
+    });
+    storage.save_packet(&packet).unwrap();
     storage.shutdown().unwrap();
 
     // Local pointed at closed port; priority maliciously lists cloud first.
