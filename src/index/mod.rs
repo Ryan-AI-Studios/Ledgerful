@@ -34,6 +34,8 @@ pub mod runtime_usage;
 pub mod signature;
 pub mod staleness;
 pub mod storage;
+/// Per-surface freshness rows for inspection (0313).
+pub mod surface_freshness;
 pub mod symbols;
 pub mod test_mapping;
 pub mod topology;

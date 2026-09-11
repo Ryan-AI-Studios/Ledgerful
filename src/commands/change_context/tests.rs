@@ -533,6 +533,22 @@ fn soft_open_existing_db_builds_valid_packet() {
         "unexpected status: {}",
         packet.status
     );
+    assert!(
+        packet
+            .freshness
+            .iter()
+            .all(|r| r.id != "files" && r.id != "symbols"),
+        "change-context freshness must omit files/symbols: {:?}",
+        packet.freshness
+    );
+    assert!(
+        packet.freshness.iter().any(|r| r.id == "mapping"
+            || r.id == "routes"
+            || r.id == "embeddings"
+            || r.id == "impact"),
+        "expected derived freshness rows: {:?}",
+        packet.freshness
+    );
     let _ = storage.shutdown();
 }
 
@@ -1294,6 +1310,7 @@ fn change_context_schema_version_stays_one_with_affected_flows_key() {
             active_tx: vec![],
         },
         analysis_warnings: vec![],
+        freshness: vec![],
         next_actions: vec![],
         impact_schema_version: Some("v1".into()),
     };
@@ -1435,4 +1452,158 @@ fn change_hints_rename_control_not_greenfield() {
     let hints = compute_change_hints(&files, &ChangeHintsOpts::default());
     assert_eq!(hints.kind, ChangeHintsKind::None);
     assert!(!hints.mostly_added);
+}
+
+fn stale_mapping_freshness() -> crate::index::surface_freshness::SurfaceFreshness {
+    use crate::index::surface_freshness::{
+        REFRESH_INDEX_INCREMENTAL, SurfaceFreshness, SurfaceFreshnessSource, SurfaceFreshnessStatus,
+    };
+    SurfaceFreshness {
+        id: "mapping".into(),
+        status: SurfaceFreshnessStatus::Stale,
+        source: SurfaceFreshnessSource::IndexHead,
+        reason: "index head_hash (250c7afe) ≠ compared head (96d46c10)".into(),
+        refresh: Some(REFRESH_INDEX_INCREMENTAL.into()),
+        indexed_head: Some("250c7afe".into()),
+        compared_head: Some("96d46c10".into()),
+    }
+}
+
+#[test]
+fn change_context_json_emits_freshness_rows() {
+    let mut coverage = crate::impact::enrichment::test_gaps::TestGapsReport::unavailable();
+    coverage.notes = vec![
+        "test_mapping may be stale: index head_hash (250c7afe) ≠ change head (96d46c10)".into(),
+    ];
+    let mut flows = crate::impact::enrichment::affected_flows::AffectedFlowsReport::unavailable();
+    flows.notes =
+        vec!["api_routes may be stale: index head_hash (250c7afe) ≠ change head (96d46c10)".into()];
+    let packet = ChangeContextPacket {
+        schema_version: CHANGE_CONTEXT_SCHEMA_VERSION,
+        status: "ready".into(),
+        summary: "test".into(),
+        agent_summary: None,
+        reason: None,
+        head_hash: Some("96d46c10".into()),
+        base_ref: None,
+        risk_level: Some("low".into()),
+        risk_reasons: vec![],
+        read_set: vec![],
+        read_set_capped: false,
+        read_set_total_candidates: 0,
+        blast: None,
+        test_coverage: Some(coverage),
+        affected_flows: Some(flows),
+        change_hints: None,
+        doctor: DoctorSection {
+            status: "ok".into(),
+            ready_for_publish: true,
+            block: 0,
+            warn: 0,
+            info: 0,
+            top_findings: vec![],
+        },
+        ledger: LedgerSection {
+            pending_count: 0,
+            active_tx: vec![],
+        },
+        analysis_warnings: vec![],
+        freshness: vec![stale_mapping_freshness()],
+        next_actions: vec![],
+        impact_schema_version: Some("v1".into()),
+    };
+    let v = serde_json::to_value(&packet).unwrap();
+    assert_eq!(v["schemaVersion"], 1);
+    assert!(v.get("freshness").is_some());
+    assert_eq!(v["freshness"][0]["id"], "mapping");
+    assert!(
+        v["freshness"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|r| r["id"] != "files" && r["id"] != "symbols")
+    );
+    let notes = v["testCoverage"]["notes"].as_array().unwrap();
+    assert!(
+        notes
+            .iter()
+            .any(|n| n.as_str().is_some_and(|s| s.contains("change head"))),
+        "nested notes keep change head: {notes:?}"
+    );
+    let flow_notes = v["affectedFlows"]["notes"].as_array().unwrap();
+    assert!(
+        flow_notes
+            .iter()
+            .any(|n| n.as_str().is_some_and(|s| s.contains("change head")))
+    );
+    let missing = serde_json::from_str::<ChangeContextPacket>(r#"{"schemaVersion":1,"status":"empty","summary":"x","readSet":[],"readSetCapped":false,"readSetTotalCandidates":0,"doctor":{"status":"ok","readyForPublish":true,"block":0,"warn":0,"info":0},"ledger":{"pendingCount":0}}"#)
+        .expect("older packet deserializes");
+    assert!(missing.freshness.is_empty());
+}
+
+#[test]
+fn change_context_human_prints_freshness_block() {
+    let packet = ChangeContextPacket {
+        schema_version: CHANGE_CONTEXT_SCHEMA_VERSION,
+        status: "ready".into(),
+        summary: "test".into(),
+        agent_summary: None,
+        reason: None,
+        head_hash: None,
+        base_ref: None,
+        risk_level: None,
+        risk_reasons: vec![],
+        read_set: vec![],
+        read_set_capped: false,
+        read_set_total_candidates: 0,
+        blast: None,
+        test_coverage: None,
+        affected_flows: None,
+        change_hints: None,
+        doctor: DoctorSection {
+            status: "ok".into(),
+            ready_for_publish: true,
+            block: 0,
+            warn: 0,
+            info: 0,
+            top_findings: vec![],
+        },
+        ledger: LedgerSection {
+            pending_count: 0,
+            active_tx: vec![],
+        },
+        analysis_warnings: vec![],
+        freshness: vec![stale_mapping_freshness()],
+        next_actions: vec![],
+        impact_schema_version: None,
+    };
+    let lines = super::emit::freshness_block_lines(&packet);
+    assert!(lines.iter().any(|l| l.contains("freshness:")));
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("mapping") && l.contains("stale"))
+    );
+}
+
+#[test]
+fn change_context_permission_denied_omits_index_refresh() {
+    let (doctor, ledger) = empty_doctor_ledger();
+    let p = not_ready_packet(
+        "storage unavailable: state directory not writable: permission denied".into(),
+        None,
+        doctor,
+        ledger,
+        NotReadyErrorClass::PermissionDenied,
+    );
+    assert!(p.freshness.is_empty());
+    let joined = p.next_actions.join("\n").to_ascii_lowercase();
+    assert!(!joined.contains("ledgerful index"));
+    for row in &p.freshness {
+        assert!(
+            row.refresh
+                .as_deref()
+                .is_none_or(|r| !r.contains("ledgerful index"))
+        );
+    }
 }

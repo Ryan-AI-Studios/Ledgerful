@@ -160,6 +160,10 @@ pub struct PrScanReport {
     pub branch_name: Option<String>,
     pub tree_clean: bool,
     pub change_count: u32,
+    /// Additive omit-empty note when the selected range is nonempty (0313).
+    /// `treeClean` remains range emptiness, not working-tree dirtiness.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope_note: Option<String>,
     pub changes: Vec<PrChange>,
     pub risk_level: PrRiskLevel,
     pub risk_reasons: Vec<String>,
@@ -255,6 +259,11 @@ impl PrScanReport {
             branch_name: ctx.branch_name,
             tree_clean: ctx.tree_clean,
             change_count,
+            scope_note: if change_count > 0 {
+                Some(crate::index::surface_freshness::SCOPE_NOTE.to_string())
+            } else {
+                None
+            },
             changes: pr_changes,
             risk_level,
             risk_reasons,
@@ -773,5 +782,44 @@ mod tests {
             value["affectedFlows"]["flows"][0]["handlerSymbolName"],
             "health_handler"
         );
+    }
+
+    #[test]
+    fn scan_pr_nonempty_range_has_scope_note() {
+        let changes = vec![make_change("src/lib.rs", ChangeType::Modified)];
+        let report = report_with(&changes, None, None, &[], &empty_history());
+        assert!(!report.tree_clean);
+        assert_eq!(report.change_count, 1);
+        assert_eq!(
+            report.scope_note.as_deref(),
+            Some(crate::index::surface_freshness::SCOPE_NOTE)
+        );
+        let v = serde_json::to_value(&report).expect("json");
+        assert_eq!(v["schemaVersion"], 2);
+        assert_eq!(v["treeClean"], false);
+        assert_eq!(v["changeCount"], 1);
+        assert_eq!(v["scopeNote"], crate::index::surface_freshness::SCOPE_NOTE);
+    }
+
+    #[test]
+    fn scan_pr_empty_range_omits_scope_note() {
+        let report = PrScanReport::new(
+            PrScanContext {
+                base_ref: "main".into(),
+                head_ref: "HEAD".into(),
+                head_hash: None,
+                branch_name: None,
+                tree_clean: true,
+            },
+            &[],
+            &[],
+            &empty_history(),
+        );
+        assert!(report.tree_clean);
+        assert_eq!(report.change_count, 0);
+        assert!(report.scope_note.is_none());
+        let v = serde_json::to_value(&report).expect("json");
+        assert_eq!(v["treeClean"], true);
+        assert!(v.get("scopeNote").is_none());
     }
 }

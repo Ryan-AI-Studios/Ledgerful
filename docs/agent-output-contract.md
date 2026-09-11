@@ -883,7 +883,16 @@ check path still emits status before `process::exit`.
   "assessment": {
     "state": "FreshPopulated",
     "staleFiles": 0
-  }
+  },
+  "surfaces": [
+    {
+      "id": "mapping",
+      "status": "stale",
+      "source": "indexHead",
+      "reason": "index head_hash (250c7afe) ≠ compared head (96d46c10)",
+      "refresh": "ledgerful index --incremental"
+    }
+  ]
 }
 ```
 
@@ -894,6 +903,7 @@ check path still emits status before `process::exit`.
 | `totalFiles` / `totalSymbols` / `staleFiles` / `lastIndexedAt` | camelCase; `lastIndexedAt` omitted when absent |
 | `assessment.state` | Enum **values** stay **PascalCase**: `FreshPopulated`, `ContentStalePopulated`, `NeverIndexed`, `StaleEmpty`, `StalePopulated`, `FreshEmpty`, `Indeterminate`. Nested `emptyReason` / `source` values also PascalCase (`AllIndexableCandidatesIgnored`, `RepositoryMetadata`, …) |
 | Nested assessment fields | camelCase (`emptyReason`, `staleFiles`, `emptyDiagnostics`, `indexedFiles`, …). Absent optionals **omitted** (never JSON `null`) |
+| `surfaces[]` | Additive (0313). Typed per-surface freshness (`files` / `symbols` / `routes` / `mapping` / `embeddings`). `status` is camelCase `available`/`stale`/`unavailable`. `assessment.source` stays `FreshnessSource` (PascalCase); row `source` is `SurfaceFreshnessSource` (`contentHash`, `indexHead`, …). Omit-empty. `--strict` / exit codes stay file-hash only. |
 
 `assessment.state` already carries Fresh/Stale — do not require stderr Info
 for machine consumers. **Ban:** `FreshPopulated` with top-level `staleFiles > 0`.
@@ -1102,6 +1112,15 @@ structure, doctor readiness, open ledger work, and a budgeted `readSet`.
     "activeTx": []
   },
   "analysisWarnings": [],
+  "freshness": [
+    {
+      "id": "mapping",
+      "status": "stale",
+      "source": "indexHead",
+      "reason": "index head_hash (250c7afe) ≠ compared head (96d46c10)",
+      "refresh": "ledgerful index --incremental"
+    }
+  ],
   "nextActions": [
     "ledgerful verify --scope fast",
     "review changeHints.suggestedTests and add covering tests for new surfaces"
@@ -1125,6 +1144,7 @@ structure, doctor readiness, open ledger work, and a budgeted `readSet`.
 | `doctor` / `ledger` | object | **Always present** on successful builds (including `status=empty`) |
 | `doctor.topFindings` | array | From sidecar `findings` after a successful `doctor` write (0129 + **0138**): **action-critical** only — severity `block` always, or `warn` when category ≠ `optional` (optional-category warns **excluded** so flaky backends do not crowd the cap-5 budget). Severity-first (block before warn), then code/message, **cap ≤5**. Each entry: `code`, `severity`, `message`, optional `remediation` when present (never `null`). **Empty is OK** when the only warns are optional (or only info) — `doctor.warn` may still be >0; inspect full `ledgerful doctor --json` for optional backends. Full `doctor --json` `findings[]` remains the complete SoT and **includes `category`** on each finding (agents can self-filter). Empty also when doctor not run / sidecar missing / pre-0129 count-only sidecar. |
 | `analysisWarnings` | array | Ambient analysis health (not diff risk). Empty-tree federation schema-unavailable/invalid lands here (same greppable string as historical medium riskReasons): `Cross-repo impact: Sibling '…' schema is unavailable or invalid.` Clean tree with only those warnings → `riskLevel=low` and empty/non-medium sole riskReasons. Real `[FEDERATED]` modify / interface-removed stay on `riskReasons`. |
+| `freshness[]` | array | Additive (0313). Derived surfaces + impact only (`mapping` / `routes` / `embeddings` / `impact`). Omit-empty. Same row shape as `index --check` `surfaces[]`. Nested `testCoverage.notes` / `affectedFlows.notes` stay the SoT for the free-text “change head” strings. PermissionDenied `not_ready` omits the array (no Class C `refresh`). |
 | Empty-tree risk | — | `status=empty` is independent of `analysisWarnings` (file changes + pending ledger only). Do **not** escalate solely because historical medium federation noise — product routes schema-miss to warnings (0129). |
 
 | `status` | When |
@@ -1137,7 +1157,8 @@ structure, doctor readiness, open ledger work, and a budgeted `readSet`.
 
 - `--json` → **machine mode**: pure JSON on **stdout only** (0093).
 - Human mode (no `--json`): print **`agentSummary` header first**, then status,
-  freeform `summary`, risk, readSet count, readyForPublish, next steps.
+  freeform `summary`, risk, readSet count, readyForPublish, a short
+  `freshness:` block when any row is not `available`, then next steps.
 
 ### Path mode (code vs governance) — 0173 / 0202
 

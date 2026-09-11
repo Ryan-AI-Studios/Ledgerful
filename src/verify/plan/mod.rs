@@ -1,5 +1,6 @@
 use crate::config::model::VerifyConfig;
 use crate::impact::packet::ImpactPacket;
+use crate::index::surface_freshness::{MappingHeadPair, classify_mapping_head_pair};
 use crate::verify::timeouts::DEFAULT_AUTO_TIMEOUT_SECS;
 use serde::{Deserialize, Serialize};
 
@@ -186,19 +187,11 @@ pub fn classify_test_mapping_freshness(
         )
         .ok();
 
-    match (&packet.head_hash, indexed_head.as_deref()) {
-        (Some(packet_head), Some(indexed)) if packet_head != indexed => {
-            MappingFreshness::HeadMismatch
-        }
-        (Some(_), Some(_)) => MappingFreshness::Ok,
-        // Index head missing + populated mapping: allow stem query (product
-        // bug we fix by writing head_hash on index finish — not force-stale).
-        (Some(_), None) => MappingFreshness::Ok,
-        // Packet head missing + indexed present: cannot confirm freshness.
-        (None, Some(_)) => MappingFreshness::PacketHeadMissing,
-        // Both missing with count>0: treat as Ok so stem query can still
-        // produce ScopedOk; empty count already returned Empty above.
-        (None, None) => MappingFreshness::Ok,
+    match classify_mapping_head_pair(total, indexed_head.as_deref(), packet.head_hash.as_deref()) {
+        MappingHeadPair::Ok => MappingFreshness::Ok,
+        MappingHeadPair::Empty => MappingFreshness::Empty,
+        MappingHeadPair::HeadMismatch => MappingFreshness::HeadMismatch,
+        MappingHeadPair::ComparedHeadMissing => MappingFreshness::PacketHeadMissing,
     }
 }
 

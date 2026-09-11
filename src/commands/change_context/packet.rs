@@ -124,6 +124,9 @@ pub struct ChangeContextPacket {
     pub ledger: LedgerSection,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub analysis_warnings: Vec<String>,
+    /// Typed per-surface freshness (0313). Derived surfaces + impact only.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub freshness: Vec<crate::index::surface_freshness::SurfaceFreshness>,
     #[serde(default)]
     pub next_actions: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]

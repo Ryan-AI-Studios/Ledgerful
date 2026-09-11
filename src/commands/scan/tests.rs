@@ -16,6 +16,19 @@ use chrono::Utc;
 use rusqlite::Connection;
 use std::path::PathBuf;
 
+#[test]
+fn scan_pr_human_uses_range_label_not_working_tree() {
+    let src = include_str!("execute.rs");
+    assert!(
+        src.contains("\"Range:\""),
+        "PR human summary must label treeClean as Range"
+    );
+    assert!(
+        !src.contains("\"Working tree:\""),
+        "PR human summary must not label range emptiness as Working tree"
+    );
+}
+
 /// 0174: scan RO honesty must not prefix machine stdout.
 #[test]
 fn scan_report_honesty_human_only_gate() {

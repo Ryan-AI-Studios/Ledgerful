@@ -4,6 +4,10 @@ use crate::index::staleness::{
     EmptyDiscoveryDiagnostics, EmptyIndexReason, FreshnessSource, IndexFreshnessAssessment,
     IndexFreshnessState,
 };
+use crate::index::surface_freshness::{
+    ClassifySurfaceFreshness, SurfaceFreshness, classify_surface_freshness,
+    embeddings_probe_from_storage, format_human_lag_lines, probe_named_table, read_indexed_head,
+};
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
 
@@ -261,16 +265,53 @@ fn emit_check_messages(messages: &[(CheckMsgKind, String)], json: bool) {
     }
 }
 
-fn print_check_status_block(status: &crate::index::orchestrator::IndexStatus) {
-    println!("Index Status:");
-    println!("  Files indexed:   {}", status.total_files);
-    println!("  Symbols indexed: {}", status.total_symbols);
-    println!("  Stale files:     {}", status.stale_files);
+fn format_check_status_block(status: &crate::index::orchestrator::IndexStatus) -> String {
+    let mut out = String::from("Index Status:\n");
+    out.push_str(&format!("  Files indexed:   {}\n", status.total_files));
+    out.push_str(&format!("  Symbols indexed: {}\n", status.total_symbols));
+    out.push_str(&format!("  Stale files:     {}\n", status.stale_files));
     if let Some(last) = &status.last_indexed_at {
-        println!("  Last indexed:    {last}");
+        out.push_str(&format!("  Last indexed:    {last}\n"));
     } else {
-        println!("  Last indexed:     never");
+        out.push_str("  Last indexed:     never\n");
     }
+    out
+}
+
+fn format_check_human(
+    status: &crate::index::orchestrator::IndexStatus,
+    surfaces: &[SurfaceFreshness],
+    will_exit: bool,
+) -> String {
+    if will_exit {
+        return String::new();
+    }
+    let mut out = format_check_status_block(status);
+    for line in format_human_lag_lines(surfaces) {
+        out.push_str(&line);
+        out.push('\n');
+    }
+    out
+}
+
+fn classify_check_surfaces(indexer: &ProjectIndexer, files_stale: usize) -> Vec<SurfaceFreshness> {
+    let conn = indexer.storage().get_connection();
+    let compared_head = crate::git::repo::open_repo(indexer.storage().root().as_std_path())
+        .ok()
+        .and_then(|repo| crate::git::repo::get_head_info(&repo).ok())
+        .and_then(|(hash, _)| hash);
+    let indexed_head = read_indexed_head(conn);
+    let configured =
+        crate::embed::client::is_embedding_backend_configured(&indexer.config().local_model);
+    classify_surface_freshness(ClassifySurfaceFreshness {
+        files_stale: Some(files_stale),
+        compared_head: compared_head.as_deref(),
+        indexed_head: indexed_head.as_deref(),
+        mapping: probe_named_table(conn, "test_mapping"),
+        routes: probe_named_table(conn, "api_routes"),
+        embeddings: embeddings_probe_from_storage(configured, indexer.storage()),
+        permission_denied: false,
+    })
 }
 
 /// CLI DTO for `index --check --json`. Domain `IndexStatus` stays snake_case
@@ -288,6 +329,8 @@ struct IndexCheckJson {
     last_indexed_at: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     assessment: Option<IndexCheckAssessmentJson>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    surfaces: Vec<SurfaceFreshness>,
 }
 
 #[derive(Serialize)]
@@ -353,7 +396,10 @@ impl From<&IndexFreshnessAssessment> for IndexCheckAssessmentJson {
     }
 }
 
-fn index_check_json(status: &crate::index::orchestrator::IndexStatus) -> IndexCheckJson {
+fn index_check_json(
+    status: &crate::index::orchestrator::IndexStatus,
+    surfaces: Vec<SurfaceFreshness>,
+) -> IndexCheckJson {
     IndexCheckJson {
         schema_version: 1,
         kind: "indexCheck",
@@ -362,6 +408,7 @@ fn index_check_json(status: &crate::index::orchestrator::IndexStatus) -> IndexCh
         stale_files: status.stale_files,
         last_indexed_at: status.last_indexed_at.clone(),
         assessment: status.assessment.as_ref().map(Into::into),
+        surfaces,
     }
 }
 
@@ -376,9 +423,11 @@ pub(super) fn execute_check_mode(indexer: &mut ProjectIndexer, args: &IndexArgs)
     let verdict = decide_check_verdict(&status, is_missing, args.strict);
 
     let will_exit = verdict.exit_missing || verdict.exit_indeterminate || verdict.exit_strict_stale;
+    let surfaces = classify_check_surfaces(indexer, status.stale_files);
 
     if args.json {
-        let output = serde_json::to_string_pretty(&index_check_json(&status)).into_diagnostic()?;
+        let output =
+            serde_json::to_string_pretty(&index_check_json(&status, surfaces)).into_diagnostic()?;
         println!("{output}");
         // Info suppressed under --json; Error still on stderr. JSON already on stdout.
         emit_check_messages(&verdict.messages, true);
@@ -387,7 +436,7 @@ pub(super) fn execute_check_mode(indexer: &mut ProjectIndexer, args: &IndexArgs)
         // Status block is the healthy/warning human report. On exit-1 paths keep
         // stdout empty so CI gates see diagnostics only on stderr (DoD-2).
         if !will_exit {
-            print_check_status_block(&status);
+            print!("{}", format_check_human(&status, &surfaces, false));
         }
     }
 
@@ -402,4 +451,113 @@ pub(super) fn execute_check_mode(indexer: &mut ProjectIndexer, args: &IndexArgs)
         std::process::exit(1);
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::index::staleness::IndexFreshnessState;
+    use crate::index::surface_freshness::{
+        ClassifySurfaceFreshness, EmbeddingsProbe, SurfaceTableProbe, classify_surface_freshness,
+    };
+
+    fn fresh_status() -> crate::index::orchestrator::IndexStatus {
+        crate::index::orchestrator::IndexStatus {
+            total_files: 4,
+            total_symbols: 10,
+            stale_files: 0,
+            last_indexed_at: Some("2026-09-11T00:00:00Z".into()),
+            assessment: Some(IndexFreshnessAssessment {
+                state: IndexFreshnessState::FreshPopulated,
+                empty_reason: None,
+                empty_diagnostics: None,
+                last_indexed_at: Some("2026-09-11T00:00:00Z".into()),
+                days_since_indexed: Some(0),
+                indexed_files: 4,
+                stale_files: 0,
+                unindexed_files: 0,
+                sample_paths: vec![],
+                source: FreshnessSource::RepositoryMetadata,
+                warnings: vec![],
+            }),
+        }
+    }
+
+    fn stale_mapping_surfaces() -> Vec<SurfaceFreshness> {
+        classify_surface_freshness(ClassifySurfaceFreshness {
+            files_stale: Some(0),
+            compared_head: Some("96d46c10"),
+            indexed_head: Some("250c7afe"),
+            mapping: SurfaceTableProbe {
+                exists: true,
+                rows: 2,
+                query_failed: false,
+            },
+            routes: SurfaceTableProbe {
+                exists: true,
+                rows: 0,
+                query_failed: false,
+            },
+            embeddings: EmbeddingsProbe::NotConfigured,
+            permission_denied: false,
+        })
+    }
+
+    #[test]
+    fn index_check_json_fresh_populated_with_stale_mapping() {
+        let status = fresh_status();
+        let surfaces = stale_mapping_surfaces();
+        let dto = index_check_json(&status, surfaces);
+        let v = serde_json::to_value(&dto).expect("json");
+        assert_eq!(v["schemaVersion"], 1);
+        assert_eq!(v["kind"], "indexCheck");
+        assert_eq!(v["assessment"]["state"], "FreshPopulated");
+        assert_eq!(v["staleFiles"], 0);
+        assert!(v.get("surfaces").is_some());
+        let mapping = v["surfaces"]
+            .as_array()
+            .expect("surfaces")
+            .iter()
+            .find(|s| s["id"] == "mapping")
+            .expect("mapping");
+        assert_eq!(mapping["status"], "stale");
+        assert_eq!(mapping["source"], "indexHead");
+        let dumped = serde_json::to_string(&v).expect("dump");
+        assert!(!dumped.contains(":null"), "never JSON null: {dumped}");
+        assert!(v.as_object().expect("obj").contains_key("schemaVersion"));
+    }
+
+    #[test]
+    fn index_check_strict_still_file_hash_only() {
+        let status = fresh_status();
+        let verdict = decide_check_verdict(&status, false, true);
+        assert!(!verdict.exit_strict_stale);
+        assert!(!verdict.exit_missing);
+        assert!(!verdict.exit_indeterminate);
+    }
+
+    #[test]
+    fn index_check_human_prints_surface_lag_after_status_block() {
+        let status = fresh_status();
+        let surfaces = stale_mapping_surfaces();
+        let human = format_check_human(&status, &surfaces, false);
+        let status_at = human.find("Index Status:").expect("status block");
+        let lag_at = human.find("Surface mapping:").expect("mapping lag");
+        assert!(status_at < lag_at, "lag must follow status block:\n{human}");
+        let missing = crate::index::orchestrator::IndexStatus {
+            total_files: 0,
+            total_symbols: 0,
+            stale_files: 0,
+            last_indexed_at: None,
+            assessment: None,
+        };
+        let exit_verdict = decide_check_verdict(&missing, true, false);
+        assert!(exit_verdict.exit_missing);
+        let silent = format_check_human(&missing, &surfaces, true);
+        assert!(
+            silent.is_empty(),
+            "exit-1 must not print surfaces:\n{silent}"
+        );
+        assert!(!silent.contains("Surface "));
+    }
 }

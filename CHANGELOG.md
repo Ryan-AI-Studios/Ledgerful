@@ -8,6 +8,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Surface freshness provenance (0313):** `index --check --json` emits
+  additive `surfaces[]` (file-hash vs mapping/routes/embeddings).
+  `change-context --json` emits additive `freshness[]` for derived
+  surfaces + impact cache (no blake3 walk; no `latest-impact.json`
+  rewrite). `scan --pr` keeps `treeClean` as range emptiness, adds
+  omit-empty `scopeNote` when `changeCount > 0`, and labels the human
+  line `Range:` instead of `Working tree:`. schemaVersion stays 1 / 1 / 2.
+  `--strict` stays file-hash only.
+
 - **Retrieved answer evidence (0312):** Semantic `search` emits a source
   preview (`results[].content`) and `line` when known instead of
   `name (offset, dist)` labels. `ask` reconstructs the same hit windows
