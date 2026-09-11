@@ -97,8 +97,14 @@ pub fn execute_hotspots(args: HotspotArgs) -> Result<()> {
             HotspotSubcommands::Explain { entity } => {
                 return explain::execute_hotspots_explain(&storage, entity, &repo);
             }
-            HotspotSubcommands::Budget { json } => {
-                return budget::execute_hotspots_budget(&storage, &config, json);
+            HotspotSubcommands::Budget {
+                json,
+                threshold,
+                fail,
+            } => {
+                return budget::execute_hotspots_budget(
+                    &storage, &repo, &config, json, threshold, fail,
+                );
             }
         }
     }

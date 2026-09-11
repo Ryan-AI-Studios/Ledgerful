@@ -23,6 +23,7 @@ all_parents = false
 [hotspots]
 max_commits = 500
 limit = 10
+# budget_threshold = 0.5  # informational default when omitted; required for --fail
 
 [local_model]
 base_url = "http://localhost:8080" # Example for llama-server

@@ -125,6 +125,17 @@ pub fn validate_config(config: &Config) -> Result<()> {
         .into());
     }
 
+    if let Some(threshold) = config.hotspots.budget_threshold
+        && (!threshold.is_finite() || !(0.0..=1.0).contains(&threshold))
+    {
+        return Err(ConfigError::ValidationFailed {
+            reason: format!(
+                "hotspots.budget_threshold must be finite and in 0.0..=1.0, got {threshold}"
+            ),
+        }
+        .into());
+    }
+
     if config.semantic.hnsw_rebuild_threshold == Some(0) {
         return Err(ConfigError::ValidationFailed {
             reason: "semantic.hnsw_rebuild_threshold must be > 0".to_string(),
@@ -556,6 +567,34 @@ mod tests {
         let config = Config::default();
         let result = validate_config(&config);
         assert!(result.is_ok(), "default config should validate: {result:?}");
+    }
+
+    #[test]
+    fn config_rejects_budget_threshold_out_of_range() {
+        for threshold in [5.0, -0.1, f64::NAN, f64::INFINITY] {
+            let config = Config {
+                hotspots: HotspotsConfig {
+                    budget_threshold: Some(threshold),
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let err = validate_config(&config).expect_err("out of range");
+            let msg = format!("{err}");
+            assert!(
+                msg.contains("budget_threshold"),
+                "threshold={threshold}: {msg}"
+            );
+        }
+
+        let ok = Config {
+            hotspots: HotspotsConfig {
+                budget_threshold: Some(0.5),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        assert!(validate_config(&ok).is_ok());
     }
 
     #[test]

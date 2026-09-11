@@ -1,5 +1,18 @@
 use clap::{Args, Subcommand, ValueEnum};
 
+/// Clap parser for `hotspots budget --threshold` (0.0..=1.0 finite).
+pub fn parse_budget_threshold(s: &str) -> Result<f64, String> {
+    let threshold: f64 = s
+        .parse()
+        .map_err(|_| format!("invalid threshold '{s}': expected a number"))?;
+    if !threshold.is_finite() || !(0.0..=1.0).contains(&threshold) {
+        return Err(format!(
+            "threshold must be finite and in 0.0..=1.0, got {s}"
+        ));
+    }
+    Ok(threshold)
+}
+
 /// Extra path classes to include in the CLI hotspot list.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum HotspotIncludeScope {
@@ -111,11 +124,17 @@ pub enum HotspotSubcommands {
         /// Entity path to explain
         entity: String,
     },
-    /// Check hotspot and coupling budgets
+    /// Check hotspot score budget
     Budget {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Score (0–1) that a persisted hotspot must not exceed
+        #[arg(long, value_parser = parse_budget_threshold)]
+        threshold: Option<f64>,
+        /// Exit 1 on VIOLATION, NO_DATA, or NOT_CONFIGURED
+        #[arg(long)]
+        fail: bool,
     },
 }
 

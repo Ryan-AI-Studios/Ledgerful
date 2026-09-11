@@ -827,3 +827,288 @@ fn entity_prefix_still_git_history_starts_with() {
     );
     let _ = storage.shutdown();
 }
+
+fn budget_storage() -> (tempfile::TempDir, crate::state::storage::StorageManager) {
+    use crate::state::layout::Layout;
+    use crate::state::storage::StorageManager;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    (tmp, storage)
+}
+
+fn insert_history(
+    storage: &crate::state::storage::StorageManager,
+    path: &str,
+    score: f64,
+    timestamp: &str,
+) {
+    storage
+        .get_connection()
+        .execute(
+            "INSERT INTO hotspot_history (file_path, score, display_score, complexity, frequency, timestamp) \
+             VALUES (?1, ?2, 1.0, 1, 1.0, ?3)",
+            rusqlite::params![path, score, timestamp],
+        )
+        .unwrap();
+}
+
+#[test]
+fn budget_in_range_score_is_ok() {
+    use super::budget::{BudgetStatus, ThresholdSource, evaluate_hotspot_budget};
+    use chrono::{TimeZone, Utc};
+
+    let (_tmp, storage) = budget_storage();
+    insert_history(&storage, "src/a.rs", 0.1, "2026-01-01T00:00:00Z");
+    let now = Utc.with_ymd_and_hms(2026, 1, 1, 1, 0, 0).unwrap();
+    let report = evaluate_hotspot_budget(&storage, Some(0.5), None, false, None, now).unwrap();
+    assert_eq!(report.status, BudgetStatus::Ok);
+    assert_eq!(report.evaluated, 1);
+    assert!(report.violations.is_empty());
+    assert_eq!(report.score_unit, "score");
+    assert_eq!(report.threshold, Some(0.5));
+    assert_eq!(report.threshold_source, Some(ThresholdSource::Cli));
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn budget_over_threshold_is_violation() {
+    use super::budget::{BudgetStatus, evaluate_hotspot_budget, format_budget_human};
+    use chrono::Utc;
+
+    let (_tmp, storage) = budget_storage();
+    insert_history(&storage, "src/hot.rs", 0.9, "2026-01-01T00:00:00Z");
+    let report =
+        evaluate_hotspot_budget(&storage, Some(0.5), None, false, None, Utc::now()).unwrap();
+    assert_eq!(report.status, BudgetStatus::Violation);
+    assert_eq!(report.violations.len(), 1);
+    assert_eq!(report.violations[0].path, "src/hot.rs");
+    assert!((report.violations[0].score - 0.9).abs() < f64::EPSILON);
+    assert!((report.violations[0].threshold - 0.5).abs() < f64::EPSILON);
+    let human = format_budget_human(&report);
+    assert!(human.contains("exceeds budget"), "{human}");
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn budget_empty_history_is_no_data_not_ok() {
+    use super::budget::{BudgetStatus, evaluate_hotspot_budget, format_budget_human};
+    use chrono::Utc;
+
+    let (_tmp, storage) = budget_storage();
+    let report =
+        evaluate_hotspot_budget(&storage, Some(0.5), None, false, None, Utc::now()).unwrap();
+    assert_eq!(report.status, BudgetStatus::NoData);
+    assert_eq!(report.evaluated, 0);
+    let human = format_budget_human(&report);
+    assert!(human.contains("No hotspot_history snapshot"), "{human}");
+    assert!(!human.contains("within budget"), "{human}");
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn budget_json_echoes_unit_threshold_evaluated() {
+    use super::budget::{ThresholdSource, evaluate_hotspot_budget};
+    use chrono::{TimeZone, Utc};
+
+    let (_tmp, storage) = budget_storage();
+    insert_history(&storage, "src/a.rs", 0.1, "2026-01-01T00:00:00Z");
+    let now = Utc.with_ymd_and_hms(2026, 1, 1, 1, 0, 0).unwrap();
+    let report = evaluate_hotspot_budget(&storage, None, None, false, None, now).unwrap();
+    assert_eq!(report.threshold, Some(0.5));
+    assert_eq!(report.threshold_source, Some(ThresholdSource::Default));
+    assert_eq!(report.score_unit, "score");
+    let v = serde_json::to_value(&report).expect("json");
+    assert_eq!(v["scoreUnit"], "score");
+    assert!((v["threshold"].as_f64().unwrap() - 0.5).abs() < f64::EPSILON);
+    assert_eq!(v["thresholdSource"], "default");
+    assert_eq!(v["snapshotAt"], "2026-01-01T00:00:00Z");
+    assert!(v["snapshotAgeSecs"].as_u64().expect("age") >= 3600);
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn budget_fail_without_threshold_is_not_configured() {
+    use super::budget::{
+        BudgetStatus, evaluate_hotspot_budget, format_budget_human, request_fail_exit,
+    };
+    use chrono::Utc;
+
+    let _ = crate::output::requested_exit::take_requested_exit_code();
+    let (_tmp, storage) = budget_storage();
+    let report = evaluate_hotspot_budget(&storage, None, None, true, None, Utc::now()).unwrap();
+    assert_eq!(report.status, BudgetStatus::NotConfigured);
+    assert!(report.threshold.is_none());
+    let human = format_budget_human(&report);
+    assert!(human.contains("--fail requires --threshold"), "{human}");
+    assert!(request_fail_exit(&report, true).is_err());
+    assert_eq!(
+        crate::output::requested_exit::take_requested_exit_code(),
+        Some(1)
+    );
+    insert_history(&storage, "src/a.rs", 0.1, "2026-01-01T00:00:00Z");
+    let with_rows = evaluate_hotspot_budget(&storage, None, None, true, None, Utc::now()).unwrap();
+    assert_eq!(with_rows.status, BudgetStatus::NotConfigured);
+    let _ = crate::output::requested_exit::take_requested_exit_code();
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn budget_fail_violation_requests_exit_1() {
+    use super::budget::{BudgetStatus, evaluate_hotspot_budget, request_fail_exit};
+    use chrono::Utc;
+
+    let _ = crate::output::requested_exit::take_requested_exit_code();
+    let (_tmp, storage) = budget_storage();
+    insert_history(&storage, "src/hot.rs", 0.9, "2026-01-01T00:00:00Z");
+    let report =
+        evaluate_hotspot_budget(&storage, Some(0.5), None, true, None, Utc::now()).unwrap();
+    assert_eq!(report.status, BudgetStatus::Violation);
+    assert!(request_fail_exit(&report, true).is_err());
+    assert_eq!(
+        crate::output::requested_exit::take_requested_exit_code(),
+        Some(1)
+    );
+    assert!(request_fail_exit(&report, false).is_ok());
+    assert_eq!(
+        crate::output::requested_exit::take_requested_exit_code(),
+        None
+    );
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn budget_fail_no_data_requests_exit_1() {
+    use super::budget::{BudgetStatus, evaluate_hotspot_budget, request_fail_exit};
+    use chrono::Utc;
+
+    let _ = crate::output::requested_exit::take_requested_exit_code();
+    let (_tmp, storage) = budget_storage();
+    let report =
+        evaluate_hotspot_budget(&storage, Some(0.5), None, true, None, Utc::now()).unwrap();
+    assert_eq!(report.status, BudgetStatus::NoData);
+    assert!(request_fail_exit(&report, true).is_err());
+    assert_eq!(
+        crate::output::requested_exit::take_requested_exit_code(),
+        Some(1)
+    );
+    let _ = crate::output::requested_exit::take_requested_exit_code();
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn budget_legacy_score_gt_one_counted() {
+    use super::budget::{BudgetStatus, evaluate_hotspot_budget, format_budget_human};
+    use chrono::Utc;
+
+    let (_tmp, storage) = budget_storage();
+    insert_history(&storage, "src/old.rs", 12.0, "2026-01-01T00:00:00Z");
+    let report =
+        evaluate_hotspot_budget(&storage, Some(0.5), None, false, None, Utc::now()).unwrap();
+    assert_eq!(report.status, BudgetStatus::Violation);
+    assert_eq!(report.legacy_score_count, 1);
+    let human = format_budget_human(&report);
+    assert!(human.contains("score > 1"), "{human}");
+    let v = serde_json::to_value(&report).expect("json");
+    assert_eq!(v["legacyScoreCount"], 1);
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn budget_threshold_cli_overrides_config() {
+    use super::budget::{BudgetStatus, ThresholdSource, evaluate_hotspot_budget};
+    use chrono::Utc;
+
+    let (_tmp, storage) = budget_storage();
+    insert_history(&storage, "src/a.rs", 0.5, "2026-01-01T00:00:00Z");
+    let report =
+        evaluate_hotspot_budget(&storage, Some(0.8), Some(0.2), false, None, Utc::now()).unwrap();
+    assert_eq!(report.status, BudgetStatus::Ok);
+    assert_eq!(report.threshold, Some(0.8));
+    assert_eq!(report.threshold_source, Some(ThresholdSource::Cli));
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn budget_history_budget_secs_is_not_score_threshold() {
+    use super::budget::{ThresholdSource, evaluate_hotspot_budget};
+    use chrono::Utc;
+
+    let (_tmp, storage) = budget_storage();
+    insert_history(&storage, "src/a.rs", 0.1, "2026-01-01T00:00:00Z");
+    let mut config = crate::config::model::Config::default();
+    config.hotspots.history_budget_secs = 5;
+    let report = evaluate_hotspot_budget(
+        &storage,
+        None,
+        config.hotspots.budget_threshold,
+        false,
+        None,
+        Utc::now(),
+    )
+    .unwrap();
+    assert_eq!(report.threshold, Some(0.5));
+    assert_eq!(report.threshold_source, Some(ThresholdSource::Default));
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn budget_equal_threshold_is_ok() {
+    use super::budget::{BudgetStatus, evaluate_hotspot_budget};
+    use chrono::Utc;
+
+    let (_tmp, storage) = budget_storage();
+    insert_history(&storage, "src/a.rs", 0.5, "2026-01-01T00:00:00Z");
+    let report =
+        evaluate_hotspot_budget(&storage, Some(0.5), None, false, None, Utc::now()).unwrap();
+    assert_eq!(report.status, BudgetStatus::Ok);
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn parse_budget_threshold_rejects_out_of_range() {
+    use crate::cli::parse_budget_threshold;
+
+    assert!(parse_budget_threshold("1.1").is_err());
+    assert!(parse_budget_threshold("-0.1").is_err());
+    assert!(parse_budget_threshold("nan").is_err());
+    assert!((parse_budget_threshold("0").unwrap() - 0.0).abs() < f64::EPSILON);
+    assert!((parse_budget_threshold("1").unwrap() - 1.0).abs() < f64::EPSILON);
+    assert!((parse_budget_threshold("0.5").unwrap() - 0.5).abs() < f64::EPSILON);
+}
+
+#[test]
+fn list_session_trend_omit_score_unit() {
+    use super::budget::evaluate_hotspot_budget;
+    use crate::impact::hotspots::HotspotQuery;
+    use chrono::Utc;
+
+    let list = wrap_hotspots_list_json(vec![serde_json::json!({"path": "src/a.rs"})], 10);
+    assert!(list.get("scoreUnit").is_none(), "{list}");
+    let live = serde_json::to_value(live_list_provenance(
+        &HotspotQuery::default(),
+        None,
+        None,
+        None,
+        Utc::now(),
+    ))
+    .expect("live");
+    assert!(live.get("scoreUnit").is_none(), "{live}");
+    let trend = serde_json::to_value(trend_summary_provenance(30, 20, &[])).expect("trend");
+    assert!(trend.get("scoreUnit").is_none(), "{trend}");
+    let full_trend = serde_json::to_value(trend_entries_provenance(30, &[])).expect("entries");
+    assert!(full_trend.get("scoreUnit").is_none(), "{full_trend}");
+
+    let (_tmp, storage) = budget_storage();
+    insert_history(&storage, "src/a.rs", 0.1, "2026-01-01T00:00:00Z");
+    let budget = evaluate_hotspot_budget(&storage, None, None, false, None, Utc::now()).unwrap();
+    let budget_json = serde_json::to_value(&budget).expect("budget");
+    assert_eq!(budget_json["scoreUnit"], "score");
+    assert!(budget_json.get("schemaVersion").is_none(), "{budget_json}");
+    assert!(budget_json.get("provenance").is_none(), "{budget_json}");
+    let _ = storage.shutdown();
+}

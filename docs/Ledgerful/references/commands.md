@@ -52,7 +52,7 @@ JSON `idle: true`; it is not a merge-gate pass. Observe still exit 0.
 
 ## `ledgerful hotspots`
 
-Default list omits tests/examples/benches **and** `.md` **and** vendored `deps_src`/`vendor`/`third_party`. `--include tests` is the unfiltered `f×c` audit view (includes vendor). `--include docs` ranks markdown by frequency (`score` = `f_norm`, `complexity` 0). `--include vendor` restores vendored trees on the `f×c` list (tests + docs still omitted). `--entity` into a vendored subtree needs `--include vendor`. `--semantic` ignores `--include`. Pin JSON `score` (0–1), not `displayScore`. Item `complexity` is max across current-index symbols; C++ functions are body-scoped. `--include docs --snapshot` is refused (`hotspot_history` stores `f×c`); `--include vendor --snapshot` is allowed. MCP / `/api/hotspots` stay unfiltered.
+Default list omits tests/examples/benches **and** `.md` **and** vendored `deps_src`/`vendor`/`third_party`. `--include tests` is the unfiltered `f×c` audit view (includes vendor). `--include docs` ranks markdown by frequency (`score` = `f_norm`, `complexity` 0). `--include vendor` restores vendored trees on the `f×c` list (tests + docs still omitted). `--entity` into a vendored subtree needs `--include vendor`. `--semantic` ignores `--include`. Pin JSON `score` (0–1), not `displayScore`. Item `complexity` is max across current-index symbols; C++ functions are body-scoped. `--include docs --snapshot` is refused (`hotspot_history` stores `f×c`); `--include vendor --snapshot` is allowed. MCP / `/api/hotspots` stay unfiltered. `hotspots budget` compares persisted `score` (0–1); empty history is `NO_DATA`; `--fail` needs `--threshold` or `[hotspots] budget_threshold`.
 
 ## `ledgerful audit`
 

@@ -6,6 +6,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Hotspot budget units (0310):** `hotspots budget` compares persisted
+  `hotspot_history.score` (0–1) to an explicit threshold (informational
+  default 0.5; `[hotspots] budget_threshold`; CLI `--threshold`). Empty
+  history is `NO_DATA`, not a vacuous pass against hardcoded `5.0`.
+  `--fail` is the only exit-1 gate and requires an explicit threshold
+  (`NOT_CONFIGURED` otherwise). JSON is a versionless object with
+  `scoreUnit: "score"`; only `status == "OK"` is in-budget. List /
+  session / trend / MCP / `/api/hotspots` stay without `scoreUnit`.
+
 ### Added
 
 - **Hotspot provenance (0309):** CLI `hotspots --json`, session

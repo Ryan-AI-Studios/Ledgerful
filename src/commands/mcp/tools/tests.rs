@@ -619,6 +619,7 @@ fn api_and_mcp_stay_arrays() {
     let encoded = serde_json::to_value(&sample).expect("hotspot");
     assert!(encoded.get("presence").is_none(), "{encoded}");
     assert!(encoded.get("provenance").is_none(), "{encoded}");
+    assert!(encoded.get("scoreUnit").is_none(), "{encoded}");
 
     let hotspots = vec![sample.clone()];
     let envelope = hotspots_from_calc::<&str>(Ok(hotspots));
@@ -661,4 +662,6 @@ fn api_and_mcp_stay_arrays() {
     assert!(api_json.get("completeness").is_none());
     assert!(api_json.get("provenance").is_none());
     assert!(api_json[0].get("presence").is_none());
+    assert!(api_json[0].get("scoreUnit").is_none());
+    assert!(api_json.get("scoreUnit").is_none());
 }
