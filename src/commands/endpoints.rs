@@ -21,6 +21,9 @@ pub struct EndpointsArgs {
     /// registration file, or optional blast edges) — not registration-file only
     #[arg(long)]
     changed: bool,
+    /// Include fixture and in-file test routes omitted from the default list
+    #[arg(long)]
+    include_fixtures: bool,
     /// Output as JSON
     #[arg(long)]
     json: bool,
@@ -47,6 +50,9 @@ impl EndpointsArgs {
         if self.changed {
             f.push("changed");
         }
+        if self.include_fixtures {
+            f.push("include-fixtures");
+        }
         if self.json {
             f.push("json");
         }
@@ -67,6 +73,11 @@ struct EndpointRow {
     consumers: Option<String>,
     file_path: Option<String>,
     route_confidence: f64,
+    handler_symbol_id: Option<i64>,
+    evidence: Option<String>,
+    route_source: String,
+    mount_prefix: Option<String>,
+    handler_file: Option<String>,
 }
 
 /// Dedupe key: (method uppercase, path_pattern, framework) — exact 0118 3-tuple.
@@ -158,9 +169,12 @@ fn query_filter_and_dedupe_endpoints(
     let mut query = String::from(
         "SELECT ar.id, ar.method, ar.path_pattern, ar.handler_symbol_name, ar.framework, \
          ar.auth_requirements, ar.owning_service, ar.consumers, pf.file_path, \
-         ar.route_confidence \
+         ar.route_confidence, ar.handler_symbol_id, ar.evidence, ar.route_source, \
+         ar.mount_prefix, impl_pf.file_path \
          FROM api_routes ar \
          LEFT JOIN project_files pf ON ar.handler_file_id = pf.id \
+         LEFT JOIN project_symbols ps ON ar.handler_symbol_id = ps.id \
+         LEFT JOIN project_files impl_pf ON ps.file_id = impl_pf.id \
          WHERE 1=1",
     );
     let mut params: Vec<String> = Vec::new();
@@ -192,6 +206,13 @@ fn query_filter_and_dedupe_endpoints(
                 consumers: row.get::<_, Option<String>>(7)?,
                 file_path: row.get::<_, Option<String>>(8)?,
                 route_confidence: row.get::<_, f64>(9)?,
+                handler_symbol_id: row.get::<_, Option<i64>>(10)?,
+                evidence: row.get::<_, Option<String>>(11)?,
+                route_source: row
+                    .get::<_, Option<String>>(12)?
+                    .unwrap_or_else(|| "DECORATOR".to_string()),
+                mount_prefix: row.get::<_, Option<String>>(13)?,
+                handler_file: row.get::<_, Option<String>>(14)?,
             })
         })
         .into_diagnostic()?
@@ -276,20 +297,14 @@ pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
         matched_route_keys.as_ref(),
     )?;
 
+    let (rows, fixtures_omitted) = omit_fixture_endpoint_rows(rows, args.include_fixtures);
+
     if args.json {
         let mut results = Vec::new();
         for row in &rows {
-            results.push(serde_json::json!({
-                "method": row.method,
-                "path": row.path_pattern,
-                "handler": row.handler_symbol_name,
-                "framework": row.framework,
-                "auth": row.auth_requirements.as_deref().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()),
-                "service": row.owning_service,
-                "consumers": row.consumers.as_deref().and_then(|s| serde_json::from_str::<serde_json::Value>(s).ok()),
-            }));
+            results.push(endpoint_row_to_json(row));
         }
-        let output = crate::output::empty::format_json_empty_state(results, "results", || {
+        let mut output = crate::output::empty::format_json_empty_state(results, "results", || {
             if all_rows_empty {
                 (
                     crate::output::empty::EmptyReason::NoIndexedData,
@@ -305,20 +320,28 @@ pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
                 )
             }
         });
+        attach_fixture_flags(&mut output, args.include_fixtures, fixtures_omitted);
         println!(
             "{}",
             serde_json::to_string_pretty(&output).into_diagnostic()?
         );
     } else {
         let mut table = Table::new();
-        table.set_header(vec!["Method", "Path", "Framework", "Service", "Auth"]);
+        table.set_header(vec![
+            "Method",
+            "Path",
+            "Handler",
+            "Framework",
+            "Service",
+            "Auth",
+        ]);
 
         for row in &rows {
             // Parse as Option<Vec<String>> — the writer's exact type
             // (routes.rs serializes Option<Vec<String>>). Every real state is a
             // success arm: "null" → Ok(None), "[]" → Ok(Some([])), '["a"]' → Ok(Some).
             // Neighbours parse Vec<String> and recover null via parse failure;
-            // we deliberately do not copy that pattern here.
+            // we deliberately do not copy that pattern here. Malformed → Invalid.
             let auth_str = match &row.auth_requirements {
                 Some(aj) => format_auth_requirements(aj),
                 None => "Unknown".to_string(),
@@ -327,6 +350,9 @@ pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
             table.add_row(vec![
                 row.method.clone(),
                 row.path_pattern.clone(),
+                row.handler_symbol_name
+                    .clone()
+                    .unwrap_or_else(|| "-".to_string()),
                 row.framework.clone(),
                 row.owning_service
                     .clone()
@@ -352,9 +378,172 @@ pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
             }
         }
         println!("{}", table);
+        print_endpoints_omit_footer(fixtures_omitted);
     }
 
     Ok(())
+}
+
+fn omit_fixture_endpoint_rows(
+    rows: Vec<EndpointRow>,
+    include_fixtures: bool,
+) -> (Vec<EndpointRow>, usize) {
+    if include_fixtures {
+        return (rows, 0);
+    }
+    let mut kept = Vec::new();
+    let mut omitted = 0usize;
+    for row in rows {
+        if is_fixture_endpoint_row(&row) {
+            omitted += 1;
+        } else {
+            kept.push(row);
+        }
+    }
+    (kept, omitted)
+}
+
+fn is_fixture_endpoint_row(row: &EndpointRow) -> bool {
+    if row.route_source == "TEST" {
+        return true;
+    }
+    row.file_path
+        .as_deref()
+        .is_some_and(crate::index::test_mapping::is_test_path)
+}
+
+fn attach_fixture_flags(output: &mut serde_json::Value, include_fixtures: bool, omitted: usize) {
+    if let Some(obj) = output.as_object_mut() {
+        obj.insert(
+            "includeFixtures".to_string(),
+            serde_json::json!(include_fixtures),
+        );
+        obj.insert("fixturesOmitted".to_string(), serde_json::json!(omitted));
+    }
+}
+
+fn print_endpoints_omit_footer(omitted: usize) {
+    if omitted > 0 {
+        println!("  {omitted} fixture routes omitted. Pass --include-fixtures to show them.");
+    }
+}
+
+fn slash_normalize(path: &str) -> String {
+    path.replace('\\', "/")
+}
+
+fn join_mount(prefix: &str, path: &str) -> String {
+    let prefix = prefix.trim_end_matches('/');
+    if path.starts_with('/') {
+        format!("{prefix}{path}")
+    } else {
+        format!("{prefix}/{path}")
+    }
+}
+
+fn handler_unresolved_reason(
+    handler: Option<&str>,
+    symbol_id: Option<i64>,
+    evidence: Option<&str>,
+) -> Option<&'static str> {
+    let name = handler.unwrap_or("");
+    let sentinel =
+        name.is_empty() || name == "unknown" || name == "<unknown>" || name == "<func_literal>";
+    if !sentinel && symbol_id.is_none() {
+        return Some("missing_symbol");
+    }
+    let ev = evidence.unwrap_or("");
+    if sentinel && ev.contains("-> <closure>") {
+        return Some("closure");
+    }
+    if sentinel && ev.contains("-> <not_identifier>") {
+        return Some("not_identifier");
+    }
+    if sentinel {
+        return Some("unresolved");
+    }
+    None
+}
+
+fn endpoint_row_to_json(row: &EndpointRow) -> serde_json::Value {
+    let mut item = serde_json::Map::new();
+    item.insert("method".to_string(), serde_json::json!(row.method));
+    item.insert("path".to_string(), serde_json::json!(row.path_pattern));
+    item.insert(
+        "handler".to_string(),
+        serde_json::json!(row.handler_symbol_name),
+    );
+    item.insert("framework".to_string(), serde_json::json!(row.framework));
+    item.insert("service".to_string(), serde_json::json!(row.owning_service));
+
+    if let Some(raw) = row.auth_requirements.as_deref() {
+        match serde_json::from_str::<Option<Vec<String>>>(raw) {
+            Ok(Some(v)) if !v.is_empty() => {
+                item.insert("auth".to_string(), serde_json::json!(v));
+                item.insert("authSource".to_string(), serde_json::json!("inferred"));
+            }
+            Ok(_) => {}
+            Err(_) => {
+                item.insert("authParse".to_string(), serde_json::json!("invalid"));
+            }
+        }
+    }
+
+    if let Some(raw) = row.consumers.as_deref() {
+        match serde_json::from_str::<serde_json::Value>(raw) {
+            Ok(v) if !v.is_null() => {
+                item.insert("consumers".to_string(), v);
+            }
+            Ok(_) => {}
+            Err(_) => {
+                item.insert("consumersParse".to_string(), serde_json::json!("invalid"));
+            }
+        }
+    }
+
+    if let Some(reg) = row.file_path.as_deref().filter(|p| !p.is_empty()) {
+        let registration = slash_normalize(reg);
+        item.insert(
+            "registrationFile".to_string(),
+            serde_json::json!(registration),
+        );
+        if let Some(impl_file) = row.handler_file.as_deref().filter(|p| !p.is_empty()) {
+            let impl_norm = slash_normalize(impl_file);
+            if impl_norm != registration {
+                item.insert("handlerFile".to_string(), serde_json::json!(impl_norm));
+            }
+        }
+    }
+
+    if let Some(reason) = handler_unresolved_reason(
+        row.handler_symbol_name.as_deref(),
+        row.handler_symbol_id,
+        row.evidence.as_deref(),
+    ) {
+        item.insert(
+            "handlerUnresolvedReason".to_string(),
+            serde_json::json!(reason),
+        );
+    }
+
+    if let Some(prefix) = row.mount_prefix.as_deref() {
+        item.insert("mountPrefix".to_string(), serde_json::json!(prefix));
+        item.insert(
+            "mountedPath".to_string(),
+            serde_json::json!(join_mount(prefix, &row.path_pattern)),
+        );
+        item.insert("mountProvenance".to_string(), serde_json::json!("nest"));
+    } else if row.framework == "Axum" {
+        item.insert(
+            "mountedPath".to_string(),
+            serde_json::json!(row.path_pattern),
+        );
+        item.insert("mountProvenance".to_string(), serde_json::json!("literal"));
+    } else {
+        item.insert("mountProvenance".to_string(), serde_json::json!("unknown"));
+    }
+
+    serde_json::Value::Object(item)
 }
 
 /// Format stored `auth_requirements` JSON for the human Auth column.
@@ -367,15 +556,15 @@ fn format_auth_requirements(aj: &str) -> String {
         Ok(None) => "None".to_string(),
         Ok(Some(v)) if v.is_empty() => "None".to_string(),
         Ok(Some(v)) => v.join(", "),
-        // Writer cannot produce malformed data; stable fallback for hand-edited rows.
-        Err(_) => "None".to_string(),
+        Err(_) => "Invalid".to_string(),
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        EndpointRow, dedupe_endpoint_rows, endpoint_row_better_than, format_auth_requirements,
+        EndpointRow, attach_fixture_flags, dedupe_endpoint_rows, endpoint_row_better_than,
+        endpoint_row_to_json, format_auth_requirements, omit_fixture_endpoint_rows,
         query_filter_and_dedupe_endpoints,
     };
     use crate::state::migrations::get_migrations;
@@ -401,6 +590,11 @@ mod tests {
             consumers: None,
             file_path: None,
             route_confidence: confidence,
+            handler_symbol_id: None,
+            evidence: None,
+            route_source: "DECORATOR".to_string(),
+            mount_prefix: None,
+            handler_file: None,
         }
     }
 
@@ -843,5 +1037,362 @@ mod tests {
         assert!(!raw_empty);
         assert!(after_dedupe.is_empty());
         // all_rows_empty stays false so empty-state reason is CleanDiff, not NoIndexedData
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn row_with(
+        id: i64,
+        method: &str,
+        path: &str,
+        handler: Option<&str>,
+        framework: &str,
+        file_path: Option<&str>,
+        route_source: &str,
+        mount_prefix: Option<&str>,
+        evidence: Option<&str>,
+        symbol_id: Option<i64>,
+        auth: Option<&str>,
+        consumers: Option<&str>,
+    ) -> EndpointRow {
+        let mut r = row(id, method, path, handler, framework, 1.0);
+        r.file_path = file_path.map(str::to_string);
+        r.route_source = route_source.to_string();
+        r.mount_prefix = mount_prefix.map(str::to_string);
+        r.evidence = evidence.map(str::to_string);
+        r.handler_symbol_id = symbol_id;
+        r.auth_requirements = auth.map(str::to_string);
+        r.consumers = consumers.map(str::to_string);
+        r
+    }
+
+    #[test]
+    fn format_auth_requirements_invalid_is_invalid() {
+        assert_eq!(format_auth_requirements("{not-json"), "Invalid");
+    }
+
+    #[test]
+    fn endpoints_default_omits_test_path_and_test_source() {
+        let rows = vec![
+            row_with(
+                1,
+                "GET",
+                "/items",
+                Some("listUsers"),
+                "gin",
+                Some("tests/fixtures/go_sample/pkg/handlers.go"),
+                "METHOD_CALL",
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            row_with(
+                2,
+                "GET",
+                "/probe",
+                Some("unknown"),
+                "Axum",
+                Some("src/commands/web/server/startup.rs"),
+                "TEST",
+                None,
+                Some("get(/probe) -> <closure>"),
+                None,
+                None,
+                None,
+            ),
+            row_with(
+                3,
+                "GET",
+                "/session",
+                Some("session_handler"),
+                "Axum",
+                Some("src/commands/web/server/router.rs"),
+                "BUILDER",
+                Some("/api"),
+                Some("get(/session) -> session_handler"),
+                Some(1),
+                None,
+                None,
+            ),
+        ];
+        let (kept, omitted) = omit_fixture_endpoint_rows(rows, false);
+        assert_eq!(omitted, 2);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].path_pattern, "/session");
+    }
+
+    #[test]
+    fn endpoints_windows_test_path_still_omits() {
+        let rows = vec![row_with(
+            1,
+            "GET",
+            "/users",
+            Some("listUsers"),
+            "gin",
+            Some(r"tests\fixtures\go_sample\pkg\handlers.go"),
+            "METHOD_CALL",
+            None,
+            None,
+            None,
+            None,
+            None,
+        )];
+        let (kept, omitted) = omit_fixture_endpoint_rows(rows, false);
+        assert_eq!(omitted, 1);
+        assert!(kept.is_empty());
+    }
+
+    #[test]
+    fn endpoints_omit_footer_counts_tuples_not_paths() {
+        let rows = vec![
+            row_with(
+                1,
+                "GET",
+                "/users",
+                Some("listUsers"),
+                "gin",
+                Some("tests/fixtures/go_sample/pkg/handlers.go"),
+                "METHOD_CALL",
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            row_with(
+                2,
+                "POST",
+                "/users",
+                Some("createUser"),
+                "gin",
+                Some("tests/fixtures/go_sample/pkg/handlers.go"),
+                "METHOD_CALL",
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+        ];
+        let (_kept, omitted) = omit_fixture_endpoint_rows(rows, false);
+        assert_eq!(omitted, 2);
+    }
+
+    #[test]
+    fn endpoints_include_fixtures_restores() {
+        let rows = vec![
+            row_with(
+                1,
+                "GET",
+                "/items",
+                Some("listUsers"),
+                "gin",
+                Some("tests/fixtures/go_sample/pkg/handlers.go"),
+                "METHOD_CALL",
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            row_with(
+                2,
+                "GET",
+                "/probe",
+                Some("unknown"),
+                "Axum",
+                Some("src/startup.rs"),
+                "TEST",
+                None,
+                None,
+                None,
+                None,
+                None,
+            ),
+            row_with(
+                3,
+                "GET",
+                "/session",
+                Some("session_handler"),
+                "Axum",
+                Some("src/router.rs"),
+                "BUILDER",
+                None,
+                None,
+                Some(1),
+                None,
+                None,
+            ),
+        ];
+        let (kept, omitted) = omit_fixture_endpoint_rows(rows, true);
+        assert_eq!(omitted, 0);
+        assert_eq!(kept.len(), 3);
+        let mut envelope = crate::output::empty::format_json_list_envelope(
+            kept.iter().map(endpoint_row_to_json).collect(),
+            "results",
+        );
+        attach_fixture_flags(&mut envelope, true, omitted);
+        assert_eq!(envelope["includeFixtures"], true);
+        assert_eq!(envelope["fixturesOmitted"], 0);
+    }
+
+    #[test]
+    fn endpoints_include_fixtures_echoed_on_empty() {
+        let mut empty = crate::output::empty::format_json_empty_state(
+            Vec::<serde_json::Value>::new(),
+            "results",
+            || {
+                (
+                    crate::output::empty::EmptyReason::NoIndexedData,
+                    "No endpoints indexed.".to_string(),
+                )
+            },
+        );
+        attach_fixture_flags(&mut empty, false, 0);
+        assert_eq!(empty["includeFixtures"], false);
+        assert_eq!(empty["fixturesOmitted"], 0);
+        assert_eq!(empty["resultCount"], 0);
+
+        let mut clean = crate::output::empty::format_json_empty_state(
+            Vec::<serde_json::Value>::new(),
+            "results",
+            || {
+                (
+                    crate::output::empty::EmptyReason::CleanDiff,
+                    "No endpoints changed in the current diff.".to_string(),
+                )
+            },
+        );
+        attach_fixture_flags(&mut clean, true, 0);
+        assert_eq!(clean["includeFixtures"], true);
+        assert_eq!(clean["fixturesOmitted"], 0);
+        assert_eq!(clean["emptyReason"], "cleanDiff");
+    }
+
+    #[test]
+    fn endpoints_json_emits_locations_and_mount() {
+        let nested = row_with(
+            1,
+            "GET",
+            "/endpoints/changed",
+            Some("endpoints_changed_handler"),
+            "Axum",
+            Some("src/commands/web/server/router.rs"),
+            "BUILDER",
+            Some("/api"),
+            Some("get(/endpoints/changed) -> endpoints_changed_handler"),
+            Some(9),
+            None,
+            None,
+        );
+        let v = endpoint_row_to_json(&nested);
+        assert_eq!(v["registrationFile"], "src/commands/web/server/router.rs");
+        assert_eq!(v["mountPrefix"], "/api");
+        assert_eq!(v["mountedPath"], "/api/endpoints/changed");
+        assert_eq!(v["mountProvenance"], "nest");
+        assert!(v.get("handlerUnresolvedReason").is_none());
+
+        let literal = row_with(
+            2,
+            "GET",
+            "/health",
+            Some("health_handler"),
+            "Axum",
+            Some("src/commands/web/server/router.rs"),
+            "BUILDER",
+            None,
+            Some("get(/health) -> health_handler"),
+            Some(8),
+            None,
+            None,
+        );
+        let v = endpoint_row_to_json(&literal);
+        assert!(v.get("mountPrefix").is_none());
+        assert_eq!(v["mountedPath"], "/health");
+        assert_eq!(v["mountProvenance"], "literal");
+
+        let go = row_with(
+            3,
+            "GET",
+            "/items",
+            Some("listUsers"),
+            "gin",
+            Some("pkg/handlers.go"),
+            "METHOD_CALL",
+            None,
+            None,
+            Some(7),
+            None,
+            None,
+        );
+        let v = endpoint_row_to_json(&go);
+        assert!(v.get("mountedPath").is_none());
+        assert_eq!(v["mountProvenance"], "unknown");
+    }
+
+    #[test]
+    fn endpoints_unknown_handler_has_reason() {
+        let closure = row_with(
+            1,
+            "GET",
+            "/probe",
+            Some("unknown"),
+            "Axum",
+            Some("src/startup.rs"),
+            "TEST",
+            None,
+            Some("get(/probe) -> <closure>"),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            endpoint_row_to_json(&closure)["handlerUnresolvedReason"],
+            "closure"
+        );
+
+        let missing = row_with(
+            2,
+            "GET",
+            "/session",
+            Some("session_handler"),
+            "Axum",
+            Some("src/router.rs"),
+            "BUILDER",
+            None,
+            Some("get(/session) -> session_handler"),
+            None,
+            None,
+            None,
+        );
+        assert_eq!(
+            endpoint_row_to_json(&missing)["handlerUnresolvedReason"],
+            "missing_symbol"
+        );
+    }
+
+    #[test]
+    fn endpoints_auth_parse_invalid_not_null() {
+        let row = row_with(
+            1,
+            "GET",
+            "/health",
+            Some("health_handler"),
+            "Axum",
+            Some("src/router.rs"),
+            "BUILDER",
+            None,
+            Some("get(/health) -> health_handler"),
+            Some(1),
+            Some("not-json"),
+            Some("{"),
+        );
+        let v = endpoint_row_to_json(&row);
+        assert_eq!(v["authParse"], "invalid");
+        assert!(v.get("auth").is_none());
+        assert_eq!(v["consumersParse"], "invalid");
+        assert!(v.get("consumers").is_none());
+        assert!(v.get("authSource").is_none());
     }
 }

@@ -31,6 +31,13 @@ fn test_endpoints_json() {
     use ledgerful::cli::{Cli, Commands};
     let cli = Cli::try_parse_from(["ledgerful", "endpoints", "--json"])
         .expect("endpoints --json parsing must succeed");
+    let with_fixtures =
+        Cli::try_parse_from(["ledgerful", "endpoints", "--include-fixtures", "--json"])
+            .expect("endpoints --include-fixtures --json parsing must succeed");
+    match &with_fixtures.command {
+        Commands::Endpoints(_) => {}
+        _ => panic!("expected Endpoints command for --include-fixtures"),
+    }
     match cli.command {
         Commands::Endpoints(args) => {
             let result = execute_endpoints(args);
