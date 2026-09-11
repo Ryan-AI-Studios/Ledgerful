@@ -96,6 +96,10 @@ impl ProjectIndexer {
         &self.storage
     }
 
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
     pub fn storage_mut(&mut self) -> &mut StorageManager {
         &mut self.storage
     }

@@ -891,6 +891,15 @@ pub enum ImpactFreshness {
     Corrupt { reason: String },
 }
 
+/// Live working-tree snapshot only (not `--base-ref` / `--paths`).
+pub fn check_live_impact_freshness(
+    layout: &Layout,
+    ignore_patterns: &[String],
+) -> Option<ImpactFreshness> {
+    let snapshot = build_repo_snapshot(layout, ignore_patterns)?;
+    Some(check_impact_freshness(layout, &snapshot))
+}
+
 pub fn check_impact_freshness(layout: &Layout, snapshot: &RepoSnapshot) -> ImpactFreshness {
     let report_opt = match read_latest_impact_report(layout) {
         Ok(Some(r)) => r,

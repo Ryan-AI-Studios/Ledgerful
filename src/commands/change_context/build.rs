@@ -152,6 +152,9 @@ pub fn build_change_context(
         doctor,
         ledger,
         analysis_warnings: warnings,
+        // 0124 RO uses `not_ready_packet` (empty `freshness[]`), not
+        // `permission_denied: true` on this path.
+        freshness: classify_change_context_freshness(layout, storage, &config, false),
         next_actions,
         impact_schema_version: Some(impact.schema_version.clone()),
     })
@@ -283,9 +286,49 @@ pub(crate) fn not_ready_packet(
         doctor,
         ledger,
         analysis_warnings: Vec::new(),
+        freshness: Vec::new(),
         next_actions: next_actions_for_class(class),
         impact_schema_version: None,
     }
+}
+
+/// Classify derived + impact rows. `permission_denied` omits Class C
+/// `refresh` strings. Production PermissionDenied short-circuits to
+/// [`not_ready_packet`] (empty array); pass `false` from
+/// [`build_change_context`].
+pub(crate) fn classify_change_context_freshness(
+    layout: &Layout,
+    storage: &StorageManager,
+    config: &Config,
+    permission_denied: bool,
+) -> Vec<crate::index::surface_freshness::SurfaceFreshness> {
+    use crate::index::surface_freshness::{
+        ClassifySurfaceFreshness, classify_surface_freshness, embeddings_probe_from_storage,
+        impact_freshness_row, probe_named_table, read_indexed_head,
+    };
+
+    let conn = storage.get_connection();
+    let compared_head = crate::git::repo::open_repo(layout.root.as_std_path())
+        .ok()
+        .and_then(|repo| get_head_info(&repo).ok())
+        .and_then(|(hash, _)| hash);
+    let indexed_head = read_indexed_head(conn);
+    let configured = crate::embed::client::is_embedding_backend_configured(&config.local_model);
+    let mut rows = classify_surface_freshness(ClassifySurfaceFreshness {
+        files_stale: None,
+        compared_head: compared_head.as_deref(),
+        indexed_head: indexed_head.as_deref(),
+        mapping: probe_named_table(conn, "test_mapping"),
+        routes: probe_named_table(conn, "api_routes"),
+        embeddings: embeddings_probe_from_storage(configured, storage),
+        permission_denied,
+    });
+    if let Some(impact) =
+        crate::state::reports::check_live_impact_freshness(layout, &config.watch.ignore_patterns)
+    {
+        rows.push(impact_freshness_row(&impact, permission_denied));
+    }
+    rows
 }
 
 /// Build structured agentSummary from impact + optional changeHints (0173).

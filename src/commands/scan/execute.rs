@@ -711,7 +711,7 @@ fn print_pr_scan_summary(report: &PrScanReport) {
     );
     println!(
         "{:<15} {}",
-        "Working tree:".if_supports_color(Stream::Stdout, |s| s.bold()),
+        "Range:".if_supports_color(Stream::Stdout, |s| s.bold()),
         match report.tree_clean {
             true => "CLEAN"
                 .if_supports_color(Stream::Stdout, |s| s.green())

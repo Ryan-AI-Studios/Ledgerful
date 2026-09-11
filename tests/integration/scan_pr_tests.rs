@@ -420,6 +420,7 @@ fn pr_scan_golden_output_matches_fixture() {
         "riskLevel": "high",
         "riskReasons": ["sensitive path touched: Cargo.toml"],
         "analysisWarnings": [],
+        "scopeNote": "selected range is nonempty; treeClean is range emptiness, not working-tree dirtiness",
         "historyWindowCommits": 3,
         "historyTruncated": false,
         "testGaps": {
@@ -711,6 +712,10 @@ fn pr_scan_same_base_and_head_yields_empty_low_risk() {
     assert_eq!(parsed["changeCount"], 0);
     assert_eq!(parsed["riskLevel"], "low");
     assert_eq!(parsed["treeClean"], true);
+    assert!(
+        parsed.get("scopeNote").is_none(),
+        "empty range must omit scopeNote: {parsed}"
+    );
 }
 
 // This test asserts that the scan --pr code path adds zero new network code.

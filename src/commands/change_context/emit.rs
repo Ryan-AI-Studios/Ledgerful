@@ -107,10 +107,31 @@ fn print_human(packet: &ChangeContextPacket) {
         "  ledger:           pendingCount={}",
         packet.ledger.pending_count
     );
+    for line in freshness_block_lines(packet) {
+        println!("{line}");
+    }
     if !packet.next_actions.is_empty() {
         println!("  nextActions:");
         for a in &packet.next_actions {
             println!("    - {a}");
         }
     }
+}
+
+pub(crate) fn freshness_block_lines(packet: &ChangeContextPacket) -> Vec<String> {
+    if !packet.freshness.iter().any(|r| !r.is_available()) {
+        return Vec::new();
+    }
+    let mut lines = vec!["  freshness:".to_string()];
+    for row in &packet.freshness {
+        if !row.is_available() {
+            lines.push(format!(
+                "    - {}: {} — {}",
+                row.id,
+                row.status.as_str(),
+                row.reason
+            ));
+        }
+    }
+    lines
 }

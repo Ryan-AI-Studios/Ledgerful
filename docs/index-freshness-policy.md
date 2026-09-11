@@ -104,6 +104,11 @@ serialize:
 
 **Ban:** `FreshPopulated` with top-level `staleFiles > 0`. Human and JSON agree.
 
+Additive `surfaces[]` (0313) reports derived-table provenance (`mapping` /
+`routes` / `embeddings`) against `index_metadata.head_hash`. It does **not**
+run a second content-hash walk. `surfaces.files` reuses the Full `--check`
+byte walk. Mapping/route lag cannot flip `--strict` or `FreshPopulated`.
+
 ## Search `--auto-index` and Tantivy (full-text)
 
 There is **no** incremental Tantivy API. After shared-path `--auto-index`:

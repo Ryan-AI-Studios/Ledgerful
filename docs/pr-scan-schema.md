@@ -30,8 +30,9 @@ ledgerful scan --pr main...HEAD --format text
   "headRef": "HEAD",
   "headHash": "abc123...",
   "branchName": "feature/x",
-  "treeClean": true,
+  "treeClean": false,
   "changeCount": 3,
+  "scopeNote": "selected range is nonempty; treeClean is range emptiness, not working-tree dirtiness",
   "changes": [
     {
       "path": "src/foo.rs",
@@ -93,6 +94,7 @@ ledgerful scan --pr main...HEAD --format text
 | `headHash` | string (omitted when unknown) | Commit hash at HEAD. **Omitted** (not `null`) when unavailable — e.g. some edge cases. |
 | `branchName` | string (omitted when unknown) | Current branch name. **Omitted** on detached HEAD (typical `actions/checkout` PR checkout). Never serialized as JSON `null`. |
 | `treeClean` | boolean | Whether the diff between `baseRef` and `headRef` is empty (no changes). In CI/PR mode this reflects diff emptiness, not working-tree dirtiness. |
+| `scopeNote` | string (omitted when empty) | Present only when `changeCount > 0`. Explains that `treeClean` is range emptiness. Human `--pr` labels this bit `Range:`, not `Working tree:`. |
 | `changeCount` | integer | `len(changes)`. |
 | `changes` | array | Sorted by `path`. Forward-slash normalized for cross-platform determinism. |
 | `changes[].path` | string | Forward-slash normalized path. |
@@ -161,6 +163,9 @@ Specific guarantees:
 - `schemaVersion` is a stable integer; breaking changes bump it.
 - History enrichment uses a bounded first-parent walk (`DEFAULT_MAX_COMMITS =
   1000`); same history ⇒ same `churn` / `lastCommitAt` / window fields.
+- `scopeNote` is the pinned string when `changeCount > 0` and is omitted when
+  the selected range is empty (`treeClean=true`). Same `(baseRef, headHash,
+  repoState)` ⇒ same presence/value.
 
 ## Risk derivation
 
