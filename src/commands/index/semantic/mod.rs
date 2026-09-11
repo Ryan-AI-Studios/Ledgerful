@@ -523,11 +523,7 @@ pub(crate) fn execute_semantic_dry_run(
             &report.embedding_model,
             "config.local_model.embedding_model",
         ]);
-        let dims_str = if report.embedding_dimensions == 0 {
-            "0 (probed at runtime)".to_string()
-        } else {
-            report.embedding_dimensions.to_string()
-        };
+        let dims_str = format_dimensions_label(report.embedding_dimensions);
         table.add_row(vec![
             "Embedding Dimensions",
             &dims_str,
@@ -557,6 +553,15 @@ pub(crate) fn execute_semantic_dry_run(
     }
 
     Ok(())
+}
+
+/// Human label for configured embedding width. Config `0` is unset, not a probe.
+pub(crate) fn format_dimensions_label(configured: usize) -> String {
+    if configured == 0 {
+        "unset".to_string()
+    } else {
+        configured.to_string()
+    }
 }
 
 #[derive(serde::Serialize)]

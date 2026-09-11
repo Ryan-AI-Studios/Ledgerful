@@ -204,21 +204,72 @@ pub(crate) fn is_transient_error(err: &str) -> bool {
 
 /// Doctor honesty: a listening local router (TCP open) is not "unreachable"
 /// when the 2s ping budget expires (cold load). `ask` uses the full timeout.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CompletionReadiness {
+    Cold,
+    Loading,
+    Busy,
+    Ready,
+    Unreachable,
+    FallbackFailed,
+    EmptyUrl,
+}
+
+impl CompletionReadiness {
+    pub(crate) fn as_json_str(self) -> Option<&'static str> {
+        match self {
+            Self::Cold => Some("cold"),
+            Self::Loading => Some("loading"),
+            Self::Busy => Some("busy"),
+            Self::Ready => Some("ready"),
+            Self::Unreachable => Some("unreachable"),
+            Self::FallbackFailed => Some("fallback_failed"),
+            Self::EmptyUrl => Some("unreachable"),
+        }
+    }
+}
+
+#[cfg(test)]
 pub(crate) fn completion_probe_failure_kind(
     tcp_ok: bool,
 ) -> (&'static str, &'static str, &'static str) {
-    if tcp_ok {
-        (
+    completion_probe_failure_kind_for(if tcp_ok {
+        CompletionReadiness::FallbackFailed
+    } else {
+        CompletionReadiness::Unreachable
+    })
+}
+
+pub(crate) fn completion_probe_failure_kind_for(
+    readiness: CompletionReadiness,
+) -> (&'static str, &'static str, &'static str) {
+    match readiness {
+        CompletionReadiness::Ready => ("", "ready", "Completion model ready"),
+        CompletionReadiness::Cold => (
+            "completion-not-ready",
+            "listening; cold",
+            "Completion model listening but cold (model not loaded)",
+        ),
+        CompletionReadiness::Loading => (
+            "completion-not-ready",
+            "listening; loading",
+            "Completion model listening but loading",
+        ),
+        CompletionReadiness::Busy => (
+            "completion-not-ready",
+            "listening; busy",
+            "Completion model listening but busy (VRAM conflict)",
+        ),
+        CompletionReadiness::FallbackFailed => (
             "completion-not-ready",
             "listening; ping failed",
             "Completion model listening but ping failed in doctor budget",
-        )
-    } else {
-        (
+        ),
+        CompletionReadiness::Unreachable | CompletionReadiness::EmptyUrl => (
             "completion-unreachable",
             "unreachable",
             "Completion model unreachable",
-        )
+        ),
     }
 }
 
@@ -234,6 +285,7 @@ pub(crate) enum CompletionPingClass {
 }
 
 impl CompletionPingClass {
+    #[cfg(test)]
     pub(crate) fn tcp_ok(self) -> bool {
         matches!(self, Self::Timeout)
     }
@@ -263,6 +315,22 @@ pub(crate) fn classify_completion_ping_error(
         Some(ureq::ErrorKind::Io) => CompletionPingClass::ConnectionFailed,
         None => CompletionPingClass::Timeout,
         _ => CompletionPingClass::ConnectionFailed,
+    }
+}
+
+/// Classified health states already name the state in the lead. Do not
+/// append `(idle)` / `(model not loaded)` again.
+pub(crate) fn classified_completion_finding_message(
+    readiness: CompletionReadiness,
+    err: &str,
+    retries: u32,
+) -> String {
+    let (_, _, lead) = completion_probe_failure_kind_for(readiness);
+    match readiness {
+        CompletionReadiness::Cold | CompletionReadiness::Loading | CompletionReadiness::Busy => {
+            lead.to_string()
+        }
+        _ => completion_finding_message(lead, err, retries),
     }
 }
 
@@ -300,10 +368,86 @@ pub(crate) fn completion_status_detail(err: &str, retries: u32) -> (String, Stri
     (truncated, retry_suffix, detail_hint)
 }
 
-/// Doctor completion ping with retry; last failure classified without a second TCP.
+/// Doctor completion probe: non-loading `/health` first, ping as fallback.
 pub(crate) fn probe_completion_classified(
     config: crate::config::model::LocalModelConfig,
-) -> (ProbeResult<String>, CompletionPingClass) {
+) -> (ProbeResult<String>, CompletionReadiness) {
+    let health_cfg = config.clone();
+    probe_completion_classified_with(config, PROBE_PER_ATTEMPT_DEADLINE, move || {
+        crate::local_model::client::probe_generation_health(&health_cfg)
+    })
+}
+
+/// Same as [`probe_completion_classified`], with an injectable health
+/// deadline (0143 spawn + `recv_timeout`). Health is one attempt
+/// (`max_retries = 0`); classified 503/409 never retry. A hung DNS/read
+/// is abandoned at `health_deadline` and does **not** fall through to ping.
+fn probe_completion_classified_with<H>(
+    config: crate::config::model::LocalModelConfig,
+    health_deadline: std::time::Duration,
+    health_probe: H,
+) -> (ProbeResult<String>, CompletionReadiness)
+where
+    H: Fn() -> crate::local_model::client::HealthProbeResult + Send + Sync + 'static,
+{
+    let health = match probe_with_retry_budgeted(
+        move || Ok(health_probe()),
+        RETRY_BUDGET,
+        RETRY_DELAY,
+        health_deadline,
+        0,
+    ) {
+        ProbeResult::Healthy(v) | ProbeResult::ReachableAfterRetry { val: v, .. } => v,
+        ProbeResult::Unreachable { err, retries } => {
+            return (
+                ProbeResult::Unreachable { err, retries },
+                CompletionReadiness::FallbackFailed,
+            );
+        }
+    };
+    match health {
+        crate::local_model::client::HealthProbeResult::Ready { display } => {
+            return (ProbeResult::Healthy(display), CompletionReadiness::Ready);
+        }
+        crate::local_model::client::HealthProbeResult::Cold { detail } => {
+            return (
+                ProbeResult::Unreachable {
+                    err: detail,
+                    retries: 0,
+                },
+                CompletionReadiness::Cold,
+            );
+        }
+        crate::local_model::client::HealthProbeResult::Loading { detail } => {
+            return (
+                ProbeResult::Unreachable {
+                    err: detail,
+                    retries: 0,
+                },
+                CompletionReadiness::Loading,
+            );
+        }
+        crate::local_model::client::HealthProbeResult::Busy { detail } => {
+            return (
+                ProbeResult::Unreachable {
+                    err: detail,
+                    retries: 0,
+                },
+                CompletionReadiness::Busy,
+            );
+        }
+        crate::local_model::client::HealthProbeResult::Unreachable { detail } => {
+            return (
+                ProbeResult::Unreachable {
+                    err: detail,
+                    retries: 0,
+                },
+                CompletionReadiness::Unreachable,
+            );
+        }
+        crate::local_model::client::HealthProbeResult::Unknown => {}
+    }
+
     let last_class = std::sync::Arc::new(std::sync::Mutex::new(CompletionPingClass::Timeout));
     let slot = std::sync::Arc::clone(&last_class);
     let result = probe_with_retry(move || {
@@ -323,7 +467,17 @@ pub(crate) fn probe_completion_classified(
         Ok(guard) => *guard,
         Err(_) => CompletionPingClass::Timeout,
     };
-    (result, class)
+    let readiness = match &result {
+        ProbeResult::Healthy(_) | ProbeResult::ReachableAfterRetry { .. } => {
+            CompletionReadiness::Ready
+        }
+        ProbeResult::Unreachable { .. } => match class {
+            CompletionPingClass::Timeout => CompletionReadiness::FallbackFailed,
+            CompletionPingClass::ConnectionFailed => CompletionReadiness::Unreachable,
+            CompletionPingClass::EmptyUrl => CompletionReadiness::EmptyUrl,
+        },
+    };
+    (result, readiness)
 }
 
 /// Wall-clock cap on sleep time between retries (secondary bound).
@@ -547,6 +701,203 @@ mod tests {
         assert_eq!(code, "completion-unreachable");
         assert_eq!(status, "unreachable");
         assert!(lead.contains("unreachable"));
+    }
+
+    #[test]
+    fn classified_cold_finding_does_not_repeat_detail() {
+        use super::CompletionReadiness;
+        let msg = super::classified_completion_finding_message(
+            CompletionReadiness::Cold,
+            "model not loaded",
+            0,
+        );
+        assert_eq!(
+            msg,
+            "Completion model listening but cold (model not loaded)"
+        );
+        assert_eq!(msg.matches("model not loaded").count(), 1);
+        let busy = super::classified_completion_finding_message(
+            CompletionReadiness::Busy,
+            "VRAM conflict",
+            0,
+        );
+        assert_eq!(busy, "Completion model listening but busy (VRAM conflict)");
+        assert_eq!(busy.matches("VRAM conflict").count(), 1);
+    }
+
+    #[test]
+    fn health_states_name_lead_not_ping() {
+        use super::CompletionReadiness;
+        let (code, _, lead) = super::completion_probe_failure_kind_for(CompletionReadiness::Cold);
+        assert_eq!(code, "completion-not-ready");
+        assert!(lead.contains("cold"));
+        assert!(!lead.to_lowercase().contains("ping failed"));
+
+        let (code, _, lead) =
+            super::completion_probe_failure_kind_for(CompletionReadiness::Loading);
+        assert_eq!(code, "completion-not-ready");
+        assert!(lead.contains("loading"));
+
+        let (code, _, lead) = super::completion_probe_failure_kind_for(CompletionReadiness::Busy);
+        assert_eq!(code, "completion-not-ready");
+        assert!(lead.contains("busy"));
+    }
+
+    #[test]
+    fn completion_readiness_json_ready_and_unconfigured() {
+        use super::CompletionReadiness;
+        assert_eq!(CompletionReadiness::Ready.as_json_str(), Some("ready"));
+        assert_eq!(CompletionReadiness::Cold.as_json_str(), Some("cold"));
+        assert_eq!(
+            CompletionReadiness::FallbackFailed.as_json_str(),
+            Some("fallback_failed")
+        );
+    }
+
+    fn classified_cfg(base: &str) -> crate::config::model::LocalModelConfig {
+        crate::config::model::LocalModelConfig {
+            base_url: base.to_string(),
+            generation_url: None,
+            generation_model: "gemma".to_string(),
+            timeout_secs: 2,
+            ..crate::config::model::LocalModelConfig::default()
+        }
+    }
+
+    #[test]
+    fn classified_health_cold_does_not_post() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        let health = server.mock(|when, then| {
+            when.method(GET).path("/health");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"model_loaded":false,"proxy":true}"#);
+        });
+        let completions = server.mock(|when, then| {
+            when.method(POST).path("/v1/chat/completions");
+            then.status(200).body("{}");
+        });
+        let (result, readiness) =
+            super::probe_completion_classified(classified_cfg(&server.base_url()));
+        assert_eq!(readiness, super::CompletionReadiness::Cold);
+        assert!(matches!(result, super::ProbeResult::Unreachable { .. }));
+        health.assert();
+        completions.assert_calls(0);
+    }
+
+    #[test]
+    fn classified_health_ready_does_not_post() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        let health = server.mock(|when, then| {
+            when.method(GET).path("/health");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"model_loaded":true}"#);
+        });
+        let completions = server.mock(|when, then| {
+            when.method(POST).path("/v1/chat/completions");
+            then.status(200).body("{}");
+        });
+        let (result, readiness) =
+            super::probe_completion_classified(classified_cfg(&server.base_url()));
+        assert_eq!(readiness, super::CompletionReadiness::Ready);
+        assert!(matches!(result, super::ProbeResult::Healthy(_)));
+        health.assert();
+        completions.assert_calls(0);
+    }
+
+    #[test]
+    fn classified_health_401_falls_back_to_completion_ping() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        let health = server.mock(|when, then| {
+            when.method(GET).path("/health");
+            then.status(401).body("unauthorized");
+        });
+        let completions = server.mock(|when, then| {
+            when.method(POST).path("/v1/chat/completions");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"model":"gemma"}"#);
+        });
+        let (result, readiness) =
+            super::probe_completion_classified(classified_cfg(&server.base_url()));
+        assert_eq!(readiness, super::CompletionReadiness::Ready);
+        assert!(matches!(result, super::ProbeResult::Healthy(_)));
+        health.assert();
+        completions.assert_calls(1);
+    }
+
+    #[test]
+    fn classified_no_health_falls_back_to_completion_ping() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        let health = server.mock(|when, then| {
+            when.method(GET).path("/health");
+            then.status(404).body("no");
+        });
+        let completions = server.mock(|when, then| {
+            when.method(POST).path("/v1/chat/completions");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"model":"gemma"}"#);
+        });
+        let (result, readiness) =
+            super::probe_completion_classified(classified_cfg(&server.base_url()));
+        assert_eq!(readiness, super::CompletionReadiness::Ready);
+        assert!(matches!(result, super::ProbeResult::Healthy(_)));
+        health.assert();
+        completions.assert_calls(1);
+    }
+
+    #[test]
+    fn classified_tcp_closed_is_unreachable() {
+        use super::CompletionReadiness;
+        let cfg = crate::config::model::LocalModelConfig {
+            base_url: "http://127.0.0.1:1".to_string(),
+            generation_url: None,
+            generation_model: "gemma".to_string(),
+            timeout_secs: 1,
+            ..crate::config::model::LocalModelConfig::default()
+        };
+        let (result, readiness) = super::probe_completion_classified(cfg);
+        assert_eq!(readiness, CompletionReadiness::Unreachable);
+        assert!(matches!(result, super::ProbeResult::Unreachable { .. }));
+    }
+
+    #[test]
+    fn classified_health_hung_worker_abandoned_within_deadline() {
+        use crate::local_model::client::HealthProbeResult;
+        let deadline = std::time::Duration::from_millis(80);
+        let start = std::time::Instant::now();
+        let (result, readiness) = super::probe_completion_classified_with(
+            classified_cfg("http://127.0.0.1:9"),
+            deadline,
+            || {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                HealthProbeResult::Ready {
+                    display: "should-not-see".to_string(),
+                }
+            },
+        );
+        let elapsed = start.elapsed();
+        assert_eq!(readiness, super::CompletionReadiness::FallbackFailed);
+        match result {
+            super::ProbeResult::Unreachable { err, retries } => {
+                assert!(
+                    err.contains("timed out"),
+                    "deadline error should mention timed out, got: {err}"
+                );
+                assert_eq!(retries, 0);
+            }
+            other => panic!("expected Unreachable, got {other:?}"),
+        }
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "hung health probe took {elapsed:?}, expected well under 400ms"
+        );
     }
 
     #[test]
