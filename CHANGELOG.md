@@ -39,6 +39,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Security inventory vs changed (0317):** Unfiltered
+  `security impact` is a declared Cedar inventory (`scope:
+  inventory`, title `Security Policy Inventory`) instead of an
+  “Impact Analysis” hit-list. `--changed` stays 0208 CleanDiff /
+  path filter (`scope: changed`). Items carry
+  `enforcement: "none"` and omit-empty `declaredAction`. CLI
+  impact and boundaries emit `authorization: "declared"` plus
+  `coverage` (`policies` = 0208-C count, `linkedEndpoints` =
+  unique endpoint targets, `indexedEndpoints` = raw graph
+  count, repo-general `limitation`). REST
+  `GET /api/security/boundaries` stays `{meta, boundaries}`.
+  schemaVersion stays 1 on impact; boundaries stay unwrapped +
+  `pdp: false`.
+
 - **Data-model inventory honesty (0316):** Rust extract uses
   persistence derive idents only (`FromRow` / `Queryable` /
   `Insertable`). Clap, thiserror-only, and `Table`/`Entity`

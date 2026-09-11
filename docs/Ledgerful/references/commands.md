@@ -82,6 +82,10 @@ Empty OpenSLO inventory (any empty reason). Keep `hide` on root `--help` (0289).
 
 Show prints `Gate mode: <observe|enforce>` then a warn/block + how-to-set line. Set with a positional: `ledgerful gate mode enforce`. Do not flip EXEC `gate.mode` unattended.
 
+## `ledgerful security impact`
+
+Unfiltered listing is a **declared Cedar inventory** (title `Security Policy Inventory`), not a changed-policy hit-list. `--changed` filters to the current diff (0208 CleanDiff when none match; title `Security Policy Impact`). Human header is `Policy | Source | Effect | Changed?` (Policy = resolved `@id`; Source = `source_file`). Populated inventory/impact prints `declared Cedar coverage only — not runtime enforcement (daemon auth is Bearer).` immediately under the title; omit that line on every empty arm including CleanDiff. `--json`: schemaVersion 1, collection `impacted`, `indexedCount`, plus `scope` / `authorization` / `coverage`. Item `enforcement: "none"` and omit-empty `declaredAction`. Not a live PDP.
+
 ## `ledgerful security boundaries`
 
-Operator `@id` → indexed endpoint (not a live PDP; daemon auth is Bearer). `--verbose` after this subcommand: URN / authorization-node table (does **not** enable tracing). `-v` after this subcommand is a usage error (clap same-id skip). Leading `ledgerful -v security boundaries` is logging, not the URN table. `--json`: unwrapped object + additive `pdp:false`, no `schemaVersion` (0207 freeze); `security impact` (0208) is a different command.
+Operator `@id` → indexed endpoint (not a live PDP; daemon auth is Bearer). `--verbose` after this subcommand: URN / authorization-node table (does **not** enable tracing). `-v` after this subcommand is a usage error (clap same-id skip). Leading `ledgerful -v security boundaries` is logging, not the URN table. Populated human footer: `Declared coverage: {linkedEndpoints} unique endpoint targets of {N} cross-surface links; {indexedEndpoints} indexed endpoint nodes. Not all HTTP routes have a Cedar permit.` (`N` is all refined edges; `{linkedEndpoints}` counts endpoint targets only). `--json`: unwrapped object + additive `pdp:false` + CLI-only `authorization` / `coverage`, no `schemaVersion` (0207 freeze). REST `{meta, boundaries}` is unchanged. `security impact` (inventory / `--changed`) is a different command.

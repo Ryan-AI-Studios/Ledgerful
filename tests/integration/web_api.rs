@@ -1164,6 +1164,10 @@ permit (
         json.get("pdp").is_none(),
         "REST DTO stays meta/boundaries without pdp: {json}"
     );
+    assert!(
+        json.get("coverage").is_none() && json.get("authorization").is_none(),
+        "REST DTO must not grow CLI coverage keys: {json}"
+    );
     let edges = json["boundaries"]["boundary_edges"]
         .as_array()
         .expect("boundary_edges");
