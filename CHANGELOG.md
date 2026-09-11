@@ -39,6 +39,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Endpoint inventory evidence (0315):** Default `endpoints`
+  omits fixture/test-path and in-file `route_source=TEST` routes
+  (`--include-fixtures` restores). JSON always echoes
+  `includeFixtures` / `fixturesOmitted`. Additive item keys for
+  registration/handler locations, unresolved-handler reason, Axum
+  nest mount provenance, and `authSource: "inferred"`. Auth walk
+  uses `.layer` / `.route_layer` argument identifiers only (comments
+  no longer mark `/health` secured). Malformed auth/consumers emit
+  `authParse`/`consumersParse` instead of silent null. `--changed`
+  match keys and schemaVersion 1 stay.
+
 - **Dead-code evidence (0314):** Score Function/Method only;
   missing graph/test rows no longer count as dead; default omit
   test/vendor paths. 0303 Kind and 0100 footer unchanged.

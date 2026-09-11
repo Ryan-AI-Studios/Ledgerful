@@ -105,6 +105,14 @@ fn endpoints_json_is_object_envelope() {
         v.get("resultCount").is_some(),
         "endpoints --json must include resultCount: {stdout}"
     );
+    assert!(
+        v.get("includeFixtures").is_some(),
+        "endpoints --json must echo includeFixtures: {stdout}"
+    );
+    assert!(
+        v.get("fixturesOmitted").is_some(),
+        "endpoints --json must echo fixturesOmitted: {stdout}"
+    );
 }
 
 #[test]
