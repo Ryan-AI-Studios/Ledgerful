@@ -15,6 +15,3 @@
 
 # Project manifest and workspace config.
 /Cargo.toml                 @RyanB
-
-# Release packaging metadata.
-/release.yml                @RyanB

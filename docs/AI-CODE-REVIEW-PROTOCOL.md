@@ -59,7 +59,7 @@
    findings, adjudicates any exceptions, and decides whether to merge. The owner is not expected
    to provide a code-level approval.
 3. **Provenance check:** for any new dependency, verify it's a real, maintained, correctly-named
-   package (run `scripts/slopsquat-sweep.ps1` or check the registry manually).
+   package (check the registry manually).
 
 ## Enforcement (CI gate)
 

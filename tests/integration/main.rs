@@ -77,7 +77,6 @@ mod crypto_key_migrate;
 mod daemon_lifecycle;
 mod demo_command;
 mod doc_generation;
-mod dump_rust_tree;
 #[cfg(feature = "export")]
 mod export_cli_parity;
 #[cfg(feature = "export")]
@@ -143,13 +142,6 @@ mod track_z4_repro;
 mod track_z5_repro;
 mod track_z6_repro;
 mod watch_graph_sync;
-
-#[test]
-fn test_integration_harness_init() {
-    // Basic test to ensure the harness compiles and runs.
-    let init = true;
-    assert!(init);
-}
 
 #[cfg(feature = "sync")]
 mod sync_apply;

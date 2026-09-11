@@ -10,4 +10,4 @@ required_verifications = ["cargo clippy --all-targets --all-features"]
 
 [[overrides]]
 pattern = "tests/**/*.rs"
-required_verifications = ["cargo test --test cli_scan"]
+required_verifications = ["cargo nextest run --workspace --all-features -E 'test(cli_scan)'"]
