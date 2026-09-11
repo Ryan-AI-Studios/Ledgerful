@@ -1,6 +1,5 @@
 pub mod advisories;
 pub mod analysis;
-pub mod ast_worker;
 /// File-scope import/mod bindings for call resolution (0092).
 pub mod bindings;
 pub mod call_graph;
@@ -12,13 +11,10 @@ pub mod docs;
 pub mod entrypoint;
 pub mod env_patterns;
 pub mod env_schema;
-pub mod git_worker;
 pub mod graph_loader;
-pub mod graph_worker;
 pub mod incremental;
 pub mod languages;
 pub mod metrics;
-pub mod migrations;
 /// Module path derivation from source file paths (0092).
 pub mod module_path;
 pub mod normalize;
