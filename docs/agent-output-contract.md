@@ -771,6 +771,8 @@ SUCCESS lines, and stale-index banners are off under `--json`.
   "threshold": 0.75,
   "limit": 50,
   "includeTraits": false,
+  "includeTests": false,
+  "includeVendor": false,
   "truncated": false,
   "findingCount": 1,
   "findings": [
@@ -795,6 +797,7 @@ SUCCESS lines, and stale-index banners are off under `--json`.
 |---|---|---|
 | `schemaVersion` | number | Always **1** |
 | `threshold` / `limit` / `includeTraits` | echo of CLI flags | |
+| `includeTests` / `includeVendor` | bool | Echo of `--include-tests` / `--include-vendor` (always present; default false). Additive 0314; schemaVersion stays 1 |
 | `truncated` | bool | **Honest overfetch:** `scan_repo(limit + 1)` then `truncated = len > limit`; display cap is `limit` |
 | `findingCount` | number | `findings.len()` after cap |
 | `findings` | array | Sorted confidence desc; reuses `DeadCodeFinding` Serialize |

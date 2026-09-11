@@ -17,7 +17,9 @@ fn dead_code_reports_unused_symbols() {
     execute_init(false, false).unwrap();
 
     // threshold 0.9, limit 50, auto_index false, include_traits false, prune false, expand false, explain None, json false
-    let result = execute_dead_code(0.9, 50, false, false, false, false, None, false);
+    let result = execute_dead_code(
+        0.9, 50, false, false, false, false, false, false, None, false,
+    );
     assert!(result.is_ok());
 }
 
@@ -34,7 +36,9 @@ fn test_dead_code_include_traits_flag() {
     execute_init(false, false).unwrap();
 
     // include_traits = true must not error even when no traits are present
-    let result = execute_dead_code(0.9, 50, false, true, false, false, None, false);
+    let result = execute_dead_code(
+        0.9, 50, false, true, false, false, false, false, None, false,
+    );
     assert!(result.is_ok());
 }
 
@@ -62,7 +66,9 @@ fn test_dead_code_bounded_latency_on_nontrivial_fixture() {
     seed_dead_code_fixture(500);
 
     let start = std::time::Instant::now();
-    let result = execute_dead_code(0.75, 50, false, false, false, false, None, false);
+    let result = execute_dead_code(
+        0.75, 50, false, false, false, false, false, false, None, false,
+    );
     let elapsed = start.elapsed();
 
     assert!(result.is_ok(), "dead-code command failed: {:?}", result);
@@ -111,6 +117,8 @@ fn test_dead_code_explain_resolves_varied_path_formats() {
             false,
             false,
             false,
+            false,
+            false,
             Some(path.clone()),
             false,
         );
@@ -136,6 +144,8 @@ fn test_dead_code_explain_non_indexed_file_exits_zero() {
     let result = execute_dead_code(
         0.9,
         50,
+        false,
+        false,
         false,
         false,
         false,
@@ -192,6 +202,44 @@ fn dead_code_json_emits_schema_version_1_envelope() {
     assert!(
         v["heuristicNote"].as_str().is_some_and(|s| !s.is_empty()),
         "heuristicNote required"
+    );
+}
+
+#[test]
+fn dead_code_json_echoes_include_flags() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+
+    setup_git_repo(root);
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let _guard = DirGuard::new(root);
+    execute_init(false, false).unwrap();
+    seed_dead_code_fixture(8);
+
+    let (stdout, stderr, code) = run_cli(
+        root,
+        &[
+            "dead-code",
+            "--json",
+            "--include-tests",
+            "--include-vendor",
+            "--limit",
+            "10",
+        ],
+    );
+    assert_eq!(code, 0, "dead-code --json must exit 0; stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap_or_else(|e| {
+        panic!("stdout must be pure JSON envelope: {e}; stdout={stdout}");
+    });
+    assert_eq!(v["schemaVersion"], 1);
+    assert_eq!(v["includeTests"], true);
+    assert_eq!(v["includeVendor"], true);
+    assert!(v["includeTraits"].is_boolean());
+    assert_eq!(
+        v["heuristicNote"],
+        "Heuristic evidence — not proof of dead code. Factors include reachability, git activity, and test coverage."
     );
 }
 
@@ -331,6 +379,13 @@ fn seed_dead_code_fixture(symbol_count: usize) {
         // Symbols beyond reachable_count are left with no edges at all:
         // unreachable, and therefore dead-code candidates.
     }
+
+    conn.execute(
+        "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id, mapping_kind, last_indexed_at) \
+         VALUES (0, 0, 0, 0, 'IMPORT', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
 
     storage.shutdown().unwrap();
 }

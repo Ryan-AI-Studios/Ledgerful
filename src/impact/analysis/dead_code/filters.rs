@@ -1,4 +1,5 @@
 use crate::index::symbols::{Symbol, SymbolKind};
+use std::path::Path;
 
 pub(super) fn is_entrypoint(symbol: &Symbol) -> bool {
     matches!(
@@ -146,6 +147,32 @@ pub(super) fn derive_penalty(symbol: &Symbol) -> f64 {
         .map(|t| t.trim())
         .any(|t| IMPLICIT_USAGE_DERIVED_TRAITS.contains(&t));
     if has_implicit { DERIVE_PENALTY } else { 0.0 }
+}
+
+/// `pub use` re-exports are stored as `SymbolKind::Type` with
+/// `metadata.reexport=true`. They are not call-graph targets.
+pub(super) fn is_reexport(symbol: &Symbol) -> bool {
+    symbol
+        .metadata
+        .get("reexport")
+        .is_some_and(|value| value == "true")
+}
+
+/// Bin scripts and crate `main` entrypoints that the extractor does not
+/// classify as `ENTRYPOINT` (JS bin `main`, `src/main.rs`).
+pub(super) fn is_bin_or_crate_main(symbol: &Symbol, file_path: &Path) -> bool {
+    if symbol.name != "main" {
+        return false;
+    }
+    let normalized = file_path.to_string_lossy().replace('\\', "/");
+    let parts: Vec<&str> = normalized.split('/').filter(|p| !p.is_empty()).collect();
+    if parts.len() > 1 && parts[..parts.len() - 1].contains(&"bin") {
+        return true;
+    }
+    matches!(
+        parts.last().copied(),
+        Some("main.rs" | "main.js" | "main.ts" | "main.jsx" | "main.tsx")
+    )
 }
 
 #[cfg(test)]
@@ -351,5 +378,37 @@ mod tests {
                 "{trait_name} must trigger the derive penalty"
             );
         }
+    }
+
+    #[test]
+    fn is_reexport_reads_metadata_flag() {
+        let reexport =
+            make_symbol_with_metadata("calls", SymbolKind::Type, vec![("reexport", "true")]);
+        assert!(is_reexport(&reexport));
+
+        let not_flag =
+            make_symbol_with_metadata("calls", SymbolKind::Type, vec![("reexport", "false")]);
+        assert!(!is_reexport(&not_flag));
+        assert!(!is_reexport(&make_symbol("calls", SymbolKind::Module)));
+    }
+
+    #[test]
+    fn is_bin_or_crate_main_slash_and_backslash() {
+        let main_fn = make_symbol("main", SymbolKind::Function);
+        assert!(is_bin_or_crate_main(
+            &main_fn,
+            Path::new("mcp-server/bin/x.js")
+        ));
+        assert!(is_bin_or_crate_main(
+            &main_fn,
+            Path::new("mcp-server\\bin\\x.js")
+        ));
+        assert!(is_bin_or_crate_main(&main_fn, Path::new("src/main.rs")));
+        assert!(!is_bin_or_crate_main(&main_fn, Path::new("src/lib.rs")));
+        let helper = make_symbol("helper", SymbolKind::Function);
+        assert!(!is_bin_or_crate_main(
+            &helper,
+            Path::new("mcp-server/bin/x.js")
+        ));
     }
 }

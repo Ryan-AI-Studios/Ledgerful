@@ -12,7 +12,8 @@ mod verify;
 pub(crate) use dead_code::print_dead_code_grouped_to;
 pub use dead_code::{
     DEAD_CODE_EMPTY_STATE, DEAD_CODE_HONESTY_FOOTER, print_dead_code_explanation,
-    print_dead_code_explanation_struct, print_dead_code_grouped, print_dead_code_summary,
+    print_dead_code_explanation_struct, print_dead_code_grouped, print_dead_code_omit_footer,
+    print_dead_code_scope_line, print_dead_code_summary,
 };
 pub(crate) use doctor::doctor_should_print_remediation;
 pub(crate) use doctor::print_doctor_report_to;

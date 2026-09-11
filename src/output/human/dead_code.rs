@@ -9,6 +9,22 @@ pub const DEAD_CODE_HONESTY_FOOTER: &str = "Heuristic evidence — not proof of 
 /// Empty-state copy when no findings pass the confidence threshold.
 pub const DEAD_CODE_EMPTY_STATE: &str = "No findings above threshold (heuristic analysis).";
 
+/// Human-only scope line (not part of the frozen heuristic note).
+pub const DEAD_CODE_SCOPE_LINE: &str = "Only Function/Method symbols are scored.";
+
+pub fn print_dead_code_scope_line() {
+    println!("  {DEAD_CODE_SCOPE_LINE}");
+}
+
+pub fn print_dead_code_omit_footer(test_paths: usize, vendor_paths: usize) {
+    if test_paths > 0 {
+        println!("  {test_paths} test/fixture files omitted; --include-tests");
+    }
+    if vendor_paths > 0 {
+        println!("  {vendor_paths} vendored files omitted; --include-vendor");
+    }
+}
+
 /// File-level Kind: first match Unreachable > Untested > GitInactive > Unknown.
 pub(crate) fn grouped_file_kind<'a>(
     findings: impl IntoIterator<Item = &'a DeadCodeFinding>,
