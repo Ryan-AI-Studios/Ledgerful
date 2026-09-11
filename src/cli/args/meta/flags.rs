@@ -1264,6 +1264,7 @@ impl Commands {
                 DataModelSubcommands::List {
                     all,
                     min_confidence,
+                    include_fixtures,
                     json,
                 } => {
                     if *all {
@@ -1272,13 +1273,23 @@ impl Commands {
                     if (*min_confidence - 0.5).abs() > f64::EPSILON {
                         f.push("min_confidence");
                     }
+                    if *include_fixtures {
+                        f.push("include-fixtures");
+                    }
                     if *json {
                         f.push("json");
                     }
                 }
-                DataModelSubcommands::Impact { changed, json } => {
+                DataModelSubcommands::Impact {
+                    changed,
+                    include_fixtures,
+                    json,
+                } => {
                     if *changed {
                         f.push("changed");
+                    }
+                    if *include_fixtures {
+                        f.push("include-fixtures");
                     }
                     if *json {
                         f.push("json");

@@ -140,11 +140,64 @@ fn test_data_models_impact_changed() {
     let args = DataModelsArgs {
         command: DataModelSubcommands::Impact {
             changed: true,
+            include_fixtures: false,
             json: false,
         },
     };
     let result = execute_data_models(args);
     assert!(result.is_ok());
+}
+
+#[test]
+fn test_data_models_include_fixtures_parses_on_list_and_impact() {
+    use clap::Parser;
+    use ledgerful::cli::{Cli, Commands};
+
+    let list = Cli::try_parse_from([
+        "ledgerful",
+        "data-models",
+        "list",
+        "--include-fixtures",
+        "--json",
+    ])
+    .expect("data-models list --include-fixtures --json parsing must succeed");
+    match list.command {
+        Commands::DataModels(DataModelsArgs {
+            command:
+                DataModelSubcommands::List {
+                    include_fixtures,
+                    json,
+                    ..
+                },
+        }) => {
+            assert!(include_fixtures);
+            assert!(json);
+        }
+        _ => panic!("expected data-models list"),
+    }
+
+    let impact = Cli::try_parse_from([
+        "ledgerful",
+        "data-models",
+        "impact",
+        "--include-fixtures",
+        "--json",
+    ])
+    .expect("data-models impact --include-fixtures --json parsing must succeed");
+    match impact.command {
+        Commands::DataModels(DataModelsArgs {
+            command:
+                DataModelSubcommands::Impact {
+                    include_fixtures,
+                    json,
+                    ..
+                },
+        }) => {
+            assert!(include_fixtures);
+            assert!(json);
+        }
+        _ => panic!("expected data-models impact"),
+    }
 }
 
 /// B4 / DoD-2 / DoD-6: clean-tree `data-models impact --changed` must not
@@ -187,6 +240,7 @@ fn test_data_models_impact_changed_does_not_rewrite_latest_impact() {
     let args = DataModelsArgs {
         command: DataModelSubcommands::Impact {
             changed: true,
+            include_fixtures: false,
             json: true,
         },
     };
@@ -214,6 +268,7 @@ fn test_data_models_impact_changed_does_not_rewrite_latest_impact() {
     let args_again = DataModelsArgs {
         command: DataModelSubcommands::Impact {
             changed: true,
+            include_fixtures: false,
             json: true,
         },
     };
