@@ -395,6 +395,30 @@ pub fn compute_impact_from_snapshot_in_memory_with_mode(
     analysis_mode: &str,
     prospective_paths: Vec<String>,
 ) -> Result<crate::impact::packet::ImpactPacket> {
+    compute_impact_from_snapshot_in_memory_with_history(
+        storage,
+        config,
+        project_root,
+        snapshot,
+        include_governance,
+        analysis_mode,
+        prospective_paths,
+        crate::impact::orchestrator::ImpactHistoryOpts::default(),
+    )
+}
+
+/// In-memory impact with explicit history-walk opts (0308).
+#[allow(clippy::too_many_arguments)]
+pub fn compute_impact_from_snapshot_in_memory_with_history(
+    storage: &crate::state::storage::StorageManager,
+    config: &crate::config::model::Config,
+    project_root: &std::path::Path,
+    snapshot: RepoSnapshot,
+    include_governance: bool,
+    analysis_mode: &str,
+    prospective_paths: Vec<String>,
+    history_opts: crate::impact::orchestrator::ImpactHistoryOpts,
+) -> Result<crate::impact::packet::ImpactPacket> {
     let mut packet = crate::impact::orchestrator::map_snapshot_to_packet(snapshot, project_root)?;
     apply_impact_honesty_fields(
         &mut packet,
@@ -404,7 +428,7 @@ pub fn compute_impact_from_snapshot_in_memory_with_mode(
     );
 
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
-    orchestrator.run(&mut packet, storage, config, project_root)?;
+    orchestrator.run_with_history_opts(&mut packet, storage, config, project_root, history_opts)?;
 
     packet.finalize();
     crate::impact::redact::redact_secrets(&mut packet);

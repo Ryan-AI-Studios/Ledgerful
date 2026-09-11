@@ -17,7 +17,7 @@ fn audit_returns_entity_list() {
     execute_init(false, false).unwrap();
 
     // Audit with limit 5, no entity filter, not json, no unaudited
-    let result = execute_ledger_audit(None, false, 5, 0, false);
+    let result = execute_ledger_audit(None, false, 5, 0, false, None);
     assert!(result.is_ok());
 }
 
@@ -89,6 +89,13 @@ fn audit_entity_related_returns_related_entities() {
     drop(storage);
 
     // Audit dispatch.rs
-    let result = execute_ledger_audit(Some("src/cli/dispatch.rs".to_string()), false, 5, 0, false);
+    let result = execute_ledger_audit(
+        Some("src/cli/dispatch.rs".to_string()),
+        false,
+        5,
+        0,
+        false,
+        None,
+    );
     assert!(result.is_ok());
 }

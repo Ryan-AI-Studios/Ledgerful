@@ -47,6 +47,7 @@ pub(super) fn handle_change_context(params: Value) -> Value {
         blast_depth,
         paths,
         include_governance,
+        ..ChangeContextOpts::default()
     };
 
     let layout = match crate::commands::helpers::get_layout_or_cwd_if_not_git() {
@@ -168,15 +169,37 @@ pub(super) fn handle_hotspots(params: Value) -> Value {
         Err(e) => return error_response(format!("Failed to open storage: {}", e)),
     };
 
+    let mut config = config;
+    crate::impact::budget::apply_resolved_history_budget(&mut config, None);
     let history_provider = crate::impact::temporal::GixHistoryProvider::new(&repo);
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let query = crate::impact::hotspots::HotspotQuery {
         limit,
         commits: config.hotspots.max_commits,
         decay_half_life: config.hotspots.decay_half_life,
+        budget: Some(crate::impact::budget::AnalysisBudget::from_secs(
+            config.hotspots.history_budget_secs,
+            cancel,
+        )),
         ..Default::default()
     };
 
-    let hotspots = crate::impact::hotspots::calculate_hotspots(&storage, &history_provider, &query);
+    let hotspots = match crate::impact::hotspots::calculate_hotspots_detailed(
+        &storage,
+        &history_provider,
+        &query,
+    ) {
+        Ok(calc) => {
+            crate::impact::budget::warn_history_truncated(
+                "mcp.hotspots",
+                calc.walk_stop,
+                calc.commits_walked,
+                query.commits,
+            );
+            Ok(calc.hotspots)
+        }
+        Err(e) => Err(e),
+    };
     hotspots_from_calc(hotspots)
 }
 

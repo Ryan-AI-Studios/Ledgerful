@@ -1,6 +1,7 @@
 use crate::config::model::Config;
 use crate::git::{ChangeType, RepoSnapshot};
 use crate::impact::analysis::AnalysisRegistry;
+use crate::impact::budget::AnalysisBudget;
 use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
 use crate::impact::packet::{ChangedFile, FileAnalysisStatus, ImpactPacket};
 use crate::index::analysis::{AnalysisOutcome, analyze_file};
@@ -9,9 +10,37 @@ use crate::util::clock::SystemClock;
 use indicatif::{ProgressBar, ProgressStyle};
 use miette::Result;
 use std::path::Path;
+use std::sync::atomic::AtomicBool;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tracing::{debug, warn};
+
+/// Plumbing for history-backed enrichment (0308). Not hung on Config or ImpactPacket.
+#[derive(Clone)]
+pub struct ImpactHistoryOpts {
+    pub skip_git_history_enrichment: bool,
+    pub cancel: Arc<AtomicBool>,
+}
+
+impl Default for ImpactHistoryOpts {
+    fn default() -> Self {
+        Self {
+            skip_git_history_enrichment: false,
+            cancel: Arc::new(AtomicBool::new(false)),
+        }
+    }
+}
+
+impl std::fmt::Debug for ImpactHistoryOpts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ImpactHistoryOpts")
+            .field(
+                "skip_git_history_enrichment",
+                &self.skip_git_history_enrichment,
+            )
+            .finish_non_exhaustive()
+    }
+}
 
 pub struct ImpactOrchestrator {
     enrichment_providers: Vec<Box<dyn EnrichmentProvider>>,
@@ -146,6 +175,23 @@ impl ImpactOrchestrator {
         config: &Config,
         project_root: &Path,
     ) -> Result<()> {
+        self.run_with_history_opts(
+            packet,
+            storage,
+            config,
+            project_root,
+            ImpactHistoryOpts::default(),
+        )
+    }
+
+    pub fn run_with_history_opts(
+        &self,
+        packet: &mut ImpactPacket,
+        storage: &StorageManager,
+        config: &Config,
+        project_root: &Path,
+        opts: ImpactHistoryOpts,
+    ) -> Result<()> {
         debug!("Starting impact orchestration...");
 
         // 0147: empty-tree fast path — no AI probe, no providers, no analysis registry.
@@ -185,6 +231,10 @@ impl ImpactOrchestrator {
         // primary fix.
         let deadline = std::time::Instant::now() + config.federation.scan_timeout();
 
+        let history_budget = Some(AnalysisBudget::from_secs(
+            config.hotspots.history_budget_secs,
+            opts.cancel,
+        ));
         let context = EnrichmentContext {
             storage,
             config,
@@ -192,6 +242,8 @@ impl ImpactOrchestrator {
             project_root: project_root.to_path_buf(),
             warnings: Arc::clone(&warnings_collector),
             deadline,
+            skip_git_history_enrichment: opts.skip_git_history_enrichment,
+            history_budget,
         };
 
         // 2. Execute Enrichment Providers (Resilient Execution)

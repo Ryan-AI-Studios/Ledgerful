@@ -8,7 +8,8 @@ use crate::config::checklist::build_config_checklist;
 use crate::config::model::Config;
 use crate::git::repo::{get_head_info, open_repo};
 use crate::git::status::get_repo_status;
-use crate::impact::hotspots::{HotspotQuery, calculate_hotspots};
+use crate::impact::budget::{CompletenessFilter, completeness_for_error, completeness_for_walk};
+use crate::impact::hotspots::{HotspotQuery, calculate_hotspots_detailed};
 use crate::impact::temporal::GixHistoryProvider;
 use crate::ledger::Transaction;
 use crate::ledger::db::LedgerDb;
@@ -38,6 +39,7 @@ pub fn build_session(
 
     let opts = ChangeContextOpts {
         max_files: SESSION_MAX_FILES,
+        skip_git_history_enrichment: true,
         ..ChangeContextOpts::default()
     };
     let cc = build_change_context(&opts, layout, storage, config)?;
@@ -79,7 +81,8 @@ pub fn build_session(
         }
     };
 
-    let (hotspot_files, hotspot_warning) = collect_hotspots(storage, config, project_root);
+    let (hotspot_files, hotspot_warning, hotspot_completeness) =
+        collect_hotspots(storage, config, project_root);
 
     let change_context = SessionChangeContext {
         status: cc.status.clone(),
@@ -128,6 +131,7 @@ pub fn build_session(
         hotspots: SessionHotspots {
             files: hotspot_files,
             excluded_tests: true,
+            completeness: hotspot_completeness,
         },
         impact_cache,
         next,
@@ -217,7 +221,11 @@ fn collect_hotspots(
     storage: &StorageManager,
     config: &Config,
     project_root: &Path,
-) -> (Vec<SessionHotspotFile>, Option<String>) {
+) -> (
+    Vec<SessionHotspotFile>,
+    Option<String>,
+    Option<crate::impact::budget::AnalysisCompleteness>,
+) {
     let repo = match open_repo(project_root) {
         Ok(r) => r,
         Err(e) => {
@@ -226,10 +234,17 @@ fn collect_hotspots(
                 Some(format!(
                     "hotspots unavailable: git repository not openable: {e}"
                 )),
+                Some(completeness_for_error(
+                    config.hotspots.max_commits.min(SESSION_HOTSPOT_COMMITS_CAP) as u64,
+                    Some(SESSION_HOTSPOT_DAYS),
+                    CompletenessFilter::Session,
+                    Some(config.hotspots.history_budget_secs).filter(|s| *s > 0),
+                )),
             );
         }
     };
     let commits = config.hotspots.max_commits.min(SESSION_HOTSPOT_COMMITS_CAP);
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let query = HotspotQuery {
         commits,
         days: Some(SESSION_HOTSPOT_DAYS),
@@ -237,19 +252,42 @@ fn collect_hotspots(
         decay_half_life: config.hotspots.decay_half_life,
         exclude_test_paths: true,
         exclude_vendor_paths: true,
+        budget: Some(crate::impact::budget::AnalysisBudget::from_secs(
+            config.hotspots.history_budget_secs,
+            cancel,
+        )),
         ..HotspotQuery::default()
     };
     let provider = GixHistoryProvider::new(&repo);
-    match calculate_hotspots(storage, &provider, &query) {
-        Ok(hotspots) => {
-            let files = hotspots
+    match calculate_hotspots_detailed(storage, &provider, &query) {
+        Ok(calc) => {
+            let files = calc
+                .hotspots
                 .into_iter()
                 .take(SESSION_HOTSPOT_LIMIT)
                 .map(|h| session_hotspot_file_from(&h))
                 .collect();
-            (files, None)
+            let completeness = completeness_for_walk(
+                calc.walk_stop,
+                commits as u64,
+                calc.commits_walked as u64,
+                Some(SESSION_HOTSPOT_DAYS),
+                CompletenessFilter::Session,
+                calc.head,
+                Some(config.hotspots.history_budget_secs).filter(|s| *s > 0),
+            );
+            (files, None, completeness)
         }
-        Err(e) => (Vec::new(), Some(format!("hotspots unavailable: {e}"))),
+        Err(e) => (
+            Vec::new(),
+            Some(format!("hotspots unavailable: {e}")),
+            Some(completeness_for_error(
+                commits as u64,
+                Some(SESSION_HOTSPOT_DAYS),
+                CompletenessFilter::Session,
+                Some(config.hotspots.history_budget_secs).filter(|s| *s > 0),
+            )),
+        ),
     }
 }
 

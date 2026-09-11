@@ -207,6 +207,9 @@ pub struct HotspotsConfig {
     /// Half-life for exponential decay (in commits). Recent commits weighted higher.
     #[serde(default = "default_decay_half_life")]
     pub decay_half_life: usize,
+    /// Wall-clock budget for history walks (0308). `0` disables the clock.
+    #[serde(default = "default_history_budget_secs")]
+    pub history_budget_secs: u64,
 }
 
 impl Default for HotspotsConfig {
@@ -215,6 +218,7 @@ impl Default for HotspotsConfig {
             max_commits: default_hotspots_max_commits(),
             limit: default_hotspots_limit(),
             decay_half_life: default_decay_half_life(),
+            history_budget_secs: default_history_budget_secs(),
         }
     }
 }
@@ -224,6 +228,9 @@ fn default_hotspots_max_commits() -> usize {
 }
 fn default_hotspots_limit() -> usize {
     10
+}
+fn default_history_budget_secs() -> u64 {
+    45
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]

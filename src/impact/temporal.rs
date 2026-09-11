@@ -1,5 +1,6 @@
 use crate::config::model::TemporalConfig;
 use crate::git::GitError;
+use crate::impact::budget::{AnalysisBudget, HistoryWalkStop};
 use crate::impact::packet::TemporalCoupling;
 use camino::Utf8PathBuf;
 use gix::Repository;
@@ -13,6 +14,15 @@ pub struct CommitFileSet {
     pub is_merge: bool,
 }
 
+/// Result of a budgeted first-parent (or all-parents) walk.
+#[derive(Clone)]
+pub struct HistoryWalkResult {
+    pub history: Vec<CommitFileSet>,
+    pub stop: HistoryWalkStop,
+    pub commits_walked: usize,
+    pub head: Option<String>,
+}
+
 pub trait HistoryProvider {
     fn get_history(
         &self,
@@ -21,6 +31,26 @@ pub trait HistoryProvider {
         since_commit: Option<String>,
         all_parents: bool,
     ) -> Result<Vec<CommitFileSet>, GitError>;
+
+    /// Default wraps [`Self::get_history`] as a complete walk so existing
+    /// mocks keep compiling. `GixHistoryProvider` overrides this.
+    fn get_history_budgeted(
+        &self,
+        max_commits: usize,
+        max_days: Option<u64>,
+        since_commit: Option<String>,
+        all_parents: bool,
+        _budget: Option<&AnalysisBudget>,
+    ) -> Result<HistoryWalkResult, GitError> {
+        let history = self.get_history(max_commits, max_days, since_commit, all_parents)?;
+        let commits_walked = history.len();
+        Ok(HistoryWalkResult {
+            history,
+            stop: HistoryWalkStop::Complete,
+            commits_walked,
+            head: None,
+        })
+    }
 }
 
 #[derive(Clone)]
@@ -56,11 +86,34 @@ impl<'repo> HistoryProvider for GixHistoryProvider<'repo> {
         since_commit: Option<String>,
         all_parents: bool,
     ) -> Result<Vec<CommitFileSet>, GitError> {
+        Ok(self
+            .get_history_budgeted(max_commits, max_days, since_commit, all_parents, None)?
+            .history)
+    }
+
+    fn get_history_budgeted(
+        &self,
+        max_commits: usize,
+        max_days: Option<u64>,
+        since_commit: Option<String>,
+        all_parents: bool,
+        budget: Option<&AnalysisBudget>,
+    ) -> Result<HistoryWalkResult, GitError> {
+        #[cfg(test)]
+        crate::impact::budget::test_hooks::incr_walk_count();
+
         if self.repo.is_shallow() {
             return Err(GitError::ShallowClone);
         }
 
         let mut history = Vec::new();
+        let mut stop = HistoryWalkStop::Complete;
+        let head = if let Some(start) = self.start_commit {
+            Some(start.to_string())
+        } else {
+            self.repo.head_commit().ok().map(|c| c.id().to_string())
+        };
+
         let mut walk = if let Some(start) = self.start_commit {
             self.repo.rev_walk([start.as_ref()])
         } else {
@@ -92,6 +145,12 @@ impl<'repo> HistoryProvider for GixHistoryProvider<'repo> {
         });
 
         for res in walk {
+            if let Some(b) = budget
+                && let Some(early) = b.should_stop()
+            {
+                stop = early;
+                break;
+            }
             if history.len() >= max_commits {
                 break;
             }
@@ -205,7 +264,13 @@ impl<'repo> HistoryProvider for GixHistoryProvider<'repo> {
             history.push(CommitFileSet { files, is_merge });
         }
 
-        Ok(history)
+        let commits_walked = history.len();
+        Ok(HistoryWalkResult {
+            history,
+            stop,
+            commits_walked,
+            head,
+        })
     }
 }
 
@@ -220,12 +285,22 @@ impl<P: HistoryProvider> TemporalEngine<P> {
     }
 
     pub fn calculate_couplings(&self) -> Result<Vec<TemporalCoupling>, GitError> {
-        let history = self.provider.get_history(
+        self.calculate_couplings_budgeted(None)
+    }
+
+    pub fn calculate_couplings_budgeted(
+        &self,
+        budget: Option<&AnalysisBudget>,
+    ) -> Result<Vec<TemporalCoupling>, GitError> {
+        let walk = self.provider.get_history_budgeted(
             self.config.max_commits,
             None,
             None,
             self.config.all_parents,
+            budget,
         )?;
+        let walk_stop = walk.stop;
+        let history = walk.history;
 
         let mut commit_count = 0;
         // Store (commit_index, weight) for each file
@@ -263,6 +338,9 @@ impl<P: HistoryProvider> TemporalEngine<P> {
         }
 
         if commit_count < 10 {
+            if !matches!(walk_stop, HistoryWalkStop::Complete) {
+                return Ok(Vec::new());
+            }
             return Err(GitError::InsufficientHistory {
                 found: commit_count,
                 required: 10,
@@ -406,6 +484,168 @@ mod tests {
         ) -> Result<Vec<CommitFileSet>, GitError> {
             Ok(self.commits.clone())
         }
+    }
+
+    struct CountingHistoryProvider {
+        commits: Vec<CommitFileSet>,
+        diffs: std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    }
+
+    impl HistoryProvider for CountingHistoryProvider {
+        fn get_history(
+            &self,
+            max: usize,
+            days: Option<u64>,
+            since: Option<String>,
+            all: bool,
+        ) -> Result<Vec<CommitFileSet>, GitError> {
+            Ok(self
+                .get_history_budgeted(max, days, since, all, None)?
+                .history)
+        }
+
+        fn get_history_budgeted(
+            &self,
+            max_commits: usize,
+            _days: Option<u64>,
+            _since: Option<String>,
+            _all: bool,
+            budget: Option<&AnalysisBudget>,
+        ) -> Result<HistoryWalkResult, GitError> {
+            let mut history = Vec::new();
+            let mut stop = HistoryWalkStop::Complete;
+            for c in self.commits.iter().take(max_commits) {
+                if let Some(b) = budget
+                    && let Some(early) = b.should_stop()
+                {
+                    stop = early;
+                    break;
+                }
+                self.diffs.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                history.push(c.clone());
+            }
+            let commits_walked = history.len();
+            Ok(HistoryWalkResult {
+                history,
+                stop,
+                commits_walked,
+                head: Some("deadbeef".to_string()),
+            })
+        }
+    }
+
+    fn dummy_commits(n: usize) -> Vec<CommitFileSet> {
+        (0..n)
+            .map(|i| {
+                let mut files = HashSet::new();
+                files.insert(Utf8PathBuf::from(format!("src/f{i}.rs")));
+                CommitFileSet {
+                    files,
+                    is_merge: false,
+                }
+            })
+            .collect()
+    }
+
+    #[test]
+    fn history_walk_stops_at_deadline_without_further_diffs() {
+        let diffs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let budget = AnalysisBudget::expired(cancel);
+        let provider = CountingHistoryProvider {
+            commits: dummy_commits(20),
+            diffs: std::sync::Arc::clone(&diffs),
+        };
+        let walk = provider
+            .get_history_budgeted(20, None, None, false, Some(&budget))
+            .expect("walk");
+        assert_eq!(walk.stop, HistoryWalkStop::Budget);
+        assert!(walk.commits_walked < 20);
+        let after = diffs.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(after, walk.commits_walked);
+        let again = diffs.load(std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(again, after, "no further diffs after return");
+    }
+
+    #[test]
+    fn history_walk_stops_on_cancel_flag() {
+        let diffs = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let budget = AnalysisBudget {
+            deadline: None,
+            cancel: std::sync::Arc::clone(&cancel),
+        };
+        let provider = CountingHistoryProvider {
+            commits: dummy_commits(20),
+            diffs: std::sync::Arc::clone(&diffs),
+        };
+        // Flip after the provider would see 2 successful diffs: first two
+        // iterations pass, then we set the flag from a wrapper by pre-setting
+        // after constructing a mid-walk cancel via a custom loop.
+        struct CancelAfterTwo {
+            inner: CountingHistoryProvider,
+            cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        }
+        impl HistoryProvider for CancelAfterTwo {
+            fn get_history(
+                &self,
+                max: usize,
+                days: Option<u64>,
+                since: Option<String>,
+                all: bool,
+            ) -> Result<Vec<CommitFileSet>, GitError> {
+                Ok(self
+                    .get_history_budgeted(max, days, since, all, None)?
+                    .history)
+            }
+            fn get_history_budgeted(
+                &self,
+                max_commits: usize,
+                _days: Option<u64>,
+                _since: Option<String>,
+                _all: bool,
+                budget: Option<&AnalysisBudget>,
+            ) -> Result<HistoryWalkResult, GitError> {
+                let mut history = Vec::new();
+                let mut stop = HistoryWalkStop::Complete;
+                for c in self.inner.commits.iter().take(max_commits) {
+                    if let Some(b) = budget
+                        && let Some(early) = b.should_stop()
+                    {
+                        stop = early;
+                        break;
+                    }
+                    self.inner
+                        .diffs
+                        .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    history.push(c.clone());
+                    if history.len() == 2 {
+                        self.cancel.store(true, std::sync::atomic::Ordering::SeqCst);
+                    }
+                }
+                let commits_walked = history.len();
+                Ok(HistoryWalkResult {
+                    history,
+                    stop,
+                    commits_walked,
+                    head: Some("deadbeef".to_string()),
+                })
+            }
+        }
+        let walker = CancelAfterTwo {
+            inner: provider,
+            cancel,
+        };
+        let walk = walker
+            .get_history_budgeted(20, None, None, false, Some(&budget))
+            .expect("walk");
+        assert_eq!(walk.stop, HistoryWalkStop::Cancelled);
+        assert_eq!(walk.commits_walked, 2);
+        assert_eq!(
+            diffs.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "no further diffs after cancel"
+        );
     }
 
     #[test]

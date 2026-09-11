@@ -1,3 +1,4 @@
+use crate::impact::budget::{AnalysisBudget, HistoryWalkStop};
 use crate::impact::packet::Hotspot;
 use crate::impact::temporal::HistoryProvider;
 use crate::state::storage::StorageManager;
@@ -125,6 +126,8 @@ pub struct HotspotQuery {
     /// before `max_freq` / `max_comp`. Default false so MCP, `/api/hotspots`,
     /// packet enrich, hooks, trend, and explain stay unfiltered (0222).
     pub exclude_vendor_paths: bool,
+    /// Cooperative walk budget (0308). `None` means unlimited wall clock.
+    pub budget: Option<AnalysisBudget>,
 }
 
 /// Ranked hotspot list plus how many candidate paths were omitted when
@@ -136,6 +139,9 @@ pub struct HotspotCalculation {
     pub omitted_test_paths: usize,
     pub omitted_docs_paths: usize,
     pub omitted_vendor_paths: usize,
+    pub walk_stop: HistoryWalkStop,
+    pub commits_walked: usize,
+    pub head: Option<String>,
 }
 
 /// Directory components excluded in addition to topology `TEST_PATTERNS`.
@@ -246,14 +252,16 @@ pub fn calculate_hotspots_detailed(
     history_provider: &dyn HistoryProvider,
     query: &HotspotQuery,
 ) -> Result<HotspotCalculation> {
-    let history = history_provider
-        .get_history(
+    let walk = history_provider
+        .get_history_budgeted(
             query.commits,
             query.days,
             query.since_commit.clone(),
             query.all_parents,
+            query.budget.as_ref(),
         )
         .map_err(|e| miette::miette!("Git history error: {e}"))?;
+    let history = walk.history;
 
     let mut frequency_map: HashMap<Utf8PathBuf, f64> = HashMap::new();
     let mut total_eligible_commits = 0;
@@ -302,7 +310,12 @@ pub fn calculate_hotspots_detailed(
     }
 
     if total_eligible_commits == 0 {
-        return Ok(HotspotCalculation::default());
+        return Ok(HotspotCalculation {
+            walk_stop: walk.stop,
+            commits_walked: walk.commits_walked,
+            head: walk.head,
+            ..HotspotCalculation::default()
+        });
     }
 
     let mut omitted_test_paths = 0;
@@ -412,6 +425,9 @@ pub fn calculate_hotspots_detailed(
         omitted_test_paths,
         omitted_docs_paths,
         omitted_vendor_paths,
+        walk_stop: walk.stop,
+        commits_walked: walk.commits_walked,
+        head: walk.head,
     })
 }
 

@@ -562,3 +562,41 @@ fn session_hotspots_exclude_vendor_paths() {
     );
     let _ = storage.shutdown();
 }
+
+#[test]
+fn session_skips_git_history_enrichment() {
+    let tmp = tempdir().unwrap();
+    let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+    let dir = tmp.path();
+    init_git_repo(dir);
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(dir.join("src").join("dirty.rs"), "pub fn x() {}\n").unwrap();
+
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    let seed = ImpactPacket {
+        schema_version: "v1".to_string(),
+        head_hash: Some("SEED_MARKER_0308".to_string()),
+        ..Default::default()
+    };
+    write_impact_report(&layout, &seed).unwrap();
+    let report_path = layout.reports_dir().join(LATEST_IMPACT_REPORT);
+    let before = fs::read_to_string(report_path.as_std_path()).unwrap();
+
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    crate::impact::budget::test_hooks::reset_walk_count();
+    let envelope = build_session(&layout, &storage, &Config::default()).unwrap();
+    let walks = crate::impact::budget::test_hooks::walk_count();
+    assert_eq!(
+        walks, 1,
+        "dirty session must call get_history exactly once (collect_hotspots); got {walks}"
+    );
+    assert!(envelope.change_context.read_set.len() <= SESSION_MAX_FILES);
+    if let Some(c) = &envelope.hotspots.completeness {
+        assert_eq!(c.filter, crate::impact::budget::CompletenessFilter::Session);
+    }
+    let after = fs::read_to_string(report_path.as_std_path()).unwrap();
+    assert_eq!(before, after, "session must not rewrite latest-impact.json");
+    let _ = storage.shutdown();
+}

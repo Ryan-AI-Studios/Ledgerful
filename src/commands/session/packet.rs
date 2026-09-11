@@ -120,6 +120,8 @@ pub struct SessionChangeContext {
 pub struct SessionHotspots {
     pub files: Vec<SessionHotspotFile>,
     pub excluded_tests: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completeness: Option<crate::impact::budget::AnalysisCompleteness>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -228,6 +230,7 @@ impl Default for SessionEnvelope {
             hotspots: SessionHotspots {
                 files: Vec::new(),
                 excluded_tests: true,
+                completeness: None,
             },
             impact_cache: SessionImpactCache {
                 present: false,

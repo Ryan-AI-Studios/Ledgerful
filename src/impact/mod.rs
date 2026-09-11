@@ -57,6 +57,7 @@
 //!   provider does not prevent other providers from completing.
 
 pub mod analysis;
+pub mod budget;
 pub mod enrichment;
 pub mod hotspots;
 pub mod lead;

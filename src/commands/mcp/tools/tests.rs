@@ -605,3 +605,37 @@ fn handle_hotspots_calculate_failure_is_error() {
         "hotspots calc failure must use error_response: {text}"
     );
 }
+
+#[test]
+fn api_and_mcp_stay_arrays() {
+    let hotspots: Vec<crate::impact::packet::Hotspot> = Vec::new();
+    let envelope = hotspots_from_calc::<&str>(Ok(hotspots));
+    assert_ne!(
+        envelope.get("isError"),
+        Some(&Value::Bool(true)),
+        "{envelope}"
+    );
+    let text = envelope["content"][0]["text"].as_str().unwrap_or("");
+    assert!(
+        !text.contains("\"completeness\""),
+        "MCP hotspots must stay an array without completeness: {text}"
+    );
+    let start = text
+        .find("\n[")
+        .map(|i| i + 1)
+        .or_else(|| text.rfind('['))
+        .expect("array");
+    let inner: Value = serde_json::from_str(&text[start..]).expect("array json");
+    assert!(
+        inner.is_array(),
+        "MCP inner payload must be an array: {inner}"
+    );
+
+    let api: Vec<crate::impact::packet::Hotspot> = Vec::new();
+    let api_json = serde_json::to_value(&api).expect("api");
+    assert!(
+        api_json.is_array(),
+        "GET /api/hotspots stays a JSON array: {api_json}"
+    );
+    assert!(api_json.get("completeness").is_none());
+}

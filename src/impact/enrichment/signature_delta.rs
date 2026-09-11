@@ -428,6 +428,8 @@ mod tests {
             project_root: PathBuf::from(r"C:\dev\ledgerful"),
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
         };
         let mut packet = ImpactPacket::default();
         SignatureDeltaProvider
@@ -447,6 +449,8 @@ mod tests {
             project_root: PathBuf::from(r"C:\dev\ledgerful"),
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![changed_file(
@@ -486,6 +490,8 @@ mod tests {
             project_root: dir.path().to_path_buf(),
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![changed_file(
@@ -531,6 +537,8 @@ mod tests {
             project_root: dir.path().to_path_buf(),
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
         };
         // Packet path for Deleted: symbols None (map_snapshot_to_packet behavior).
         let mut packet = ImpactPacket {
@@ -571,6 +579,8 @@ mod tests {
             project_root: dir.path().to_path_buf(),
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![changed_file(
@@ -611,6 +621,8 @@ mod tests {
             project_root: dir.path().to_path_buf(),
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![changed_file(
@@ -721,6 +733,8 @@ mod tests {
             project_root: dir.path().to_path_buf(),
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![changed_file("app.py", "Modified", None, Some(curr_syms))],
@@ -765,6 +779,8 @@ mod tests {
             project_root: dir.path().to_path_buf(),
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![changed_file("app.py", "Modified", None, Some(curr_syms))],
@@ -799,6 +815,8 @@ mod tests {
             project_root: dir.path().to_path_buf(),
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![changed_file("app.py", "Modified", None, Some(curr_syms))],
@@ -839,6 +857,8 @@ mod tests {
             project_root: dir.path().to_path_buf(),
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![changed_file("app.ts", "Modified", None, Some(curr_syms))],
@@ -881,6 +901,8 @@ mod tests {
             project_root: dir.path().to_path_buf(),
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![changed_file("app.ts", "Modified", None, Some(curr_syms))],
@@ -918,6 +940,8 @@ mod tests {
             project_root: dir.path().to_path_buf(),
             warnings: Arc::new(Mutex::new(Vec::new())),
             deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+            skip_git_history_enrichment: false,
+            history_budget: None,
         };
         let mut packet = ImpactPacket {
             changes: vec![changed_file("app.ts", "Modified", None, Some(curr_syms))],
@@ -962,6 +986,8 @@ mod tests {
                 project_root: dir.path().to_path_buf(),
                 warnings: Arc::new(Mutex::new(Vec::new())),
                 deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+                skip_git_history_enrichment: false,
+                history_budget: None,
             };
             let mut packet = ImpactPacket {
                 changes: vec![changed_file("app.py", "Modified", None, Some(curr_syms))],
@@ -1007,6 +1033,8 @@ mod tests {
                 project_root: dir.path().to_path_buf(),
                 warnings: Arc::new(Mutex::new(Vec::new())),
                 deadline: std::time::Instant::now() + std::time::Duration::from_secs(120),
+                skip_git_history_enrichment: false,
+                history_budget: None,
             };
             let mut packet = ImpactPacket {
                 changes: vec![changed_file("app.ts", "Modified", None, Some(curr_syms))],

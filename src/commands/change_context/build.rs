@@ -172,7 +172,7 @@ pub(crate) fn compute_structural_impact(
     if !opts.paths.is_empty() {
         let parsed = crate::commands::impact::parse_prospective_paths(&opts.paths)?;
         let snapshot = crate::commands::impact::build_prospective_snapshot(project_root, &parsed)?;
-        return crate::commands::impact::compute_impact_from_snapshot_in_memory_with_mode(
+        return crate::commands::impact::compute_impact_from_snapshot_in_memory_with_history(
             storage,
             config,
             project_root,
@@ -180,12 +180,13 @@ pub(crate) fn compute_structural_impact(
             opts.include_governance,
             "prospective",
             parsed,
+            history_opts_from(opts),
         );
     }
 
     if let Some(ref base_ref) = opts.base_ref {
         let snapshot = build_repo_snapshot_from_base_ref(project_root, base_ref, config)?;
-        return crate::commands::impact::compute_impact_from_snapshot_in_memory_with_mode(
+        return crate::commands::impact::compute_impact_from_snapshot_in_memory_with_history(
             storage,
             config,
             project_root,
@@ -193,6 +194,7 @@ pub(crate) fn compute_structural_impact(
             opts.include_governance,
             "base_ref",
             Vec::new(),
+            history_opts_from(opts),
         );
     }
 
@@ -212,7 +214,7 @@ pub(crate) fn compute_structural_impact(
         is_clean,
         changes,
     };
-    crate::commands::impact::compute_impact_from_snapshot_in_memory_with_mode(
+    crate::commands::impact::compute_impact_from_snapshot_in_memory_with_history(
         storage,
         config,
         project_root,
@@ -220,7 +222,15 @@ pub(crate) fn compute_structural_impact(
         opts.include_governance,
         "working_tree",
         Vec::new(),
+        history_opts_from(opts),
     )
+}
+
+fn history_opts_from(opts: &ChangeContextOpts) -> crate::impact::orchestrator::ImpactHistoryOpts {
+    crate::impact::orchestrator::ImpactHistoryOpts {
+        skip_git_history_enrichment: opts.skip_git_history_enrichment,
+        cancel: std::sync::Arc::clone(&opts.cancel),
+    }
 }
 
 /// Build a [`RepoSnapshot`] from `git diff base_ref...HEAD` (structure only).
