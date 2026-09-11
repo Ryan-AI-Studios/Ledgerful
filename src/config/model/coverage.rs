@@ -210,6 +210,10 @@ pub struct HotspotsConfig {
     /// Wall-clock budget for history walks (0308). `0` disables the clock.
     #[serde(default = "default_history_budget_secs")]
     pub history_budget_secs: u64,
+    /// Score (0–1) above which `hotspots budget` reports a violation.
+    /// Absent key → informational default 0.5. `--fail` requires this or `--threshold`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub budget_threshold: Option<f64>,
 }
 
 impl Default for HotspotsConfig {
@@ -219,6 +223,7 @@ impl Default for HotspotsConfig {
             limit: default_hotspots_limit(),
             decay_half_life: default_decay_half_life(),
             history_budget_secs: default_history_budget_secs(),
+            budget_threshold: None,
         }
     }
 }

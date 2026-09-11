@@ -495,10 +495,20 @@ impl Commands {
                     Some(HotspotSubcommands::Explain { .. }) => {
                         f.push("explain");
                     }
-                    Some(HotspotSubcommands::Budget { json }) => {
+                    Some(HotspotSubcommands::Budget {
+                        json,
+                        threshold,
+                        fail,
+                    }) => {
                         f.push("budget");
                         if *json {
                             f.push("json");
+                        }
+                        if threshold.is_some() {
+                            f.push("threshold");
+                        }
+                        if *fail {
+                            f.push("fail");
                         }
                     }
                     None => {}

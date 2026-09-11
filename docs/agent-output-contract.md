@@ -43,6 +43,7 @@ on stderr.
 | `dead-code --json` | yes (0149) | yes | schemaVersion 1 envelope; see rejected combos |
 | `hotspots --json` | yes | yes | schemaVersion 1 object; collection `files`; list and `--semantic` echo `limit` (0207). Additive `completeness` (0308) only when the history walk stops early (`stop`: `budget`\|`cancelled`\|`error`); omitted on a complete window. Additive `provenance` (0309) is **always** on the live list (`source: live`; `commitsRequested`; `daysRequested` only with `--days`; `limit`; `filter`; `head` when known; `snapshotAt`/`snapshotAgeSecs` when `hotspot_history` has a row). `--semantic --json` omits `provenance`. Per-file `presence: "historical"` is emit-time only when the ranked path is missing from HEAD. CLI default list omits test/example/bench paths (0222; `--include tests` restores) **and** markdown (0293; `--include docs` is a frequency lane) **and** vendored `deps_src`/`vendor`/… (0297; `--include vendor` restores `f×c`). **`score` is 0–1**; `displayScore` is ln display. No `scoreUnit`. **MCP `hotspots` stays an in-process array** and stays unfiltered. `--semantic` ignores `--include`. `--timeout` bounds the walk (config `[hotspots] history_budget_secs`, default 45; `0` disables the clock). |
 | `hotspots trend --json` | yes (0151) | yes | schemaVersion 1; modes summary/full/entity; additive `provenance` (0309, `source: trends`) always present — see schema below |
+| `hotspots budget --json` | yes | yes | Versionless object (no `schemaVersion`). `status`: `OK` \| `VIOLATION` \| `NO_DATA` \| `NOT_CONFIGURED`. Always `scoreUnit: "score"` (persisted `hotspot_history.score`, 0–1). `threshold` + `thresholdSource` (`cli` \| `config` \| `default`) omit on `NOT_CONFIGURED`. Informational default threshold **0.5**. `--fail` is the only exit-1 gate and requires `--threshold` or `[hotspots] budget_threshold`. Only `status == "OK"` is in-budget. Always `evaluated` + `violations[]` (`path` / `score` / `threshold`). Additive `snapshotAt` / `snapshotAgeSecs` / `head` / `legacyScoreCount` / `skippedNonFinite`. No `provenance`. List / session / trend / MCP / `GET /api/hotspots` stay without `scoreUnit`. See schema below. |
 | `endpoints --json` | yes | yes | schemaVersion 1 object; collection `results` (0207). MCP `endpoints_changed` re-execs CLI and rides this envelope |
 | `symbols --json` | yes (0163) | yes | schemaVersion **1** inventory; path/changed/kind/pub filters; COUNT-backed `totalMatching`; optional `indexStatus`; see schema below |
 | `data-models list --json` | yes | yes | schemaVersion 1 object; collection `models` (0207); item `file_path` stays snake (0155); one row per logical model identity |
@@ -579,6 +580,52 @@ ledgerful hotspots trend --json
 ledgerful hotspots trend --limit 5 --json
 ledgerful hotspots trend --all --json
 ledgerful hotspots trend --entity src/lib.rs --json
+```
+
+---
+
+## `hotspots budget --json` schema (versionless)
+
+Track **0310**. Bare object (do **not** add `schemaVersion`). Compares persisted
+`hotspot_history.score` (0–1) to an explicit threshold. Informational default
+is **0.5**. `--fail` exits **1** on `VIOLATION`, `NO_DATA`, and
+`NOT_CONFIGURED`; without `--fail` those statuses still exit **0**. `--fail`
+without `--threshold` and without `[hotspots] budget_threshold` is
+`NOT_CONFIGURED` (do not invent 0.5 as a CI gate). Only `status == "OK"` is
+in-budget.
+
+```json
+{
+  "status": "OK",
+  "scoreUnit": "score",
+  "threshold": 0.5,
+  "thresholdSource": "default",
+  "evaluated": 12,
+  "violations": [],
+  "snapshotAt": "2026-01-01T00:00:00Z",
+  "snapshotAgeSecs": 3600,
+  "head": "8e0f41d7…"
+}
+```
+
+| Key | Rules |
+|---|---|
+| `status` | always `OK` \| `VIOLATION` \| `NO_DATA` \| `NOT_CONFIGURED` |
+| `scoreUnit` | always `"score"` — do **not** emit on list / session / trend / MCP / API |
+| `threshold` / `thresholdSource` | omit on `NOT_CONFIGURED`; source is `cli` \| `config` \| `default` |
+| `evaluated` | finite rows in the latest snapshot (0 on `NO_DATA`) |
+| `violations` | always an array; empty unless `VIOLATION`; items `path`, `score`, `threshold` |
+| `snapshotAt` / `snapshotAgeSecs` | latest `MAX(timestamp)` when present and parseable |
+| `head` | omit when HEAD id unknown |
+| `legacyScoreCount` / `skippedNonFinite` | omit when 0 |
+| `schemaVersion` / `provenance` | **never** |
+
+Invalid `--threshold` is clap usage (exit **2**), not a status.
+
+```powershell
+ledgerful hotspots budget --json
+ledgerful hotspots budget --threshold 0.5 --json
+ledgerful hotspots budget --fail --threshold 0.5 --json
 ```
 
 ---

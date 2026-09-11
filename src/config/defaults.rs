@@ -26,6 +26,7 @@ decay_half_life = 100
 max_commits = 500
 limit = 10
 history_budget_secs = 45
+# budget_threshold = 0.5  # informational default when omitted; required for --fail
 
 [verify]
 mode = "auto"
