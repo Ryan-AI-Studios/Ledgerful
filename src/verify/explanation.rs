@@ -1,7 +1,7 @@
 use crate::config::model::LocalModelConfig;
 use crate::local_model::client::{ChatMessage, CompletionOptions, complete};
 use crate::verify::ci_predictor::CIJobOutcome;
-use crate::verify::semantic_predictor::{TestOutcome, TestStatus};
+use crate::verify::semantic_predictor::TestStatus;
 use miette::Result;
 use tracing::info;
 
@@ -12,42 +12,6 @@ pub struct ExplanationEngine {
 impl ExplanationEngine {
     pub fn new(config: LocalModelConfig) -> Self {
         Self { config }
-    }
-
-    pub fn explain_test_failure(
-        &self,
-        test_file: &str,
-        diff_summary: &str,
-        historical_outcomes: &[(TestOutcome, f32)],
-    ) -> Result<String> {
-        if self.config.base_url.is_empty() {
-            return Ok("Local model not configured; cannot provide explanation.".to_string());
-        }
-
-        let mut fail_context = String::new();
-        for (outcome, sim) in historical_outcomes {
-            if outcome.test_file == test_file && outcome.status == TestStatus::Failed {
-                fail_context.push_str(&format!(
-                    "- Similarity: {:.2}, Commit: {}, Diff: {}\n",
-                    sim, outcome.commit_hash, outcome.diff_summary
-                ));
-            }
-        }
-
-        let prompt = format!(
-            "Explain why the test file '{test_file}' is predicted to fail based on the following changes:\n\
-            \n\
-            Current Changes Summary:\n\
-            {diff_summary}\n\
-            \n\
-            Historical Context (Similar changes that caused failures in this test):\n\
-            {fail_context}\n\
-            \n\
-            Provide a concise, technical explanation (max 3 sentences) of the likely failure reason. \
-            Be specific about how the current changes relate to past failure patterns."
-        );
-
-        self.generate_explanation(prompt)
     }
 
     pub fn explain_ci_failure(

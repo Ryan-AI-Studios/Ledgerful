@@ -53,31 +53,17 @@ impl CodeTokenizer {
     }
 }
 
-// NOTE (0084 DoD-8 / plan Phase 8): There is no live production dispatch that selects a
-// per-language `CodeTokenizer` for Rust, TypeScript, *or* Go — `get_*_tokenizer` helpers are
-// retained as thin constructors for potential future callers/tests but are unreached today.
-// Wiring a new dispatch mechanism is out of scope for language-parity tracks; removal of the
-// dead helpers is logged to deferred.md as cross-language hygiene rather than inventing a
-// call site solely to satisfy wire-up for Go alone.
-pub fn get_rust_tokenizer() -> CodeTokenizer {
-    CodeTokenizer::new(tree_sitter_rust::LANGUAGE.into())
-}
-
-pub fn get_typescript_tokenizer() -> CodeTokenizer {
-    CodeTokenizer::new(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into())
-}
-
-pub fn get_go_tokenizer() -> CodeTokenizer {
-    CodeTokenizer::new(tree_sitter_go::LANGUAGE.into())
-}
-
 #[cfg(test)]
 mod tokenize_tests {
     use super::*;
 
+    fn rust_tokenizer() -> CodeTokenizer {
+        CodeTokenizer::new(tree_sitter_rust::LANGUAGE.into())
+    }
+
     #[test]
     fn tokenize_invalid_syntax_returns_without_panic() {
-        let tokenizer = get_rust_tokenizer();
+        let tokenizer = rust_tokenizer();
         let tokens = tokenizer.tokenize("fn {{{ not valid rust");
         // tree-sitter may still recover partial identifiers; the contract is no panic.
         let _ = tokens;
@@ -85,7 +71,7 @@ mod tokenize_tests {
 
     #[test]
     fn tokenize_valid_rust_extracts_identifiers() {
-        let tokenizer = get_rust_tokenizer();
+        let tokenizer = rust_tokenizer();
         let tokens = tokenizer.tokenize("fn main() { let value = 1; }");
         assert!(tokens.contains(&"main".to_string()));
         assert!(tokens.contains(&"value".to_string()));

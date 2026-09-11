@@ -129,22 +129,6 @@ impl ScipIndexJson {
             message: None,
         }
     }
-
-    /// Constructor retained for API stability; production paths no longer
-    /// emit `SkippedStale` (requested augment always re-applies edges).
-    #[allow(dead_code)]
-    pub fn skipped_stale() -> Self {
-        Self {
-            status: ScipRunStatus::SkippedStale,
-            edges_added: Some(0),
-            edges_updated: Some(0),
-            message: Some(
-                "SCIP index hash unchanged (legacy skip; edges are always re-applied now)"
-                    .to_string(),
-            ),
-            ..Self::empty_stats_fields()
-        }
-    }
 }
 
 /// Detect/generate or use path, run edge augment, clean up temp file.
