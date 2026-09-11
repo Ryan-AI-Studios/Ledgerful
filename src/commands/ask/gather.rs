@@ -26,10 +26,6 @@ pub(crate) enum SemanticGatherKind {
 pub(crate) struct GatherResult {
     pub latest_packet: ImpactPacket,
     pub is_global: bool,
-    #[allow(dead_code)]
-    pub had_real_packet: bool,
-    #[allow(dead_code)]
-    pub fresh_packet: bool,
     pub pruned_for_intent: bool,
     /// Live git (or in-memory auto-scan) showed an empty change set.
     /// Honesty for the "no pending changes" prompt/stderr; not `is_global`.
@@ -193,8 +189,6 @@ pub(crate) fn gather_impact_and_bridge(
     Ok(GatherResult {
         latest_packet,
         is_global,
-        had_real_packet,
-        fresh_packet,
         pruned_for_intent,
         live_tree_clean,
         query_string,

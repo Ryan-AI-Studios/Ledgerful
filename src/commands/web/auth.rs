@@ -21,13 +21,6 @@ pub enum TokenResolution {
 }
 
 impl TokenResolution {
-    /// Borrow the resolved token string.
-    pub fn as_str(&self) -> &str {
-        match self {
-            Self::Generated(t) | Self::Provided(t) => t,
-        }
-    }
-
     /// Consume into the owned token string.
     pub fn into_token(self) -> String {
         match self {
