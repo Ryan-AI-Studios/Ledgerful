@@ -6,6 +6,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **CI/install hygiene:** Drop duplicate Security `cargo-deny` job
+  (`cargo deny check` stays the required `deny` job in `ci.yml`).
+  Pin `smoke.yml` rustc to `1.98.1` (`release.yml` stays `stable`).
+  Add `coverage` `timeout-minutes: 120`. Unix installer copies
+  `ledgerful` once plus `ldg`; Windows installer also installs
+  `ldg.exe`. MCP smoke protocol string is `2024-11-05` (engine
+  initialize default). No Cargo bump.
+
 ### Added
 
 - **Hotspot provenance (0309):** CLI `hotspots --json`, session

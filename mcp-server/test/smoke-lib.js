@@ -49,7 +49,7 @@ async function runSmoke() {
       id: 1,
       method: "initialize",
       params: {
-        protocolVersion: "2025-11-25",
+        protocolVersion: "2024-11-05",
         capabilities: {},
         clientInfo: {
           name: "ledgerful-mcp-smoke",

@@ -85,11 +85,10 @@ authorization to merge.
 `.github/workflows/security.yml` still runs on pull_request, push to `main`, and the weekly
 schedule. **`Semgrep SAST` is a required merge check** (added 2026-09-07 after the 0280
 `UNSTABLE` stall; false positives use line-adjacent `// nosemgrep: <rule-id>`).
-`Secret scan` still runs and does **not** gate merge. Display names `Cargo audit` /
-`Cargo deny` are Security workflow jobs.
+`Secret scan` still runs and does **not** gate merge. Display name `Cargo audit`
+is a Security workflow job.
 
-Context `deny` in the live list is the CI workflow job (`cargo deny check`), not the
-Security workflow display name.
+Context `deny` in the live list is the CI workflow job (`cargo deny check`).
 
 HITL name if protection is updated further: `Secret scan`.
 
