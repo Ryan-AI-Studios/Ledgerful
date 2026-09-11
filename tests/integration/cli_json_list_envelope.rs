@@ -242,3 +242,95 @@ fn services_list_json_is_object_envelope() {
     let tmp = init_indexed_repo();
     assert_services_json_envelope(tmp.path(), "list");
 }
+
+fn seed_data_model_rows(root: &std::path::Path, product: bool, fixture: bool) {
+    let root_utf8 = Utf8Path::from_path(root).expect("utf8 root");
+    let layout = Layout::new(root_utf8);
+    let storage = StorageManager::init_with_layout(&layout).unwrap();
+    let conn = storage.get_connection();
+    if product {
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES ('src/models/user.rs', 'Rust', 'hash_dm_prod', 80, '2026-09-11T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO data_models (model_name, model_file_id, language, model_kind, confidence, evidence, last_indexed_at)
+             VALUES ('UserRow', ?1, 'Rust', 'SCHEMA', 0.9, '-> <persistence>', '2026-09-11T00:00:00Z')",
+            [file_id],
+        )
+        .unwrap();
+    }
+    if fixture {
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+             VALUES ('tests/fixtures/go_sample/pkg/user.go', 'go', 'hash_dm_fix', 80, '2026-09-11T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        let file_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO data_models (model_name, model_file_id, language, model_kind, confidence, evidence, last_indexed_at)
+             VALUES ('User', ?1, 'go', 'STRUCT', 1.0, 'json tags', '2026-09-11T00:00:00Z')",
+            [file_id],
+        )
+        .unwrap();
+    }
+    storage.shutdown().unwrap();
+}
+
+#[test]
+fn data_models_list_json_echoes_fixture_flags() {
+    let tmp = init_indexed_repo();
+    seed_data_model_rows(tmp.path(), true, true);
+
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["data-models", "list", "--json"]);
+    assert_eq!(code, 0, "data-models list --json; stderr={stderr}");
+    let v = parse_object(&stdout, "data-models list --json");
+    assert_eq!(v["includeFixtures"], false);
+    assert_eq!(v["fixturesOmitted"], 1);
+    assert_eq!(v["resultCount"], 1);
+    assert_eq!(v["models"][0]["name"], "UserRow");
+    assert_eq!(v["models"][0]["fieldImpact"], "unsupported");
+    assert!(v.get("fieldImpact").is_none());
+
+    let (stdout, stderr, code) = run_cli(
+        tmp.path(),
+        &["data-models", "list", "--include-fixtures", "--json"],
+    );
+    assert_eq!(
+        code, 0,
+        "data-models list --include-fixtures --json; stderr={stderr}"
+    );
+    let with = parse_object(&stdout, "data-models list --include-fixtures --json");
+    assert_eq!(with["includeFixtures"], true);
+    assert_eq!(with["fixturesOmitted"], 0);
+    assert_eq!(with["resultCount"], 2);
+}
+
+#[test]
+fn data_models_list_json_post_omit_empty_is_no_matches() {
+    let tmp = init_indexed_repo();
+    seed_data_model_rows(tmp.path(), false, true);
+
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["data-models", "list", "--json"]);
+    assert_eq!(
+        code, 0,
+        "data-models list --json post-omit; stderr={stderr}"
+    );
+    let v = parse_object(&stdout, "data-models list post-omit empty");
+    assert_eq!(v["includeFixtures"], false);
+    assert_eq!(v["fixturesOmitted"], 1);
+    assert_eq!(v["resultCount"], 0);
+    assert_eq!(v["emptyReason"], "noMatches");
+    assert_ne!(v["emptyReason"], "noIndexedData");
+    assert!(v.get("fieldImpact").is_none());
+    assert!(
+        v["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("No product data models indexed")
+    );
+}

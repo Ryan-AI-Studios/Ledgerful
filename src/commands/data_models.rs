@@ -14,7 +14,7 @@ pub struct DataModelsArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum DataModelSubcommands {
-    /// List all extracted data models and their mapping to tables
+    /// List extracted data models
     List {
         /// Show all candidate structs, even those with low confidence
         #[arg(long)]
@@ -22,6 +22,9 @@ pub enum DataModelSubcommands {
         /// Minimum confidence threshold
         #[arg(long, default_value_t = 0.5)]
         min_confidence: f64,
+        /// Include fixture and test-path models omitted from the default list
+        #[arg(long)]
+        include_fixtures: bool,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -31,6 +34,9 @@ pub enum DataModelSubcommands {
         /// Filter by changed models only
         #[arg(long)]
         changed: bool,
+        /// Include fixture and test-path models omitted from the default list
+        #[arg(long)]
+        include_fixtures: bool,
         /// Output as JSON
         #[arg(long)]
         json: bool,
@@ -141,6 +147,102 @@ fn query_and_dedupe_data_models(
     Ok(dedupe_data_model_rows(model_rows))
 }
 
+fn omit_fixture_data_model_rows(
+    rows: Vec<DataModelRow>,
+    include_fixtures: bool,
+) -> (Vec<DataModelRow>, usize) {
+    if include_fixtures {
+        return (rows, 0);
+    }
+    let mut kept = Vec::new();
+    let mut omitted = 0usize;
+    for row in rows {
+        if crate::index::test_mapping::is_test_path(&row.file_path) {
+            omitted += 1;
+        } else {
+            kept.push(row);
+        }
+    }
+    (kept, omitted)
+}
+
+fn attach_fixture_flags(output: &mut serde_json::Value, include_fixtures: bool, omitted: usize) {
+    if let Some(obj) = output.as_object_mut() {
+        obj.insert(
+            "includeFixtures".to_string(),
+            serde_json::json!(include_fixtures),
+        );
+        obj.insert("fixturesOmitted".to_string(), serde_json::json!(omitted));
+    }
+}
+
+fn data_model_row_to_list_json(r: &DataModelRow) -> serde_json::Value {
+    serde_json::json!({
+        "name": r.model_name,
+        "language": r.language,
+        "kind": r.model_kind,
+        "confidence": r.confidence,
+        "file_path": r.file_path,
+        "fieldImpact": "unsupported",
+    })
+}
+
+fn data_model_row_to_impact_json(r: &DataModelRow, is_changed: bool) -> serde_json::Value {
+    serde_json::json!({
+        "name": r.model_name,
+        "file_path": r.file_path,
+        "language": r.language,
+        "kind": r.model_kind,
+        "confidence": r.confidence,
+        "is_changed": is_changed,
+        "fieldImpact": "unsupported",
+    })
+}
+
+fn print_data_models_omit_footer(omitted: usize) {
+    if omitted > 0 {
+        println!("  {omitted} fixture models omitted. Pass --include-fixtures to show them.");
+    }
+}
+
+fn product_empty_omit_message(omitted: usize) -> String {
+    format!(
+        "No product data models indexed. {omitted} fixture models omitted. Pass --include-fixtures to show them."
+    )
+}
+
+fn list_json_empty_reason(fixtures_omitted: usize) -> (crate::output::empty::EmptyReason, String) {
+    (
+        crate::output::empty::EmptyReason::NoMatches,
+        product_empty_omit_message(fixtures_omitted),
+    )
+}
+
+/// Empty-state reason for impact JSON. `total_models` is queried on the outer
+/// `execute` `Result` before `format_json_empty_state` (no silent-zero).
+fn impact_json_empty_reason(
+    changed: bool,
+    total_models: i64,
+    fixtures_omitted: usize,
+) -> (crate::output::empty::EmptyReason, String) {
+    if changed && total_models > 0 {
+        (
+            crate::output::empty::EmptyReason::CleanDiff,
+            "No changed data models found.".to_string(),
+        )
+    } else if !changed && fixtures_omitted > 0 {
+        list_json_empty_reason(fixtures_omitted)
+    } else {
+        (
+            crate::output::empty::EmptyReason::NoIndexedData,
+            "No data models indexed. Data models are extracted from ORM structs, \
+             SQL table definitions, and migration files. Run `ledgerful index \
+             --incremental` if models exist, or confirm your ORM/framework is supported."
+                .to_string(),
+        )
+    }
+}
+
 pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
     let layout = get_layout()?;
 
@@ -148,6 +250,7 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
         DataModelSubcommands::List {
             all,
             min_confidence,
+            include_fixtures,
             json,
         } => {
             let storage = StorageManager::open_read_only(&layout)?;
@@ -155,21 +258,20 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
 
             let threshold = if all { 0.0 } else { min_confidence };
             let model_rows = query_and_dedupe_data_models(conn, threshold)?;
+            let (model_rows, fixtures_omitted) =
+                omit_fixture_data_model_rows(model_rows, include_fixtures);
 
             if json {
-                let results: Vec<serde_json::Value> = model_rows
-                    .into_iter()
-                    .map(|r| {
-                        serde_json::json!({
-                            "name": r.model_name,
-                            "language": r.language,
-                            "kind": r.model_kind,
-                            "confidence": r.confidence,
-                            "file_path": r.file_path,
-                        })
+                let results: Vec<serde_json::Value> =
+                    model_rows.iter().map(data_model_row_to_list_json).collect();
+                let mut output = if results.is_empty() && fixtures_omitted > 0 {
+                    crate::output::empty::format_json_empty_state(results, "models", || {
+                        list_json_empty_reason(fixtures_omitted)
                     })
-                    .collect();
-                let output = crate::output::empty::format_json_list_envelope(results, "models");
+                } else {
+                    crate::output::empty::format_json_list_envelope(results, "models")
+                };
+                attach_fixture_flags(&mut output, include_fixtures, fixtures_omitted);
                 crate::output::json::emit(&output)?;
             } else {
                 println!(
@@ -178,7 +280,11 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
                         .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
                 );
                 if model_rows.is_empty() {
-                    println!("  No data models indexed.");
+                    if fixtures_omitted > 0 {
+                        println!("  {}", product_empty_omit_message(fixtures_omitted));
+                    } else {
+                        println!("  No data models indexed.");
+                    }
                 } else {
                     let mut table =
                         build_premium_table(["Name", "Language", "Kind", "Confidence", "File"]);
@@ -194,10 +300,15 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
                         ]);
                     }
                     println!("{}", table);
+                    print_data_models_omit_footer(fixtures_omitted);
                 }
             }
         }
-        DataModelSubcommands::Impact { changed, json } => {
+        DataModelSubcommands::Impact {
+            changed,
+            include_fixtures,
+            json,
+        } => {
             // Path membership only — git status + ignore filter, not full impact.
             // Avoids federation, cache rewrite, and multi-second empty paths (0146).
             let changed_files: std::collections::HashSet<String> =
@@ -208,6 +319,11 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
 
             let storage = StorageManager::open_read_only(&layout)?;
             let conn = storage.get_connection();
+
+            // COUNT on the outer Result — helper closure cannot `?` (0243 same-class).
+            let total_models: i64 = conn
+                .query_row("SELECT COUNT(*) FROM data_models", [], |row| row.get(0))
+                .into_diagnostic()?;
 
             // Query with id + model_file_id for keep-best; JOIN for path (C1/C4).
             let mut stmt = conn
@@ -244,47 +360,24 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
                 }
             }
 
-            // Dedupe after --changed filter; preserve empty-state on raw COUNT.
+            // Dedupe after --changed filter, then emit-time fixture omit.
             let deduped = dedupe_data_model_rows(filtered);
+            let (deduped, fixtures_omitted) =
+                omit_fixture_data_model_rows(deduped, include_fixtures);
             let impacted: Vec<serde_json::Value> = deduped
-                .into_iter()
+                .iter()
                 .map(|r| {
                     let is_changed = changed_flags.get(&r.id).copied().unwrap_or(false);
-                    serde_json::json!({
-                        "name": r.model_name,
-                        "file_path": r.file_path,
-                        "language": r.language,
-                        "kind": r.model_kind,
-                        "confidence": r.confidence,
-                        "is_changed": is_changed,
-                    })
+                    data_model_row_to_impact_json(r, is_changed)
                 })
                 .collect();
 
             if json {
-                let output = crate::output::empty::format_json_empty_state(
-                    impacted,
-                    "impacted",
-                    || {
-                        let total_models: i64 = conn
-                            .query_row("SELECT COUNT(*) FROM data_models", [], |row| row.get(0))
-                            .unwrap_or(0);
-                        if total_models > 0 && changed {
-                            (
-                                crate::output::empty::EmptyReason::CleanDiff,
-                                "No changed data models found.".to_string(),
-                            )
-                        } else {
-                            (
-                            crate::output::empty::EmptyReason::NoIndexedData,
-                            "No data models indexed. Data models are extracted from ORM structs, \
-                             SQL table definitions, and migration files. Run `ledgerful index \
-                             --incremental` if models exist, or confirm your ORM/framework is supported."
-                                .to_string(),
-                        )
-                        }
-                    },
-                );
+                let mut output =
+                    crate::output::empty::format_json_empty_state(impacted, "impacted", || {
+                        impact_json_empty_reason(changed, total_models, fixtures_omitted)
+                    });
+                attach_fixture_flags(&mut output, include_fixtures, fixtures_omitted);
                 crate::output::json::emit(&output)?;
             } else {
                 println!(
@@ -293,16 +386,14 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
                         .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
                 );
                 if impacted.is_empty() {
-                    let total_models: i64 = conn
-                        .query_row("SELECT COUNT(*) FROM data_models", [], |row| row.get(0))
-                        .into_diagnostic()?;
-
-                    if total_models > 0 && changed {
+                    if changed && total_models > 0 {
                         println!(
                             "{}",
                             "  No changed data models found."
                                 .if_supports_color(Stream::Stdout, |s| s.dimmed())
                         );
+                    } else if !changed && fixtures_omitted > 0 {
+                        println!("  {}", product_empty_omit_message(fixtures_omitted));
                     } else {
                         println!(
                             "{}",
@@ -338,6 +429,7 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
                         ]);
                     }
                     println!("{}", table);
+                    print_data_models_omit_footer(fixtures_omitted);
                 }
             }
         }
@@ -701,5 +793,186 @@ mod tests {
         let all = query_and_dedupe_data_models(conn, 0.0).expect("query+dedupe --all");
         assert_eq!(all.len(), 1);
         assert_eq!(all[0].model_name, "LowConf");
+    }
+
+    #[test]
+    fn data_models_default_omits_test_path() {
+        let rows = vec![
+            row(
+                1,
+                "User",
+                "go",
+                "STRUCT",
+                1.0,
+                10,
+                "tests/fixtures/go_sample/pkg/user.go",
+            ),
+            row(
+                2,
+                "UserRow",
+                "Rust",
+                "SCHEMA",
+                0.9,
+                11,
+                "src/models/user.rs",
+            ),
+        ];
+        let (kept, omitted) = omit_fixture_data_model_rows(rows, false);
+        assert_eq!(omitted, 1);
+        assert_eq!(kept.len(), 1);
+        assert_eq!(kept[0].model_name, "UserRow");
+    }
+
+    #[test]
+    fn data_models_windows_test_path_still_omits() {
+        let rows = vec![row(
+            1,
+            "User",
+            "go",
+            "STRUCT",
+            1.0,
+            10,
+            r"tests\fixtures\go_sample\pkg\user.go",
+        )];
+        let (kept, omitted) = omit_fixture_data_model_rows(rows, false);
+        assert_eq!(omitted, 1);
+        assert!(kept.is_empty());
+    }
+
+    #[test]
+    fn data_models_include_fixtures_restores() {
+        let rows = vec![
+            row(
+                1,
+                "User",
+                "go",
+                "STRUCT",
+                1.0,
+                10,
+                "tests/fixtures/go_sample/pkg/user.go",
+            ),
+            row(
+                2,
+                "UserRow",
+                "Rust",
+                "SCHEMA",
+                0.9,
+                11,
+                "src/models/user.rs",
+            ),
+        ];
+        let (kept, omitted) = omit_fixture_data_model_rows(rows, true);
+        assert_eq!(omitted, 0);
+        assert_eq!(kept.len(), 2);
+    }
+
+    #[test]
+    fn data_models_include_fixtures_echoed_on_empty() {
+        let mut empty = crate::output::empty::format_json_empty_state(
+            Vec::<serde_json::Value>::new(),
+            "models",
+            || list_json_empty_reason(3),
+        );
+        attach_fixture_flags(&mut empty, false, 3);
+        assert_eq!(empty["includeFixtures"], false);
+        assert_eq!(empty["fixturesOmitted"], 3);
+        assert_eq!(empty["emptyReason"], "noMatches");
+        assert!(empty.get("fieldImpact").is_none());
+        assert!(
+            empty["message"]
+                .as_str()
+                .unwrap_or("")
+                .contains("No product data models indexed")
+        );
+
+        let mut clean = crate::output::empty::format_json_empty_state(
+            Vec::<serde_json::Value>::new(),
+            "impacted",
+            || impact_json_empty_reason(true, 4, 0),
+        );
+        attach_fixture_flags(&mut clean, true, 0);
+        assert_eq!(clean["includeFixtures"], true);
+        assert_eq!(clean["fixturesOmitted"], 0);
+        assert_eq!(clean["emptyReason"], "cleanDiff");
+        assert!(clean.get("fieldImpact").is_none());
+    }
+
+    #[test]
+    fn data_models_json_emits_field_impact_unsupported() {
+        let item = data_model_row_to_list_json(&row(
+            1,
+            "UserRow",
+            "Rust",
+            "SCHEMA",
+            0.9,
+            11,
+            "src/models/user.rs",
+        ));
+        assert_eq!(item["fieldImpact"], "unsupported");
+        assert!(item.get("fields").is_none());
+        assert!(item.get("table").is_none());
+        assert!(item.get("evidence").is_none());
+
+        let impact = data_model_row_to_impact_json(
+            &row(
+                1,
+                "UserRow",
+                "Rust",
+                "SCHEMA",
+                0.9,
+                11,
+                "src/models/user.rs",
+            ),
+            false,
+        );
+        assert_eq!(impact["fieldImpact"], "unsupported");
+        assert!(impact.get("fields").is_none());
+        assert!(impact.get("table").is_none());
+        assert!(impact.get("evidence").is_none());
+    }
+
+    #[test]
+    fn data_models_post_omit_empty_not_no_indexed() {
+        let rows = vec![row(
+            1,
+            "User",
+            "go",
+            "STRUCT",
+            1.0,
+            10,
+            "tests/fixtures/go_sample/pkg/user.go",
+        )];
+        let (kept, omitted) = omit_fixture_data_model_rows(rows, false);
+        assert!(kept.is_empty());
+        assert_eq!(omitted, 1);
+
+        let human = product_empty_omit_message(omitted);
+        assert!(!human.contains("No data models indexed."));
+        assert!(human.contains("No product data models indexed."));
+
+        let (reason, message) = list_json_empty_reason(omitted);
+        assert_eq!(reason, crate::output::empty::EmptyReason::NoMatches);
+        assert!(!message.contains("No data models indexed."));
+        assert!(!message.contains("noIndexedData"));
+
+        let (impact_reason, _) = impact_json_empty_reason(false, 1, omitted);
+        assert_eq!(impact_reason, crate::output::empty::EmptyReason::NoMatches);
+    }
+
+    #[test]
+    fn data_models_impact_count_before_empty_helper() {
+        let src = include_str!("data_models.rs");
+        assert!(
+            src.contains("COUNT on the outer Result"),
+            "COUNT must be documented on the outer execute Result"
+        );
+        assert!(
+            src.contains("impact_json_empty_reason(changed, total_models, fixtures_omitted)"),
+            "empty helper must receive the precomputed total, not query inside the closure"
+        );
+        let (reason, message) = impact_json_empty_reason(true, 5, 0);
+        assert_eq!(reason, crate::output::empty::EmptyReason::CleanDiff);
+        assert_eq!(message, "No changed data models found.");
+        assert!(!message.contains("no compatibility risk"));
     }
 }

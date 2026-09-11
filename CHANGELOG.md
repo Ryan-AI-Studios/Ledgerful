@@ -39,6 +39,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Data-model inventory honesty (0316):** Rust extract uses
+  persistence derive idents only (`FromRow` / `Queryable` /
+  `Insertable`). Clap, thiserror-only, and `Table`/`Entity`
+  name hits are no longer models. Default list/impact omit
+  `is_test_path` (`--include-fixtures` restores). JSON always
+  echoes `includeFixtures` / `fixturesOmitted`. Item
+  `fieldImpact: "unsupported"` on non-empty `models[]` /
+  `impacted[]`. Post-omit empty is not `No data models
+  indexed` / `noIndexedData`. schemaVersion 1 and 0155
+  dedupe stay. No MCP/API.
+
 - **Endpoint inventory evidence (0315):** Default `endpoints`
   omits fixture/test-path and in-file `route_source=TEST` routes
   (`--include-fixtures` restores). JSON always echoes
