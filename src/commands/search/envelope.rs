@@ -531,6 +531,64 @@ mod tests {
     }
 
     #[test]
+    fn search_semantic_json_fills_content_and_line() {
+        let env = SearchEnvelope {
+            schema_version: 1,
+            query: "blast radius".into(),
+            mode: "semantic".into(),
+            limit: 5,
+            truncated: false,
+            result_count: 1,
+            results: vec![SearchHit {
+                kind: "insight".into(),
+                path: "src/lib.rs".into(),
+                line: Some(12),
+                score: Some(0.75),
+                content: "fn execute_search() {}".into(),
+            }],
+            search_index_status: None,
+            semantic: None,
+            fallback_used: None,
+        };
+        let s = serde_json::to_string(&env).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&s).expect("parse");
+        assert_eq!(v["schemaVersion"], 1);
+        assert_eq!(v["results"][0]["kind"], "insight");
+        assert_eq!(v["results"][0]["content"], "fn execute_search() {}");
+        assert_eq!(v["results"][0]["line"], 12);
+        assert!(!s.contains("(offset"));
+        assert!(v["results"][0].get("offset").is_none());
+    }
+
+    #[test]
+    fn search_semantic_json_omits_line_when_unknown() {
+        let env = SearchEnvelope {
+            schema_version: 1,
+            query: "ghost".into(),
+            mode: "semantic".into(),
+            limit: 5,
+            truncated: false,
+            result_count: 1,
+            results: vec![SearchHit {
+                kind: "insight".into(),
+                path: "src/missing.rs".into(),
+                line: None,
+                score: Some(0.1),
+                content: String::new(),
+            }],
+            search_index_status: None,
+            semantic: None,
+            fallback_used: None,
+        };
+        let s = serde_json::to_string(&env).expect("serialize");
+        let v: serde_json::Value = serde_json::from_str(&s).expect("parse");
+        assert_eq!(v["schemaVersion"], 1);
+        assert!(v["results"][0].get("line").is_none());
+        assert!(!s.contains("\"line\":null"));
+        assert!(!s.contains("(offset"));
+    }
+
+    #[test]
     fn envelope_fallback_used_camel_case() {
         let env = SearchEnvelope {
             schema_version: 1,

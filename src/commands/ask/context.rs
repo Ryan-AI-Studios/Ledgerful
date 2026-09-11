@@ -62,7 +62,10 @@ pub fn escape_cozo_string(s: &str) -> String {
 #[derive(Debug)]
 pub(crate) enum SemanticGather {
     /// Embed+query completed (chunks may be empty — true no-match / filtered).
-    Chunks(Vec<pruner::RankedChunk>),
+    Chunks {
+        chunks: Vec<pruner::RankedChunk>,
+        read_failed: usize,
+    },
     /// Semantic path not usable (no Cozo, backend not configured, etc.).
     Skipped { reason: String },
     /// Backend should work but embed/query failed at runtime.
@@ -77,8 +80,6 @@ pub(crate) fn gather_semantic_chunks(
     config: &LocalModelConfig,
     is_global: bool,
 ) -> SemanticGather {
-    use crate::util::path::resolve_under_work_root;
-
     let Some(cozo) = storage.cozo() else {
         return SemanticGather::Skipped {
             reason: "CozoDB storage not available".to_string(),
@@ -135,20 +136,30 @@ pub(crate) fn gather_semantic_chunks(
     let mut relevant_chunks = Vec::new();
     let mut semantic_symbols = std::collections::HashSet::new();
 
-    for (file_path, name, _offset, dist) in results {
+    let mut read_failed = 0;
+    for (file_path, name, offset, dist) in results {
         let score = 1.0 - (dist / 2.0);
         if score >= config.chunk_min_similarity {
             semantic_symbols.insert(name.clone());
-            // Root-joined open only — never Path::new(relative) CWD-relative.
-            let open_path = resolve_under_work_root(work_root, &file_path);
-            if let Ok(content) = crate::util::fs::read_to_string_with_encoding(&open_path) {
-                let snippet = content.chars().take(1000).collect::<String>();
-                relevant_chunks.push(pruner::RankedChunk {
-                    source: format!("{}:: {}", file_path, name),
-                    content: snippet,
-                    score,
-                });
+            let preview = crate::commands::search::preview_semantic_hit(
+                work_root,
+                &file_path,
+                &name,
+                offset,
+                crate::commands::search::ASK_PREVIEW_CHARS,
+            );
+            if preview.read_failed {
+                read_failed += 1;
+                continue;
             }
+            if preview.content.is_empty() {
+                continue;
+            }
+            relevant_chunks.push(pruner::RankedChunk {
+                source: format!("{}::{}", preview.path, preview.name),
+                content: preview.content,
+                score,
+            });
         }
     }
 
@@ -164,7 +175,10 @@ pub(crate) fn gather_semantic_chunks(
         });
     }
 
-    SemanticGather::Chunks(relevant_chunks)
+    SemanticGather::Chunks {
+        chunks: relevant_chunks,
+        read_failed,
+    }
 }
 
 /// CR7: Run the KG neighborhood edge query for a set of symbol names and return a
@@ -308,8 +322,8 @@ mod tests {
                     "skipped reason should name config/backend: {reason}"
                 );
             }
-            SemanticGather::Chunks(c) => {
-                panic!("unconfigured must not look like successful empty gather: {c:?}")
+            SemanticGather::Chunks { chunks, .. } => {
+                panic!("unconfigured must not look like successful empty gather: {chunks:?}")
             }
             SemanticGather::Failed { reason } => {
                 panic!("unconfigured should be Skipped, not Failed: {reason}")

@@ -5,6 +5,7 @@
 //! - `--json-lines` → legacy NDJSON BridgeRecord stream
 
 mod envelope;
+mod preview;
 mod retrieve;
 mod trigrams;
 
@@ -12,6 +13,7 @@ pub use envelope::{
     HitEmit, SearchCollector, SearchEnvelope, SearchHit, SearchIndexStatus, SearchJsonMode,
     SearchSemantic,
 };
+pub(crate) use preview::{ASK_PREVIEW_CHARS, preview_semantic_hit};
 pub use retrieve::{is_identifier_likely, is_regex_likely};
 pub use trigrams::execute_search_trigrams;
 
@@ -229,16 +231,28 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
             let truncated = results.len() > args.limit;
             results.truncate(args.limit);
             collector.set_truncated(truncated);
+            let work_root = layout.root.as_std_path();
             if args.is_machine() {
                 for (path, name, offset, dist) in results {
+                    let preview = preview::preview_semantic_hit(
+                        work_root,
+                        &path,
+                        &name,
+                        offset,
+                        preview::SEARCH_PREVIEW_CHARS,
+                    );
                     let score = 1.0 - dist as f64;
-                    let content = format!("{} (offset {}, dist {:.4})", name, offset, dist);
-                    let bridge_content = content.clone();
-                    let memory_id = format!("{}::{}", path, name);
+                    let content = preview.content;
+                    let path = preview.path;
+                    let bridge_content = match preview.line {
+                        Some(line) => format!("{}:{}: {}", path, line, content),
+                        None => format!("{}: {}", path, content),
+                    };
+                    let memory_id = format!("{}::{}", path, preview.name);
                     collector.push_hit(HitEmit {
                         kind: "insight",
                         path,
-                        line: None,
+                        line: preview.line,
                         score: Some(score),
                         content,
                         bridge_content,
@@ -253,13 +267,25 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                         .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
                 );
                 for (path, name, offset, dist) in results {
-                    println!(
-                        "- {} ({} at offset {}) [dist: {:.4}]",
-                        name.if_supports_color(Stream::Stdout, |s| s.bold()),
-                        path,
+                    let preview = preview::preview_semantic_hit(
+                        work_root,
+                        &path,
+                        &name,
                         offset,
-                        dist
+                        preview::SEARCH_PREVIEW_CHARS,
                     );
+                    let header = preview::format_semantic_human(
+                        &preview.name,
+                        &preview.path,
+                        preview.line,
+                        dist,
+                    );
+                    println!("{header}");
+                    if !preview.content.is_empty() {
+                        println!("  {}", preview.content.replace('\n', "\n  "));
+                    } else if preview.read_failed {
+                        println!("  (source unavailable)");
+                    }
                 }
                 if truncated {
                     print_search_truncation_affordance();

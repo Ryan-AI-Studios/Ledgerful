@@ -1,8 +1,10 @@
 use ledgerful::commands::ask::{ExecuteAskOpts, execute_ask};
 use ledgerful::gemini::modes::GeminiMode;
+use ledgerful::impact::packet::{ChangedFile, ImpactPacket};
 use ledgerful::state::layout::Layout;
 use ledgerful::state::storage::StorageManager;
 use std::fs;
+use std::path::PathBuf;
 use tempfile::tempdir;
 
 use crate::common::DirGuard;
@@ -100,6 +102,19 @@ fn test_ask_no_kg_fallback_suppression() {
             ?[id, label, category, risk_score, metadata] <- [['test_id', 'SpecialNodeLabel', 'TEST_CATEGORY', 0.0, {}]]
             :insert node {id, label, category, risk_score, metadata}
         ").unwrap();
+    }
+
+    fs::write(tmp.path().join("dirty.rs"), "fn planted() {}\n").unwrap();
+    let mut packet = ImpactPacket::default();
+    packet.changes.push(ChangedFile {
+        path: PathBuf::from("dirty.rs"),
+        status: "Added".to_string(),
+        ..Default::default()
+    });
+    {
+        let storage_path = layout.state_subdir().join("ledger.db");
+        let storage = StorageManager::init(storage_path.as_std_path()).unwrap();
+        storage.save_packet(&packet).unwrap();
     }
 
     // Run with no_kg_fallback = true

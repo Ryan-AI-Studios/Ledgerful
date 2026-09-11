@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Retrieved answer evidence (0312):** Semantic `search` emits a source
+  preview (`results[].content`) and `line` when known instead of
+  `name (offset, dist)` labels. `ask` reconstructs the same hit windows
+  and refuses LLM generation when global/`--semantic` retrieval is empty
+  after BM25/KG fallback (`Note: no retrieved snippets for this query.`
+  plus `[Evidence] semantic=…` counts). `schemaVersion` stays 1.
+
 - **Doctor local readiness (0311):** `doctor` probes `GET {origin}/health`
   first (never `/v1/health`) so a listening cold router is
   `completion-not-ready` without POSTing `/v1/chat/completions`.
