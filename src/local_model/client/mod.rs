@@ -3,6 +3,7 @@ mod complete;
 mod completion_text;
 mod fallback_error;
 mod gemini;
+mod health;
 mod ollama;
 mod openai;
 mod types;
@@ -23,6 +24,7 @@ pub use fallback_error::{
     is_multi_cause_fallback_error, local_cause_is_timeout, sanitize_cause,
 };
 pub use gemini::{gemini_complete, gemini_complete_unsanitized};
+pub(crate) use health::{HealthProbeResult, probe_generation_health};
 pub use types::{ChatMessage, CompletionOptions, EndpointKind, EndpointTarget};
 pub use util::{
     check_base_url_warnings, completion_target, detect_endpoint_kind, transport_is_timeout,

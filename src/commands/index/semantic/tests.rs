@@ -304,3 +304,14 @@ fn execute_semantic_index_refuses_when_unconfigured() {
         "error must point at dry-run inspect: {msg}"
     );
 }
+
+#[test]
+fn dry_run_zero_configured_dims_is_unset() {
+    assert_eq!(format_dimensions_label(0), "unset");
+    assert_eq!(format_dimensions_label(768), "768");
+    let report = serde_json::json!({
+        "embedding_dimensions": 0usize,
+    });
+    assert_eq!(report["embedding_dimensions"], 0);
+    assert_ne!(report["embedding_dimensions"], "unset");
+}

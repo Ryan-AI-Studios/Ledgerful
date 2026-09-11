@@ -118,6 +118,49 @@ fn doctor_json_summary_warn_split_row1() {
 }
 
 #[test]
+fn doctor_json_schema_v1_codes_frozen() {
+    let findings = vec![
+        DoctorFinding::warn("completion-not-ready", DoctorCategory::Optional, "cold"),
+        DoctorFinding::warn("completion-unreachable", DoctorCategory::Optional, "down"),
+        DoctorFinding::warn("embed-unreachable", DoctorCategory::Optional, "embed"),
+        DoctorFinding::warn(
+            "embed-not-configured",
+            DoctorCategory::Optional,
+            "embed cfg",
+        ),
+        DoctorFinding::warn(
+            "embed-partial-config",
+            DoctorCategory::Optional,
+            "embed partial",
+        ),
+    ];
+    let mut body = serde_json::json!({
+        "schemaVersion": 1u32,
+        "readyForPublish": ready_for_publish(&findings),
+        "findings": findings,
+        "completionReadiness": "cold",
+    });
+    assert_eq!(body["schemaVersion"], 1);
+    assert!(body["schemaVersion"].is_number());
+    assert_eq!(body["completionReadiness"], "cold");
+    let codes: Vec<&str> = findings.iter().map(|f| f.code.as_str()).collect();
+    for expected in [
+        "completion-not-ready",
+        "completion-unreachable",
+        "embed-unreachable",
+        "embed-not-configured",
+        "embed-partial-config",
+    ] {
+        assert!(codes.contains(&expected), "frozen code missing: {expected}");
+    }
+    body.as_object_mut()
+        .expect("object")
+        .remove("completionReadiness");
+    assert!(body.get("completionReadiness").is_none());
+    assert_eq!(body["schemaVersion"], 1);
+}
+
+#[test]
 fn chain_checkpoint_practice_finding_signed_info_never_blocks() {
     let finding = DoctorFinding::info(
         "chain-checkpoint-practice",

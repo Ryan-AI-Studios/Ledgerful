@@ -244,7 +244,7 @@ pub fn execute_doctor(opts: DoctorRunOpts) -> Result<()> {
         &config, &layout, &storage,
     ));
 
-    apply_joined_network_probes(
+    let completion_readiness = apply_joined_network_probes(
         embed_handle,
         completion_handle,
         &generation_endpoint,
@@ -404,6 +404,9 @@ pub fn execute_doctor(opts: DoctorRunOpts) -> Result<()> {
             },
             "durationMs": duration_ms,
         });
+        if let Some(readiness) = completion_readiness {
+            body["completionReadiness"] = json!(readiness);
+        }
         if let Some(plan) = fix_plan.as_ref() {
             body["fix"] = serde_json::to_value(plan).unwrap_or_else(|_| json!(null));
         }
@@ -486,13 +489,13 @@ pub(crate) fn apply_acknowledgements(
 fn apply_joined_network_probes(
     embed_handle: std::thread::JoinHandle<BackendAvailabilityReport>,
     completion_handle: Option<
-        std::thread::JoinHandle<(ProbeResult<String>, checks::llm::CompletionPingClass)>,
+        std::thread::JoinHandle<(ProbeResult<String>, checks::llm::CompletionReadiness)>,
     >,
     generation_endpoint: &str,
     config: &crate::config::model::Config,
     report: &mut crate::output::human::DoctorReport<'_>,
     findings: &mut Vec<DoctorFinding>,
-) {
+) -> Option<&'static str> {
     let avail = match embed_handle.join() {
         Ok(v) => v,
         Err(payload) => std::panic::resume_unwind(payload),
@@ -516,15 +519,33 @@ fn apply_joined_network_probes(
                 DoctorCategory::Optional,
                 "Completion model not configured",
             ));
+            None
         }
         Some(handle) => {
-            let (completion_probe, ping_class) = match handle.join() {
+            let (completion_probe, readiness) = match handle.join() {
                 Ok(v) => v,
                 Err(payload) => std::panic::resume_unwind(payload),
             };
+            let readiness = if generation_endpoint.trim().is_empty()
+                && !matches!(
+                    readiness,
+                    checks::llm::CompletionReadiness::Ready
+                        | checks::llm::CompletionReadiness::Cold
+                        | checks::llm::CompletionReadiness::Loading
+                        | checks::llm::CompletionReadiness::Busy
+                ) {
+                checks::llm::CompletionReadiness::EmptyUrl
+            } else {
+                readiness
+            };
             match completion_probe {
                 ProbeResult::Healthy(model) => {
-                    report.completion_model_status = format!("{model} @ {generation_endpoint}");
+                    let label = if model.trim().is_empty() {
+                        "ready".to_string()
+                    } else {
+                        model
+                    };
+                    report.completion_model_status = format!("{label} @ {generation_endpoint}");
                 }
                 ProbeResult::ReachableAfterRetry {
                     val: model,
@@ -543,13 +564,8 @@ fn apply_joined_network_probes(
                     );
                 }
                 ProbeResult::Unreachable { err, retries } => {
-                    let class = if generation_endpoint.trim().is_empty() {
-                        checks::llm::CompletionPingClass::EmptyUrl
-                    } else {
-                        ping_class
-                    };
                     let (code, status_prefix, finding_lead) =
-                        checks::llm::completion_probe_failure_kind(class.tcp_ok());
+                        checks::llm::completion_probe_failure_kind_for(readiness);
                     tracing::debug!("Full completion model error: {}", err);
                     let (truncated, retry_suffix, detail_hint) =
                         checks::llm::completion_status_detail(&err, retries);
@@ -562,6 +578,7 @@ fn apply_joined_network_probes(
                     ));
                 }
             }
+            readiness.as_json_str()
         }
     }
 }

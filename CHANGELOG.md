@@ -6,6 +6,17 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Doctor local readiness (0311):** `doctor` probes `GET {origin}/health`
+  first (never `/v1/health`) so a listening cold router is
+  `completion-not-ready` without POSTing `/v1/chat/completions`.
+  Additive top-level `completionReadiness` (`cold` / `loading` /
+  `busy` / `ready` / `unreachable` / `fallback_failed`);
+  `schemaVersion` stays 1 and finding codes stay frozen.
+  `index --semantic --dry-run` prints configured `0` dims as `unset`,
+  not “probed at runtime”.
+
 ### Fixed
 
 - **Hotspot budget units (0310):** `hotspots budget` compares persisted

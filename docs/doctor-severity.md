@@ -37,6 +37,7 @@ Pure stdout schema v1 (`schemaVersion` is integer `1`):
 {
   "schemaVersion": 1,
   "readyForPublish": true,
+  "completionReadiness": "cold",
   "summary": { "block": 0, "warn": 4, "warnAction": 3, "warnOptional": 1, "info": 5 },
   "findings": [
     {
@@ -138,7 +139,7 @@ Examples:
 | **(default)** | Expand Block + ActionWarn only; greppable trailer `N hygiene finding(s) collapsed — run doctor --full`. When optional warns exist, the trailer adds `(1 optional warning)` / `(N optional warnings)`; with none, the default string is unchanged. Observe-mode later signing warns (0225) are omitted from the body and get a **separate** deferred trailer — never the hygiene line. |
 | **`doctor --full`** | Expand hygiene too: non-optional **info** under Index Health; **optional** findings under Optional Accelerators. Orthogonal to global `-v` (logging). |
 | **`-q` / `--quiet` or `LEDGERFUL_QUIET=1\|true`** | Via shared `resolve_quiet`: suppress multi-line remediations + **VRAM** footer; keep finding one-liners + hygiene collapse. Does **not** select machine mode. |
-| **`doctor --json`** | Unchanged: schemaVersion **1**, **full** findings always. `full`/`quiet` ignored for JSON content. Additive `sessionPriority` (`now` \| `later`) on each finding (0225). Additive `acknowledged` (bool, omitted when false) + `acknowledgedAt` (optional ISO time) (0226). |
+| **`doctor --json`** | Unchanged: schemaVersion **1**, **full** findings always. `full`/`quiet` ignored for JSON content. Additive `sessionPriority` (`now` \| `later`) on each finding (0225). Additive `acknowledged` (bool, omitted when false) + `acknowledgedAt` (optional ISO time) (0226). Additive top-level `completionReadiness` (0311: `cold` \| `loading` \| `busy` \| `ready` \| `unreachable` \| `fallback_failed`; omitted when generation is not configured). Sidecar omits `completionReadiness`. |
 
 VRAM section: shown under default and `--full`; **suppressed under quiet**.
 
