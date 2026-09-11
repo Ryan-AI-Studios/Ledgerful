@@ -448,6 +448,23 @@ mod tests {
     }
 
     #[test]
+    fn health_401_is_unknown_not_cold() {
+        let server = MockServer::start();
+        let health = server.mock(|when, then| {
+            when.method(GET).path("/health");
+            then.status(401).body("unauthorized");
+        });
+        let completions = server.mock(|when, then| {
+            when.method(POST).path("/v1/chat/completions");
+            then.status(200).body("{}");
+        });
+        let result = probe_generation_health(&cfg(&server.base_url()));
+        assert_eq!(result, HealthProbeResult::Unknown);
+        health.assert();
+        completions.assert_calls(0);
+    }
+
+    #[test]
     fn no_health_is_unknown() {
         let server = MockServer::start();
         let health = server.mock(|when, then| {

@@ -564,17 +564,29 @@ fn apply_joined_network_probes(
                     );
                 }
                 ProbeResult::Unreachable { err, retries } => {
-                    let (code, status_prefix, finding_lead) =
+                    let (code, status_prefix, _) =
                         checks::llm::completion_probe_failure_kind_for(readiness);
                     tracing::debug!("Full completion model error: {}", err);
-                    let (truncated, retry_suffix, detail_hint) =
-                        checks::llm::completion_status_detail(&err, retries);
-                    report.completion_model_status =
-                        format!("{status_prefix} ({truncated}{retry_suffix}){detail_hint}");
+                    let classified = matches!(
+                        readiness,
+                        checks::llm::CompletionReadiness::Cold
+                            | checks::llm::CompletionReadiness::Loading
+                            | checks::llm::CompletionReadiness::Busy
+                    );
+                    if classified {
+                        report.completion_model_status = status_prefix.to_string();
+                    } else {
+                        let (truncated, retry_suffix, detail_hint) =
+                            checks::llm::completion_status_detail(&err, retries);
+                        report.completion_model_status =
+                            format!("{status_prefix} ({truncated}{retry_suffix}){detail_hint}");
+                    }
                     findings.push(DoctorFinding::warn(
                         code,
                         DoctorCategory::Optional,
-                        checks::llm::completion_finding_message(finding_lead, &err, retries),
+                        checks::llm::classified_completion_finding_message(
+                            readiness, &err, retries,
+                        ),
                     ));
                 }
             }

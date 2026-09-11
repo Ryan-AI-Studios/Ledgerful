@@ -318,6 +318,22 @@ pub(crate) fn classify_completion_ping_error(
     }
 }
 
+/// Classified health states already name the state in the lead. Do not
+/// append `(idle)` / `(model not loaded)` again.
+pub(crate) fn classified_completion_finding_message(
+    readiness: CompletionReadiness,
+    err: &str,
+    retries: u32,
+) -> String {
+    let (_, _, lead) = completion_probe_failure_kind_for(readiness);
+    match readiness {
+        CompletionReadiness::Cold | CompletionReadiness::Loading | CompletionReadiness::Busy => {
+            lead.to_string()
+        }
+        _ => completion_finding_message(lead, err, retries),
+    }
+}
+
 /// Human/JSON completion finding text: `sanitize_cause` then truncate.
 pub(crate) fn completion_finding_message(finding_lead: &str, err: &str, retries: u32) -> String {
     let sanitized = crate::local_model::client::sanitize_cause(err);
@@ -655,6 +671,28 @@ mod tests {
     }
 
     #[test]
+    fn classified_cold_finding_does_not_repeat_detail() {
+        use super::CompletionReadiness;
+        let msg = super::classified_completion_finding_message(
+            CompletionReadiness::Cold,
+            "model not loaded",
+            0,
+        );
+        assert_eq!(
+            msg,
+            "Completion model listening but cold (model not loaded)"
+        );
+        assert_eq!(msg.matches("model not loaded").count(), 1);
+        let busy = super::classified_completion_finding_message(
+            CompletionReadiness::Busy,
+            "VRAM conflict",
+            0,
+        );
+        assert_eq!(busy, "Completion model listening but busy (VRAM conflict)");
+        assert_eq!(busy.matches("VRAM conflict").count(), 1);
+    }
+
+    #[test]
     fn health_states_name_lead_not_ping() {
         use super::CompletionReadiness;
         let (code, _, lead) = super::completion_probe_failure_kind_for(CompletionReadiness::Cold);
@@ -735,6 +773,28 @@ mod tests {
         assert!(matches!(result, super::ProbeResult::Healthy(_)));
         health.assert();
         completions.assert_calls(0);
+    }
+
+    #[test]
+    fn classified_health_401_falls_back_to_completion_ping() {
+        use httpmock::prelude::*;
+        let server = MockServer::start();
+        let health = server.mock(|when, then| {
+            when.method(GET).path("/health");
+            then.status(401).body("unauthorized");
+        });
+        let completions = server.mock(|when, then| {
+            when.method(POST).path("/v1/chat/completions");
+            then.status(200)
+                .header("content-type", "application/json")
+                .body(r#"{"model":"gemma"}"#);
+        });
+        let (result, readiness) =
+            super::probe_completion_classified(classified_cfg(&server.base_url()));
+        assert_eq!(readiness, super::CompletionReadiness::Ready);
+        assert!(matches!(result, super::ProbeResult::Healthy(_)));
+        health.assert();
+        completions.assert_calls(1);
     }
 
     #[test]
