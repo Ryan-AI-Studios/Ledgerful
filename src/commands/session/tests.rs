@@ -148,6 +148,10 @@ fn envelope_json_has_frozen_fields_no_warn_action() {
     assert!(v["doctor"].get("warnAction").is_none());
     assert!(v["ledger"]["collisions"].is_array());
     assert_eq!(v["hotspots"]["excludedTests"], true);
+    assert_eq!(v["hotspots"]["provenance"]["source"], "live");
+    assert_eq!(v["hotspots"]["provenance"]["filter"], "session");
+    assert_eq!(v["hotspots"]["provenance"]["daysRequested"], 30);
+    assert_eq!(v["hotspots"]["provenance"]["limit"], 5);
 }
 
 #[test]
@@ -168,6 +172,7 @@ fn session_hotspot_file_from_copies_stored_display_score_not_recomputed_ln() {
         "must copy stored display_score, not normalize_score(score): {}",
         file.display_score
     );
+    assert!(file.presence.is_none());
     assert!((file.score - file.display_score).abs() > 1.0);
     let v = serde_json::to_value(&file).expect("serialize");
     assert!(v.get("scoreUnit").is_none(), "no scoreUnit: {v}");
@@ -599,4 +604,141 @@ fn session_skips_git_history_enrichment() {
     let after = fs::read_to_string(report_path.as_std_path()).unwrap();
     assert_eq!(before, after, "session must not rewrite latest-impact.json");
     let _ = storage.shutdown();
+}
+
+#[test]
+fn session_json_emits_provenance_keeps_ten_line_human() {
+    let envelope = SessionEnvelope::default();
+    let v = serde_json::to_value(&envelope).expect("json");
+    assert_eq!(v["hotspots"]["provenance"]["filter"], "session");
+    assert!(
+        v["hotspots"]["provenance"]["commitsRequested"]
+            .as_u64()
+            .unwrap()
+            <= 50
+    );
+    assert_eq!(v["hotspots"]["provenance"]["daysRequested"], 30);
+    assert_eq!(v["hotspots"]["provenance"]["limit"], 5);
+    assert!(v["hotspots"]["provenance"].get("snapshotAt").is_none());
+    let text = format_human(&envelope);
+    let lines: Vec<&str> = text.lines().collect();
+    assert_eq!(lines.len(), 10, "human summary must stay 10 lines: {text}");
+    assert!(
+        serde_json::from_str::<serde_json::Value>(&text).is_err(),
+        "human stdout must not parse as JSON: {text}"
+    );
+}
+
+#[test]
+fn session_omits_snapshot_age_keys() {
+    let tmp = tempdir().unwrap();
+    let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+    let dir = tmp.path();
+    init_git_repo(dir);
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    storage
+        .get_connection()
+        .execute(
+            "INSERT INTO hotspot_history (file_path, score, display_score, complexity, frequency, timestamp) \
+             VALUES ('src/a.rs', 0.1, 1.0, 1, 1.0, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    let envelope = build_session(&layout, &storage, &Config::default()).unwrap();
+    let v = serde_json::to_value(&envelope.hotspots.provenance).expect("json");
+    assert_eq!(v["source"], "live");
+    assert_eq!(v["filter"], "session");
+    assert!(v.get("snapshotAt").is_none(), "{v}");
+    assert!(v.get("snapshotAgeSecs").is_none(), "{v}");
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn same_query_session_and_list_ranks_match() {
+    use crate::impact::hotspots::{HotspotQuery, calculate_hotspots_detailed};
+    use crate::impact::temporal::GixHistoryProvider;
+
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path();
+    init_git_repo(dir);
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::write(dir.join("src/lib.rs"), "pub fn a() {}\n").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(dir)
+        .output()
+        .expect("git add");
+    std::process::Command::new("git")
+        .args(["commit", "-m", "src"])
+        .current_dir(dir)
+        .output()
+        .expect("git commit");
+
+    let root = camino::Utf8Path::from_path(dir).unwrap();
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    let repo = crate::git::repo::open_repo(dir).expect("open");
+    let provider = GixHistoryProvider::new(&repo);
+    let query = HotspotQuery {
+        commits: 50,
+        days: Some(30),
+        limit: 5,
+        exclude_test_paths: true,
+        exclude_vendor_paths: true,
+        ..HotspotQuery::default()
+    };
+    let a = calculate_hotspots_detailed(&storage, &provider, &query).expect("first");
+    let b = calculate_hotspots_detailed(&storage, &provider, &query).expect("second");
+    let ranks_a: Vec<(String, i32)> = a
+        .hotspots
+        .iter()
+        .map(|h| {
+            (
+                h.path.to_string_lossy().replace('\\', "/"),
+                (h.score * 1_000_000.0).round() as i32,
+            )
+        })
+        .collect();
+    let ranks_b: Vec<(String, i32)> = b
+        .hotspots
+        .iter()
+        .map(|h| {
+            (
+                h.path.to_string_lossy().replace('\\', "/"),
+                (h.score * 1_000_000.0).round() as i32,
+            )
+        })
+        .collect();
+    assert_eq!(
+        ranks_a, ranks_b,
+        "same HotspotQuery must yield same path+score"
+    );
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn unmatched_windows_differ_and_are_labeled() {
+    use crate::impact::budget::{CompletenessFilter, HotspotProvenance, HotspotProvenanceSource};
+
+    let session = SessionEnvelope::default();
+    let session_v = serde_json::to_value(&session.hotspots.provenance).expect("session");
+    let list = HotspotProvenance {
+        source: HotspotProvenanceSource::Live,
+        commits_requested: Some(500),
+        days_requested: None,
+        limit: Some(10),
+        filter: Some(CompletenessFilter::Default),
+        ..HotspotProvenance::default()
+    };
+    let list_v = serde_json::to_value(&list).expect("list");
+    assert_ne!(session_v["commitsRequested"], list_v["commitsRequested"]);
+    assert_eq!(session_v["filter"], "session");
+    assert_eq!(list_v["filter"], "default");
+    assert_eq!(session_v["daysRequested"], 30);
+    assert!(list_v.get("daysRequested").is_none());
 }

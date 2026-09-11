@@ -1,12 +1,15 @@
 use crate::cli::{HotspotArgs, HotspotIncludeScope};
+use crate::git::blob::head_path_exists;
 use crate::impact::budget::{
-    AnalysisBudget, completeness_for_walk, eprint_walk_stop, filter_for_cli_include,
+    AnalysisBudget, HotspotProvenance, HotspotProvenanceSource, completeness_for_walk,
+    eprint_walk_stop, filter_for_cli_include, format_provenance_footer,
 };
 use crate::impact::hotspots::{HotspotQuery, calculate_hotspots_detailed};
+use crate::impact::packet::Hotspot;
 use crate::impact::temporal::{GixHistoryProvider, TemporalEngine};
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
-use chrono::Utc;
+use chrono::{DateTime, Utc};
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
 
@@ -16,13 +19,14 @@ pub(super) fn wrap_hotspots_list_json<T: Serialize>(
     items: Vec<T>,
     limit: usize,
 ) -> serde_json::Value {
-    wrap_hotspots_list_json_with_completeness(items, limit, None)
+    wrap_hotspots_list_json_with_completeness(items, limit, None, None)
 }
 
 pub(super) fn wrap_hotspots_list_json_with_completeness<T: Serialize>(
     mut items: Vec<T>,
     limit: usize,
     completeness: Option<&crate::impact::budget::AnalysisCompleteness>,
+    provenance: Option<&HotspotProvenance>,
 ) -> serde_json::Value {
     items.truncate(limit);
     let mut output = crate::output::empty::format_json_list_envelope(items, "files");
@@ -33,8 +37,79 @@ pub(super) fn wrap_hotspots_list_json_with_completeness<T: Serialize>(
         {
             map.insert("completeness".to_string(), v);
         }
+        if let Some(p) = provenance
+            && let Ok(v) = serde_json::to_value(p)
+        {
+            map.insert("provenance".to_string(), v);
+        }
     }
     output
+}
+
+/// Emit-time `presence` only — never a field on shared [`Hotspot`].
+pub(super) fn list_hotspot_json(repo: &gix::Repository, hotspot: &Hotspot) -> serde_json::Value {
+    let mut value = match serde_json::to_value(hotspot) {
+        Ok(v) => v,
+        Err(_) => serde_json::json!({
+            "path": hotspot.path.to_string_lossy(),
+            "score": hotspot.score,
+            "displayScore": hotspot.display_score,
+            "complexity": hotspot.complexity,
+            "frequency": hotspot.frequency,
+        }),
+    };
+    if !head_path_exists(repo, &hotspot.path.to_string_lossy())
+        && let Some(obj) = value.as_object_mut()
+    {
+        obj.insert(
+            "presence".to_string(),
+            serde_json::Value::String("historical".to_string()),
+        );
+    }
+    value
+}
+
+pub(super) fn latest_hotspot_history_timestamp(storage: &StorageManager) -> Option<String> {
+    storage
+        .get_connection()
+        .query_row("SELECT MAX(timestamp) FROM hotspot_history", [], |row| {
+            row.get::<_, Option<String>>(0)
+        })
+        .ok()
+        .flatten()
+}
+
+pub(super) fn snapshot_age_secs_from(snapshot_at: &str, now: DateTime<Utc>) -> Option<u64> {
+    let parsed = DateTime::parse_from_rfc3339(snapshot_at).ok()?;
+    let age = now.signed_duration_since(parsed.with_timezone(&Utc));
+    Some(age.num_seconds().max(0) as u64)
+}
+
+pub(super) fn live_list_provenance(
+    query: &HotspotQuery,
+    include: Option<HotspotIncludeScope>,
+    head: Option<String>,
+    snapshot_at: Option<String>,
+    now: DateTime<Utc>,
+) -> HotspotProvenance {
+    let (snapshot_at, snapshot_age_secs) = match snapshot_at {
+        Some(ts) => match snapshot_age_secs_from(&ts, now) {
+            Some(age) => (Some(ts), Some(age)),
+            None => (None, None),
+        },
+        None => (None, None),
+    };
+    HotspotProvenance {
+        source: HotspotProvenanceSource::Live,
+        commits_requested: Some(query.commits as u64),
+        days_requested: query.days,
+        limit: Some(query.limit as u64),
+        filter: Some(filter_for_cli_include(include)),
+        head,
+        snapshot_at,
+        snapshot_age_secs,
+        ..HotspotProvenance::default()
+    }
 }
 
 pub(super) fn execute_hotspots_list(
@@ -135,9 +210,30 @@ pub(super) fn execute_hotspots_list(
         }
     }
 
+    let snapshot_at = if args.json {
+        latest_hotspot_history_timestamp(storage)
+    } else {
+        None
+    };
+    let provenance = live_list_provenance(
+        &query,
+        args.include,
+        calculated.head.clone(),
+        snapshot_at,
+        Utc::now(),
+    );
+
     if args.json {
-        let output =
-            wrap_hotspots_list_json_with_completeness(hotspots, query.limit, completeness.as_ref());
+        let files: Vec<serde_json::Value> = hotspots
+            .iter()
+            .map(|h| list_hotspot_json(repo, h))
+            .collect();
+        let output = wrap_hotspots_list_json_with_completeness(
+            files,
+            query.limit,
+            completeness.as_ref(),
+            Some(&provenance),
+        );
         crate::output::json::emit(&output).map_err(|e| miette::miette!("{}", e))?;
     } else if args.centrality {
         crate::output::human::print_hotspots_table_with_centrality(&hotspots);
@@ -147,6 +243,7 @@ pub(super) fn execute_hotspots_list(
             calculated.omitted_vendor_paths,
             docs_frequency_lane,
         );
+        println!("{}", format_provenance_footer(&provenance));
     } else {
         crate::output::human::print_hotspots_table(&hotspots);
         print_omit_footers(
@@ -155,6 +252,7 @@ pub(super) fn execute_hotspots_list(
             calculated.omitted_vendor_paths,
             docs_frequency_lane,
         );
+        println!("{}", format_provenance_footer(&provenance));
     }
 
     Ok(())

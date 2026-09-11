@@ -8,6 +8,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Hotspot provenance (0309):** CLI `hotspots --json`, session
+  `hotspots`, and `hotspots trend --json` emit additive `provenance`
+  (window, filter, `source: live`\|`trends`). Live list items and
+  session files mark git-history-only paths with `presence:
+  "historical"`. Trend summary labels `delta` as
+  `deltaUnit: "displayScore"` (ln). MCP `hotspots` and
+  `GET /api/hotspots` stay arrays. Session vs list windows stay
+  different — compare `provenance` before comparing ranks.
+
 - **History-walk budget (0308):** Cooperative `AnalysisBudget` (default
   45s via `[hotspots] history_budget_secs`, CLI `--timeout` on
   `hotspots` / `audit` / `review`, env `LEDGERFUL_HISTORY_BUDGET_SECS`).

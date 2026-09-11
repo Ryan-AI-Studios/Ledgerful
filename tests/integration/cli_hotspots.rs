@@ -106,6 +106,19 @@ fn hotspot_trends_count(root: &std::path::Path) -> i64 {
         .unwrap()
 }
 
+/// 0181 honesty: reject a bare table `Score` column. 0309 footer
+/// `Delta: displayScore` is allowed (not a header).
+fn assert_no_bare_score_header(stdout: &str) {
+    assert!(
+        !stdout.contains("| Score"),
+        "bare Score header is the honesty bug: {stdout}"
+    );
+    assert!(
+        stdout.contains("Display"),
+        "expected tabular Display header: {stdout}"
+    );
+}
+
 /// Seed `hotspot_trends` with one row per path so summary/limit/entity e2e
 /// tests do not depend on multi-file git history from bootstrap.
 ///
@@ -195,6 +208,9 @@ fn test_trend_no_history_non_bootstrap_json_shape_and_read_only() {
     assert_eq!(json["schemaVersion"], 1);
     assert_eq!(json["mode"], "summary");
     assert_eq!(json["historyAvailable"], serde_json::json!(false));
+    assert_eq!(json["provenance"]["source"], "trends");
+    assert_eq!(json["provenance"]["deltaUnit"], "displayScore");
+    assert!(json["provenance"].get("firstRecordedAt").is_none());
     assert_eq!(
         json["bootstrapHint"],
         serde_json::json!("ledgerful hotspots trend --bootstrap")
@@ -247,6 +263,8 @@ fn test_trend_bootstrap_on_empty_history_creates_one_snapshot_and_reports_availa
     assert_eq!(json["mode"], "summary");
     assert_eq!(json["historyAvailable"], serde_json::json!(true));
     assert_eq!(json["bootstrapHint"], serde_json::Value::Null);
+    assert_eq!(json["provenance"]["source"], "trends");
+    assert_eq!(json["provenance"]["deltaUnit"], "displayScore");
     assert!(
         !json["files"].as_array().unwrap().is_empty(),
         "expected the freshly bootstrapped snapshot to be visible in summary files, got: {stdout}"
@@ -299,13 +317,10 @@ fn test_trend_bootstrap_on_empty_history_creates_one_snapshot_and_reports_availa
         stdout_human.contains('\u{253C}') || stdout_human.contains('+'),
         "expected a premium table border (utf8 ┼ or ascii +) in human output, got: {stdout_human}"
     );
+    assert_no_bare_score_header(&stdout_human);
     assert!(
-        stdout_human.contains("Display"),
-        "expected tabular 'Display' header in human output, got: {stdout_human}"
-    );
-    assert!(
-        !stdout_human.contains("Score"),
-        "bare Score header is the honesty bug: {stdout_human}"
+        stdout_human.contains("Delta: displayScore"),
+        "expected 0309 trend provenance footer, got: {stdout_human}"
     );
 }
 
@@ -444,13 +459,10 @@ fn test_trend_bootstrap_succeeds_on_young_repo_with_insufficient_coupling_histor
         stdout_human.contains('\u{253C}') || stdout_human.contains('+'),
         "expected a premium table border (utf8 ┼ or ascii +) in human output, got: {stdout_human}"
     );
+    assert_no_bare_score_header(&stdout_human);
     assert!(
-        stdout_human.contains("Display"),
-        "expected tabular 'Display' header in human output, got: {stdout_human}"
-    );
-    assert!(
-        !stdout_human.contains("Score"),
-        "bare Score header is the honesty bug: {stdout_human}"
+        stdout_human.contains("Delta: displayScore"),
+        "expected 0309 trend provenance footer, got: {stdout_human}"
     );
 }
 

@@ -608,7 +608,19 @@ fn handle_hotspots_calculate_failure_is_error() {
 
 #[test]
 fn api_and_mcp_stay_arrays() {
-    let hotspots: Vec<crate::impact::packet::Hotspot> = Vec::new();
+    let sample = crate::impact::packet::Hotspot {
+        path: std::path::PathBuf::from("src/lib.rs"),
+        score: 0.12,
+        display_score: 4.8,
+        complexity: 3,
+        frequency: 2.0,
+        centrality: None,
+    };
+    let encoded = serde_json::to_value(&sample).expect("hotspot");
+    assert!(encoded.get("presence").is_none(), "{encoded}");
+    assert!(encoded.get("provenance").is_none(), "{encoded}");
+
+    let hotspots = vec![sample.clone()];
     let envelope = hotspots_from_calc::<&str>(Ok(hotspots));
     assert_ne!(
         envelope.get("isError"),
@@ -620,6 +632,14 @@ fn api_and_mcp_stay_arrays() {
         !text.contains("\"completeness\""),
         "MCP hotspots must stay an array without completeness: {text}"
     );
+    assert!(
+        !text.contains("\"provenance\""),
+        "MCP hotspots must stay an array without provenance: {text}"
+    );
+    assert!(
+        !text.contains("\"presence\""),
+        "MCP hotspots must not emit presence: {text}"
+    );
     let start = text
         .find("\n[")
         .map(|i| i + 1)
@@ -630,12 +650,15 @@ fn api_and_mcp_stay_arrays() {
         inner.is_array(),
         "MCP inner payload must be an array: {inner}"
     );
+    assert!(inner.as_array().is_some_and(|a| !a.is_empty()));
 
-    let api: Vec<crate::impact::packet::Hotspot> = Vec::new();
+    let api = vec![sample];
     let api_json = serde_json::to_value(&api).expect("api");
     assert!(
         api_json.is_array(),
         "GET /api/hotspots stays a JSON array: {api_json}"
     );
     assert!(api_json.get("completeness").is_none());
+    assert!(api_json.get("provenance").is_none());
+    assert!(api_json[0].get("presence").is_none());
 }

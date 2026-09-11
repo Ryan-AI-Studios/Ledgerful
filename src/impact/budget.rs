@@ -130,6 +130,88 @@ pub enum CompletenessFilter {
     Session,
 }
 
+impl CompletenessFilter {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Default => "default",
+            Self::Tests => "tests",
+            Self::Docs => "docs",
+            Self::Vendor => "vendor",
+            Self::Unfiltered => "unfiltered",
+            Self::Session => "session",
+        }
+    }
+}
+
+/// Query window / source label (0309). Always present on CLI live list,
+/// session `hotspots`, and trend JSON. Distinct from omit-when-complete
+/// [`AnalysisCompleteness`].
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Default)]
+#[serde(rename_all = "camelCase")]
+pub struct HotspotProvenance {
+    pub source: HotspotProvenanceSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commits_requested: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub days_requested: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub limit: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub filter: Option<CompletenessFilter>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub snapshot_age_secs: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub delta_unit: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub first_recorded_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub last_recorded_at: Option<String>,
+    /// Human footer only (trend `days` is top-level JSON, not this key).
+    #[serde(skip)]
+    pub footer_days: Option<u64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+pub enum HotspotProvenanceSource {
+    #[default]
+    Live,
+    Trends,
+}
+
+/// Exact human footer templates (0309 spec §3.3).
+pub fn format_provenance_footer(p: &HotspotProvenance) -> String {
+    match p.source {
+        HotspotProvenanceSource::Live => {
+            let commits = p.commits_requested.unwrap_or(0);
+            let days = p
+                .days_requested
+                .map(|n| format!(" · {n} days"))
+                .unwrap_or_default();
+            let filter = p
+                .filter
+                .map(CompletenessFilter::as_str)
+                .unwrap_or("default");
+            format!("Window: {commits} commits{days} · Filter: {filter} · Source: live")
+        }
+        HotspotProvenanceSource::Trends => {
+            let days = p.footer_days.or(p.days_requested).unwrap_or(0);
+            if p.delta_unit.is_some() {
+                let limit = p.limit.unwrap_or(0);
+                format!(
+                    "Window: {days} days · Limit: {limit} · Source: trends · Delta: displayScore"
+                )
+            } else {
+                format!("Window: {days} days · Source: trends")
+            }
+        }
+    }
+}
+
 /// CLI > env > config.toml > 45. Unparseable env warns and falls through.
 pub fn resolve_history_budget_secs(cli_timeout: Option<u64>, config_secs: u64) -> u64 {
     if let Some(cli) = cli_timeout {
@@ -310,5 +392,50 @@ mod tests {
         assert_eq!(v["stop"], "error");
         assert!(v.get("commitsWalked").is_none());
         assert!(v.get("cacheHit").is_none());
+    }
+
+    #[test]
+    fn format_provenance_footer_exact_strings() {
+        let live = HotspotProvenance {
+            source: HotspotProvenanceSource::Live,
+            commits_requested: Some(500),
+            filter: Some(CompletenessFilter::Default),
+            ..HotspotProvenance::default()
+        };
+        assert_eq!(
+            format_provenance_footer(&live),
+            "Window: 500 commits · Filter: default · Source: live"
+        );
+        let live_days = HotspotProvenance {
+            source: HotspotProvenanceSource::Live,
+            commits_requested: Some(50),
+            days_requested: Some(30),
+            filter: Some(CompletenessFilter::Session),
+            ..HotspotProvenance::default()
+        };
+        assert_eq!(
+            format_provenance_footer(&live_days),
+            "Window: 50 commits · 30 days · Filter: session · Source: live"
+        );
+        let summary = HotspotProvenance {
+            source: HotspotProvenanceSource::Trends,
+            limit: Some(20),
+            delta_unit: Some("displayScore".to_string()),
+            footer_days: Some(30),
+            ..HotspotProvenance::default()
+        };
+        assert_eq!(
+            format_provenance_footer(&summary),
+            "Window: 30 days · Limit: 20 · Source: trends · Delta: displayScore"
+        );
+        let full = HotspotProvenance {
+            source: HotspotProvenanceSource::Trends,
+            footer_days: Some(14),
+            ..HotspotProvenance::default()
+        };
+        assert_eq!(
+            format_provenance_footer(&full),
+            "Window: 14 days · Source: trends"
+        );
     }
 }

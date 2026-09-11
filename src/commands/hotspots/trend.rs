@@ -1,5 +1,6 @@
 use super::list::persist_hotspots_and_couplings;
 use crate::commands::hook_post_commit::insert_hotspot_trends_with_retry;
+use crate::impact::budget::{HotspotProvenance, HotspotProvenanceSource, format_provenance_footer};
 use crate::impact::hotspots::{HotspotQuery, calculate_hotspots, normalize_score};
 use crate::impact::temporal::GixHistoryProvider;
 use crate::output::human::HOTSPOT_DISPLAY_HEADER;
@@ -421,6 +422,59 @@ pub(super) fn build_trend_summary(rows: &[TrendRow], limit: usize) -> TrendSumma
     }
 }
 
+pub(super) fn trend_window_extrema(rows: &[TrendRow]) -> (Option<String>, Option<String>) {
+    if rows.is_empty() {
+        return (None, None);
+    }
+    let mut first = rows[0].recorded_at.as_str();
+    let mut last = first;
+    for row in rows {
+        if row.recorded_at.as_str() < first {
+            first = row.recorded_at.as_str();
+        }
+        if row.recorded_at.as_str() > last {
+            last = row.recorded_at.as_str();
+        }
+    }
+    (Some(first.to_string()), Some(last.to_string()))
+}
+
+pub(super) fn trend_summary_provenance(
+    days: u32,
+    limit: u64,
+    rows: &[TrendRow],
+) -> HotspotProvenance {
+    let (first_recorded_at, last_recorded_at) = trend_window_extrema(rows);
+    HotspotProvenance {
+        source: HotspotProvenanceSource::Trends,
+        limit: Some(limit),
+        delta_unit: Some("displayScore".to_string()),
+        first_recorded_at,
+        last_recorded_at,
+        footer_days: Some(u64::from(days)),
+        ..HotspotProvenance::default()
+    }
+}
+
+pub(super) fn trend_entries_provenance(days: u32, rows: &[TrendRow]) -> HotspotProvenance {
+    let (first_recorded_at, last_recorded_at) = trend_window_extrema(rows);
+    HotspotProvenance {
+        source: HotspotProvenanceSource::Trends,
+        first_recorded_at,
+        last_recorded_at,
+        footer_days: Some(u64::from(days)),
+        ..HotspotProvenance::default()
+    }
+}
+
+fn insert_trend_provenance(payload: &mut serde_json::Value, provenance: &HotspotProvenance) {
+    if let Some(map) = payload.as_object_mut()
+        && let Ok(v) = serde_json::to_value(provenance)
+    {
+        map.insert("provenance".to_string(), v);
+    }
+}
+
 /// Count distinct `file_path` / `recorded_at` in a row set (for full/entity JSON).
 fn trend_window_counts(rows: &[TrendRow]) -> (usize, usize, usize) {
     let total_entries = rows.len();
@@ -621,7 +675,8 @@ pub(super) fn execute_hotspots_trend(
                 let summary = build_trend_summary(&rows, limit);
                 let files_json: Vec<serde_json::Value> =
                     summary.files.iter().map(trend_file_json).collect();
-                serde_json::json!({
+                let provenance = trend_summary_provenance(days, summary.limit as u64, &rows);
+                let mut payload = serde_json::json!({
                     "schemaVersion": 1,
                     "mode": "summary",
                     "days": days,
@@ -637,11 +692,14 @@ pub(super) fn execute_hotspots_trend(
                     "totalEntries": summary.total_entries,
                     "snapshotCount": summary.snapshot_count,
                     "files": files_json,
-                })
+                });
+                insert_trend_provenance(&mut payload, &provenance);
+                payload
             }
             TrendMode::Full => {
                 let (total_files, total_entries, snapshot_count) = trend_window_counts(&rows);
-                serde_json::json!({
+                let provenance = trend_entries_provenance(days, &rows);
+                let mut payload = serde_json::json!({
                     "schemaVersion": 1,
                     "mode": "full",
                     "days": days,
@@ -656,7 +714,9 @@ pub(super) fn execute_hotspots_trend(
                     "totalEntries": total_entries,
                     "snapshotCount": snapshot_count,
                     "entries": trend_entries_json(&rows),
-                })
+                });
+                insert_trend_provenance(&mut payload, &provenance);
+                payload
             }
             TrendMode::Entity => {
                 let (distinct_files, total_entries, snapshot_count) = trend_window_counts(&rows);
@@ -665,7 +725,8 @@ pub(super) fn execute_hotspots_trend(
                 } else {
                     0
                 };
-                serde_json::json!({
+                let provenance = trend_entries_provenance(days, &rows);
+                let mut payload = serde_json::json!({
                     "schemaVersion": 1,
                     "mode": "entity",
                     "days": days,
@@ -680,7 +741,9 @@ pub(super) fn execute_hotspots_trend(
                     "totalEntries": total_entries,
                     "snapshotCount": snapshot_count,
                     "entries": trend_entries_json(&rows),
-                })
+                });
+                insert_trend_provenance(&mut payload, &provenance);
+                payload
             }
         };
         crate::output::json::emit(&payload)
@@ -766,6 +829,14 @@ pub(super) fn execute_hotspots_trend(
                 }
             }
         }
+        let footer_provenance = match mode {
+            TrendMode::Summary { limit } => {
+                let summary = build_trend_summary(&rows, limit);
+                trend_summary_provenance(days, summary.limit as u64, &rows)
+            }
+            TrendMode::Full | TrendMode::Entity => trend_entries_provenance(days, &rows),
+        };
+        println!("{}", format_provenance_footer(&footer_provenance));
     }
 
     Ok(())
