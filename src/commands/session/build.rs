@@ -81,7 +81,7 @@ pub fn build_session(
         }
     };
 
-    let (hotspot_files, hotspot_warning, hotspot_completeness) =
+    let (hotspot_files, hotspot_warning, hotspot_completeness, hotspot_provenance) =
         collect_hotspots(storage, config, project_root);
 
     let change_context = SessionChangeContext {
@@ -132,6 +132,7 @@ pub fn build_session(
             files: hotspot_files,
             excluded_tests: true,
             completeness: hotspot_completeness,
+            provenance: hotspot_provenance,
         },
         impact_cache,
         next,
@@ -225,7 +226,9 @@ fn collect_hotspots(
     Vec<SessionHotspotFile>,
     Option<String>,
     Option<crate::impact::budget::AnalysisCompleteness>,
+    crate::impact::budget::HotspotProvenance,
 ) {
+    let commits = config.hotspots.max_commits.min(SESSION_HOTSPOT_COMMITS_CAP) as u64;
     let repo = match open_repo(project_root) {
         Ok(r) => r,
         Err(e) => {
@@ -235,18 +238,18 @@ fn collect_hotspots(
                     "hotspots unavailable: git repository not openable: {e}"
                 )),
                 Some(completeness_for_error(
-                    config.hotspots.max_commits.min(SESSION_HOTSPOT_COMMITS_CAP) as u64,
+                    commits,
                     Some(SESSION_HOTSPOT_DAYS),
                     CompletenessFilter::Session,
                     Some(config.hotspots.history_budget_secs).filter(|s| *s > 0),
                 )),
+                session_hotspots_provenance(commits, None),
             );
         }
     };
-    let commits = config.hotspots.max_commits.min(SESSION_HOTSPOT_COMMITS_CAP);
     let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let query = HotspotQuery {
-        commits,
+        commits: commits as usize,
         days: Some(SESSION_HOTSPOT_DAYS),
         limit: SESSION_HOTSPOT_LIMIT,
         decay_half_life: config.hotspots.decay_half_life,
@@ -263,30 +266,36 @@ fn collect_hotspots(
         Ok(calc) => {
             let files = calc
                 .hotspots
-                .into_iter()
+                .iter()
                 .take(SESSION_HOTSPOT_LIMIT)
-                .map(|h| session_hotspot_file_from(&h))
+                .map(|h| session_hotspot_file_with_head(h, &repo))
                 .collect();
             let completeness = completeness_for_walk(
                 calc.walk_stop,
-                commits as u64,
+                commits,
                 calc.commits_walked as u64,
                 Some(SESSION_HOTSPOT_DAYS),
                 CompletenessFilter::Session,
-                calc.head,
+                calc.head.clone(),
                 Some(config.hotspots.history_budget_secs).filter(|s| *s > 0),
             );
-            (files, None, completeness)
+            (
+                files,
+                None,
+                completeness,
+                session_hotspots_provenance(commits, calc.head),
+            )
         }
         Err(e) => (
             Vec::new(),
             Some(format!("hotspots unavailable: {e}")),
             Some(completeness_for_error(
-                commits as u64,
+                commits,
                 Some(SESSION_HOTSPOT_DAYS),
                 CompletenessFilter::Session,
                 Some(config.hotspots.history_budget_secs).filter(|s| *s > 0),
             )),
+            session_hotspots_provenance(commits, None),
         ),
     }
 }

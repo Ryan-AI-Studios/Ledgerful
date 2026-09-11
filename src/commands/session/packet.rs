@@ -122,6 +122,9 @@ pub struct SessionHotspots {
     pub excluded_tests: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub completeness: Option<crate::impact::budget::AnalysisCompleteness>,
+    /// Always emitted after 0309; `default` keeps pre-0309 session JSON loadable.
+    #[serde(default)]
+    pub provenance: crate::impact::budget::HotspotProvenance,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -132,6 +135,8 @@ pub struct SessionHotspotFile {
     /// Human ln display. Additive; older envelopes without the key default to 0.0.
     #[serde(default)]
     pub display_score: f32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub presence: Option<String>,
 }
 
 /// Map a hotspot into the session briefing item. Copies stored `display_score`
@@ -141,6 +146,34 @@ pub(crate) fn session_hotspot_file_from(h: &Hotspot) -> SessionHotspotFile {
         path: h.path.to_string_lossy().replace('\\', "/"),
         score: h.score,
         display_score: h.display_score,
+        presence: None,
+    }
+}
+
+/// Session emit-time presence. Unborn / missing HEAD omits the key.
+pub(crate) fn session_hotspot_file_with_head(
+    h: &Hotspot,
+    repo: &gix::Repository,
+) -> SessionHotspotFile {
+    let mut file = session_hotspot_file_from(h);
+    if !crate::git::blob::head_path_exists(repo, &file.path) {
+        file.presence = Some("historical".to_string());
+    }
+    file
+}
+
+pub(crate) fn session_hotspots_provenance(
+    commits_requested: u64,
+    head: Option<String>,
+) -> crate::impact::budget::HotspotProvenance {
+    crate::impact::budget::HotspotProvenance {
+        source: crate::impact::budget::HotspotProvenanceSource::Live,
+        commits_requested: Some(commits_requested),
+        days_requested: Some(SESSION_HOTSPOT_DAYS),
+        limit: Some(SESSION_HOTSPOT_LIMIT as u64),
+        filter: Some(crate::impact::budget::CompletenessFilter::Session),
+        head,
+        ..crate::impact::budget::HotspotProvenance::default()
     }
 }
 
@@ -231,6 +264,7 @@ impl Default for SessionEnvelope {
                 files: Vec::new(),
                 excluded_tests: true,
                 completeness: None,
+                provenance: session_hotspots_provenance(SESSION_HOTSPOT_COMMITS_CAP as u64, None),
             },
             impact_cache: SessionImpactCache {
                 present: false,

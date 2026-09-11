@@ -33,6 +33,31 @@ pub fn read_head_blob(project_root: &Path, path: &Path) -> Option<String> {
     String::from_utf8(blob.data.clone()).ok()
 }
 
+/// Normalize a repo-relative path for gix tree lookup (POSIX slashes).
+pub fn normalize_tree_path(path: &str) -> String {
+    path.replace('\\', "/")
+        .trim_start_matches("./")
+        .trim_start_matches('/')
+        .to_string()
+}
+
+/// True when `path` exists as a tree entry at HEAD. Unborn / missing HEAD
+/// returns `false` (callers omit `presence` rather than marking every row
+/// historical).
+pub fn head_path_exists(repo: &gix::Repository, path: &str) -> bool {
+    let Ok(tree) = repo.head_tree() else {
+        return false;
+    };
+    let path_str = normalize_tree_path(path);
+    if path_str.is_empty() {
+        return false;
+    }
+    tree.lookup_entry_by_path(path_str.as_str())
+        .ok()
+        .flatten()
+        .is_some()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -129,5 +154,25 @@ mod tests {
         let dir = tempdir().unwrap();
         fs::write(dir.path().join("x.txt"), "no git\n").unwrap();
         assert!(read_head_blob(dir.path(), Path::new("x.txt")).is_none());
+    }
+
+    #[test]
+    fn head_path_exists_normalizes_and_fail_opens() {
+        let dir = tempdir().unwrap();
+        init_repo_with_commit(dir.path());
+        let repo = crate::git::repo::open_repo(dir.path()).expect("open");
+        assert!(head_path_exists(&repo, "tracked.txt"));
+        assert!(head_path_exists(&repo, r"sub\nested.txt"));
+        assert!(head_path_exists(&repo, "./sub/nested.txt"));
+        assert!(head_path_exists(&repo, "/sub/nested.txt"));
+        assert!(!head_path_exists(&repo, "brand_new.txt"));
+
+        let unborn = tempdir().unwrap();
+        assert!(git(unborn.path(), &["init", "-b", "main"]).status.success());
+        let unborn_repo = crate::git::repo::open_repo(unborn.path()).expect("unborn");
+        assert!(
+            !head_path_exists(&unborn_repo, "tracked.txt"),
+            "unborn HEAD must fail-open (omit presence)"
+        );
     }
 }

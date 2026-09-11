@@ -1,11 +1,16 @@
 use super::explain::complexity_for_entity_path;
 use super::list::{
-    omitted_docs_footer, omitted_hotspots_footer, omitted_vendor_hotspots_footer,
-    wrap_hotspots_list_json, wrap_hotspots_list_json_with_completeness,
+    latest_hotspot_history_timestamp, list_hotspot_json, live_list_provenance, omitted_docs_footer,
+    omitted_hotspots_footer, omitted_vendor_hotspots_footer, wrap_hotspots_list_json,
+    wrap_hotspots_list_json_with_completeness,
 };
 use super::trend::{
     TrendMode, TrendRow, build_trend_summary, compute_history_available, format_trend_ts,
-    render_hotspot_trend_table, render_trend_summary_table, resolve_trend_mode, trend_file_json,
+    render_hotspot_trend_table, render_trend_summary_table, resolve_trend_mode,
+    trend_entries_provenance, trend_file_json, trend_summary_provenance,
+};
+use crate::impact::budget::{
+    CompletenessFilter, HotspotProvenance, HotspotProvenanceSource, format_provenance_footer,
 };
 use crate::impact::hotspots::normalize_score;
 
@@ -106,6 +111,7 @@ fn hotspots_json_budget_emits_one_document() {
         vec![serde_json::json!({"path": "src/a.rs"})],
         10,
         Some(&completeness),
+        None,
     );
     assert_eq!(output["schemaVersion"], 1);
     assert_eq!(output["limit"], 10);
@@ -461,4 +467,363 @@ fn complexity_two_symbols_uses_max() {
 
     let resolved = complexity_for_entity_path(&conn, "src/file.rs").unwrap();
     assert_eq!(resolved, 12);
+}
+
+fn live_prov(
+    commits: u64,
+    days: Option<u64>,
+    limit: u64,
+    filter: CompletenessFilter,
+) -> HotspotProvenance {
+    HotspotProvenance {
+        source: HotspotProvenanceSource::Live,
+        commits_requested: Some(commits),
+        days_requested: days,
+        limit: Some(limit),
+        filter: Some(filter),
+        head: Some("abc".to_string()),
+        ..HotspotProvenance::default()
+    }
+}
+
+#[test]
+fn list_json_emits_provenance_on_complete_walk() {
+    let provenance = live_prov(500, None, 10, CompletenessFilter::Default);
+    let output = wrap_hotspots_list_json_with_completeness(
+        vec![serde_json::json!({"path": "src/a.rs"})],
+        10,
+        None,
+        Some(&provenance),
+    );
+    assert_eq!(output["schemaVersion"], 1);
+    assert_eq!(output["limit"], 10);
+    assert!(output.get("completeness").is_none(), "{output}");
+    assert_eq!(output["provenance"]["source"], "live");
+    assert_eq!(output["provenance"]["filter"], "default");
+    assert_eq!(output["provenance"]["commitsRequested"], 500);
+}
+
+#[test]
+fn list_json_emits_provenance_on_empty_files() {
+    let provenance = live_prov(50, Some(30), 5, CompletenessFilter::Session);
+    let output = wrap_hotspots_list_json_with_completeness(
+        Vec::<serde_json::Value>::new(),
+        5,
+        None,
+        Some(&provenance),
+    );
+    assert_eq!(output["files"].as_array().map(Vec::len), Some(0));
+    assert_eq!(output["provenance"]["source"], "live");
+}
+
+#[test]
+fn list_json_omits_days_requested_without_days_flag() {
+    let provenance = live_prov(500, None, 10, CompletenessFilter::Default);
+    let output = wrap_hotspots_list_json_with_completeness(
+        vec![serde_json::json!({"path": "src/a.rs"})],
+        10,
+        None,
+        Some(&provenance),
+    );
+    assert!(
+        output["provenance"].get("daysRequested").is_none(),
+        "{output}"
+    );
+}
+
+#[test]
+fn semantic_json_omits_provenance() {
+    let output = wrap_hotspots_list_json(vec![serde_json::json!({"path": "dup.rs"})], 10);
+    assert!(output.get("provenance").is_none(), "{output}");
+    assert!(output.get("completeness").is_none(), "{output}");
+}
+
+#[test]
+fn format_provenance_footer_exact_strings() {
+    let live = live_prov(500, None, 10, CompletenessFilter::Default);
+    assert_eq!(
+        format_provenance_footer(&live),
+        "Window: 500 commits · Filter: default · Source: live"
+    );
+    let live_days = live_prov(50, Some(30), 5, CompletenessFilter::Session);
+    assert_eq!(
+        format_provenance_footer(&live_days),
+        "Window: 50 commits · 30 days · Filter: session · Source: live"
+    );
+    let summary = trend_summary_provenance(30, 20, &[]);
+    assert_eq!(
+        format_provenance_footer(&summary),
+        "Window: 30 days · Limit: 20 · Source: trends · Delta: displayScore"
+    );
+    let full = trend_entries_provenance(14, &[]);
+    assert_eq!(
+        format_provenance_footer(&full),
+        "Window: 14 days · Source: trends"
+    );
+}
+
+#[test]
+fn trend_json_labels_delta_unit_display_score() {
+    let rows = vec![
+        row("f.rs", "2026-01-01T00:00:00Z", 0.1, "c1"),
+        row("f.rs", "2026-01-02T00:00:00Z", 0.2, "c2"),
+    ];
+    let summary = build_trend_summary(&rows, 5);
+    assert!((summary.files[0].latest_score - 0.2).abs() < f64::EPSILON);
+    assert!(summary.files[0].latest_score > 0.0 && summary.files[0].latest_score <= 1.0);
+    assert!(summary.files[0].delta.is_some());
+    let provenance = trend_summary_provenance(30, summary.limit as u64, &rows);
+    let v = serde_json::to_value(&provenance).expect("json");
+    assert_eq!(v["source"], "trends");
+    assert_eq!(v["deltaUnit"], "displayScore");
+    assert_eq!(v["firstRecordedAt"], "2026-01-01T00:00:00Z");
+    assert_eq!(v["lastRecordedAt"], "2026-01-02T00:00:00Z");
+    assert!(v.get("filter").is_none());
+    assert!(v.get("head").is_none());
+    assert!(v.get("commitsRequested").is_none());
+
+    let solo = vec![row("solo.rs", "2026-01-01T00:00:00Z", 0.3, "c1")];
+    let solo_summary = build_trend_summary(&solo, 5);
+    assert!(solo_summary.files[0].delta.is_none());
+}
+
+#[test]
+fn trend_json_empty_omits_extrema() {
+    let provenance = trend_summary_provenance(30, 20, &[]);
+    let v = serde_json::to_value(&provenance).expect("json");
+    assert_eq!(v["source"], "trends");
+    assert!(v.get("firstRecordedAt").is_none(), "{v}");
+    assert!(v.get("lastRecordedAt").is_none(), "{v}");
+}
+
+#[test]
+fn trend_full_entity_omit_limit_filter_head_delta_unit() {
+    let rows = vec![row("f.rs", "2026-01-01T00:00:00Z", 0.1, "c1")];
+    let provenance = trend_entries_provenance(30, &rows);
+    let v = serde_json::to_value(&provenance).expect("json");
+    assert_eq!(v["source"], "trends");
+    assert!(v.get("limit").is_none(), "{v}");
+    assert!(v.get("filter").is_none(), "{v}");
+    assert!(v.get("head").is_none(), "{v}");
+    assert!(v.get("deltaUnit").is_none(), "{v}");
+    assert_eq!(v["firstRecordedAt"], "2026-01-01T00:00:00Z");
+}
+
+#[test]
+fn list_json_snapshot_age_when_history_exists() {
+    use crate::impact::hotspots::HotspotQuery;
+    use crate::state::layout::Layout;
+    use crate::state::storage::StorageManager;
+    use chrono::{TimeZone, Utc};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = camino::Utf8Path::from_path(tmp.path()).unwrap();
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    assert!(latest_hotspot_history_timestamp(&storage).is_none());
+
+    let query = HotspotQuery {
+        commits: 500,
+        limit: 10,
+        ..HotspotQuery::default()
+    };
+    let empty = live_list_provenance(&query, None, None, None, Utc::now());
+    let empty_json = serde_json::to_value(&empty).expect("json");
+    assert!(empty_json.get("snapshotAt").is_none(), "{empty_json}");
+    assert!(empty_json.get("snapshotAgeSecs").is_none(), "{empty_json}");
+
+    storage
+        .get_connection()
+        .execute(
+            "INSERT INTO hotspot_history (file_path, score, display_score, complexity, frequency, timestamp) \
+             VALUES ('src/a.rs', 0.1, 1.0, 1, 1.0, '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+    let ts = latest_hotspot_history_timestamp(&storage).expect("row");
+    assert_eq!(ts, "2026-01-01T00:00:00Z");
+    let now = Utc.with_ymd_and_hms(2026, 1, 1, 1, 0, 0).unwrap();
+    let with_age = live_list_provenance(&query, None, None, Some(ts), now);
+    let v = serde_json::to_value(&with_age).expect("json");
+    assert_eq!(v["snapshotAt"], "2026-01-01T00:00:00Z");
+    assert!(v["snapshotAgeSecs"].as_u64().expect("age") >= 3600);
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn presence_historical_on_deleted_git_path() {
+    use crate::impact::packet::Hotspot;
+    use std::fs;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    assert!(
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success()
+    );
+    for (k, v) in [("user.email", "t@t.com"), ("user.name", "T")] {
+        assert!(
+            Command::new("git")
+                .args(["config", k, v])
+                .current_dir(dir)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    fs::write(dir.join("stay.rs"), "fn stay() {}\n").unwrap();
+    fs::write(dir.join("gone.rs"), "fn gone() {}\n").unwrap();
+    assert!(
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success()
+    );
+    fs::remove_file(dir.join("gone.rs")).unwrap();
+    assert!(
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["commit", "-m", "delete gone"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let repo = crate::git::repo::open_repo(dir).expect("open");
+    let gone = Hotspot {
+        path: PathBuf::from("gone.rs"),
+        score: 0.2,
+        display_score: 1.0,
+        complexity: 1,
+        frequency: 1.0,
+        centrality: None,
+    };
+    let stay = Hotspot {
+        path: PathBuf::from("stay.rs"),
+        score: 0.3,
+        display_score: 1.1,
+        complexity: 1,
+        frequency: 1.0,
+        centrality: None,
+    };
+    let gone_json = list_hotspot_json(&repo, &gone);
+    let stay_json = list_hotspot_json(&repo, &stay);
+    assert_eq!(gone_json["presence"], "historical");
+    assert!(stay_json.get("presence").is_none(), "{stay_json}");
+    assert_eq!(gone_json["path"], "gone.rs");
+}
+
+#[test]
+fn entity_prefix_still_git_history_starts_with() {
+    use crate::impact::hotspots::{HotspotQuery, calculate_hotspots_detailed};
+    use crate::impact::temporal::GixHistoryProvider;
+    use crate::state::layout::Layout;
+    use crate::state::storage::StorageManager;
+    use std::fs;
+    use std::process::Command;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    assert!(
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success()
+    );
+    for (k, v) in [("user.email", "t@t.com"), ("user.name", "T")] {
+        assert!(
+            Command::new("git")
+                .args(["config", k, v])
+                .current_dir(dir)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::create_dir_all(dir.join("other")).unwrap();
+    fs::write(dir.join("src/lib.rs"), "fn src() {}\n").unwrap();
+    fs::write(dir.join("other/out.rs"), "fn other() {}\n").unwrap();
+    assert!(
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["commit", "-m", "init"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let root = camino::Utf8Path::from_path(dir).unwrap();
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    let repo = crate::git::repo::open_repo(dir).expect("open");
+    let provider = GixHistoryProvider::new(&repo);
+    let query = HotspotQuery {
+        commits: 50,
+        limit: 10,
+        dir_filter: Some("src/".to_string()),
+        ..HotspotQuery::default()
+    };
+    let calc = calculate_hotspots_detailed(&storage, &provider, &query).expect("calc");
+    assert!(
+        calc.hotspots.iter().all(|h| h
+            .path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .starts_with("src/")),
+        "dir_filter must stay git-history starts_with: {:?}",
+        calc.hotspots
+            .iter()
+            .map(|h| h.path.clone())
+            .collect::<Vec<_>>()
+    );
+    assert!(
+        calc.hotspots
+            .iter()
+            .all(|h| !h.path.to_string_lossy().contains("other/")),
+        "must not remap via project_files: {:?}",
+        calc.hotspots
+            .iter()
+            .map(|h| h.path.clone())
+            .collect::<Vec<_>>()
+    );
+    let _ = storage.shutdown();
 }

@@ -41,8 +41,8 @@ on stderr.
 | `index --semantic --json` | yes (0161) | yes | One final JSON object (`schemaVersion`, `mode`, `reason`, counts, `upToDate`); zero human mid-run lines on stdout |
 | `index --json` (main / `--auto-scip` / `--scip`) | yes | yes* | Merged index stats object; top-level **`scip`** (0157/0166): `status`, `edges_added`/`edges_updated`, `definitions_mapped`/`definitions_seen`, `files_skipped`, skip/recovery tallies (`edges_skipped_enclosing_disagreement`, `edges_recovered_nest_prefer`, `edges_skipped_unmapped`, `edges_skipped_invalid_occ_range`, `edges_skipped_duplicate`, `definitions_skipped_invalid_range`, `invalid_enclosing_fallback`), `references_seen`, optional `message`. On Success skip/recovery fields are always present (incl. 0). WARN summary for disagreement/invalid-range is **stderr** only (O(1)); not part of the JSON payload |
 | `dead-code --json` | yes (0149) | yes | schemaVersion 1 envelope; see rejected combos |
-| `hotspots --json` | yes | yes | schemaVersion 1 object; collection `files`; list and `--semantic` echo `limit` (0207). Additive `completeness` (0308) only when the history walk stops early (`stop`: `budget`\|`cancelled`\|`error`); omitted on a complete window. CLI default list omits test/example/bench paths (0222; `--include tests` restores) **and** markdown (0293; `--include docs` is a frequency lane) **and** vendored `deps_src`/`vendor`/… (0297; `--include vendor` restores `f×c`). **`score` is 0–1**; `displayScore` is ln display. No `scoreUnit`. **MCP `hotspots` stays an in-process array** and stays unfiltered. `--semantic` ignores `--include`. `--timeout` bounds the walk (config `[hotspots] history_budget_secs`, default 45; `0` disables the clock). |
-| `hotspots trend --json` | yes (0151) | yes | schemaVersion 1; modes summary/full/entity; see schema below |
+| `hotspots --json` | yes | yes | schemaVersion 1 object; collection `files`; list and `--semantic` echo `limit` (0207). Additive `completeness` (0308) only when the history walk stops early (`stop`: `budget`\|`cancelled`\|`error`); omitted on a complete window. Additive `provenance` (0309) is **always** on the live list (`source: live`; `commitsRequested`; `daysRequested` only with `--days`; `limit`; `filter`; `head` when known; `snapshotAt`/`snapshotAgeSecs` when `hotspot_history` has a row). `--semantic --json` omits `provenance`. Per-file `presence: "historical"` is emit-time only when the ranked path is missing from HEAD. CLI default list omits test/example/bench paths (0222; `--include tests` restores) **and** markdown (0293; `--include docs` is a frequency lane) **and** vendored `deps_src`/`vendor`/… (0297; `--include vendor` restores `f×c`). **`score` is 0–1**; `displayScore` is ln display. No `scoreUnit`. **MCP `hotspots` stays an in-process array** and stays unfiltered. `--semantic` ignores `--include`. `--timeout` bounds the walk (config `[hotspots] history_budget_secs`, default 45; `0` disables the clock). |
+| `hotspots trend --json` | yes (0151) | yes | schemaVersion 1; modes summary/full/entity; additive `provenance` (0309, `source: trends`) always present — see schema below |
 | `endpoints --json` | yes | yes | schemaVersion 1 object; collection `results` (0207). MCP `endpoints_changed` re-execs CLI and rides this envelope |
 | `symbols --json` | yes (0163) | yes | schemaVersion **1** inventory; path/changed/kind/pub filters; COUNT-backed `totalMatching`; optional `indexStatus`; see schema below |
 | `data-models list --json` | yes | yes | schemaVersion 1 object; collection `models` (0207); item `file_path` stays snake (0155); one row per logical model identity |
@@ -530,9 +530,18 @@ precedence: `--entity` > `-a/--all` > summary.
       "lastRecordedAt": "2026-08-08T15:59:19.529795500+00:00",
       "commitHash": "85ebb481e9c882e0c7d90c5e6281fa739a9c7dc6"
     }
-  ]
+  ],
+  "provenance": {
+    "source": "trends",
+    "limit": 20,
+    "deltaUnit": "displayScore",
+    "firstRecordedAt": "2026-01-01T00:00:00Z",
+    "lastRecordedAt": "2026-08-08T15:59:19.529795500+00:00"
+  }
 }
 ```
+
+`provenance` is always present (including empty `files` / `entries`). Summary includes `limit` + `deltaUnit: "displayScore"` (`delta` / `displayScore` stay ln; `latestScore` stays 0–1). Full/entity omit `limit`, `filter`, `head`, and `deltaUnit`. `firstRecordedAt` / `lastRecordedAt` are window extrema when `totalEntries > 0` and omitted when empty. Trend `days` stays top-level — do not echo `daysRequested` / `commitsRequested` / `filter` / `head` on trend provenance.
 
 ### Full mode (`--all`) and entity mode (`--entity`)
 
@@ -779,7 +788,7 @@ field names stay command-specific (`results` / `impacted` / `files` /
 | `observability coverage --json` | `results` | Item `slo_count` / `metric_count` stay snake |
 | `data-models list --json` | `models` | Item `file_path` stays snake |
 | `data-models impact --json` | `impacted` | |
-| `hotspots --json` (list + `--semantic`) | `files` | List and `--semantic` echo `limit`. No `truncated` (no extra overfetch). CLI default omits test/example/bench paths; `--include tests` is the unfiltered audit view (0222, includes vendor). CLI default also omits `.md`; `--include docs` ranks markdown by frequency (`score` = `f_norm`, `complexity` 0). CLI default also omits vendored `deps_src`/`vendor`/`third_party`; `--include vendor` restores `f×c` (tests + docs still omitted). `--entity` into a vendored subtree needs `--include vendor`. `--semantic` ignores `--include`. Default and `--include tests` / `--include vendor` item `score` is 0–1 (`f_norm × c_norm`); `displayScore` is `ln_1p(score × 1000)` for humans. Item `complexity` is `MAX(MAX(cognitive, cyclomatic))` across current-index symbols (`project_symbols`; impact `symbols` only if the file is unindexed). C++ `function_definition` is scored on its `body`. AI-T252 must pin `score`, not `displayScore`. No `scoreUnit` key. |
+| `hotspots --json` (list + `--semantic`) | `files` | List and `--semantic` echo `limit`. No `truncated` (no extra overfetch). Live list always emits `provenance` (0309); `--semantic` omits it. Item `presence: "historical"` only when the path is missing from HEAD (omit when current; not a field on shared `Hotspot`). CLI default omits test/example/bench paths; `--include tests` is the unfiltered audit view (0222, includes vendor). CLI default also omits `.md`; `--include docs` ranks markdown by frequency (`score` = `f_norm`, `complexity` 0). CLI default also omits vendored `deps_src`/`vendor`/`third_party`; `--include vendor` restores `f×c` (tests + docs still omitted). `--entity` into a vendored subtree needs `--include vendor`. `--semantic` ignores `--include`. Default and `--include tests` / `--include vendor` item `score` is 0–1 (`f_norm × c_norm`); `displayScore` is `ln_1p(score × 1000)` for humans. Item `complexity` is `MAX(MAX(cognitive, cyclomatic))` across current-index symbols (`project_symbols`; impact `symbols` only if the file is unindexed). C++ `function_definition` is scored on its `body`. AI-T252 must pin `score`, not `displayScore`. No `scoreUnit` key. |
 | `ci list --json` / `ci diff --json` (alias) | `gates` | Empty catalog: `gates: []`, `resultCount: 0`, **no** `emptyReason`. `list` is primary. |
 | `services list --json` / `services diff --json` (alias) | `results` | Gated empty keeps `emptyReason: "disabledByConfig"` + `message`. `list` is primary. |
 | `tests --json` (mapped) | `mappings` | Additive `resolvedPath` (omit when none); empty arms use the helper. Missing entity (no `--entity` / positional) is a usage error (exit 2, empty stdout), not an empty `mappings` envelope. |
@@ -1194,14 +1203,24 @@ rewrite `latest-impact.json`. CLI-only (MCP registry is not one-file additive).
     "readSetTotalCandidates": 0,
     "readSet": []
   },
-  "hotspots": { "files": [], "excludedTests": true },
+  "hotspots": {
+    "files": [],
+    "excludedTests": true,
+    "provenance": {
+      "source": "live",
+      "commitsRequested": 50,
+      "daysRequested": 30,
+      "limit": 5,
+      "filter": "session"
+    }
+  },
   "impactCache": { "present": false, "validForHead": false, "treeClean": false },
   "next": ["ledgerful change-context --json"],
   "configChecklist": []
 }
 ```
 
-Session `hotspots.completeness` (0308) is omitted when the 50/30/5 walk finished the requested window; present with `filter: "session"` when the walk stopped early.
+Session `hotspots.completeness` (0308) is omitted when the 50/30/5 walk finished the requested window; present with `filter: "session"` when the walk stopped early. Session `hotspots.provenance` (0309) is always emitted (`source: live`, `commitsRequested ≤ 50`, `daysRequested: 30`, `limit: 5`, `filter: session`). It never includes `snapshotAt` / `snapshotAgeSecs` (no `hotspot_history` query). Per-file `presence: "historical"` when a ranked path is missing from HEAD.
 
 | Field | Notes |
 |---|---|
@@ -1211,7 +1230,7 @@ Session `hotspots.completeness` (0308) is omitted when the 50/30/5 walk finished
 | `ledger.collisions` | 0223 `pending_entity_overlap` vs dirty paths; `[]` when none. **Not** on status v1 |
 | `doctor` | sidecar `block`/`warn`/`info` + `readyForPublish`. **No** `warnAction`. Per-finding `sessionPriority` / `acknowledged` stay on `doctor --json` |
 | `changeContext.readSetCapped` / `readSetTotalCandidates` | pass-through from `build_change_context` with `max_files=5` (not a post-slice of a 20-file packet) |
-| `hotspots.files` | limit 5, `exclude_test_paths: true`, `exclude_vendor_paths: true` (0297; vendor ranks unlike markdown), git walk `commits ≤ min(config, 50)`, `days: 30`. Item keys: `path`, `score` (0–1, pin this), additive `displayScore` (ln). This is the **second** field on the session item (parity with `hotspots --json`), not a third field on either surface. No `scoreUnit`. No `excludedVendor` key (`excludedTests` stays). Additive `hotspots.completeness` (0308) only when the walk stops early (`filter: "session"`). MCP `hotspots` stays unfiltered |
+| `hotspots.files` | limit 5, `exclude_test_paths: true`, `exclude_vendor_paths: true` (0297; vendor ranks unlike markdown), git walk `commits ≤ min(config, 50)`, `days: 30`. Item keys: `path`, `score` (0–1, pin this), additive `displayScore` (ln), optional emit-time `presence`. This is the **second** field on the session item (parity with `hotspots --json`), not a third field on either surface. No `scoreUnit`. No `excludedVendor` key (`excludedTests` stays). Additive `hotspots.completeness` (0308) only when the walk stops early (`filter: "session"`). Always-on `hotspots.provenance` (0309). Session vs CLI list windows differ by design — compare `provenance` before comparing ranks. MCP `hotspots` stays unfiltered |
 | `impactCache` | new HEAD comparator: None → all false; Packet → `present`, `treeClean=false`, `validForHead` iff packet head equals live HEAD; CleanTree → `present`, `treeClean=true`, `validForHead` iff tombstone head equals live HEAD |
 | `next` | sorted deterministic strings (change-context `next_actions` idiom plus cache/collision notes). **Must not** gain `config set` from the checklist |
 | `configChecklist` | always present (may be `[]`). Applicable rows only, sorted by `id`. Keys: `id`, `status` (`ready`\|`gated`\|`empty`\|`optional`), `applicable` (always true), `next` (always a string; `""` when ready except 0185 reuse rows), `alreadyShown`, optional `applyArg`. No `sessionNotices` on this envelope |
