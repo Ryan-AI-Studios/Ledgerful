@@ -372,7 +372,40 @@ pub(crate) fn completion_status_detail(err: &str, retries: u32) -> (String, Stri
 pub(crate) fn probe_completion_classified(
     config: crate::config::model::LocalModelConfig,
 ) -> (ProbeResult<String>, CompletionReadiness) {
-    match crate::local_model::client::probe_generation_health(&config) {
+    let health_cfg = config.clone();
+    probe_completion_classified_with(config, PROBE_PER_ATTEMPT_DEADLINE, move || {
+        crate::local_model::client::probe_generation_health(&health_cfg)
+    })
+}
+
+/// Same as [`probe_completion_classified`], with an injectable health
+/// deadline (0143 spawn + `recv_timeout`). Health is one attempt
+/// (`max_retries = 0`); classified 503/409 never retry. A hung DNS/read
+/// is abandoned at `health_deadline` and does **not** fall through to ping.
+fn probe_completion_classified_with<H>(
+    config: crate::config::model::LocalModelConfig,
+    health_deadline: std::time::Duration,
+    health_probe: H,
+) -> (ProbeResult<String>, CompletionReadiness)
+where
+    H: Fn() -> crate::local_model::client::HealthProbeResult + Send + Sync + 'static,
+{
+    let health = match probe_with_retry_budgeted(
+        move || Ok(health_probe()),
+        RETRY_BUDGET,
+        RETRY_DELAY,
+        health_deadline,
+        0,
+    ) {
+        ProbeResult::Healthy(v) | ProbeResult::ReachableAfterRetry { val: v, .. } => v,
+        ProbeResult::Unreachable { err, retries } => {
+            return (
+                ProbeResult::Unreachable { err, retries },
+                CompletionReadiness::FallbackFailed,
+            );
+        }
+    };
+    match health {
         crate::local_model::client::HealthProbeResult::Ready { display } => {
             return (ProbeResult::Healthy(display), CompletionReadiness::Ready);
         }
@@ -832,6 +865,39 @@ mod tests {
         let (result, readiness) = super::probe_completion_classified(cfg);
         assert_eq!(readiness, CompletionReadiness::Unreachable);
         assert!(matches!(result, super::ProbeResult::Unreachable { .. }));
+    }
+
+    #[test]
+    fn classified_health_hung_worker_abandoned_within_deadline() {
+        use crate::local_model::client::HealthProbeResult;
+        let deadline = std::time::Duration::from_millis(80);
+        let start = std::time::Instant::now();
+        let (result, readiness) = super::probe_completion_classified_with(
+            classified_cfg("http://127.0.0.1:9"),
+            deadline,
+            || {
+                std::thread::sleep(std::time::Duration::from_secs(30));
+                HealthProbeResult::Ready {
+                    display: "should-not-see".to_string(),
+                }
+            },
+        );
+        let elapsed = start.elapsed();
+        assert_eq!(readiness, super::CompletionReadiness::FallbackFailed);
+        match result {
+            super::ProbeResult::Unreachable { err, retries } => {
+                assert!(
+                    err.contains("timed out"),
+                    "deadline error should mention timed out, got: {err}"
+                );
+                assert_eq!(retries, 0);
+            }
+            other => panic!("expected Unreachable, got {other:?}"),
+        }
+        assert!(
+            elapsed < std::time::Duration::from_millis(400),
+            "hung health probe took {elapsed:?}, expected well under 400ms"
+        );
     }
 
     #[test]

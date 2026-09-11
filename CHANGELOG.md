@@ -11,6 +11,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 - **Doctor local readiness (0311):** `doctor` probes `GET {origin}/health`
   first (never `/v1/health`) so a listening cold router is
   `completion-not-ready` without POSTing `/v1/chat/completions`.
+  The health GET (and optional `/models` follow-up) uses the same
+  0143 spawn + `recv_timeout` per-attempt deadline as other doctor
+  probes (`max_retries = 0`); a hung DNS/read is abandoned and does
+  not fall through to a completions ping.
   Additive top-level `completionReadiness` (`cold` / `loading` /
   `busy` / `ready` / `unreachable` / `fallback_failed`);
   `schemaVersion` stays 1 and finding codes stay frozen.
