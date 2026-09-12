@@ -615,6 +615,36 @@ mod tests {
     }
 
     #[test]
+    fn config_checklist_http_plus_global_emits_sorted_service_children() {
+        let (_tmp, layout, storage, mut config, session) = harness();
+        insert_route(&storage, 1, "src/http/routes.rs");
+        config.coverage.enabled = true;
+        let items = build_config_checklist(&layout, &storage, &config, &session).unwrap();
+        let ids = ids_of(&items);
+        assert!(
+            ids.contains(&"coverage.services"),
+            "HTTP + global on must emit coverage.services: {ids:?}"
+        );
+        assert!(
+            ids.contains(&"services.declare"),
+            "HTTP + global on must emit services.declare: {ids:?}"
+        );
+        let services = ids
+            .iter()
+            .position(|id| *id == "coverage.services")
+            .expect("coverage.services");
+        let declare = ids
+            .iter()
+            .position(|id| *id == "services.declare")
+            .expect("services.declare");
+        assert!(
+            services < declare,
+            "child rows must stay in id order: {ids:?}"
+        );
+        let _ = storage.shutdown();
+    }
+
+    #[test]
     fn config_checklist_second_session_marks_already_shown() {
         let (_tmp, layout, storage, config, mut session) = harness();
         insert_route(&storage, 1, "src/api.rs");

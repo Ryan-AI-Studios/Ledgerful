@@ -79,11 +79,11 @@ Index topology inventory (gated empty when `coverage.enabled` is false). Alias: 
 
 ## `ledgerful deploy impact`
 
-Gated empty when `coverage.enabled` / `coverage.deploy.enabled` is false. Keep `hide` on root `--help` (0289). Flag is on `impact`, not parent `deploy`. `--json`: schemaVersion 1 object, collection `results`; gated empty keeps `emptyReason`/`message`. Session-once (0300): second human empty contains `Already shown this session.` and omits `config set`; JSON `message` stays and may add `sessionNotices`. Honor `already_shown` — do not re-ask HITL.
+Gated empty when `coverage.enabled` / `coverage.deploy.enabled` is false. Disabled copy names the switch and does **not** start with “No deployment impact detected.” (that sentence is enabled + no current-change hits). Keep `hide` on root `--help` (0289). Flag is on `impact`, not parent `deploy`. `--json`: schemaVersion 1 object, collection `results`; gated empty keeps `emptyReason`/`message`. Session-once (0300): second human empty contains `Already shown this session.` and omits `config set`; JSON `message` stays and may add `sessionNotices`. Honor `already_shown` — do not re-ask HITL.
 
 ## `ledgerful observability coverage`
 
-Empty OpenSLO inventory (any empty reason). Keep `hide` on root `--help` (0289). `--json`: schemaVersion 1 object, collection `results`; empty keeps `emptyReason`/`message`. Session-once (0300): second human contains `Already shown this session.` and skips the generate-template prompt; JSON `message` stays (including analyze-graph) and may add `sessionNotices.observability.empty`. `observability diff` does **not** participate. Honor `already_shown` — do not re-ask HITL.
+Empty OpenSLO inventory (any empty reason). Supported inputs are repo-root `observability/` OpenSLO YAML (`kind: Service` plus matching `kind: SLO`, or `[services]` that creates the service node) after `index --analyze-graph`. A SLO-only DX1 template stays empty. Coverage stays opt-in (`coverage.enabled` default false). Keep `hide` on root `--help` (0289). `--json`: schemaVersion 1 object, collection `results`; empty keeps `emptyReason`/`message`. Session-once (0300): second human contains `Already shown this session.` and skips the generate-template prompt; JSON `message` stays (including analyze-graph) and may add `sessionNotices.observability.empty`. `observability diff` does **not** participate. Honor `already_shown` — do not re-ask HITL.
 
 ## `ledgerful gate mode`
 

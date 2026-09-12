@@ -460,6 +460,10 @@ mod tests {
         assert!(result.is_err(), "must refuse inapplicable");
         assert!(stdout.is_empty(), "{stdout}");
         assert!(
+            !layout.cli_session_file_for_id("t-inapp").exists(),
+            "validation refuse must not write cookie"
+        );
+        assert!(
             !crate::config::load::load_config(&layout)
                 .unwrap()
                 .coverage
@@ -476,6 +480,10 @@ mod tests {
             let (result, stdout) = run_in(&layout, &storage, &config, true, &[token], "t-star");
             assert!(result.is_err(), "must refuse {token}");
             assert!(stdout.is_empty(), "{token} stdout={stdout}");
+            assert!(
+                !layout.cli_session_file_for_id("t-star").exists(),
+                "validation refuse {token} must not write cookie"
+            );
             assert!(
                 !crate::config::load::load_config(&layout)
                     .unwrap()
