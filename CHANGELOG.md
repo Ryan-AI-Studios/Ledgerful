@@ -26,6 +26,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Declared CI inventory (0326):** `ci list --json` adds `filePath`,
+  event-name `triggers`, omit-empty `jobIf` / `needs` / `uses`, and
+  always-present `scope` (`declaredWorkflowJobs`; not GitHub required
+  checks or live runs). Human table names the same ceiling. Triggers
+  are `on:` event names only (not branch/cron list items).
+
 - **Scoped readiness honesty (0325):** Empty `ledger validator doctor`
   prints registered/enabled/inspected/resolved counts and does not
   claim a health pass. `policy check --format json` always includes

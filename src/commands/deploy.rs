@@ -11,6 +11,7 @@ use chrono::Utc;
 use clap::{Args, Subcommand};
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
+use serde::Serialize;
 
 #[derive(Args, Debug)]
 #[command(after_help = "Default when omitted: impact.")]
@@ -319,6 +320,38 @@ pub(crate) fn format_ci_inventory_preamble(tree_clean: bool) -> &'static str {
     }
 }
 
+const CI_DECLARED_SCOPE_SENTENCE: &str =
+    "Declared workflow jobs from the index — not GitHub required checks or live run status.";
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct CiGateJson {
+    platform: String,
+    job: String,
+    workflow: Option<String>,
+    environment: Option<String>,
+    file_path: String,
+    triggers: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    job_if: Option<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    needs: Vec<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    uses: Option<String>,
+}
+
+struct CiGateRowOut {
+    file_path: String,
+    platform: String,
+    job: String,
+    workflow: Option<String>,
+    environment: Option<String>,
+    triggers: Vec<String>,
+    job_if: Option<String>,
+    needs: Vec<String>,
+    uses: Option<String>,
+}
+
 pub fn execute_ci(args: CiArgs) -> Result<()> {
     let layout = get_layout()?;
     let storage = StorageManager::open_read_only(&layout)?;
@@ -327,39 +360,73 @@ pub fn execute_ci(args: CiArgs) -> Result<()> {
     match args.command_or_default() {
         CiSubcommands::Diff { json } => {
             let mut stmt = conn
-                .prepare("SELECT platform, job_name, workflow_name, environment FROM ci_gates")
+                .prepare(
+                    "SELECT pf.file_path, g.platform, g.job_name, g.workflow_name, g.environment, \
+                     g.trigger, g.job_if, g.needs, g.uses \
+                     FROM ci_gates g \
+                     INNER JOIN project_files pf ON pf.id = g.ci_file_id",
+                )
                 .into_diagnostic()?;
 
-            let rows = stmt
+            let query_rows = stmt
                 .query_map([], |row| {
                     Ok((
                         row.get::<_, String>(0)?,
                         row.get::<_, String>(1)?,
-                        row.get::<_, Option<String>>(2)?,
+                        row.get::<_, String>(2)?,
                         row.get::<_, Option<String>>(3)?,
+                        row.get::<_, Option<String>>(4)?,
+                        row.get::<_, Option<String>>(5)?,
+                        row.get::<_, Option<String>>(6)?,
+                        row.get::<_, Option<String>>(7)?,
+                        row.get::<_, Option<String>>(8)?,
                     ))
                 })
                 .into_diagnostic()?;
 
+            let mut rows = Vec::new();
+            for row in query_rows {
+                let (file_path, platform, job, workflow, env, trigger, job_if, needs, uses) =
+                    row.into_diagnostic()?;
+                let file_path = file_path.replace('\\', "/");
+                rows.push(CiGateRowOut {
+                    triggers: cli_triggers(&platform, trigger.as_deref()),
+                    needs: split_name_list(needs.as_deref()),
+                    job_if: empty_to_none(job_if),
+                    uses: empty_to_none(uses),
+                    file_path,
+                    platform,
+                    job,
+                    workflow,
+                    environment: env,
+                });
+            }
+            rows.sort_by(|a, b| {
+                (&a.file_path, &a.job, &a.platform).cmp(&(&b.file_path, &b.job, &b.platform))
+            });
+
             if json {
-                let mut results = Vec::new();
-                for row in rows {
-                    let (plat, job, workflow, env) = row.into_diagnostic()?;
-                    results.push(serde_json::json!({
-                        "platform": plat,
-                        "job": job,
-                        "workflow": workflow,
-                        "environment": env,
-                    }));
-                }
-                let output = crate::output::empty::format_json_list_envelope(results, "gates");
+                let results: Vec<CiGateJson> = rows
+                    .into_iter()
+                    .map(|r| CiGateJson {
+                        platform: r.platform,
+                        job: r.job,
+                        workflow: r.workflow,
+                        environment: r.environment,
+                        file_path: r.file_path,
+                        triggers: r.triggers,
+                        job_if: r.job_if,
+                        needs: r.needs,
+                        uses: r.uses,
+                    })
+                    .collect();
+                let mut output = crate::output::empty::format_json_list_envelope(results, "gates");
+                attach_ci_inventory_scope(&mut output);
                 println!(
                     "{}",
                     serde_json::to_string_pretty(&output).into_diagnostic()?
                 );
             } else {
-                // Same empty-tree class as scan / policy idle. Git or filter
-                // failure is treated as dirty so this SQLite inventory still prints.
                 let tree_clean = crate::git::status::collect_changed_files_for_filter(&layout)
                     .map(|changes| changes.is_empty())
                     .unwrap_or(false);
@@ -369,16 +436,25 @@ pub fn execute_ci(args: CiArgs) -> Result<()> {
                     "CI Gate Inventory"
                         .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
                 );
+                println!("{CI_DECLARED_SCOPE_SENTENCE}");
                 let mut table = Table::new();
-                table.set_header(vec!["Platform", "Job", "Workflow", "Environment"]);
+                table.set_header(vec![
+                    "Platform", "Job", "Workflow", "File", "Trigger", "If", "Needs",
+                ]);
 
                 for row in rows {
-                    let (plat, job, workflow, env) = row.into_diagnostic()?;
                     table.add_row(vec![
-                        plat,
-                        job,
-                        workflow.unwrap_or_else(|| "-".to_string()),
-                        env.unwrap_or_else(|| "-".to_string()),
+                        row.platform,
+                        row.job,
+                        row.workflow.unwrap_or_else(|| "-".to_string()),
+                        row.file_path,
+                        if row.triggers.is_empty() {
+                            "-".to_string()
+                        } else {
+                            row.triggers.join(", ")
+                        },
+                        row.job_if.unwrap_or_else(|| "-".to_string()),
+                        format_needs_cell(&row.needs, row.uses.as_deref()),
                     ]);
                 }
                 println!("{}", table);
@@ -389,9 +465,64 @@ pub fn execute_ci(args: CiArgs) -> Result<()> {
     Ok(())
 }
 
+fn attach_ci_inventory_scope(output: &mut serde_json::Value) {
+    if let Some(obj) = output.as_object_mut() {
+        obj.insert(
+            "scope".to_string(),
+            serde_json::json!({
+                "inventory": "declaredWorkflowJobs",
+                "notIncluded": ["branchProtectionRequired", "liveRunStatus"],
+            }),
+        );
+    }
+}
+
+fn cli_triggers(platform: &str, stored: Option<&str>) -> Vec<String> {
+    if platform != "github_actions" {
+        return Vec::new();
+    }
+    split_name_list(stored)
+}
+
+fn split_name_list(stored: Option<&str>) -> Vec<String> {
+    let Some(raw) = stored.map(str::trim).filter(|s| !s.is_empty()) else {
+        return Vec::new();
+    };
+    let mut names: Vec<String> = raw
+        .split(',')
+        .map(|p| p.trim().to_string())
+        .filter(|p| !p.is_empty())
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+fn empty_to_none(value: Option<String>) -> Option<String> {
+    value.and_then(|s| {
+        let t = s.trim();
+        if t.is_empty() {
+            None
+        } else {
+            Some(t.to_string())
+        }
+    })
+}
+
+fn format_needs_cell(needs: &[String], uses: Option<&str>) -> String {
+    match (needs.is_empty(), uses) {
+        (true, None) => "-".to_string(),
+        (false, None) => needs.join(", "),
+        (true, Some(u)) => format!("uses: {u}"),
+        (false, Some(u)) => format!("{}; uses: {u}", needs.join(", ")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::format_ci_inventory_preamble;
+    use super::{
+        CI_DECLARED_SCOPE_SENTENCE, cli_triggers, format_ci_inventory_preamble, format_needs_cell,
+    };
 
     #[test]
     fn format_ci_inventory_preamble_clean_vs_dirty() {
@@ -402,6 +533,45 @@ mod tests {
         assert_eq!(
             format_ci_inventory_preamble(false),
             "Indexed CI gates (catalog; this command does not diff workflow files)."
+        );
+    }
+
+    #[test]
+    fn cli_triggers_gha_only_splits_events() {
+        assert_eq!(
+            cli_triggers("github_actions", Some("push, pull_request, schedule")),
+            vec![
+                "pull_request".to_string(),
+                "push".to_string(),
+                "schedule".to_string()
+            ]
+        );
+        assert_eq!(
+            cli_triggers("makefile", Some("manual")),
+            Vec::<String>::new()
+        );
+        assert_eq!(
+            cli_triggers("gitlab_ci", Some("stages: build, test")),
+            Vec::<String>::new()
+        );
+        assert_eq!(cli_triggers("circleci", Some("push")), Vec::<String>::new());
+    }
+
+    #[test]
+    fn format_needs_cell_pins_uses_in_needs_column() {
+        assert_eq!(format_needs_cell(&[], None), "-");
+        assert_eq!(format_needs_cell(&["a".into(), "b".into()], None), "a, b");
+        assert_eq!(
+            format_needs_cell(&[], Some("org/repo/.github/workflows/ci.yml@main")),
+            "uses: org/repo/.github/workflows/ci.yml@main"
+        );
+        assert_eq!(
+            format_needs_cell(&["web-build".into()], Some("reusable.yml@main")),
+            "web-build; uses: reusable.yml@main"
+        );
+        assert_eq!(
+            CI_DECLARED_SCOPE_SENTENCE,
+            "Declared workflow jobs from the index — not GitHub required checks or live run status."
         );
     }
 }

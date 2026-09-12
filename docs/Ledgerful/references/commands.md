@@ -77,7 +77,7 @@ Read-only inventory of six advanced surfaces (ready / empty / gated). Alias: `to
 
 ## `ledgerful ci list`
 
-Indexed CI-gate catalog (not a working-tree workflow diff). Alias: `diff`. Bare `ci` is the same inventory. `--json`: schemaVersion 1 object, collection `gates` (0207/0214 freeze).
+Indexed CI-gate catalog (not a working-tree workflow diff). Alias: `diff`. Bare `ci` is the same inventory. Declared workflow jobs from local YAML — not GitHub required checks or live run status. `--json`: schemaVersion 1 object, collection `gates` (0207/0214 freeze) plus always-present `scope` and item `filePath` / `triggers` (0326).
 
 ## `ledgerful services list`
 

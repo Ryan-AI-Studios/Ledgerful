@@ -38,6 +38,7 @@ pub fn parse_makefile(content: &str) -> Vec<ParsedCIGate> {
                     environment: None,
                     artifacts: None,
                     release_gates: None,
+                    ..Default::default()
                 });
             }
         }
