@@ -72,9 +72,6 @@ pub struct ConfidenceScorer<'a> {
     pub(super) storage: &'a StorageManager,
     pub(super) config: &'a DeadCodeConfig,
     pub(super) repo_path: &'a Path,
-    /// When `false` (default), standard trait symbols are excluded from results.
-    /// Set to `true` via `--include-traits` to see all findings.
-    pub(super) include_traits: bool,
     /// When `false` (CLI default), `is_test_path` files are omitted.
     pub(super) include_tests: bool,
     /// When `false` (CLI default), vendored trees are omitted.
@@ -98,14 +95,13 @@ impl<'a> ConfidenceScorer<'a> {
         storage: &'a StorageManager,
         config: &'a DeadCodeConfig,
         repo_path: &'a Path,
-        include_traits: bool,
+        _include_traits: bool,
     ) -> Self {
         Self {
             cozo,
             storage,
             config,
             repo_path,
-            include_traits,
             include_tests: false,
             include_vendor: false,
             git_activity_cache: std::cell::RefCell::new(std::collections::HashMap::new()),
@@ -632,74 +628,40 @@ mod tests {
     }
 
     #[test]
-    fn test_standard_trait_filtered_by_default() {
+    fn score_symbol_skips_non_callable_kinds() {
         let (storage, _cozo) = in_memory_storage_with_cozo();
         let config = default_config();
         let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
-
-        // The Rust extractor stores `impl Eq for MyType {}` as (name="Eq", kind=Type).
-        let eq_symbol = Symbol {
-            name: "Eq".to_string(),
-            kind: SymbolKind::Type, // impl_item → Type in the Rust AST extractor
-            is_public: true,
-            cognitive_complexity: None,
-            cyclomatic_complexity: None,
-            line_start: None,
-            line_end: None,
-            qualified_name: Some("crate::Eq".to_string()),
-            byte_start: None,
-            byte_end: None,
-            entrypoint_kind: None,
-            metadata: std::collections::BTreeMap::new(),
-        };
-
-        let result = scorer
-            .score_symbol(&eq_symbol, Path::new("src/lib.rs"))
-            .unwrap();
-        assert!(
-            result.is_none(),
-            "impl Eq for MyType (stored as Type/Eq) must be filtered by default"
-        );
+        for kind in [
+            SymbolKind::Type,
+            SymbolKind::Struct,
+            SymbolKind::Enum,
+            SymbolKind::Module,
+        ] {
+            let symbol = Symbol {
+                name: "Eq".to_string(),
+                kind: kind.clone(),
+                is_public: true,
+                cognitive_complexity: None,
+                cyclomatic_complexity: None,
+                line_start: None,
+                line_end: None,
+                qualified_name: Some("crate::Eq".to_string()),
+                byte_start: None,
+                byte_end: None,
+                entrypoint_kind: None,
+                metadata: std::collections::BTreeMap::new(),
+            };
+            assert!(
+                scorer
+                    .score_symbol(&symbol, Path::new("src/lib.rs"))
+                    .unwrap()
+                    .is_none(),
+                "{kind:?} is not Function/Method"
+            );
+        }
     }
 
-    #[test]
-    fn test_standard_trait_shown_with_include_traits() {
-        let (storage, _cozo) = in_memory_storage_with_cozo();
-        // Zero threshold so any confidence value above 0 would be returned,
-        // and zero weights so confidence = 0 via blend → None regardless.
-        // The key assertion: score_symbol must NOT short-circuit for standard traits
-        // when include_traits = true (no early None from is_standard_trait filter).
-        // We confirm by checking it reaches the reachability check (no panic).
-        let config = DeadCodeConfig {
-            enabled: true,
-            confidence_threshold: 0.0,
-            git_inactivity_days: 90,
-            reachability_weight: 0.0,
-            git_activity_weight: 0.0,
-            test_coverage_weight: 0.0,
-        };
-        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), true);
-
-        let eq_symbol = Symbol {
-            name: "Eq".to_string(),
-            kind: SymbolKind::Type, // impl_item → Type in the Rust AST extractor
-            is_public: true,
-            cognitive_complexity: None,
-            cyclomatic_complexity: None,
-            line_start: None,
-            line_end: None,
-            qualified_name: Some("crate::Eq".to_string()),
-            byte_start: None,
-            byte_end: None,
-            entrypoint_kind: None,
-            metadata: std::collections::BTreeMap::new(),
-        };
-
-        // Should not panic (reaches scoring path even for standard traits)
-        let _ = scorer.score_symbol(&eq_symbol, Path::new("src/lib.rs"));
-    }
-
-    /// DX4: helper to build a Symbol with explicit kind + metadata.
     fn seed_rs_edge_and_mapping(conn: &rusqlite::Connection) {
         conn.execute(
             "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('src/entry.rs', 'Rust', 'hedge', 50, 'OK', '2026-01-01')",
@@ -729,245 +691,6 @@ mod tests {
             [main_id, file_id, helper_id, file_id],
         )
         .unwrap();
-    }
-
-    fn make_symbol_with_kind(name: &str, kind: SymbolKind, metadata: Vec<(&str, &str)>) -> Symbol {
-        let mut map = std::collections::BTreeMap::new();
-        for (k, v) in metadata {
-            map.insert(k.to_string(), v.to_string());
-        }
-        Symbol {
-            name: name.to_string(),
-            kind,
-            is_public: false,
-            cognitive_complexity: None,
-            cyclomatic_complexity: None,
-            line_start: None,
-            line_end: None,
-            qualified_name: Some(format!("crate::{name}")),
-            byte_start: None,
-            byte_end: None,
-            entrypoint_kind: None,
-            metadata: map,
-        }
-    }
-
-    /// DX4: a struct carrying `#[derive(Serialize, Deserialize, Debug)]` with
-    /// raw confidence 1.0 (unreachable, no git, no tests) must fall below the
-    /// 0.75 default threshold after the -0.50 derive penalty and be suppressed.
-    #[test]
-    fn test_derived_struct_suppressed_by_default_threshold() {
-        let (storage, _cozo) = in_memory_storage_with_cozo();
-        let config = default_config(); // threshold 0.75
-        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
-
-        let user = make_symbol_with_kind(
-            "User",
-            SymbolKind::Struct,
-            vec![("derived_traits", "Debug,Deserialize,Serialize")],
-        );
-
-        let result = scorer
-            .score_symbol(&user, Path::new("src/models.rs"))
-            .unwrap();
-        assert!(
-            result.is_none(),
-            "derived struct with implicit-usage traits must be suppressed by default; got {:?}",
-            result
-        );
-    }
-
-    /// DX4: a plain struct WITHOUT `derived_traits` metadata still scores
-    /// above the 0.75 threshold (raw 1.0, no penalty) and is flagged.
-    #[test]
-    fn test_plain_struct_without_derives_is_flagged() {
-        let (storage, _cozo) = in_memory_storage_with_cozo();
-        let config = default_config();
-        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
-
-        let plain = make_symbol_with_kind("Plain", SymbolKind::Struct, Vec::new());
-        let result = scorer
-            .score_symbol(&plain, Path::new("src/models.rs"))
-            .unwrap();
-        assert!(
-            result.is_none(),
-            "0314: Struct is not callable; score_symbol returns None"
-        );
-        assert_eq!(super::filters::derive_penalty(&plain), 0.0);
-    }
-
-    /// DX4: `--include-traits` must NOT re-enable derived-struct suppression.
-    /// The flag governs explicit trait impls (CG-F6); the derive penalty is
-    /// applied regardless. A derived struct stays suppressed even with
-    /// `include_traits = true`.
-    #[test]
-    fn test_derived_struct_still_suppressed_with_include_traits() {
-        let (storage, _cozo) = in_memory_storage_with_cozo();
-        let config = default_config();
-        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), true);
-
-        let user = make_symbol_with_kind(
-            "User",
-            SymbolKind::Struct,
-            vec![("derived_traits", "Debug,Deserialize,Serialize")],
-        );
-        let result = scorer
-            .score_symbol(&user, Path::new("src/models.rs"))
-            .unwrap();
-        assert!(
-            result.is_none(),
-            "derive penalty must apply regardless of --include-traits; got {:?}",
-            result
-        );
-    }
-
-    /// DX4: a struct with only a non-implicit derive (not in the standard
-    /// set) gets no derive penalty and is flagged per its raw signals.
-    #[test]
-    fn test_struct_with_only_non_implicit_derive_is_flagged() {
-        let (storage, _cozo) = in_memory_storage_with_cozo();
-        let config = default_config();
-        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
-
-        let widget = make_symbol_with_kind(
-            "Widget",
-            SymbolKind::Struct,
-            vec![("derived_traits", "MyCustomDerive")],
-        );
-        let result = scorer
-            .score_symbol(&widget, Path::new("src/models.rs"))
-            .unwrap();
-        assert!(
-            result.is_none(),
-            "0314: Struct is not callable; score_symbol returns None"
-        );
-        assert_eq!(super::filters::derive_penalty(&widget), 0.0);
-    }
-
-    /// DX4 (codex Finding 1): a DB model struct carrying only a reflection
-    /// derive (`sqlx::FromRow`, reduced to `FromRow`) — consumed only via sqlx
-    /// reflection with no static call edges — must be suppressed at the
-    /// default 0.75 threshold. Before `FromRow` was added to
-    /// `IMPLICIT_USAGE_DERIVED_TRAITS`, such a model had zero derive penalty
-    /// and remained a false positive (raw confidence 1.0 -> flagged).
-    #[test]
-    fn test_db_reflection_derive_fromrow_suppressed_by_default() {
-        let (storage, _cozo) = in_memory_storage_with_cozo();
-        let config = default_config(); // threshold 0.75
-        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
-
-        let model = make_symbol_with_kind(
-            "Account",
-            SymbolKind::Struct,
-            vec![("derived_traits", "FromRow")],
-        );
-        let result = scorer
-            .score_symbol(&model, Path::new("src/models.rs"))
-            .unwrap();
-        assert!(
-            result.is_none(),
-            "DB reflection derive (FromRow) must be suppressed at default threshold; got {:?}",
-            result
-        );
-    }
-
-    /// DX4 end-to-end metadata round-trip: prove the FULL path preserves
-    /// `derived_traits` through the JSON serialization the storage layer uses
-    /// (`serde_json::to_string(&symbol.metadata)` into the `project_symbols.metadata`
-    /// column) and back (`serde_json::from_str`), and that `score_symbol`
-    /// still suppresses the derived struct at the default 0.75 threshold
-    /// after the round-trip. A control struct with NO `derived_traits`
-    /// metadata round-trips and is still flagged.
-    ///
-    /// This locks the contract the reviewer verified by inspection across
-    /// `src/index/storage.rs` (serialize) and
-    /// `src/impact/analysis/dead_code/evidence.rs` (deserialize), so a future
-    /// change to either layer that breaks the `derived_traits` key will fail
-    /// here rather than silently regress the derive penalty.
-    #[test]
-    fn test_derived_traits_metadata_survives_json_round_trip_to_score_symbol() {
-        use std::collections::BTreeMap;
-
-        let (storage, _cozo) = in_memory_storage_with_cozo();
-        let config = default_config(); // threshold 0.75
-        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
-
-        // Build a realistic metadata map exactly as the Rust AST extractor
-        // would: sorted, comma-joined `derived_traits`.
-        let mut original_metadata = BTreeMap::new();
-        original_metadata.insert(
-            "derived_traits".to_string(),
-            "Debug,Deserialize,Serialize".to_string(),
-        );
-
-        // Simulate the DB round-trip: serialize the metadata map to a JSON
-        // string (as `src/index/storage.rs` does on write), then deserialize
-        // it back (as `evidence.rs` does on read).
-        let json = serde_json::to_string(&original_metadata).expect("metadata must serialize");
-        let round_tripped: BTreeMap<String, String> =
-            serde_json::from_str(&json).expect("metadata must deserialize");
-
-        // Rebuild the Symbol with the round-tripped metadata and run it
-        // through the real scorer with unreachable/no-git/no-test signals
-        // (raw confidence 1.0).
-        let user = Symbol {
-            name: "User".to_string(),
-            kind: SymbolKind::Struct,
-            is_public: false,
-            cognitive_complexity: None,
-            cyclomatic_complexity: None,
-            line_start: None,
-            line_end: None,
-            qualified_name: Some("crate::User".to_string()),
-            byte_start: None,
-            byte_end: None,
-            entrypoint_kind: None,
-            metadata: round_tripped,
-        };
-
-        let result = scorer
-            .score_symbol(&user, Path::new("src/models.rs"))
-            .unwrap();
-        assert!(
-            result.is_none(),
-            "derived struct must be suppressed after JSON round-trip (derive penalty -0.50 -> 0.5 < 0.75); got {:?}",
-            result
-        );
-
-        // Control: the SAME struct with NO `derived_traits` metadata (only a
-        // non-implicit key) round-trips and is NOT suppressed — raw 1.0, no
-        // derive penalty -> 1.0 >= 0.75.
-        let mut control_metadata = BTreeMap::new();
-        control_metadata.insert("abi".to_string(), "extern \"C\"".to_string());
-        let control_json =
-            serde_json::to_string(&control_metadata).expect("control metadata must serialize");
-        let control_round_tripped: BTreeMap<String, String> =
-            serde_json::from_str(&control_json).expect("control metadata must deserialize");
-
-        let control = Symbol {
-            name: "Control".to_string(),
-            kind: SymbolKind::Struct,
-            is_public: false,
-            cognitive_complexity: None,
-            cyclomatic_complexity: None,
-            line_start: None,
-            line_end: None,
-            qualified_name: Some("crate::Control".to_string()),
-            byte_start: None,
-            byte_end: None,
-            entrypoint_kind: None,
-            metadata: control_round_tripped,
-        };
-
-        let control_result = scorer
-            .score_symbol(&control, Path::new("src/models.rs"))
-            .unwrap();
-        assert!(
-            control_result.is_none(),
-            "0314: Struct is not callable; score_symbol returns None after round-trip; got {:?}",
-            control_result
-        );
-        assert_eq!(super::filters::derive_penalty(&control), 0.0);
     }
 
     fn git(dir: &std::path::Path, args: &[&str]) {
@@ -1449,38 +1172,6 @@ mod tests {
     }
 
     #[test]
-    fn score_symbol_skips_module_kind() {
-        let (storage, _cozo) = in_memory_storage_with_cozo();
-        let conn = storage.get_connection();
-        seed_rs_edge_and_mapping(conn);
-        let config = default_config();
-        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
-        let module = make_symbol_with_kind("calls", SymbolKind::Module, Vec::new());
-        assert!(
-            scorer
-                .score_symbol(&module, Path::new("src/lib.rs"))
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[test]
-    fn score_symbol_skips_reexport_metadata() {
-        let (storage, _cozo) = in_memory_storage_with_cozo();
-        let conn = storage.get_connection();
-        seed_rs_edge_and_mapping(conn);
-        let config = default_config();
-        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
-        let reexport = make_symbol_with_kind("calls", SymbolKind::Type, vec![("reexport", "true")]);
-        assert!(
-            scorer
-                .score_symbol(&reexport, Path::new("src/lib.rs"))
-                .unwrap()
-                .is_none()
-        );
-    }
-
-    #[test]
     fn score_symbol_skips_bin_main() {
         let (storage, _cozo) = in_memory_storage_with_cozo();
         let conn = storage.get_connection();
@@ -1616,12 +1307,10 @@ mod tests {
             .score_symbol(&symbol, Path::new("src/lib.rs"))
             .unwrap()
         {
-            assert!(
-                !finding
-                    .factors
-                    .iter()
-                    .any(|f| matches!(f, crate::impact::packet::ConfidenceFactor::NoTestCoverage))
-            );
+            assert!(!finding
+                .factors
+                .iter()
+                .any(|f| matches!(f, crate::impact::packet::ConfidenceFactor::NoTestCoverage)));
         }
     }
 
@@ -1650,26 +1339,20 @@ mod tests {
         let included = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false)
             .with_path_include(true, false);
         let symbol = make_symbol("test_only", Some("test_only"), None);
-        assert!(
-            default
-                .score_symbol(&symbol, Path::new("tests/foo.rs"))
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            included
-                .score_symbol(&symbol, Path::new("tests/foo.rs"))
-                .unwrap()
-                .is_some()
-        );
+        assert!(default
+            .score_symbol(&symbol, Path::new("tests/foo.rs"))
+            .unwrap()
+            .is_none());
+        assert!(included
+            .score_symbol(&symbol, Path::new("tests/foo.rs"))
+            .unwrap()
+            .is_some());
         let mut explainer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
         let explanation = explainer.explain_file(Path::new("tests/foo.rs")).unwrap();
-        assert!(
-            explanation
-                .symbols
-                .iter()
-                .any(|s| s.symbol_name == "test_only")
-        );
+        assert!(explanation
+            .symbols
+            .iter()
+            .any(|s| s.symbol_name == "test_only"));
     }
 
     #[test]
@@ -1682,17 +1365,13 @@ mod tests {
         let included = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false)
             .with_path_include(false, true);
         let symbol = make_symbol("vendored", Some("vendored"), None);
-        assert!(
-            default
-                .score_symbol(&symbol, Path::new("vendor/x.rs"))
-                .unwrap()
-                .is_none()
-        );
-        assert!(
-            included
-                .score_symbol(&symbol, Path::new("vendor/x.rs"))
-                .unwrap()
-                .is_some()
-        );
+        assert!(default
+            .score_symbol(&symbol, Path::new("vendor/x.rs"))
+            .unwrap()
+            .is_none());
+        assert!(included
+            .score_symbol(&symbol, Path::new("vendor/x.rs"))
+            .unwrap()
+            .is_some());
     }
 }
