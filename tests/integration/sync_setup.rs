@@ -491,3 +491,120 @@ fn readiness_windows_style_target_parse_ok() {
     // Path does not exist → not Yes.
     assert_ne!(report.target_reachable, TargetReachable::Yes);
 }
+
+#[test]
+#[cfg(feature = "sync")]
+#[serial_test::serial(env)]
+fn cursor_json_lag_reasons() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+    let _guard = DirGuard::from_utf8(root);
+
+    ledgerful::commands::init::execute_init(false, false).unwrap();
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["sync", "cursor", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(
+        !stdout.contains("Sync Cursors"),
+        "human must not leak:\n{stdout}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["schemaVersion"], 1);
+    assert_eq!(v["initialized"], false);
+    assert_eq!(v["lastExtractHlc"], serde_json::Value::Null);
+    assert_eq!(v["lag"]["status"], "unknown");
+    assert_eq!(v["lag"]["reason"], "notInitialized");
+    assert_eq!(v["nextAction"], "ledgerful sync init");
+
+    let _id = init_device(root);
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["sync", "cursor", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["initialized"], true);
+    assert_eq!(v["lag"]["reason"], "neverRun");
+    assert_eq!(v["nextAction"], "ledgerful sync setup");
+
+    let layout = ledgerful::state::layout::Layout::new(root);
+    let storage = StorageManager::init_with_layout(&layout).unwrap();
+    storage
+        .get_connection()
+        .execute(
+            "UPDATE sync_state SET last_extract_hlc = ?1, last_apply_hlc = ?2 WHERE id = 1",
+            ["hlc-a", "hlc-b"],
+        )
+        .unwrap();
+    storage.shutdown().unwrap();
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["sync", "cursor", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["lag"]["reason"], "hlcNotWallClock");
+    assert_eq!(v["lastExtractHlc"], "hlc-a");
+    assert_eq!(v["lastApplyHlc"], "hlc-b");
+
+    let (human, _, hcode) = run_cli(tmp.path(), &["sync", "cursor"]);
+    assert_eq!(hcode, 0);
+    assert!(human.contains("Last Extract HLC: hlc-a"));
+}
+
+#[test]
+#[cfg(feature = "sync")]
+#[serial_test::serial(env)]
+fn log_json_states() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+    let _guard = DirGuard::from_utf8(root);
+
+    ledgerful::commands::init::execute_init(false, false).unwrap();
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["sync", "log", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(!stdout.contains("No sync log found") || stdout.starts_with('{'));
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["logState"], "neverInitialized");
+    assert_eq!(v["nextAction"], "ledgerful sync init");
+    assert_eq!(v["lineCount"], 0);
+
+    let _id = init_device(root);
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["sync", "log", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["logState"], "noLog");
+    assert_eq!(v["nextAction"], "ledgerful sync setup");
+
+    let layout = ledgerful::state::layout::Layout::new(root);
+    let log_path = layout.state_dir.join("sync").join("sync.log");
+    fs::write(
+        log_path.as_std_path(),
+        [b"keep-head\n".as_slice(), &[0xff, 0xff], b"\nkeep-tail\n"].concat(),
+    )
+    .unwrap();
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["sync", "log", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["logState"], "partial");
+    assert!(v["skippedLines"].as_u64().unwrap() >= 1);
+    let lines = v["lines"].as_array().unwrap();
+    assert!(lines.iter().any(|l| l.as_str() == Some("keep-tail")));
+    assert_eq!(v["lineCount"].as_u64().unwrap(), 2);
+
+    fs::remove_file(log_path.as_std_path()).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::write(log_path.as_std_path(), "blocked").unwrap();
+        fs::set_permissions(log_path.as_std_path(), PermissionsExt::from_mode(0o000)).unwrap();
+        let (stdout, stderr, code) = run_cli(tmp.path(), &["sync", "log", "--json"]);
+        let _ = fs::set_permissions(log_path.as_std_path(), PermissionsExt::from_mode(0o644));
+        assert_eq!(code, 1, "unreadable --json must exit 1; stderr={stderr}");
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+        assert_eq!(v["logState"], "unreadable");
+    }
+    #[cfg(windows)]
+    {
+        fs::create_dir_all(log_path.as_std_path()).unwrap();
+        let (stdout, stderr, code) = run_cli(tmp.path(), &["sync", "log", "--json"]);
+        assert_eq!(code, 1, "unreadable --json must exit 1; stderr={stderr}");
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+        assert_eq!(v["logState"], "unreadable");
+    }
+}

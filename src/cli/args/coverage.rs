@@ -14,7 +14,11 @@ pub enum FederateCommands {
     /// Scan sibling directories for Ledgerful schemas
     Scan,
     /// Show status of federated links
-    Status,
+    Status {
+        /// Emit pure camelCase federated-peer JSON on stdout (`schemaVersion: 1`)
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Subcommand, Debug)]

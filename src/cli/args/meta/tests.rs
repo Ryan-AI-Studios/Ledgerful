@@ -85,6 +85,20 @@ fn machine_mode_selected_for_json_flags() {
         assert!(!parse(&["sync", "run", "--once"]).is_machine_output());
         assert_eq!(parse(&["sync", "setup"]).command_name(), "sync_setup");
         assert_eq!(parse(&["sync", "status"]).command_name(), "sync_status");
+        assert!(!parse(&["sync", "cursor"]).is_machine_output());
+        assert!(parse(&["sync", "cursor", "--json"]).is_machine_output());
+        assert!(!parse(&["sync", "log"]).is_machine_output());
+        assert!(parse(&["sync", "log", "--json"]).is_machine_output());
+    }
+    assert!(!parse(&["federate"]).is_machine_output());
+    assert!(!parse(&["federate", "status"]).is_machine_output());
+    assert!(parse(&["federate", "status", "--json"]).is_machine_output());
+    #[cfg(feature = "sync")]
+    {
+        assert!(
+            Cli::try_parse_from(["ledgerful", "sync", "cursor", "--json", "--set", "x"]).is_err(),
+            "cursor --json --set must conflict"
+        );
     }
 }
 

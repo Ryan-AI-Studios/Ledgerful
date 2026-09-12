@@ -1411,7 +1411,7 @@ mod tests {
             section: None,
             verbose: false,
         };
-        let _: FederateCommands = FederateCommands::Status;
+        let _: FederateCommands = FederateCommands::Status { json: false };
         let _: ExportCommands = ExportCommands::Evidence {
             profile: "soc2".to_string(),
             out: None,

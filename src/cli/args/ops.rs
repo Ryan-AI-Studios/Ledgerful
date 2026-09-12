@@ -235,14 +235,20 @@ pub enum SyncSubcommands {
     /// Manage sync cursors [Available]
     Cursor {
         /// Set a specific cursor HLC
-        #[arg(long)]
+        #[arg(long, conflicts_with = "json")]
         set: Option<String>,
+        /// Emit pure camelCase cursor JSON on stdout (`schemaVersion: 1`)
+        #[arg(long)]
+        json: bool,
     },
     /// Show sync logs [Available]
     Log {
         /// Number of lines to tail
         #[arg(long, short)]
         tail: Option<usize>,
+        /// Emit pure camelCase log JSON on stdout (`schemaVersion: 1`)
+        #[arg(long)]
+        json: bool,
     },
 }
 

@@ -66,6 +66,9 @@ on stderr.
 | `services list --json` / `services diff --json` | yes | yes | schemaVersion 1 object, collection `results`. Gated empty keeps `emptyReason`/`message`. Additive `sessionNotices` (0300; skip empty) |
 | `deploy impact --json` | yes | yes | schemaVersion 1 object, collection `results`. Gated empty keeps `emptyReason`/`message`. Disabled `message` must **not** start with “No deployment impact detected.” (that sentence is enabled `noMatches` only). Additive `sessionNotices` (0300; skip empty). Flag is on `impact`, not parent `deploy` |
 | `observability coverage --json` | yes | yes | schemaVersion 1 object, collection `results`. Empty keeps `emptyReason`/`message`. Additive `sessionNotices` (0300; skip empty). `observability diff` does **not** participate |
+| `federate status --json` | yes (0327) | yes | schemaVersion 1 object; `peers[]` live only (0184 omit Self/Dead/dups in `omitted`); item `name`/`path`/`lastScanned` + omit-empty `schemaGeneratedAt`; `freshness.status` `available`\|`stale`\|`unavailable` from sibling `generated_at` vs last scan (not wall-clock catalog). Omit-empty `next`: `ledgerful federate scan` when stale or `peers` empty. No `emptyReason`. Bare `federate` stays human. |
+| `sync cursor --json` | yes (0327; `feature = "sync"`) | yes | schemaVersion 1; `initialized`; `lastExtractHlc`/`lastApplyHlc` null when missing; `lag.status` always `unknown` with `reason` `notInitialized`\|`neverRun`\|`hlcNotWallClock`. `nextAction` is `sync init` or `sync setup` (no NAS probe). Conflicts with `--set`. |
+| `sync log --json` | yes (0327; `feature = "sync"`) | yes* | schemaVersion 1; `logState` `neverInitialized`\|`noLog`\|`unreadable`\|`ok`\|`partial`; `lineCount` is decoded file total; `lines` is the tail (default 20); `skippedLines` for UTF-8 errors. Missing file exit 0; unreadable writes JSON then exit **1**. |
 
 \* Non-essential progress INFO suppressed under machine mode; hard failures still
 use stderr.

@@ -9,7 +9,9 @@ pub(super) fn dispatch_federate(command: FederateCommands) -> Result<()> {
             crate::commands::federate::execute_federate_export(dry_run, out)
         }
         FederateCommands::Scan => crate::commands::federate::execute_federate_scan(),
-        FederateCommands::Status => crate::commands::federate::execute_federate_status(),
+        FederateCommands::Status { json } => {
+            crate::commands::federate::execute_federate_status(json)
+        }
     }
 }
 pub(super) fn dispatch_services(
@@ -39,7 +41,7 @@ pub(super) fn policy_or_default(command: Option<PolicyCommands>) -> PolicyComman
 
 /// Bare `federate` → `status` (read-only). Never default to Export (writes).
 pub(super) fn federate_or_default(command: Option<FederateCommands>) -> FederateCommands {
-    command.unwrap_or(FederateCommands::Status)
+    command.unwrap_or(FederateCommands::Status { json: false })
 }
 
 /// Bare `services` → list (alias: diff) with default flags (soft optional 0179).
