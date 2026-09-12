@@ -1,6 +1,7 @@
+use crate::commands::config_verify::ProvenanceContext;
 use crate::commands::helpers::get_layout;
 use crate::policy::load as policy_load;
-use miette::Result;
+use miette::{IntoDiagnostic, Result};
 
 pub fn execute_config_verify(json: bool, section: Option<&str>, verbose: bool) -> Result<()> {
     let layout = get_layout()?;
@@ -71,7 +72,13 @@ pub fn execute_config_verify(json: bool, section: Option<&str>, verbose: bool) -
 
     // Report config sections
     if let (true, Some(cfg)) = (success, &config) {
-        match crate::commands::config_verify::render_verify_report(cfg, json, section, verbose) {
+        match crate::commands::config_verify::render_verify_report_with(
+            cfg,
+            json,
+            section,
+            verbose,
+            &ProvenanceContext::from_layout(&layout),
+        ) {
             Ok(report) => {
                 if json {
                     println!("{report}");
@@ -96,11 +103,14 @@ pub fn execute_config_verify(json: bool, section: Option<&str>, verbose: bool) -
         if json {
             let err_json = serde_json::json!({
                 "success": false,
-                "errors": errors
+                "errors": errors,
+                "schemaVersion": 1,
+                "kind": "configVerify",
+                "ok": false,
             });
             println!(
                 "{}",
-                serde_json::to_string_pretty(&err_json).unwrap_or_default()
+                serde_json::to_string_pretty(&err_json).into_diagnostic()?
             );
         }
         Err(miette::miette!("Configuration verification failed."))

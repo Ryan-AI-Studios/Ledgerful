@@ -1,5 +1,4 @@
 use crate::commands::helpers::get_layout;
-use crate::index::env_schema::EnvDeclaration;
 use crate::index::env_schema::EnvSourceKind;
 use crate::index::staleness::check_index_staleness;
 use crate::output::empty::{EmptyReason, format_json_empty_state};
@@ -7,17 +6,49 @@ use crate::output::table::Table;
 use crate::state::storage::StorageManager;
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream};
+use serde::Serialize;
 use std::str::FromStr;
 
-pub fn execute_config_schema(json: bool) -> Result<()> {
-    let layout = get_layout()?;
-    let storage = crate::state::storage::StorageManager::open_read_only(&layout)?;
-    let conn = storage.get_connection();
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SchemaEmitRow {
+    pub var_name: String,
+    pub source_kind: EnvSourceKind,
+    pub required: bool,
+    pub is_secret: bool,
+    pub default_value_redacted: Option<String>,
+    pub description: Option<String>,
+    pub owner: Option<String>,
+    pub environment: Option<String>,
+    pub confidence: f64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub file_path: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub requiredness: Option<&'static str>,
+}
 
+pub(crate) fn requiredness_label(
+    kind: EnvSourceKind,
+    required: bool,
+    confidence: f64,
+) -> Option<&'static str> {
+    if kind == EnvSourceKind::Docs || confidence < 1.0 {
+        Some("unknown")
+    } else if matches!(kind, EnvSourceKind::DotenvExample | EnvSourceKind::Config) && !required {
+        Some("optional")
+    } else {
+        None
+    }
+}
+
+pub(crate) fn load_schema_rows(conn: &rusqlite::Connection) -> Result<Vec<SchemaEmitRow>> {
     let mut stmt = conn
         .prepare(
-            "SELECT var_name, source_kind, required, is_secret, default_value_redacted, description, owner, environment
-         FROM env_declarations ORDER BY var_name ASC",
+            "SELECT d.var_name, d.source_kind, d.required, d.is_secret, d.default_value_redacted,
+                    d.description, d.owner, d.environment, d.confidence, f.file_path
+             FROM env_declarations d
+             LEFT JOIN project_files f ON f.id = d.source_file_id
+             ORDER BY d.var_name ASC, d.source_kind ASC",
         )
         .into_diagnostic()?;
 
@@ -32,6 +63,8 @@ pub fn execute_config_schema(json: bool) -> Result<()> {
                 row.get::<_, Option<String>>(5)?,
                 row.get::<_, Option<String>>(6)?,
                 row.get::<_, Option<String>>(7)?,
+                row.get::<_, f64>(8)?,
+                row.get::<_, Option<String>>(9)?,
             ))
         })
         .into_diagnostic()?;
@@ -47,20 +80,34 @@ pub fn execute_config_schema(json: bool) -> Result<()> {
             description,
             owner,
             environment,
+            confidence,
+            file_path,
         ) = row.into_diagnostic()?;
         let source_kind = EnvSourceKind::from_str(&source_kind_raw)?;
-        results.push(EnvDeclaration {
+        let required = required != 0;
+        let requiredness = requiredness_label(source_kind.clone(), required, confidence);
+        results.push(SchemaEmitRow {
             var_name,
             source_kind,
-            required: required != 0,
+            required,
             is_secret: is_secret != 0,
             default_value_redacted,
             description,
             owner,
             environment,
-            confidence: 1.0,
+            confidence,
+            file_path,
+            requiredness,
         });
     }
+    Ok(results)
+}
+
+pub fn execute_config_schema(json: bool) -> Result<()> {
+    let layout = get_layout()?;
+    let storage = crate::state::storage::StorageManager::open_read_only(&layout)?;
+    let conn = storage.get_connection();
+    let results = load_schema_rows(conn)?;
 
     if json {
         let output = format_json_empty_state(results, "results", || {
@@ -76,8 +123,19 @@ pub fn execute_config_schema(json: bool) -> Result<()> {
             println!("{}", msg.if_supports_color(Stream::Stdout, |s| s.dimmed()));
         }
 
+        let optional_n = results
+            .iter()
+            .filter(|d| d.requiredness == Some("optional"))
+            .count();
+        let unknown_n = results
+            .iter()
+            .filter(|d| d.requiredness == Some("unknown"))
+            .count();
+
         let mut table = Table::new();
-        table.set_header(vec!["Variable", "Source", "Req", "Sec", "Default", "Owner"]);
+        table.set_header(vec![
+            "Variable", "Source", "Req", "Sec", "Default", "Owner", "File",
+        ]);
 
         for d in results {
             table.add_row(vec![
@@ -87,9 +145,11 @@ pub fn execute_config_schema(json: bool) -> Result<()> {
                 if d.is_secret { "🔒" } else { "-" }.to_string(),
                 d.default_value_redacted.unwrap_or_else(|| "-".to_string()),
                 d.owner.unwrap_or_else(|| "-".to_string()),
+                d.file_path.unwrap_or_else(|| "-".to_string()),
             ]);
         }
         println!("{}", table);
+        println!("{optional_n} optional (declared), {unknown_n} unknown requiredness.");
     }
 
     Ok(())
@@ -235,6 +295,60 @@ mod tests {
             msg.contains(".env.example"),
             "fresh-empty message should mention .env.example, got: {msg}"
         );
+    }
+
+    #[test]
+    fn requiredness_unknown_wins_over_config_optional() {
+        assert_eq!(
+            requiredness_label(EnvSourceKind::Config, false, 0.7),
+            Some("unknown")
+        );
+        assert_eq!(
+            requiredness_label(EnvSourceKind::DotenvExample, false, 1.0),
+            Some("optional")
+        );
+        assert_eq!(
+            requiredness_label(EnvSourceKind::Docs, false, 1.0),
+            Some("unknown")
+        );
+    }
+
+    #[test]
+    fn load_schema_rows_joins_file_path_and_reads_confidence() {
+        let storage = in_memory_storage();
+        let conn = storage.get_connection();
+        conn.execute(
+            "INSERT INTO project_files (id, file_path, language, last_indexed_at)
+             VALUES (1, '.env.example', 'Dotenv', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO env_declarations (
+                var_name, source_file_id, source_kind, required, default_value_redacted,
+                confidence, last_indexed_at, is_secret
+             ) VALUES ('FOO', 1, 'DOTENV_EXAMPLE', 0, 'EMPTY_DEFAULT', 1.0, '2026-01-01T00:00:00Z', 0)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO env_declarations (
+                var_name, source_file_id, source_kind, required, default_value_redacted,
+                confidence, last_indexed_at, is_secret
+             ) VALUES ('BAR', 1, 'CONFIG', 0, 'HAS_DEFAULT', 0.7, '2026-01-01T00:00:00Z', 0)",
+            [],
+        )
+        .unwrap();
+        let rows = load_schema_rows(conn).unwrap();
+        let foo = rows.iter().find(|r| r.var_name == "FOO").unwrap();
+        assert_eq!(foo.file_path.as_deref(), Some(".env.example"));
+        assert_eq!(foo.requiredness, Some("optional"));
+        assert_eq!(foo.confidence, 1.0);
+        assert!(!foo.required);
+        let bar = rows.iter().find(|r| r.var_name == "BAR").unwrap();
+        assert_eq!(bar.requiredness, Some("unknown"));
+        assert_eq!(bar.confidence, 0.7);
+        assert!(!bar.required);
     }
 
     #[test]

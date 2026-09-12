@@ -89,6 +89,21 @@ mod tests {
         quiet["sourceKind"], "dotenvExample",
         "sourceKind must round-trip dotenvExample: {stdout}"
     );
+    assert_eq!(
+        quiet["requiredness"], "optional",
+        "indexed empty dotenv is declared-optional: {stdout}"
+    );
+    assert_eq!(
+        quiet["filePath"], ".env.example",
+        "schema JOIN must emit filePath: {stdout}"
+    );
+    assert!(
+        quiet["defaultValueRedacted"]
+            .as_str()
+            .unwrap_or("")
+            .contains("EMPTY_DEFAULT"),
+        "empty dotenv default stays EMPTY_DEFAULT: {stdout}"
+    );
 
     let (human_schema, stderr, code) = run_cli(root, &["config", "schema"]);
     assert_eq!(code, 0, "config schema; stderr={stderr}");
@@ -103,6 +118,19 @@ mod tests {
     assert!(
         !human_schema.contains("YES"),
         "human schema must not print Req YES for dotenv rows, got: {human_schema}"
+    );
+    assert!(
+        human_schema.contains("File"),
+        "human schema must have a File column, got: {human_schema}"
+    );
+    assert!(
+        human_schema.contains(".env.example"),
+        "human schema File column should list .env.example, got: {human_schema}"
+    );
+    assert!(
+        human_schema.contains("optional (declared)")
+            && human_schema.contains("unknown requiredness"),
+        "human schema footer must count requiredness, got: {human_schema}"
     );
     // Source-column token, not substring of LEDGERFUL_CONFIG_HOME / LEDGERFUL_DEFAULT_CONFIG.
     assert!(

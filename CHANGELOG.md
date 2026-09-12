@@ -26,6 +26,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Config evidence and schema UX (0323):** `config verify` rows with a
+  `toml_key` get additive omit-empty `origin` / `location` from on-disk
+  TOML presence (`source` follows presence; derived rows omit both).
+  Fail `config verify --json` adds `schemaVersion` 1, `kind: configVerify`,
+  `ok: false`. `config schema --json` JOINs `filePath`, reads live
+  `confidence`, and emits `requiredness` (`unknown` first). Human
+  `config diff` prints sorted `file_paths`. View `--section`/`--key` and
+  0216 empty-default stay.
+
 - **Verify diagnostic `--json` (0321):** the five former refuses for
   `--json` + `--health` / `--dry-run` / `--signatures` / `--chain` /
   `--against-export` become the three kinds above. Executed

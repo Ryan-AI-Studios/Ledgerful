@@ -105,6 +105,7 @@ pub fn execute_config_diff(json: bool, show_internal: bool) -> Result<()> {
         })
         .collect();
     missing_declarations.sort_by(|a, b| a.var_name.cmp(&b.var_name));
+    sort_entry_file_paths(&mut missing_declarations);
 
     // Split internal env vars (LEDGERFUL_* and known non-prefixed internal
     // vars) from real missing declarations. When --show-internal is passed,
@@ -118,6 +119,7 @@ pub fn execute_config_diff(json: bool, show_internal: bool) -> Result<()> {
     };
     let mut internal_declarations = internal_declarations;
     internal_declarations.sort_by(|a, b| a.var_name.cmp(&b.var_name));
+    sort_entry_file_paths(&mut internal_declarations);
     let missing_declarations = real_missing;
 
     // A var can show up referenced from both production and test/example
@@ -133,6 +135,7 @@ pub fn execute_config_diff(json: bool, show_internal: bool) -> Result<()> {
         })
         .collect();
     test_only_declarations.sort_by(|a, b| a.var_name.cmp(&b.var_name));
+    sort_entry_file_paths(&mut test_only_declarations);
 
     let mut all_unused_declarations = Vec::new();
     for d_var in &db_declared_vars {
@@ -174,6 +177,7 @@ pub fn execute_config_diff(json: bool, show_internal: bool) -> Result<()> {
         });
     }
     internal_env_vars.sort_by(|a, b| a.var_name.cmp(&b.var_name));
+    sort_entry_file_paths(&mut internal_env_vars);
 
     // In --show-internal mode the full unused list is exposed; otherwise only
     // the non-internal (or explicitly-schema-declared) unused vars are shown.
@@ -215,12 +219,7 @@ pub fn execute_config_diff(json: bool, show_internal: bool) -> Result<()> {
             println!("  None");
         } else {
             for entry in &missing_declarations {
-                println!(
-                    "  - {}",
-                    entry
-                        .var_name
-                        .if_supports_color(Stream::Stdout, |s| s.red())
-                );
+                println!("{}", format_human_var_line(entry));
             }
         }
 
@@ -231,22 +230,10 @@ pub fn execute_config_diff(json: bool, show_internal: bool) -> Result<()> {
                     .if_supports_color(Stream::Stdout, |s| s.dimmed())
             );
             for entry in &internal_env_vars {
-                if let Some(note) = &entry.note {
-                    println!(
-                        "  - {} {}",
-                        entry
-                            .var_name
-                            .if_supports_color(Stream::Stdout, |s| s.dimmed()),
-                        note.if_supports_color(Stream::Stdout, |s| s.dimmed())
-                    );
-                } else {
-                    println!(
-                        "  - {}",
-                        entry
-                            .var_name
-                            .if_supports_color(Stream::Stdout, |s| s.dimmed())
-                    );
-                }
+                println!(
+                    "{}",
+                    format_human_var_line(entry).if_supports_color(Stream::Stdout, |s| s.dimmed())
+                );
             }
         }
 
@@ -263,10 +250,8 @@ pub fn execute_config_diff(json: bool, show_internal: bool) -> Result<()> {
         } else {
             for entry in &test_only_declarations {
                 println!(
-                    "  - {}",
-                    entry
-                        .var_name
-                        .if_supports_color(Stream::Stdout, |s| s.dimmed())
+                    "{}",
+                    format_human_var_line(entry).if_supports_color(Stream::Stdout, |s| s.dimmed())
                 );
             }
         }
@@ -289,4 +274,49 @@ pub fn execute_config_diff(json: bool, show_internal: bool) -> Result<()> {
     }
 
     Ok(())
+}
+
+fn sort_entry_file_paths(entries: &mut [MissingDeclarationSource]) {
+    for entry in entries.iter_mut() {
+        entry.file_paths.sort();
+    }
+}
+
+fn format_human_var_line(entry: &MissingDeclarationSource) -> String {
+    let paths = if entry.file_paths.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", entry.file_paths.join(", "))
+    };
+    match &entry.note {
+        Some(note) => format!("  - {}{paths} {note}", entry.var_name),
+        None => format!("  - {}{paths}", entry.var_name),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_human_var_line_paths_and_note() {
+        let with_paths = MissingDeclarationSource {
+            var_name: "FOO".to_string(),
+            file_paths: vec!["b.rs".to_string(), "a.rs".to_string()],
+            note: None,
+        };
+        let mut sorted = vec![with_paths];
+        sort_entry_file_paths(&mut sorted);
+        assert_eq!(format_human_var_line(&sorted[0]), "  - FOO (a.rs, b.rs)");
+
+        let noted = MissingDeclarationSource {
+            var_name: "BAR".to_string(),
+            file_paths: Vec::new(),
+            note: Some("declared but not directly referenced".to_string()),
+        };
+        assert_eq!(
+            format_human_var_line(&noted),
+            "  - BAR declared but not directly referenced"
+        );
+    }
 }
