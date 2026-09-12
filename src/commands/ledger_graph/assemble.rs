@@ -12,12 +12,56 @@ use serde::Serialize;
 use std::collections::{HashSet, VecDeque};
 
 /// Three-bucket graph payload. JSON keys are `{exact, derived, heuristic}`
-/// with no `schemaVersion`.
-#[derive(Serialize)]
+/// with no `schemaVersion`. `completeness` is omit-empty when the assemble
+/// cap did not hide further hops or nodes.
+#[derive(Clone, Serialize)]
 pub(super) struct LedgerGraphData {
     pub exact: Vec<GraphRelation>,
     pub derived: Vec<GraphRelation>,
     pub heuristic: Vec<GraphRelation>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completeness: Option<GraphCompleteness>,
+}
+
+#[derive(Clone, Debug, Serialize, PartialEq, Eq)]
+pub(super) struct GraphCompleteness {
+    pub stop: &'static str,
+    #[serde(rename = "maxDepth")]
+    pub max_depth: u32,
+    #[serde(rename = "maxNodes")]
+    pub max_nodes: u32,
+}
+
+fn category_is_filtered(category: &str) -> bool {
+    let c = category.to_lowercase();
+    c == "ledger_transaction" || c == "transaction" || c == "adr"
+}
+
+fn relation_count(
+    exact: &[GraphRelation],
+    derived: &[GraphRelation],
+    heuristic: &[GraphRelation],
+) -> usize {
+    exact.len() + derived.len() + heuristic.len()
+}
+
+fn has_further_unvisited_edge(
+    cozo: &CozoStorage,
+    root: &camino::Utf8Path,
+    urn: &str,
+    visited: &HashSet<String>,
+) -> Result<bool> {
+    let outgoing = query_outgoing_edges(cozo, urn, root)?;
+    let incoming = query_incoming_edges(cozo, urn, root)?;
+    for (neighbor, _, category, _) in outgoing.into_iter().chain(incoming) {
+        if category_is_filtered(&category) {
+            continue;
+        }
+        if !visited.contains(&neighbor) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 pub(super) fn assemble_ledger_graph(
@@ -228,12 +272,15 @@ pub(super) fn assemble_ledger_graph(
     // BFS Neighborhood Traversal (Derived Relationships)
     let max_depth = 2;
     let max_nodes = 150;
+    let mut truncated = false;
 
     while let Some((curr_urn, depth)) = queue.pop_front() {
-        if depth >= max_depth
-            || (exact_relations.len() + derived_relations.len() + heuristic_relations.len())
-                >= max_nodes
-        {
+        if relation_count(&exact_relations, &derived_relations, &heuristic_relations) >= max_nodes {
+            truncated = true;
+            continue;
+        }
+        if depth >= max_depth {
+            // Unreachable while enqueue is gated by `depth + 1 < max_depth`.
             continue;
         }
 
@@ -241,16 +288,13 @@ pub(super) fn assemble_ledger_graph(
         let incoming = query_incoming_edges(cozo, &curr_urn, &layout.root)?;
 
         for (target_urn, target_label, target_category, relation) in outgoing {
-            if (exact_relations.len() + derived_relations.len() + heuristic_relations.len())
+            if relation_count(&exact_relations, &derived_relations, &heuristic_relations)
                 >= max_nodes
             {
+                truncated = true;
                 break;
             }
-            let target_cat_lower = target_category.to_lowercase();
-            if target_cat_lower == "ledger_transaction"
-                || target_cat_lower == "transaction"
-                || target_cat_lower == "adr"
-            {
+            if category_is_filtered(&target_category) {
                 continue;
             }
             if visited.insert(target_urn.clone()) {
@@ -264,21 +308,20 @@ pub(super) fn assemble_ledger_graph(
                 });
                 if depth + 1 < max_depth {
                     queue.push_back((target_urn, depth + 1));
+                } else if has_further_unvisited_edge(cozo, &layout.root, &target_urn, &visited)? {
+                    truncated = true;
                 }
             }
         }
 
         for (source_urn, source_label, source_category, relation) in incoming {
-            if (exact_relations.len() + derived_relations.len() + heuristic_relations.len())
+            if relation_count(&exact_relations, &derived_relations, &heuristic_relations)
                 >= max_nodes
             {
+                truncated = true;
                 break;
             }
-            let source_cat_lower = source_category.to_lowercase();
-            if source_cat_lower == "ledger_transaction"
-                || source_cat_lower == "transaction"
-                || source_cat_lower == "adr"
-            {
+            if category_is_filtered(&source_category) {
                 continue;
             }
             if visited.insert(source_urn.clone()) {
@@ -292,6 +335,8 @@ pub(super) fn assemble_ledger_graph(
                 });
                 if depth + 1 < max_depth {
                     queue.push_back((source_urn, depth + 1));
+                } else if has_further_unvisited_edge(cozo, &layout.root, &source_urn, &visited)? {
+                    truncated = true;
                 }
             }
         }
@@ -301,10 +346,21 @@ pub(super) fn assemble_ledger_graph(
     derived_relations.sort();
     heuristic_relations.sort();
 
+    let completeness = if truncated {
+        Some(GraphCompleteness {
+            stop: "cap",
+            max_depth: 2,
+            max_nodes: 150,
+        })
+    } else {
+        None
+    };
+
     Ok(LedgerGraphData {
         exact: exact_relations,
         derived: derived_relations,
         heuristic: heuristic_relations,
+        completeness,
     })
 }
 

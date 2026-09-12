@@ -213,9 +213,12 @@ pub(super) fn dispatch_ledger(command: LedgerCommands) -> Result<()> {
             dry_run,
         } => crate::commands::ledger::execute_ledger_gc(stale, orphans, ttl_hours, force, dry_run),
         LedgerCommands::Resume { tx_id } => crate::commands::ledger::execute_ledger_resume(tx_id),
-        LedgerCommands::ExportProvenance { out_path, force } => {
-            dispatch_ledger_export_provenance(out_path, force)
-        }
+        LedgerCommands::ExportProvenance {
+            out_path,
+            force,
+            limit,
+            offset,
+        } => dispatch_ledger_export_provenance(out_path, force, limit, offset),
         LedgerCommands::ExportPublic { output, sign, key } => {
             dispatch_ledger_export_public(output, sign, key)
         }
@@ -228,17 +231,19 @@ pub(super) fn dispatch_ledger(command: LedgerCommands) -> Result<()> {
 pub(super) fn dispatch_ledger_export_provenance(
     out_path: Option<std::path::PathBuf>,
     force: bool,
+    limit: Option<usize>,
+    offset: usize,
 ) -> Result<()> {
     use camino::Utf8PathBuf;
 
     let Some(path) = out_path else {
-        return crate::commands::ledger::execute_ledger_export_provenance(None);
+        return crate::commands::ledger::execute_ledger_export_provenance(None, limit, offset);
     };
 
     let clean = validate_export_path(&path, force)?;
     let utf8 = Utf8PathBuf::from_path_buf(clean)
         .map_err(|_| miette::miette!("export path is not valid UTF-8"))?;
-    crate::commands::ledger::execute_ledger_export_provenance(Some(utf8.to_string()))
+    crate::commands::ledger::execute_ledger_export_provenance(Some(utf8.to_string()), limit, offset)
 }
 
 pub(super) fn dispatch_ledger_export_public(

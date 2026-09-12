@@ -26,6 +26,10 @@ Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/ch
 |---|---|
 | `ledgerful ledger search "<topic>" [--json]` | Committed-plan / TX FTS. **Quotes required** (clap `query` is one `String` token). Contrast: code `ledgerful search foo bar` stays unquoted multi-word. `--json` is a **bare array** (`Vec<LedgerEntry>`) — 0213 freeze; not a `schemaVersion` object. Key `related_tickets` frozen; **new** row values are ticket ids (or null), not staged file paths (files live on snapshot/`changed_files`). Additive omit-empty item keys `reason_kind` (`"trailer"` only; prose omits) and `risk_source` (`category` \| `explicit`). Empty `[]` is a valid FTS miss. Example: `ledgerful ledger search "0126" --json`. |
 | `ledgerful ledger audit <entity> [--json]` | Entity/file history. `--json` is `{exact, related}` camelCase items. File paths union entity-string matches with exact `changed_files.path` (`matchBasis`: `entity` \| `changed_files`; related is `directory`). Additive omit-empty `reasonKind` / `riskSource` / `matchBasis`. Human `Reason:` prefixes `[trailer]` when the stored reason is trailer-only. No new clap flags. |
+| `ledgerful ledger graph <tx> [--json] [--compact] [--layer …]` | Neighborhood `{exact, derived, heuristic}`. `--json` is that object (no `schemaVersion`); omit-empty `completeness` only when the 150/depth-2 cap hid a further hop or node. `--compact` is human-only (refused with `--json`). `--layer exact\|derived\|heuristic` is repeatable. |
+| `ledgerful ledger adr list [--json] [--status …]` | Human table ID/Entity/Status/Title/Created. `--json` is schemaVersion 1 `kind: "ledgerAdr"` (`id` is a number). `--status` uses `AdrStatus` snake_case. |
+| `ledgerful ledger export-provenance [--limit N] [--offset N]` | Pretty **bare array** of committed entries, oldest first. `--limit`/`--offset` page that array; truncation is one stderr `truncated:` line. Not a `schemaVersion` wrap. |
+| `ledgerful export head [--out PATH] [--stdout]` | Thin `ChainHead` checkpoint. `--stdout` / `-o -` is exact JSON bytes (0182). File-mode SUCCESS is a checkpoint write, not a verification. |
 
 ## `ledgerful tests`
 

@@ -96,7 +96,7 @@ pub(super) fn dispatch_export(command: ExportCommands) -> Result<()> {
                     std::fs::write(&validated, &json).into_diagnostic()?;
 
                     println!(
-                        "{} Chain head exported to {}",
+                        "{} Chain head checkpoint written to {} (not a verification; use verify --signatures --against-export)",
                         "SUCCESS:".if_supports_color(Stream::Stdout, |s| {
                             s.style(Style::new().green().bold())
                         }),

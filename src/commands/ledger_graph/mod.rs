@@ -9,9 +9,17 @@ mod query;
 
 use crate::commands::helpers::get_layout;
 use crate::state::storage::StorageManager;
-use clap::Args;
+use clap::{Args, ValueEnum};
 use miette::Result;
 use serde::Serialize;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ValueEnum)]
+#[value(rename_all = "lowercase")]
+pub enum GraphLayer {
+    Exact,
+    Derived,
+    Heuristic,
+}
 
 #[derive(Args, Debug)]
 pub struct LedgerGraphArgs {
@@ -20,6 +28,12 @@ pub struct LedgerGraphArgs {
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
+    /// Compact human readout (counts + at most 5 rows per bucket)
+    #[arg(long, conflicts_with = "json")]
+    pub compact: bool,
+    /// Restrict printed / JSON buckets (`exact`, `derived`, `heuristic`; repeatable)
+    #[arg(long, value_enum)]
+    pub layer: Vec<GraphLayer>,
 }
 
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -41,6 +55,9 @@ pub fn execute_ledger_graph(args: LedgerGraphArgs) -> Result<()> {
 
     let db = crate::ledger::db::LedgerDb::new(storage.get_connection());
     let full_id = query::resolve_tx_id(&db, &args.tx_id)?;
+    if args.compact && args.json {
+        miette::bail!("--compact cannot be combined with --json");
+    }
     let data = assemble::assemble_ledger_graph(&layout, &storage, cozo, &db, &full_id)?;
     print::print_ledger_graph(&args, &full_id, &data)
 }

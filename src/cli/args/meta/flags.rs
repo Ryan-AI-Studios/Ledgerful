@@ -887,7 +887,14 @@ impl Commands {
                             f.push("message");
                         }
                     }
-                    AdrSubcommands::List => {}
+                    AdrSubcommands::List { json, status } => {
+                        if *json {
+                            f.push("json");
+                        }
+                        if status.is_some() {
+                            f.push("status");
+                        }
+                    }
                 },
                 LedgerCommands::Validator { command } => match command {
                     ValidatorSubcommands::List { json } => {
@@ -903,6 +910,12 @@ impl Commands {
                 LedgerCommands::Graph(args) => {
                     if args.json {
                         f.push("json");
+                    }
+                    if args.compact {
+                        f.push("compact");
+                    }
+                    if !args.layer.is_empty() {
+                        f.push("layer");
                     }
                 }
                 LedgerCommands::Audit {
@@ -966,12 +979,23 @@ impl Commands {
                         f.push("tx");
                     }
                 }
-                LedgerCommands::ExportProvenance { out_path, force } => {
+                LedgerCommands::ExportProvenance {
+                    out_path,
+                    force,
+                    limit,
+                    offset,
+                } => {
                     if out_path.is_some() {
                         f.push("out_path");
                     }
                     if *force {
                         f.push("force");
+                    }
+                    if limit.is_some() {
+                        f.push("limit");
+                    }
+                    if *offset != 0 {
+                        f.push("offset");
                     }
                 }
                 LedgerCommands::ExportPublic { sign, key, .. } => {

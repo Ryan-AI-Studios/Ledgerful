@@ -6,7 +6,20 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Ledger readout UX (0320):** `ledger graph` gains `--compact` / `--layer`
+  and omit-empty JSON `completeness` when the existing 150-node / depth-2
+  cap hides further hops or nodes. `ledger adr list --json` is a
+  schemaVersion 1 `kind: "ledgerAdr"` object with `--status` filter.
+  `ledger export-provenance --limit` / `--offset` pages the genesis→head
+  bare array and reports truncation on stderr.
+
 ### Changed
+
+- **Export-head file banner (0320):** file-mode `export head` SUCCESS
+  states the write is a checkpoint, not a verification. `--stdout` /
+  `-o -` bytes stay 0182-identical.
 
 - **Surface freshness provenance (0313):** `index --check --json` emits
   additive `surfaces[]` (file-hash vs mapping/routes/embeddings).
