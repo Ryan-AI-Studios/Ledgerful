@@ -12,8 +12,9 @@ pub use binary_currency::{
     worktree_package_version,
 };
 pub use finding::{
-    DoctorCategory, DoctorFinding, DoctorSeverity, DoctorSummary, SessionPriority,
-    dashboard_failures, ready_for_publish, summarize,
+    DoctorCategory, DoctorFinding, DoctorSeverity, DoctorSummary, NOT_REQUIRED_FOR_READY,
+    READY_FOR_PUBLISH_MEANS, READY_SCOPE_HUMAN_LINE, SessionPriority, dashboard_failures,
+    ready_for_publish, summarize,
 };
 pub(crate) use finding::{
     is_action_critical, is_hygiene, is_observe_signing_later_code, split_doctor_warns,
@@ -403,6 +404,10 @@ pub fn execute_doctor(opts: DoctorRunOpts) -> Result<()> {
                 "githubLatest": github_latest_json,
             },
             "durationMs": duration_ms,
+            "readyForPublishScope": {
+                "readyMeans": READY_FOR_PUBLISH_MEANS,
+                "notRequiredForReady": NOT_REQUIRED_FOR_READY,
+            },
         });
         if let Some(readiness) = completion_readiness {
             body["completionReadiness"] = json!(readiness);

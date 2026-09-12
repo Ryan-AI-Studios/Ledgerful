@@ -19,6 +19,9 @@ Canonical definition lives in this doc and the agent skill — **not** embedded 
 in the JSON payload.
 
 **Does not mean:** `verify` passed, tests green, or full CI green.
+CLI `doctor --json` names that ceiling as `readyForPublishScope.notRequiredForReady`
+(`chain`, `fullTests`, `signerTrust`) — those surfaces may still emit findings;
+they are not required for the boolean to be true. Sidecar omits the object.
 
 **Block set (publish-env hard stop):** lifecycle CRITICAL codes (`PROMOTE_ORPHAN`,
 `HEAD_UNCOVERED`, `INTENT_NEVER_UNDER_ENFORCE`, `sig-require`) and missing **git**.
@@ -87,6 +90,10 @@ Pure stdout schema v1 (`schemaVersion` is integer `1`):
       "running": "ahead",
       "worktree": "unknown"
     }
+  },
+  "readyForPublishScope": {
+    "readyMeans": "zeroBlockFindings",
+    "notRequiredForReady": ["chain", "fullTests", "signerTrust"]
   },
   "durationMs": 842
 }

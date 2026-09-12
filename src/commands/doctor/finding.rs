@@ -5,6 +5,15 @@
 
 use serde::Serialize;
 
+/// CLI-only ready-boolean ceiling (0325). Locked constant — do not auto-derive
+/// from the live block set. Sidecar `doctor-results.json` must omit this object.
+pub const READY_FOR_PUBLISH_MEANS: &str = "zeroBlockFindings";
+/// ASCII-sorted. Meaning: not required for `readyForPublish` to be true.
+pub const NOT_REQUIRED_FOR_READY: [&str; 3] = ["chain", "fullTests", "signerTrust"];
+/// Human line after the summary when `block == 0` (includes warn-ready).
+pub const READY_SCOPE_HUMAN_LINE: &str =
+    "  (Ready means zero block findings. Not required for ready: chain, full tests, signer trust)";
+
 /// Severity grades for doctor findings (GitHub Actions-style mapping).
 ///
 /// Wire form: `"block" | "warn" | "info"`.
@@ -265,6 +274,19 @@ mod tests {
 
     fn f(code: &str, severity: DoctorSeverity, category: DoctorCategory) -> DoctorFinding {
         DoctorFinding::new(code, severity, category, code)
+    }
+
+    #[test]
+    fn ready_scope_human_line_matches_spec_bytes() {
+        assert_eq!(
+            READY_SCOPE_HUMAN_LINE,
+            "  (Ready means zero block findings. Not required for ready: chain, full tests, signer trust)"
+        );
+        assert_eq!(READY_FOR_PUBLISH_MEANS, "zeroBlockFindings");
+        assert_eq!(
+            NOT_REQUIRED_FOR_READY,
+            ["chain", "fullTests", "signerTrust"]
+        );
     }
 
     #[test]

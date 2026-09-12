@@ -56,6 +56,78 @@ pub struct PolicyCheckReport {
     /// Omitted from JSON when false (schemaVersion stays 1; additive optional field).
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub idle: bool,
+    /// Per-run rule counts. Integers always present. `rules[]` always emitted
+    /// (may be empty on legacy deserialize). Nested camelCase; container rename
+    /// does not recurse. Default zeros are the legacy/unknown sentinel.
+    #[serde(default)]
+    pub evaluation: PolicyEvaluation,
+}
+
+/// Count of declared [`PolicyRules`] fields. Independent of `rules.len()`.
+const POLICY_RULES_DECLARED: u32 = 5;
+
+/// Four-status policy evaluation (0325). Identity:
+/// `rulesDeclared == rulesChecked + rulesIdle + rulesOff + rulesSkipped`.
+/// `rulesDeclared` is [`POLICY_RULES_DECLARED`], not `rules.len()`.
+/// Serde default (all zeros, empty `rules[]`) is the legacy/unknown sentinel.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default, rename_all = "camelCase")]
+pub struct PolicyEvaluation {
+    pub rules_declared: u32,
+    pub rules_checked: u32,
+    pub rules_idle: u32,
+    pub rules_off: u32,
+    pub rules_skipped: u32,
+    pub rules: Vec<PolicyRuleEval>,
+}
+
+impl PolicyEvaluation {
+    fn from_rules(mut rules: Vec<PolicyRuleEval>) -> Self {
+        rules.sort_by(|a, b| a.rule_id.cmp(&b.rule_id));
+        let mut rules_checked = 0u32;
+        let mut rules_idle = 0u32;
+        let mut rules_off = 0u32;
+        let mut rules_skipped = 0u32;
+        for rule in &rules {
+            match rule.status {
+                PolicyRuleEvalStatus::Checked => rules_checked += 1,
+                PolicyRuleEvalStatus::Idle => rules_idle += 1,
+                PolicyRuleEvalStatus::Off => rules_off += 1,
+                PolicyRuleEvalStatus::Skipped => rules_skipped += 1,
+            }
+        }
+        Self {
+            rules_declared: POLICY_RULES_DECLARED,
+            rules_checked,
+            rules_idle,
+            rules_off,
+            rules_skipped,
+            rules,
+        }
+    }
+
+    fn identity_holds(&self) -> bool {
+        self.rules_declared
+            == self.rules_checked + self.rules_idle + self.rules_off + self.rules_skipped
+    }
+}
+
+/// One declared `PolicyRules` field and how this run treated it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct PolicyRuleEval {
+    pub rule_id: String,
+    pub status: PolicyRuleEvalStatus,
+}
+
+/// Live evaluator dispositions. Do not collapse to `checked|idle`.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum PolicyRuleEvalStatus {
+    Checked,
+    Idle,
+    Off,
+    Skipped,
 }
 
 /// A single policy violation.
@@ -300,6 +372,7 @@ pub fn evaluate_policy_check(
         policy_source,
         violations: Vec::new(),
         notes: Vec::new(),
+        rule_eval: Vec::new(),
     };
 
     ctx.evaluate()?;
@@ -472,26 +545,60 @@ struct EvalContext {
     policy_source: PolicySource,
     violations: Vec<PolicyViolation>,
     notes: Vec<String>,
+    rule_eval: Vec<PolicyRuleEval>,
 }
 
 impl EvalContext {
+    fn record(&mut self, rule_id: &str, status: PolicyRuleEvalStatus) {
+        self.rule_eval.push(PolicyRuleEval {
+            rule_id: rule_id.to_string(),
+            status,
+        });
+    }
+
     fn evaluate(&mut self) -> Result<()> {
         let rules = self.config.rules.clone();
 
         if rules.require_signed_entries {
             self.eval_require_signed_entries()?;
+            self.record("require_signed_entries", PolicyRuleEvalStatus::Checked);
+        } else {
+            self.record("require_signed_entries", PolicyRuleEvalStatus::Skipped);
         }
         if rules.no_pending_tx {
-            self.eval_no_pending_tx()?;
+            if self.is_pr_mode {
+                self.eval_no_pending_tx()?;
+                self.record("no_pending_tx", PolicyRuleEvalStatus::Skipped);
+            } else {
+                self.eval_no_pending_tx()?;
+                self.record("no_pending_tx", PolicyRuleEvalStatus::Checked);
+            }
+        } else {
+            self.record("no_pending_tx", PolicyRuleEvalStatus::Skipped);
         }
         if rules.verification_must_pass {
+            let notes_before = self.notes.len();
             self.eval_verification_must_pass()?;
+            let idle = self.notes[notes_before..]
+                .iter()
+                .any(|n| n == VERIFICATION_MUST_PASS_IDLE_NOTE);
+            self.record(
+                "verification_must_pass",
+                if idle {
+                    PolicyRuleEvalStatus::Idle
+                } else {
+                    PolicyRuleEvalStatus::Checked
+                },
+            );
+        } else {
+            self.record("verification_must_pass", PolicyRuleEvalStatus::Skipped);
         }
 
         let max_adr = RiskThreshold::parse(&rules.max_risk_without_adr)?;
         let fail_on = RiskThreshold::parse(&rules.fail_on)?;
 
         // Risk is needed for max_risk_without_adr and fail_on.
+        let mut risk_ran: Option<bool> = None;
         if max_adr != RiskThreshold::Off || fail_on != RiskThreshold::Off {
             match self.resolve_risk()? {
                 Some(risk) => {
@@ -532,6 +639,7 @@ impl EvalContext {
                             );
                         }
                     }
+                    risk_ran = Some(true);
                 }
                 None => {
                     // Not evaluable — record a note, not a violation.
@@ -539,9 +647,23 @@ impl EvalContext {
                         "risk rules (fail_on / max_risk_without_adr) skipped: risk not evaluable in this context"
                             .to_string(),
                     );
+                    risk_ran = Some(false);
                 }
             }
         }
+
+        let max_status = match (max_adr, risk_ran) {
+            (RiskThreshold::Off, _) => PolicyRuleEvalStatus::Off,
+            (_, Some(true)) => PolicyRuleEvalStatus::Checked,
+            _ => PolicyRuleEvalStatus::Skipped,
+        };
+        let fail_status = match (fail_on, risk_ran) {
+            (RiskThreshold::Off, _) => PolicyRuleEvalStatus::Off,
+            (_, Some(true)) => PolicyRuleEvalStatus::Checked,
+            _ => PolicyRuleEvalStatus::Skipped,
+        };
+        self.record("max_risk_without_adr", max_status);
+        self.record("fail_on", fail_status);
 
         Ok(())
     }
@@ -576,6 +698,16 @@ impl EvalContext {
             .notes
             .iter()
             .any(|n| n == VERIFICATION_MUST_PASS_IDLE_NOTE);
+        let evaluation = PolicyEvaluation::from_rules(self.rule_eval);
+        debug_assert!(
+            evaluation.identity_holds(),
+            "policy evaluation identity: {evaluation:?}"
+        );
+        debug_assert_eq!(
+            evaluation.rules.len() as u32,
+            POLICY_RULES_DECLARED,
+            "every PolicyRules field must be recorded: {evaluation:?}"
+        );
         Ok(PolicyCheckReport {
             schema_version: POLICY_CHECK_SCHEMA_VERSION,
             violations: self.violations,
@@ -584,6 +716,7 @@ impl EvalContext {
             policy_source: self.policy_source.as_str().to_string(),
             notes: self.notes,
             idle,
+            evaluation,
         })
     }
 
@@ -1422,6 +1555,7 @@ fail_on = "critical"
             policy_source: "local".into(),
             notes: vec![],
             idle: false,
+            evaluation: PolicyEvaluation::default(),
         };
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["schemaVersion"], 1);
@@ -1449,6 +1583,7 @@ fail_on = "critical"
             policy_source: "local".into(),
             notes: vec!["risk rules skipped: risk not evaluable".into()],
             idle: false,
+            evaluation: PolicyEvaluation::default(),
         };
         let json = serde_json::to_value(&report).unwrap();
         assert_eq!(json["notes"][0], "risk rules skipped: risk not evaluable");
@@ -1481,6 +1616,7 @@ fail_on = "critical"
             policy_source: policy_source.into(),
             notes,
             idle,
+            evaluation: PolicyEvaluation::default(),
         }
     }
 
@@ -1606,6 +1742,71 @@ fail_on = "critical"
         assert!(!back.idle);
         assert!(back.passed);
         assert_eq!(back.policy_source, "local");
+        assert_eq!(back.evaluation, PolicyEvaluation::default());
+        assert_eq!(back.evaluation.rules_declared, 0);
+        assert!(back.evaluation.rules.is_empty());
+    }
+
+    #[test]
+    fn evaluation_from_rules_declared_is_independent_of_recorded_len() {
+        let eval = PolicyEvaluation::from_rules(vec![PolicyRuleEval {
+            rule_id: "fail_on".into(),
+            status: PolicyRuleEvalStatus::Off,
+        }]);
+        assert_eq!(eval.rules_declared, POLICY_RULES_DECLARED);
+        assert_eq!(eval.rules.len(), 1);
+        assert!(
+            !eval.identity_holds(),
+            "under-record must fail identity: {eval:?}"
+        );
+    }
+
+    #[test]
+    fn evaluation_from_rules_identity_and_sort() {
+        let eval = PolicyEvaluation::from_rules(vec![
+            PolicyRuleEval {
+                rule_id: "verification_must_pass".into(),
+                status: PolicyRuleEvalStatus::Idle,
+            },
+            PolicyRuleEval {
+                rule_id: "fail_on".into(),
+                status: PolicyRuleEvalStatus::Off,
+            },
+            PolicyRuleEval {
+                rule_id: "no_pending_tx".into(),
+                status: PolicyRuleEvalStatus::Skipped,
+            },
+            PolicyRuleEval {
+                rule_id: "require_signed_entries".into(),
+                status: PolicyRuleEvalStatus::Checked,
+            },
+            PolicyRuleEval {
+                rule_id: "max_risk_without_adr".into(),
+                status: PolicyRuleEvalStatus::Off,
+            },
+        ]);
+        assert!(eval.identity_holds());
+        assert_eq!(eval.rules_declared, 5);
+        assert_eq!(eval.rules_checked, 1);
+        assert_eq!(eval.rules_idle, 1);
+        assert_eq!(eval.rules_off, 2);
+        assert_eq!(eval.rules_skipped, 1);
+        let ids: Vec<&str> = eval.rules.iter().map(|r| r.rule_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "fail_on",
+                "max_risk_without_adr",
+                "no_pending_tx",
+                "require_signed_entries",
+                "verification_must_pass"
+            ]
+        );
+        let json = serde_json::to_value(&eval).unwrap();
+        assert_eq!(json["rulesDeclared"], 5);
+        assert_eq!(json["rules"][0]["ruleId"], "fail_on");
+        assert_eq!(json["rules"][0]["status"], "off");
+        assert_eq!(json["rules"][2]["status"], "skipped");
     }
 
     /// DoD-5 (0072): v2 signing basis binds provenance fields; policy/mode never enter.
@@ -1711,6 +1912,7 @@ fail_on = "critical"
             policy_source: PolicySource::Local,
             violations: Vec::new(),
             notes: Vec::new(),
+            rule_eval: Vec::new(),
         };
         ctx.push_violation("no_pending_tx", "f", "msg".into());
         assert_eq!(ctx.violations[0].severity, "warn");
@@ -1727,6 +1929,7 @@ fail_on = "critical"
             policy_source: PolicySource::Local,
             violations: Vec::new(),
             notes: Vec::new(),
+            rule_eval: Vec::new(),
         };
         ctx.push_violation("no_pending_tx", "f", "msg".into());
         assert_eq!(ctx.violations[0].severity, "error");

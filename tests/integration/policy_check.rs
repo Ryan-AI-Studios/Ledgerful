@@ -5,8 +5,9 @@
 
 use ledgerful::commands::init::execute_init;
 use ledgerful::commands::policy_check::{
-    POLICY_CHECK_SCHEMA_VERSION, PolicyCheckReport, VERIFICATION_MUST_PASS_IDLE_NOTE,
-    evaluate_policy_check, execute_policy_check, parse_policy_toml,
+    POLICY_CHECK_SCHEMA_VERSION, PolicyCheckReport, PolicyRuleEvalStatus,
+    VERIFICATION_MUST_PASS_IDLE_NOTE, evaluate_policy_check, execute_policy_check,
+    parse_policy_toml,
 };
 use ledgerful::config::model::Config;
 
@@ -36,6 +37,24 @@ fn git_cmd(dir: &Path, args: &[&str]) {
         args,
         String::from_utf8_lossy(&output.stderr)
     );
+}
+
+fn assert_evaluation_identity(report: &PolicyCheckReport) {
+    let e = &report.evaluation;
+    assert_eq!(
+        e.rules_declared, 5,
+        "live emit rulesDeclared must be 5: {e:?}"
+    );
+    assert_eq!(
+        e.rules_declared,
+        e.rules_checked + e.rules_idle + e.rules_off + e.rules_skipped,
+        "evaluation identity: {e:?}"
+    );
+    assert_eq!(e.rules_declared as usize, e.rules.len(), "{e:?}");
+    let ids: Vec<&str> = e.rules.iter().map(|r| r.rule_id.as_str()).collect();
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    assert_eq!(ids, sorted, "rules[] must be sorted by ruleId: {ids:?}");
 }
 
 fn write_policy(root: &Path, body: &str) {
@@ -413,6 +432,17 @@ fail_on = "off"
         "--pr must not flag pending workspace state: {:?}",
         pr.violations
     );
+    assert_evaluation_identity(&pr);
+    assert_eq!(
+        pr.evaluation
+            .rules
+            .iter()
+            .find(|r| r.rule_id == "no_pending_tx")
+            .map(|r| r.status),
+        Some(PolicyRuleEvalStatus::Skipped),
+        "--pr no_pending_tx must be skipped: {:?}",
+        pr.evaluation.rules
+    );
 }
 
 /// DoD-1c / CX-P2: pending DB txs are workspace state; `--pr` skips them.
@@ -674,6 +704,68 @@ fn verification_must_pass_synthesized_idle_is_idle_pass() {
         report.notes
     );
     assert!(report.idle, "synthesized idle must set idle: true");
+    assert_evaluation_identity(&report);
+    assert!(
+        report.evaluation.rules_idle >= 1,
+        "synthesized idle must count idle rules: {:?}",
+        report.evaluation
+    );
+    assert_eq!(report.evaluation.rules_declared, 5);
+    assert!(
+        report.evaluation.rules.iter().any(
+            |r| r.rule_id == "verification_must_pass" && r.status == PolicyRuleEvalStatus::Idle
+        ),
+        "verification_must_pass must be idle: {:?}",
+        report.evaluation.rules
+    );
+}
+
+/// 0325 DoD-2: local policy.toml `off` thresholds are `off`, not checked/idle.
+#[test]
+#[serial(env, cwd)]
+fn evaluation_off_thresholds_are_off() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "base\n").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let _ni = non_interactive();
+    let _guard = DirGuard::new(root);
+    execute_init(false, false).unwrap();
+    git_add_and_commit_if_dirty(root, "commit init artifacts");
+    write_policy(
+        root,
+        r#"
+preset = "observe"
+[rules]
+require_signed_entries = false
+no_pending_tx = false
+verification_must_pass = false
+max_risk_without_adr = "off"
+fail_on = "off"
+"#,
+    );
+
+    let report = evaluate_policy_check(None, None, None).unwrap();
+    assert!(!report.idle, "local write must not be synthesized idle");
+    assert_eq!(report.policy_source, "local");
+    assert_evaluation_identity(&report);
+    for id in ["fail_on", "max_risk_without_adr"] {
+        assert_eq!(
+            report
+                .evaluation
+                .rules
+                .iter()
+                .find(|r| r.rule_id == id)
+                .map(|r| r.status),
+            Some(PolicyRuleEvalStatus::Off),
+            "{id} must be off: {:?}",
+            report.evaluation.rules
+        );
+    }
+    assert_eq!(report.evaluation.rules_off, 2);
+    assert_eq!(report.evaluation.rules_skipped, 3);
 }
 
 /// 0214-A: idle local target + unbound-only passing run is still a note.
@@ -2070,6 +2162,7 @@ fn policy_check_report_roundtrip() {
         policy_source: "local".into(),
         notes: vec![],
         idle: false,
+        evaluation: Default::default(),
     };
     let json = serde_json::to_string(&report).unwrap();
     let back: PolicyCheckReport = serde_json::from_str(&json).unwrap();

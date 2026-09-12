@@ -70,6 +70,12 @@ fn doctor_json_stdout_is_pure_schema_v1() {
     assert!(v["summary"]["info"].is_number());
     assert!(v["findings"].is_array());
     assert!(v.get("readyForPublishDefinition").is_none());
+    assert!(v.get("notEvaluated").is_none());
+    assert_eq!(v["readyForPublishScope"]["readyMeans"], "zeroBlockFindings");
+    assert_eq!(
+        v["readyForPublishScope"]["notRequiredForReady"],
+        serde_json::json!(["chain", "fullTests", "signerTrust"])
+    );
     if let Some(arr) = v["findings"].as_array() {
         for f in arr {
             assert!(f["code"].is_string());
@@ -311,6 +317,13 @@ require_signing = true
     assert!(
         v["summary"]["block"].as_u64().unwrap_or(0) >= 1,
         "expected block count >= 1: {v}"
+    );
+    assert!(v.get("readyForPublishDefinition").is_none());
+    assert!(v.get("notEvaluated").is_none());
+    assert_eq!(v["readyForPublishScope"]["readyMeans"], "zeroBlockFindings");
+    assert_eq!(
+        v["readyForPublishScope"]["notRequiredForReady"],
+        serde_json::json!(["chain", "fullTests", "signerTrust"])
     );
 }
 

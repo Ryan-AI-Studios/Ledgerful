@@ -954,3 +954,81 @@ fn wsl_support_line_mounted_and_unmounted() {
     );
     assert_eq!(wsl_support_line(false), None);
 }
+
+#[test]
+fn print_doctor_report_ready_includes_scope_line() {
+    use crate::commands::doctor::{
+        DoctorCategory, DoctorFinding, READY_SCOPE_HUMAN_LINE, summarize,
+    };
+
+    let tools: Vec<(String, ExecutableStatus)> = Vec::new();
+    let report = DoctorReport {
+        platform: "test",
+        shell: "test",
+        tools: &tools,
+        path_display: "test",
+        path_kind: "test",
+        work_root: "test",
+        state_dir: "test/.ledgerful",
+        is_wsl_mounted: false,
+        embedding_model_status: "OK".to_string(),
+        embedding_model_failed: false,
+        completion_model_status: "OK".to_string(),
+        native_graph_status: "Ready".to_string(),
+        active_ask_backend: "test".to_string(),
+        index_health: vec!["Search index: OK (1 documents)".to_string()],
+        target_triple: "test",
+    };
+
+    let warn_ready = vec![DoctorFinding::warn(
+        "sig-pin",
+        DoctorCategory::Signing,
+        "pin",
+    )];
+    let counts = summarize(&warn_ready);
+    let summary = DoctorSummaryCounts {
+        block: counts.block,
+        warn: counts.warn,
+        info: counts.info,
+    };
+    let mut buf = Vec::new();
+    print_doctor_report_to(
+        &mut buf,
+        &report,
+        &summary,
+        &warn_ready,
+        DoctorHumanProfile::default(),
+    )
+    .expect("write");
+    let out = String::from_utf8(buf).expect("utf8");
+    assert!(
+        out.contains(READY_SCOPE_HUMAN_LINE),
+        "warn-ready must print scope line:\n{out}"
+    );
+
+    let blocked = vec![DoctorFinding::block(
+        "tool-git",
+        DoctorCategory::Tools,
+        "git missing",
+    )];
+    let block_counts = summarize(&blocked);
+    let block_summary = DoctorSummaryCounts {
+        block: block_counts.block,
+        warn: block_counts.warn,
+        info: block_counts.info,
+    };
+    let mut block_buf = Vec::new();
+    print_doctor_report_to(
+        &mut block_buf,
+        &report,
+        &block_summary,
+        &blocked,
+        DoctorHumanProfile::default(),
+    )
+    .expect("write");
+    let blocked_out = String::from_utf8(block_buf).expect("utf8");
+    assert!(
+        !blocked_out.contains(READY_SCOPE_HUMAN_LINE),
+        "block path must omit scope line:\n{blocked_out}"
+    );
+}

@@ -9,6 +9,7 @@ use crate::state::storage::StorageManager;
 use chrono::Utc;
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
+use std::io::{self, Write};
 
 pub fn execute_validator_lifecycle(subcommand: ValidatorSubcommands) -> Result<()> {
     let layout = get_layout()?;
@@ -73,59 +74,114 @@ pub fn execute_validator_lifecycle(subcommand: ValidatorSubcommands) -> Result<(
             let validators = db
                 .get_commit_validators(None)
                 .map_err(|e| miette::miette!("{}", e))?;
-            println!(
-                "\n{}",
-                "Commit Validator Doctor Report"
-                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
-            );
-            let mut all_ok = true;
-            for v in validators {
-                print!(
-                    "  Validator {}: ",
-                    v.name.if_supports_color(Stream::Stdout, |s| s.bold())
-                );
-                let exe = v.executable.trim();
-                let exists = if exe.is_empty() {
-                    false
-                } else {
-                    let path = std::path::Path::new(exe);
-                    if path.exists() {
-                        true
-                    } else {
-                        crate::util::which::which(exe).is_some()
-                    }
-                };
-
-                if !v.enabled {
-                    println!(
-                        "{}",
-                        "DISABLED".if_supports_color(Stream::Stdout, |s| s.yellow())
-                    );
-                } else if exists {
-                    println!("{}", "OK".if_supports_color(Stream::Stdout, |s| s.green()));
-                } else {
-                    println!(
-                        "{} (Executable '{}' not found)",
-                        "MISSING/ERROR".if_supports_color(Stream::Stdout, |s| s.red()),
-                        exe
-                    );
-                    all_ok = false;
-                }
-            }
-            if all_ok {
-                println!(
-                    "\n{}",
-                    "All enabled validators are healthy!"
-                        .if_supports_color(Stream::Stdout, |s| s.green())
-                );
-            } else {
-                println!(
-                    "\n{}",
-                    "Some enabled validators have issues. Please check the paths."
-                        .if_supports_color(Stream::Stdout, |s| s.red())
-                );
-            }
+            let rows: Vec<ValidatorDoctorRow> = validators
+                .into_iter()
+                .map(|v| ValidatorDoctorRow {
+                    name: v.name,
+                    executable: v.executable,
+                    enabled: v.enabled,
+                })
+                .collect();
+            let mut stdout = io::stdout();
+            print_validator_doctor_report_to(&mut stdout, &rows).into_diagnostic()?;
         }
+    }
+    Ok(())
+}
+
+/// Path-probe row for `ledger validator doctor` (never runs the executable).
+#[derive(Debug, Clone)]
+pub(crate) struct ValidatorDoctorRow {
+    pub name: String,
+    pub executable: String,
+    pub enabled: bool,
+}
+
+fn validator_executable_resolves(executable: &str) -> bool {
+    let exe = executable.trim();
+    if exe.is_empty() {
+        return false;
+    }
+    let path = std::path::Path::new(exe);
+    if path.exists() {
+        return true;
+    }
+    crate::util::which::which(exe).is_some()
+}
+
+/// Human validator-doctor report. Path lookup only — not a health run.
+pub(crate) fn print_validator_doctor_report_to(
+    out: &mut dyn Write,
+    rows: &[ValidatorDoctorRow],
+) -> io::Result<()> {
+    writeln!(
+        out,
+        "\n{}",
+        "Commit Validator Doctor Report"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+    )?;
+
+    let registered = rows.len();
+    let enabled = rows.iter().filter(|r| r.enabled).count();
+    let mut inspected = 0usize;
+    let mut resolved = 0usize;
+    let mut missing_enabled = false;
+
+    for v in rows {
+        write!(
+            out,
+            "  Validator {}: ",
+            v.name.if_supports_color(Stream::Stdout, |s| s.bold())
+        )?;
+        let exists = validator_executable_resolves(&v.executable);
+        if !v.enabled {
+            writeln!(
+                out,
+                "{}",
+                "DISABLED".if_supports_color(Stream::Stdout, |s| s.yellow())
+            )?;
+            continue;
+        }
+        inspected += 1;
+        if exists {
+            resolved += 1;
+            writeln!(
+                out,
+                "{}",
+                "OK".if_supports_color(Stream::Stdout, |s| s.green())
+            )?;
+        } else {
+            missing_enabled = true;
+            writeln!(
+                out,
+                "{} (Executable '{}' not found)",
+                "MISSING/ERROR".if_supports_color(Stream::Stdout, |s| s.red()),
+                v.executable.trim()
+            )?;
+        }
+    }
+
+    writeln!(
+        out,
+        "Validators: {registered} registered / {enabled} enabled / {inspected} inspected / {resolved} resolved"
+    )?;
+
+    if enabled == 0 {
+        writeln!(out, "This is not a health pass.")?;
+        writeln!(out, "Next: ledgerful ledger register validator --help")?;
+    } else if !missing_enabled && resolved == enabled {
+        writeln!(
+            out,
+            "\n{}",
+            "All enabled validators are healthy!".if_supports_color(Stream::Stdout, |s| s.green())
+        )?;
+    } else {
+        writeln!(
+            out,
+            "\n{}",
+            "Some enabled validators have issues. Please check the paths."
+                .if_supports_color(Stream::Stdout, |s| s.red())
+        )?;
     }
     Ok(())
 }
@@ -251,4 +307,105 @@ pub(crate) fn execute_ledger_register(
     }
 
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn report(rows: &[ValidatorDoctorRow]) -> String {
+        let mut buf = Vec::new();
+        print_validator_doctor_report_to(&mut buf, rows).expect("write");
+        String::from_utf8(buf).expect("utf8")
+    }
+
+    #[test]
+    fn validator_doctor_empty_is_not_a_health_pass() {
+        let out = report(&[]);
+        assert!(
+            out.contains("Validators: 0 registered / 0 enabled / 0 inspected / 0 resolved"),
+            "{out}"
+        );
+        assert!(
+            !out.contains("All enabled validators are healthy!"),
+            "{out}"
+        );
+        assert!(out.contains("This is not a health pass."), "{out}");
+        assert!(
+            out.contains("ledgerful ledger register validator --help"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn validator_doctor_resolved_exe_may_claim_healthy() {
+        let exe = if cfg!(windows) {
+            std::env::var("COMSPEC").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into())
+        } else {
+            "/bin/sh".into()
+        };
+        let out = report(&[ValidatorDoctorRow {
+            name: "ok-one".into(),
+            executable: exe,
+            enabled: true,
+        }]);
+        assert!(
+            out.contains("Validators: 1 registered / 1 enabled / 1 inspected / 1 resolved"),
+            "{out}"
+        );
+        assert!(out.contains("All enabled validators are healthy!"), "{out}");
+        assert!(!out.contains("This is not a health pass."), "{out}");
+    }
+
+    #[test]
+    fn validator_doctor_missing_exe_is_inspected_not_resolved() {
+        let out = report(&[ValidatorDoctorRow {
+            name: "gone".into(),
+            executable: "definitely-not-a-ledgerful-validator-0325.exe".into(),
+            enabled: true,
+        }]);
+        assert!(
+            out.contains("Validators: 1 registered / 1 enabled / 1 inspected / 0 resolved"),
+            "{out}"
+        );
+        assert!(out.contains("MISSING/ERROR"), "{out}");
+        assert!(
+            !out.contains("All enabled validators are healthy!"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn validator_doctor_mixed_enabled_does_not_claim_healthy() {
+        let exe = if cfg!(windows) {
+            std::env::var("COMSPEC").unwrap_or_else(|_| r"C:\Windows\System32\cmd.exe".into())
+        } else {
+            "/bin/sh".into()
+        };
+        let out = report(&[
+            ValidatorDoctorRow {
+                name: "ok-one".into(),
+                executable: exe,
+                enabled: true,
+            },
+            ValidatorDoctorRow {
+                name: "gone".into(),
+                executable: "definitely-not-a-ledgerful-validator-0325.exe".into(),
+                enabled: true,
+            },
+        ]);
+        assert!(
+            out.contains("Validators: 2 registered / 2 enabled / 2 inspected / 1 resolved"),
+            "{out}"
+        );
+        assert!(out.contains("MISSING/ERROR"), "{out}");
+        assert!(
+            out.contains("Some enabled validators have issues."),
+            "{out}"
+        );
+        assert!(
+            !out.contains("All enabled validators are healthy!"),
+            "{out}"
+        );
+    }
 }
