@@ -5,9 +5,6 @@ use std::path::{Path, PathBuf};
 /// Exactly four platform ids (shared by clap parser, help, and errors).
 pub const PLATFORM_IDS: &[&str] = &["claude-code", "cursor", "codex", "copilot"];
 
-/// Stable server entry name in host configs.
-pub const SERVER_NAME: &str = crate::commands::mcp::merge::SERVER_NAME;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum PlatformId {
     ClaudeCode,

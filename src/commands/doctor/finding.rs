@@ -43,22 +43,6 @@ pub enum DoctorCategory {
     Other,
 }
 
-impl DoctorCategory {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Lifecycle => "lifecycle",
-            Self::Signing => "signing",
-            Self::Tools => "tools",
-            Self::Index => "index",
-            Self::Optional => "optional",
-            Self::Migration => "migration",
-            Self::Layout => "layout",
-            Self::Gate => "gate",
-            Self::Other => "other",
-        }
-    }
-}
-
 /// Session attention for a doctor finding (0225).
 ///
 /// Wire form: `"now" | "later"`. Derived at emission from live

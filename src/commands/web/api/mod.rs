@@ -8,10 +8,8 @@
 //! - `openapi.rs`: OpenAPI document generation (`ApiDoc`, `generate_openapi_json`).
 //! - `handlers.rs`: API request handlers and business logic helpers.
 //! - `cozo.rs`: CozoDB knowledge-graph and security-boundary queries.
-//! - `dto.rs`: API-specific DTO re-exports (most shared DTOs live in `web::types`).
 
 pub mod cozo;
-pub mod dto;
 pub mod handlers;
 pub mod openapi;
 

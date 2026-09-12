@@ -4,7 +4,6 @@ pub(crate) mod graph;
 pub(crate) mod modes;
 pub(crate) mod output;
 pub(crate) mod repair;
-pub(crate) mod scip;
 pub(crate) mod semantic;
 
 /// CLI arguments for the `ledgerful index` command.
