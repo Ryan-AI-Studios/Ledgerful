@@ -706,6 +706,8 @@ pub(crate) fn audit_entity_payload(
             .cmp(&a.0.committed_at)
             .then_with(|| b.0.tx_id.cmp(&a.0.tx_id))
     });
+    let exact_ids: std::collections::HashSet<String> =
+        hits.iter().map(|(e, _)| e.tx_id.clone()).collect();
     let exact_hits: Vec<(LedgerEntry, Option<&'static str>)> =
         hits.into_iter().skip(offset).take(limit).collect();
 
@@ -719,8 +721,6 @@ pub(crate) fn audit_entity_payload(
             let mut related = db
                 .get_related_ledger_entries(dir, limit)
                 .map_err(|e| miette::miette!("{}", e))?;
-            let exact_ids: std::collections::HashSet<String> =
-                exact_hits.iter().map(|(e, _)| e.tx_id.clone()).collect();
             related.retain(|e| !exact_ids.contains(&e.tx_id));
             related
         } else {
@@ -1246,6 +1246,71 @@ mod tests {
                     ids.contains(track_id) && ids.contains(second.as_str()),
                     "union paging must include both changed_files TXs: {ids:?}"
                 );
+            },
+        );
+    }
+
+    #[test]
+    fn audit_related_excludes_exact_ids_outside_page() {
+        let entity_exact_id = std::cell::RefCell::new(String::new());
+        with_changed_files_fixture_setup(
+            |manager| {
+                let entity_exact = manager
+                    .start_change(crate::ledger::TransactionRequest {
+                        category: crate::ledger::types::Category::Bugfix,
+                        entity: "src/commands/configure.rs".to_string(),
+                        ..Default::default()
+                    })
+                    .expect("start entity-exact");
+                manager
+                    .commit_change(
+                        entity_exact.clone(),
+                        crate::ledger::CommitRequest {
+                            summary: "entity-exact file commit".to_string(),
+                            reason: "Store a substantive why.".to_string(),
+                            risk: Some("HIGH".to_string()),
+                            ..Default::default()
+                        },
+                        false,
+                    )
+                    .expect("commit entity-exact");
+                *entity_exact_id.borrow_mut() = entity_exact;
+            },
+            |manager, db, track_id, file_path| {
+                let entity_exact = entity_exact_id.borrow();
+                let all = audit_entity_payload(manager, db, file_path, Some(file_path), 20, 0)
+                    .expect("all");
+                let exact_ids: std::collections::HashSet<_> =
+                    all.exact.iter().map(|e| e.tx_id.as_str()).collect();
+                assert!(
+                    exact_ids.contains(track_id) && exact_ids.contains(entity_exact.as_str()),
+                    "union must include changed_files + entity-exact: {exact_ids:?}"
+                );
+                assert!(
+                    all.related
+                        .iter()
+                        .any(|e| e.entity == "src/commands/other.rs"),
+                    "directory neighbor must remain related on the unpaged union"
+                );
+                let page0 = audit_entity_payload(manager, db, file_path, Some(file_path), 1, 0)
+                    .expect("page0");
+                let page1 = audit_entity_payload(manager, db, file_path, Some(file_path), 1, 1)
+                    .expect("page1");
+                assert_eq!(page0.exact.len(), 1);
+                assert_eq!(page1.exact.len(), 1);
+                assert_ne!(page0.exact[0].tx_id, page1.exact[0].tx_id);
+                for (label, page) in [("page0", &page0), ("page1", &page1)] {
+                    let leaked: Vec<_> = page
+                        .related
+                        .iter()
+                        .filter(|e| exact_ids.contains(e.tx_id.as_str()))
+                        .map(|e| e.tx_id.as_str())
+                        .collect();
+                    assert!(
+                        leaked.is_empty(),
+                        "{label} related must exclude every exact tx_id (including off-page): {leaked:?}"
+                    );
+                }
             },
         );
     }
