@@ -18,7 +18,7 @@ Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/ch
 
 `ledgerful configure --json` — config-HITL catalog (`kind: configure`, same item shape as session `configChecklist[]`). No TUI / Confirm. After the human names apply-able ids: `configure --json --apply <id>[,<id>]` only for tokens that have `applyArg`. Refuse unknown / inapplicable / no-`applyArg` / apply-all. Human `configure` is a table. Cookie persist: `configure` (human and JSON) and `session --json` may write `cli-session.json` on gated/empty; human `session` does not; doctor never writes. Quote gated/empty once (`alreadyShown`); never `config set` unless the human named the id.
 
-`ledgerful review <RANGE> --json` — range review packet (`kind: review`). Compose git files + range-correct impact counts + bounded ledger search. Empty `[review]` is valid. Conductor off unless `[review.conductor].root` is set. Use this for a git-range review instead of assembling change-context / `scan --impact`. Does not rewrite `latest-impact.json`. Not `scan --pr`. Not Daily 5.
+`ledgerful review <RANGE> --json` — range review packet (`kind: review`). Compose git files + range-correct impact counts + bounded ledger search. `ciEvidence` is target-bound: `status` is `ok` \| `unverified` \| `unavailable` (never `none`); omit-empty `boundHead` is the resolved lowercase head OID; unbound `verifyHistory` rows go to omit-empty `historical[]` (item `head` omit-empty). Empty `[review]` is valid. Conductor off unless `[review.conductor].root` is set. Use this for a git-range review instead of assembling change-context / `scan --impact`. Does not rewrite `latest-impact.json`. Not `scan --pr`. Not Daily 5.
 
 ## Provenance (not Daily 5)
 

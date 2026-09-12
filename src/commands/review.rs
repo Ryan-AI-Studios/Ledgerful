@@ -19,6 +19,7 @@ use crate::verify::results::{VERIFY_HISTORY, parse_verify_history};
 use globset::{Glob, GlobSet, GlobSetBuilder};
 use miette::Result;
 use serde::{Deserialize, Serialize};
+use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -187,6 +188,25 @@ pub struct ReviewCiEvidence {
     pub items: Vec<ReviewCiItem>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub truncated: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub bound_head: Option<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub historical: Vec<ReviewCiItem>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub historical_truncated: bool,
+}
+
+impl Default for ReviewCiEvidence {
+    fn default() -> Self {
+        Self {
+            status: "unavailable".to_string(),
+            items: Vec::new(),
+            truncated: false,
+            bound_head: None,
+            historical: Vec::new(),
+            historical_truncated: false,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -197,8 +217,10 @@ pub enum ReviewCiItem {
         timestamp: String,
         passed: bool,
         duration_secs: u64,
-        #[serde(skip_serializing_if = "Option::is_none")]
+        #[serde(default, skip_serializing_if = "Option::is_none")]
         tx_id: Option<String>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        head: Option<String>,
     },
     #[serde(rename_all = "camelCase")]
     GithubCheck {
@@ -369,6 +391,8 @@ pub fn execute_review_in(
         work_dir,
         opts.id.as_deref(),
         suppress_github,
+        snapshot.head_hash.as_deref(),
+        files_changed.len(),
     );
 
     let envelope = ReviewEnvelope {
@@ -1282,61 +1306,86 @@ fn load_ci_evidence(
     work_dir: &Path,
     id: Option<&str>,
     suppress_github: bool,
+    bound_head: Option<&str>,
+    files_changed_len: usize,
 ) -> ReviewCiEvidence {
+    let bound_head = bound_head
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| s.to_ascii_lowercase());
+    let bound = bound_head.as_deref();
+
     let mut items = Vec::new();
+    let mut historical = Vec::new();
     let history_path = layout.reports_dir().join(VERIFY_HISTORY);
     if history_path.exists() {
         match std::fs::read_to_string(&history_path) {
             Ok(content) => match parse_verify_history(&content) {
-                Ok(mut recs) => {
-                    recs.sort_by(|a, b| a.timestamp.cmp(&b.timestamp));
-                    for r in recs.into_iter().rev() {
-                        items.push(ReviewCiItem::VerifyHistory {
+                Ok(recs) => {
+                    for r in recs {
+                        let item = ReviewCiItem::VerifyHistory {
                             timestamp: r.timestamp,
                             passed: r.passed,
                             duration_secs: r.duration_secs,
                             tx_id: r.tx_id,
-                        });
+                            head: r.head,
+                        };
+                        if verify_history_target_bound(item_head(&item), bound) {
+                            items.push(item);
+                        } else {
+                            historical.push(item);
+                        }
                     }
                 }
                 Err(e) => {
-                    return ReviewCiEvidence {
-                        status: "unavailable".to_string(),
-                        items: Vec::new(),
-                        truncated: false,
-                    }
-                    .with_note_unused(e);
+                    return unavailable_ci(bound_head).with_note_unused(e);
                 }
             },
             Err(_) => {
-                return ReviewCiEvidence {
-                    status: "unavailable".to_string(),
-                    items: Vec::new(),
-                    truncated: false,
-                };
+                return unavailable_ci(bound_head);
             }
         }
     }
 
     if !suppress_github
         && should_fetch_github_checks(cfg)
-        && let Some(extra) = fetch_github_checks(work_dir, cfg, id)
+        && let Some((pr_sha, extra)) = fetch_github_checks(work_dir, cfg, id)
     {
-        items.extend(extra);
+        if github_checks_target_bound(&pr_sha, bound) {
+            items.extend(extra);
+        } else {
+            historical.extend(extra);
+        }
     }
 
-    items.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+    sort_ci_items(&mut items);
+    sort_ci_items(&mut historical);
     let truncated = items.len() > MAX_CI;
     items.truncate(MAX_CI);
-    let status = if items.is_empty() {
-        "unavailable"
-    } else {
+    let historical_truncated = historical.len() > MAX_CI;
+    historical.truncate(MAX_CI);
+    let status = if !items.is_empty() {
         "ok"
+    } else if files_changed_len > 0 {
+        "unverified"
+    } else {
+        "unavailable"
     };
     ReviewCiEvidence {
         status: status.to_string(),
         items,
         truncated,
+        bound_head,
+        historical,
+        historical_truncated,
+    }
+}
+
+fn unavailable_ci(bound_head: Option<String>) -> ReviewCiEvidence {
+    ReviewCiEvidence {
+        status: "unavailable".to_string(),
+        bound_head,
+        ..ReviewCiEvidence::default()
     }
 }
 
@@ -1347,11 +1396,50 @@ impl ReviewCiEvidence {
     }
 }
 
+fn item_head(item: &ReviewCiItem) -> Option<&str> {
+    match item {
+        ReviewCiItem::VerifyHistory { head, .. } => head.as_deref(),
+        ReviewCiItem::GithubCheck { .. } => None,
+    }
+}
+
+fn verify_history_target_bound(head: Option<&str>, bound_head: Option<&str>) -> bool {
+    match (head, bound_head) {
+        (Some(head), Some(bound)) => {
+            !head.is_empty() && !bound.is_empty() && head.eq_ignore_ascii_case(bound)
+        }
+        _ => false,
+    }
+}
+
+pub(crate) fn github_checks_target_bound(pr_head_sha: &str, bound_head: Option<&str>) -> bool {
+    bound_head.is_some_and(|bound| {
+        !bound.is_empty() && !pr_head_sha.is_empty() && bound.eq_ignore_ascii_case(pr_head_sha)
+    })
+}
+
+fn sort_ci_items(items: &mut [ReviewCiItem]) {
+    items.sort_by(|a, b| ci_item_ord(a).cmp(&ci_item_ord(b)));
+}
+
+fn ci_item_ord(item: &ReviewCiItem) -> (u8, Reverse<&str>, &str) {
+    match item {
+        ReviewCiItem::VerifyHistory {
+            timestamp, tx_id, ..
+        } => (
+            0,
+            Reverse(timestamp.as_str()),
+            tx_id.as_deref().unwrap_or(""),
+        ),
+        ReviewCiItem::GithubCheck { name, .. } => (1, Reverse(""), name.as_str()),
+    }
+}
+
 fn fetch_github_checks(
     work_dir: &Path,
     cfg: &ReviewConfig,
     id: Option<&str>,
-) -> Option<Vec<ReviewCiItem>> {
+) -> Option<(String, Vec<ReviewCiItem>)> {
     let token = std::env::var("GITHUB_TOKEN")
         .or_else(|_| std::env::var("GH_TOKEN"))
         .ok()?;
@@ -1362,7 +1450,7 @@ fn fetch_github_checks(
         .build();
     let url = format!("https://api.github.com/repos/{repo}/pulls/{pr}");
     let body = github_get_json(&agent, &token, &url).ok()?;
-    let sha = body.get("head")?.get("sha")?.as_str()?;
+    let sha = body.get("head")?.get("sha")?.as_str()?.to_string();
     let checks_url = format!("https://api.github.com/repos/{repo}/commits/{sha}/check-runs");
     let json = github_get_json(&agent, &token, &checks_url).ok()?;
     let arr = json.get("check_runs")?.as_array()?;
@@ -1381,7 +1469,7 @@ fn fetch_github_checks(
                 .map(|s| s.to_string()),
         });
     }
-    Some(items)
+    Some((sha, items))
 }
 
 fn emit_review(envelope: &ReviewEnvelope, json: bool, out: &mut impl Write) -> Result<()> {
@@ -1753,15 +1841,75 @@ mod tests {
         assert!(env.unresolved_findings.items.is_empty());
     }
 
-    #[test]
-    fn review_verify_history_populates_ci_evidence() {
-        let (_tmp, layout, work, config) = harness();
+    fn write_history(layout: &Layout, json: &str) {
         fs::create_dir_all(layout.reports_dir().as_std_path()).unwrap();
         fs::write(
             layout.reports_dir().join(VERIFY_HISTORY).as_std_path(),
-            r#"[{"timestamp":"2026-09-09T00:00:00Z","passed":true,"duration_secs":3,"tx_id":"abc"}]"#,
+            json,
         )
         .unwrap();
+    }
+
+    fn rev_parse_head(work: &Path) -> String {
+        String::from_utf8_lossy(&git(work, &["rev-parse", "HEAD"]).stdout)
+            .trim()
+            .to_ascii_lowercase()
+    }
+
+    #[test]
+    fn review_ci_unbound_history_is_not_ok_on_empty_range() {
+        let (_tmp, layout, work, config) = harness();
+        write_history(
+            &layout,
+            r#"[{"timestamp":"2026-07-14T00:00:00Z","passed":true,"duration_secs":3,"tx_id":"abc"}]"#,
+        );
+        let (result, stdout) = run(
+            &layout,
+            &work,
+            &config,
+            ReviewOpts {
+                range: "HEAD..HEAD".to_string(),
+                json: true,
+                requirements: Vec::new(),
+                id: None,
+                timeout: None,
+            },
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let env = parse_env(&stdout);
+        assert_eq!(env.ci_evidence.status, "unavailable");
+        assert!(
+            env.ci_evidence.items.is_empty(),
+            "{:?}",
+            env.ci_evidence.items
+        );
+        assert_eq!(env.ci_evidence.historical.len(), 1);
+        assert!(
+            env.ci_evidence
+                .historical
+                .iter()
+                .any(|i| matches!(i, ReviewCiItem::VerifyHistory { passed: true, .. }))
+        );
+        let bound = env.ci_evidence.bound_head.as_deref().expect("boundHead");
+        assert_eq!(bound.len(), 40, "{bound}");
+        assert!(
+            bound
+                .chars()
+                .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase()),
+            "{bound}"
+        );
+        assert_eq!(bound, rev_parse_head(&work));
+    }
+
+    #[test]
+    fn review_ci_two_head_records_bind_only_target() {
+        let (_tmp, layout, work, config) = harness();
+        let head_a = rev_parse_head(&work);
+        let head_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        let json = format!(
+            r#"[{{"timestamp":"2026-09-09T00:00:00Z","passed":true,"duration_secs":3,"tx_id":"a","head":"{head_a}"}},{{"timestamp":"2026-09-08T00:00:00Z","passed":false,"duration_secs":2,"tx_id":"b","head":"{head_b}"}}]"#
+        );
+        write_history(&layout, &json);
         let (result, stdout) = run(
             &layout,
             &work,
@@ -1777,12 +1925,158 @@ mod tests {
         assert!(result.is_ok(), "{result:?}\n{stdout}");
         let env = parse_env(&stdout);
         assert_eq!(env.ci_evidence.status, "ok");
-        assert!(
-            env.ci_evidence
-                .items
-                .iter()
-                .any(|i| matches!(i, ReviewCiItem::VerifyHistory { passed: true, .. }))
+        assert_eq!(env.ci_evidence.items.len(), 1);
+        match &env.ci_evidence.items[0] {
+            ReviewCiItem::VerifyHistory { head, tx_id, .. } => {
+                assert_eq!(head.as_deref(), Some(head_a.as_str()));
+                assert_eq!(tx_id.as_deref(), Some("a"));
+            }
+            other => panic!("expected bound history, got {other:?}"),
+        }
+        assert_eq!(env.ci_evidence.historical.len(), 1);
+        match &env.ci_evidence.historical[0] {
+            ReviewCiItem::VerifyHistory { tx_id, .. } => {
+                assert_eq!(tx_id.as_deref(), Some("b"));
+            }
+            other => panic!("expected historical, got {other:?}"),
+        }
+        assert_eq!(env.ci_evidence.bound_head.as_deref(), Some(head_a.as_str()));
+    }
+
+    #[test]
+    fn review_ci_changed_range_without_bound_head_is_unverified() {
+        let (_tmp, layout, work, config) = harness();
+        write_history(
+            &layout,
+            r#"[{"timestamp":"2026-09-09T00:00:00Z","passed":true,"duration_secs":3,"tx_id":"abc"}]"#,
         );
+        let (result, stdout) = run(
+            &layout,
+            &work,
+            &config,
+            ReviewOpts {
+                range: "HEAD~1..HEAD".to_string(),
+                json: true,
+                requirements: Vec::new(),
+                id: None,
+                timeout: None,
+            },
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let env = parse_env(&stdout);
+        assert_eq!(env.ci_evidence.status, "unverified");
+        assert!(env.ci_evidence.items.is_empty());
+        assert_eq!(env.ci_evidence.historical.len(), 1);
+    }
+
+    #[test]
+    fn review_ci_missing_history_on_changed_range_is_unverified() {
+        let (_tmp, layout, work, config) = harness();
+        let (result, stdout) = run(
+            &layout,
+            &work,
+            &config,
+            ReviewOpts {
+                range: "HEAD~1..HEAD".to_string(),
+                json: true,
+                requirements: Vec::new(),
+                id: None,
+                timeout: None,
+            },
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let env = parse_env(&stdout);
+        assert_eq!(env.ci_evidence.status, "unverified");
+        assert!(env.ci_evidence.items.is_empty());
+        assert!(env.ci_evidence.historical.is_empty());
+    }
+
+    #[test]
+    fn review_ci_corrupt_history_is_unavailable() {
+        let (_tmp, layout, work, config) = harness();
+        write_history(&layout, "{not-valid-verify-history");
+        let (result, stdout) = run(
+            &layout,
+            &work,
+            &config,
+            ReviewOpts {
+                range: "HEAD~1..HEAD".to_string(),
+                json: true,
+                requirements: Vec::new(),
+                id: None,
+                timeout: None,
+            },
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let env = parse_env(&stdout);
+        assert_eq!(env.ci_evidence.status, "unavailable");
+        assert!(env.ci_evidence.items.is_empty());
+        assert!(env.ci_evidence.historical.is_empty());
+        let after = fs::read_to_string(layout.reports_dir().join(VERIFY_HISTORY).as_std_path())
+            .expect("history file");
+        assert_eq!(after, "{not-valid-verify-history");
+    }
+
+    #[test]
+    fn review_ci_sort_is_timestamp_not_debug() {
+        let older = ReviewCiItem::VerifyHistory {
+            timestamp: "2026-01-01T00:00:00Z".into(),
+            passed: true,
+            duration_secs: 1,
+            tx_id: Some("zzz".into()),
+            head: None,
+        };
+        let newer = ReviewCiItem::VerifyHistory {
+            timestamp: "2026-09-01T00:00:00Z".into(),
+            passed: true,
+            duration_secs: 1,
+            tx_id: Some("aaa".into()),
+            head: None,
+        };
+        let check = ReviewCiItem::GithubCheck {
+            name: "ci".into(),
+            conclusion: Some("success".into()),
+            html_url: None,
+        };
+        let debug_order = {
+            let mut v = vec![older.clone(), newer.clone(), check.clone()];
+            v.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+            v
+        };
+        let mut items = vec![older.clone(), newer.clone(), check.clone()];
+        sort_ci_items(&mut items);
+        assert_ne!(
+            items, debug_order,
+            "pin must use a pair that Debug-sort would invert"
+        );
+        match &items[..] {
+            [
+                ReviewCiItem::VerifyHistory { tx_id: Some(a), .. },
+                ReviewCiItem::VerifyHistory { tx_id: Some(b), .. },
+                ReviewCiItem::GithubCheck { name, .. },
+            ] => {
+                assert_eq!(a, "aaa");
+                assert_eq!(b, "zzz");
+                assert_eq!(name, "ci");
+            }
+            other => panic!("kind-rank order: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn review_ci_github_pr_sha_binds_only_when_equals_bound_head() {
+        let bound = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+        assert!(github_checks_target_bound(bound, Some(bound)));
+        assert!(github_checks_target_bound(
+            &bound.to_ascii_uppercase(),
+            Some(bound)
+        ));
+        assert!(!github_checks_target_bound(
+            "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            Some(bound)
+        ));
+        assert!(!github_checks_target_bound(bound, None));
+        assert!(!github_checks_target_bound(bound, Some("")));
     }
 
     #[test]
@@ -2327,6 +2621,8 @@ mod tests {
         assert!(!suppress_github_http(false, "ok"));
     }
 
+    /// R-0306-L02: `github.enabled=false` AND-gate is proved by
+    /// `should_fetch_github_checks`, not by an empty `GithubCheck` list.
     #[test]
     fn review_ci_github_checks_ignored_when_github_disabled() {
         let (tmp, layout, work, mut config) = harness();
@@ -2337,12 +2633,10 @@ mod tests {
         config.review.github.repo = "owner/repo".to_string();
         config.review.ci.github_checks = true;
         assert!(!should_fetch_github_checks(&config.review));
-        fs::create_dir_all(layout.reports_dir().as_std_path()).unwrap();
-        fs::write(
-            layout.reports_dir().join(VERIFY_HISTORY).as_std_path(),
+        write_history(
+            &layout,
             r#"[{"timestamp":"2026-09-09T00:00:00Z","passed":true,"duration_secs":3,"tx_id":"abc"}]"#,
-        )
-        .unwrap();
+        );
         let (result, stdout) = run(
             &layout,
             &work,
@@ -2357,10 +2651,11 @@ mod tests {
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
         let env = parse_env(&stdout);
-        assert_eq!(env.ci_evidence.status, "ok");
+        assert_eq!(env.ci_evidence.status, "unverified");
+        assert!(env.ci_evidence.items.is_empty());
         assert!(
             env.ci_evidence
-                .items
+                .historical
                 .iter()
                 .any(|i| matches!(i, ReviewCiItem::VerifyHistory { passed: true, .. }))
         );
@@ -2371,6 +2666,14 @@ mod tests {
                 .any(|i| matches!(i, ReviewCiItem::GithubCheck { .. })),
             "{:?}",
             env.ci_evidence.items
+        );
+        assert!(
+            !env.ci_evidence
+                .historical
+                .iter()
+                .any(|i| matches!(i, ReviewCiItem::GithubCheck { .. })),
+            "{:?}",
+            env.ci_evidence.historical
         );
     }
 
@@ -2384,12 +2687,10 @@ mod tests {
         config.review.github.repo = "owner/repo".to_string();
         config.review.ci.github_checks = true;
         assert!(should_fetch_github_checks(&config.review));
-        fs::create_dir_all(layout.reports_dir().as_std_path()).unwrap();
-        fs::write(
-            layout.reports_dir().join(VERIFY_HISTORY).as_std_path(),
+        write_history(
+            &layout,
             r#"[{"timestamp":"2026-09-09T00:00:00Z","passed":true,"duration_secs":3,"tx_id":"abc"}]"#,
-        )
-        .unwrap();
+        );
         let (result, stdout) = run(
             &layout,
             &work,
@@ -2404,10 +2705,11 @@ mod tests {
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
         let env = parse_env(&stdout);
-        assert_eq!(env.ci_evidence.status, "ok");
+        assert_eq!(env.ci_evidence.status, "unverified");
+        assert!(env.ci_evidence.items.is_empty());
         assert!(
             env.ci_evidence
-                .items
+                .historical
                 .iter()
                 .any(|i| matches!(i, ReviewCiItem::VerifyHistory { passed: true, .. }))
         );
@@ -2444,7 +2746,7 @@ mod tests {
         assert_eq!(env.blast.status, "ok", "{stdout}");
         assert_eq!(env.blast.files_total, env.files_changed.len());
         assert!(!env.blast.files_capped);
-        assert_eq!(env.ci_evidence.status, "unavailable");
+        assert_eq!(env.ci_evidence.status, "unverified");
         assert!(!stdout.contains("\"filesChangedTruncated\""));
     }
 
@@ -2580,6 +2882,9 @@ mod tests {
                 status: "unavailable".into(),
                 items: vec![],
                 truncated: false,
+                bound_head: None,
+                historical: vec![],
+                historical_truncated: false,
             },
             coordinated: None,
         };
@@ -2645,6 +2950,9 @@ mod tests {
                 status: "unavailable".into(),
                 items: vec![],
                 truncated: false,
+                bound_head: None,
+                historical: vec![],
+                historical_truncated: false,
             },
             coordinated: None,
         };

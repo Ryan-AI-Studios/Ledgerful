@@ -39,6 +39,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Review CI evidence range binding (0318):** `review --json`
+  `ciEvidence` binds to the reviewed head OID (`boundHead`).
+  Unbound `verify-history` rows move to omit-empty `historical`
+  and can no longer make empty `HEAD..HEAD` look `ok`. Status
+  is `ok` only with a target-bound item; otherwise `unverified`
+  (changed files) or `unavailable`. New history writes include
+  `head` only on a porcelain-clean worktree. schemaVersion stays
+  1. GitHub checks count as bound only when the PR head SHA
+  equals `boundHead`.
+
 - **Security inventory vs changed (0317):** Unfiltered
   `security impact` is a declared Cedar inventory (`scope:
   inventory`, title `Security Policy Inventory`) instead of an
