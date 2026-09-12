@@ -673,6 +673,15 @@ fn test_write_doctor_results_writes_file() {
     assert_eq!(json["info"].as_u64(), Some(1));
     assert!(json["timestamp"].as_str().is_some());
     assert!(json.get("readyForPublishDefinition").is_none());
+    assert!(
+        json.get("readyForPublishScope").is_none(),
+        "sidecar must not grow readyForPublishScope: {json}"
+    );
+    assert!(
+        json.get("notRequiredForReady").is_none(),
+        "sidecar must not grow notRequiredForReady: {json}"
+    );
+    assert!(json.get("completionReadiness").is_none());
     // 0129: findings top-N — block+warn only, block first, info excluded
     let findings_arr = json["findings"].as_array().expect("findings array present");
     assert_eq!(findings_arr.len(), 2);
@@ -1772,4 +1781,37 @@ fn stale_ack_without_finding_is_inert() {
     apply_acknowledgements(&mut findings, &config);
     assert!(!findings[0].acknowledged);
     assert_eq!(findings.len(), 1);
+}
+
+#[test]
+fn print_doctor_report_warn_ready_includes_scope_line() {
+    use crate::output::human::{DoctorHumanProfile, DoctorSummaryCounts, print_doctor_report_to};
+
+    let tools: Vec<(String, ExecutableStatus)> = Vec::new();
+    let report = sample_report(&tools);
+    let findings = vec![DoctorFinding::warn(
+        "sig-pin",
+        DoctorCategory::Signing,
+        "pin",
+    )];
+    let counts = summarize(&findings);
+    let summary = DoctorSummaryCounts {
+        block: counts.block,
+        warn: counts.warn,
+        info: counts.info,
+    };
+    let mut buf = Vec::new();
+    print_doctor_report_to(
+        &mut buf,
+        &report,
+        &summary,
+        &findings,
+        DoctorHumanProfile::default(),
+    )
+    .expect("write");
+    let out = String::from_utf8(buf).expect("utf8");
+    assert!(
+        out.contains(READY_SCOPE_HUMAN_LINE),
+        "warn-ready must print scope line:\n{out}"
+    );
 }

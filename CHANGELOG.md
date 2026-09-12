@@ -26,6 +26,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Scoped readiness honesty (0325):** Empty `ledger validator doctor`
+  prints registered/enabled/inspected/resolved counts and does not
+  claim a health pass. `policy check --format json` always includes
+  `evaluation` (checked / idle / off / skipped); live `rulesDeclared`
+  is 5 and default zeros are a legacy sentinel. CLI `doctor --json`
+  always emits `readyForPublishScope.notRequiredForReady`; sidecar
+  stays frozen. `readyForPublish` remains zero block findings.
+
 - **Advanced-surface honesty (0324):** Disabled `deploy impact` empty
   copy leads with the coverage switch, not “No deployment impact
   detected.” (`emptyReason` stays `disabledByConfig`). Catalog child

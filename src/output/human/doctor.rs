@@ -1,4 +1,4 @@
-use crate::commands::doctor::is_observe_signing_later_code;
+use crate::commands::doctor::{READY_SCOPE_HUMAN_LINE, is_observe_signing_later_code};
 use crate::platform::env::ExecutableStatus;
 use owo_colors::{OwoColorize, Stream, Style};
 use std::io::{self, Write};
@@ -228,6 +228,9 @@ pub(crate) fn print_doctor_report_to(
             summary_text
                 .if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
         )?;
+    }
+    if summary.block == 0 {
+        writeln!(out, "{READY_SCOPE_HUMAN_LINE}")?;
     }
 
     writeln!(out, "\nLedgerful Doctor - Environment Health Check")?;

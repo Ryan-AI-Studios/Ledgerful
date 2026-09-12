@@ -6,7 +6,7 @@ Short flags only. Humans: `ledgerful --help`.
 
 | Command | Role |
 |---|---|
-| `ledgerful doctor --json` | Env readiness. Standing observe-signing warns: ack via `[doctor] acknowledged_codes` or `doctor --fix --yes` (pin only). Optional embed miss is fail-fast (`embed-unreachable`); not ERROR stderr. |
+| `ledgerful doctor --json` | Env readiness. `readyForPublish` is zero block findings. CLI always emits `readyForPublishScope` (`readyMeans` + `notRequiredForReady`); sidecar omits it. Standing observe-signing warns: ack via `[doctor] acknowledged_codes` or `doctor --fix --yes` (pin only). Optional embed miss is fail-fast (`embed-unreachable`); not ERROR stderr. |
 | `ledgerful change-context --json` | Default pre-edit packet (does not rewrite `latest-impact.json`). `--paths` is presence / blast-if-edit, not “public types modified”. |
 | `ledgerful ledger status --compact` or `--json` | Pending / drift; names `workRoot` |
 | `ledgerful search …` | Discovery (`--auto-index` when stale). Code FTS; unquoted multi-word OK. Not `ledger search`. `--json` agents pin `path` + `line`; `content` is a preview (`/` paths). |
@@ -56,6 +56,12 @@ Evaluates declared `.ledgerful/policy.toml` (or synthesized defaults). Machine
 flag is `--format json` (not `--json`). `passed` is no-violations. Synthesized
 + idle (no bound verify) is human `IDLE (synthesized; not a merge gate)` with
 JSON `idle: true`; it is not a merge-gate pass. Observe still exit 0.
+`--format json` always includes `evaluation` (checked / idle / off / skipped
+counts + `rules[]`). Live `rulesDeclared` is 5; serde default zeros + empty
+`rules[]` is a legacy/unknown sentinel. Human path does not print those
+counts. `ledger validator doctor` is human-only: path-probe counts
+(`registered` / `enabled` / `inspected` / `resolved`); empty catalog is
+not a health pass.
 
 ## `ledgerful hotspots`
 

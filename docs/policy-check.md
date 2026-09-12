@@ -264,6 +264,11 @@ verify):
 }
 ```
 
+Live emit **always** includes `evaluation` (0325): `rulesDeclared` is 5,
+`rules[]` always present, sorted by `ruleId`. Samples above omit that object
+for brevity — they are not the live shape. See
+`docs/agent-output-contract.md`. Human path does not print evaluation counts.
+
 Violations are sorted deterministically by `(ruleId, file, message)`.
 
 ## CI example (pairs with 0047 Action)
