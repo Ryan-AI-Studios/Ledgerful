@@ -173,7 +173,10 @@ impl Commands {
             #[cfg(feature = "viz-server")]
             Commands::VizServer { .. } => false,
             #[cfg(feature = "web")]
-            Commands::Web { .. } => false,
+            Commands::Web { command } => match command {
+                WebCommands::Status { json } => *json,
+                WebCommands::Start(_) | WebCommands::Stop => false,
+            },
             Commands::Internal { .. } => false,
             Commands::Demo(DemoArgs { .. }) => false,
             #[cfg(feature = "usage-metrics")]

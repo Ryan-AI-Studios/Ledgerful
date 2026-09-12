@@ -278,9 +278,10 @@ Tips:
     /// High-performance trigram-based search (low-level)
     #[command(hide = true)]
     SearchTrigrams(SearchTrigramsArgs),
+    /// Language Server Protocol (LSP) server on stdio (not a background service)
     #[cfg(feature = "daemon")]
     Daemon {
-        /// The interval in milliseconds to batch events
+        /// Event batch interval in milliseconds (accepted; currently unused)
         #[arg(long, short, default_value_t = 1000)]
         interval: u64,
     },

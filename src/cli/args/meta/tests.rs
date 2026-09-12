@@ -2,7 +2,7 @@ use crate::cli::args::{
     ChangeContextArgs, Cli, Commands, DoctorArgs, ImpactArgs, LedgerCommands, ScanArgs,
 };
 use crate::ledger::types::Category;
-use clap::Parser;
+use clap::{CommandFactory, Parser};
 
 fn parse(args: &[&str]) -> Commands {
     let mut full = vec!["ledgerful"];
@@ -93,6 +93,16 @@ fn machine_mode_selected_for_json_flags() {
     assert!(!parse(&["federate"]).is_machine_output());
     assert!(!parse(&["federate", "status"]).is_machine_output());
     assert!(parse(&["federate", "status", "--json"]).is_machine_output());
+    #[cfg(feature = "web")]
+    {
+        assert!(!parse(&["web", "status"]).is_machine_output());
+        assert!(parse(&["web", "status", "--json"]).is_machine_output());
+        assert!(!parse(&["web", "start"]).is_machine_output());
+        assert!(
+            Cli::try_parse_from(["ledgerful", "web"]).is_err(),
+            "bare web still requires a subcommand"
+        );
+    }
     #[cfg(feature = "sync")]
     {
         assert!(
@@ -369,6 +379,29 @@ fn ledger_stack_json_parses_before_or_after_category() {
         }
         other => panic!("expected stack --json BUGFIX, got {other:?}"),
     }
+}
+
+#[cfg(feature = "daemon")]
+#[test]
+fn daemon_about_names_lsp_and_stdio_on_first_line() {
+    let cmd = Cli::command();
+    let daemon = cmd.find_subcommand("daemon").expect("daemon subcommand");
+    let about = daemon
+        .get_about()
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    assert!(about.contains("LSP"), "about={about}");
+    assert!(about.contains("stdio"), "about={about}");
+    assert!(!about.to_lowercase().contains("background daemon"));
+    let interval = daemon
+        .get_arguments()
+        .find(|a| a.get_id() == "interval")
+        .expect("interval arg");
+    let help = interval
+        .get_help()
+        .map(|s| s.to_string())
+        .unwrap_or_default();
+    assert!(help.contains("unused"), "interval help={help}");
 }
 
 #[test]

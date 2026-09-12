@@ -742,6 +742,52 @@ fn test_usage_features_enabled_excludes_self() {
         !feature_strs.contains(&"usage-metrics"),
         "features_enabled must not self-report 'usage-metrics', got: {feature_strs:?}"
     );
+    let mut expected = Vec::new();
+    if cfg!(feature = "web") {
+        expected.push("web");
+    }
+    if cfg!(feature = "mcp") {
+        expected.push("mcp");
+    }
+    if cfg!(feature = "sync") {
+        expected.push("sync");
+    }
+    if cfg!(feature = "daemon") {
+        expected.push("daemon");
+    }
+    if cfg!(feature = "viz-server") {
+        expected.push("viz-server");
+    }
+    assert_eq!(
+        feature_strs, expected,
+        "show-payload features_enabled order must stay compile-cfg order, not sorted"
+    );
+}
+
+#[test]
+#[serial(env, cwd)]
+fn test_usage_status_compiled_features_without_db() {
+    let _env_non_interactive = non_interactive();
+    let home_tmp = tempdir().expect("home tempdir");
+    let work_tmp = tempdir().expect("work tempdir");
+
+    let _home_guard = TempEnv::set("USERPROFILE", home_tmp.path().to_str().unwrap());
+    let _work = DirGuard::new(work_tmp.path());
+
+    let output = run_cg(work_tmp.path(), &["usage", "status"]);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Compiled features:"),
+        "compiled features must print even with no usage DB, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("not telemetry consent"),
+        "consent disclaimer required, got: {stdout}"
+    );
+    assert!(
+        stdout.contains("Pending events:  0"),
+        "no-DB pending stays 0, got: {stdout}"
+    );
 }
 
 #[test]
