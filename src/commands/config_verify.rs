@@ -14,6 +14,201 @@ pub struct ConfigRow {
     pub label: String,
     pub value: String,
     pub source: ValueSource,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<RowOrigin>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub location: Option<String>,
+    #[serde(skip)]
+    pub toml_key: Option<&'static str>,
+}
+
+impl ConfigRow {
+    fn new(
+        label: impl Into<String>,
+        value: impl Into<String>,
+        source: ValueSource,
+        toml_key: Option<&'static str>,
+    ) -> Self {
+        Self {
+            label: label.into(),
+            value: value.into(),
+            source,
+            origin: None,
+            location: None,
+            toml_key,
+        }
+    }
+}
+
+#[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum RowOrigin {
+    File,
+    Env,
+    Dotenv,
+    Default,
+}
+
+/// On-disk TOML key presence + config path for provenance (0323).
+#[derive(Clone, Debug, Default)]
+pub struct ProvenanceContext {
+    pub keys: std::collections::BTreeSet<String>,
+    pub config_location: String,
+    raw: Option<toml::Value>,
+}
+
+impl ProvenanceContext {
+    pub fn from_layout(layout: &crate::state::layout::Layout) -> Self {
+        let path = layout.config_file();
+        let config_location = path
+            .strip_prefix(&layout.root)
+            .map(|rel| rel.as_str().replace('\\', "/"))
+            .unwrap_or_else(|_| ".ledgerful/config.toml".to_string());
+        let raw = if path.exists() {
+            std::fs::read_to_string(path.as_std_path())
+                .ok()
+                .and_then(|content| toml::from_str::<toml::Value>(&content).ok())
+        } else {
+            None
+        };
+        let keys = raw.as_ref().map(present_toml_keys).unwrap_or_default();
+        Self {
+            keys,
+            config_location,
+            raw,
+        }
+    }
+
+    pub fn from_current_layout() -> Self {
+        match crate::commands::helpers::get_layout() {
+            Ok(layout) => Self::from_layout(&layout),
+            Err(_) => Self::default(),
+        }
+    }
+}
+
+pub fn present_toml_keys(value: &toml::Value) -> std::collections::BTreeSet<String> {
+    let mut keys = std::collections::BTreeSet::new();
+    collect_toml_keys(value, "", &mut keys);
+    keys
+}
+
+fn collect_toml_keys(
+    value: &toml::Value,
+    prefix: &str,
+    out: &mut std::collections::BTreeSet<String>,
+) {
+    match value {
+        toml::Value::Table(table) => {
+            for (key, child) in table {
+                let path = if prefix.is_empty() {
+                    key.clone()
+                } else {
+                    format!("{prefix}.{key}")
+                };
+                out.insert(path.clone());
+                collect_toml_keys(child, &path, out);
+            }
+        }
+        toml::Value::Array(items) => {
+            for (idx, child) in items.iter().enumerate() {
+                let path = format!("{prefix}[{idx}]");
+                out.insert(path.clone());
+                collect_toml_keys(child, &path, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+pub fn strip_url_userinfo(value: &str) -> String {
+    let Some(scheme_at) = value.find("://") else {
+        return value.to_string();
+    };
+    let rest_start = scheme_at + 3;
+    let rest = &value[rest_start..];
+    let authority_end = rest.find(['/', '?', '#']).unwrap_or(rest.len());
+    let authority = &rest[..authority_end];
+    let Some(at) = authority.rfind('@') else {
+        return value.to_string();
+    };
+    format!(
+        "{}{}{}",
+        &value[..rest_start],
+        &authority[at + 1..],
+        &rest[authority_end..]
+    )
+}
+
+fn apply_provenance(row: &mut ConfigRow, ctx: &ProvenanceContext) {
+    if row.label == "base_url" {
+        row.value = strip_url_userinfo(&row.value);
+    }
+    let Some(toml_key) = row.toml_key else {
+        return;
+    };
+    if toml_key == "local_model.base_url" && !toml_string_nonempty(ctx.raw.as_ref(), toml_key) {
+        if std::env::var("LEDGERFUL_LOCAL_MODEL_URL")
+            .ok()
+            .is_some_and(|v| !v.trim().is_empty())
+        {
+            row.origin = Some(RowOrigin::Env);
+            row.location = Some("LEDGERFUL_LOCAL_MODEL_URL".to_string());
+            row.source = ValueSource::Explicit;
+            return;
+        }
+        if crate::config::model::read_env_key("LEDGERFUL_LOCAL_MODEL_URL")
+            .is_some_and(|v| !v.trim().is_empty())
+        {
+            row.origin = Some(RowOrigin::Dotenv);
+            row.location = Some("LEDGERFUL_LOCAL_MODEL_URL".to_string());
+            row.source = ValueSource::Explicit;
+            return;
+        }
+    }
+    if ctx.keys.contains(toml_key) {
+        row.origin = Some(RowOrigin::File);
+        row.location = Some(ctx.config_location.clone());
+        row.source = ValueSource::Explicit;
+    } else {
+        row.origin = Some(RowOrigin::Default);
+        row.location = None;
+        row.source = ValueSource::Default;
+    }
+}
+
+fn toml_string_nonempty(root: Option<&toml::Value>, dotted: &str) -> bool {
+    let mut cur = match root {
+        Some(value) => value,
+        None => return false,
+    };
+    for part in dotted.split('.') {
+        match cur.get(part) {
+            Some(next) => cur = next,
+            None => return false,
+        }
+    }
+    cur.as_str().is_some_and(|s| !s.trim().is_empty())
+}
+
+fn source_cell(row: &ConfigRow) -> String {
+    match row.origin {
+        Some(RowOrigin::File) => "explicit (file)".to_string(),
+        Some(RowOrigin::Env) => format!(
+            "explicit (env:{})",
+            row.location
+                .as_deref()
+                .unwrap_or("LEDGERFUL_LOCAL_MODEL_URL")
+        ),
+        Some(RowOrigin::Dotenv) => format!(
+            "explicit (dotenv:{})",
+            row.location
+                .as_deref()
+                .unwrap_or("LEDGERFUL_LOCAL_MODEL_URL")
+        ),
+        Some(RowOrigin::Default) => "default".to_string(),
+        None => row.source.to_string(),
+    }
 }
 
 #[derive(Serialize, Clone, Copy, Debug, PartialEq, Eq)]
@@ -60,6 +255,22 @@ pub fn render_verify_report(
     section_filter: Option<&str>,
     verbose: bool,
 ) -> miette::Result<String> {
+    render_verify_report_with(
+        config,
+        json,
+        section_filter,
+        verbose,
+        &ProvenanceContext::from_current_layout(),
+    )
+}
+
+pub fn render_verify_report_with(
+    config: &Config,
+    json: bool,
+    section_filter: Option<&str>,
+    verbose: bool,
+    ctx: &ProvenanceContext,
+) -> miette::Result<String> {
     let mut sections = all_sections();
     sections.sort_by_key(|s| s.order());
 
@@ -86,6 +297,9 @@ pub fn render_verify_report(
     let mut reports = Vec::new();
     for section in filtered_sections {
         let mut rows = section.render_rows(config);
+        for row in &mut rows {
+            apply_provenance(row, ctx);
+        }
         if !verbose {
             rows.retain(|r| r.source != ValueSource::Default);
         }
@@ -98,17 +312,19 @@ pub fn render_verify_report(
     }
 
     if json {
-        Ok(serde_json::to_string_pretty(&reports).unwrap_or_default())
+        Ok(serde_json::to_string_pretty(&reports)
+            .map_err(|e| miette::miette!("Failed to serialize config verify report: {e}"))?)
     } else {
         let mut table = Table::new();
         table.set_header(vec!["Section", "Key", "Value", "Source"]);
         for report in &reports {
             for row in &report.rows {
+                let source = source_cell(row);
                 table.add_row([
                     report.section.as_str(),
                     row.label.as_str(),
                     row.value.as_str(),
-                    row.source.to_string().as_str(),
+                    source.as_str(),
                 ]);
             }
         }
@@ -136,34 +352,31 @@ impl ConfigSection for BackendSection {
         let resolved = ask::resolve_backend_with(config, None, &env_reader, &dotenv_reader);
 
         // Prefer local setting row
-        rows.push(ConfigRow {
-            label: "prefer_local".to_string(),
-            value: config.local_model.prefer_local.to_string(),
-            source: if config.local_model.prefer_local {
+        rows.push(ConfigRow::new(
+            "prefer_local",
+            config.local_model.prefer_local.to_string(),
+            if config.local_model.prefer_local {
                 ValueSource::Explicit
             } else {
                 ValueSource::Default
             },
-        });
+            Some("local_model.prefer_local"),
+        ));
 
         match resolved {
             Backend::Gemini => {
                 let has_key = has_gemini_api_key_with(config, &env_reader, &dotenv_reader);
-                rows.push(ConfigRow {
-                    label: "type".to_string(),
-                    value: "Gemini".to_string(),
-                    source: ValueSource::Auto,
-                });
-                rows.push(ConfigRow {
-                    label: "api_key_status".to_string(),
-                    value: if has_key {
+                rows.push(ConfigRow::new("type", "Gemini", ValueSource::Auto, None));
+                rows.push(ConfigRow::new(
+                    "api_key_status",
+                    if has_key {
                         "API key present"
                     } else {
                         "API key missing"
-                    }
-                    .to_string(),
-                    source: ValueSource::Auto,
-                });
+                    },
+                    ValueSource::Auto,
+                    None,
+                ));
             }
             Backend::Local | Backend::OllamaCloud | Backend::OpenRouter => {
                 let base_url =
@@ -177,20 +390,17 @@ impl ConfigSection for BackendSection {
                         config.local_model.base_url.clone()
                     };
 
-                rows.push(ConfigRow {
-                    label: "type".to_string(),
-                    value: "Local".to_string(),
-                    source: ValueSource::Auto,
-                });
-                rows.push(ConfigRow {
-                    label: "base_url".to_string(),
-                    value: base_url,
-                    source: if config.local_model.base_url.is_empty() {
+                rows.push(ConfigRow::new("type", "Local", ValueSource::Auto, None));
+                rows.push(ConfigRow::new(
+                    "base_url",
+                    base_url,
+                    if config.local_model.base_url.is_empty() {
                         ValueSource::Default
                     } else {
                         ValueSource::Explicit
                     },
-                });
+                    Some("local_model.base_url"),
+                ));
             }
         }
 
@@ -243,22 +453,24 @@ impl ConfigSection for AskSection {
     fn render_rows(&self, config: &Config) -> Vec<ConfigRow> {
         let mut rows = Vec::new();
 
-        rows.push(ConfigRow {
-            label: "cli_default_timeout_secs".to_string(),
-            value: "15".to_string(),
-            source: ValueSource::Default,
-        });
+        rows.push(ConfigRow::new(
+            "cli_default_timeout_secs",
+            "15",
+            ValueSource::Default,
+            None,
+        ));
 
         let local = config.local_model.timeout_secs;
-        rows.push(ConfigRow {
-            label: "local_model.timeout_secs".to_string(),
-            value: local.to_string(),
-            source: if local == 60 {
+        rows.push(ConfigRow::new(
+            "local_model.timeout_secs",
+            local.to_string(),
+            if local == 60 {
                 ValueSource::Default
             } else {
                 ValueSource::Explicit
             },
-        });
+            Some("local_model.timeout_secs"),
+        ));
 
         let gemini_value = config
             .gemini
@@ -270,11 +482,12 @@ impl ConfigSection for AskSection {
         } else {
             ValueSource::Default
         };
-        rows.push(ConfigRow {
-            label: "gemini.timeout_secs".to_string(),
-            value: gemini_value,
-            source: gemini_source,
-        });
+        rows.push(ConfigRow::new(
+            "gemini.timeout_secs",
+            gemini_value,
+            gemini_source,
+            Some("gemini.timeout_secs"),
+        ));
 
         rows
     }
@@ -308,10 +521,10 @@ impl ConfigSection for SemanticSection {
             resolve_opts,
         );
 
-        rows.push(ConfigRow {
-            label: "parse_threads".to_string(),
-            value: resolved.parse_threads.get().to_string(),
-            source: match resolved.parse_source {
+        rows.push(ConfigRow::new(
+            "parse_threads",
+            resolved.parse_threads.get().to_string(),
+            match resolved.parse_source {
                 crate::semantic::concurrency::ConcurrencySource::Cli => ValueSource::Explicit,
                 crate::semantic::concurrency::ConcurrencySource::ConfigParse => {
                     ValueSource::Explicit
@@ -331,12 +544,13 @@ impl ConfigSection for SemanticSection {
                 crate::semantic::concurrency::ConcurrencySource::Default => ValueSource::Default,
                 crate::semantic::concurrency::ConcurrencySource::Auto => ValueSource::Auto,
             },
-        });
+            None,
+        ));
 
-        rows.push(ConfigRow {
-            label: "embed_concurrency".to_string(),
-            value: resolved.requested_embed_threads.get().to_string(),
-            source: match resolved.embed_source {
+        rows.push(ConfigRow::new(
+            "embed_concurrency",
+            resolved.requested_embed_threads.get().to_string(),
+            match resolved.embed_source {
                 crate::semantic::concurrency::ConcurrencySource::Cli => ValueSource::Explicit,
                 crate::semantic::concurrency::ConcurrencySource::ConfigParse => {
                     ValueSource::Explicit
@@ -356,7 +570,8 @@ impl ConfigSection for SemanticSection {
                 crate::semantic::concurrency::ConcurrencySource::Default => ValueSource::Default,
                 crate::semantic::concurrency::ConcurrencySource::Auto => ValueSource::Auto,
             },
-        });
+            None,
+        ));
 
         let effective_source = if resolved.embed_threads.get()
             < resolved.requested_embed_threads.get()
@@ -385,16 +600,17 @@ impl ConfigSection for SemanticSection {
             }
         };
 
-        rows.push(ConfigRow {
-            label: "embed_concurrency_effective".to_string(),
-            value: resolved.embed_threads.get().to_string(),
-            source: effective_source,
-        });
+        rows.push(ConfigRow::new(
+            "embed_concurrency_effective",
+            resolved.embed_threads.get().to_string(),
+            effective_source,
+            None,
+        ));
 
-        rows.push(ConfigRow {
-            label: "embed_concurrency_cap".to_string(),
-            value: resolved.embed_cap.get().to_string(),
-            source: match resolved.cap_source {
+        rows.push(ConfigRow::new(
+            "embed_concurrency_cap",
+            resolved.embed_cap.get().to_string(),
+            match resolved.cap_source {
                 crate::semantic::concurrency::ConcurrencySource::Cli => ValueSource::Explicit,
                 crate::semantic::concurrency::ConcurrencySource::ConfigParse => {
                     ValueSource::Explicit
@@ -414,39 +630,15 @@ impl ConfigSection for SemanticSection {
                 crate::semantic::concurrency::ConcurrencySource::Default => ValueSource::Default,
                 crate::semantic::concurrency::ConcurrencySource::Auto => ValueSource::Auto,
             },
-        });
+            None,
+        ));
 
-        let rebuild_threshold_explicit =
-            if let Ok(layout) = crate::commands::helpers::get_layout_or_cwd_if_not_git() {
-                let path = layout.config_file();
-                if path.exists() {
-                    if let Ok(content) = std::fs::read_to_string(&path) {
-                        if let Ok(val) = toml::from_str::<toml::Value>(&content) {
-                            val.get("semantic")
-                                .and_then(|s| s.get("hnsw_rebuild_threshold"))
-                                .is_some()
-                        } else {
-                            false
-                        }
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                }
-            } else {
-                false
-            };
-
-        rows.push(ConfigRow {
-            label: "hnsw_rebuild_threshold".to_string(),
-            value: config.semantic.hnsw_rebuild_threshold().to_string(),
-            source: if rebuild_threshold_explicit {
-                ValueSource::Explicit
-            } else {
-                ValueSource::Default
-            },
-        });
+        rows.push(ConfigRow::new(
+            "hnsw_rebuild_threshold",
+            config.semantic.hnsw_rebuild_threshold().to_string(),
+            ValueSource::Default,
+            Some("semantic.hnsw_rebuild_threshold"),
+        ));
 
         rows
     }
@@ -466,15 +658,16 @@ impl ConfigSection for GateSection {
     fn render_rows(&self, config: &Config) -> Vec<ConfigRow> {
         let mut rows = Vec::new();
 
-        rows.push(ConfigRow {
-            label: "mode".to_string(),
-            value: config.gate.mode.clone(),
-            source: if config.gate.mode == "observe" {
+        rows.push(ConfigRow::new(
+            "mode",
+            config.gate.mode.clone(),
+            if config.gate.mode == "observe" {
                 ValueSource::Default
             } else {
                 ValueSource::Explicit
             },
-        });
+            Some("gate.mode"),
+        ));
 
         rows
     }
@@ -496,11 +689,7 @@ mod tests {
 
     #[test]
     fn test_value_source_serialization() {
-        let row = ConfigRow {
-            label: "test".to_string(),
-            value: "1".to_string(),
-            source: ValueSource::Explicit,
-        };
+        let row = ConfigRow::new("test", "1", ValueSource::Explicit, None);
         let serialized = serde_json::to_string(&row).unwrap();
         assert!(serialized.contains("explicit"));
     }
@@ -553,5 +742,141 @@ mod tests {
         assert!(report.contains("embed_concurrency"));
         assert!(report.contains("embed_concurrency_effective"));
         assert!(report.contains("embed_concurrency_cap"));
+    }
+
+    fn ctx_from_toml(toml: &str, location: &str) -> ProvenanceContext {
+        let raw = toml::from_str::<toml::Value>(toml).expect("valid toml fixture");
+        ProvenanceContext {
+            keys: present_toml_keys(&raw),
+            config_location: location.to_string(),
+            raw: Some(raw),
+        }
+    }
+
+    #[test]
+    fn present_toml_keys_walks_dotted_tables() {
+        let raw = toml::from_str::<toml::Value>("[gate]\nmode = \"enforce\"\n").unwrap();
+        let keys = present_toml_keys(&raw);
+        assert!(keys.contains("gate"));
+        assert!(keys.contains("gate.mode"));
+        assert!(!keys.contains("mode"));
+    }
+
+    #[test]
+    fn gate_mode_present_is_file_even_when_observe() {
+        let ctx = ctx_from_toml("[gate]\nmode = \"observe\"\n", ".ledgerful/config.toml");
+        let mut config = Config::default();
+        config.gate.mode = "observe".to_string();
+        let report = render_verify_report_with(&config, true, Some("Gate"), true, &ctx).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&report).unwrap();
+        let row = &v[0]["rows"][0];
+        assert_eq!(row["label"], "mode");
+        assert_eq!(row["origin"], "file");
+        assert_eq!(row["source"], "explicit");
+        assert!(row["location"].as_str().unwrap().ends_with("config.toml"));
+        assert!(row.get("toml_key").is_none());
+    }
+
+    #[test]
+    fn gate_mode_enforce_is_file() {
+        let ctx = ctx_from_toml(
+            "[gate]\nmode = \"enforce\"\n",
+            "repo/.ledgerful/config.toml",
+        );
+        let mut config = Config::default();
+        config.gate.mode = "enforce".to_string();
+        let report = render_verify_report_with(&config, true, Some("Gate"), true, &ctx).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&report).unwrap();
+        assert_eq!(v[0]["rows"][0]["origin"], "file");
+        assert_eq!(v[0]["rows"][0]["source"], "explicit");
+        let human = render_verify_report_with(&config, false, Some("Gate"), true, &ctx).unwrap();
+        assert!(human.contains("explicit (file)"), "{human}");
+    }
+
+    #[test]
+    fn absent_toml_key_is_default() {
+        let ctx = ProvenanceContext::default();
+        let config = Config::default();
+        let report = render_verify_report_with(&config, true, Some("Gate"), true, &ctx).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&report).unwrap();
+        assert_eq!(v[0]["rows"][0]["origin"], "default");
+        assert_eq!(v[0]["rows"][0]["source"], "default");
+        assert!(v[0]["rows"][0].get("location").is_none());
+    }
+
+    #[test]
+    fn derived_rows_omit_origin_and_location() {
+        let ctx = ProvenanceContext::default();
+        let config = Config::default();
+        let report = render_verify_report_with(&config, true, Some("Ask"), true, &ctx).unwrap();
+        let v: serde_json::Value = serde_json::from_str(&report).unwrap();
+        let rows = v[0]["rows"].as_array().unwrap();
+        let cli = rows
+            .iter()
+            .find(|r| r["label"] == "cli_default_timeout_secs")
+            .unwrap();
+        assert!(cli.get("origin").is_none());
+        assert!(cli.get("location").is_none());
+
+        let backend =
+            render_verify_report_with(&config, true, Some("Backend"), true, &ctx).unwrap();
+        let bv: serde_json::Value = serde_json::from_str(&backend).unwrap();
+        for label in ["type", "api_key_status"] {
+            if let Some(row) = bv[0]["rows"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|r| r["label"] == label)
+            {
+                assert!(row.get("origin").is_none(), "{label}: {row}");
+                assert!(row.get("location").is_none(), "{label}: {row}");
+            }
+        }
+        let ty = bv[0]["rows"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|r| r["label"] == "type")
+            .unwrap();
+        assert!(ty.get("origin").is_none());
+        assert!(ty.get("location").is_none());
+    }
+
+    #[test]
+    fn strip_url_userinfo_removes_credentials() {
+        assert_eq!(
+            strip_url_userinfo("http://user:pass@host:11434"),
+            "http://host:11434"
+        );
+        assert_eq!(strip_url_userinfo("http://host:11434"), "http://host:11434");
+        assert_eq!(
+            strip_url_userinfo("http://token@host:11434"),
+            "http://host:11434"
+        );
+        assert_eq!(
+            strip_url_userinfo("http://host/path@segment"),
+            "http://host/path@segment"
+        );
+        assert_eq!(
+            strip_url_userinfo("http://user:pass@host/path@x"),
+            "http://host/path@x"
+        );
+    }
+
+    #[test]
+    fn apply_provenance_strips_base_url_userinfo() {
+        let ctx = ctx_from_toml(
+            "[local_model]\nbase_url = \"http://user:pass@host:1\"\n",
+            ".ledgerful/config.toml",
+        );
+        let mut row = ConfigRow::new(
+            "base_url",
+            "http://user:pass@host:1",
+            ValueSource::Explicit,
+            Some("local_model.base_url"),
+        );
+        apply_provenance(&mut row, &ctx);
+        assert_eq!(row.value, "http://host:1");
+        assert_eq!(row.origin, Some(RowOrigin::File));
     }
 }

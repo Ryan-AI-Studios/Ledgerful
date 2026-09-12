@@ -644,3 +644,196 @@ fn config_diff_internal_var_handling(#[case] case: ConfigDiffCase) {
         }
     }
 }
+
+#[test]
+fn config_verify_json_malformed_toml_fail_envelope() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let exe = env!("CARGO_BIN_EXE_ledgerful");
+    let init_out = Command::new(exe)
+        .arg("init")
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        init_out.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init_out.stderr)
+    );
+    fs::write(
+        root.join(".ledgerful").join("config.toml"),
+        "not = [ valid toml",
+    )
+    .unwrap();
+
+    let out = Command::new(exe)
+        .args(["config", "verify", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        !out.status.success(),
+        "malformed config must fail: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("expected fail JSON object: {e}\n{stdout}"));
+    assert_eq!(v["success"], false);
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["schemaVersion"], 1);
+    assert_eq!(v["kind"], "configVerify");
+    assert!(
+        v["errors"].as_array().is_some_and(|e| !e.is_empty()),
+        "errors must be non-empty: {v}"
+    );
+}
+
+#[test]
+#[serial_test::serial(env)]
+fn config_verify_base_url_origin_env() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let exe = env!("CARGO_BIN_EXE_ledgerful");
+    let init_out = Command::new(exe)
+        .arg("init")
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        init_out.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init_out.stderr)
+    );
+    fs::write(
+        root.join(".ledgerful").join("config.toml"),
+        "[local_model]\nprefer_local = true\n",
+    )
+    .unwrap();
+    let _env = TempEnv::set("LEDGERFUL_LOCAL_MODEL_URL", "http://env-origin:11434");
+
+    let out = Command::new(exe)
+        .args([
+            "config",
+            "verify",
+            "--json",
+            "--section",
+            "backend",
+            "--verbose",
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "verify failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("expected verify array: {e}\n{stdout}"));
+    let rows = v[0]["rows"].as_array().expect("rows");
+    let base = rows
+        .iter()
+        .find(|r| r["label"] == "base_url")
+        .unwrap_or_else(|| panic!("missing base_url in {v}"));
+    assert_eq!(base["origin"], "env");
+    assert_eq!(base["location"], "LEDGERFUL_LOCAL_MODEL_URL");
+    assert_eq!(base["source"], "explicit");
+    assert!(
+        !base["value"].as_str().unwrap_or("").contains("secret"),
+        "must not leak secrets: {base}"
+    );
+
+    let human = Command::new(exe)
+        .args(["config", "verify", "--section", "backend", "--verbose"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    let human_out = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        human_out.contains("explicit (env:LEDGERFUL_LOCAL_MODEL_URL)"),
+        "human Source cell: {human_out}"
+    );
+}
+
+#[test]
+#[serial_test::serial(env)]
+fn config_verify_base_url_origin_dotenv() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let exe = env!("CARGO_BIN_EXE_ledgerful");
+    let init_out = Command::new(exe)
+        .arg("init")
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        init_out.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init_out.stderr)
+    );
+    fs::write(
+        root.join(".ledgerful").join("config.toml"),
+        "[local_model]\nprefer_local = true\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join(".env"),
+        "LEDGERFUL_LOCAL_MODEL_URL=http://dotenv-origin:11434\n",
+    )
+    .unwrap();
+    let _unset = TempEnv::remove("LEDGERFUL_LOCAL_MODEL_URL");
+
+    let out = Command::new(exe)
+        .args([
+            "config",
+            "verify",
+            "--json",
+            "--section",
+            "backend",
+            "--verbose",
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        out.status.success(),
+        "verify failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("expected verify array: {e}\n{stdout}"));
+    let rows = v[0]["rows"].as_array().expect("rows");
+    let base = rows
+        .iter()
+        .find(|r| r["label"] == "base_url")
+        .unwrap_or_else(|| panic!("missing base_url in {v}"));
+    assert_eq!(base["origin"], "dotenv");
+    assert_eq!(base["location"], "LEDGERFUL_LOCAL_MODEL_URL");
+    assert_eq!(base["source"], "explicit");
+
+    let human = Command::new(exe)
+        .args(["config", "verify", "--section", "backend", "--verbose"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    let human_out = String::from_utf8_lossy(&human.stdout);
+    assert!(
+        human_out.contains("explicit (dotenv:LEDGERFUL_LOCAL_MODEL_URL)"),
+        "human Source cell: {human_out}"
+    );
+}
