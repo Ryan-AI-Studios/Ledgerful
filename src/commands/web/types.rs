@@ -163,10 +163,19 @@ pub(crate) struct LedgerEntryResponse {
     pub(crate) risk: Option<String>,
     pub(crate) related_tickets: Option<String>,
     pub(crate) author: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) reason_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(crate) risk_source: Option<String>,
 }
 
 impl From<LedgerEntry> for LedgerEntryResponse {
     fn from(entry: LedgerEntry) -> Self {
+        let reason_kind =
+            crate::ledger::reason::classify_reason_kind(&entry.reason).map(|s| s.to_string());
+        let risk_source =
+            crate::ledger::reason::classify_risk_source(entry.risk.as_deref(), entry.category)
+                .map(|s| s.to_string());
         Self {
             id: entry.id,
             tx_id: entry.tx_id,
@@ -189,6 +198,8 @@ impl From<LedgerEntry> for LedgerEntryResponse {
             risk: entry.risk,
             related_tickets: entry.related_tickets,
             author: entry.author,
+            reason_kind,
+            risk_source,
         }
     }
 }
@@ -822,5 +833,41 @@ mod hotspot_dto_tests {
         let json = serde_json::to_value(node).unwrap();
         assert_eq!(json["file_path"].as_str(), Some("src/main.rs"));
         assert_eq!(json["complexity"].as_i64(), Some(7));
+    }
+
+    #[test]
+    fn ledger_entry_response_omits_reason_kind_on_body() {
+        let mut entry = crate::ledger::types::LedgerEntry {
+            id: 1,
+            tx_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string(),
+            category: crate::ledger::types::Category::Bugfix,
+            entry_type: crate::ledger::types::EntryType::Implementation,
+            entity: "e".to_string(),
+            entity_normalized: "e".to_string(),
+            change_type: crate::ledger::types::ChangeType::Modify,
+            summary: "s".to_string(),
+            reason: "Store a substantive why.".to_string(),
+            is_breaking: false,
+            committed_at: "2026-09-12T00:00:00Z".to_string(),
+            verification_status: None,
+            verification_basis: None,
+            outcome_notes: None,
+            origin: "LOCAL".to_string(),
+            trace_id: None,
+            signature: None,
+            public_key: None,
+            risk: Some("HIGH".to_string()),
+            related_tickets: None,
+            author: "t".to_string(),
+            observed: None,
+            prev_hash: None,
+            sig_version: 2,
+        };
+        let body = serde_json::to_value(LedgerEntryResponse::from(entry.clone())).unwrap();
+        assert!(body.get("reason_kind").is_none(), "{body}");
+        assert_eq!(body["risk_source"], "category");
+        entry.reason = "Co-authored-by: Cursor <cursoragent@cursor.com>".to_string();
+        let trailer = serde_json::to_value(LedgerEntryResponse::from(entry)).unwrap();
+        assert_eq!(trailer["reason_kind"], "trailer");
     }
 }

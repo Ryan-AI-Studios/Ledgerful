@@ -39,6 +39,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Ledger reason and file attribution (0319):** New hook writes
+  strip git trailers from stored `reason` (fallback to subject).
+  Historical trailer-only reasons stay byte-identical and emit
+  omit-empty `reason_kind` / `reasonKind` = `trailer`. File
+  `ledger audit` exact includes transactions graph already
+  attributes through `changed_files`. Search JSON stays a bare
+  array. No re-sign, no new SQLite columns.
+
 - **Review CI evidence range binding (0318):** `review --json`
   `ciEvidence` binds to the reviewed head OID (`boundHead`).
   Unbound `verify-history` rows move to omit-empty `historical`

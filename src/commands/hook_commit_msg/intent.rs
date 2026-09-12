@@ -114,6 +114,7 @@ pub(super) fn capture_intent(args: IntentArgs<'_>) -> Result<IntentOutcome> {
             .unwrap_or(false);
 
     // Fast-path bypass for well-formed conventional commits
+    let mut conventional_bypass = false;
     if is_well_formed_conventional(raw_commit_msg) {
         tracing::info!(
             target: "cli_summary",
@@ -121,18 +122,15 @@ pub(super) fn capture_intent(args: IntentArgs<'_>) -> Result<IntentOutcome> {
         );
         let lines: Vec<&str> = raw_commit_msg.lines().collect();
         drafted_what = lines[0].trim().to_string();
-        drafted_why = lines
-            .iter()
-            .skip(1)
-            .copied()
-            .collect::<Vec<&str>>()
-            .join("\n")
-            .trim()
-            .to_string();
+        drafted_why = crate::ledger::reason::substantive_reason_from_commit_msg(
+            raw_commit_msg,
+            Some(drafted_what.as_str()),
+        );
         let category = parse_category_from_message(&drafted_what);
         drafted_risk = risk_from_category(category).to_string();
         drafted_related = Vec::new();
         confidence = 1.0;
+        conventional_bypass = true;
     } else {
         tracing::info!(target: "cli_summary", "[Ledgerful] Drafting change intent via local LLM...");
 
@@ -157,7 +155,12 @@ pub(super) fn capture_intent(args: IntentArgs<'_>) -> Result<IntentOutcome> {
             draft.what
         };
         drafted_why = if draft.why.is_empty() {
-            raw_commit_msg.to_string()
+            crate::ledger::reason::substantive_reason_from_commit_msg(raw_commit_msg, None)
+        } else if crate::ledger::reason::is_trailer_only_reason(&draft.why) {
+            crate::ledger::reason::substantive_reason_from_commit_msg(
+                raw_commit_msg,
+                Some(drafted_what.as_str()),
+            )
         } else {
             draft.why
         };
@@ -184,9 +187,17 @@ pub(super) fn capture_intent(args: IntentArgs<'_>) -> Result<IntentOutcome> {
             tracing::info!(target: "cli_summary", "[Ledgerful] Non-interactive shell detected; committing silently.");
         }
 
-        // Update commit message file if LLM refined it
+        // Update commit message file if LLM refined it.
+        // Conventional bypass: do not rewrite COMMIT_EDITMSG (already
+        // conventional; a synthesized subject-fallback why would duplicate
+        // the subject into the git body).
         let mut final_commit_msg = raw_commit_msg.to_string();
-        if confidence >= 0.85 && !drafted_what.is_empty() {
+        if should_rewrite_commit_editmsg(
+            conventional_bypass,
+            confidence,
+            &drafted_what,
+            &drafted_why,
+        ) {
             let trailers = extract_trailers(raw_commit_msg);
             let updated_msg = if trailers.is_empty() {
                 format!("{}\n\n{}", drafted_what, drafted_why)
@@ -284,5 +295,47 @@ pub(super) fn capture_intent(args: IntentArgs<'_>) -> Result<IntentOutcome> {
         Ok(IntentOutcome::Done)
     } else {
         Ok(IntentOutcome::Abort)
+    }
+}
+
+pub(crate) fn should_rewrite_commit_editmsg(
+    conventional_bypass: bool,
+    confidence: f64,
+    drafted_what: &str,
+    drafted_why: &str,
+) -> bool {
+    !conventional_bypass
+        && confidence >= 0.85
+        && !drafted_what.is_empty()
+        && drafted_why != drafted_what
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_rewrite_commit_editmsg;
+
+    #[test]
+    fn conventional_bypass_does_not_rewrite_commit_editmsg() {
+        assert!(
+            !should_rewrite_commit_editmsg(
+                true,
+                1.0_f64,
+                "feat: bind review evidence",
+                "feat: bind review evidence",
+            ),
+            "conventional bypass must not rewrite COMMIT_EDITMSG"
+        );
+        assert!(!should_rewrite_commit_editmsg(
+            true,
+            1.0,
+            "feat: bind review evidence",
+            "Co-authored-by: Cursor <cursoragent@cursor.com>",
+        ));
+        assert!(should_rewrite_commit_editmsg(
+            false,
+            0.9,
+            "feat: bind review evidence",
+            "Store a substantive why.",
+        ));
     }
 }

@@ -286,7 +286,8 @@ pub(super) fn handle_ledger_search(params: Value) -> Value {
         Ok(r) => r,
         Err(e) => return error_response(format!("Ledger search failed: {}", e)),
     };
-    json_response(&results)
+    let labeled = crate::ledger::reason::labeled_search_items(&results);
+    json_response(&labeled)
 }
 
 pub(super) fn handle_ask(params: Value) -> Value {

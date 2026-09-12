@@ -115,9 +115,10 @@ pub fn execute_ledger_search(
         .map_err(|e| miette::miette!("{}", e))?;
 
     if json {
+        let labeled = crate::ledger::reason::labeled_search_items(&results);
         println!(
             "{}",
-            serde_json::to_string_pretty(&results).into_diagnostic()?
+            serde_json::to_string_pretty(&labeled).into_diagnostic()?
         );
         return Ok(());
     }

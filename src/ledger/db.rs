@@ -328,6 +328,13 @@ impl<'a> LedgerDb<'a> {
         provenance::find_transactions_by_file(self.conn, file_path)
     }
 
+    pub fn find_ledger_entries_by_changed_file(
+        &self,
+        file_path: &str,
+    ) -> Result<Vec<LedgerEntry>, LedgerError> {
+        provenance::find_ledger_entries_by_changed_file(self.conn, file_path)
+    }
+
     pub fn get_related_ledger_entries(
         &self,
         directory: &str,

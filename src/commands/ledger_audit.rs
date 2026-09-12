@@ -82,6 +82,14 @@ pub struct AuditEntry {
     pub risk: Option<String>,
     pub related_tickets: Option<String>,
     pub provenance: Vec<ProvenanceEntry>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reason_kind: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub risk_source: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub match_basis: Option<String>,
+    #[serde(skip)]
+    pub category: crate::ledger::types::Category,
 }
 
 #[derive(Debug, Serialize)]
@@ -311,6 +319,39 @@ fn gather_audit_data(
     })
 }
 
+fn audit_entry_from_ledger(
+    entry: LedgerEntry,
+    provenance: Vec<ProvenanceEntry>,
+    match_basis: Option<&str>,
+) -> AuditEntry {
+    let reason_kind =
+        crate::ledger::reason::classify_reason_kind(&entry.reason).map(|s| s.to_string());
+    let risk_source =
+        crate::ledger::reason::classify_risk_source(entry.risk.as_deref(), entry.category)
+            .map(|s| s.to_string());
+    AuditEntry {
+        id: entry.id,
+        tx_id: entry.tx_id,
+        entity: entry.entity,
+        trace_id: entry.trace_id,
+        origin: entry.origin,
+        summary: entry.summary,
+        reason: entry.reason,
+        change_type: entry.change_type,
+        committed_at: entry.committed_at,
+        is_breaking: entry.is_breaking,
+        signature: entry.signature,
+        public_key: entry.public_key,
+        risk: entry.risk,
+        related_tickets: entry.related_tickets,
+        provenance,
+        reason_kind,
+        risk_source,
+        match_basis: match_basis.map(|s| s.to_string()),
+        category: entry.category,
+    }
+}
+
 fn audit_entries_from_ledger_entries(
     db: &LedgerDb<'_>,
     entries: Vec<LedgerEntry>,
@@ -331,23 +372,7 @@ fn audit_entries_from_ledger_entries(
             })
             .collect();
 
-        audit_entries.push(AuditEntry {
-            id: entry.id,
-            tx_id: entry.tx_id,
-            entity: entry.entity,
-            trace_id: entry.trace_id,
-            origin: entry.origin,
-            summary: entry.summary,
-            reason: entry.reason,
-            change_type: entry.change_type,
-            committed_at: entry.committed_at,
-            is_breaking: entry.is_breaking,
-            signature: entry.signature,
-            public_key: entry.public_key,
-            risk: entry.risk,
-            related_tickets: entry.related_tickets,
-            provenance,
-        });
+        audit_entries.push(audit_entry_from_ledger(entry, provenance, None));
     }
 
     Ok(audit_entries)
@@ -574,34 +599,116 @@ fn audit_entity(
     json: bool,
 ) -> Result<()> {
     let db = LedgerDb::new(manager.get_connection());
-    let mut exact_entries = manager
-        .get_ledger_entries_paginated(entity, limit, offset)
-        .map_err(|e| miette::miette!("{}", e))?;
+    let payload = audit_entity_payload(manager, &db, entity, resolved_file, limit, offset)?;
 
-    // Also try to find transactions via token provenance if resolved_file is present
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&payload).into_diagnostic()?
+        );
+        return Ok(());
+    }
+
+    println!(
+        "\nAudit History for {}:",
+        entity.if_supports_color(Stream::Stdout, |s| s.cyan())
+    );
+
+    if payload.exact.is_empty() {
+        println!("  No exact committed entries found.");
+    } else {
+        print_audit_entry_list_from_audit(&payload.exact)?;
+    }
+
+    if !payload.related.is_empty() {
+        println!(
+            "\n{}",
+            "--- Related Entries (Adjacent Modules/Directory) ---"
+                .if_supports_color(Stream::Stdout, |s| s.dimmed())
+        );
+        print_audit_entry_list_from_audit(&payload.related)?;
+    }
+
+    Ok(())
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct AuditEntityPayload {
+    exact: Vec<AuditEntry>,
+    related: Vec<AuditEntry>,
+}
+
+fn provenance_for_tx(db: &LedgerDb<'_>, tx_id: &str) -> Result<Vec<ProvenanceEntry>> {
+    let provenance_data = db
+        .get_token_provenance_for_tx(tx_id)
+        .map_err(|e| miette::miette!("{}", e))?;
+    Ok(provenance_data
+        .into_iter()
+        .map(|p| ProvenanceEntry {
+            entity: p.entity,
+            symbol_name: p.symbol_name,
+            symbol_type: p.symbol_type,
+            action: p.action,
+        })
+        .collect())
+}
+
+pub(crate) fn audit_entity_payload(
+    manager: &TransactionManager,
+    db: &LedgerDb<'_>,
+    entity: &str,
+    resolved_file: Option<&str>,
+    limit: usize,
+    offset: usize,
+) -> Result<AuditEntityPayload> {
+    let mut hits: Vec<(LedgerEntry, Option<&'static str>)> = Vec::new();
+    let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
+
+    let entity_entries = manager
+        .get_ledger_entries_paginated(entity, 10_000, 0)
+        .map_err(|e| miette::miette!("{}", e))?;
+    let entity_basis = if resolved_file.is_some() {
+        Some("entity")
+    } else {
+        None
+    };
+    for entry in entity_entries {
+        if seen.insert(entry.tx_id.clone()) {
+            hits.push((entry, entity_basis));
+        }
+    }
+
     if let Some(file_path) = resolved_file {
         let file_entries = db
             .find_transactions_by_file(file_path)
             .map_err(|e| miette::miette!("{}", e))?;
-        let mut seen: std::collections::HashSet<String> =
-            exact_entries.iter().map(|e| e.tx_id.clone()).collect();
         for fe in file_entries {
-            // Check if fe.entity_normalized == resolved_file to count it as exact
-            if fe.entity_normalized == file_path {
-                if seen.insert(fe.tx_id.clone()) {
-                    exact_entries.push(fe);
-                }
-            } else {
-                // Ignore token provenance from other files for exact match
+            if fe.entity_normalized.replace('\\', "/") == file_path.replace('\\', "/")
+                && seen.insert(fe.tx_id.clone())
+            {
+                hits.push((fe, Some("entity")));
+            }
+        }
+
+        let changed = db
+            .find_ledger_entries_by_changed_file(file_path)
+            .map_err(|e| miette::miette!("{}", e))?;
+        for fe in changed {
+            if seen.insert(fe.tx_id.clone()) {
+                hits.push((fe, Some("changed_files")));
             }
         }
     }
 
-    // Sort exact entries descending by committed_at
-    exact_entries.sort_by(|a, b| b.committed_at.cmp(&a.committed_at));
-    exact_entries.truncate(limit);
+    hits.sort_by(|a, b| {
+        b.0.committed_at
+            .cmp(&a.0.committed_at)
+            .then_with(|| b.0.tx_id.cmp(&a.0.tx_id))
+    });
+    let exact_hits: Vec<(LedgerEntry, Option<&'static str>)> =
+        hits.into_iter().skip(offset).take(limit).collect();
 
-    // Get related entries
     let related_entries = if let Some(file_path) = resolved_file {
         let dir = std::path::Path::new(file_path)
             .parent()
@@ -612,11 +719,8 @@ fn audit_entity(
             let mut related = db
                 .get_related_ledger_entries(dir, limit)
                 .map_err(|e| miette::miette!("{}", e))?;
-
-            // Filter out exact matches
             let exact_ids: std::collections::HashSet<String> =
-                exact_entries.iter().map(|e| e.tx_id.clone()).collect();
-
+                exact_hits.iter().map(|(e, _)| e.tx_id.clone()).collect();
             related.retain(|e| !exact_ids.contains(&e.tx_id));
             related
         } else {
@@ -626,48 +730,41 @@ fn audit_entity(
         Vec::new()
     };
 
-    if json {
-        let audit_exact = audit_entries_from_ledger_entries(&db, exact_entries)?;
-        let audit_related = audit_entries_from_ledger_entries(&db, related_entries)?;
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&serde_json::json!({
-                "exact": audit_exact,
-                "related": audit_related
-            }))
-            .into_diagnostic()?
-        );
-        return Ok(());
+    let mut exact = Vec::new();
+    for (entry, basis) in exact_hits {
+        let provenance = provenance_for_tx(db, &entry.tx_id)?;
+        exact.push(audit_entry_from_ledger(entry, provenance, basis));
+    }
+    let mut related = Vec::new();
+    for entry in related_entries {
+        let provenance = provenance_for_tx(db, &entry.tx_id)?;
+        let basis = resolved_file.map(|_| "directory");
+        related.push(audit_entry_from_ledger(entry, provenance, basis));
     }
 
-    println!(
-        "\nAudit History for {}:",
-        entity.if_supports_color(Stream::Stdout, |s| s.cyan())
-    );
-
-    if exact_entries.is_empty() {
-        println!("  No exact committed entries found.");
-    } else {
-        print_audit_entry_list(&db, entity, &exact_entries)?;
-    }
-
-    if !related_entries.is_empty() {
-        println!(
-            "\n{}",
-            "--- Related Entries (Adjacent Modules/Directory) ---"
-                .if_supports_color(Stream::Stdout, |s| s.dimmed())
-        );
-        print_audit_entry_list(&db, entity, &related_entries)?;
-    }
-
-    Ok(())
+    Ok(AuditEntityPayload { exact, related })
 }
 
-fn print_audit_entry_list(
-    db: &LedgerDb,
-    search_entity: &str,
-    entries: &[crate::ledger::types::LedgerEntry],
-) -> Result<()> {
+pub(crate) fn format_audit_reason_line(reason: &str) -> String {
+    if crate::ledger::reason::classify_reason_kind(reason) == Some("trailer") {
+        format!("[trailer] {reason}")
+    } else {
+        reason.to_string()
+    }
+}
+
+pub(crate) fn format_audit_risk_line(
+    risk: &str,
+    category: crate::ledger::types::Category,
+) -> String {
+    if crate::ledger::reason::classify_risk_source(Some(risk), category) == Some("category") {
+        format!("{risk} (from category {category})")
+    } else {
+        risk.to_string()
+    }
+}
+
+fn print_audit_entry_list_from_audit(entries: &[AuditEntry]) -> Result<()> {
     for entry in entries {
         let prefix = if entry.origin == "LOCAL" {
             format!(
@@ -696,9 +793,7 @@ fn print_audit_entry_list(
         );
         println!(
             "  Entity:  {}",
-            entry
-                .entity_normalized
-                .if_supports_color(Stream::Stdout, |s| s.cyan())
+            entry.entity.if_supports_color(Stream::Stdout, |s| s.cyan())
         );
         println!(
             "  Summary: {}",
@@ -713,11 +808,12 @@ fn print_audit_entry_list(
                 format!("{:?}", entry.change_type),
             )
         );
-        println!("  Reason:  {}", entry.reason);
+        println!("  Reason:  {}", format_audit_reason_line(&entry.reason));
         if let Some(risk) = &entry.risk {
             println!(
                 "  Risk:    {}",
-                risk.if_supports_color(Stream::Stdout, |s| s.yellow())
+                format_audit_risk_line(risk, entry.category)
+                    .if_supports_color(Stream::Stdout, |s| s.yellow())
             );
         }
         if let Some(sig) = &entry.signature {
@@ -729,22 +825,9 @@ fn print_audit_entry_list(
                     .if_supports_color(Stream::Stdout, |s| s.dimmed())
             );
         }
-
-        let provenance = db
-            .get_token_provenance_for_tx(&entry.tx_id)
-            .map_err(|e| miette::miette!("{}", e))?;
-        let entity_prov: Vec<_> = provenance
-            .into_iter()
-            .filter(|p| {
-                p.entity == search_entity
-                    || p.entity_normalized == search_entity
-                    || p.entity_normalized == entry.entity_normalized
-            })
-            .collect();
-
-        if !entity_prov.is_empty() {
+        if !entry.provenance.is_empty() {
             println!("  Symbols:");
-            for p in entity_prov {
+            for p in &entry.provenance {
                 let action_str = p.action.to_string();
                 let formatted = match p.action {
                     crate::ledger::provenance::ProvenanceAction::Added => action_str
@@ -890,5 +973,140 @@ mod tests {
         );
         assert!(line.contains("src/lib.rs"));
         assert!(line.contains("3.29"));
+    }
+
+    #[test]
+    fn audit_human_trailer_reason_prefixed() {
+        let trailer = "Co-authored-by: Cursor <cursoragent@cursor.com>";
+        let reason = format_audit_reason_line(trailer);
+        assert!(
+            reason.starts_with("[trailer] "),
+            "human Reason must prefix [trailer]: {reason}"
+        );
+        assert!(reason.contains(trailer));
+        let risk = format_audit_risk_line("HIGH", crate::ledger::types::Category::Bugfix);
+        assert_eq!(risk, "HIGH (from category BUGFIX)");
+        let prose = format_audit_reason_line("Store a substantive why.");
+        assert_eq!(prose, "Store a substantive why.");
+    }
+
+    fn with_changed_files_fixture(
+        f: impl FnOnce(&crate::ledger::TransactionManager, &crate::ledger::db::LedgerDb<'_>, &str, &str),
+    ) {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let db_path = tmp.path().join("ledger.db");
+        let mut storage =
+            crate::state::storage::StorageManager::init(&db_path).expect("init storage");
+        let mut manager = crate::ledger::TransactionManager::new(
+            &mut storage,
+            tmp.path().to_path_buf(),
+            crate::config::model::Config::default(),
+        );
+        let file_path = "src/commands/configure.rs";
+        let snapshot_id = {
+            let conn = manager.get_connection();
+            conn.execute(
+                "INSERT INTO snapshots (timestamp, head_hash, branch_name, is_clean, packet_json)
+                 VALUES ('2026-09-12T00:00:00Z', 'deadbeef', 'main', 1, '{}')",
+                [],
+            )
+            .expect("insert snapshot");
+            conn.last_insert_rowid()
+        };
+        manager
+            .get_connection()
+            .execute(
+                "INSERT INTO changed_files (snapshot_id, path, status, is_staged) VALUES (?1, ?2, 'MODIFIED', 1)",
+                rusqlite::params![snapshot_id, file_path],
+            )
+            .expect("insert changed_files");
+
+        let track_tx = manager
+            .start_change(crate::ledger::TransactionRequest {
+                category: crate::ledger::types::Category::Bugfix,
+                entity: "0319-fixture-track".to_string(),
+                ..Default::default()
+            })
+            .expect("start track tx");
+        manager
+            .commit_change(
+                track_tx.clone(),
+                crate::ledger::CommitRequest {
+                    summary: "fixture track commit".to_string(),
+                    reason: "Co-authored-by: Cursor <cursoragent@cursor.com>".to_string(),
+                    risk: Some("HIGH".to_string()),
+                    snapshot_id: Some(snapshot_id),
+                    ..Default::default()
+                },
+                false,
+            )
+            .expect("commit track tx");
+
+        let neighbor_tx = manager
+            .start_change(crate::ledger::TransactionRequest {
+                category: crate::ledger::types::Category::Docs,
+                entity: "src/commands/other.rs".to_string(),
+                ..Default::default()
+            })
+            .expect("start neighbor");
+        manager
+            .commit_change(
+                neighbor_tx,
+                crate::ledger::CommitRequest {
+                    summary: "neighbor".to_string(),
+                    reason: "Store a substantive why.".to_string(),
+                    risk: Some("TRIVIAL".to_string()),
+                    ..Default::default()
+                },
+                false,
+            )
+            .expect("commit neighbor");
+
+        let db = crate::ledger::db::LedgerDb::new(manager.get_connection());
+        f(&manager, &db, &track_tx, file_path);
+    }
+
+    #[test]
+    fn audit_exact_includes_changed_files_track_entity() {
+        with_changed_files_fixture(|manager, db, track_id, file_path| {
+            let payload = audit_entity_payload(manager, db, file_path, Some(file_path), 20, 0)
+                .expect("payload");
+            let exact = payload
+                .exact
+                .iter()
+                .find(|e| e.tx_id == track_id)
+                .unwrap_or_else(|| panic!("expected track tx in exact: {:?}", payload.exact));
+            assert_eq!(
+                exact.match_basis.as_deref(),
+                Some("changed_files"),
+                "track-slug TX must join via changed_files"
+            );
+            assert_eq!(exact.reason_kind.as_deref(), Some("trailer"));
+        });
+    }
+
+    #[test]
+    fn audit_related_is_directory_not_changed_file() {
+        with_changed_files_fixture(|manager, db, track_id, file_path| {
+            let payload = audit_entity_payload(manager, db, file_path, Some(file_path), 20, 0)
+                .expect("payload");
+            assert!(
+                payload
+                    .exact
+                    .iter()
+                    .all(|e| e.entity != "src/commands/other.rs"),
+                "directory neighbor must not be exact"
+            );
+            let related = payload
+                .related
+                .iter()
+                .find(|e| e.entity == "src/commands/other.rs")
+                .expect("neighbor in related");
+            assert_eq!(related.match_basis.as_deref(), Some("directory"));
+            assert!(
+                payload.related.iter().all(|e| e.tx_id != track_id),
+                "exact tx must be filtered from related"
+            );
+        });
     }
 }
