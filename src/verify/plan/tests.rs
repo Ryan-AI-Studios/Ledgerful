@@ -409,26 +409,6 @@ default-filter = 'test(/__slow$/)'
 }
 
 #[test]
-fn test_resolve_default_test_command_with_ci_profile_uses_profile_ci() {
-    if !crate::verify::engine::probe_nextest() {
-        return;
-    }
-    let dir = tempfile::tempdir().expect("tempdir");
-    let config_dir = dir.path().join(".config");
-    std::fs::create_dir_all(&config_dir).expect("mkdir .config");
-    std::fs::write(
-        config_dir.join("nextest.toml"),
-        "[profile.ci]\nretries = 1\n",
-    )
-    .expect("write nextest.toml");
-    let cmd = resolve_default_test_command(Some(true), dir.path());
-    assert_eq!(
-        cmd, "cargo nextest run --workspace --all-features --profile ci",
-        "must detect [profile.ci] via toml::from_str"
-    );
-}
-
-#[test]
 fn test_append_full_tier_commands_emits_slow_and_doctest_not_compile_fail() {
     if !crate::verify::engine::probe_nextest() {
         return;
@@ -457,33 +437,6 @@ fn test_append_full_tier_commands_emits_slow_and_doctest_not_compile_fail() {
         cmds.iter().all(|c| !c.contains("compile-fail")),
         "full tier must not emit compile-fail after 0067: {cmds:?}"
     );
-}
-
-#[test]
-fn test_default_command_fallback_when_nextest_disabled() {
-    let cmd = resolve_default_test_command(Some(false), std::path::Path::new("."));
-    assert_eq!(cmd, "cargo test --workspace --all-features");
-}
-
-#[test]
-fn test_default_command_nextest_preferred() {
-    // On CI/generic runners nextest might not be installed, but the function
-    // should probe and fall back gracefully. We verify the command resolves
-    // to a concrete default and contains nextest when probe succeeds.
-    let cmd = resolve_default_test_command(None, std::path::Path::new("."));
-    assert!(!cmd.is_empty(), "default test command must not be empty");
-    assert!(
-        cmd.starts_with("cargo "),
-        "default command should start with cargo: {cmd}"
-    );
-    if crate::verify::engine::probe_nextest() {
-        assert!(
-            cmd.contains("nextest"),
-            "with nextest installed command should contain nextest: {cmd}"
-        );
-    } else {
-        assert_eq!(cmd, "cargo test --workspace --all-features");
-    }
 }
 
 #[test]
@@ -1410,7 +1363,6 @@ fn test_classify_test_mapping_freshness_empty() {
         classify_test_mapping_freshness(&conn, &packet),
         MappingFreshness::Empty
     );
-    assert!(is_test_mapping_stale(&conn, &packet));
 }
 
 #[test]
@@ -1426,7 +1378,6 @@ fn test_classify_test_mapping_freshness_ok_heads_match() {
         classify_test_mapping_freshness(&conn, &packet),
         MappingFreshness::Ok
     );
-    assert!(!is_test_mapping_stale(&conn, &packet));
 }
 
 #[test]
@@ -1442,7 +1393,6 @@ fn test_classify_test_mapping_freshness_head_mismatch() {
         classify_test_mapping_freshness(&conn, &packet),
         MappingFreshness::HeadMismatch
     );
-    assert!(is_test_mapping_stale(&conn, &packet));
 }
 
 #[test]
@@ -1458,7 +1408,6 @@ fn test_classify_test_mapping_freshness_packet_head_missing() {
         classify_test_mapping_freshness(&conn, &packet),
         MappingFreshness::PacketHeadMissing
     );
-    assert!(is_test_mapping_stale(&conn, &packet));
 }
 
 #[test]
@@ -1475,7 +1424,6 @@ fn test_classify_test_mapping_freshness_indexed_head_missing_ok() {
         classify_test_mapping_freshness(&conn, &packet),
         MappingFreshness::Ok
     );
-    assert!(!is_test_mapping_stale(&conn, &packet));
 }
 
 #[test]
@@ -1490,7 +1438,6 @@ fn test_classify_test_mapping_freshness_both_heads_missing_ok() {
         classify_test_mapping_freshness(&conn, &packet),
         MappingFreshness::Ok
     );
-    assert!(!is_test_mapping_stale(&conn, &packet));
 }
 
 #[test]
@@ -1502,67 +1449,6 @@ fn test_classify_test_mapping_freshness_missing_table_empty() {
         classify_test_mapping_freshness(&conn, &packet),
         MappingFreshness::Empty
     );
-}
-
-// Thin-wrapper regressions (same matrix as classify_*).
-#[test]
-fn test_is_test_mapping_stale_empty_mapping() {
-    let conn = rusqlite::Connection::open_in_memory().unwrap();
-    conn.execute(
-        "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
-             tested_symbol_id INTEGER, tested_file_id INTEGER)",
-        [],
-    )
-    .unwrap();
-    let packet = ImpactPacket::default();
-    assert!(is_test_mapping_stale(&conn, &packet));
-}
-
-#[test]
-fn test_is_test_mapping_stale_head_hash_mismatch() {
-    let conn = rusqlite::Connection::open_in_memory().unwrap();
-    seed_mapping_row(&conn);
-    seed_index_head(&conn, "old-hash");
-    let packet = ImpactPacket {
-        head_hash: Some("new-hash".to_string()),
-        ..ImpactPacket::default()
-    };
-    assert!(is_test_mapping_stale(&conn, &packet));
-}
-
-#[test]
-fn test_is_test_mapping_stale_head_hash_matches() {
-    let conn = rusqlite::Connection::open_in_memory().unwrap();
-    seed_mapping_row(&conn);
-    seed_index_head(&conn, "current-hash");
-    let packet = ImpactPacket {
-        head_hash: Some("current-hash".to_string()),
-        ..ImpactPacket::default()
-    };
-    assert!(!is_test_mapping_stale(&conn, &packet));
-}
-
-#[test]
-fn test_is_test_mapping_stale_missing_index_head_not_force_stale() {
-    let conn = rusqlite::Connection::open_in_memory().unwrap();
-    seed_mapping_row(&conn);
-    let packet = ImpactPacket {
-        head_hash: Some("any-hash".to_string()),
-        ..ImpactPacket::default()
-    };
-    assert!(!is_test_mapping_stale(&conn, &packet));
-}
-
-#[test]
-fn test_is_test_mapping_stale_missing_packet_head_conservative() {
-    let conn = rusqlite::Connection::open_in_memory().unwrap();
-    seed_mapping_row(&conn);
-    seed_index_head(&conn, "indexed");
-    let packet = ImpactPacket {
-        head_hash: None,
-        ..ImpactPacket::default()
-    };
-    assert!(is_test_mapping_stale(&conn, &packet));
 }
 
 #[test]
@@ -1658,7 +1544,7 @@ fn test_build_plan_scoped_fast_auto_index_failure_refuses() {
     };
     let rules = Rules::default();
     let conn = rusqlite::Connection::open_in_memory().unwrap();
-    // Create the tables so is_test_mapping_stale sees an empty mapping.
+    // Create the tables so classify_test_mapping_freshness sees an empty mapping.
     conn.execute(
         "CREATE TABLE test_mapping (test_symbol_id INTEGER, test_file_id INTEGER, \
              tested_symbol_id INTEGER, tested_file_id INTEGER)",

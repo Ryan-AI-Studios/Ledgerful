@@ -76,23 +76,6 @@ pub fn probe_nextest() -> bool {
 pub struct VerifyEngine;
 
 impl VerifyEngine {
-    pub fn execute(
-        ctx: &mut VerificationContext,
-        plan: Option<VerificationPlan>,
-        steps: &[VerificationStep],
-        manual_requested: bool,
-        tx_id: Option<String>,
-    ) -> Result<VerificationReport> {
-        Self::execute_with_scope(
-            ctx,
-            plan,
-            steps,
-            manual_requested,
-            tx_id,
-            crate::verify::plan::VerifyScope::Full,
-        )
-    }
-
     pub fn execute_with_scope(
         ctx: &mut VerificationContext,
         plan: Option<VerificationPlan>,

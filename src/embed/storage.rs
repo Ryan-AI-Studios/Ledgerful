@@ -99,13 +99,6 @@ pub fn load_embedding(
     }
 }
 
-pub fn embedding_count(conn: &Connection) -> Result<usize, String> {
-    let count: i64 = conn
-        .query_row("SELECT COUNT(*) FROM embeddings", [], |row| row.get(0))
-        .map_err(|e| e.to_string())?;
-    Ok(count as usize)
-}
-
 pub fn load_candidates(
     conn: &Connection,
     entity_type: &str,
@@ -141,12 +134,6 @@ pub fn load_candidates(
     }
 
     Ok(candidates)
-}
-
-pub fn clear_all_embeddings(conn: &Connection) -> Result<(), String> {
-    conn.execute("DELETE FROM embeddings", [])
-        .map_err(|e| e.to_string())?;
-    Ok(())
 }
 
 #[cfg(test)]
@@ -192,7 +179,6 @@ mod tests {
             .unwrap()
             .expect("should find embedding");
         assert_eq!(loaded, vector);
-        assert_eq!(embedding_count(&conn).unwrap(), 1);
     }
 
     #[test]
@@ -221,7 +207,10 @@ mod tests {
         )
         .unwrap();
 
-        assert_eq!(embedding_count(&conn).unwrap(), 1);
+        assert_eq!(
+            load_candidates(&conn, "FILE", "test-model").unwrap().len(),
+            1
+        );
     }
 
     #[test]
@@ -251,8 +240,10 @@ mod tests {
         )
         .unwrap();
 
-        // Should still have exactly one row
-        assert_eq!(embedding_count(&conn).unwrap(), 1);
+        assert_eq!(
+            load_candidates(&conn, "FILE", "test-model").unwrap().len(),
+            1
+        );
 
         // The vector should be the new one
         let loaded = load_embedding(&conn, "FILE", "src/main.rs", "test-model")
@@ -287,19 +278,6 @@ mod tests {
     }
 
     #[test]
-    fn test_clear_all_embeddings() {
-        let conn = setup_db();
-        let v: Vec<f32> = vec![1.0];
-
-        upsert_embedding(&conn, "FILE", "a.rs", "text a", "model", &v, 1).unwrap();
-        upsert_embedding(&conn, "FILE", "b.rs", "text b", "model", &v, 1).unwrap();
-        assert_eq!(embedding_count(&conn).unwrap(), 2);
-
-        clear_all_embeddings(&conn).unwrap();
-        assert_eq!(embedding_count(&conn).unwrap(), 0);
-    }
-
-    #[test]
     fn test_load_candidates_returns_stored_embeddings() {
         let conn = setup_db();
         let v1: Vec<f32> = vec![1.0, 2.0, 3.0];
@@ -327,8 +305,6 @@ mod tests {
 
         upsert_embedding(&conn, "FILE", "src/main.rs", "text", "model-a", &v1, 2).unwrap();
         upsert_embedding(&conn, "FILE", "src/main.rs", "text", "model-b", &v2, 2).unwrap();
-
-        assert_eq!(embedding_count(&conn).unwrap(), 2);
 
         let loaded_a = load_embedding(&conn, "FILE", "src/main.rs", "model-a")
             .unwrap()

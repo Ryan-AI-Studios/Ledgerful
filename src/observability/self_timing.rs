@@ -107,11 +107,6 @@ fn min_span_ms() -> u64 {
     }
 }
 
-/// Test inject: set min span ms (`u64::MAX` clears).
-pub fn set_test_min_span_ms(ms: u64) {
-    TEST_MIN_SPAN_MS.store(ms, Ordering::Relaxed);
-}
-
 /// Hash a canonicalized argv shape (subcommand + sorted flag names, values stripped).
 pub fn hash_argv_shape(shape: &str) -> String {
     let mut hasher = Sha256::new();

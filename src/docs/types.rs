@@ -40,14 +40,6 @@ pub struct ModuleGroup {
     pub files: Vec<String>,
 }
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct RiskyNode {
-    pub id: String,
-    pub label: String,
-    pub category: String,
-    pub risk_score: f64,
-}
-
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct NeighborEdge {
     pub source: String,
@@ -184,41 +176,6 @@ pub fn query_module_groups(cozo: &CozoStorage) -> Result<Vec<ModuleGroup>> {
         });
     }
     Ok(result)
-}
-
-pub fn query_risky_nodes(cozo: &CozoStorage) -> Result<Vec<RiskyNode>> {
-    let script = r#"
-        ?[id, label, category, risk_score] :=
-            *node{id, label, category, risk_score}, risk_score > 0
-    "#;
-    let res = cozo
-        .run_script(script)
-        .map_err(|e| DocGenerationError::QueryFailed(e.to_string()))?;
-
-    let mut rows = Vec::new();
-    for row in res.rows {
-        if let (
-            Some(DataValue::Str(id)),
-            Some(DataValue::Str(label)),
-            Some(DataValue::Str(category)),
-            Some(DataValue::Num(Num::Float(risk_score))),
-        ) = (row.first(), row.get(1), row.get(2), row.get(3))
-        {
-            rows.push(RiskyNode {
-                id: id.to_string(),
-                label: label.to_string(),
-                category: category.to_string(),
-                risk_score: *risk_score,
-            });
-        }
-    }
-    rows.sort_by(|a, b| {
-        b.risk_score
-            .partial_cmp(&a.risk_score)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.id.cmp(&b.id))
-    });
-    Ok(rows)
 }
 
 pub fn query_all_edges(cozo: &CozoStorage) -> Result<Vec<NeighborEdge>> {
