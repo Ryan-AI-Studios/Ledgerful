@@ -7,6 +7,7 @@ use crate::util::term::prompt_yes_no;
 use clap::{Args, Subcommand};
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
+use serde::Serialize;
 use std::collections::HashSet;
 
 #[derive(Args, Debug)]
@@ -17,7 +18,7 @@ pub struct SecurityArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum SecuritySubcommands {
-    /// Show security impact of recent changes
+    /// List indexed Cedar policies (inventory); --changed filters to the current diff
     Impact {
         /// Filter by changed policies only
         #[arg(long)]
@@ -80,6 +81,160 @@ pub(crate) fn graph_has_any_nodes(cozo: &crate::state::storage_cozo::CozoStorage
     Ok(populated)
 }
 
+const COVERAGE_LIMITATION: &str =
+    "Declared Cedar @id coverage only. Daemon auth is Bearer (0090), not a PDP.";
+
+const DECLARED_NOT_ENFORCED: &str =
+    "declared Cedar coverage only — not runtime enforcement (daemon auth is Bearer).";
+
+/// Declared Cedar coverage counts (CLI impact + CLI boundaries). REST does not emit this.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SecurityCoverage {
+    pub policies: usize,
+    pub linked_endpoints: usize,
+    pub indexed_endpoints: usize,
+    pub limitation: String,
+}
+
+fn complete_policy_query() -> &'static str {
+    "?[id, label, raw, effect, source_file] := *node{id, label, category: 'policy', metadata: meta}, \
+     raw = get(meta, 'raw'), \
+     effect = get(meta, 'effect'), \
+     source_file = get(meta, 'source_file')"
+}
+
+/// 0208-C: rows with all five policy metadata strings present.
+fn complete_policy_count(cozo: &crate::state::storage_cozo::CozoStorage) -> Result<usize> {
+    let res = cozo.run_script(complete_policy_query())?;
+    Ok(res
+        .rows
+        .iter()
+        .filter(|row| {
+            matches!(
+                (row.first(), row.get(1), row.get(2), row.get(3), row.get(4)),
+                (
+                    Some(cozo::DataValue::Str(_)),
+                    Some(cozo::DataValue::Str(_)),
+                    Some(cozo::DataValue::Str(_)),
+                    Some(cozo::DataValue::Str(_)),
+                    Some(cozo::DataValue::Str(_)),
+                )
+            )
+        })
+        .count())
+}
+
+fn endpoint_node_count(cozo: &crate::state::storage_cozo::CozoStorage) -> Result<usize> {
+    let res = cozo.run_script("?[count(n)] := *node{id: n, category: 'endpoint'}")?;
+    let n = res
+        .rows
+        .first()
+        .and_then(|r| r.first())
+        .and_then(|v| match v {
+            cozo::DataValue::Num(cozo::Num::Int(i)) if *i >= 0 => usize::try_from(*i).ok(),
+            _ => None,
+        })
+        .unwrap_or(0);
+    Ok(n)
+}
+
+/// Unique refined `protected_by` targets that are endpoints (not service/deploy/config/adr).
+fn linked_endpoint_count(edges: &[serde_json::Value]) -> usize {
+    let mut ids = HashSet::new();
+    for edge in edges {
+        let relation = edge.get("relation").and_then(|v| v.as_str()).unwrap_or("");
+        let category = edge
+            .get("target_category")
+            .and_then(|v| v.as_str())
+            .unwrap_or("");
+        if relation != "protected_by" || category != "endpoint" {
+            continue;
+        }
+        if let Some(id) = edge.get("target_id").and_then(|v| v.as_str()) {
+            ids.insert(id);
+        }
+    }
+    ids.len()
+}
+
+fn security_coverage(
+    cozo: &crate::state::storage_cozo::CozoStorage,
+    refined_edges: &[serde_json::Value],
+    policies: usize,
+) -> Result<SecurityCoverage> {
+    Ok(SecurityCoverage {
+        policies,
+        linked_endpoints: linked_endpoint_count(refined_edges),
+        indexed_endpoints: endpoint_node_count(cozo)?,
+        limitation: COVERAGE_LIMITATION.to_string(),
+    })
+}
+
+fn coverage_json(coverage: &SecurityCoverage) -> Result<serde_json::Value> {
+    serde_json::to_value(coverage).into_diagnostic()
+}
+
+fn impact_title(changed: bool) -> &'static str {
+    if changed {
+        "Security Policy Impact"
+    } else {
+        "Security Policy Inventory"
+    }
+}
+
+fn impact_scope(changed: bool) -> &'static str {
+    if changed { "changed" } else { "inventory" }
+}
+
+fn impact_policy_item(
+    id: &str,
+    label: &str,
+    raw: &str,
+    effect: &str,
+    source_file: &str,
+    is_changed: bool,
+) -> serde_json::Value {
+    let resolved = crate::policy::cedar::policy_operator_label(label, None, None, Some(raw));
+    let mut item = serde_json::json!({
+        "id": id,
+        "label": resolved,
+        "raw": raw,
+        "effect": effect,
+        "is_changed": is_changed,
+        "source_file": source_file,
+        "enforcement": "none",
+    });
+    if let Some((method, path)) = crate::policy::cedar::parse_action_from_policy_raw(raw)
+        && let Some(map) = item.as_object_mut()
+    {
+        map.insert(
+            "declaredAction".to_string(),
+            serde_json::json!(format!("{method} {path}")),
+        );
+    }
+    item
+}
+
+fn inject_impact_envelope(
+    output: &mut serde_json::Value,
+    changed: bool,
+    indexed: usize,
+    coverage: &SecurityCoverage,
+) -> Result<()> {
+    let Some(map) = output.as_object_mut() else {
+        return Ok(());
+    };
+    map.insert("indexedCount".to_string(), serde_json::json!(indexed));
+    map.insert(
+        "scope".to_string(),
+        serde_json::json!(impact_scope(changed)),
+    );
+    map.insert("authorization".to_string(), serde_json::json!("declared"));
+    map.insert("coverage".to_string(), coverage_json(coverage)?);
+    Ok(())
+}
+
 /// Collect `(method, path_pattern)` routes from the SQLite `api_routes` table
 /// (the same surface `ledgerful endpoints` queries). Used by the DX1
 /// interactive bootstrap offer to decide whether a Cedar policy template can
@@ -120,12 +275,8 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
         .cozo()
         .ok_or_else(|| miette::miette!("CozoDB not available"))?;
 
-    // Query all policy nodes and determine impact in-memory
-    let query = "?[id, label, raw, effect, source_file] := *node{id, label, category: 'policy', metadata: meta}, \
-                 raw = get(meta, 'raw'), \
-                 effect = get(meta, 'effect'), \
-                 source_file = get(meta, 'source_file')";
-    let res = cozo.run_script(query)?;
+    // Query all policy nodes and determine impact in-memory (0208-C 5-tuple).
+    let res = cozo.run_script(complete_policy_query())?;
 
     let mut indexed_rows = Vec::new();
     for row in res.rows {
@@ -140,18 +291,21 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
             let source_norm = source_file.as_str().replace('\\', "/");
             let is_changed = changed_files.contains(source_norm.as_str());
             indexed_rows.push((
-                serde_json::json!({
-                    "id": id,
-                    "label": label,
-                    "raw": raw,
-                    "effect": effect,
-                    "is_changed": is_changed,
-                    "source_file": source_norm,
-                }),
+                impact_policy_item(id, label, raw, effect, source_norm.as_str(), is_changed),
                 is_changed,
             ));
         }
     }
+    indexed_rows.sort_by(|a, b| {
+        (
+            a.0.get("label").and_then(|v| v.as_str()).unwrap_or(""),
+            a.0.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+        )
+            .cmp(&(
+                b.0.get("label").and_then(|v| v.as_str()).unwrap_or(""),
+                b.0.get("id").and_then(|v| v.as_str()).unwrap_or(""),
+            ))
+    });
     // 0208-C: indexed = rows with complete policy metadata (matches display
     // loop), not raw query row count.
     let indexed = indexed_rows.len();
@@ -160,6 +314,9 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
         .filter(|(_, is_changed)| !changed || *is_changed)
         .map(|(item, _)| item)
         .collect();
+
+    let (_, _, boundary_edges) = assemble_security_boundaries(cozo)?;
+    let coverage = security_coverage(cozo, &boundary_edges, indexed)?;
 
     if displayed.is_empty() {
         let on_disk = crate::commands::surfaces::repo_root_cedar_present(&layout.root);
@@ -196,14 +353,12 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
                 crate::output::empty::format_json_empty_state(displayed, "impacted", || {
                     (reason, message)
                 });
-            if let Some(map) = output.as_object_mut() {
-                map.insert("indexedCount".to_string(), serde_json::json!(indexed));
-            }
+            inject_impact_envelope(&mut output, changed, indexed, &coverage)?;
             crate::output::json::emit(&output)?;
         } else {
             println!(
                 "{}",
-                "Security Policy Impact Analysis"
+                impact_title(changed)
                     .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().red()))
             );
             println!(
@@ -229,18 +384,20 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
             crate::output::empty::format_json_empty_state(displayed, "impacted", || {
                 (crate::output::empty::EmptyReason::NoMatches, String::new())
             });
-        if let Some(map) = output.as_object_mut() {
-            map.insert("indexedCount".to_string(), serde_json::json!(indexed));
-        }
+        inject_impact_envelope(&mut output, changed, indexed, &coverage)?;
         crate::output::json::emit(&output)?;
     } else {
         println!(
             "{}",
-            "Security Policy Impact Analysis"
+            impact_title(changed)
                 .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().red()))
         );
+        println!(
+            "{}",
+            DECLARED_NOT_ENFORCED.if_supports_color(Stream::Stdout, |s| s.dimmed())
+        );
         let mut table = Table::new();
-        table.set_header(vec!["Policy ID", "Effect", "Changed?"]);
+        table.set_header(vec!["Policy", "Source", "Effect", "Changed?"]);
 
         let mut changed_count = 0usize;
         for item in &displayed {
@@ -249,7 +406,8 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
                 changed_count += 1;
             }
             table.add_row(vec![
-                item["id"].as_str().unwrap_or("").to_string(),
+                item["label"].as_str().unwrap_or("").to_string(),
+                item["source_file"].as_str().unwrap_or_default().to_string(),
                 item["effect"].as_str().unwrap_or_default().to_string(),
                 if is_changed {
                     "YES"
@@ -277,7 +435,7 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
             );
         } else {
             println!(
-                "  {} policies evaluated, {} changed by this diff",
+                "  {} indexed policies (inventory); {} changed by this diff.",
                 indexed
                     .to_string()
                     .if_supports_color(Stream::Stdout, |s| s.bold()),
@@ -493,8 +651,12 @@ fn execute_boundaries(
                 },
             })
         };
+        let policies = complete_policy_count(cozo)?;
+        let coverage = security_coverage(cozo, &boundary_edges, policies)?;
         if let Some(map) = json_out.as_object_mut() {
             map.insert("pdp".to_string(), serde_json::json!(false));
+            map.insert("authorization".to_string(), serde_json::json!("declared"));
+            map.insert("coverage".to_string(), coverage_json(&coverage)?);
         }
         crate::output::json::emit(&json_out)?;
     } else if auth_nodes.is_empty() {
@@ -591,6 +753,15 @@ fn execute_boundaries(
             println!("{}", boundary_table);
         }
 
+        let policies = complete_policy_count(cozo)?;
+        let coverage = security_coverage(cozo, &boundary_edges, policies)?;
+        println!(
+            "  Declared coverage: {} unique endpoint targets of {} cross-surface links; {} indexed endpoint nodes. Not all HTTP routes have a Cedar permit.",
+            coverage.linked_endpoints,
+            boundary_edges.len(),
+            coverage.indexed_endpoints
+        );
+
         if verbose {
             println!(
                 "\n{} ({} total)",
@@ -646,7 +817,157 @@ pub fn execute_security(args: SecurityArgs) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
-    use super::urn_table_from_args;
+    use super::{
+        COVERAGE_LIMITATION, SecurityCoverage, coverage_json, impact_policy_item, impact_title,
+        linked_endpoint_count, urn_table_from_args,
+    };
+    use clap::CommandFactory;
+
+    #[test]
+    fn security_impact_clap_about_is_inventory() {
+        let cmd = crate::cli::args::Cli::command();
+        let security = cmd
+            .get_subcommands()
+            .find(|c| c.get_name() == "security")
+            .expect("security subcommand");
+        let impact = security
+            .get_subcommands()
+            .find(|c| c.get_name() == "impact")
+            .expect("impact subcommand");
+        let about = impact
+            .get_about()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        assert!(
+            about.to_lowercase().contains("inventory"),
+            "Impact about must describe inventory, got: {about}"
+        );
+        assert!(
+            about.contains("changed"),
+            "Impact about must mention --changed, got: {about}"
+        );
+        assert!(
+            !about.contains("Show security impact of recent changes"),
+            "old Impact about must be gone, got: {about}"
+        );
+    }
+
+    #[test]
+    fn security_impact_titles_never_say_analysis() {
+        assert_eq!(impact_title(false), "Security Policy Inventory");
+        assert_eq!(impact_title(true), "Security Policy Impact");
+        assert!(!impact_title(false).contains("Analysis"));
+        assert!(!impact_title(true).contains("Analysis"));
+    }
+
+    #[test]
+    fn security_impact_declared_action_omitted_when_unparsable() {
+        let item = impact_policy_item(
+            "urn:ledgerful:policy:test",
+            "Policy: permit 0",
+            "permit(principal, action, resource);",
+            "permit",
+            "policies/unconstrained.cedar",
+            false,
+        );
+        assert!(
+            item.get("declaredAction").is_none(),
+            "unparsable raw must omit declaredAction, got: {item}"
+        );
+        assert_eq!(item["enforcement"], "none");
+        assert_eq!(item["label"], "Policy: permit 0");
+    }
+
+    #[test]
+    fn security_impact_declared_action_from_raw_only() {
+        let item = impact_policy_item(
+            "urn:ledgerful:policy:status",
+            "Policy: permit 0",
+            r#"@id("route_get_api_status")
+permit (
+    principal,
+    action == Action::"GET /api/status",
+    resource
+);"#,
+            "permit",
+            "policies/daemon-api.cedar",
+            false,
+        );
+        assert_eq!(item["declaredAction"], "GET /api/status");
+        assert_eq!(item["label"], "route_get_api_status");
+        assert_eq!(item["id"], "urn:ledgerful:policy:status");
+    }
+
+    #[test]
+    fn linked_endpoint_count_excludes_non_endpoint_protected_by() {
+        let edges = vec![
+            serde_json::json!({
+                "relation": "protected_by",
+                "target_category": "endpoint",
+                "target_id": "urn:ledgerful:endpoint:GET:/status",
+            }),
+            serde_json::json!({
+                "relation": "protected_by",
+                "target_category": "endpoint",
+                "target_id": "urn:ledgerful:endpoint:GET:/status",
+            }),
+            serde_json::json!({
+                "relation": "protected_by",
+                "target_category": "service",
+                "target_id": "urn:ledgerful:service:daemon",
+            }),
+            serde_json::json!({
+                "relation": "protected_by",
+                "target_category": "deploy_surface",
+                "target_id": "urn:ledgerful:deploy:local",
+            }),
+            serde_json::json!({
+                "relation": "related_to",
+                "target_category": "endpoint",
+                "target_id": "urn:ledgerful:endpoint:GET:/other",
+            }),
+        ];
+        assert_eq!(linked_endpoint_count(&edges), 1);
+    }
+
+    #[test]
+    fn security_coverage_serde_is_camel_case() {
+        let coverage = SecurityCoverage {
+            policies: 8,
+            linked_endpoints: 3,
+            indexed_endpoints: 12,
+            limitation: COVERAGE_LIMITATION.to_string(),
+        };
+        let v = coverage_json(&coverage).expect("serialize coverage");
+        assert_eq!(v["policies"], 8);
+        assert_eq!(v["linkedEndpoints"], 3);
+        assert_eq!(v["indexedEndpoints"], 12);
+        assert_eq!(v["limitation"], COVERAGE_LIMITATION);
+        assert!(v.get("linked_endpoints").is_none());
+        assert!(
+            !COVERAGE_LIMITATION.contains("0186"),
+            "limitation must stay repo-general"
+        );
+    }
+
+    #[test]
+    fn security_coverage_cozo_err_is_hard() {
+        let cozo = crate::state::storage_cozo::CozoStorage::new_in_memory_bare()
+            .expect("bare in-memory Cozo");
+        let err = super::endpoint_node_count(&cozo).expect_err("bare db has no node relation");
+        assert!(
+            !err.to_string().is_empty(),
+            "probe failure must be a hard error"
+        );
+        assert!(
+            super::complete_policy_count(&cozo).is_err(),
+            "complete_policy_count must not silent-zero on probe failure"
+        );
+        assert!(
+            super::security_coverage(&cozo, &[], 0).is_err(),
+            "security_coverage must propagate Cozo probe Err"
+        );
+    }
 
     #[test]
     fn urn_table_only_when_verbose_follows_boundaries() {
