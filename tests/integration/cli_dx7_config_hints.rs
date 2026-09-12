@@ -137,6 +137,14 @@ fn deploy_disabled_globally_emits_two_key_hint() {
         msg.contains("not change"),
         "should not suggest reindexing: {msg}"
     );
+    assert!(
+        !msg.starts_with("No deployment impact detected"),
+        "disabled global must not lead with no-impact: {msg}"
+    );
+    assert!(
+        !msg.starts_with(' '),
+        "deploy empty message must not embed leading spaces: {msg:?}"
+    );
 }
 
 #[test]
@@ -160,6 +168,14 @@ fn deploy_disabled_for_deploy_specifically_emits_one_key_hint() {
     assert!(
         !msg.contains("coverage.enabled = false"),
         "should not blame global gate when only deploy is disabled: {msg}"
+    );
+    assert!(
+        !msg.starts_with("No deployment impact detected"),
+        "disabled deploy section must not lead with no-impact: {msg}"
+    );
+    assert!(
+        !msg.starts_with(' '),
+        "deploy empty message must not embed leading spaces: {msg:?}"
     );
 }
 

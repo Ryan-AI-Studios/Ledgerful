@@ -63,7 +63,7 @@ on stderr.
 | `audit --json` | yes | yes | Bare `ProjectAuditReport` object, **no** `schemaVersion`. Additive `completeness` (0308) sibling of `hotspots` when the walk stops early or history `Err` (`stop=error` omits `commitsWalked`). `churn[].entity` is a unique file path; `count` is distinct LOCAL TXs. `--timeout` bounds the walk. Not Daily 5 |
 | `surfaces --json` | yes (0185) | yes | schemaVersion 1 object `kind: "surfaces"`. Item keys `id`/`name`/`command`/`status`/`gate`/`reason`/`next` stay. Additive `sessionNotices` object (0300; skip empty): notice id → `"already_shown"`. `next` strings stay on later emits |
 | `services list --json` / `services diff --json` | yes | yes | schemaVersion 1 object, collection `results`. Gated empty keeps `emptyReason`/`message`. Additive `sessionNotices` (0300; skip empty) |
-| `deploy impact --json` | yes | yes | schemaVersion 1 object, collection `results`. Gated empty keeps `emptyReason`/`message`. Additive `sessionNotices` (0300; skip empty). Flag is on `impact`, not parent `deploy` |
+| `deploy impact --json` | yes | yes | schemaVersion 1 object, collection `results`. Gated empty keeps `emptyReason`/`message`. Disabled `message` must **not** start with “No deployment impact detected.” (that sentence is enabled `noMatches` only). Additive `sessionNotices` (0300; skip empty). Flag is on `impact`, not parent `deploy` |
 | `observability coverage --json` | yes | yes | schemaVersion 1 object, collection `results`. Empty keeps `emptyReason`/`message`. Additive `sessionNotices` (0300; skip empty). `observability diff` does **not** participate |
 
 \* Non-essential progress INFO suppressed under machine mode; hard failures still

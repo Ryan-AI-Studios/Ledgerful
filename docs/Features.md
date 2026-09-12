@@ -37,7 +37,13 @@ Understand the "blast radius" of any change before it is committed.
     *   **Complexity**: Cognitive and cyclomatic complexity hotspots.
     *   **Contracts**: OpenAPI/Swagger contract risk matching.
     *   **Infrastructure**: Docker, Kubernetes, Terraform, and Helm manifest awareness.
+        `deploy impact` disabled-by-config empty states name the coverage switch
+        and do not lead with “No deployment impact detected.”
     *   **Observability**: Trace config drift and SDK dependency detection.
+        Coverage inventory reads repo-root `observability/` OpenSLO
+        (`kind: Service` + matching SLO, or `[services]`) after
+        `index --analyze-graph`.
+        Coverage stays opt-in; do not enable it on this engine tree to “see” data.
     *   **Affected HTTP flows (0118)**: Change-set `affectedFlows` over indexed route
         registrations (handler symbol / impl file / registration file / optional blast
         edges). Surfaces: impact, change-context, `scan --pr`, and

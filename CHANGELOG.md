@@ -26,6 +26,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Advanced-surface honesty (0324):** Disabled `deploy impact` empty
+  copy leads with the coverage switch, not “No deployment impact
+  detected.” (`emptyReason` stays `disabledByConfig`). Catalog child
+  rows and `configure --apply a,b` clap split stay pinned. Isolated
+  fixtures prove a populated `services diff` after fixture-only
+  coverage + `index --analyze-graph`. Observability inputs stay
+  repo-root `observability/` OpenSLO (`kind: Service` + SLO).
+  Coverage default remains off.
+
 - **Config evidence and schema UX (0323):** `config verify` rows with a
   `toml_key` get additive omit-empty `origin` / `location` from on-disk
   TOML presence (`source` follows presence; derived rows omit both).

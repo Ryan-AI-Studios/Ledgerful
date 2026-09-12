@@ -263,8 +263,8 @@ pub fn deploy_empty_state_message(config: &crate::config::model::Config) -> (Emp
         (
             EmptyReason::DisabledByConfig,
             format!(
-                "No deployment impact detected. Deploy manifest detection is disabled by the \
-                 global `coverage.enabled = false` switch in `.ledgerful/config.toml` -- \
+                "Deploy manifest detection is disabled by the global \
+                 `coverage.enabled = false` switch in `.ledgerful/config.toml` -- \
                  reindexing will not change this. {hint}"
             ),
         )
@@ -273,7 +273,7 @@ pub fn deploy_empty_state_message(config: &crate::config::model::Config) -> (Emp
         (
             EmptyReason::DisabledByConfig,
             format!(
-                "No deployment impact detected. Deploy manifest detection is disabled by \
+                "Deploy manifest detection is disabled by \
                  `coverage.deploy.enabled = false` in `.ledgerful/config.toml` -- reindexing \
                  will not change this. {hint}"
             ),
