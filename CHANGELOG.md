@@ -26,6 +26,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Dead-code scoring leftovers (0314):** `is_reexport` / `is_standard_trait` /
+  `derive_penalty` never ran after callable-only scoring. Removed those
+  filters and the comments that still claimed they suppress Type/Struct.
+  `--include-traits` stays on CLI/JSON echo.
+
 - **Verify diagnostic `--json` (0321):** the five former refuses for
   `--json` + `--health` / `--dry-run` / `--signatures` / `--chain` /
   `--against-export` become the three kinds above. Executed

@@ -61,11 +61,7 @@ pub(crate) fn human_factor_label(fac: &ConfidenceFactor) -> &'static str {
     }
 }
 
-pub fn print_dead_code_summary(
-    findings: &[DeadCodeFinding],
-    _threshold: f64,
-    include_traits: bool,
-) {
+pub fn print_dead_code_summary(findings: &[DeadCodeFinding], _threshold: f64) {
     println!(
         "\n{}",
         "Dead Code Analysis".if_supports_color(Stream::Stdout, |s| s.bold())
@@ -96,13 +92,6 @@ pub fn print_dead_code_summary(
     }
     // 0100 Option 1: honest-ceiling footer (title kept; not proof of dead code).
     println!("  {DEAD_CODE_HONESTY_FOOTER}");
-
-    // DX4: the broad `HINT: Derived traits ...` warning was removed because
-    // derive-based and standard-trait false positives are now suppressed
-    // structurally (derive penalty in `dead_code::filters::derive_penalty`
-    // and the `is_standard_trait` filter from CG-F6). The `--include-traits`
-    // flag's own help text in `args.rs` remains as user documentation.
-    let _ = include_traits;
 }
 
 pub fn print_dead_code_grouped(findings: &[DeadCodeFinding]) {

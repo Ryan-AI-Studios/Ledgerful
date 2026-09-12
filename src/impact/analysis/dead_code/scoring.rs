@@ -1,9 +1,9 @@
 use super::*;
 
 impl<'a> ConfidenceScorer<'a> {
-    /// Score a single symbol. Returns `None` if the symbol is an entrypoint itself,
-    /// a standard trait (when `include_traits` is false), or if the final confidence
-    /// falls below the threshold after name-based penalties are applied.
+    /// Score a single symbol. Returns `None` if the symbol is an entrypoint,
+    /// not Function/Method, or if the final confidence falls below the
+    /// threshold after name-based penalties are applied.
     pub fn score_symbol(
         &self,
         symbol: &Symbol,
@@ -30,10 +30,6 @@ impl<'a> ConfidenceScorer<'a> {
             return Ok(None);
         }
 
-        if filters::is_reexport(symbol) {
-            return Ok(None);
-        }
-
         if omit_paths {
             let path_key = file_path.to_string_lossy().replace('\\', "/");
             if !self.include_tests && crate::index::test_mapping::is_test_path(&path_key) {
@@ -46,23 +42,13 @@ impl<'a> ConfidenceScorer<'a> {
             }
         }
 
-        if !self.include_traits && filters::is_standard_trait(symbol) {
-            return Ok(None);
-        }
-
         let reachability = self.reachability_score(symbol, file_path)?;
         let git_activity = self.git_activity_score(file_path)?;
         let test_coverage = self.test_coverage_score(symbol, file_path)?;
 
         let raw_confidence = self.blend(reachability, git_activity, test_coverage);
         let penalty = filters::name_penalty(&symbol.name);
-        // DX4: apply the derive-based penalty for Struct/Enum symbols that
-        // carry an implicit-usage `#[derive(...)]` trait (serde, Debug, etc.).
-        // Applied after the name penalty and before the threshold gate, and
-        // deliberately independent of `include_traits` (that flag governs
-        // *explicit* trait impls, which CG-F6 handles via `is_standard_trait`).
-        let derive_penalty = filters::derive_penalty(symbol);
-        let confidence = (raw_confidence - penalty - derive_penalty).max(0.0);
+        let confidence = (raw_confidence - penalty).max(0.0);
 
         if confidence < self.config.confidence_threshold {
             return Ok(None);

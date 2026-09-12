@@ -255,7 +255,7 @@ pub fn execute_dead_code_with_prompt(
     display_findings.truncate(limit);
 
     if expand || prune {
-        crate::output::human::print_dead_code_summary(&display_findings, threshold, include_traits);
+        crate::output::human::print_dead_code_summary(&display_findings, threshold);
     } else {
         crate::output::human::print_dead_code_grouped(&display_findings);
     }
