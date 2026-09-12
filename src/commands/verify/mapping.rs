@@ -1,3 +1,20 @@
+/// One mapped test with stored kind + location (0321).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MappedTest {
+    /// Compat `"path::symbol"` string.
+    pub test: String,
+    /// Stored `mapping_kind`: `IMPORT` | `SAME_FILE` | `NAMING_CONVENTION`.
+    pub kind: String,
+    pub file: String,
+    pub symbol: String,
+}
+
+impl MappedTest {
+    pub fn display_line(&self) -> String {
+        format!("{} ({})", self.test, self.kind)
+    }
+}
+
 /// Distinct absence/presence states for `verify --explain --entity`, so the
 /// CLI can tell "feature is empty here" apart from "feature is broken".
 #[derive(Debug, PartialEq, Eq)]
@@ -19,9 +36,9 @@ pub enum TestMappingState {
         /// Stored `project_files.file_path` when resolved via a file path.
         resolved_path: Option<String>,
     },
-    /// Mapped tests, formatted as `"<test file path>::<test symbol name>"`.
+    /// Mapped tests with kind + location (compat `test` stays `"path::symbol"`).
     Mapped {
-        tests: Vec<String>,
+        tests: Vec<MappedTest>,
         /// Stored `project_files.file_path` when resolved via a file path
         /// (`None` for pure symbol-name matches).
         resolved_path: Option<String>,
@@ -59,20 +76,20 @@ pub(crate) fn step_relevant_to_entity(
         || cmd.contains("check")
 }
 
-const MAPPED_TESTS_QUERY_BY_FILE: &str = "SELECT DISTINCT pf_test.file_path || '::' || ps_test.symbol_name \
+const MAPPED_TESTS_QUERY_BY_FILE: &str = "SELECT DISTINCT pf_test.file_path, ps_test.symbol_name, tm.mapping_kind \
      FROM test_mapping tm \
      JOIN project_symbols ps_test ON tm.test_symbol_id = ps_test.id \
      JOIN project_files pf_test ON tm.test_file_id = pf_test.id \
      WHERE tm.tested_file_id = ?1 \
-     ORDER BY 1";
+     ORDER BY pf_test.file_path, ps_test.symbol_name, tm.mapping_kind";
 
-const MAPPED_TESTS_QUERY_BY_SYMBOL: &str = "SELECT DISTINCT pf_test.file_path || '::' || ps_test.symbol_name \
+const MAPPED_TESTS_QUERY_BY_SYMBOL: &str = "SELECT DISTINCT pf_test.file_path, ps_test.symbol_name, tm.mapping_kind \
      FROM test_mapping tm \
      JOIN project_symbols ps_test ON tm.test_symbol_id = ps_test.id \
      JOIN project_files pf_test ON tm.test_file_id = pf_test.id \
      JOIN project_symbols ps_tested ON tm.tested_symbol_id = ps_tested.id \
      WHERE ps_tested.symbol_name = ?1 \
-     ORDER BY 1";
+     ORDER BY pf_test.file_path, ps_test.symbol_name, tm.mapping_kind";
 
 /// Outcome of path/symbol resolution before mapping lookup.
 #[derive(Debug, PartialEq, Eq)]
@@ -138,20 +155,32 @@ fn resolve_tested_entity(conn: &rusqlite::Connection, normalized: &str) -> Resol
     ResolvedEntity::NotFound
 }
 
-fn query_mapped_tests_by_file(conn: &rusqlite::Connection, file_id: i64) -> Vec<String> {
+fn mapped_test_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<MappedTest> {
+    let file: String = row.get(0)?;
+    let symbol: String = row.get(1)?;
+    let kind: String = row.get::<_, Option<String>>(2)?.unwrap_or_default();
+    Ok(MappedTest {
+        test: format!("{file}::{symbol}"),
+        kind,
+        file,
+        symbol,
+    })
+}
+
+fn query_mapped_tests_by_file(conn: &rusqlite::Connection, file_id: i64) -> Vec<MappedTest> {
     conn.prepare(MAPPED_TESTS_QUERY_BY_FILE)
         .and_then(|mut s| {
-            s.query_map([file_id], |row| row.get(0))
-                .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<String>>())
+            s.query_map([file_id], mapped_test_from_row)
+                .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<MappedTest>>())
         })
         .unwrap_or_default()
 }
 
-fn query_mapped_tests_by_symbol(conn: &rusqlite::Connection, name: &str) -> Vec<String> {
+fn query_mapped_tests_by_symbol(conn: &rusqlite::Connection, name: &str) -> Vec<MappedTest> {
     conn.prepare(MAPPED_TESTS_QUERY_BY_SYMBOL)
         .and_then(|mut s| {
-            s.query_map([name], |row| row.get(0))
-                .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<String>>())
+            s.query_map([name], mapped_test_from_row)
+                .map(|rows| rows.filter_map(|r| r.ok()).collect::<Vec<MappedTest>>())
         })
         .unwrap_or_default()
 }
@@ -260,6 +289,20 @@ mod entity_path_resolution_tests {
         ));
     }
 
+    #[test]
+    fn mapped_test_display_line_includes_kind() {
+        let mapped = super::MappedTest {
+            test: "src/index/test_mapping.rs::is_test".into(),
+            kind: "SAME_FILE".into(),
+            file: "src/index/test_mapping.rs".into(),
+            symbol: "is_test".into(),
+        };
+        assert_eq!(
+            mapped.display_line(),
+            "src/index/test_mapping.rs::is_test (SAME_FILE)"
+        );
+    }
+
     /// Display cap helper contract for Ambiguous lists (DoD-3 / L2 data side).
     #[test]
     fn ambiguous_display_cap_shows_and_n_more_when_over_10() {
@@ -270,5 +313,61 @@ mod entity_path_resolution_tests {
         assert_eq!(more, 1);
         let line = format!("… and {} more", more);
         assert_eq!(line, "… and 1 more");
+    }
+}
+
+#[cfg(test)]
+mod mapping_kind_sql_tests {
+    use super::{MappedTest, TestMappingState, explain_test_mappings};
+    use crate::state::migrations::get_migrations;
+    use rusqlite::Connection;
+
+    #[test]
+    fn explain_selects_mapping_kind_file_and_symbol() {
+        let mut conn = Connection::open_in_memory().unwrap();
+        get_migrations().to_latest(&mut conn).unwrap();
+        conn.execute(
+            "INSERT INTO project_files (id, file_path, last_indexed_at) VALUES (1, 'src/lib.rs', 't')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_files (id, file_path, last_indexed_at) VALUES (2, 'tests/lib_test.rs', 't')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_symbols (id, file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at)
+             VALUES (1, 1, 'lib', 'lib_fn', 'Function', 't')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_symbols (id, file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at)
+             VALUES (2, 2, 'test_lib', 'test_lib_fn', 'Function', 't')",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id, mapping_kind, last_indexed_at)
+             VALUES (2, 2, 1, 1, 'NAMING_CONVENTION', 't')",
+            [],
+        )
+        .unwrap();
+
+        match explain_test_mappings(&conn, "src/lib.rs") {
+            TestMappingState::Mapped { tests, .. } => {
+                assert_eq!(
+                    tests,
+                    vec![MappedTest {
+                        test: "tests/lib_test.rs::test_lib_fn".into(),
+                        kind: "NAMING_CONVENTION".into(),
+                        file: "tests/lib_test.rs".into(),
+                        symbol: "test_lib_fn".into(),
+                    }]
+                );
+            }
+            other => panic!("expected Mapped, got {other:?}"),
+        }
     }
 }

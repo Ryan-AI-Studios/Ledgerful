@@ -9,6 +9,39 @@ use crate::ledger::types::{ChainHead, LedgerEntry};
 use miette::Result;
 use std::path::Path;
 
+/// Non-error checkpoint outcome for `verify --json` (0321).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CheckpointResultKind {
+    Match,
+    Extends,
+    Diverges,
+    ExactMismatch,
+    ExportSigInvalid,
+}
+
+impl CheckpointResultKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Match => "match",
+            Self::Extends => "extends",
+            Self::Diverges => "diverges",
+            Self::ExactMismatch => "exactMismatch",
+            Self::ExportSigInvalid => "exportSigInvalid",
+        }
+    }
+
+    pub fn is_match(self) -> bool {
+        matches!(self, Self::Match)
+    }
+
+    /// JSON/human pass: live equals or cleanly extends the export.
+    /// Fail kinds are `diverges` / `exactMismatch` / `exportSigInvalid`.
+    pub fn is_pass(self) -> bool {
+        matches!(self, Self::Match | Self::Extends)
+    }
+}
+
 /// Comparison mode for `verify --against-export`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum CheckpointMode {
@@ -125,16 +158,29 @@ pub fn compare_against_export(
     export_head: &ChainHead,
     mode: CheckpointMode,
 ) -> Result<()> {
-    // Genesis must match in both modes.
+    match classify_against_export(ordered_local, local_head, export_head, mode) {
+        Ok(_) => Ok(()),
+        Err((_, msg)) => Err(miette::miette!("{}", msg)),
+    }
+}
+
+/// Map checkpoint compare to a result kind (0321). `Ok` is `match` or `extends`.
+pub fn classify_against_export(
+    ordered_local: &[&LedgerEntry],
+    local_head: &ChainHead,
+    export_head: &ChainHead,
+    mode: CheckpointMode,
+) -> std::result::Result<CheckpointResultKind, (CheckpointResultKind, String)> {
     if local_head.genesis != export_head.genesis {
-        return Err(miette::miette!(
-            "Live chain genesis {} does not match exported genesis {}.",
-            local_head.genesis,
-            export_head.genesis
+        return Err((
+            CheckpointResultKind::Diverges,
+            format!(
+                "Live chain genesis {} does not match exported genesis {}.",
+                local_head.genesis, export_head.genesis
+            ),
         ));
     }
 
-    // Export head signature: fail-closed when sig+pub present; soft-note if unsigned.
     let export_sig = export_head.head_signature.as_deref().unwrap_or("");
     let export_pub = export_head.head_public_key.as_deref().unwrap_or("");
     if export_sig.is_empty() || export_pub.is_empty() {
@@ -149,74 +195,98 @@ pub fn compare_against_export(
         export_sig,
         export_pub,
     ) {
-        return Err(miette::miette!(
-            "Exported chain head signature verification failed."
+        return Err((
+            CheckpointResultKind::ExportSigInvalid,
+            "Exported chain head signature verification failed.".to_string(),
         ));
     }
 
     match mode {
-        CheckpointMode::Exact => compare_exact(local_head, export_head),
-        CheckpointMode::Checkpoint => compare_checkpoint(ordered_local, export_head),
+        CheckpointMode::Exact => classify_exact(local_head, export_head),
+        CheckpointMode::Checkpoint => classify_checkpoint(ordered_local, export_head),
     }
 }
 
-fn compare_exact(local_head: &ChainHead, export_head: &ChainHead) -> Result<()> {
+fn classify_exact(
+    local_head: &ChainHead,
+    export_head: &ChainHead,
+) -> std::result::Result<CheckpointResultKind, (CheckpointResultKind, String)> {
     if local_head.latest_entry_hash != export_head.latest_entry_hash {
-        return Err(miette::miette!(
-            "Live chain head {} does not match exported head {} (exact mode: snapshot equality required).",
-            local_head.latest_entry_hash,
-            export_head.latest_entry_hash
+        return Err((
+            CheckpointResultKind::ExactMismatch,
+            format!(
+                "Live chain head {} does not match exported head {} (exact mode: snapshot equality required).",
+                local_head.latest_entry_hash, export_head.latest_entry_hash
+            ),
         ));
     }
     if local_head.length != export_head.length {
-        return Err(miette::miette!(
-            "Live chain length {} does not match exported length {} (exact mode: snapshot equality required).",
-            local_head.length,
-            export_head.length
+        return Err((
+            CheckpointResultKind::ExactMismatch,
+            format!(
+                "Live chain length {} does not match exported length {} (exact mode: snapshot equality required).",
+                local_head.length, export_head.length
+            ),
         ));
     }
-    Ok(())
+    Ok(CheckpointResultKind::Match)
 }
 
-fn compare_checkpoint(ordered_local: &[&LedgerEntry], export_head: &ChainHead) -> Result<()> {
+fn classify_checkpoint(
+    ordered_local: &[&LedgerEntry],
+    export_head: &ChainHead,
+) -> std::result::Result<CheckpointResultKind, (CheckpointResultKind, String)> {
     let k = export_head.length;
     if k < 0 {
-        return Err(miette::miette!(
-            "Exported chain head has invalid length {}.",
-            k
+        return Err((
+            CheckpointResultKind::Diverges,
+            format!("Exported chain head has invalid length {}.", k),
         ));
     }
     let k_usize = k as usize;
     if ordered_local.len() < k_usize {
-        return Err(miette::miette!(
-            "Local chain has {} linked entries but export requires length {} (rollback/tail-truncation detected).",
-            ordered_local.len(),
-            k
+        return Err((
+            CheckpointResultKind::Diverges,
+            format!(
+                "Local chain has {} linked entries but export requires length {} (rollback/tail-truncation detected).",
+                ordered_local.len(),
+                k
+            ),
         ));
     }
     if k_usize == 0 {
-        // Empty export head: nothing to prefix-match.
-        return Ok(());
+        return if ordered_local.is_empty() {
+            Ok(CheckpointResultKind::Match)
+        } else {
+            Ok(CheckpointResultKind::Extends)
+        };
     }
 
     let entry_at_k = ordered_local[k_usize - 1];
     let hash_at_k = compute_entry_hash_for_entry(entry_at_k).map_err(|e| {
-        miette::miette!(
-            "Failed to compute entry hash at checkpoint position {} (TX {}): {e}",
-            k,
-            entry_at_k.tx_id
+        (
+            CheckpointResultKind::Diverges,
+            format!(
+                "Failed to compute entry hash at checkpoint position {} (TX {}): {e}",
+                k, entry_at_k.tx_id
+            ),
         )
     })?;
 
     if hash_at_k != export_head.latest_entry_hash {
-        return Err(miette::miette!(
-            "Chain fork/rewrite at checkpoint position {}: local entry hash {} does not match exported latest_entry_hash {} (not a clean extension of the retained head).",
-            k,
-            hash_at_k,
-            export_head.latest_entry_hash
+        return Err((
+            CheckpointResultKind::Diverges,
+            format!(
+                "Chain fork/rewrite at checkpoint position {}: local entry hash {} does not match exported latest_entry_hash {} (not a clean extension of the retained head).",
+                k, hash_at_k, export_head.latest_entry_hash
+            ),
         ));
     }
-    Ok(())
+    if ordered_local.len() > k_usize {
+        Ok(CheckpointResultKind::Extends)
+    } else {
+        Ok(CheckpointResultKind::Match)
+    }
 }
 
 #[cfg(test)]
@@ -301,6 +371,45 @@ mod tests {
         };
         compare_against_export(&ordered, &local, &export, CheckpointMode::Checkpoint)
             .expect("advance past checkpoint must pass");
+    }
+
+    #[test]
+    fn is_pass_treats_extends_as_success() {
+        assert!(CheckpointResultKind::Match.is_pass());
+        assert!(CheckpointResultKind::Extends.is_pass());
+        assert!(!CheckpointResultKind::Diverges.is_pass());
+        assert!(!CheckpointResultKind::ExactMismatch.is_pass());
+        assert!(!CheckpointResultKind::ExportSigInvalid.is_pass());
+        assert!(CheckpointResultKind::Match.is_match());
+        assert!(!CheckpointResultKind::Extends.is_match());
+    }
+
+    #[test]
+    fn classify_checkpoint_advance_is_extends() {
+        let a = entry("tx1", None, "2026-07-11T10:00:00Z");
+        let a_hash = compute_entry_hash_for_entry(&a).expect("hash");
+        let b = entry("tx2", Some(&a_hash), "2026-07-11T10:00:01Z");
+        let entries = [a, b];
+        let ordered = ordered_local_for_head(&entries);
+        let export = ChainHead {
+            latest_entry_hash: a_hash,
+            genesis: "2026-07-11T10:00:00Z".into(),
+            length: 1,
+            head_signature: None,
+            head_public_key: None,
+            updated_at: "2026-07-11T10:00:00Z".into(),
+        };
+        let local = ChainHead {
+            latest_entry_hash: compute_entry_hash_for_entry(ordered[1]).expect("hash"),
+            genesis: export.genesis.clone(),
+            length: 2,
+            head_signature: None,
+            head_public_key: None,
+            updated_at: "2026-07-11T10:00:01Z".into(),
+        };
+        let kind = classify_against_export(&ordered, &local, &export, CheckpointMode::Checkpoint)
+            .expect("extends");
+        assert_eq!(kind, CheckpointResultKind::Extends);
     }
 
     #[test]

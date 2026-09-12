@@ -1,5 +1,5 @@
 use crate::cli::args::VerifyArgs;
-use crate::commands::verify::ExecuteVerifyOpts;
+use crate::commands::verify::{ExecuteVerifyOpts, refuse_mixed_verify_diagnostics};
 use miette::Result;
 
 pub(super) fn dispatch_verify(
@@ -31,12 +31,10 @@ pub(super) fn dispatch_verify(
             "--exact requires --against-export <path> (snapshot equality against a retained head)"
         ));
     }
+    // Mix reject first so `--json --health --signatures` never reaches execute
+    // or the signatures walk (0321).
+    refuse_mixed_verify_diagnostics(health, dry_run, signatures, chain, against_export.is_some())?;
     if signatures || chain || against_export.is_some() {
-        if json {
-            return Err(miette::miette!(
-                "verify --json cannot be combined with --signatures, --chain, or --against-export"
-            ));
-        }
         crate::commands::verify::verify_ledger_signatures_with_options(
             layout,
             signatures,
@@ -44,6 +42,7 @@ pub(super) fn dispatch_verify(
             strict_signatures,
             against_export.as_deref(),
             exact,
+            json,
         )
     } else {
         crate::commands::verify::execute_verify(ExecuteVerifyOpts {
@@ -61,5 +60,37 @@ pub(super) fn dispatch_verify(
             json,
             verbose,
         })
+    }
+}
+
+#[cfg(test)]
+mod dispatch_verify_mix_tests {
+    use crate::commands::verify::refuse_mixed_verify_diagnostics;
+
+    #[test]
+    fn dispatch_verify_json_health_signatures_refuses_here() {
+        let err = refuse_mixed_verify_diagnostics(true, false, true, false, false)
+            .expect_err("health+signatures");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("--health") && msg.contains("--signatures"),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn dispatch_verify_json_dry_run_chain_refuses_here() {
+        let err = refuse_mixed_verify_diagnostics(false, true, false, true, false)
+            .expect_err("dry-run+chain");
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("--dry-run") && (msg.contains("--chain") || msg.contains("signatures")),
+            "{msg}"
+        );
+    }
+
+    #[test]
+    fn dispatch_verify_health_dry_run_refuses_here() {
+        assert!(refuse_mixed_verify_diagnostics(true, true, false, false, false).is_err());
     }
 }

@@ -3,6 +3,11 @@ use crate::verify::suggestions::query_ledger_status;
 use miette::Result;
 use owo_colors::{OwoColorize, Stream, Style};
 
+use super::diagnostic::{
+    VerifyHealthJson, VerifyHealthLedgerJson, VerifyHealthRunnerJson, VerifyHealthToolJson,
+    diagnostic_schema_version, verify_health_kind,
+};
+
 /// Fast health check that only probes executable availability and basic ledger
 /// state, skipping OutcomePredictor::predict and full plan building entirely.
 /// Returns within a bounded time (<5s on normal machines).
@@ -133,6 +138,110 @@ pub(crate) fn execute_verify_health(
         Err(miette::miette!(
             "Verification health check failed: some executables are missing."
         ))
+    }
+}
+
+/// Machine `--json --health` envelope (0321). Ledger notes do not flip `ok`.
+pub(crate) fn emit_verify_health_json(
+    layout: &Layout,
+    config: &crate::config::model::Config,
+) -> Result<()> {
+    let payload = collect_verify_health_json(layout, config);
+    println!("{}", payload.to_json_string()?);
+    if payload.ok {
+        Ok(())
+    } else {
+        Err(miette::miette!(
+            "Verification health check failed: some executables are missing."
+        ))
+    }
+}
+
+fn collect_verify_health_json(
+    layout: &Layout,
+    config: &crate::config::model::Config,
+) -> VerifyHealthJson {
+    let profile = crate::platform::repository::detect_repository(layout.root.as_std_path());
+    let empty_packet = crate::impact::packet::ImpactPacket::default();
+    let rules = crate::policy::load::load_rules(layout).unwrap_or_default();
+    let effective_plan = crate::verify::plan::build_plan(
+        &empty_packet,
+        &rules,
+        &[],
+        &config.verify,
+        &profile,
+        layout.root.as_std_path(),
+    );
+
+    let mut expected_tools = std::collections::HashSet::new();
+    for step in &effective_plan.steps {
+        expected_tools.insert(extract_executable(&step.command).to_string());
+    }
+    let prefer_nextest = config.verify.prefer_nextest.unwrap_or(false);
+    if profile.rust.is_some() && prefer_nextest {
+        expected_tools.insert("cargo-nextest".to_string());
+    }
+
+    let mut tools: Vec<VerifyHealthToolJson> = expected_tools
+        .into_iter()
+        .map(|name| {
+            let available = check_executable_exists(&name);
+            let hint = if available {
+                None
+            } else {
+                let h = match name.as_str() {
+                    "cargo-nextest" => "install with `cargo install cargo-nextest`",
+                    "cargo" => "install Rust toolchain",
+                    "npm" => "install Node.js",
+                    "pnpm" => "install pnpm",
+                    "yarn" => "install yarn",
+                    "bun" => "install Bun",
+                    "deno" => "install Deno",
+                    _ => "",
+                };
+                if h.is_empty() {
+                    None
+                } else {
+                    Some(h.to_string())
+                }
+            };
+            VerifyHealthToolJson {
+                name,
+                available,
+                hint,
+            }
+        })
+        .collect();
+    tools.sort_by(|a, b| a.name.cmp(&b.name));
+    let ok = tools.iter().all(|t| t.available);
+
+    let ledger_status = query_ledger_status(layout);
+    let ledger_clean = ledger_status.unaudited_count == 0
+        && !ledger_status.has_stale_pending
+        && !ledger_status.no_impact_report;
+    let nextest_available = check_executable_exists("cargo-nextest");
+    let selected = if nextest_available && prefer_nextest {
+        "nextest"
+    } else {
+        "cargoTest"
+    };
+
+    VerifyHealthJson {
+        schema_version: diagnostic_schema_version(),
+        kind: verify_health_kind(),
+        ok,
+        tools,
+        ledger: VerifyHealthLedgerJson {
+            clean: ledger_clean,
+            unaudited_count: ledger_status.unaudited_count,
+            stale_pending: ledger_status.has_stale_pending,
+            no_impact_report: ledger_status.no_impact_report,
+        },
+        runner: VerifyHealthRunnerJson {
+            selected: selected.to_string(),
+            nextest_available,
+            prefer_nextest,
+        },
     }
 }
 

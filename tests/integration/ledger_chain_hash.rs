@@ -171,7 +171,7 @@ fn chain__two_sequential_commits__linear_no_fork() {
 
     // The public API must report the chain as valid.
     let layout = Layout::new(root.as_str());
-    verify_ledger_signatures_with_options(&layout, true, true, false, None, false).unwrap();
+    verify_ledger_signatures_with_options(&layout, true, true, false, None, false, false).unwrap();
 }
 
 #[test]
@@ -230,8 +230,8 @@ fn chain__downgrade_deletes_head__verify_chain_fails_closed() {
     drop(conn);
 
     let layout = Layout::new(root.as_str());
-    let err =
-        verify_ledger_signatures_with_options(&layout, true, true, false, None, false).unwrap_err();
+    let err = verify_ledger_signatures_with_options(&layout, true, true, false, None, false, false)
+        .unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("downgrade") || msg.contains("No chain head") || msg.contains("missing"),
@@ -295,8 +295,8 @@ fn chain__delete_all_entries_leave_head__verify_chain_fails_orphan_head() {
     drop(conn);
 
     let layout = Layout::new(root.as_str());
-    let err =
-        verify_ledger_signatures_with_options(&layout, true, true, false, None, false).unwrap_err();
+    let err = verify_ledger_signatures_with_options(&layout, true, true, false, None, false, false)
+        .unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("Chain head exists but no ledger entries found"),
@@ -329,7 +329,7 @@ fn chain__pre_chain_entries_without_prev_hash__verify_chain_is_benign() {
     drop(conn);
 
     let layout = Layout::new(root.as_str());
-    verify_ledger_signatures_with_options(&layout, false, true, false, None, false)
+    verify_ledger_signatures_with_options(&layout, false, true, false, None, false, false)
         .expect("pre-chain ledger (no prev_hash, no head) must not report downgrade");
 }
 
@@ -422,6 +422,7 @@ fn chain__pre_chain_entries_without_prev_hash__against_export_of_same_ledger_pas
         false,
         Some(export_path.as_path()),
         false,
+        false,
     )
     .expect("verify --against-export must pass for pre-chain ledger matching its own export");
 }
@@ -482,8 +483,8 @@ fn chain__delete_middle_entry__verify_chain_fails_localized() {
     drop(conn);
 
     let layout = Layout::new(root.as_str());
-    let err =
-        verify_ledger_signatures_with_options(&layout, true, true, false, None, false).unwrap_err();
+    let err = verify_ledger_signatures_with_options(&layout, true, true, false, None, false, false)
+        .unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("Chain break")
@@ -556,8 +557,9 @@ fn chain__reorder_entries__verify_chain_fails() {
     let layout = Layout::new(root.as_str());
     // Reordering invalidates the per-entry signatures (basis includes
     // committed_at), so verify the chain linkage only, not the signatures.
-    let err = verify_ledger_signatures_with_options(&layout, false, true, false, None, false)
-        .unwrap_err();
+    let err =
+        verify_ledger_signatures_with_options(&layout, false, true, false, None, false, false)
+            .unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("Chain break")
@@ -630,8 +632,8 @@ fn chain__insert_unlinked_entry__verify_chain_fails() {
     drop(conn);
 
     let layout = Layout::new(root.as_str());
-    let err =
-        verify_ledger_signatures_with_options(&layout, true, true, false, None, false).unwrap_err();
+    let err = verify_ledger_signatures_with_options(&layout, true, true, false, None, false, false)
+        .unwrap_err();
     let msg = format!("{err}");
     assert!(
         msg.contains("Chain break")
@@ -818,6 +820,7 @@ fn chain__against_export_after_rollback__detects_rollback() {
         false,
         Some(export_path.as_path()),
         false,
+        false,
     )
     .unwrap_err();
     let msg = format!("{err}");
@@ -895,6 +898,7 @@ fn chain__against_export_missing_head_with_links__fails_closed_downgrade() {
         true,
         false,
         Some(export_path.as_path()),
+        false,
         false,
     )
     .unwrap_err();
@@ -978,6 +982,7 @@ fn chain__against_export_tail_deleted_with_head_unchanged__fails_local_truncatio
         false,
         Some(export_path.as_path()),
         false,
+        false,
     )
     .unwrap_err();
     let msg = format!("{err}");
@@ -1056,6 +1061,7 @@ fn chain__against_export_advance_past_checkpoint__passes() {
         false,
         Some(export_path.as_path()),
         false,
+        false,
     )
     .expect("checkpoint mode must pass when live chain advances past export");
 }
@@ -1086,6 +1092,7 @@ fn chain__against_export_exact_after_advance__fails() {
         false,
         Some(export_path.as_path()),
         true, // --exact
+        false,
     )
     .unwrap_err();
     let msg = format!("{err}");
@@ -1119,6 +1126,7 @@ fn chain__against_export_bare_json_path__works() {
         false,
         Some(json_path.as_path()),
         false,
+        false,
     )
     .expect("bare JSON chain_head must work with --against-export");
 }
@@ -1145,6 +1153,7 @@ fn chain__against_export_zip_path__still_works() {
         true,
         false,
         Some(export_path.as_path()),
+        false,
         false,
     )
     .expect("zip against-export must still work");
@@ -1213,6 +1222,7 @@ fn chain__against_export_fork_same_length__fails() {
         false,
         Some(export_path.as_path()),
         false,
+        false,
     )
     .unwrap_err();
     let msg = format!("{err}");
@@ -1239,13 +1249,29 @@ fn chain__export_head_round_trip__checkpoint_ok_exact_fails_after_advance() {
     let path = setup.dir.path().join("exported-head.json");
     std::fs::write(&path, serialize_chain_head(&head).unwrap()).unwrap();
 
-    verify_ledger_signatures_with_options(&layout, true, true, false, Some(path.as_path()), false)
-        .expect("same DB against export head must pass");
+    verify_ledger_signatures_with_options(
+        &layout,
+        true,
+        true,
+        false,
+        Some(path.as_path()),
+        false,
+        false,
+    )
+    .expect("same DB against export head must pass");
 
     commit_n_entries(&setup, 1, "after head export");
 
-    verify_ledger_signatures_with_options(&layout, true, true, false, Some(path.as_path()), false)
-        .expect("checkpoint mode must pass after advance");
+    verify_ledger_signatures_with_options(
+        &layout,
+        true,
+        true,
+        false,
+        Some(path.as_path()),
+        false,
+        false,
+    )
+    .expect("checkpoint mode must pass after advance");
 
     let err = verify_ledger_signatures_with_options(
         &layout,
@@ -1254,6 +1280,7 @@ fn chain__export_head_round_trip__checkpoint_ok_exact_fails_after_advance() {
         false,
         Some(path.as_path()),
         true,
+        false,
     )
     .unwrap_err();
     let msg = format!("{err}");

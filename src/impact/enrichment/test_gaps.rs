@@ -7,6 +7,7 @@
 //! `test_symbol_id NOT NULL`); that ceiling is always noted.
 
 use crate::impact::enrichment::blast::{Seed, normalize_path, populate_test_coverage};
+use crate::impact::lead::is_documentation_shaped;
 use crate::impact::packet::TestCoverage;
 use crate::index::test_mapping::is_test_path;
 use miette::Result;
@@ -85,6 +86,13 @@ pub struct TestGapsReport {
     pub unmapped: Vec<UnmappedGapEntry>,
     pub mapped_sample: Vec<MappedSampleEntry>,
     pub notes: Vec<String>,
+    /// Docs-shaped paths dropped before seed counting (0321). Omit when 0.
+    #[serde(default, skip_serializing_if = "is_zero_usize")]
+    pub omitted_docs_count: usize,
+}
+
+fn is_zero_usize(n: &usize) -> bool {
+    *n == 0
 }
 
 /// Optional inputs for gap computation (staleness, etc.).
@@ -121,7 +129,13 @@ impl TestGapsReport {
             unmapped: Vec::new(),
             mapped_sample: Vec::new(),
             notes,
+            omitted_docs_count: 0,
         }
+    }
+
+    fn with_omitted_docs(mut self, omitted_docs_count: usize) -> Self {
+        self.omitted_docs_count = omitted_docs_count;
+        self
     }
 }
 
@@ -286,14 +300,18 @@ pub fn compute_change_set_test_gaps_from_seeds(
     seeds: &[Seed],
     opts: &TestGapsOpts,
 ) -> TestGapsReport {
+    let omitted_docs_count = seeds
+        .iter()
+        .filter(|s| is_documentation_shaped(&s.file_path))
+        .count();
     let source_seeds: Vec<&Seed> = seeds
         .iter()
-        .filter(|s| !is_test_path(&s.file_path))
+        .filter(|s| !is_documentation_shaped(&s.file_path) && !is_test_path(&s.file_path))
         .collect();
     let source_seed_count = source_seeds.len();
 
     if let Some(early) = probe_table(conn, source_seed_count, opts) {
-        return early;
+        return early.with_omitted_docs(omitted_docs_count);
     }
 
     if source_seeds.is_empty() {
@@ -301,7 +319,8 @@ pub fn compute_change_set_test_gaps_from_seeds(
             TestGapsStatus::NoSourceSeeds,
             0,
             collect_extra_notes(conn, opts),
-        );
+        )
+        .with_omitted_docs(omitted_docs_count);
     }
 
     // Resolve file_id per seed path (batch-friendly sequential lookup).
@@ -398,6 +417,7 @@ pub fn compute_change_set_test_gaps_from_seeds(
         unmapped,
         mapped_sample,
         notes,
+        omitted_docs_count,
     }
 }
 
@@ -411,17 +431,22 @@ pub fn compute_change_set_test_gaps_from_files(
     paths: &[&str],
     opts: &TestGapsOpts,
 ) -> TestGapsReport {
+    let omitted_docs_count = paths
+        .iter()
+        .map(|p| normalize_path(p))
+        .filter(|p| is_documentation_shaped(p))
+        .count();
     let mut source_paths: Vec<String> = paths
         .iter()
         .map(|p| normalize_path(p))
-        .filter(|p| !is_test_path(p))
+        .filter(|p| !is_documentation_shaped(p) && !is_test_path(p))
         .collect();
     source_paths.sort();
     source_paths.dedup();
     let source_seed_count = source_paths.len();
 
     if let Some(early) = probe_table(conn, source_seed_count, opts) {
-        return early;
+        return early.with_omitted_docs(omitted_docs_count);
     }
 
     if source_paths.is_empty() {
@@ -429,7 +454,8 @@ pub fn compute_change_set_test_gaps_from_files(
             TestGapsStatus::NoSourceSeeds,
             0,
             collect_extra_notes(conn, opts),
-        );
+        )
+        .with_omitted_docs(omitted_docs_count);
     }
 
     let mut file_mapped = 0usize;
@@ -501,6 +527,7 @@ pub fn compute_change_set_test_gaps_from_files(
         unmapped,
         mapped_sample,
         notes,
+        omitted_docs_count,
     }
 }
 
@@ -953,6 +980,7 @@ mod tests {
             unmapped: Vec::new(),
             mapped_sample: Vec::new(),
             notes: vec![STRUCTURAL_NOTE.to_string(), LCOV_NOTE.to_string()],
+            omitted_docs_count: 0,
         };
         reconcile_coverage_and_gaps(&[], &mut gaps);
         assert!(
@@ -973,6 +1001,7 @@ mod tests {
             unmapped: Vec::new(),
             mapped_sample: Vec::new(),
             notes: vec![STRUCTURAL_NOTE.to_string()],
+            omitted_docs_count: 0,
         };
         let cov = vec![crate::impact::packet::TestCoverage {
             changed_symbol: "x".into(),
@@ -1020,6 +1049,64 @@ mod tests {
         let report = compute_change_set_test_gaps_from_seeds(&conn, &[], &TestGapsOpts::default());
         assert!(report.notes.iter().any(|n| n == STRUCTURAL_NOTE));
         assert!(report.notes.iter().any(|n| n == LCOV_NOTE));
+    }
+
+    #[test]
+    fn test_gap_docs_only_is_no_source_seeds_not_unmapped_readme() {
+        let conn = setup_conn();
+        let src = insert_file(&conn, "src/foo.rs");
+        let tst = insert_file(&conn, "tests/foo_test.rs");
+        let sym = insert_symbol(&conn, src, "foo", "crate::foo");
+        let tsym = insert_symbol(&conn, tst, "test_foo", "crate::test_foo");
+        insert_mapping(&conn, tsym, tst, Some(sym), Some(src));
+
+        let from_files = compute_change_set_test_gaps_from_files(
+            &conn,
+            &["README.md", "docs/guide.md"],
+            &TestGapsOpts::default(),
+        );
+        assert_eq!(from_files.status, TestGapsStatus::NoSourceSeeds);
+        assert_eq!(from_files.source_seed_count, 0);
+        assert_eq!(from_files.omitted_docs_count, 2);
+        assert!(from_files.unmapped.is_empty());
+        let json = serde_json::to_string(&from_files).unwrap();
+        assert!(json.contains("omittedDocsCount"));
+        assert!(!json.contains("README.md"));
+
+        let from_seeds = compute_change_set_test_gaps_from_seeds(
+            &conn,
+            &[seed(1, "readme", "README.md", None)],
+            &TestGapsOpts::default(),
+        );
+        assert_eq!(from_seeds.status, TestGapsStatus::NoSourceSeeds);
+        assert_eq!(from_seeds.omitted_docs_count, 1);
+    }
+
+    #[test]
+    fn test_gap_mixed_omits_readme_keeps_source() {
+        let conn = setup_conn();
+        let src = insert_file(&conn, "src/lib.rs");
+        let tst = insert_file(&conn, "tests/lib_test.rs");
+        let sym = insert_symbol(&conn, src, "lib", "crate::lib");
+        let tsym = insert_symbol(&conn, tst, "test_lib", "crate::test_lib");
+        insert_mapping(&conn, tsym, tst, Some(sym), Some(src));
+
+        let report = compute_change_set_test_gaps_from_files(
+            &conn,
+            &["src/lib.rs", "README.md"],
+            &TestGapsOpts::default(),
+        );
+        assert_eq!(report.status, TestGapsStatus::Available);
+        assert_eq!(report.source_seed_count, 1);
+        assert_eq!(report.omitted_docs_count, 1);
+        assert_eq!(report.file_mapped_count, 1);
+        assert!(
+            !report.unmapped.iter().any(|u| u.file.contains("README")),
+            "README must not be an unmapped seed: {:?}",
+            report.unmapped
+        );
+        let json = serde_json::to_string(&report).unwrap();
+        assert!(!json.contains("README.md"));
     }
 
     #[test]

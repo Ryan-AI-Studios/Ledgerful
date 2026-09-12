@@ -513,6 +513,7 @@ mod tests {
             unmapped: Vec::new(),
             mapped_sample: Vec::new(),
             notes: Vec::new(),
+            omitted_docs_count: 0,
         }
     }
 

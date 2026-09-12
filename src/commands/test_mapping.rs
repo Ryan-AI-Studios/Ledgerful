@@ -1,5 +1,7 @@
 use crate::commands::helpers::get_layout;
-use crate::commands::verify::{TestMappingState, explain_test_mappings};
+use crate::commands::verify::{
+    MappedTest, TestMappingState, explain_test_mappings, nextest_on_path,
+};
 use crate::state::storage::StorageManager;
 use clap::Args;
 use miette::{IntoDiagnostic, Result};
@@ -28,6 +30,9 @@ pub fn execute_tests_for_entity(args: TestsForEntityArgs) -> Result<()> {
     };
 
     let layout = get_layout()?;
+    let config = crate::config::load::load_config(&layout).unwrap_or_default();
+    let prefer_nextest = config.verify.prefer_nextest.unwrap_or(false);
+    let runner_nextest = prefer_nextest && nextest_on_path();
     let storage = StorageManager::open_read_only(&layout)?;
     let conn = storage.get_connection();
 
@@ -36,6 +41,7 @@ pub fn execute_tests_for_entity(args: TestsForEntityArgs) -> Result<()> {
             .unwrap_or_else(|_| entity_val.clone());
 
     let state = explain_test_mappings(conn, &normalized_entity);
+    let freshness = mapping_freshness_row(conn, &layout);
 
     if args.json {
         let output = match state {
@@ -113,8 +119,8 @@ pub fn execute_tests_for_entity(args: TestsForEntityArgs) -> Result<()> {
                 resolved_path,
             } => {
                 let mappings: Vec<_> = tests
-                    .into_iter()
-                    .map(|t| serde_json::json!({"test": t}))
+                    .iter()
+                    .map(|t| mapped_test_json(t, runner_nextest))
                     .collect();
                 let result_count = mappings.len();
                 let mut obj = serde_json::json!({
@@ -130,6 +136,13 @@ pub fn execute_tests_for_entity(args: TestsForEntityArgs) -> Result<()> {
                 obj
             }
         };
+        let mut output = output;
+        if let Some(row) = freshness
+            && let Some(map) = output.as_object_mut()
+            && let Ok(value) = serde_json::to_value(row)
+        {
+            map.insert("freshness".to_string(), value);
+        }
         println!(
             "{}",
             serde_json::to_string_pretty(&output).into_diagnostic()?
@@ -207,13 +220,73 @@ pub fn execute_tests_for_entity(args: TestsForEntityArgs) -> Result<()> {
                     display.if_supports_color(Stream::Stdout, |s| s.cyan())
                 );
                 for t in tests {
-                    println!("  • {}", t);
+                    println!("  • {}", t.display_line());
                 }
             }
         }
     }
 
     Ok(())
+}
+
+fn mapped_test_json(mapped: &MappedTest, runner_nextest: bool) -> serde_json::Value {
+    let runner = if runner_nextest {
+        "nextest"
+    } else {
+        "cargoTest"
+    };
+    let stem = if runner_nextest {
+        crate::verify::plan::test_file_to_nextest_stem(&mapped.file)
+    } else {
+        None
+    };
+    let mut selector = serde_json::json!({
+        "runner": runner,
+        "testFile": mapped.file,
+        "testName": mapped.symbol,
+    });
+    if let Some(stem) = stem.filter(|s| !s.is_empty())
+        && let Some(obj) = selector.as_object_mut()
+    {
+        obj.insert("stem".to_string(), serde_json::json!(stem));
+    }
+    serde_json::json!({
+        "test": mapped.test,
+        "kind": mapped.kind,
+        "location": {
+            "file": mapped.file,
+            "symbol": mapped.symbol,
+        },
+        "selector": selector,
+    })
+}
+
+fn mapping_freshness_row(
+    conn: &rusqlite::Connection,
+    layout: &crate::state::layout::Layout,
+) -> Option<crate::index::surface_freshness::SurfaceFreshness> {
+    use crate::git::repo::{get_head_info, open_repo};
+    use crate::index::surface_freshness::{
+        ClassifySurfaceFreshness, EmbeddingsProbe, classify_surface_freshness, probe_named_table,
+        read_indexed_head,
+    };
+
+    let compared_head = open_repo(layout.root.as_std_path())
+        .ok()
+        .and_then(|repo| get_head_info(&repo).ok())
+        .and_then(|(hash, _)| hash);
+    let indexed_head = read_indexed_head(conn);
+    classify_surface_freshness(ClassifySurfaceFreshness {
+        files_stale: None,
+        compared_head: compared_head.as_deref(),
+        indexed_head: indexed_head.as_deref(),
+        mapping: probe_named_table(conn, "test_mapping"),
+        routes: probe_named_table(conn, "api_routes"),
+        embeddings: EmbeddingsProbe::NotConfigured,
+        permission_denied: false,
+    })
+    .into_iter()
+    .find(|row| row.id == "mapping")
 }
 
 fn refuse_missing_entity(json: bool) -> Result<()> {
@@ -325,7 +398,8 @@ fn is_mapped_product_picker_path(path: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_mapped_product_picker_path;
+    use super::{is_mapped_product_picker_path, mapped_test_json};
+    use crate::commands::verify::MappedTest;
 
     #[test]
     fn test_mapping_picker_keeps_product_paths() {
@@ -363,5 +437,77 @@ mod tests {
             "src\\verify\\plan\\tests.rs"
         ));
         assert!(!is_mapped_product_picker_path("src/test.rs"));
+    }
+
+    #[test]
+    fn mapped_json_has_kind_selector_and_no_plus_or_e_flag() {
+        let mapped = MappedTest {
+            test: "src/index/test_mapping.rs::is_test".into(),
+            kind: "SAME_FILE".into(),
+            file: "src/index/test_mapping.rs".into(),
+            symbol: "is_test".into(),
+        };
+        let json = mapped_test_json(&mapped, true);
+        let text = serde_json::to_string(&json).unwrap();
+        assert_eq!(json["test"], "src/index/test_mapping.rs::is_test");
+        assert_eq!(json["kind"], "SAME_FILE");
+        assert_eq!(json["location"]["file"], "src/index/test_mapping.rs");
+        assert_eq!(json["location"]["symbol"], "is_test");
+        assert_eq!(json["selector"]["runner"], "nextest");
+        assert_eq!(json["selector"]["testFile"], "src/index/test_mapping.rs");
+        assert_eq!(json["selector"]["testName"], "is_test");
+        assert_eq!(json["selector"]["stem"], "test_mapping");
+        assert!(
+            !text.contains('+') && !text.contains("-E"),
+            "selector must not emit + or -E: {text}"
+        );
+    }
+
+    #[test]
+    fn mapped_json_cargo_test_omits_stem() {
+        let mapped = MappedTest {
+            test: "src/lib.rs::foo".into(),
+            kind: "IMPORT".into(),
+            file: "src/lib.rs".into(),
+            symbol: "foo".into(),
+        };
+        let json = mapped_test_json(&mapped, false);
+        assert_eq!(json["selector"]["runner"], "cargoTest");
+        assert!(json["selector"].get("stem").is_none());
+        let text = serde_json::to_string(&json).unwrap();
+        assert!(!text.contains('+') && !text.contains("-E"));
+    }
+
+    #[test]
+    fn tests_json_freshness_is_one_object_not_array() {
+        use crate::index::surface_freshness::{
+            SurfaceFreshness, SurfaceFreshnessSource, SurfaceFreshnessStatus,
+        };
+        let row = SurfaceFreshness {
+            id: "mapping".into(),
+            status: SurfaceFreshnessStatus::Available,
+            source: SurfaceFreshnessSource::IndexHead,
+            reason: "ok".into(),
+            refresh: None,
+            indexed_head: None,
+            compared_head: None,
+        };
+        let mut output = serde_json::json!({
+            "schemaVersion": 1,
+            "mappings": [],
+            "resultCount": 0
+        });
+        if let Some(map) = output.as_object_mut() {
+            map.insert("freshness".to_string(), serde_json::to_value(&row).unwrap());
+        }
+        assert!(
+            output["freshness"].is_object(),
+            "freshness must be one object: {output}"
+        );
+        assert!(
+            !output["freshness"].is_array(),
+            "freshness must not be an array: {output}"
+        );
+        assert_eq!(output["freshness"]["id"], "mapping");
     }
 }

@@ -1,4 +1,4 @@
-use ledgerful::commands::verify::{TestMappingState, explain_test_mappings};
+use ledgerful::commands::verify::{MappedTest, TestMappingState, explain_test_mappings};
 use ledgerful::state::storage::StorageManager;
 use tempfile::tempdir;
 
@@ -51,6 +51,16 @@ fn insert_mapping(
 }
 
 /// Baseline: one mapped file + one test file so the table is never empty (M7).
+fn mapped(test: &str) -> MappedTest {
+    let (file, symbol) = test.split_once("::").expect("path::symbol");
+    MappedTest {
+        test: test.to_string(),
+        kind: "IMPORT".into(),
+        file: file.to_string(),
+        symbol: symbol.to_string(),
+    }
+}
+
 fn seed_baseline_mapping(storage: &StorageManager) {
     insert_file(storage, 1, "src/lib.rs");
     insert_file(storage, 2, "tests/lib_test.rs");
@@ -70,7 +80,7 @@ fn test_explain_test_mappings_returns_mapped_tests_for_indexed_file() {
     assert_eq!(
         state,
         TestMappingState::Mapped {
-            tests: vec!["tests/lib_test.rs::test_tested_fn".to_string()],
+            tests: vec![mapped("tests/lib_test.rs::test_tested_fn")],
             resolved_path: Some("src/lib.rs".to_string()),
         }
     );
@@ -88,10 +98,39 @@ fn test_explain_test_mappings_falls_back_to_symbol_name() {
     assert_eq!(
         state,
         TestMappingState::Mapped {
-            tests: vec!["tests/lib_test.rs::test_tested_fn".to_string()],
+            tests: vec![mapped("tests/lib_test.rs::test_tested_fn")],
             resolved_path: None,
         }
     );
+}
+
+#[test]
+fn explain_test_mappings_human_kind_is_stored_mapping_kind() {
+    let tmp = tempdir().unwrap();
+    let storage = StorageManager::init(&tmp.path().join("ledger.db")).unwrap();
+    insert_file(&storage, 1, "src/index/test_mapping.rs");
+    insert_symbol(&storage, 1, 1, "is_test");
+    insert_symbol(&storage, 2, 1, "is_test_maps");
+    storage
+        .get_connection()
+        .execute(
+            "INSERT INTO test_mapping (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id, mapping_kind, last_indexed_at) \
+             VALUES (2, 1, 1, 1, 'SAME_FILE', '2026-01-01T00:00:00Z')",
+            [],
+        )
+        .unwrap();
+
+    let state = explain_test_mappings(storage.get_connection(), "src/index/test_mapping.rs");
+    match state {
+        TestMappingState::Mapped { tests, .. } => {
+            assert_eq!(tests[0].kind, "SAME_FILE");
+            assert_eq!(
+                tests[0].display_line(),
+                "src/index/test_mapping.rs::is_test_maps (SAME_FILE)"
+            );
+        }
+        other => panic!("expected Mapped, got {other:?}"),
+    }
 }
 
 #[test]
@@ -151,7 +190,7 @@ fn test_explain_test_mappings_dir_module_alias_rs_to_mod() {
     assert_eq!(
         state,
         TestMappingState::Mapped {
-            tests: vec!["tests/pkg_test.rs::test_pkg_fn".to_string()],
+            tests: vec![mapped("tests/pkg_test.rs::test_pkg_fn")],
             resolved_path: Some("src/pkg/mod.rs".to_string()),
         }
     );
@@ -174,7 +213,7 @@ fn test_explain_test_mappings_extensionless_alias_to_rs() {
     assert_eq!(
         state,
         TestMappingState::Mapped {
-            tests: vec!["tests/pkg_test.rs::test_pkg_fn".to_string()],
+            tests: vec![mapped("tests/pkg_test.rs::test_pkg_fn")],
             resolved_path: Some("src/pkg.rs".to_string()),
         }
     );
@@ -200,7 +239,7 @@ fn test_explain_test_mappings_extensionless_alias_to_mod() {
     assert_eq!(
         state,
         TestMappingState::Mapped {
-            tests: vec!["tests/pkg_mod_test.rs::test_pkg_mod_fn".to_string()],
+            tests: vec![mapped("tests/pkg_mod_test.rs::test_pkg_mod_fn")],
             resolved_path: Some("src/pkg/mod.rs".to_string()),
         }
     );
@@ -223,7 +262,7 @@ fn test_explain_test_mappings_unique_path_suffix() {
     assert_eq!(
         state,
         TestMappingState::Mapped {
-            tests: vec!["tests/finding_test.rs::test_finding_fn".to_string()],
+            tests: vec![mapped("tests/finding_test.rs::test_finding_fn")],
             resolved_path: Some("src/commands/doctor/finding.rs".to_string()),
         }
     );
@@ -313,7 +352,7 @@ fn test_explain_test_mappings_exact_beats_alias_when_both_exist() {
     assert_eq!(
         state,
         TestMappingState::Mapped {
-            tests: vec!["tests/dual_rs_test.rs::test_dual_rs".to_string()],
+            tests: vec![mapped("tests/dual_rs_test.rs::test_dual_rs")],
             resolved_path: Some("src/dual.rs".to_string()),
         }
     );
@@ -347,7 +386,7 @@ fn test_explain_test_mappings_windows_case_fold_exact() {
     assert_eq!(
         state,
         TestMappingState::Mapped {
-            tests: vec!["tests/lib_test.rs::test_tested_fn".to_string()],
+            tests: vec![mapped("tests/lib_test.rs::test_tested_fn")],
             resolved_path: Some("src/lib.rs".to_string()),
         }
     );

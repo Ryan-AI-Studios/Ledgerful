@@ -221,26 +221,19 @@ fn test_command_dry_run_first_line_is_scope() {
 }
 
 #[test]
-fn test_verify_json_dry_run_still_errors() {
+fn test_verify_json_dry_run_emits_verify_dry_run_kind() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
     init_committed_rust_repo(root);
 
     let out = spawn_verify(root, &["verify", "--json", "--dry-run"]);
-    assert!(!out.status.success(), "verify --json --dry-run must error");
     let stdout = stdout_text(&out);
-    let stderr = String::from_utf8_lossy(&out.stderr);
-    let combined = format!("{stdout}{stderr}");
-    assert!(
-        combined.contains("verify --json cannot be combined with --dry-run"),
-        "exact refuse string; combined={combined:?}"
-    );
-    if !stdout.trim().is_empty() {
-        assert!(
-            !stdout.contains("schemaVersion"),
-            "must not emit VerifyCliJson; stdout={stdout:?}"
-        );
-    }
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("dry-run JSON is now allowed");
+    assert_eq!(v["kind"], "verifyDryRun");
+    assert_eq!(v["executed"], false);
+    assert!(v.get("ok").is_none());
+    assert!(v["gitAvailable"].is_boolean());
 }
 
 #[test]

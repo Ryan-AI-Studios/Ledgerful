@@ -81,10 +81,11 @@ pub(crate) use full::build_plan_with_scope;
 #[cfg(test)]
 pub(crate) use full::{append_full_tier_commands, nextest_has_profile};
 pub(crate) use non_code::is_non_code_cheap_path;
+pub(crate) use scoped::test_file_to_nextest_stem;
 #[cfg(test)]
 pub(crate) use scoped::{
     build_scoped_nextest_command, is_test_mapping_stale, query_scoped_test_files,
-    should_attempt_mapping_repair, test_file_to_nextest_stem,
+    should_attempt_mapping_repair,
 };
 #[cfg(test)]
 pub(crate) use shared_infra::touches_shared_infra;

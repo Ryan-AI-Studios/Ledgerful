@@ -238,7 +238,7 @@ fn run_crypto_proof_beat(root: &Path, export_path: &Path) -> Result<()> {
         "verify --signatures --chain"
             .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
     );
-    verify_ledger_signatures_with_options(&layout, true, true, false, None, false)?;
+    verify_ledger_signatures_with_options(&layout, true, true, false, None, false, false)?;
     println!(
         "{} {}",
         "[DEMO]".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),
@@ -255,7 +255,15 @@ fn run_crypto_proof_beat(root: &Path, export_path: &Path) -> Result<()> {
         )
         .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
     );
-    verify_ledger_signatures_with_options(&layout, true, true, false, Some(export_path), false)?;
+    verify_ledger_signatures_with_options(
+        &layout,
+        true,
+        true,
+        false,
+        Some(export_path),
+        false,
+        false,
+    )?;
     println!(
         "{} {}",
         "[DEMO]".if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold())),

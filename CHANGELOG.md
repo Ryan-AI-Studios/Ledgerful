@@ -8,6 +8,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Verification diagnostic contracts (0321):** `--json --dry-run` /
+  `--json --health` / `--json --signatures` (and `--chain` /
+  `--against-export`) emit sibling `kind` envelopes (`verifyDryRun`,
+  `verifyHealth`, `verifySignatures`). Mixed diagnostic flags refuse with
+  empty stdout. `tests --json` mapped items add `kind` / `location` /
+  `selector` (no `+` / `-E`) plus a mapping freshness row. Docs-shaped
+  paths are dropped from test-gap “unmapped” / “tests missing” claims
+  (`omittedDocsCount`).
+
 - **Ledger readout UX (0320):** `ledger graph` gains `--compact` / `--layer`
   and omit-empty JSON `completeness` when the existing 150-node / depth-2
   cap hides further hops or nodes. `ledger adr list --json` is a
@@ -16,6 +25,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   bare array and reports truncation on stderr.
 
 ### Changed
+
+- **Verify diagnostic `--json` (0321):** the five former refuses for
+  `--json` + `--health` / `--dry-run` / `--signatures` / `--chain` /
+  `--against-export` become the three kinds above. Executed
+  `verify --json` is unchanged (schemaVersion 1, no `kind`). Signature
+  JSON collect-then-emits chain/checkpoint dimensions; human `!json`
+  first-break strings stay. Checkpoint `match`/`extends` stay exit 0;
+  fail kinds stay exit 1. Diagnostics do not write `latest-verify.json`.
 
 - **Export-head file banner (0320):** file-mode `export head` SUCCESS
   states the write is a checkpoint, not a verification. `--stdout` /
