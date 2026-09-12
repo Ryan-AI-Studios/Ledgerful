@@ -124,6 +124,14 @@ fn human_commands_not_machine() {
 }
 
 #[test]
+fn verify_json_diagnostic_flags_are_machine_output() {
+    assert!(parse(&["verify", "--json", "--dry-run"]).is_machine_output());
+    assert!(parse(&["verify", "--json", "--health"]).is_machine_output());
+    assert!(parse(&["verify", "--json", "--signatures"]).is_machine_output());
+    assert!(!parse(&["verify", "--signatures"]).is_machine_output());
+}
+
+#[test]
 fn export_head_stdout_is_machine_output() {
     assert!(parse(&["export", "head", "--stdout"]).is_machine_output());
     assert!(parse(&["export", "head", "-o", "-"]).is_machine_output());

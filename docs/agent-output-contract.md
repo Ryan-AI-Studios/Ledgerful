@@ -260,20 +260,41 @@ layer; no filter state suppresses them.
 
 ---
 
-## Rejected flag combinations (`verify --json`)
+## Diagnostic `verify --json` kinds (0321)
 
-`verify --json` is only defined for the plan-execution payload. Combining it
-with surfaces that have no versioned JSON schema is a hard error:
+Executed `verify --json` (no diagnostic flags) stays `VerifyCliJson`:
+schemaVersion 1, **no** `kind`. Absence of `kind` is the plan-execution
+discriminator.
+
+Diagnostic envelopes are sibling kinds (schemaVersion 1, required `kind`).
+They do **not** write `latest-verify.json`.
+
+| Combo | `kind` |
+|---|---|
+| `verify --json --dry-run` | `verifyDryRun` (`executed: false`, no `ok`) |
+| `verify --json --health` | `verifyHealth` (`ok` = tools only) |
+| `verify --json --signatures` / `--chain` / `--against-export` | `verifySignatures` |
+
+`verifySignatures.checkpoint` (only with `--against-export`): `match` and
+`extends` are `ok: true` / exit 0 (same as human extends-or-equals).
+`diverges` / `exactMismatch` / `exportSigInvalid` are `ok: false` / exit 1.
+
+`verifySignatures.chain.head` (omit-empty): present only when a stored
+chain head exists. Fields: `signatureValid`, `hashMatch`, `lengthMatch`.
+A stored-head signature / hash / length fail can be `ok: false` with
+`signatures.invalid == 0` and `breaks: []` — do not treat empty `breaks`
+as a silent pass. `--chain`-only keeps `signatures.checked: false`.
+
+Reject (miette, empty stdout, no partial JSON) mixed diagnostic modes:
 
 | Combo | Error |
 |---|---|
-| `verify --json --health` | `verify --json cannot be combined with --health` |
-| `verify --json --dry-run` | `verify --json cannot be combined with --dry-run` |
-| `verify --json --signatures` | `verify --json cannot be combined with --signatures, --chain, or --against-export` |
-| `verify --json --chain` | same as above |
-| `verify --json --against-export …` | same as above |
+| `--health` + `--dry-run` | `verify --health cannot be combined with --dry-run` |
+| `--health` + (`--signatures` / `--chain` / `--against-export`) | `verify --health cannot be combined with --signatures, --chain, or --against-export` |
+| `--dry-run` + (`--signatures` / `--chain` / `--against-export`) | `verify --dry-run cannot be combined with --signatures, --chain, or --against-export` |
 
 These reject rather than emit empty stdout under machine mode.
+`--json --explain` stays human-skipped. `--exact` still requires `--against-export`.
 
 ### Rejected flag combinations (`doctor`)
 
@@ -847,7 +868,7 @@ field names stay command-specific (`results` / `impacted` / `files` /
 | `hotspots --json` (list + `--semantic`) | `files` | List and `--semantic` echo `limit`. No `truncated` (no extra overfetch). Live list always emits `provenance` (0309); `--semantic` omits it. Item `presence: "historical"` only when the path is missing from HEAD (omit when current; not a field on shared `Hotspot`). CLI default omits test/example/bench paths; `--include tests` is the unfiltered audit view (0222, includes vendor). CLI default also omits `.md`; `--include docs` ranks markdown by frequency (`score` = `f_norm`, `complexity` 0). CLI default also omits vendored `deps_src`/`vendor`/`third_party`; `--include vendor` restores `f×c` (tests + docs still omitted). `--entity` into a vendored subtree needs `--include vendor`. `--semantic` ignores `--include`. Default and `--include tests` / `--include vendor` item `score` is 0–1 (`f_norm × c_norm`); `displayScore` is `ln_1p(score × 1000)` for humans. Item `complexity` is `MAX(MAX(cognitive, cyclomatic))` across current-index symbols (`project_symbols`; impact `symbols` only if the file is unindexed). C++ `function_definition` is scored on its `body`. AI-T252 must pin `score`, not `displayScore`. No `scoreUnit` key. |
 | `ci list --json` / `ci diff --json` (alias) | `gates` | Empty catalog: `gates: []`, `resultCount: 0`, **no** `emptyReason`. `list` is primary. |
 | `services list --json` / `services diff --json` (alias) | `results` | Gated empty keeps `emptyReason: "disabledByConfig"` + `message`. `list` is primary. |
-| `tests --json` (mapped) | `mappings` | Additive `resolvedPath` (omit when none); empty arms use the helper. Missing entity (no `--entity` / positional) is a usage error (exit 2, empty stdout), not an empty `mappings` envelope. |
+| `tests --json` (mapped) | `mappings` | Additive `resolvedPath` (omit when none). Item additive `kind`, `location`, `selector` (omit-empty; compat `test` stays `path::symbol`; `selector` is `{runner, testFile, testName, stem?}` — never nextest `+` / `-E`). Top-level `freshness` is **one object** (`id: "mapping"`) when classifiable — not `freshness[]` (0313 `index --check` owns `surfaces[]`). Empty arms use the helper. Missing entity (no `--entity` / positional) is a usage error (exit 2, empty stdout), not an empty `mappings` envelope. |
 
 Empty helper arm: `emptyReason` + `message` present. Populated helper arm:
 those keys **omitted** (never JSON `null`). `schemaVersion` stays **1**.

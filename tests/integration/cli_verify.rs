@@ -31,29 +31,114 @@ fn test_verify_json_invalid_scope_fatal_empty_stdout() {
     );
 }
 
-/// DoD-15 / F3: rejected combo returns non-zero with no JSON payload on stdout.
+/// 0321: `--json --signatures` is allowed (`kind: verifySignatures`).
+/// Hermetic repo: CI checkout has no `.ledgerful` (gitignored), so a
+/// CWD-relative spawn would fail before emit (empty stdout).
 #[test]
-fn test_verify_json_signatures_rejected_no_partial_json() {
+fn test_verify_json_signatures_emits_kind() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    let _guard = DirGuard::from_utf8(root);
+    setup_git_repo(tmp.path());
     let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let init = Command::new(ledgerful_bin)
+        .arg("init")
+        .current_dir(tmp.path())
+        .output()
+        .expect("init");
+    assert!(
+        init.status.success(),
+        "init must succeed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
     let output = Command::new(ledgerful_bin)
         .args(["verify", "--json", "--signatures"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("spawn ledgerful");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value =
+        serde_json::from_str(stdout.trim()).expect("signatures JSON on stdout");
+    assert_eq!(v["kind"], "verifySignatures");
+    assert_eq!(v["schemaVersion"], 1);
+    assert!(v.get("signatures").is_some());
+    assert!(v.get("chain").is_some());
+    assert!(
+        v.get("checkpoint").is_none(),
+        "checkpoint only with --against-export: {stdout}"
+    );
+}
+
+#[test]
+fn test_verify_json_health_emits_kind() {
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["verify", "--json", "--health"])
+        .output()
+        .expect("spawn ledgerful");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("health JSON");
+    assert_eq!(v["kind"], "verifyHealth");
+    assert!(v["ok"].is_boolean());
+    assert!(v["tools"].is_array());
+    assert_eq!(output.status.success(), v["ok"].as_bool().unwrap());
+}
+
+#[test]
+fn test_verify_json_dry_run_emits_kind_executed_false() {
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["verify", "--json", "--dry-run"])
+        .output()
+        .expect("spawn ledgerful");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("dry-run JSON");
+    assert_eq!(v["kind"], "verifyDryRun");
+    assert_eq!(v["executed"], false);
+    assert!(v.get("ok").is_none(), "dry-run must not emit ok: {stdout}");
+    assert!(v["gitAvailable"].is_boolean());
+}
+
+#[test]
+fn test_verify_json_health_signatures_refuse_empty_stdout() {
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["verify", "--json", "--health", "--signatures"])
         .output()
         .expect("spawn ledgerful");
     assert!(!output.status.success());
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    // miette may render on stderr only; stdout must not be a partial/full payload.
-    if !stdout.is_empty() {
+    assert!(
+        output.stdout.is_empty(),
+        "mix refuse must not emit JSON; stdout={:?}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+}
+
+#[test]
+fn test_verify_json_diagnostics_do_not_write_latest_verify() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    let _guard = DirGuard::from_utf8(root);
+    setup_git_repo(tmp.path());
+    let reports = tmp.path().join(".ledgerful").join("reports");
+    let pin = reports.join("latest-verify.json");
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    for args in [
+        vec!["verify", "--json", "--health"],
+        vec!["verify", "--json", "--dry-run"],
+        vec!["verify", "--json", "--signatures"],
+    ] {
+        let _ = Command::new(ledgerful_bin)
+            .args(&args)
+            .current_dir(tmp.path())
+            .output()
+            .expect("spawn");
         assert!(
-            serde_json::from_str::<serde_json::Value>(stdout.trim()).is_err()
-                || !stdout.contains("schemaVersion"),
-            "reject must not emit VerifyCliJson; stdout={stdout:?}"
+            !pin.exists(),
+            "diagnostic {:?} must not persist latest-verify.json",
+            args
         );
     }
-    let combined = format!("{}{}", stdout, String::from_utf8_lossy(&output.stderr));
-    assert!(
-        combined.contains("cannot be combined") || combined.contains("signatures"),
-        "reject message must appear; combined={combined:?}"
-    );
 }
 
 #[test]

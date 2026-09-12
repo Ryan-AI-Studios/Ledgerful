@@ -1062,6 +1062,75 @@ fn test_coverage_never_bare_empty_or_track_0115_handoff() {
 }
 
 #[test]
+fn change_context_docs_only_test_coverage_is_no_source_seeds() {
+    use crate::impact::enrichment::test_gaps::{
+        TestGapsOpts, TestGapsStatus, compute_change_set_test_gaps_from_files,
+        compute_change_set_test_gaps_from_seeds,
+    };
+    use crate::state::migrations::get_migrations;
+
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    get_migrations().to_latest(&mut conn).unwrap();
+    conn.execute(
+        "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+         VALUES ('src/keep.rs', 'Rust', 'h', 1, '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_files (file_path, language, content_hash, file_size, last_indexed_at)
+         VALUES ('tests/keep_test.rs', 'Rust', 'h', 1, '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at)
+         VALUES (1, 'crate::keep', 'keep', 'Function', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, last_indexed_at)
+         VALUES (2, 'crate::test_keep', 'test_keep', 'Function', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO test_mapping
+         (test_symbol_id, test_file_id, tested_symbol_id, tested_file_id,
+          confidence, mapping_kind, last_indexed_at)
+         VALUES (2, 2, 1, 1, 0.9, 'IMPORT', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+
+    let docs_only =
+        compute_change_set_test_gaps_from_files(&conn, &["README.md"], &TestGapsOpts::default());
+    assert_eq!(docs_only.status, TestGapsStatus::NoSourceSeeds);
+    assert_eq!(docs_only.omitted_docs_count, 1);
+    assert!(docs_only.unmapped.is_empty());
+
+    let mixed = compute_change_set_test_gaps_from_files(
+        &conn,
+        &["src/keep.rs", "README.md"],
+        &TestGapsOpts::default(),
+    );
+    assert_eq!(mixed.status, TestGapsStatus::Available);
+    assert_eq!(mixed.source_seed_count, 1);
+    assert!(!mixed.unmapped.iter().any(|u| u.file.contains("README")));
+
+    let seed_docs = crate::impact::enrichment::blast::Seed {
+        symbol_id: 99,
+        name: "readme".into(),
+        file_path: "README.md".into(),
+        qualified_name: None,
+    };
+    let from_seeds =
+        compute_change_set_test_gaps_from_seeds(&conn, &[seed_docs], &TestGapsOpts::default());
+    assert_eq!(from_seeds.status, TestGapsStatus::NoSourceSeeds);
+}
+
+#[test]
 fn summarize_test_coverage_uses_impact_attached_gaps() {
     use crate::impact::enrichment::test_gaps::{TestGapsReport, TestGapsStatus};
 
@@ -1084,6 +1153,7 @@ fn summarize_test_coverage_uses_impact_attached_gaps() {
             unmapped: vec![],
             mapped_sample: vec![],
             notes: vec!["note".into()],
+            omitted_docs_count: 0,
         }),
         ..ImpactPacket::default()
     };

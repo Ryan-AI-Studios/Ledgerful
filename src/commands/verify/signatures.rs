@@ -4,6 +4,13 @@ use miette::Result;
 use owo_colors::{OwoColorize, Stream};
 use std::path::Path;
 
+use super::diagnostic::{
+    ChainBreakKind, VerifyChainBreakJson, VerifyChainDimensionJson, VerifyChainHeadJson,
+    VerifyCheckpointJson, VerifySignatureTrustJson, VerifySignaturesDimensionJson,
+    VerifySignaturesJson, cap_sorted_breaks, cap_sorted_invalid_samples, diagnostic_schema_version,
+    verify_signatures_kind,
+};
+
 /// Where a per-entry signature status line is emitted (0093 DoD-5 / 0100).
 ///
 /// `RawStderr` lines use `eprintln!` and are **never** suppressed by the
@@ -209,7 +216,7 @@ pub mod sig_exit {
 }
 
 pub fn verify_ledger_signatures(layout: &Layout) -> Result<()> {
-    verify_ledger_signatures_with_options(layout, true, false, false, None, false)
+    verify_ledger_signatures_with_options(layout, true, false, false, None, false, false)
 }
 
 pub fn verify_ledger_signatures_with_options(
@@ -219,6 +226,7 @@ pub fn verify_ledger_signatures_with_options(
     strict_signatures: bool,
     against_export: Option<&Path>,
     exact: bool,
+    json: bool,
 ) -> Result<()> {
     let mut storage = StorageManager::init_with_layout(layout)?;
     let db = crate::ledger::db::LedgerDb::new(storage.get_connection_mut());
@@ -235,6 +243,21 @@ pub fn verify_ledger_signatures_with_options(
     let head = db
         .get_chain_head()
         .map_err(|e| miette::miette!("Failed to read chain head: {}", e))?;
+
+    if json {
+        return emit_verify_signatures_json(
+            &entries,
+            head.as_ref(),
+            verify_signatures,
+            verify_chain,
+            against_export,
+            exact,
+            signing_required,
+            trusted_keys,
+            min_sig_version,
+            strict_signatures,
+        );
+    }
 
     if verify_chain || against_export.is_some() {
         if entries.is_empty() && against_export.is_none() {
@@ -810,6 +833,622 @@ fn compare_against_export_path(
     compare_against_export(&ordered, &local_head, &export_head, mode)
 }
 
+#[allow(clippy::too_many_arguments)]
+fn build_verify_signatures_json(
+    entries: &[crate::ledger::types::LedgerEntry],
+    head: Option<&crate::ledger::types::ChainHead>,
+    verify_signatures: bool,
+    verify_chain: bool,
+    against_export: Option<&Path>,
+    exact: bool,
+    signing_required: bool,
+    trusted_keys: &[String],
+    min_sig_version: u32,
+    strict_signatures: bool,
+) -> Result<(VerifySignaturesJson, Option<String>)> {
+    let chain_requested = verify_chain || against_export.is_some();
+    let signatures = if verify_signatures {
+        tally_signatures_dimension(entries, signing_required, trusted_keys, min_sig_version)
+    } else {
+        VerifySignaturesDimensionJson::unchecked()
+    };
+
+    let (chain, checkpoint, first_human, chain_break) = if chain_requested {
+        collect_chain_and_checkpoint_for_json(
+            entries,
+            head,
+            against_export,
+            exact,
+            verify_signatures,
+            signing_required,
+            trusted_keys,
+            min_sig_version,
+        )?
+    } else {
+        (VerifyChainDimensionJson::unchecked(), None, None, false)
+    };
+
+    let unsigned_fail = signatures.unsigned;
+    let invalid = signatures.invalid;
+    let exit = sig_exit::decide_signature_exit(invalid, unsigned_fail, chain_break);
+    let ok = exit == sig_exit::OK && checkpoint.as_ref().is_none_or(|c| c.result.is_pass());
+    let exit_code = if ok {
+        sig_exit::OK
+    } else if exit != sig_exit::OK {
+        exit
+    } else {
+        sig_exit::INVALID_OR_CHAIN
+    };
+
+    let payload = VerifySignaturesJson {
+        schema_version: diagnostic_schema_version(),
+        kind: verify_signatures_kind(),
+        ok,
+        exit_code,
+        strict: strict_signatures,
+        signatures,
+        chain,
+        checkpoint,
+    };
+    Ok((payload, first_human))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_verify_signatures_json(
+    entries: &[crate::ledger::types::LedgerEntry],
+    head: Option<&crate::ledger::types::ChainHead>,
+    verify_signatures: bool,
+    verify_chain: bool,
+    against_export: Option<&Path>,
+    exact: bool,
+    signing_required: bool,
+    trusted_keys: &[String],
+    min_sig_version: u32,
+    strict_signatures: bool,
+) -> Result<()> {
+    let (payload, first_human) = build_verify_signatures_json(
+        entries,
+        head,
+        verify_signatures,
+        verify_chain,
+        against_export,
+        exact,
+        signing_required,
+        trusted_keys,
+        min_sig_version,
+        strict_signatures,
+    )?;
+    let ok = payload.ok;
+    let exit_code = payload.exit_code;
+    let unsigned_fail = payload.signatures.unsigned;
+    let invalid = payload.signatures.invalid;
+    println!("{}", payload.to_json_string()?);
+
+    if ok {
+        Ok(())
+    } else {
+        sig_exit::request_exit(exit_code);
+        if let Some(msg) = first_human {
+            Err(miette::miette!("{}", msg))
+        } else if exit_code == sig_exit::UNSIGNED {
+            Err(miette::miette!(
+                "Ledger signature verification failed: {} unsigned entries (exit {}).",
+                unsigned_fail,
+                sig_exit::UNSIGNED
+            ))
+        } else {
+            Err(miette::miette!(
+                "Ledger signature verification failed: {} entries have invalid or missing signatures.",
+                invalid
+            ))
+        }
+    }
+}
+
+fn tally_signatures_dimension(
+    entries: &[crate::ledger::types::LedgerEntry],
+    signing_required: bool,
+    trusted_keys: &[String],
+    min_sig_version: u32,
+) -> VerifySignaturesDimensionJson {
+    let invalid = enumerate_invalid_ledger_entries_with_policy(
+        entries,
+        signing_required,
+        trusted_keys,
+        min_sig_version,
+    );
+    let invalid_tx_ids: std::collections::HashSet<&str> =
+        invalid.iter().map(|(tx_id, _, _)| tx_id.as_str()).collect();
+    let mut classes: Vec<SigEntryClass> = Vec::with_capacity(entries.len());
+    let mut trusted = 0usize;
+    let mut unknown_key = 0usize;
+    let mut sample_ids: Vec<String> = Vec::new();
+
+    for entry in entries {
+        let is_local = entry.origin == "LOCAL";
+        let status = if is_local {
+            crate::ledger::crypto::classify_entry_signature(entry, trusted_keys, min_sig_version)
+        } else {
+            crate::ledger::crypto::SignatureTrustStatus::Unsigned
+        };
+        if is_local {
+            match status {
+                crate::ledger::crypto::SignatureTrustStatus::ValidTrusted => trusted += 1,
+                crate::ledger::crypto::SignatureTrustStatus::ValidUnknownKey => unknown_key += 1,
+                crate::ledger::crypto::SignatureTrustStatus::Invalid
+                | crate::ledger::crypto::SignatureTrustStatus::Unsigned => {}
+            }
+        }
+        let policy_invalid = is_local && invalid_tx_ids.contains(entry.tx_id.as_str());
+        let class = class_for_sig_entry(is_local, status, signing_required, policy_invalid);
+        if matches!(
+            class,
+            SigEntryClass::Invalid | SigEntryClass::UnsignedRequired
+        ) {
+            sample_ids.push(entry.tx_id.clone());
+        }
+        classes.push(class);
+    }
+
+    let aggregates = tally_signature_classes(classes, invalid.len());
+    VerifySignaturesDimensionJson {
+        checked: true,
+        valid: aggregates.valid,
+        invalid: aggregates.invalid,
+        unsigned: aggregates.unsigned_fail,
+        skipped: aggregates.skipped,
+        federated_skip: aggregates.federated_skip,
+        trust: VerifySignatureTrustJson {
+            trusted,
+            unknown_key,
+            pin_empty: trusted_keys.is_empty(),
+        },
+        invalid_samples: cap_sorted_invalid_samples(sample_ids),
+    }
+}
+
+fn chain_head_dimension(
+    head: &crate::ledger::types::ChainHead,
+    computed_latest: Option<&str>,
+    computed_length: i64,
+    compare_computed: bool,
+) -> VerifyChainHeadJson {
+    let head_sig = head.head_signature.as_deref().unwrap_or("");
+    let head_pub = head.head_public_key.as_deref().unwrap_or("");
+    let signature_valid = crate::ledger::crypto::verify_chain_head(
+        &head.latest_entry_hash,
+        &head.genesis,
+        head.length,
+        head_sig,
+        head_pub,
+    );
+    let expected_latest = computed_latest.unwrap_or("");
+    let (hash_match, length_match) = if compare_computed {
+        (
+            expected_latest == head.latest_entry_hash,
+            computed_length == head.length,
+        )
+    } else {
+        (true, true)
+    };
+    VerifyChainHeadJson {
+        signature_valid,
+        hash_match,
+        length_match,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_chain_and_checkpoint_for_json(
+    entries: &[crate::ledger::types::LedgerEntry],
+    head: Option<&crate::ledger::types::ChainHead>,
+    against_export: Option<&Path>,
+    exact: bool,
+    verify_signatures: bool,
+    signing_required: bool,
+    trusted_keys: &[String],
+    min_sig_version: u32,
+) -> Result<(
+    VerifyChainDimensionJson,
+    Option<VerifyCheckpointJson>,
+    Option<String>,
+    bool,
+)> {
+    if entries.is_empty() && against_export.is_none() {
+        if let Some(head_ref) = head {
+            return Ok((
+                VerifyChainDimensionJson {
+                    checked: true,
+                    linked_entries: 0,
+                    extra_genesis_count: 0,
+                    break_count: 1,
+                    breaks: vec![],
+                    head: Some(chain_head_dimension(head_ref, None, 0, true)),
+                },
+                None,
+                Some(
+                    "Chain head exists but no ledger entries found (entries may have been wiped)."
+                        .to_string(),
+                ),
+                true,
+            ));
+        }
+        return Ok((
+            VerifyChainDimensionJson {
+                checked: true,
+                ..VerifyChainDimensionJson::unchecked()
+            },
+            None,
+            None,
+            false,
+        ));
+    }
+
+    let walk = crate::ledger::chain_iter::iter_local_chain(entries);
+    let head_is_real = head.is_some();
+    let has_any_prev_link = walk.ordered.iter().any(|e| e.prev_hash.is_some())
+        || entries
+            .iter()
+            .any(|e| e.origin == "LOCAL" && e.prev_hash.is_some());
+    let should_walk_chain = head_is_real || has_any_prev_link;
+
+    let mut breaks: Vec<VerifyChainBreakJson> = Vec::new();
+    let mut first_human: Option<String> = None;
+
+    if !walk.forks.is_empty() {
+        first_human.get_or_insert_with(|| {
+            format!(
+                "CHAIN_BREAK: detected {} fork(s) in local chain (first parent hash {}).",
+                walk.forks.len(),
+                walk.forks[0].0
+            )
+        });
+        for (_parent, kids) in &walk.forks {
+            for tx in kids {
+                breaks.push(VerifyChainBreakJson {
+                    tx_id: tx.clone(),
+                    kind: ChainBreakKind::Fork,
+                });
+            }
+        }
+    }
+    if should_walk_chain && !walk.extra_genesis.is_empty() {
+        first_human.get_or_insert_with(|| {
+            format!(
+                "Chain break: {} additional genesis entr(y/ies) with null prev_hash after chain started (first: {}).",
+                walk.extra_genesis.len(),
+                walk.extra_genesis[0].tx_id
+            )
+        });
+        for e in &walk.extra_genesis {
+            breaks.push(VerifyChainBreakJson {
+                tx_id: e.tx_id.clone(),
+                kind: ChainBreakKind::ExtraGenesis,
+            });
+        }
+    }
+    if should_walk_chain && !walk.orphans.is_empty() {
+        first_human.get_or_insert_with(|| {
+            format!(
+                "Chain break: {} orphan LOCAL entr(y/ies) not linked by prev_hash (first: {}).",
+                walk.orphans.len(),
+                walk.orphans[0].tx_id
+            )
+        });
+        for e in &walk.orphans {
+            breaks.push(VerifyChainBreakJson {
+                tx_id: e.tx_id.clone(),
+                kind: ChainBreakKind::Orphan,
+            });
+        }
+    }
+
+    let mut prev_hash: Option<String> = None;
+    let mut chain_length: i64 = 0;
+    if should_walk_chain {
+        for entry in &walk.ordered {
+            if verify_signatures {
+                let status = crate::ledger::crypto::classify_entry_signature(
+                    entry,
+                    trusted_keys,
+                    min_sig_version,
+                );
+                match status {
+                    crate::ledger::crypto::SignatureTrustStatus::Invalid => {
+                        first_human.get_or_insert_with(|| {
+                            format!(
+                                "Signature verification failed for TX {} (chain break).",
+                                entry.tx_id
+                            )
+                        });
+                    }
+                    crate::ledger::crypto::SignatureTrustStatus::Unsigned if signing_required => {
+                        first_human.get_or_insert_with(|| {
+                            format!(
+                                "TX {} is missing a signature (chain-required-after-genesis; exit {}).",
+                                entry.tx_id,
+                                sig_exit::UNSIGNED
+                            )
+                        });
+                    }
+                    _ => {}
+                }
+            }
+            if let Some(expected_prev) = prev_hash.as_ref() {
+                match &entry.prev_hash {
+                    Some(actual_prev) if actual_prev == expected_prev => {}
+                    Some(_) => {
+                        first_human.get_or_insert_with(|| {
+                            format!(
+                                "Chain break at TX {}: expected prev_hash {}, found {}",
+                                entry.tx_id,
+                                expected_prev,
+                                entry.prev_hash.as_deref().unwrap_or("")
+                            )
+                        });
+                        breaks.push(VerifyChainBreakJson {
+                            tx_id: entry.tx_id.clone(),
+                            kind: ChainBreakKind::HashMismatch,
+                        });
+                    }
+                    None => {
+                        first_human.get_or_insert_with(|| {
+                            format!(
+                                "Chain break at TX {}: expected prev_hash {} but entry has none",
+                                entry.tx_id, expected_prev
+                            )
+                        });
+                        breaks.push(VerifyChainBreakJson {
+                            tx_id: entry.tx_id.clone(),
+                            kind: ChainBreakKind::MissingPrev,
+                        });
+                    }
+                }
+            } else if entry.prev_hash.is_some() {
+                first_human.get_or_insert_with(|| {
+                    format!(
+                        "Chain break at TX {}: genesis entry must have no prev_hash",
+                        entry.tx_id
+                    )
+                });
+                breaks.push(VerifyChainBreakJson {
+                    tx_id: entry.tx_id.clone(),
+                    kind: ChainBreakKind::GenesisHasPrev,
+                });
+            }
+            chain_length += 1;
+            prev_hash = Some(compute_entry_hash_for_verify(entry)?);
+        }
+    }
+
+    if !head_is_real && !entries.is_empty() {
+        let any_prev = entries.iter().any(|e| e.prev_hash.is_some());
+        if any_prev {
+            first_human.get_or_insert_with(|| {
+                "Chain head is missing but ledger entries have prev_hash values; downgrade detected."
+                    .to_string()
+            });
+        }
+    }
+
+    if let Some(head_ref) = head {
+        let expected_latest = prev_hash.as_deref().unwrap_or("");
+        if should_walk_chain && expected_latest != head_ref.latest_entry_hash {
+            first_human.get_or_insert_with(|| {
+                format!(
+                    "Chain head mismatch: computed latest entry hash {} does not match stored head {}",
+                    expected_latest, head_ref.latest_entry_hash
+                )
+            });
+        }
+        if should_walk_chain && chain_length != head_ref.length {
+            first_human.get_or_insert_with(|| {
+                format!(
+                    "Chain length mismatch: computed {} linked entries but head claims {}",
+                    chain_length, head_ref.length
+                )
+            });
+        }
+        let head_sig = head_ref.head_signature.as_deref().unwrap_or("");
+        let head_pub = head_ref.head_public_key.as_deref().unwrap_or("");
+        if !crate::ledger::crypto::verify_chain_head(
+            &head_ref.latest_entry_hash,
+            &head_ref.genesis,
+            head_ref.length,
+            head_sig,
+            head_pub,
+        ) {
+            first_human.get_or_insert_with(|| {
+                format!(
+                    "Chain head signature verification failed for head {}.",
+                    head_ref.latest_entry_hash
+                )
+            });
+        }
+    }
+
+    let extra_genesis_count = if should_walk_chain {
+        walk.extra_genesis.len()
+    } else {
+        0
+    };
+    let break_count = breaks.len();
+    let chain = VerifyChainDimensionJson {
+        checked: true,
+        linked_entries: chain_length,
+        extra_genesis_count,
+        break_count,
+        breaks: cap_sorted_breaks(breaks),
+        head: head.map(|head_ref| {
+            chain_head_dimension(
+                head_ref,
+                prev_hash.as_deref(),
+                chain_length,
+                should_walk_chain,
+            )
+        }),
+    };
+
+    let checkpoint = if let Some(export_path) = against_export {
+        Some(collect_checkpoint_for_json(
+            entries,
+            head,
+            head_is_real,
+            prev_hash.as_deref(),
+            chain_length,
+            export_path,
+            exact,
+            &mut first_human,
+        )?)
+    } else {
+        None
+    };
+    let checkpoint_fail = checkpoint.as_ref().is_some_and(|c| !c.result.is_pass());
+    let chain_break = break_count > 0 || first_human.is_some() || checkpoint_fail;
+
+    Ok((chain, checkpoint, first_human, chain_break))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_checkpoint_for_json(
+    entries: &[crate::ledger::types::LedgerEntry],
+    local_head: Option<&crate::ledger::types::ChainHead>,
+    head_is_real: bool,
+    computed_latest_hash: Option<&str>,
+    _chain_length: i64,
+    export_path: &Path,
+    exact: bool,
+    first_human: &mut Option<String>,
+) -> Result<VerifyCheckpointJson> {
+    #[cfg(not(feature = "export"))]
+    {
+        let _ = (
+            entries,
+            local_head,
+            head_is_real,
+            computed_latest_hash,
+            _chain_length,
+            export_path,
+            exact,
+        );
+        first_human.get_or_insert_with(|| {
+            "verify --against-export requires the export feature; rebuild with --features export"
+                .to_string()
+        });
+        return Ok(VerifyCheckpointJson {
+            compared: true,
+            mode: if exact {
+                "exact".to_string()
+            } else {
+                "extendsOrEquals".to_string()
+            },
+            result: crate::ledger::chain_checkpoint::CheckpointResultKind::Diverges,
+        });
+    }
+
+    #[cfg(feature = "export")]
+    {
+        use crate::ledger::chain_checkpoint::{
+            CheckpointMode, CheckpointResultKind, classify_against_export, load_checkpoint_head,
+            ordered_local_for_head,
+        };
+
+        let mode_label = if exact {
+            "exact".to_string()
+        } else {
+            "extendsOrEquals".to_string()
+        };
+        let export_head = match load_checkpoint_head(export_path) {
+            Ok(h) => h,
+            Err(e) => {
+                first_human.get_or_insert_with(|| format!("{e}"));
+                return Ok(VerifyCheckpointJson {
+                    compared: true,
+                    mode: mode_label,
+                    result: CheckpointResultKind::Diverges,
+                });
+            }
+        };
+        if entries.is_empty() {
+            first_human.get_or_insert_with(|| {
+                format!(
+                    "Local ledger is empty but export shows {} linked entries (rollback/wipe detected).",
+                    export_head.length
+                )
+            });
+            return Ok(VerifyCheckpointJson {
+                compared: true,
+                mode: mode_label,
+                result: CheckpointResultKind::Diverges,
+            });
+        }
+
+        let local_head = if let Some(h) = local_head {
+            h.clone()
+        } else {
+            let any_prev = entries.iter().any(|e| e.prev_hash.is_some());
+            if any_prev {
+                first_human.get_or_insert_with(|| {
+                    "Chain head is missing but entries have chain links (downgrade detected)"
+                        .to_string()
+                });
+                return Ok(VerifyCheckpointJson {
+                    compared: true,
+                    mode: mode_label,
+                    result: CheckpointResultKind::Diverges,
+                });
+            }
+            match crate::export::soc2::synthesize_chain_head(entries) {
+                Some(h) => h,
+                None => {
+                    first_human.get_or_insert_with(|| {
+                        "No local chain head and no entries to compare against export".to_string()
+                    });
+                    return Ok(VerifyCheckpointJson {
+                        compared: true,
+                        mode: mode_label,
+                        result: CheckpointResultKind::Diverges,
+                    });
+                }
+            }
+        };
+
+        if head_is_real {
+            let computed = computed_latest_hash.unwrap_or("");
+            if computed != local_head.latest_entry_hash {
+                first_human.get_or_insert_with(|| {
+                    format!(
+                        "Chain head mismatch: computed latest entry hash {} does not match stored head {} (local chain altered).",
+                        computed, local_head.latest_entry_hash
+                    )
+                });
+            }
+        }
+
+        let ordered = ordered_local_for_head(entries);
+        let mode = if exact {
+            CheckpointMode::Exact
+        } else {
+            CheckpointMode::Checkpoint
+        };
+        match classify_against_export(&ordered, &local_head, &export_head, mode) {
+            Ok(kind) => Ok(VerifyCheckpointJson {
+                compared: true,
+                mode: mode_label,
+                result: kind,
+            }),
+            Err((kind, msg)) => {
+                first_human.get_or_insert(msg);
+                Ok(VerifyCheckpointJson {
+                    compared: true,
+                    mode: mode_label,
+                    result: kind,
+                })
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod sig_entry_stream_tests {
     use super::{
@@ -1226,5 +1865,370 @@ mod sig_exit_tests {
         );
         assert_eq!(SignatureTrustStatus::Invalid.as_str(), "INVALID");
         assert_eq!(SignatureTrustStatus::Unsigned.as_str(), "UNSIGNED");
+    }
+}
+
+#[cfg(test)]
+mod verify_signatures_json_collect_tests {
+    use super::*;
+    use crate::commands::verify::diagnostic::{ChainBreakKind, cap_sorted_invalid_samples};
+    use crate::ledger::crypto::compute_entry_hash_for_entry;
+    use crate::ledger::types::{Category, ChangeType, EntryType, LedgerEntry};
+
+    fn entry(tx: &str, prev: Option<&str>, origin: &str) -> LedgerEntry {
+        LedgerEntry {
+            id: 0,
+            tx_id: tx.to_string(),
+            category: Category::Feature,
+            entry_type: EntryType::Implementation,
+            entity: "e".into(),
+            entity_normalized: "e".into(),
+            change_type: ChangeType::Modify,
+            summary: "s".into(),
+            reason: "r".into(),
+            is_breaking: false,
+            committed_at: format!("2026-01-0{}T00:00:00Z", tx.chars().last().unwrap_or('1')),
+            verification_status: None,
+            verification_basis: None,
+            outcome_notes: None,
+            origin: origin.into(),
+            trace_id: None,
+            signature: None,
+            public_key: None,
+            risk: None,
+            related_tickets: None,
+            author: "a".into(),
+            observed: None,
+            prev_hash: prev.map(|s| s.to_string()),
+            sig_version: 2,
+        }
+    }
+
+    #[test]
+    fn extra_genesis_increments_chain_not_invalid() {
+        let a = entry("tx1", None, "LOCAL");
+        let a_hash = compute_entry_hash_for_entry(&a).expect("hash");
+        let b = entry("tx2", Some(&a_hash), "LOCAL");
+        let extra = entry("tx9", None, "LOCAL");
+        let sigs =
+            tally_signatures_dimension(&[a.clone(), b.clone(), extra.clone()], false, &[], 1);
+        assert_eq!(sigs.invalid, 0, "extra-genesis is not invalid crypto");
+        let (chain, checkpoint, _, _) = collect_chain_and_checkpoint_for_json(
+            &[a, b, extra],
+            None,
+            None,
+            false,
+            true,
+            false,
+            &[],
+            1,
+        )
+        .unwrap();
+        assert!(checkpoint.is_none());
+        assert!(chain.checked);
+        assert!(chain.extra_genesis_count >= 1);
+        assert!(
+            chain
+                .breaks
+                .iter()
+                .any(|b| matches!(b.kind, ChainBreakKind::ExtraGenesis)),
+            "expected extraGenesis kind: {:?}",
+            chain.breaks
+        );
+        assert_eq!(sigs.invalid, 0);
+    }
+
+    #[test]
+    fn collect_then_emit_records_fork_and_orphan_kinds() {
+        let a = entry("tx1", None, "LOCAL");
+        let a_hash = compute_entry_hash_for_entry(&a).expect("hash");
+        let b = entry("tx2", Some(&a_hash), "LOCAL");
+        let c = entry("tx3", Some(&a_hash), "LOCAL");
+        let orphan = entry("tx4", Some("missing-parent"), "LOCAL");
+        let (chain, checkpoint, first, broke) = collect_chain_and_checkpoint_for_json(
+            &[a, b, c, orphan],
+            None,
+            None,
+            false,
+            false,
+            false,
+            &[],
+            1,
+        )
+        .unwrap();
+        assert!(
+            checkpoint.is_none(),
+            "checkpoint only with --against-export"
+        );
+        assert!(broke);
+        assert!(first.is_some(), "human first-break string kept for !json");
+        let kinds: Vec<_> = chain.breaks.iter().map(|b| b.kind).collect();
+        assert!(
+            kinds.contains(&ChainBreakKind::Fork),
+            "expected fork kind: {kinds:?}"
+        );
+        assert!(
+            kinds.contains(&ChainBreakKind::Orphan),
+            "expected orphan kind: {kinds:?}"
+        );
+    }
+
+    #[test]
+    fn trust_unknown_key_is_not_invalid_when_pin_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let keys_dir = tmp.path().join("keys");
+        std::fs::create_dir_all(&keys_dir).unwrap();
+        let mut a = entry("tx1", None, "LOCAL");
+        a.committed_at = "2026-01-01T00:00:00Z".into();
+        let input = crate::ledger::crypto::LedgerSignInput::from_entry(&a);
+        let (sig, pk) = crate::ledger::crypto::sign_ledger_entry_in_v2(&keys_dir, &input).unwrap();
+        a.signature = sig;
+        a.public_key = pk;
+        let sigs = tally_signatures_dimension(&[a], false, &[], 2);
+        assert_eq!(sigs.invalid, 0);
+        assert!(sigs.trust.pin_empty);
+        assert_eq!(sigs.trust.unknown_key, 1);
+        assert_eq!(sigs.trust.trusted, 0);
+    }
+
+    #[test]
+    fn invalid_samples_sorted_and_capped() {
+        let samples = cap_sorted_invalid_samples(vec!["z".into(), "a".into(), "a".into()]);
+        assert_eq!(samples, vec!["a".to_string(), "z".to_string()]);
+    }
+
+    #[test]
+    fn invalid_crypto_tallies_invalid_not_chain() {
+        let mut a = entry("tx-bad", None, "LOCAL");
+        a.signature = Some("00".repeat(64));
+        a.public_key = Some("11".repeat(32));
+        let sigs = tally_signatures_dimension(&[a.clone()], false, &[], 2);
+        assert!(
+            sigs.invalid >= 1,
+            "garbage sig+pub must be invalid crypto: {sigs:?}"
+        );
+        assert!(
+            sigs.invalid_samples.iter().any(|id| id == "tx-bad"),
+            "invalidSamples: {:?}",
+            sigs.invalid_samples
+        );
+        let (chain, checkpoint, _, _) =
+            collect_chain_and_checkpoint_for_json(&[a], None, None, false, false, false, &[], 1)
+                .unwrap();
+        assert!(checkpoint.is_none());
+        assert_eq!(
+            chain.extra_genesis_count, 0,
+            "invalid crypto is not extra-genesis"
+        );
+    }
+
+    #[test]
+    fn checkpoint_empty_local_vs_export_is_diverges() {
+        let tmp = tempfile::tempdir().unwrap();
+        let export_path = tmp.path().join("head.json");
+        std::fs::write(
+            &export_path,
+            r#"{
+  "latest_entry_hash": "abc",
+  "genesis": "2026-01-01T00:00:00Z",
+  "length": 4,
+  "head_signature": null,
+  "head_public_key": null,
+  "updated_at": "2026-01-01T00:00:00Z"
+}"#,
+        )
+        .unwrap();
+        let (chain, checkpoint, first, broke) = collect_chain_and_checkpoint_for_json(
+            &[],
+            None,
+            Some(export_path.as_path()),
+            false,
+            true,
+            false,
+            &[],
+            1,
+        )
+        .unwrap();
+        let checkpoint = checkpoint.expect("checkpoint object when --against-export");
+        assert!(checkpoint.compared);
+        assert_eq!(checkpoint.mode, "extendsOrEquals");
+        assert_eq!(
+            checkpoint.result,
+            crate::ledger::chain_checkpoint::CheckpointResultKind::Diverges
+        );
+        assert!(broke);
+        assert!(first.is_some());
+        let _ = chain;
+    }
+
+    #[test]
+    fn checkpoint_live_advance_is_extends_and_pass() {
+        let a = entry("tx1", None, "LOCAL");
+        let a_hash = compute_entry_hash_for_entry(&a).expect("hash");
+        let b = entry("tx2", Some(&a_hash), "LOCAL");
+        let b_hash = compute_entry_hash_for_entry(&b).expect("hash");
+        let genesis = "2026-01-01T00:00:00Z".to_string();
+        let tmp = tempfile::tempdir().unwrap();
+        let keys = tmp.path().join("keys");
+        std::fs::create_dir_all(&keys).unwrap();
+        let (head_sig, head_pub) =
+            crate::ledger::crypto::sign_chain_head(&keys, &b_hash, &genesis, 2).unwrap();
+        let export_path = tmp.path().join("head.json");
+        let export = serde_json::json!({
+            "latest_entry_hash": a_hash,
+            "genesis": genesis,
+            "length": 1,
+            "head_signature": null,
+            "head_public_key": null,
+            "updated_at": genesis,
+        });
+        std::fs::write(&export_path, serde_json::to_string(&export).unwrap()).unwrap();
+        let local = crate::ledger::types::ChainHead {
+            latest_entry_hash: b_hash,
+            genesis: genesis.clone(),
+            length: 2,
+            head_signature: head_sig,
+            head_public_key: head_pub,
+            updated_at: "2026-01-01T00:00:01Z".into(),
+        };
+        let (chain, checkpoint, first, broke) = collect_chain_and_checkpoint_for_json(
+            &[a.clone(), b.clone()],
+            Some(&local),
+            Some(export_path.as_path()),
+            false,
+            false,
+            false,
+            &[],
+            1,
+        )
+        .unwrap();
+        let checkpoint = checkpoint.expect("checkpoint object when --against-export");
+        assert_eq!(
+            checkpoint.result,
+            crate::ledger::chain_checkpoint::CheckpointResultKind::Extends
+        );
+        assert!(
+            checkpoint.result.is_pass(),
+            "extends is success (human exit 0)"
+        );
+        assert!(!broke, "clean extend is not a chain break: first={first:?}");
+        assert!(first.is_none());
+        let exit = sig_exit::decide_signature_exit(0, 0, broke);
+        let ok = exit == sig_exit::OK && checkpoint.result.is_pass();
+        assert!(ok);
+        assert_eq!(exit, sig_exit::OK);
+        assert!(chain.checked);
+        let (payload, _) = build_verify_signatures_json(
+            &[a, b],
+            Some(&local),
+            true,
+            true,
+            Some(export_path.as_path()),
+            false,
+            false,
+            &[],
+            1,
+            false,
+        )
+        .unwrap();
+        let json = payload.to_json_string().unwrap();
+        assert!(json.contains("\"kind\": \"verifySignatures\""));
+        assert!(payload.ok);
+        assert_eq!(payload.exit_code, 0);
+        assert_eq!(
+            payload.checkpoint.as_ref().map(|c| c.result),
+            Some(crate::ledger::chain_checkpoint::CheckpointResultKind::Extends)
+        );
+    }
+
+    #[test]
+    fn one_payload_invalid_head_sig_is_chain_not_crypto() {
+        let a = entry("tx1", None, "LOCAL");
+        let a_hash = compute_entry_hash_for_entry(&a).expect("hash");
+        let local = crate::ledger::types::ChainHead {
+            latest_entry_hash: a_hash,
+            genesis: "2026-01-01T00:00:00Z".into(),
+            length: 1,
+            head_signature: Some("00".repeat(64)),
+            head_public_key: Some("11".repeat(32)),
+            updated_at: "2026-01-01T00:00:00Z".into(),
+        };
+        let (payload, first) = build_verify_signatures_json(
+            &[a],
+            Some(&local),
+            true,
+            true,
+            None,
+            false,
+            false,
+            &[],
+            1,
+            false,
+        )
+        .unwrap();
+        let json = payload.to_json_string().unwrap();
+        assert!(json.contains("\"kind\": \"verifySignatures\""));
+        assert_eq!(payload.signatures.invalid, 0);
+        assert!(!payload.ok);
+        assert_eq!(payload.exit_code, sig_exit::INVALID_OR_CHAIN);
+        assert!(first.is_some());
+        assert!(
+            first
+                .as_deref()
+                .unwrap_or("")
+                .contains("Chain head signature"),
+            "{first:?}"
+        );
+        let head = payload
+            .chain
+            .head
+            .as_ref()
+            .expect("stored head → chain.head");
+        assert!(
+            !head.signature_valid,
+            "invalid head sig is chain.head, not breaks"
+        );
+        assert!(head.hash_match);
+        assert!(head.length_match);
+        assert!(
+            json.contains("\"signatureValid\": false"),
+            "omit-empty chain.head must surface head-sig fail: {json}"
+        );
+        assert!(payload.chain.breaks.is_empty());
+        assert_eq!(payload.chain.break_count, 0);
+    }
+
+    #[test]
+    fn one_payload_extra_genesis_and_fork_serialize() {
+        let a = entry("tx1", None, "LOCAL");
+        let a_hash = compute_entry_hash_for_entry(&a).expect("hash");
+        let b = entry("tx2", Some(&a_hash), "LOCAL");
+        let extra = entry("tx9", None, "LOCAL");
+        let (payload, _) = build_verify_signatures_json(
+            &[a, b, extra],
+            None,
+            true,
+            true,
+            None,
+            false,
+            false,
+            &[],
+            1,
+            false,
+        )
+        .unwrap();
+        let json = payload.to_json_string().unwrap();
+        assert!(json.contains("\"kind\": \"verifySignatures\""));
+        assert!(json.contains("extraGenesis") || json.contains("\"extraGenesisCount\""));
+        assert_eq!(payload.signatures.invalid, 0);
+        assert!(!payload.ok);
+        assert_eq!(payload.exit_code, 1);
+        assert!(payload.chain.checked);
+        assert!(payload.chain.extra_genesis_count >= 1);
+        assert!(
+            payload.chain.head.is_none(),
+            "no stored head → omit chain.head"
+        );
+        assert!(!json.contains("\"signatureValid\""));
     }
 }

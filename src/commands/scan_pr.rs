@@ -679,6 +679,7 @@ mod tests {
                 mapping_kind: "file".into(),
             }],
             notes: vec![STRUCTURAL_NOTE.into(), LCOV_NOTE.into()],
+            omitted_docs_count: 0,
         };
         let changes = vec![make_change("src/lib.rs", ChangeType::Modified)];
         let report = PrScanReport::new_with_test_gaps(

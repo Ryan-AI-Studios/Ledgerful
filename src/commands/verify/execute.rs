@@ -16,8 +16,12 @@ use owo_colors::{OwoColorize, Stream, Style};
 use std::env;
 use tracing::{debug, warn};
 
+use super::diagnostic::{
+    VerifyDryRunJson, VerifyDryRunStepJson, diagnostic_schema_version,
+    refuse_mixed_verify_diagnostics, verify_dry_run_kind,
+};
 use super::dto::VerifyCliJson;
-use super::health::execute_verify_health;
+use super::health::{emit_verify_health_json, execute_verify_health};
 use super::mapping::{TestMappingState, explain_test_mappings, step_relevant_to_entity};
 
 /// Named options for [`execute_verify`] (0191). Signature flags stay in dispatch.
@@ -147,11 +151,9 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
 
     // Health mode early exit — skip OutcomePredictor::predict and full plan building
     if health {
+        refuse_mixed_verify_diagnostics(true, dry_run, false, false, false)?;
         if json {
-            // Health is a separate surface; --json is for the plan execution payload.
-            return Err(miette::miette!(
-                "verify --json cannot be combined with --health"
-            ));
+            return emit_verify_health_json(&layout, &config);
         }
         return execute_verify_health(&layout, &config);
     }
@@ -410,7 +412,7 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
                         .unwrap_or(normalized_entity.as_str());
                     println!("  Mapped tests for '{}' ({}):", display, tests.len());
                     for t in &tests {
-                        println!("    • {}", t);
+                        println!("    • {}", t.display_line());
                     }
                 }
             }
@@ -436,9 +438,26 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
     if plan_refused {
         if dry_run {
             if json {
-                return Err(miette::miette!(
-                    "verify --json cannot be combined with --dry-run"
-                ));
+                let reason = plan
+                    .as_ref()
+                    .and_then(|p| p.fallback_reason.clone())
+                    .unwrap_or_else(|| "fast scope unavailable; refusing full suite".to_string());
+                let prediction_skipped = command_str.is_none()
+                    && matches!(
+                        classify_working_tree_material(layout.root.as_std_path()),
+                        WorkingTreeMaterial::Clean | WorkingTreeMaterial::Unavailable
+                    );
+                emit_verify_dry_run_json(
+                    &[],
+                    scope,
+                    Some(reason.clone()),
+                    true,
+                    bayesian_matched_steps,
+                    bayesian_dataset_keys,
+                    layout.root.as_std_path(),
+                    prediction_skipped,
+                )?;
+                return Err(miette::miette!("{reason}"));
             }
             // P5: scope line first, then ℹ/Next, then the refused footer.
             println!("{}", dry_run_scope_line(scope));
@@ -474,9 +493,21 @@ pub fn execute_verify(opts: ExecuteVerifyOpts) -> Result<()> {
     // No print_verify_plan (gated above); no cargo execution.
     if dry_run {
         if json {
-            return Err(miette::miette!(
-                "verify --json cannot be combined with --dry-run"
-            ));
+            let prediction_skipped = command_str.is_none()
+                && matches!(
+                    classify_working_tree_material(layout.root.as_std_path()),
+                    WorkingTreeMaterial::Clean | WorkingTreeMaterial::Unavailable
+                );
+            return emit_verify_dry_run_json(
+                &steps,
+                scope,
+                plan.as_ref().and_then(|p| p.fallback_reason.clone()),
+                false,
+                bayesian_matched_steps,
+                bayesian_dataset_keys,
+                layout.root.as_std_path(),
+                prediction_skipped,
+            );
         }
         // Manual --command: keep simple Verification Plan + single step + footer.
         // P9: same `scope:` first product line as plan dry-run.
@@ -906,6 +937,29 @@ fn build_fast_scoped_from_overlay_or_fail_closed(
     )
 }
 
+/// Working-tree material-change probe (0321). Git open/status failure is
+/// [`Unavailable`], not a clean tree.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WorkingTreeMaterial {
+    Clean,
+    Dirty,
+    Unavailable,
+}
+
+fn classify_working_tree_material(repo_root: &std::path::Path) -> WorkingTreeMaterial {
+    let Ok(repo) = crate::git::repo::open_repo(repo_root) else {
+        return WorkingTreeMaterial::Unavailable;
+    };
+    let Ok(changes) = crate::git::status::get_repo_status(&repo) else {
+        return WorkingTreeMaterial::Unavailable;
+    };
+    if changes.iter().any(|c| is_material_verify_path(&c.path)) {
+        WorkingTreeMaterial::Dirty
+    } else {
+        WorkingTreeMaterial::Clean
+    }
+}
+
 /// True when the working tree has **material** changes that verify should not
 /// ignore when there is no saved impact packet (0135 final codex P1).
 ///
@@ -914,15 +968,79 @@ fn build_fast_scoped_from_overlay_or_fail_closed(
 /// root `cargo.bat` used by empty-repo integration tests.
 ///
 /// On git discovery/status failure, returns false so clean EmptyChanges still
-/// works in non-git fixtures.
+/// works in non-git fixtures (Unavailable ≠ Dirty).
 fn working_tree_has_material_changes(repo_root: &std::path::Path) -> bool {
-    let Ok(repo) = crate::git::repo::open_repo(repo_root) else {
-        return false;
+    matches!(
+        classify_working_tree_material(repo_root),
+        WorkingTreeMaterial::Dirty
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_verify_dry_run_json(
+    steps: &[crate::verify::plan::VerificationStep],
+    scope: crate::verify::plan::VerifyScope,
+    fallback_reason: Option<String>,
+    refused: bool,
+    matched_steps: Option<usize>,
+    dataset_keys: Option<usize>,
+    repo_root: &std::path::Path,
+    prediction_gate: bool,
+) -> Result<()> {
+    let material = classify_working_tree_material(repo_root);
+    let git_available = !matches!(material, WorkingTreeMaterial::Unavailable);
+    let clean_tree = match material {
+        WorkingTreeMaterial::Clean => Some(true),
+        WorkingTreeMaterial::Dirty => Some(false),
+        WorkingTreeMaterial::Unavailable => None,
     };
-    let Ok(changes) = crate::git::status::get_repo_status(&repo) else {
-        return false;
+    // Caller already applied the 0288 gate (Clean or Unavailable skip predict).
+    // Do not re-AND with Clean — that would report predictionSkipped:false after
+    // an Unavailable skip. Reason is cleanTree only when the tree is actually clean.
+    let prediction_skipped = prediction_gate;
+    let prediction_skip_reason =
+        if prediction_skipped && matches!(material, WorkingTreeMaterial::Clean) {
+            Some("cleanTree".to_string())
+        } else {
+            None
+        };
+    let scope_executed = if refused {
+        "refused".to_string()
+    } else if fallback_reason.is_some() {
+        "full".to_string()
+    } else {
+        scope.to_string()
     };
-    changes.iter().any(|c| is_material_verify_path(&c.path))
+    let planned: Vec<VerifyDryRunStepJson> = if refused {
+        Vec::new()
+    } else {
+        steps
+            .iter()
+            .map(|s| VerifyDryRunStepJson {
+                name: crate::verify::fail_block::step_name_from_command(&s.command),
+                command: s.command.clone(),
+                status: "planned".to_string(),
+            })
+            .collect()
+    };
+    let payload = VerifyDryRunJson {
+        schema_version: diagnostic_schema_version(),
+        kind: verify_dry_run_kind(),
+        scope_requested: scope.to_string(),
+        scope_executed,
+        fallback_reason,
+        refused,
+        executed: false,
+        git_available,
+        clean_tree,
+        prediction_skipped,
+        prediction_skip_reason,
+        matched_steps,
+        dataset_keys,
+        steps: planned,
+    };
+    println!("{}", payload.to_json_string()?);
+    Ok(())
 }
 
 fn is_material_verify_path(path: &std::path::Path) -> bool {
@@ -1215,23 +1333,36 @@ mod execute_verify_json_gate_tests {
         );
     }
 
-    /// DoD-15: rejected `--json` combinations return `Err` from dispatch helpers
-    /// without building a report (no `VerifyCliJson` emit site reached).
+    /// DoD-15: mix-refuse stays an error (health+dry-run). Allowed diagnostic
+    /// `--json` paths emit sibling kinds, not executed `VerifyCliJson`.
     #[test]
     fn verify_json_rejected_combos_are_errors_not_partial_payloads() {
-        // Structural: execute_verify returns Err early for health/dry-run+json
-        // before plan execution or JSON println. Live process proof is in
-        // integration + output/0093-after/verify-json-fatal.*.
         let src = include_str!("execute.rs");
         assert!(
-            src.contains("verify --json cannot be combined with --health"),
-            "health+json must reject"
+            src.contains("refuse_mixed_verify_diagnostics(true, dry_run"),
+            "health+dry-run must still refuse in execute"
         );
         assert!(
-            src.contains("verify --json cannot be combined with --dry-run"),
-            "dry-run+json must reject"
+            src.contains("emit_verify_health_json"),
+            "health+json must emit verifyHealth"
         );
-        // Emit-before-err boundary: JSON println is immediately before overall_pass check.
+        assert!(
+            src.contains("emit_verify_dry_run_json"),
+            "dry-run+json must emit verifyDryRun"
+        );
+        let prod = src
+            .split("#[cfg(test)]")
+            .next()
+            .expect("production body before unit tests");
+        assert!(
+            !prod.contains("verify --json cannot be combined with --health"),
+            "stale health+json refuse must not block the allow path"
+        );
+        assert!(
+            !prod.contains("verify --json cannot be combined with --dry-run"),
+            "stale dry-run+json refuse must not block the allow path"
+        );
+        // Emit-before-err boundary: executed JSON println is immediately before overall_pass check.
         let emit_idx = src
             .find("payload.to_json_string()")
             .expect("JSON emit site");
