@@ -696,6 +696,33 @@ fn test_build_scoped_nextest_command_multiple() {
 }
 
 #[test]
+fn scoped_nextest_step_prepares_direct_without_spawn() {
+    let command =
+        build_scoped_nextest_command(&["cli_scan".to_string(), "dead_code_prune".to_string()]);
+    let step = VerificationStep {
+        description: "scoped nextest".to_string(),
+        command,
+        timeout_secs: 5,
+        shell: false,
+    };
+    let prepared = crate::verify::runner::prepare_rule_step(
+        &step,
+        false,
+        &crate::platform::process_policy::ProcessPolicy::default(),
+    )
+    .expect("quoted filterset must prepare Direct");
+    assert_eq!(
+        prepared.execution_mode,
+        crate::verify::runner::ExecutionMode::Direct
+    );
+    assert_eq!(prepared.executable, "cargo");
+    assert_eq!(
+        prepared.args.last().map(String::as_str),
+        Some("test(cli_scan) + test(dead_code_prune)")
+    );
+}
+
+#[test]
 fn test_scoped_clippy_and_nextest_share_feature_flags() {
     // §B regression guard: clippy and scoped nextest must share
     // --all-features so cargo does not recompile the dependency graph
