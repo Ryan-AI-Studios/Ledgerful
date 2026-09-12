@@ -26,6 +26,10 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Engine dogfood v0.2.13:** Workflow A `ledgerful-version` + Linux gnu
+  sidecar checksum track published **v0.2.13**. Action `uses:` SHA
+  stays 0334 / #337 (`259a5e5…`). No Cargo bump.
+
 - **Verify diagnostic `--json` (0321):** the five former refuses for
   `--json` + `--health` / `--dry-run` / `--signatures` / `--chain` /
   `--against-export` become the three kinds above. Executed

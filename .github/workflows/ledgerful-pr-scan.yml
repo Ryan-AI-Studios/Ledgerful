@@ -5,7 +5,7 @@
 #
 # Pin: Ryan-AI-Studios/ledgerful-action@259a5e5ca504542ab0f32d0f026924c5938ee13b
 # (Action PR #16 squash-merge SHA). Engine binary:
-# v0.2.12 + published Linux gnu sidecar. Never reintroduce inline `./action`.
+# v0.2.13 + published Linux gnu sidecar. Never reintroduce inline `./action`.
 
 name: Ledgerful PR Scan
 
@@ -29,9 +29,9 @@ jobs:
         # Pin ledgerful-action to a full commit SHA (no mutable tag yet).
         uses: Ryan-AI-Studios/ledgerful-action@259a5e5ca504542ab0f32d0f026924c5938ee13b
         with:
-          ledgerful-version: v0.2.12
-          # ledgerful-x86_64-unknown-linux-gnu.tar.gz from v0.2.12 published .sha256 sidecar
-          ledgerful-checksum: 843d91a399570e2d7e4335e573c6a2e019dfbf727a5f01385f4613e48d93a9d4
+          ledgerful-version: v0.2.13
+          # ledgerful-x86_64-unknown-linux-gnu.tar.gz from v0.2.13 published .sha256 sidecar
+          ledgerful-checksum: 3549e2edaba1ca97e06bc167b5e2f39277ba0182ceab59df9166e6df5df9f452
         env:
           LEDGERFUL_NO_NETWORK: "1"
 
