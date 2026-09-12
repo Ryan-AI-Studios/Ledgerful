@@ -134,6 +134,42 @@ fn export_head_stdout_is_machine_output() {
 }
 
 #[test]
+fn adr_list_json_is_machine_output() {
+    assert!(parse(&["ledger", "adr", "list", "--json"]).is_machine_output());
+    assert!(!parse(&["ledger", "adr", "list"]).is_machine_output());
+    assert!(!parse(&["ledger", "export-provenance"]).is_machine_output());
+}
+
+#[test]
+fn graph_compact_layer_argv_shape() {
+    let compact = parse(&["ledger", "graph", "abc", "--compact"]).argv_shape();
+    assert!(
+        compact.contains("compact"),
+        "argv_shape must record compact: {compact}"
+    );
+    let layered = parse(&["ledger", "graph", "abc", "--layer", "exact"]).argv_shape();
+    assert!(
+        layered.contains("layer"),
+        "argv_shape must record layer: {layered}"
+    );
+}
+
+#[test]
+fn graph_layer_unknown_value_rejected() {
+    let err = Cli::try_parse_from(["ledgerful", "ledger", "graph", "abc", "--layer", "nope"]);
+    assert!(err.is_err(), "expected ValueEnum reject, got {err:?}");
+}
+
+#[test]
+fn graph_compact_json_refused() {
+    let err = Cli::try_parse_from(["ledgerful", "ledger", "graph", "abc", "--compact", "--json"]);
+    assert!(
+        err.is_err(),
+        "expected --compact --json conflict, got {err:?}"
+    );
+}
+
+#[test]
 fn export_head_argv_shape_stdout_mode() {
     // argv_shape is "export_head|flag1,flag2" with sorted flag names.
     let stdout_shape = parse(&["export", "head", "--stdout"]).argv_shape();

@@ -98,7 +98,7 @@ impl Commands {
                     AdrSubcommands::UpdateStatus { .. } => "ledger_adr_update_status",
                     AdrSubcommands::Link { .. } => "ledger_adr_link",
                     AdrSubcommands::Review { .. } => "ledger_adr_review",
-                    AdrSubcommands::List => "ledger_adr_list",
+                    AdrSubcommands::List { .. } => "ledger_adr_list",
                 },
                 LedgerCommands::Validator { command } => match command {
                     ValidatorSubcommands::List { .. } => "ledger_validator_list",

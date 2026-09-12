@@ -215,6 +215,11 @@ fn ledger_graph_rich_returns_populated_graph() {
     println!("Rich graph JSON: {}", stdout);
 
     let json: serde_json::Value = serde_json::from_str(&stdout).unwrap();
+    assert!(
+        json.get("completeness").is_none(),
+        "2-hop rich fixture must omit completeness: {json}"
+    );
+    assert!(json.get("schemaVersion").is_none());
 
     // Assert exact nodes: src/api.rs, dummy_fn, [HISTORICAL] missing_fn, [HISTORICAL] src/missing.rs, [HISTORICAL] src/linked_file.rs, [HISTORICAL] src/kg_file.rs
     let exact_list = json["exact"].as_array().unwrap();
@@ -484,4 +489,250 @@ fn test_ledger_graph_max_nodes_cap_is_deterministic() {
         "expected the max_nodes cap to be hit exactly, given a neighborhood of {} candidate nodes",
         leaf_urns.len() + 2
     );
+    assert_eq!(json["completeness"]["stop"], "cap");
+    assert_eq!(json["completeness"]["maxDepth"], 2);
+    assert_eq!(json["completeness"]["maxNodes"], 150);
+}
+
+#[test]
+fn graph_json_omits_completeness_under_cap() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    setup_git_repo(&root);
+    let file_path = "src/api.rs";
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join(file_path), "fn dummy() {}").unwrap();
+    let _guard = DirGuard::new(&root);
+    let db_path = root.join(".ledgerful/state/ledger.db");
+    fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    let mut storage = StorageManager::init(&db_path).unwrap();
+    let mut manager = TransactionManager::new(&mut storage, root.clone(), Config::default());
+    let tx_id = manager
+        .start_change(TransactionRequest {
+            category: Category::Feature,
+            entity: "config".to_string(),
+            issue_ref: Some("GH-123".to_string()),
+            ..Default::default()
+        })
+        .unwrap();
+    drop(manager);
+    drop(storage);
+
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["ledger", "graph", &tx_id, "--json"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert!(
+        json.get("completeness").is_none(),
+        "under-cap heuristic graph must omit completeness: {json}"
+    );
+}
+
+#[test]
+fn graph_json_completeness_when_capped() {
+    // Covered by test_ledger_graph_max_nodes_cap_is_deterministic assertions.
+    // Keep a named CLI pin so the DoD name stays in nextest output.
+    let tmp = tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    setup_git_repo(&root);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/api.rs"), "pub fn dummy_fn() {}").unwrap();
+    let _guard = DirGuard::new(&root);
+    let db_path = root.join(".ledgerful/state/ledger.db");
+    fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    let mut storage = StorageManager::init(&db_path).unwrap();
+    let mut manager = TransactionManager::new(&mut storage, root.clone(), Config::default());
+    let tx_id = manager
+        .start_change(TransactionRequest {
+            category: Category::Feature,
+            entity: "src/api.rs".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+    drop(manager);
+    drop(storage);
+    execute_ledger_commit(
+        Some(tx_id.clone()),
+        "Node cap completeness",
+        "Named completeness pin",
+        false,
+        false,
+        LedgerCommitGitOptions::default(),
+    )
+    .unwrap();
+
+    let storage = StorageManager::init(&db_path).unwrap();
+    let conn = storage.get_connection();
+    conn.execute(
+        "INSERT INTO snapshots (timestamp, is_clean, packet_json) VALUES (datetime('now'), 1, '{}')",
+        [],
+    )
+    .unwrap();
+    let snapshot_id = conn.last_insert_rowid();
+    conn.execute(
+        "UPDATE transactions SET snapshot_id = ?1 WHERE tx_id = ?2",
+        rusqlite::params![snapshot_id, &tx_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO token_provenance (tx_id, entity, entity_normalized, symbol_name, symbol_type, action) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![tx_id, "src/api.rs", "src/api.rs", "dummy_fn", "Function", "MODIFIED"],
+    ).unwrap();
+    let cozo = storage.cozo().unwrap();
+    cozo.run_script(
+        "?[id, file_path, qualified_name, symbol_name, symbol_kind, is_public, line_start, line_end] <- [ \
+            [1, 'src/api.rs', 'crate::api::dummy_fn', 'dummy_fn', 'Function', true, 1, 5] \
+         ] :put project_symbol",
+    )
+    .unwrap();
+    let hub_urn = "urn:ledgerful:symbol:crate::hub::hub_fn";
+    let api_urn = "urn:ledgerful:file:src/api.rs";
+    let mut node_rows = format!(
+        "['{}', 'src/api.rs', 'file', 0.0, '{{}}'],['{}', 'hub_fn', 'symbol', 0.0, '{{}}']",
+        api_urn, hub_urn
+    );
+    let mut edge_rows = format!("['{}', '{}', 'affects', 1.0, '']", api_urn, hub_urn);
+    for i in 0..160 {
+        let leaf_urn = format!("urn:ledgerful:symbol:crate::hub::leaf_fn_{}", i);
+        node_rows.push_str(&format!(
+            ",['{}', 'leaf_fn_{}', 'symbol', 0.0, '{{}}']",
+            leaf_urn, i
+        ));
+        edge_rows.push_str(&format!(
+            ",['{}', '{}', 'calls', 1.0, '']",
+            hub_urn, leaf_urn
+        ));
+    }
+    cozo.run_script(&format!(
+        "?[id, label, category, risk_score, metadata] <- [ {} ] :put node",
+        node_rows
+    ))
+    .unwrap();
+    cozo.run_script(&format!(
+        "?[source, target, relation, confidence, provenance_id] <- [ {} ] :put edge",
+        edge_rows
+    ))
+    .unwrap();
+    storage.shutdown().unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ledgerful"))
+        .args(["ledger", "graph", &tx_id, "--json"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(json["completeness"]["stop"], "cap");
+    assert_eq!(json["completeness"]["maxDepth"], 2);
+    assert_eq!(json["completeness"]["maxNodes"], 150);
+}
+
+#[test]
+fn graph_json_completeness_when_depth_capped() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path().to_path_buf();
+    setup_git_repo(&root);
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(root.join("src/api.rs"), "pub fn dummy_fn() {}").unwrap();
+    let _guard = DirGuard::new(&root);
+    let db_path = root.join(".ledgerful/state/ledger.db");
+    fs::create_dir_all(db_path.parent().unwrap()).unwrap();
+    let mut storage = StorageManager::init(&db_path).unwrap();
+    let mut manager = TransactionManager::new(&mut storage, root.clone(), Config::default());
+    let tx_id = manager
+        .start_change(TransactionRequest {
+            category: Category::Feature,
+            entity: "src/api.rs".to_string(),
+            ..Default::default()
+        })
+        .unwrap();
+    drop(manager);
+    drop(storage);
+    execute_ledger_commit(
+        Some(tx_id.clone()),
+        "Depth cap completeness",
+        "Chain deeper than 2",
+        false,
+        false,
+        LedgerCommitGitOptions::default(),
+    )
+    .unwrap();
+
+    let storage = StorageManager::init(&db_path).unwrap();
+    let conn = storage.get_connection();
+    conn.execute(
+        "INSERT INTO snapshots (timestamp, is_clean, packet_json) VALUES (datetime('now'), 1, '{}')",
+        [],
+    )
+    .unwrap();
+    let snapshot_id = conn.last_insert_rowid();
+    conn.execute(
+        "UPDATE transactions SET snapshot_id = ?1 WHERE tx_id = ?2",
+        rusqlite::params![snapshot_id, &tx_id],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO token_provenance (tx_id, entity, entity_normalized, symbol_name, symbol_type, action) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+        rusqlite::params![tx_id, "src/api.rs", "src/api.rs", "dummy_fn", "Function", "MODIFIED"],
+    ).unwrap();
+    let cozo = storage.cozo().unwrap();
+    cozo.run_script(
+        "?[id, file_path, qualified_name, symbol_name, symbol_kind, is_public, line_start, line_end] <- [ \
+            [1, 'src/api.rs', 'crate::api::dummy_fn', 'dummy_fn', 'Function', true, 1, 5] \
+         ] :put project_symbol",
+    )
+    .unwrap();
+    cozo.run_script(
+        "?[id, label, category, risk_score, metadata] <- [ \
+            ['urn:ledgerful:file:src/api.rs', 'src/api.rs', 'file', 0.0, '{}'], \
+            ['urn:ledgerful:symbol:crate::api::dummy_fn', 'dummy_fn', 'symbol', 0.0, '{}'], \
+            ['urn:ledgerful:symbol:crate::chain::hop1', 'hop1', 'symbol', 0.0, '{}'], \
+            ['urn:ledgerful:symbol:crate::chain::hop2', 'hop2', 'symbol', 0.0, '{}'], \
+            ['urn:ledgerful:symbol:crate::chain::hop3', 'hop3', 'symbol', 0.0, '{}'] \
+         ] :put node",
+    )
+    .unwrap();
+    cozo.run_script(
+        "?[source, target, relation, confidence, provenance_id] <- [ \
+            ['urn:ledgerful:symbol:crate::api::dummy_fn', 'urn:ledgerful:symbol:crate::chain::hop1', 'calls', 1.0, ''], \
+            ['urn:ledgerful:symbol:crate::chain::hop1', 'urn:ledgerful:symbol:crate::chain::hop2', 'calls', 1.0, ''], \
+            ['urn:ledgerful:symbol:crate::chain::hop2', 'urn:ledgerful:symbol:crate::chain::hop3', 'calls', 1.0, ''] \
+         ] :put edge",
+    )
+    .unwrap();
+    storage.shutdown().unwrap();
+
+    let output = Command::new(env!("CARGO_BIN_EXE_ledgerful"))
+        .args(["ledger", "graph", &tx_id, "--json"])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "{:?}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let json: serde_json::Value = serde_json::from_slice(&output.stdout).unwrap();
+    let total = json["exact"].as_array().unwrap().len()
+        + json["derived"].as_array().unwrap().len()
+        + json["heuristic"].as_array().unwrap().len();
+    assert!(
+        total < 150,
+        "depth-cap fixture must stay under the node cap, got {total}"
+    );
+    assert_eq!(json["completeness"]["stop"], "cap");
+    assert_eq!(json["completeness"]["maxDepth"], 2);
+    assert_eq!(json["completeness"]["maxNodes"], 150);
 }

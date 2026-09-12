@@ -750,8 +750,13 @@ fn print_pending_sidecar(layout: &crate::state::layout::Layout) {
 /// Export stable provenance as pretty-printed JSON.
 ///
 /// When `output` is `None`, writes JSON to stdout. When `Some(path)`, writes
-/// to the specified file path.
-pub fn execute_ledger_export_provenance(output: Option<String>) -> Result<()> {
+/// to the specified file path. `--limit` / `--offset` page the live
+/// genesis→head (`committed_at ASC, tx_id ASC`) array.
+pub fn execute_ledger_export_provenance(
+    output: Option<String>,
+    limit: Option<usize>,
+    offset: usize,
+) -> Result<()> {
     let layout = get_layout()?;
     let storage = StorageManager::open_read_only(&layout)?;
     let db = LedgerDb::new(storage.get_connection());
@@ -759,18 +764,38 @@ pub fn execute_ledger_export_provenance(output: Option<String>) -> Result<()> {
         .get_all_committed_ledger_entries()
         .map_err(|e| miette::miette!("{}", e))?;
 
+    let page = page_provenance_entries(entries, limit, offset)?;
+
     if let Some(output_path) = output {
         let file = std::fs::File::create(&output_path).into_diagnostic()?;
-        serde_json::to_writer_pretty(file, &entries).into_diagnostic()?;
+        serde_json::to_writer_pretty(file, &page).into_diagnostic()?;
         println!(
             "{} Stable provenance exported to {}",
             "SUCCESS:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold())),
             output_path
         );
     } else {
-        serde_json::to_writer_pretty(std::io::stdout(), &entries).into_diagnostic()?;
+        serde_json::to_writer_pretty(std::io::stdout(), &page).into_diagnostic()?;
     }
     Ok(())
+}
+
+fn page_provenance_entries(
+    entries: Vec<crate::ledger::types::LedgerEntry>,
+    limit: Option<usize>,
+    offset: usize,
+) -> Result<Vec<crate::ledger::types::LedgerEntry>> {
+    let Some(lim) = limit else {
+        return Ok(entries);
+    };
+    if lim == 0 {
+        miette::bail!("--limit must be at least 1");
+    }
+    let total = entries.len();
+    if offset.saturating_add(lim) < total {
+        eprintln!("truncated: offset={offset} limit={lim} total={total}");
+    }
+    Ok(entries.into_iter().skip(offset).take(lim).collect())
 }
 
 /// Export a redacted, cryptographically verifiable public ledger bundle.

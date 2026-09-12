@@ -109,7 +109,10 @@ impl Commands {
                 LedgerCommands::Status { json, .. } => *json,
                 LedgerCommands::Register { .. } => false,
                 LedgerCommands::Stack { json, .. } => *json,
-                LedgerCommands::Adr { .. } => false,
+                LedgerCommands::Adr { command } => match command {
+                    AdrSubcommands::List { json, .. } => *json,
+                    _ => false,
+                },
                 LedgerCommands::Validator { command } => match command {
                     ValidatorSubcommands::List { json } => *json,
                     ValidatorSubcommands::Enable { .. } => false,

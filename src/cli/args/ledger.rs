@@ -3,6 +3,14 @@ use crate::ledger::types::Category;
 use clap::{Args, Subcommand};
 use std::path::PathBuf;
 
+fn parse_provenance_limit(raw: &str) -> Result<usize, String> {
+    let n: usize = raw.parse().map_err(|e| format!("invalid --limit: {e}"))?;
+    if n == 0 {
+        return Err("--limit must be at least 1".to_string());
+    }
+    Ok(n)
+}
+
 /// Perform a holistic project audit or history for an entity.
 #[derive(Args, Debug)]
 pub struct AuditArgs {
@@ -71,7 +79,14 @@ pub enum AdrSubcommands {
         message: Option<String>,
     },
     /// List all ADRs in the ledger
-    List,
+    List {
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
+        /// Filter by ADR lifecycle status
+        #[arg(long, value_enum)]
+        status: Option<crate::ledger::types::AdrStatus>,
+    },
 }
 
 #[derive(Subcommand, Debug)]
@@ -443,6 +458,12 @@ pub enum LedgerCommands {
         /// Overwrite an existing output file
         #[arg(short, long)]
         force: bool,
+        /// Maximum number of committed entries to emit (oldest first)
+        #[arg(long, value_parser = parse_provenance_limit)]
+        limit: Option<usize>,
+        /// Skip this many oldest entries (requires --limit)
+        #[arg(long, default_value_t = 0, requires = "limit")]
+        offset: usize,
     },
     /// Export a redacted, cryptographically verifiable public ledger bundle
     ExportPublic {

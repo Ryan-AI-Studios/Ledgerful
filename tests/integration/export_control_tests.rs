@@ -1115,6 +1115,37 @@ fn export_head__file_path_bytes_match_stdout() {
     );
 }
 
+#[test]
+#[serial(cwd, env)]
+fn export_head_file_banner_says_not_verification() {
+    let _non_interactive = non_interactive();
+    let repo = setup_export_repo();
+    seed_export_ledger(&repo);
+    seed_chain_head(&repo);
+
+    let binary = env!("CARGO_BIN_EXE_ledgerful");
+    let file_path = repo.root.join("head-banner.json");
+    let output = Command::new(binary)
+        .args(["export", "head", "--out", file_path.as_str()])
+        .current_dir(repo.root.as_std_path())
+        .output()
+        .expect("file spawn");
+    assert!(
+        output.status.success(),
+        "file export failed:\n{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("not a verification"),
+        "file banner must say not a verification: {stdout}"
+    );
+    assert!(
+        stdout.contains("SUCCESS:"),
+        "file banner must keep SUCCESS: {stdout}"
+    );
+}
+
 fn read_repo_file(path: &str) -> String {
     let repo_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
     std::fs::read_to_string(repo_root.join(path))

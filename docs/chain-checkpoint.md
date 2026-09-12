@@ -90,6 +90,8 @@ Full redacted public bundle (entries + manifest + verifier): see
 
 ## Honesty
 
+- File-mode `export head` SUCCESS is a checkpoint **write**, not VALID
+  and not `verify --signatures --against-export`.
 - Detection requires a head retained **outside** the compromised machine.
 - Signing-key compromise + re-sign remains a separate ceiling.
 - Team-sync peers share trust assumptions and are **not** a substitute for
