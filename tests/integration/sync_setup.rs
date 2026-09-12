@@ -588,9 +588,23 @@ fn log_json_states() {
     assert_eq!(v["lineCount"].as_u64().unwrap(), 2);
 
     fs::remove_file(log_path.as_std_path()).unwrap();
-    fs::create_dir_all(log_path.as_std_path()).unwrap();
-    let (stdout, stderr, code) = run_cli(tmp.path(), &["sync", "log", "--json"]);
-    assert_eq!(code, 1, "unreadable --json must exit 1; stderr={stderr}");
-    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
-    assert_eq!(v["logState"], "unreadable");
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::write(log_path.as_std_path(), "blocked").unwrap();
+        fs::set_permissions(log_path.as_std_path(), PermissionsExt::from_mode(0o000)).unwrap();
+        let (stdout, stderr, code) = run_cli(tmp.path(), &["sync", "log", "--json"]);
+        let _ = fs::set_permissions(log_path.as_std_path(), PermissionsExt::from_mode(0o644));
+        assert_eq!(code, 1, "unreadable --json must exit 1; stderr={stderr}");
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+        assert_eq!(v["logState"], "unreadable");
+    }
+    #[cfg(windows)]
+    {
+        fs::create_dir_all(log_path.as_std_path()).unwrap();
+        let (stdout, stderr, code) = run_cli(tmp.path(), &["sync", "log", "--json"]);
+        assert_eq!(code, 1, "unreadable --json must exit 1; stderr={stderr}");
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+        assert_eq!(v["logState"], "unreadable");
+    }
 }

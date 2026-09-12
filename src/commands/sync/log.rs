@@ -26,14 +26,18 @@ pub fn handle(tail: Option<usize>, json: bool) -> Result<()> {
     let file = match File::open(log_path.as_std_path()) {
         Ok(f) => f,
         Err(e) => {
-            if json {
-                emit_log_json("unreadable", log_path.as_str(), 0, 0, &[], next_action)?;
-                crate::output::requested_exit::request_exit(1);
-                return Err(miette!("Failed to open log file: {e}"));
-            }
-            return Err(miette!("Failed to open log file: {e}"));
+            return unreadable_log(json, log_path.as_str(), next_action, e.to_string());
         }
     };
+    let is_file = file.metadata().map(|m| m.is_file()).unwrap_or(false);
+    if !is_file {
+        return unreadable_log(
+            json,
+            log_path.as_str(),
+            next_action,
+            "sync.log is not a regular file".to_string(),
+        );
+    }
     let reader = BufReader::new(file);
     let mut decoded: Vec<String> = Vec::new();
     let mut skipped: u64 = 0;
@@ -73,6 +77,15 @@ pub fn handle(tail: Option<usize>, json: bool) -> Result<()> {
     Ok(())
 }
 
+fn unreadable_log(json: bool, path: &str, next_action: &str, err: String) -> Result<()> {
+    if json {
+        emit_log_json("unreadable", path, 0, 0, &[], next_action)?;
+        crate::output::requested_exit::request_exit(1);
+        return Err(miette!("Failed to open log file: {err}"));
+    }
+    Err(miette!("Failed to open log file: {err}"))
+}
+
 fn emit_log_json(
     log_state: &str,
     path: &str,
@@ -110,5 +123,6 @@ mod tests {
         assert!(!prod.contains("UPDATE sync_state"));
         assert!(!prod.contains("execute_federate_scan"));
         assert!(!prod.contains("map_while"));
+        assert!(prod.contains("is_file"));
     }
 }
