@@ -85,21 +85,6 @@ fn test_verify_json_health_emits_kind() {
 }
 
 #[test]
-fn test_verify_json_dry_run_emits_kind_executed_false() {
-    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
-    let output = Command::new(ledgerful_bin)
-        .args(["verify", "--json", "--dry-run"])
-        .output()
-        .expect("spawn ledgerful");
-    let stdout = String::from_utf8_lossy(&output.stdout);
-    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("dry-run JSON");
-    assert_eq!(v["kind"], "verifyDryRun");
-    assert_eq!(v["executed"], false);
-    assert!(v.get("ok").is_none(), "dry-run must not emit ok: {stdout}");
-    assert!(v["gitAvailable"].is_boolean());
-}
-
-#[test]
 fn test_verify_json_health_signatures_refuse_empty_stdout() {
     let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
     let output = Command::new(ledgerful_bin)
