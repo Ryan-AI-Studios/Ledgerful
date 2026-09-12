@@ -26,6 +26,7 @@ pub mod m51_ledger_chain_hash;
 pub mod m52_command_timings;
 pub mod m53_ledger_sig_version;
 pub mod m54_file_bindings;
+pub mod m55_ci_gate_qualifiers;
 
 use rusqlite_migration::Migrations;
 
@@ -148,6 +149,7 @@ pub fn get_migrations() -> Migrations<'static> {
     // imports and mod declarations. Registered unconditionally so
     // schema_version stays monotonic; the table is empty until indexing writes it.
     all_m.extend(m54_file_bindings::m54_file_bindings());
+    all_m.extend(m55_ci_gate_qualifiers::m55_ci_gate_qualifiers());
 
     Migrations::new(all_m)
 }
@@ -194,6 +196,7 @@ pub fn get_migrations_count() -> usize {
     count += m53_ledger_sig_version::m53_ledger_sig_version().len();
     // m54 is counted unconditionally — see the matching comment in `get_migrations`.
     count += m54_file_bindings::m54_file_bindings().len();
+    count += m55_ci_gate_qualifiers::m55_ci_gate_qualifiers().len();
 
     count
 }

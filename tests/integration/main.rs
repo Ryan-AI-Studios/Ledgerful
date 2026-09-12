@@ -20,6 +20,7 @@ mod cli_ask;
 mod cli_audit;
 mod cli_binary;
 mod cli_change_context;
+mod cli_ci;
 mod cli_config;
 mod cli_config_set;
 mod cli_configure;

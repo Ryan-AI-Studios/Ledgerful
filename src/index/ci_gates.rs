@@ -35,6 +35,9 @@ struct CIGateRow {
     environment: Option<String>,
     artifacts: Option<String>,
     release_gates: Option<String>,
+    job_if: Option<String>,
+    needs: Option<String>,
+    uses: Option<String>,
 }
 
 const CI_GATE_BATCH_SIZE: usize = 500;
@@ -119,6 +122,9 @@ impl<'a> CIGateExtractor<'a> {
                         .release_gates
                         .as_ref()
                         .map(|a| serde_json::to_string(a).unwrap_or_default()),
+                    job_if: gate.job_if.clone(),
+                    needs: gate.needs.clone(),
+                    uses: gate.uses.clone(),
                 });
 
                 match platform.as_str() {
@@ -257,8 +263,8 @@ impl<'a> CIGateExtractor<'a> {
 
         for row in rows {
             tx.execute(
-                "INSERT INTO ci_gates (ci_file_id, platform, job_name, trigger, steps, workflow_name, environment, artifacts, release_gates, last_indexed_at) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                "INSERT INTO ci_gates (ci_file_id, platform, job_name, trigger, steps, workflow_name, environment, artifacts, release_gates, job_if, needs, uses, last_indexed_at) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
                 rusqlite::params![
                     row.ci_file_id,
                     row.platform,
@@ -269,6 +275,9 @@ impl<'a> CIGateExtractor<'a> {
                     row.environment,
                     row.artifacts,
                     row.release_gates,
+                    row.job_if,
+                    row.needs,
+                    row.uses,
                     now,
                 ],
             )
@@ -282,6 +291,7 @@ impl<'a> CIGateExtractor<'a> {
 
 // --- Parsed CI gate struct (used internally during extraction) ---
 
+#[derive(Default)]
 pub struct ParsedCIGate {
     job_name: String,
     trigger: Option<String>,
@@ -290,6 +300,9 @@ pub struct ParsedCIGate {
     environment: Option<String>,
     artifacts: Option<Vec<String>>,
     release_gates: Option<Vec<String>>,
+    job_if: Option<String>,
+    needs: Option<String>,
+    uses: Option<String>,
 }
 
 // --- GitHub Actions Parser (delegated to ci_gates::github_actions) ---
@@ -446,6 +459,193 @@ jobs:
         assert!(!gates.is_empty());
         assert_eq!(gates[0].job_name, "build");
         assert_eq!(gates[0].workflow_name, Some("CI".to_string()));
+        assert_eq!(gates[0].trigger.as_deref(), Some("push"));
+    }
+
+    #[test]
+    fn parse_github_actions_branches_and_cron_are_not_triggers() {
+        let content = r#"
+name: CI
+on:
+  push:
+    branches:
+      - main
+      - feat/**
+  pull_request:
+  schedule:
+    - cron: '0 4 * * *'
+jobs:
+  build:
+    runs-on: ubuntu-latest
+"#;
+        let gates = parse_github_actions(content, Some("ci.yml"));
+        assert_eq!(gates.len(), 1);
+        assert_eq!(
+            gates[0].trigger.as_deref(),
+            Some("pull_request, push, schedule")
+        );
+        let t = gates[0].trigger.as_deref().unwrap_or("");
+        assert!(!t.contains("main"));
+        assert!(!t.contains("feat"));
+        assert!(!t.contains("cron"));
+    }
+
+    #[test]
+    fn parse_github_actions_inline_comment_keeps_event_name() {
+        let content = r#"
+on:
+  push: # trigger on commits
+jobs:
+  build:
+    runs-on: ubuntu-latest
+"#;
+        let gates = parse_github_actions(content, Some("ci.yml"));
+        assert_eq!(gates[0].trigger.as_deref(), Some("push"));
+    }
+
+    #[test]
+    fn parse_github_actions_scalar_needs() {
+        let content = r#"
+on: push
+jobs:
+  clippy:
+    needs: web-build
+    runs-on: ubuntu-latest
+"#;
+        let gates = parse_github_actions(content, Some("ci.yml"));
+        assert_eq!(gates[0].needs.as_deref(), Some("web-build"));
+    }
+
+    #[test]
+    fn parse_github_actions_inline_on_list_strips_brackets() {
+        let content = r#"
+on: [push, pull_request]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+"#;
+        let gates = parse_github_actions(content, Some("ci.yml"));
+        assert_eq!(gates[0].trigger.as_deref(), Some("pull_request, push"));
+    }
+
+    #[test]
+    fn parse_github_actions_dispatch_and_call_are_triggers() {
+        let content = r#"
+on:
+  workflow_dispatch:
+  workflow_call:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+"#;
+        let gates = parse_github_actions(content, Some("ci.yml"));
+        assert_eq!(
+            gates[0].trigger.as_deref(),
+            Some("workflow_call, workflow_dispatch")
+        );
+    }
+
+    #[test]
+    fn parse_github_actions_job_if_needs_uses() {
+        let content = r#"
+on: push
+jobs:
+  call:
+    uses: org/repo/.github/workflows/ci.yml@main
+  clippy:
+    needs: [web-build, fmt]
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - run: cargo clippy
+"#;
+        let gates = parse_github_actions(content, Some("ci.yml"));
+        let call = gates.iter().find(|g| g.job_name == "call").expect("call");
+        assert_eq!(
+            call.uses.as_deref(),
+            Some("org/repo/.github/workflows/ci.yml@main")
+        );
+        let clippy = gates
+            .iter()
+            .find(|g| g.job_name == "clippy")
+            .expect("clippy");
+        assert_eq!(clippy.needs.as_deref(), Some("fmt, web-build"));
+        assert_eq!(
+            clippy.job_if.as_deref(),
+            Some("github.event_name == 'push'")
+        );
+        assert!(clippy.uses.is_none());
+    }
+
+    #[test]
+    fn parse_github_actions_step_if_uses_do_not_leak() {
+        let content = r#"
+on: push
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Archive
+        if: matrix.archive == 'tar'
+        uses: actions/upload-artifact@v4
+"#;
+        let gates = parse_github_actions(content, Some("ci.yml"));
+        assert_eq!(gates.len(), 1);
+        assert!(gates[0].uses.is_none());
+        assert!(gates[0].job_if.is_none());
+    }
+
+    #[test]
+    fn parse_github_actions_folded_if_joins_continuation() {
+        let content = r#"
+on: pull_request
+jobs:
+  tag:
+    if: >
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.merged == true
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo tag
+"#;
+        let gates = parse_github_actions(content, Some("ci.yml"));
+        let ifs = gates[0].job_if.as_deref().unwrap_or("");
+        assert_ne!(ifs, ">");
+        assert!(ifs.contains("github.event_name == 'pull_request'"));
+        assert!(ifs.contains("github.event.pull_request.merged == true"));
+    }
+
+    #[test]
+    fn parse_github_actions_block_sequence_needs() {
+        let content = r#"
+on: push
+jobs:
+  publish:
+    needs:
+      - build
+      - sbom
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo ok
+"#;
+        let gates = parse_github_actions(content, Some("ci.yml"));
+        assert_eq!(gates[0].needs.as_deref(), Some("build, sbom"));
+    }
+
+    #[test]
+    fn parse_github_actions_no_jobs_yields_empty() {
+        let content = "name: Empty\non:\n  push:\n";
+        let gates = parse_github_actions(content, Some("empty.yml"));
+        assert!(gates.is_empty());
+    }
+
+    #[test]
+    fn parse_makefile_still_compiles_and_parses() {
+        let gates = parse_makefile("all:\n\techo hi\n");
+        assert_eq!(gates[0].job_name, "all");
+        assert_eq!(gates[0].trigger.as_deref(), Some("manual"));
+        assert!(gates[0].job_if.is_none());
     }
 
     #[test]

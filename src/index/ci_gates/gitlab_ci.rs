@@ -83,6 +83,7 @@ pub fn parse_gitlab_ci(content: &str) -> Vec<ParsedCIGate> {
                         environment: None,
                         artifacts: None,
                         release_gates: None,
+                        ..Default::default()
                     });
                 }
                 current_steps.clear();
@@ -129,6 +130,7 @@ pub fn parse_gitlab_ci(content: &str) -> Vec<ParsedCIGate> {
             environment: None,
             artifacts: None,
             release_gates: None,
+            ..Default::default()
         });
     }
 
