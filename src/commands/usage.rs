@@ -607,15 +607,21 @@ pub fn execute_usage_status() -> Result<()> {
         config.last_sent_at.as_deref().unwrap_or("(never)")
     );
 
-    let conn = match open_counter_store() {
-        Some(c) => c,
-        None => {
-            println!("  Pending events:  0");
-            return Ok(());
-        }
+    let mut compiled = enabled_features();
+    compiled.sort();
+    let compiled_display = if compiled.is_empty() {
+        "(none)".to_string()
+    } else {
+        compiled.join(", ")
     };
-    let total = read_total_pending(&conn);
-    println!("  Pending events:  {}", total);
+    println!("  Compiled features: {compiled_display}");
+    println!("  (Cargo features in this binary; not telemetry consent. Consent is Enabled above.)");
+
+    let total = match open_counter_store() {
+        Some(conn) => read_total_pending(&conn),
+        None => 0,
+    };
+    println!("  Pending events:  {total}");
     Ok(())
 }
 

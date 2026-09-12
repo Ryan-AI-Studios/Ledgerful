@@ -171,7 +171,7 @@ impl Commands {
             Commands::Web { command } => match command {
                 WebCommands::Start(_) => "web_start",
                 WebCommands::Stop => "web_stop",
-                WebCommands::Status => "web_status",
+                WebCommands::Status { .. } => "web_status",
             },
             Commands::Internal { command } => match command {
                 InternalCommands::HookCommitMsg { .. } => "internal_hook_commit_msg",

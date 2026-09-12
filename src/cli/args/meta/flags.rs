@@ -1541,7 +1541,12 @@ impl Commands {
                         f.push("token");
                     }
                 }
-                WebCommands::Stop | WebCommands::Status => {}
+                WebCommands::Stop => {}
+                WebCommands::Status { json } => {
+                    if *json {
+                        f.push("json");
+                    }
+                }
             },
             #[cfg(feature = "sync")]
             Commands::Sync { subcommand } => match subcommand {

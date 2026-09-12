@@ -33,6 +33,14 @@ Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/ch
 | `ledgerful ledger export-provenance [--limit N] [--offset N]` | Pretty **bare array** of committed entries, oldest first. `--limit`/`--offset` page that array; truncation is one stderr `truncated:` line. Not a `schemaVersion` wrap. |
 | `ledgerful export head [--out PATH] [--stdout]` | Thin `ChainHead` checkpoint. `--stdout` / `-o -` is exact JSON bytes (0182). File-mode SUCCESS is a checkpoint write, not a verification. |
 
+## `ledgerful web status` / `usage status` / `daemon`
+
+`web status --json` (0328) is schemaVersion 1 PID-state evidence (`running` / `stalePid` / `reusedPid` / `noPidFile`) plus always-on `next`. Read-only: does not start, stop, or delete the PID file. Bare `web` still requires a subcommand.
+
+`usage status` names compiled Cargo features vs telemetry consent. `usage show-payload` `features_enabled` stays ingest-frozen (`feature = "usage-metrics"`; not a default feature). Do not `usage enable` on operator home.
+
+`daemon` (`feature = "daemon"`, not default) is an LSP on stdio — not a background Unix daemon. `--interval` is accepted and unused. Do not spawn it unless the owner asked for LSP.
+
 ## `ledgerful federate` / `sync cursor` / `sync log`
 
 `federate status --json` (0327) is schemaVersion 1 live-peer provenance (`freshness` from sibling `schema.generated_at`, not required checks). Bare `federate` stays human status (0179). `sync cursor --json` / `sync log --json` (`feature = "sync"`) name missing vs never-run vs unreadable; lag is always `unknown`. Do not `federate scan` or `sync init` unless the owner named that HITL.

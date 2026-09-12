@@ -185,7 +185,11 @@ mod mcp_cloud_egress;
 #[cfg(feature = "mcp")]
 mod mcp_server;
 
+#[cfg(feature = "daemon")]
+mod cli_daemon_help;
 mod cli_tests_command;
+#[cfg(feature = "web")]
+mod cli_web_status;
 #[cfg(feature = "web")]
 mod openapi_contract;
 #[cfg(feature = "web")]

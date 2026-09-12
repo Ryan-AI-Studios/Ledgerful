@@ -26,6 +26,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Utility status evidence (0328):** `web status --json` names PID state
+  (`running` / `stalePid` / `reusedPid` / `noPidFile`) and always emits
+  `next` without starting or stopping the server. `usage status` names
+  compiled Cargo features vs telemetry consent; ingest `features_enabled`
+  is unchanged. `daemon --help` describes LSP on stdio (`--interval`
+  accepted, unused). `usage` / `daemon` stay off default features.
+
 - **Federate/sync status evidence (0327):** `federate status --json` lists
   live peers with `lastScanned`, omit-empty `schemaGeneratedAt`, and
   freshness (`available` / `stale` / `unavailable`) from sibling

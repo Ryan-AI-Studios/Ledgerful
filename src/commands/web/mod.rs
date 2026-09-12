@@ -17,6 +17,7 @@ use camino::{Utf8Path, Utf8PathBuf};
 use miette::{IntoDiagnostic, Result, miette};
 use owo_colors::{OwoColorize, Stream};
 use std::collections::HashSet;
+use std::io::Write;
 use std::net::IpAddr;
 use std::sync::Arc;
 use std::time::Instant;
@@ -33,7 +34,7 @@ pub fn execute_web(command: WebCommands) -> Result<()> {
             let layout = get_layout()?;
             crate::commands::pid::stop(&layout.web_pid_file())
         }
-        WebCommands::Status => print_web_status(),
+        WebCommands::Status { json } => print_web_status(json),
     }
 }
 
@@ -463,26 +464,81 @@ fn spawn_background_server(
     Err(miette!("Background mode is not supported on this platform"))
 }
 
-fn print_web_status() -> Result<()> {
-    let layout = get_layout()?;
-    let pid_path = layout.web_pid_file();
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum WebPidState {
+    Running,
+    StalePid,
+    ReusedPid,
+    NoPidFile,
+}
 
-    match PidFile::read(&pid_path)? {
-        Some(pid) if PidFile::is_alive_and_ours(pid) => {
-            println!("ledgerful web is running (PID {})", pid);
-            println!("PID file: {}", pid_path);
-        }
-        Some(pid) => {
-            println!(
-                "ledgerful web is not running (stale PID {} in {})",
-                pid, pid_path
-            );
-        }
-        None => {
-            println!("ledgerful web is not running (no PID file at {})", pid_path);
+impl WebPidState {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Running => "running",
+            Self::StalePid => "stalePid",
+            Self::ReusedPid => "reusedPid",
+            Self::NoPidFile => "noPidFile",
         }
     }
 
+    fn next_command(self) -> &'static str {
+        match self {
+            Self::Running => "ledgerful web stop",
+            Self::StalePid | Self::ReusedPid | Self::NoPidFile => "ledgerful web start",
+        }
+    }
+}
+
+fn classify_web_pid(pid: Option<u32>) -> WebPidState {
+    match pid {
+        None => WebPidState::NoPidFile,
+        Some(pid) if PidFile::is_alive_and_ours(pid) => WebPidState::Running,
+        Some(pid) if PidFile::is_alive(pid) => WebPidState::ReusedPid,
+        Some(_) => WebPidState::StalePid,
+    }
+}
+
+fn print_web_status(json: bool) -> Result<()> {
+    let layout = get_layout()?;
+    let pid_path = layout.web_pid_file();
+    let pid = PidFile::read(&pid_path)?;
+    let state = classify_web_pid(pid);
+    let next = state.next_command();
+
+    if json {
+        let mut envelope = serde_json::json!({
+            "schemaVersion": 1,
+            "state": state.as_str(),
+            "pidFile": pid_path.as_str(),
+            "next": next,
+        });
+        if let Some(pid) = pid
+            && let Some(obj) = envelope.as_object_mut()
+        {
+            obj.insert("pid".into(), serde_json::json!(pid));
+        }
+        let mut stdout = std::io::stdout().lock();
+        serde_json::to_writer(&mut stdout, &envelope).into_diagnostic()?;
+        stdout.write_all(b"\n").into_diagnostic()?;
+        return Ok(());
+    }
+
+    match (state, pid) {
+        (WebPidState::Running, Some(pid)) => {
+            println!("ledgerful web is running (PID {pid})");
+        }
+        (WebPidState::StalePid, Some(pid)) => {
+            println!("ledgerful web is not running (stale PID {pid} in {pid_path})");
+        }
+        (WebPidState::ReusedPid, Some(pid)) => {
+            println!("ledgerful web is not running (reused PID {pid} in {pid_path})");
+        }
+        _ => {
+            println!("ledgerful web is not running (no PID file at {pid_path})");
+        }
+    }
+    println!("Next: {next}");
     Ok(())
 }
 
@@ -827,5 +883,41 @@ mod tests {
         assert!(resolve_session_token(Some(String::new()), None).is_err());
         assert!(resolve_session_token(None, Some(String::new())).is_err());
         assert!(resolve_peer_allowlist(true, "0.0.0.0").is_err());
+    }
+
+    #[test]
+    fn classify_web_pid_running_is_this_process() {
+        let pid = std::process::id();
+        assert_eq!(classify_web_pid(Some(pid)), WebPidState::Running);
+        assert_eq!(WebPidState::Running.next_command(), "ledgerful web stop");
+    }
+
+    #[test]
+    fn classify_web_pid_missing_and_stale() {
+        assert_eq!(classify_web_pid(None), WebPidState::NoPidFile);
+        assert_eq!(WebPidState::NoPidFile.next_command(), "ledgerful web start");
+        // A PID that cannot be alive on this host.
+        assert_eq!(classify_web_pid(Some(u32::MAX)), WebPidState::StalePid);
+        assert_eq!(WebPidState::StalePid.next_command(), "ledgerful web start");
+        assert_eq!(WebPidState::ReusedPid.next_command(), "ledgerful web start");
+    }
+
+    #[test]
+    fn status_read_path_does_not_remove_pid_file() {
+        let src = include_str!("mod.rs");
+        let status_fn = src.split("fn print_web_status").nth(1).unwrap_or("");
+        let status_fn = status_fn.split("#[cfg(test)]").next().unwrap_or(status_fn);
+        assert!(
+            !status_fn.contains("PidFile::remove"),
+            "print_web_status must not remove the PID file"
+        );
+        assert!(
+            !status_fn.contains("fs::remove_file"),
+            "print_web_status must not fs::remove_file"
+        );
+        assert!(
+            !status_fn.contains("start_web"),
+            "print_web_status must not start the server"
+        );
     }
 }

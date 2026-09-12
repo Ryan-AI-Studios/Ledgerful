@@ -42,7 +42,11 @@ pub enum WebCommands {
     /// Stop a running ledgerful web dashboard server
     Stop,
     /// Show whether the ledgerful web server is running
-    Status,
+    Status {
+        /// Emit pure camelCase web-status JSON on stdout (`schemaVersion: 1`)
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 #[derive(Args, Debug)]
