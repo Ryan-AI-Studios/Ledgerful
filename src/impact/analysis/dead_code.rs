@@ -632,10 +632,15 @@ mod tests {
         let (storage, _cozo) = in_memory_storage_with_cozo();
         let config = default_config();
         let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
-        for kind in [SymbolKind::Type, SymbolKind::Struct, SymbolKind::Enum] {
+        for kind in [
+            SymbolKind::Type,
+            SymbolKind::Struct,
+            SymbolKind::Enum,
+            SymbolKind::Module,
+        ] {
             let symbol = Symbol {
                 name: "Eq".to_string(),
-                kind,
+                kind: kind.clone(),
                 is_public: true,
                 cognitive_complexity: None,
                 cyclomatic_complexity: None,
@@ -1164,34 +1169,6 @@ mod tests {
             "explain_file took {} ms, target is <200 ms",
             elapsed.as_millis()
         );
-    }
-
-    #[test]
-    fn score_symbol_skips_module_kind() {
-        let (storage, _cozo) = in_memory_storage_with_cozo();
-        let conn = storage.get_connection();
-        seed_rs_edge_and_mapping(conn);
-        let config = default_config();
-        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
-        let module = make_symbol_with_kind("calls", SymbolKind::Module, Vec::new());
-        assert!(scorer
-            .score_symbol(&module, Path::new("src/lib.rs"))
-            .unwrap()
-            .is_none());
-    }
-
-    #[test]
-    fn score_symbol_skips_reexport_metadata() {
-        let (storage, _cozo) = in_memory_storage_with_cozo();
-        let conn = storage.get_connection();
-        seed_rs_edge_and_mapping(conn);
-        let config = default_config();
-        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
-        let reexport = make_symbol_with_kind("calls", SymbolKind::Type, vec![("reexport", "true")]);
-        assert!(scorer
-            .score_symbol(&reexport, Path::new("src/lib.rs"))
-            .unwrap()
-            .is_none());
     }
 
     #[test]
