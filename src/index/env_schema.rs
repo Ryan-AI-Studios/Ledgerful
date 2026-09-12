@@ -776,7 +776,6 @@ struct EnvDeclarationRow {
     confidence: f64,
 }
 
-#[allow(dead_code)]
 struct EnvReferenceRow {
     file_id: i64,
     symbol_id: Option<i64>,

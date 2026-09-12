@@ -2,7 +2,6 @@ use crate::index::observability::{ErrorHandlingPattern, LoggingPattern, Telemetr
 use miette::Result;
 
 pub mod calls;
-pub mod common;
 pub mod models;
 pub mod observability;
 pub mod routes;
