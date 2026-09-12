@@ -9,7 +9,7 @@ use ledgerful::federated::schema::FederatedSchema;
 use std::fs;
 use tempfile::tempdir;
 
-use crate::common::{DirGuard, setup_git_repo};
+use crate::common::{DirGuard, run_cli, setup_git_repo};
 
 #[test]
 #[serial(cwd)]
@@ -94,7 +94,7 @@ fn test_federate_status_from_subdirectory() {
     let _subguard = DirGuard::from_utf8(&subdir);
 
     // This should find the repo root and work correctly (even if no links yet)
-    execute_federate_status().unwrap();
+    execute_federate_status(false).unwrap();
 }
 
 #[serial(cwd)]
@@ -215,7 +215,7 @@ fn federate_status_collapses_dups_and_omits_husk() {
     storage.shutdown().unwrap();
 
     // Status is RO — raw cache still has 4 rows after status.
-    execute_federate_status().unwrap();
+    execute_federate_status(false).unwrap();
     let storage = ledgerful::state::storage::StorageManager::init(db_path.as_std_path()).unwrap();
     let raw = ledgerful::federated::storage::get_federated_links(storage.get_connection()).unwrap();
     assert_eq!(raw.len(), 4, "status must not DELETE");
@@ -338,4 +338,116 @@ fn federate_scan_stores_basename_not_schema_repo_name() {
         );
         storage.shutdown().unwrap();
     }
+}
+
+#[test]
+#[serial(cwd)]
+fn federate_status_json_freshness_and_determinism() {
+    let workspace = tempdir().unwrap();
+    let workspace_path = Utf8Path::from_path(workspace.path()).unwrap();
+    let repo = workspace_path.join("main-repo");
+    let stale_peer = workspace_path.join("StalePeer");
+    let good_peer = workspace_path.join("GoodPeer");
+    let bad_peer = workspace_path.join("BadPeer");
+    fs::create_dir_all(&repo).unwrap();
+    fs::create_dir_all(&stale_peer).unwrap();
+    fs::create_dir_all(&good_peer).unwrap();
+    fs::create_dir_all(&bad_peer).unwrap();
+    setup_git_repo(repo.as_std_path());
+
+    fn write_schema(dir: &Utf8Path, generated_at: &str) {
+        let state = dir.join(".ledgerful").join("state");
+        fs::create_dir_all(&state).unwrap();
+        fs::write(
+            state.join("schema.json"),
+            format!(
+                r#"{{"schema_version":"1.1","repo_name":"peer","public_interfaces":[],"generated_at":"{generated_at}"}}"#
+            ),
+        )
+        .unwrap();
+    }
+    write_schema(&stale_peer, "2026-09-12T12:00:00Z");
+    write_schema(&good_peer, "2026-07-04T12:22:20Z");
+    let bad_state = bad_peer.join(".ledgerful").join("state");
+    fs::create_dir_all(&bad_state).unwrap();
+    fs::write(bad_state.join("schema.json"), "{").unwrap();
+
+    let _guard = DirGuard::from_utf8(&repo);
+    execute_init(false, false).unwrap();
+    let db_path = repo.join(".ledgerful").join("state").join("ledger.db");
+    let storage = ledgerful::state::storage::StorageManager::init(db_path.as_std_path()).unwrap();
+    ledgerful::federated::storage::update_federated_link(
+        storage.get_connection(),
+        "stale",
+        stale_peer.as_str(),
+        "2026-09-01T00:00:00Z",
+    )
+    .unwrap();
+    ledgerful::federated::storage::update_federated_link(
+        storage.get_connection(),
+        "good",
+        good_peer.as_str(),
+        "2026-09-12T14:42:24Z",
+    )
+    .unwrap();
+    ledgerful::federated::storage::update_federated_link(
+        storage.get_connection(),
+        "bad",
+        bad_peer.as_str(),
+        "2026-09-12T00:00:00Z",
+    )
+    .unwrap();
+    storage.shutdown().unwrap();
+
+    let (stdout1, stderr1, code1) = run_cli(repo.as_std_path(), &["federate", "status", "--json"]);
+    let (stdout2, _stderr2, code2) = run_cli(repo.as_std_path(), &["federate", "status", "--json"]);
+    assert_eq!(code1, 0, "stderr={stderr1}");
+    assert_eq!(code2, 0);
+    assert_eq!(
+        stdout1, stdout2,
+        "federate status --json must be deterministic"
+    );
+    assert!(
+        !stdout1.contains("WARN"),
+        "JSON must not include human WARN:\n{stdout1}"
+    );
+    assert!(
+        !stdout1.contains("Last scanned"),
+        "JSON must not include human lines:\n{stdout1}"
+    );
+    let v: serde_json::Value = serde_json::from_str(stdout1.trim()).expect("json");
+    assert_eq!(v["schemaVersion"], 1);
+    let peers = v["peers"].as_array().expect("peers");
+    assert_eq!(peers.len(), 3);
+    let reasons: Vec<&str> = peers
+        .iter()
+        .map(|p| p["freshness"]["reason"].as_str().unwrap_or(""))
+        .collect();
+    assert!(reasons.contains(&"schemaExportedAfterScan"));
+    assert!(reasons.contains(&"scanCapturedSchema"));
+    assert!(reasons.contains(&"schemaUnreadable"));
+    assert_eq!(v["next"], "ledgerful federate scan");
+
+    let (human, _, hcode) = run_cli(repo.as_std_path(), &["federate", "status"]);
+    assert_eq!(hcode, 0);
+    assert!(human.contains("Freshness: available (scanCapturedSchema)"));
+    assert!(human.contains("Freshness: stale (schemaExportedAfterScan)"));
+    assert!(human.contains("Freshness: unavailable (schemaUnreadable)"));
+}
+
+#[test]
+#[serial(cwd)]
+fn federate_status_json_empty_emits_next() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+    let _guard = DirGuard::from_utf8(root);
+    execute_init(false, false).unwrap();
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["federate", "status", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+    assert_eq!(v["schemaVersion"], 1);
+    assert_eq!(v["peers"].as_array().map(|a| a.len()), Some(0));
+    assert_eq!(v["next"], "ledgerful federate scan");
+    assert!(v.get("emptyReason").is_none());
 }

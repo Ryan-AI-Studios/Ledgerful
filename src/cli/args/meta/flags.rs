@@ -1263,7 +1263,12 @@ impl Commands {
                 }
             },
             Commands::Federate { command } => match command {
-                None | Some(FederateCommands::Scan) | Some(FederateCommands::Status) => {}
+                None | Some(FederateCommands::Scan) => {}
+                Some(FederateCommands::Status { json }) => {
+                    if *json {
+                        f.push("json");
+                    }
+                }
                 Some(FederateCommands::Export { dry_run, out }) => {
                     if *dry_run {
                         f.push("dry_run");
@@ -1588,14 +1593,20 @@ impl Commands {
                 SyncSubcommands::Verify { .. } => {
                     // path is positional value — never hashed.
                 }
-                SyncSubcommands::Cursor { set } => {
+                SyncSubcommands::Cursor { set, json } => {
                     if set.is_some() {
                         f.push("set");
                     }
+                    if *json {
+                        f.push("json");
+                    }
                 }
-                SyncSubcommands::Log { tail } => {
+                SyncSubcommands::Log { tail, json } => {
                     if tail.is_some() {
                         f.push("tail");
+                    }
+                    if *json {
+                        f.push("json");
                     }
                 }
             },

@@ -4,6 +4,8 @@
 //! name. Live peers require a readable sibling schema; Self and Dead are
 //! omitted from status presentation and pruned on scan.
 
+use crate::federated::schema::FederatedSchema;
+use chrono::{DateTime, Utc};
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
@@ -185,6 +187,123 @@ pub fn omitted_honesty_message(omitted: usize) -> String {
     )
 }
 
+/// 0313-style freshness strings for `federate status` (not the index packet).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FreshnessStatus {
+    Available,
+    Stale,
+    Unavailable,
+}
+
+impl FreshnessStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Available => "available",
+            Self::Stale => "stale",
+            Self::Unavailable => "unavailable",
+        }
+    }
+}
+
+/// Per-peer schema provenance vs last scan (0327).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PeerFreshness {
+    pub status: FreshnessStatus,
+    pub reason: &'static str,
+    pub schema_generated_at: Option<String>,
+}
+
+fn parse_instant(raw: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(raw)
+        .ok()
+        .map(|dt| dt.with_timezone(&Utc))
+}
+
+/// Classify one live peer. Fail-soft: one unreadable schema does not abort.
+pub fn classify_peer_freshness(peer_path: &str, last_scanned: &str) -> PeerFreshness {
+    let last_instant = parse_instant(last_scanned);
+
+    let Some(schema_path) = resolve_sibling_schema(peer_path) else {
+        return PeerFreshness {
+            status: FreshnessStatus::Unavailable,
+            reason: if last_instant.is_none() {
+                "lastScannedUnparseable"
+            } else {
+                "schemaUnreadable"
+            },
+            schema_generated_at: None,
+        };
+    };
+
+    let schema = match std::fs::read_to_string(&schema_path)
+        .ok()
+        .and_then(|body| serde_json::from_str::<FederatedSchema>(&body).ok())
+    {
+        Some(s) => s,
+        None => {
+            return PeerFreshness {
+                status: FreshnessStatus::Unavailable,
+                reason: if last_instant.is_none() {
+                    "lastScannedUnparseable"
+                } else {
+                    "schemaUnreadable"
+                },
+                schema_generated_at: None,
+            };
+        }
+    };
+
+    let generated_raw = schema.generated_at.trim();
+    let generated_at = if generated_raw.is_empty() {
+        None
+    } else {
+        Some(schema.generated_at.clone())
+    };
+
+    let Some(last_instant) = last_instant else {
+        return PeerFreshness {
+            status: FreshnessStatus::Unavailable,
+            reason: "lastScannedUnparseable",
+            schema_generated_at: generated_at,
+        };
+    };
+
+    if generated_raw.is_empty() {
+        return PeerFreshness {
+            status: FreshnessStatus::Available,
+            reason: "schemaGeneratedAtMissing",
+            schema_generated_at: None,
+        };
+    }
+
+    let Some(gen_instant) = parse_instant(generated_raw) else {
+        return PeerFreshness {
+            status: FreshnessStatus::Unavailable,
+            reason: "schemaGeneratedAtUnparseable",
+            schema_generated_at: generated_at,
+        };
+    };
+
+    if gen_instant > last_instant {
+        PeerFreshness {
+            status: FreshnessStatus::Stale,
+            reason: "schemaExportedAfterScan",
+            schema_generated_at: generated_at,
+        }
+    } else {
+        PeerFreshness {
+            status: FreshnessStatus::Available,
+            reason: "scanCapturedSchema",
+            schema_generated_at: generated_at,
+        }
+    }
+}
+
+/// Pinned human line under `Last scanned`.
+pub fn format_freshness_line(status: FreshnessStatus, reason: &str) -> String {
+    format!("  Freshness: {} ({reason})", status.as_str())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -336,5 +455,103 @@ mod tests {
             // Backslash is a separator only on Windows.
             assert_eq!(path_basename(r"C:\dev\ledgerful\"), "ledgerful");
         }
+    }
+
+    fn write_schema_with_generated_at(dir: &Path, generated_at: &str) {
+        let state = dir.join(".ledgerful").join("state");
+        fs::create_dir_all(&state).unwrap();
+        let body = format!(
+            r#"{{"schema_version":"1.1","repo_name":"peer","public_interfaces":[],"generated_at":"{generated_at}"}}"#
+        );
+        fs::write(state.join("schema.json"), body).unwrap();
+    }
+
+    #[test]
+    fn freshness_stale_when_schema_exported_after_scan() {
+        let dir = tempdir().unwrap();
+        write_schema_with_generated_at(dir.path(), "2026-09-12T12:00:00Z");
+        let got = classify_peer_freshness(dir.path().to_str().unwrap(), "2026-09-01T00:00:00Z");
+        assert_eq!(got.status, FreshnessStatus::Stale);
+        assert_eq!(got.reason, "schemaExportedAfterScan");
+        assert_eq!(
+            got.schema_generated_at.as_deref(),
+            Some("2026-09-12T12:00:00Z")
+        );
+    }
+
+    #[test]
+    fn freshness_available_when_scan_captures_schema() {
+        let dir = tempdir().unwrap();
+        write_schema_with_generated_at(dir.path(), "2026-07-04T12:22:20.229439900+00:00");
+        let got = classify_peer_freshness(
+            dir.path().to_str().unwrap(),
+            "2026-09-12T14:42:24.650955200+00:00",
+        );
+        assert_eq!(got.status, FreshnessStatus::Available);
+        assert_eq!(got.reason, "scanCapturedSchema");
+    }
+
+    #[test]
+    fn freshness_same_instant_z_vs_offset_is_not_stale() {
+        let dir = tempdir().unwrap();
+        write_schema_with_generated_at(dir.path(), "2026-09-12T12:00:00Z");
+        let got =
+            classify_peer_freshness(dir.path().to_str().unwrap(), "2026-09-12T12:00:00+00:00");
+        assert_eq!(got.status, FreshnessStatus::Available);
+        assert_eq!(got.reason, "scanCapturedSchema");
+    }
+
+    #[test]
+    fn freshness_missing_generated_at_is_available() {
+        let dir = tempdir().unwrap();
+        let state = dir.path().join(".ledgerful").join("state");
+        fs::create_dir_all(&state).unwrap();
+        fs::write(
+            state.join("schema.json"),
+            r#"{"schema_version":"1.1","repo_name":"peer","public_interfaces":[]}"#,
+        )
+        .unwrap();
+        let got = classify_peer_freshness(dir.path().to_str().unwrap(), "2026-09-12T00:00:00Z");
+        assert_eq!(got.status, FreshnessStatus::Available);
+        assert_eq!(got.reason, "schemaGeneratedAtMissing");
+        assert!(got.schema_generated_at.is_none());
+    }
+
+    #[test]
+    fn freshness_unparseable_last_scanned() {
+        let dir = tempdir().unwrap();
+        write_schema_with_generated_at(dir.path(), "2026-09-12T12:00:00Z");
+        let got = classify_peer_freshness(dir.path().to_str().unwrap(), "not-a-time");
+        assert_eq!(got.status, FreshnessStatus::Unavailable);
+        assert_eq!(got.reason, "lastScannedUnparseable");
+    }
+
+    #[test]
+    fn freshness_unparseable_generated_at() {
+        let dir = tempdir().unwrap();
+        write_schema_with_generated_at(dir.path(), "soon");
+        let got = classify_peer_freshness(dir.path().to_str().unwrap(), "2026-09-12T00:00:00Z");
+        assert_eq!(got.status, FreshnessStatus::Unavailable);
+        assert_eq!(got.reason, "schemaGeneratedAtUnparseable");
+        assert_eq!(got.schema_generated_at.as_deref(), Some("soon"));
+    }
+
+    #[test]
+    fn freshness_malformed_schema_is_unreadable() {
+        let dir = tempdir().unwrap();
+        let state = dir.path().join(".ledgerful").join("state");
+        fs::create_dir_all(&state).unwrap();
+        fs::write(state.join("schema.json"), "{").unwrap();
+        let got = classify_peer_freshness(dir.path().to_str().unwrap(), "2026-09-12T00:00:00Z");
+        assert_eq!(got.status, FreshnessStatus::Unavailable);
+        assert_eq!(got.reason, "schemaUnreadable");
+    }
+
+    #[test]
+    fn format_freshness_line_is_pinned() {
+        assert_eq!(
+            format_freshness_line(FreshnessStatus::Available, "scanCapturedSchema"),
+            "  Freshness: available (scanCapturedSchema)"
+        );
     }
 }

@@ -26,6 +26,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Federate/sync status evidence (0327):** `federate status --json` lists
+  live peers with `lastScanned`, omit-empty `schemaGeneratedAt`, and
+  freshness (`available` / `stale` / `unavailable`) from sibling
+  `schema.generated_at` vs last scan — not GitHub, not the configure
+  3-day catalog. `sync cursor --json` and `sync log --json` name
+  missing vs never-run vs unreadable without invented lag. Human cursor
+  missing HLC prints `Never`.
+
 - **Declared CI inventory (0326):** `ci list --json` adds `filePath`,
   event-name `triggers`, omit-empty `jobIf` / `needs` / `uses`, and
   always-present `scope` (`declaredWorkflowJobs`; not GitHub required

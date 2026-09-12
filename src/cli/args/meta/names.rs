@@ -54,7 +54,7 @@ impl Commands {
             },
             Commands::Federate { command } => match command {
                 // Bare federate → status (read-only); never default to export (writes).
-                None | Some(FederateCommands::Status) => "federate_status",
+                None | Some(FederateCommands::Status { .. }) => "federate_status",
                 Some(FederateCommands::Export { .. }) => "federate_export",
                 Some(FederateCommands::Scan) => "federate_scan",
             },

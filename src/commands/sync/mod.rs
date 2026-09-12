@@ -24,7 +24,7 @@ pub fn handle(subcommand: SyncSubcommands) -> Result<()> {
         SyncSubcommands::Setup { enable, json } => setup::handle(enable, json),
         SyncSubcommands::Status { json } => status::handle(json),
         SyncSubcommands::Verify { path } => verify::handle(&path),
-        SyncSubcommands::Cursor { set } => cursor::handle(set),
-        SyncSubcommands::Log { tail } => log::handle(tail),
+        SyncSubcommands::Cursor { set, json } => cursor::handle(set, json),
+        SyncSubcommands::Log { tail, json } => log::handle(tail, json),
     }
 }

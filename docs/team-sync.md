@@ -270,6 +270,10 @@ ledgerful sync pair --revoke <device_id>
 ledgerful sync pair --force '<invite>'
 ledgerful sync run --once           # clear message when disabled; no secret prompt if disabled
 ledgerful sync verify <path>        # decrypt + Ed25519 verify
+ledgerful sync cursor               # extract/apply HLC watermarks (human Never when missing)
+ledgerful sync cursor --json        # schemaVersion 1; lag.status always unknown
+ledgerful sync log                  # tail sync.log
+ledgerful sync log --json           # logState neverInitialized/noLog/unreadable/ok/partial
 ```
 
 Doctor: if `enabled=true` without init, empty target, or **zero peers** → **warn** / optional

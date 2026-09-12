@@ -1,4 +1,7 @@
-use crate::federated::links::{omitted_honesty_message, path_basename, present_federated_links};
+use crate::federated::links::{
+    classify_peer_freshness, format_freshness_line, omitted_honesty_message, path_basename,
+    present_federated_links,
+};
 use crate::federated::scanner::FederatedScanner;
 use crate::federated::schema::{FederatedSchema, PublicInterface};
 use crate::federated::storage::{
@@ -14,6 +17,7 @@ use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
 use std::env;
 use std::fs;
+use std::io::Write;
 
 pub fn execute_federate_export(dry_run: bool, out: Option<String>) -> Result<()> {
     let current_dir = env::current_dir().into_diagnostic()?;
@@ -266,7 +270,7 @@ pub fn execute_federate_scan() -> Result<()> {
     Ok(())
 }
 
-pub fn execute_federate_status() -> Result<()> {
+pub fn execute_federate_status(json: bool) -> Result<()> {
     let current_dir = env::current_dir().into_diagnostic()?;
     let _repo = open_repo(&current_dir).into_diagnostic()?;
 
@@ -276,6 +280,10 @@ pub fn execute_federate_status() -> Result<()> {
     let raw = get_federated_links(storage.get_connection())?;
     // 0184: path identity — present Live peers only (RO; no DELETE).
     let presented = present_federated_links(&raw, layout.root.as_str());
+
+    if json {
+        return emit_federate_status_json(&presented);
+    }
 
     if raw.is_empty() {
         println!("No federated links found. Run 'ledgerful federate scan' to discover siblings.");
@@ -304,7 +312,8 @@ pub fn execute_federate_status() -> Result<()> {
             .len()
             .if_supports_color(Stream::Stdout, |s| s.bold())
     );
-    for link in presented.live {
+    for link in &presented.live {
+        let freshness = classify_peer_freshness(&link.path, &link.last_scanned);
         println!(
             "- {} (at {})",
             link.name.if_supports_color(Stream::Stdout, |s| s.cyan()),
@@ -315,7 +324,74 @@ pub fn execute_federate_status() -> Result<()> {
             link.last_scanned
                 .if_supports_color(Stream::Stdout, |s| s.dimmed())
         );
+        println!(
+            "{}",
+            format_freshness_line(freshness.status, freshness.reason)
+        );
     }
 
     Ok(())
+}
+
+fn emit_federate_status_json(presented: &crate::federated::links::PresentedLinks) -> Result<()> {
+    let mut peers = Vec::new();
+    let mut any_stale = false;
+    for link in &presented.live {
+        let freshness = classify_peer_freshness(&link.path, &link.last_scanned);
+        if freshness.status == crate::federated::links::FreshnessStatus::Stale {
+            any_stale = true;
+        }
+        let mut item = serde_json::json!({
+            "name": link.name,
+            "path": link.path,
+            "lastScanned": link.last_scanned,
+            "freshness": {
+                "status": freshness.status.as_str(),
+                "reason": freshness.reason,
+            }
+        });
+        if let Some(generated) = freshness.schema_generated_at
+            && let Some(obj) = item.as_object_mut()
+        {
+            obj.insert("schemaGeneratedAt".into(), serde_json::json!(generated));
+        }
+        peers.push(item);
+    }
+
+    let mut envelope = serde_json::json!({
+        "schemaVersion": 1,
+        "peers": peers,
+        "omitted": {
+            "self": presented.omitted_self,
+            "dead": presented.omitted_dead,
+            "duplicate": presented.omitted_dup_extra,
+        }
+    });
+    if (any_stale || presented.live.is_empty())
+        && let Some(obj) = envelope.as_object_mut()
+    {
+        obj.insert("next".into(), serde_json::json!("ledgerful federate scan"));
+    }
+
+    let mut stdout = std::io::stdout().lock();
+    serde_json::to_writer(&mut stdout, &envelope).into_diagnostic()?;
+    stdout.write_all(b"\n").into_diagnostic()?;
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn status_read_path_does_not_scan_or_delete() {
+        let src = include_str!("federate.rs");
+        let status_fn = src
+            .split("pub fn execute_federate_status")
+            .nth(1)
+            .unwrap_or("");
+        let status_fn = status_fn.split("#[cfg(test)]").next().unwrap_or(status_fn);
+        assert!(!status_fn.contains("execute_federate_scan"));
+        assert!(!status_fn.contains("execute_federate_export"));
+        assert!(!status_fn.contains("DELETE FROM"));
+        assert!(!status_fn.contains("prune_dead"));
+    }
 }

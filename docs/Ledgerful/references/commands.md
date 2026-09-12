@@ -33,6 +33,10 @@ Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/ch
 | `ledgerful ledger export-provenance [--limit N] [--offset N]` | Pretty **bare array** of committed entries, oldest first. `--limit`/`--offset` page that array; truncation is one stderr `truncated:` line. Not a `schemaVersion` wrap. |
 | `ledgerful export head [--out PATH] [--stdout]` | Thin `ChainHead` checkpoint. `--stdout` / `-o -` is exact JSON bytes (0182). File-mode SUCCESS is a checkpoint write, not a verification. |
 
+## `ledgerful federate` / `sync cursor` / `sync log`
+
+`federate status --json` (0327) is schemaVersion 1 live-peer provenance (`freshness` from sibling `schema.generated_at`, not required checks). Bare `federate` stays human status (0179). `sync cursor --json` / `sync log --json` (`feature = "sync"`) name missing vs never-run vs unreadable; lag is always `unknown`. Do not `federate scan` or `sync init` unless the owner named that HITL.
+
 ## `ledgerful tests`
 
 Requires `-e` / `--entity` or a positional entity. Missing entity is a usage error (exit 2, empty stdout) — not an empty `mappings` envelope. Structural mapping includes in-file unit tests (`SAME_FILE`); still not LCOV.

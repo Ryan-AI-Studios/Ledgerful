@@ -61,7 +61,11 @@ impl Commands {
                 // Evidence remains file-only zip; never machine/stdout product body.
                 ExportCommands::Evidence { .. } => false,
             },
-            Commands::Federate { .. } => false,
+            Commands::Federate { command } => match command {
+                None => false,
+                Some(FederateCommands::Status { json }) => *json,
+                Some(_) => false,
+            },
             Commands::Services { command } => match command {
                 None => false,
                 Some(ServiceSubcommands::Diff(args)) => args.json,
@@ -157,6 +161,8 @@ impl Commands {
             Commands::Sync { subcommand } => match subcommand {
                 SyncSubcommands::Setup { json, .. } => *json,
                 SyncSubcommands::Status { json } => *json,
+                SyncSubcommands::Cursor { json, .. } => *json,
+                SyncSubcommands::Log { json, .. } => *json,
                 _ => false,
             },
             Commands::SearchTrigrams(SearchTrigramsArgs { .. }) => false,
