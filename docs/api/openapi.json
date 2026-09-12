@@ -1524,6 +1524,12 @@
           "reason": {
             "type": "string"
           },
+          "reason_kind": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
           "related_tickets": {
             "type": [
               "string",
@@ -1531,6 +1537,12 @@
             ]
           },
           "risk": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "risk_source": {
             "type": [
               "string",
               "null"

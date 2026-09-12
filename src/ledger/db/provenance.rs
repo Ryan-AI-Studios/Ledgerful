@@ -85,6 +85,34 @@ pub fn find_transactions_by_file(
     Ok(entries)
 }
 
+/// Exact file attribution via `changed_files.path` (same join as ledger graph).
+/// Slash-normalize both sides. Do not use LIKE.
+pub fn find_ledger_entries_by_changed_file(
+    conn: &Connection,
+    file_path: &str,
+) -> Result<Vec<crate::ledger::types::LedgerEntry>, LedgerError> {
+    let normalized = file_path.replace('\\', "/");
+    let mut stmt = conn.prepare(
+        "SELECT DISTINCT l.id, l.tx_id, l.category, l.entry_type, l.entity, l.entity_normalized,
+            l.change_type, l.summary, l.reason, l.is_breaking, l.committed_at,
+            l.verification_status, l.verification_basis, l.outcome_notes,
+            l.origin, l.trace_id, l.signature, l.public_key, l.risk, l.related_tickets, l.author, l.observed, l.prev_hash, l.sig_version
+         FROM ledger_entries l
+         JOIN transactions t ON t.tx_id = l.tx_id
+         JOIN changed_files cf ON cf.snapshot_id = t.snapshot_id
+         WHERE REPLACE(cf.path, '\\', '/') = ?1
+         ORDER BY l.committed_at DESC, l.tx_id DESC",
+    )?;
+
+    let rows = stmt.query_map(params![normalized], super::map_ledger_entry)?;
+
+    let mut entries = Vec::new();
+    for entry in rows {
+        entries.push(entry?);
+    }
+    Ok(entries)
+}
+
 fn map_token_provenance(row: &rusqlite::Row) -> rusqlite::Result<TokenProvenance> {
     let action_str: String = row.get(6)?;
     let action =

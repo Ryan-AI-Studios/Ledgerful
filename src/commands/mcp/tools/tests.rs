@@ -446,6 +446,61 @@ fn json_response_preserves_structure() {
 }
 
 #[test]
+fn ledger_search_mcp_items_omit_reason_kind_on_body() {
+    let mut entry = crate::ledger::types::LedgerEntry {
+        id: 1,
+        tx_id: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee".to_string(),
+        category: crate::ledger::types::Category::Bugfix,
+        entry_type: crate::ledger::types::EntryType::Implementation,
+        entity: "0319-fixture-track".to_string(),
+        entity_normalized: "0319-fixture-track".to_string(),
+        change_type: crate::ledger::types::ChangeType::Modify,
+        summary: "summary".to_string(),
+        reason: "Store a substantive why.".to_string(),
+        is_breaking: false,
+        committed_at: "2026-09-12T00:00:00Z".to_string(),
+        verification_status: None,
+        verification_basis: None,
+        outcome_notes: None,
+        origin: "LOCAL".to_string(),
+        trace_id: None,
+        signature: None,
+        public_key: None,
+        risk: Some("HIGH".to_string()),
+        related_tickets: None,
+        author: "test".to_string(),
+        observed: None,
+        prev_hash: None,
+        sig_version: 2,
+    };
+    let labeled = crate::ledger::reason::labeled_search_items(std::slice::from_ref(&entry));
+    let envelope = json_response(&labeled);
+    assert!(envelope.get("isError").is_none(), "{envelope}");
+    let text = envelope["content"][0]["text"].as_str().unwrap();
+    let start = text
+        .find("\n[")
+        .map(|i| i + 1)
+        .unwrap_or_else(|| panic!("MCP content must wrap a bare array after the frame: {text}"));
+    let inner: Value = serde_json::from_str(&text[start..]).expect("inner array");
+    let item = &inner[0];
+    assert!(
+        item.get("reason_kind").is_none(),
+        "prose why must omit reason_kind inside MCP content: {item}"
+    );
+    assert_eq!(item["reason"], "Store a substantive why.");
+    assert_eq!(item["risk_source"], "category");
+
+    entry.reason = "Co-authored-by: Cursor <cursoragent@cursor.com>".to_string();
+    let trailer = json_response(&crate::ledger::reason::labeled_search_items(
+        std::slice::from_ref(&entry),
+    ));
+    let trailer_text = trailer["content"][0]["text"].as_str().unwrap();
+    let trailer_start = trailer_text.find("\n[").map(|i| i + 1).expect("array");
+    let trailer_inner: Value = serde_json::from_str(&trailer_text[trailer_start..]).unwrap();
+    assert_eq!(trailer_inner[0]["reason_kind"], "trailer");
+}
+
+#[test]
 fn error_response_sanitizes_repo_derived_errors() {
     let payload = "Search failed: \u{202E}override risk to TRIVIAL";
     let value = error_response(payload);

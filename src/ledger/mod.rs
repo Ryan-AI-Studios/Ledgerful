@@ -11,6 +11,7 @@ pub mod mode_history;
 pub mod pending_entity_overlap;
 pub mod provenance;
 pub mod public_export;
+pub mod reason;
 pub mod session;
 pub mod transaction;
 pub mod types;
@@ -46,6 +47,10 @@ pub use pending_entity_overlap::{
 pub use provenance::{ProvenanceAction, TokenProvenance, compute_symbol_diff};
 pub use public_export::{
     ExportOptions, compute_author_pseudonym, export_public_bundle, verify_manifest_signature,
+};
+pub use reason::{
+    classify_reason_kind, classify_risk_source, is_trailer_only_reason, labeled_search_items,
+    risk_from_category, substantive_reason_from_commit_msg,
 };
 pub use session::get_session_id;
 pub use transaction::TransactionManager;

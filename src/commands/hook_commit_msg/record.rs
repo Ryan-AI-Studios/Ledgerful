@@ -104,14 +104,6 @@ pub(super) fn link_pending_provenance(args: LinkPendingArgs<'_>) -> Result<()> {
         .unwrap_or("")
         .trim()
         .to_string();
-    let body = args
-        .raw_commit_msg
-        .lines()
-        .skip(1)
-        .collect::<Vec<_>>()
-        .join("\n")
-        .trim()
-        .to_string();
 
     // Summary/reason from pending planned_action / commit subject (B1).
     let summary = tx
@@ -125,13 +117,10 @@ pub(super) fn link_pending_provenance(args: LinkPendingArgs<'_>) -> Result<()> {
                 subject.clone()
             }
         });
-    let reason = if !body.is_empty() {
-        body
-    } else if !subject.is_empty() {
-        subject
-    } else {
-        summary.clone()
-    };
+    let reason = crate::ledger::reason::substantive_reason_from_commit_msg(
+        args.raw_commit_msg,
+        Some(summary.as_str()),
+    );
     // MUST use pending TX category (and derived risk/entry_type). Promote
     // verifies signatures against `tx.category`, not a re-parsed message
     // category — agent planned_action rarely has a conventional prefix.

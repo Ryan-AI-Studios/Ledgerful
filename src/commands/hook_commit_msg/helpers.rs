@@ -1,6 +1,8 @@
 use crate::ledger::Category;
 use std::fs;
 
+pub use crate::ledger::reason::{risk_from_category, substantive_reason_from_commit_msg};
+
 pub fn extract_trailers(msg: &str) -> String {
     let lines: Vec<&str> = msg.lines().collect();
     let mut trailer_lines = Vec::new();
@@ -190,17 +192,5 @@ pub fn parse_category_from_message(msg: &str) -> Category {
             msg
         );
         Category::Chore
-    }
-}
-
-pub fn risk_from_category(cat: Category) -> &'static str {
-    match cat {
-        Category::Architecture
-        | Category::Feature
-        | Category::Bugfix
-        | Category::Infra
-        | Category::Security => "HIGH",
-        Category::Refactor | Category::Tooling => "MEDIUM",
-        Category::Docs | Category::Chore => "TRIVIAL",
     }
 }

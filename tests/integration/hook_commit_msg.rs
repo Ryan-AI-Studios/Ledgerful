@@ -1014,3 +1014,90 @@ fn provenance_sot_hook_fallback_creates_pending_when_no_sot() {
         "HookFallback must create exactly one pending TX"
     );
 }
+
+/// LinkPending sidecar why must not be a trailer-only Co-authored-by body.
+#[test]
+fn link_pending_sidecar_reason_is_not_trailer_only() {
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    crate::common::setup_git_repo(root);
+
+    let ledgerful_bin = std::env!("CARGO_BIN_EXE_ledgerful");
+    let init = std::process::Command::new(ledgerful_bin)
+        .arg("init")
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        init.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
+
+    let start = std::process::Command::new(ledgerful_bin)
+        .args([
+            "ledger",
+            "start",
+            "0319-fixture-track",
+            "--category",
+            "BUGFIX",
+            "--message",
+            "open pending",
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        start.status.success(),
+        "ledger start failed: {}",
+        String::from_utf8_lossy(&start.stderr)
+    );
+
+    std::fs::write(root.join("work.txt"), "w").unwrap();
+    std::process::Command::new("git")
+        .args(["add", "work.txt"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    let msg_file = root.join(".git").join("COMMIT_EDITMSG");
+    let original = "feat: bind review evidence\n\nCo-authored-by: Cursor <cursoragent@cursor.com>";
+    std::fs::write(&msg_file, original).unwrap();
+
+    let hook_output = std::process::Command::new(ledgerful_bin)
+        .args(["internal", "hook-commit-msg", msg_file.to_str().unwrap()])
+        .current_dir(root)
+        .env("LEDGERFUL_NON_INTERACTIVE", "1")
+        .output()
+        .unwrap();
+    assert!(
+        hook_output.status.success(),
+        "hook-commit-msg failed: stdout={} stderr={}",
+        String::from_utf8_lossy(&hook_output.stdout),
+        String::from_utf8_lossy(&hook_output.stderr)
+    );
+
+    let rewritten = std::fs::read_to_string(&msg_file).unwrap();
+    let subject_count = rewritten.matches("feat: bind review evidence").count();
+    assert_eq!(
+        subject_count, 1,
+        "conventional bypass must not duplicate the subject in COMMIT_EDITMSG: {rewritten}"
+    );
+    assert!(
+        rewritten.contains("Co-authored-by: Cursor"),
+        "trailers must stay on the git message: {rewritten}"
+    );
+
+    let sidecar_path = root
+        .join(".ledgerful")
+        .join("state")
+        .join("pending_hook_tx");
+    let sidecar: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&sidecar_path).unwrap()).unwrap();
+    let why = sidecar["reason"].as_str().unwrap_or("");
+    assert!(
+        !why.contains("Co-authored-by"),
+        "sidecar reason must not be trailer-only: {why}"
+    );
+    assert_eq!(why, "feat: bind review evidence");
+}
