@@ -32,11 +32,28 @@ fn test_verify_json_invalid_scope_fatal_empty_stdout() {
 }
 
 /// 0321: `--json --signatures` is allowed (`kind: verifySignatures`).
+/// Hermetic repo: CI checkout has no `.ledgerful` (gitignored), so a
+/// CWD-relative spawn would fail before emit (empty stdout).
 #[test]
 fn test_verify_json_signatures_emits_kind() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    let _guard = DirGuard::from_utf8(root);
+    setup_git_repo(tmp.path());
     let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let init = Command::new(ledgerful_bin)
+        .arg("init")
+        .current_dir(tmp.path())
+        .output()
+        .expect("init");
+    assert!(
+        init.status.success(),
+        "init must succeed: {}",
+        String::from_utf8_lossy(&init.stderr)
+    );
     let output = Command::new(ledgerful_bin)
         .args(["verify", "--json", "--signatures"])
+        .current_dir(tmp.path())
         .output()
         .expect("spawn ledgerful");
     let stdout = String::from_utf8_lossy(&output.stdout);

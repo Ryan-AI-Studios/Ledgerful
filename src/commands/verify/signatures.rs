@@ -5,9 +5,9 @@ use owo_colors::{OwoColorize, Stream};
 use std::path::Path;
 
 use super::diagnostic::{
-    ChainBreakKind, VerifyChainBreakJson, VerifyChainDimensionJson, VerifyCheckpointJson,
-    VerifySignatureTrustJson, VerifySignaturesDimensionJson, VerifySignaturesJson,
-    cap_sorted_breaks, cap_sorted_invalid_samples, diagnostic_schema_version,
+    ChainBreakKind, VerifyChainBreakJson, VerifyChainDimensionJson, VerifyChainHeadJson,
+    VerifyCheckpointJson, VerifySignatureTrustJson, VerifySignaturesDimensionJson,
+    VerifySignaturesJson, cap_sorted_breaks, cap_sorted_invalid_samples, diagnostic_schema_version,
     verify_signatures_kind,
 };
 
@@ -1007,6 +1007,37 @@ fn tally_signatures_dimension(
     }
 }
 
+fn chain_head_dimension(
+    head: &crate::ledger::types::ChainHead,
+    computed_latest: Option<&str>,
+    computed_length: i64,
+    compare_computed: bool,
+) -> VerifyChainHeadJson {
+    let head_sig = head.head_signature.as_deref().unwrap_or("");
+    let head_pub = head.head_public_key.as_deref().unwrap_or("");
+    let signature_valid = crate::ledger::crypto::verify_chain_head(
+        &head.latest_entry_hash,
+        &head.genesis,
+        head.length,
+        head_sig,
+        head_pub,
+    );
+    let expected_latest = computed_latest.unwrap_or("");
+    let (hash_match, length_match) = if compare_computed {
+        (
+            expected_latest == head.latest_entry_hash,
+            computed_length == head.length,
+        )
+    } else {
+        (true, true)
+    };
+    VerifyChainHeadJson {
+        signature_valid,
+        hash_match,
+        length_match,
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn collect_chain_and_checkpoint_for_json(
     entries: &[crate::ledger::types::LedgerEntry],
@@ -1024,7 +1055,7 @@ fn collect_chain_and_checkpoint_for_json(
     bool,
 )> {
     if entries.is_empty() && against_export.is_none() {
-        if head.is_some() {
+        if let Some(head_ref) = head {
             return Ok((
                 VerifyChainDimensionJson {
                     checked: true,
@@ -1032,6 +1063,7 @@ fn collect_chain_and_checkpoint_for_json(
                     extra_genesis_count: 0,
                     break_count: 1,
                     breaks: vec![],
+                    head: Some(chain_head_dimension(head_ref, None, 0, true)),
                 },
                 None,
                 Some(
@@ -1247,6 +1279,14 @@ fn collect_chain_and_checkpoint_for_json(
         extra_genesis_count,
         break_count,
         breaks: cap_sorted_breaks(breaks),
+        head: head.map(|head_ref| {
+            chain_head_dimension(
+                head_ref,
+                prev_hash.as_deref(),
+                chain_length,
+                should_walk_chain,
+            )
+        }),
     };
 
     let checkpoint = if let Some(export_path) = against_export {
@@ -2139,6 +2179,23 @@ mod verify_signatures_json_collect_tests {
                 .contains("Chain head signature"),
             "{first:?}"
         );
+        let head = payload
+            .chain
+            .head
+            .as_ref()
+            .expect("stored head → chain.head");
+        assert!(
+            !head.signature_valid,
+            "invalid head sig is chain.head, not breaks"
+        );
+        assert!(head.hash_match);
+        assert!(head.length_match);
+        assert!(
+            json.contains("\"signatureValid\": false"),
+            "omit-empty chain.head must surface head-sig fail: {json}"
+        );
+        assert!(payload.chain.breaks.is_empty());
+        assert_eq!(payload.chain.break_count, 0);
     }
 
     #[test]
@@ -2168,5 +2225,10 @@ mod verify_signatures_json_collect_tests {
         assert_eq!(payload.exit_code, 1);
         assert!(payload.chain.checked);
         assert!(payload.chain.extra_genesis_count >= 1);
+        assert!(
+            payload.chain.head.is_none(),
+            "no stored head → omit chain.head"
+        );
+        assert!(!json.contains("\"signatureValid\""));
     }
 }

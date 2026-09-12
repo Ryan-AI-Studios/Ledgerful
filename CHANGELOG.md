@@ -32,7 +32,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   `verify --json` is unchanged (schemaVersion 1, no `kind`). Signature
   JSON collect-then-emits chain/checkpoint dimensions; human `!json`
   first-break strings stay. Checkpoint `match`/`extends` stay exit 0;
-  fail kinds stay exit 1. Diagnostics do not write `latest-verify.json`.
+  fail kinds stay exit 1. Stored-head fails surface on omit-empty
+  `chain.head` (`signatureValid` / `hashMatch` / `lengthMatch`).
+  Diagnostics do not write `latest-verify.json`.
 
 - **Export-head file banner (0320):** file-mode `export head` SUCCESS
   states the write is a checkpoint, not a verification. `--stdout` /

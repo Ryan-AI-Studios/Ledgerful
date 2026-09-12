@@ -163,6 +163,17 @@ impl VerifySignaturesDimensionJson {
     }
 }
 
+/// Stored chain-head checks. Present only when a stored head exists
+/// (`skip_serializing_if` omit-empty). Entry-level `breaks[]` cannot
+/// carry these (no `txId`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct VerifyChainHeadJson {
+    pub signature_valid: bool,
+    pub hash_match: bool,
+    pub length_match: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct VerifyChainDimensionJson {
@@ -171,6 +182,8 @@ pub struct VerifyChainDimensionJson {
     pub extra_genesis_count: usize,
     pub break_count: usize,
     pub breaks: Vec<VerifyChainBreakJson>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub head: Option<VerifyChainHeadJson>,
 }
 
 impl VerifyChainDimensionJson {
@@ -181,6 +194,7 @@ impl VerifyChainDimensionJson {
             extra_genesis_count: 0,
             break_count: 0,
             breaks: Vec::new(),
+            head: None,
         }
     }
 }
@@ -429,6 +443,7 @@ mod diagnostic_dto_tests {
                     tx_id: "aaaa".into(),
                     kind: ChainBreakKind::ExtraGenesis,
                 }],
+                head: None,
             },
             checkpoint: None,
         };
@@ -438,7 +453,31 @@ mod diagnostic_dto_tests {
         assert!(json.contains("\"extraGenesis\""));
         assert!(!json.contains("checkpoint"));
         assert!(!json.contains("invalidSamples"));
+        assert!(!json.contains("\"head\""));
         assert!(json.contains("\"strict\": false"));
+    }
+
+    #[test]
+    fn chain_head_omit_empty_serializes_three_bools() {
+        let with_head = VerifyChainDimensionJson {
+            checked: true,
+            linked_entries: 1,
+            extra_genesis_count: 0,
+            break_count: 0,
+            breaks: vec![],
+            head: Some(VerifyChainHeadJson {
+                signature_valid: false,
+                hash_match: true,
+                length_match: true,
+            }),
+        };
+        let json = serde_json::to_string_pretty(&with_head).unwrap();
+        assert!(json.contains("\"signatureValid\": false"));
+        assert!(json.contains("\"hashMatch\": true"));
+        assert!(json.contains("\"lengthMatch\": true"));
+        let without = VerifyChainDimensionJson::unchecked();
+        let omitted = serde_json::to_string(&without).unwrap();
+        assert!(!omitted.contains("head"), "{omitted}");
     }
 
     #[test]

@@ -279,6 +279,12 @@ They do **not** write `latest-verify.json`.
 `extends` are `ok: true` / exit 0 (same as human extends-or-equals).
 `diverges` / `exactMismatch` / `exportSigInvalid` are `ok: false` / exit 1.
 
+`verifySignatures.chain.head` (omit-empty): present only when a stored
+chain head exists. Fields: `signatureValid`, `hashMatch`, `lengthMatch`.
+A stored-head signature / hash / length fail can be `ok: false` with
+`signatures.invalid == 0` and `breaks: []` — do not treat empty `breaks`
+as a silent pass. `--chain`-only keeps `signatures.checked: false`.
+
 Reject (miette, empty stdout, no partial JSON) mixed diagnostic modes:
 
 | Combo | Error |
