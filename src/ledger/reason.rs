@@ -282,6 +282,15 @@ mod tests {
     }
 
     #[test]
+    fn substantive_reason_strips_crlf_coauthored_trailer() {
+        let msg =
+            "feat: bind review evidence\r\n\r\nCo-authored-by: Cursor <cursoragent@cursor.com>";
+        let why = substantive_reason_from_commit_msg(msg, None);
+        assert_eq!(why, "feat: bind review evidence");
+        assert!(!why.contains("Co-authored-by"));
+    }
+
+    #[test]
     fn classify_risk_source_category_for_bugfix_high() {
         assert_eq!(
             classify_risk_source(Some("HIGH"), Category::Bugfix),

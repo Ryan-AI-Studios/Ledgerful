@@ -988,9 +988,26 @@ mod tests {
         assert_eq!(risk, "HIGH (from category BUGFIX)");
         let prose = format_audit_reason_line("Store a substantive why.");
         assert_eq!(prose, "Store a substantive why.");
+        let printed_reason = format!("  Reason:  {reason}");
+        let printed_risk = format!("  Risk:    {risk}");
+        assert!(
+            printed_reason.contains("Reason:") && printed_reason.contains("[trailer]"),
+            "printer line must keep Reason: + [trailer]: {printed_reason}"
+        );
+        assert!(
+            printed_risk.contains("Risk:") && printed_risk.contains("(from category BUGFIX)"),
+            "printer line must keep Risk: + category source: {printed_risk}"
+        );
     }
 
     fn with_changed_files_fixture(
+        f: impl FnOnce(&crate::ledger::TransactionManager, &crate::ledger::db::LedgerDb<'_>, &str, &str),
+    ) {
+        with_changed_files_fixture_setup(|_| {}, f);
+    }
+
+    fn with_changed_files_fixture_setup(
+        extra: impl FnOnce(&mut crate::ledger::TransactionManager),
         f: impl FnOnce(&crate::ledger::TransactionManager, &crate::ledger::db::LedgerDb<'_>, &str, &str),
     ) {
         let tmp = tempfile::tempdir().expect("tempdir");
@@ -1062,6 +1079,8 @@ mod tests {
             )
             .expect("commit neighbor");
 
+        extra(&mut manager);
+
         let db = crate::ledger::db::LedgerDb::new(manager.get_connection());
         f(&manager, &db, &track_tx, file_path);
     }
@@ -1082,6 +1101,29 @@ mod tests {
                 "track-slug TX must join via changed_files"
             );
             assert_eq!(exact.reason_kind.as_deref(), Some("trailer"));
+
+            let v = serde_json::to_value(&payload).expect("serialize {exact, related}");
+            assert!(
+                v.get("exact").is_some() && v.get("related").is_some(),
+                "{v}"
+            );
+            let item = v["exact"]
+                .as_array()
+                .expect("exact")
+                .iter()
+                .find(|e| e["txId"] == track_id)
+                .unwrap_or_else(|| panic!("expected track tx in exact JSON: {v}"));
+            assert_eq!(item["matchBasis"], "changed_files");
+            assert_eq!(item["reasonKind"], "trailer");
+            assert_eq!(item["riskSource"], "category");
+            assert!(
+                item.get("match_basis").is_none(),
+                "audit JSON must be camelCase: {item}"
+            );
+            assert!(
+                item.get("reason_kind").is_none(),
+                "audit JSON must be camelCase: {item}"
+            );
         });
     }
 
@@ -1107,6 +1149,104 @@ mod tests {
                 payload.related.iter().all(|e| e.tx_id != track_id),
                 "exact tx must be filtered from related"
             );
+
+            let v = serde_json::to_value(&payload).expect("serialize {exact, related}");
+            let related_json = v["related"]
+                .as_array()
+                .expect("related")
+                .iter()
+                .find(|e| e["entity"] == "src/commands/other.rs")
+                .unwrap_or_else(|| panic!("expected neighbor in related JSON: {v}"));
+            assert_eq!(related_json["matchBasis"], "directory");
         });
+    }
+
+    #[test]
+    fn audit_match_basis_omitted_on_non_file_entity() {
+        with_changed_files_fixture(|manager, db, track_id, _file_path| {
+            let payload = audit_entity_payload(manager, db, "0319-fixture-track", None, 20, 0)
+                .expect("payload");
+            let exact = payload
+                .exact
+                .iter()
+                .find(|e| e.tx_id == track_id)
+                .expect("track slug exact");
+            assert!(
+                exact.match_basis.is_none(),
+                "non-file audit must omit matchBasis"
+            );
+            let v = serde_json::to_value(&payload).expect("json");
+            let item = v["exact"]
+                .as_array()
+                .expect("exact")
+                .iter()
+                .find(|e| e["txId"] == track_id)
+                .expect("track json");
+            assert!(
+                item.get("matchBasis").is_none(),
+                "non-file audit JSON must omit matchBasis: {item}"
+            );
+        });
+    }
+
+    #[test]
+    fn audit_offset_limit_applies_to_changed_files_union() {
+        let second_id = std::cell::RefCell::new(String::new());
+        with_changed_files_fixture_setup(
+            |manager| {
+                let snapshot_id: i64 = manager
+                    .get_connection()
+                    .query_row(
+                        "SELECT snapshot_id FROM transactions WHERE entity = '0319-fixture-track'",
+                        [],
+                        |row| row.get(0),
+                    )
+                    .expect("first snapshot");
+                let second = manager
+                    .start_change(crate::ledger::TransactionRequest {
+                        category: crate::ledger::types::Category::Bugfix,
+                        entity: "0319-fixture-track-b".to_string(),
+                        ..Default::default()
+                    })
+                    .expect("start second");
+                manager
+                    .commit_change(
+                        second.clone(),
+                        crate::ledger::CommitRequest {
+                            summary: "second track commit".to_string(),
+                            reason: "Co-authored-by: Cursor <cursoragent@cursor.com>".to_string(),
+                            risk: Some("HIGH".to_string()),
+                            snapshot_id: Some(snapshot_id),
+                            ..Default::default()
+                        },
+                        false,
+                    )
+                    .expect("commit second");
+                *second_id.borrow_mut() = second;
+            },
+            |manager, db, track_id, file_path| {
+                let second = second_id.borrow();
+                let page0 = audit_entity_payload(manager, db, file_path, Some(file_path), 1, 0)
+                    .expect("page0");
+                let page1 = audit_entity_payload(manager, db, file_path, Some(file_path), 1, 1)
+                    .expect("page1");
+                assert_eq!(page0.exact.len(), 1, "offset 0 limit 1");
+                assert_eq!(page1.exact.len(), 1, "offset 1 limit 1 on the union");
+                assert_ne!(
+                    page0.exact[0].tx_id, page1.exact[0].tx_id,
+                    "pages must be distinct union slices"
+                );
+                let ids: std::collections::HashSet<_> = page0
+                    .exact
+                    .iter()
+                    .chain(page1.exact.iter())
+                    .map(|e| e.tx_id.as_str())
+                    .collect();
+                assert!(
+                    ids.contains(track_id) && ids.contains(second.as_str()),
+                    "union paging must include both changed_files TXs: {ids:?}"
+                );
+            },
+        );
     }
 }
