@@ -484,10 +484,6 @@ pub fn doctor_timing_warnings(conn: &rusqlite::Connection) -> Vec<String> {
     warnings
 }
 
-// Re-export for tests that inject rows without going through capture.
-#[cfg(test)]
-pub use crate::state::storage::timings::TimingRow;
-
 #[cfg(test)]
 mod tests {
     use super::*;

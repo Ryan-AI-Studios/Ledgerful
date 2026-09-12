@@ -1,7 +1,6 @@
 //! Build change-context packets (in-memory impact; no latest-impact rewrite).
 
 use super::packet::*;
-use super::storage::{open_storage_for_change_context, storage_unavailable_reason};
 use crate::config::model::Config;
 use crate::git::RepoSnapshot;
 use crate::git::repo::{get_head_info, open_repo};
@@ -921,50 +920,3 @@ pub(crate) fn read_ledger_section_with_warnings(
     )
 }
 
-/// Helper for tests/MCP: open layout from cwd and build packet.
-///
-/// Soft-opens existing `ledger.db` read-only (B6) before write init.
-/// Layout/storage failures return `Ok(not_ready)` with B5 class (mirrors CLI).
-pub fn build_change_context_from_cwd(opts: &ChangeContextOpts) -> Result<ChangeContextPacket> {
-    let layout = match crate::commands::helpers::get_layout() {
-        Ok(l) => l,
-        Err(e) => {
-            return Ok(not_ready_packet(
-                format!("layout unavailable: {e}"),
-                opts.base_ref.clone(),
-                DoctorSection {
-                    status: "missing".into(),
-                    ready_for_publish: false,
-                    block: 0,
-                    warn: 0,
-                    info: 0,
-                    top_findings: vec![],
-                },
-                LedgerSection {
-                    pending_count: 0,
-                    active_tx: vec![],
-                },
-                NotReadyErrorClass::LayoutUnavailable,
-            ));
-        }
-    };
-    let config = crate::config::load::load_config(&layout).unwrap_or_default();
-    let storage = match open_storage_for_change_context(&layout) {
-        Ok(s) => s,
-        Err((e, class)) => {
-            return Ok(not_ready_packet(
-                storage_unavailable_reason(&e, class),
-                opts.base_ref.clone(),
-                read_doctor_section(&layout),
-                LedgerSection {
-                    pending_count: 0,
-                    active_tx: vec![],
-                },
-                class,
-            ));
-        }
-    };
-    let packet = build_change_context(opts, &layout, &storage, &config)?;
-    let _ = storage.shutdown();
-    Ok(packet)
-}

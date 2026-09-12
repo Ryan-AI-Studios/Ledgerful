@@ -58,16 +58,6 @@ impl GateKind {
         }
     }
 
-    pub fn stamp_prefix(self) -> String {
-        let v = match self {
-            Self::Ledger => LEDGER_GATE_TEMPLATE_VERSION,
-            Self::Verify => VERIFY_GATE_TEMPLATE_VERSION,
-            Self::Intent => INTENT_GATE_TEMPLATE_VERSION,
-            Self::PostCommit => POST_COMMIT_GATE_TEMPLATE_VERSION,
-        };
-        format!("{}:v{v}", self.marker())
-    }
-
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Ledger => "ledger-gate",
