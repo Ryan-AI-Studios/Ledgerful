@@ -71,6 +71,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Verify nextest argument safety (0322):** Quote-aware metachar
+  scan so scoped nextest `-E 'test(…) + test(…)'` (and `-E "…"`)
+  prepares as Direct argv. Unquoted pipes / parens / `shell: true`
+  without `allow_shell_steps` still refuse. `tests --json` still
+  omits pasteable `+` / `-E`.
+
 - **Ledger reason and file attribution (0319):** New hook writes
   strip git trailers from stored `reason` (fallback to subject).
   Historical trailer-only reasons stay byte-identical and emit
