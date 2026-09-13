@@ -30,17 +30,6 @@ pub struct BindingInfo {
     pub is_local: bool,
 }
 
-impl From<&FileBinding> for BindingInfo {
-    fn from(b: &FileBinding) -> Self {
-        BindingInfo {
-            source_path: b.source_path.clone(),
-            binding_kind: b.binding_kind.clone(),
-            is_enumerable: b.is_enumerable,
-            is_local: b.is_local,
-        }
-    }
-}
-
 /// Sort bindings deterministically for insert (DoD-7).
 pub fn sort_bindings(bindings: &mut [FileBinding]) {
     bindings.sort_by(|a, b| {
@@ -49,27 +38,6 @@ pub fn sort_bindings(bindings: &mut [FileBinding]) {
             .then(a.source_path.cmp(&b.source_path))
             .then(a.binding_kind.cmp(&b.binding_kind))
     });
-}
-
-/// Build bound_name → BindingInfo map. When multiple rows share a bound name,
-/// prefer an enumerable local binding, then enumerable, then first by sort.
-pub fn bindings_to_map(bindings: &[FileBinding]) -> std::collections::HashMap<String, BindingInfo> {
-    let mut sorted = bindings.to_vec();
-    sort_bindings(&mut sorted);
-    let mut map = std::collections::HashMap::new();
-    for b in sorted {
-        map.entry(b.bound_name.clone())
-            .and_modify(|existing: &mut BindingInfo| {
-                // Prefer local enumerable over others.
-                let better = (b.is_local && b.is_enumerable)
-                    && !(existing.is_local && existing.is_enumerable);
-                if better {
-                    *existing = BindingInfo::from(&b);
-                }
-            })
-            .or_insert_with(|| BindingInfo::from(&b));
-    }
-    map
 }
 
 /// Whether a Rust `use` source path is proven local (crate/self/super rooted).
