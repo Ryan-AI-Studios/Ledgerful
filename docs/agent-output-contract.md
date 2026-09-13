@@ -22,7 +22,10 @@ camelCase CLI DTO).
 High-traffic surfaces agents parse. **Pure success** means stdout is the
 machine payload only and **stderr is empty** on the happy path (no human Info
 banners, spinners, or SUCCESS lines). Fail paths may still print diagnostics
-on stderr.
+on stderr. Doctor / schema / security / ADR `--json` remain UTF-8 **data**;
+human chrome (marks, bullets, lock, arrows) is not part of the machine
+contract and follows `LEDGERFUL_TABLE_STYLE`. Purity inventory unchanged
+(JSON still stdout-only).
 
 | Command | Has `--json` | Pure success stderr | Notes |
 |---|---|---|---|

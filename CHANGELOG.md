@@ -118,6 +118,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Windows human chrome (0329):** Doctor marks/bullets/rules/trailers,
+  schema lock cell, security caption arrows/dashes, setup banners, and
+  the staleness arrow follow 0181 `LEDGERFUL_TABLE_STYLE` (Ascii fallback
+  on Windows CP437 / non-TTY). `ledger adr list` human table is
+  width-aware; Created display drops sub-second nanos. JSON stays UTF-8.
+  Host OEM/UTF-16 capture is not rewritten as a product byte fix.
+
 - **Verify nextest argument safety (0322):** Quote-aware metachar
   scan so scoped nextest `-E 'test(…) + test(…)'` (and `-E "…"`)
   prepares as Direct argv. Unquoted pipes / parens / `shell: true`

@@ -591,8 +591,20 @@ fn test_security_impact_changed_does_not_rewrite_latest_impact() {
 const COVERAGE_LIMITATION: &str =
     "Declared Cedar @id coverage only. Daemon auth is Bearer (0090), not a PDP.";
 
-const DECLARED_NOT_ENFORCED: &str =
+const DECLARED_NOT_ENFORCED_UTF8: &str =
     "declared Cedar coverage only — not runtime enforcement (daemon auth is Bearer).";
+const DECLARED_NOT_ENFORCED_ASCII: &str =
+    "declared Cedar coverage only -- not runtime enforcement (daemon auth is Bearer).";
+
+fn contains_declared_not_enforced(human: &str) -> bool {
+    human.contains(DECLARED_NOT_ENFORCED_UTF8) || human.contains(DECLARED_NOT_ENFORCED_ASCII)
+}
+
+fn find_declared_not_enforced(human: &str) -> Option<usize> {
+    human
+        .find(DECLARED_NOT_ENFORCED_UTF8)
+        .or_else(|| human.find(DECLARED_NOT_ENFORCED_ASCII))
+}
 
 fn assert_coverage_shape(v: &serde_json::Value, stdout: &str) {
     let c = &v["coverage"];
@@ -723,7 +735,7 @@ fn security_impact_changed_scope_is_changed() {
         "never Analysis: {human}"
     );
     assert!(
-        !human.contains(DECLARED_NOT_ENFORCED),
+        !contains_declared_not_enforced(&human),
         "CleanDiff must omit the declared one-liner: {human}"
     );
     assert!(
@@ -775,7 +787,7 @@ fn security_impact_human_inventory_title() {
         "empty never Analysis: {empty_human}"
     );
     assert!(
-        !empty_human.contains(DECLARED_NOT_ENFORCED),
+        !contains_declared_not_enforced(&empty_human),
         "empty must omit the declared one-liner: {empty_human}"
     );
 }
@@ -791,9 +803,8 @@ fn security_impact_human_source_and_one_liner() {
         .find("Security Policy Inventory")
         .unwrap_or_else(|| panic!("title missing: {human}"));
     let title_end = title + "Security Policy Inventory".len();
-    let one = human
-        .find(DECLARED_NOT_ENFORCED)
-        .unwrap_or_else(|| panic!("one-liner missing: {human}"));
+    let one =
+        find_declared_not_enforced(&human).unwrap_or_else(|| panic!("one-liner missing: {human}"));
     assert!(one > title_end, "one-liner must follow the title: {human}");
     let between = &human[title_end..one];
     assert!(
@@ -926,7 +937,7 @@ permit (
         "changed title: {human}"
     );
     assert!(
-        human.contains(DECLARED_NOT_ENFORCED),
+        contains_declared_not_enforced(&human),
         "populated --changed prints the one-liner: {human}"
     );
 }

@@ -731,7 +731,7 @@ pub fn print_staleness_warning(warning: &StalenessWarning) {
 
     eprintln!(
         "  {} Results may be degraded. Run {} to refresh (or pass --auto-index on supported commands).",
-        "➜".if_supports_color(Stream::Stderr, |s| s.blue()),
+        crate::output::table::heavy_arrow().if_supports_color(Stream::Stderr, |s| s.blue()),
         "ledgerful index --incremental"
             .if_supports_color(Stream::Stderr, |s| s.style(Style::new().cyan().bold()))
     );

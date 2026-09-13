@@ -548,7 +548,7 @@ pub fn execute_usage_enable() -> Result<()> {
     save_config(&config)?;
     println!(
         "{} Usage metrics enabled.",
-        "✓".if_supports_color(Stream::Stdout, |s| s.green())
+        crate::output::table::status_mark(true).if_supports_color(Stream::Stdout, |s| s.green())
     );
     println!(
         "  Anonymous ID: {}",
@@ -573,7 +573,7 @@ pub fn execute_usage_disable() -> Result<()> {
     save_config(&config)?;
     println!(
         "{} Usage metrics disabled.",
-        "✓".if_supports_color(Stream::Stdout, |s| s.green())
+        crate::output::table::status_mark(true).if_supports_color(Stream::Stdout, |s| s.green())
     );
     println!("  Anonymous ID preserved (re-enabling will not generate a new one).");
     Ok(())
