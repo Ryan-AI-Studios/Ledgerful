@@ -16,6 +16,9 @@ pub const SCOPE_NOTE: &str =
 
 /// Pinned symbols reason (not an independent parser clock).
 pub const SYMBOLS_REASON: &str = "derived from indexed source files; matches file content-hash";
+/// Status-aligned symbols reason when copied files status is stale.
+pub const SYMBOLS_STALE_REASON: &str =
+    "derived from indexed source files; file content-hash drifted";
 
 pub const REFRESH_INDEX_INCREMENTAL: &str = "ledgerful index --incremental";
 pub const REFRESH_SCAN_IMPACT: &str = "ledgerful scan --impact";
@@ -314,7 +317,11 @@ fn files_row(stale: usize, permission_denied: bool) -> SurfaceFreshness {
 fn symbols_row(stale: usize, permission_denied: bool) -> SurfaceFreshness {
     let mut row = files_row(stale, permission_denied);
     row.id = "symbols".into();
-    row.reason = SYMBOLS_REASON.to_string();
+    row.reason = if stale == 0 {
+        SYMBOLS_REASON.to_string()
+    } else {
+        SYMBOLS_STALE_REASON.to_string()
+    };
     row
 }
 
@@ -349,10 +356,14 @@ fn derived_table_row(
         };
     }
     if probe.rows == 0 {
-        let reason = if indexed_head.is_some() {
-            format!("0 {noun} registered; up to date with index head")
-        } else {
-            format!("0 {noun} registered; {INDEX_HEAD_UNKNOWN}")
+        let indexed = present_head(indexed_head);
+        let compared = present_head(compared_head);
+        let reason = match (indexed, compared) {
+            (None, _) => format!("0 {noun} registered; {INDEX_HEAD_UNKNOWN}"),
+            (Some(i), Some(c)) if i == c => {
+                format!("0 {noun} registered; up to date with index head")
+            }
+            (Some(_), _) => format!("0 {noun} registered"),
         };
         return SurfaceFreshness {
             id: id.into(),
@@ -458,8 +469,12 @@ fn head_mismatch_reason(indexed_head: Option<&str>, compared_head: Option<&str>)
     format!("index head_hash ({indexed}) ≠ compared head ({compared})")
 }
 
+fn present_head(head: Option<&str>) -> Option<&str> {
+    head.filter(|h| !h.is_empty())
+}
+
 fn omit_head(head: Option<&str>) -> Option<String> {
-    head.filter(|h| !h.is_empty()).map(|h| h.to_string())
+    present_head(head).map(|h| h.to_string())
 }
 
 fn refresh_cmd(cmd: &str, available: bool, permission_denied: bool) -> Option<String> {
@@ -532,11 +547,135 @@ mod tests {
         let rows = classify_surface_freshness(mapping_stale_input());
         let routes = row(&rows, "routes");
         assert_eq!(routes.status, SurfaceFreshnessStatus::Available);
+        assert_eq!(routes.reason, "0 routes registered");
+        assert!(
+            !routes.reason.contains("up to date"),
+            "mismatch must not claim up to date: {}",
+            routes.reason
+        );
+        assert!(routes.refresh.is_none());
+    }
+
+    #[test]
+    fn surface_freshness_symbols_reason_aligns_when_files_stale() {
+        let mut input = mapping_stale_input();
+        input.files_stale = Some(2);
+        let rows = classify_surface_freshness(input);
+        let files = row(&rows, "files");
+        let symbols = row(&rows, "symbols");
+        assert_eq!(files.status, SurfaceFreshnessStatus::Stale);
+        assert_eq!(symbols.status, SurfaceFreshnessStatus::Stale);
+        assert_eq!(symbols.reason, SYMBOLS_STALE_REASON);
+        assert!(
+            !symbols.reason.contains("matches"),
+            "stale symbols must not claim a match: {}",
+            symbols.reason
+        );
+        assert_eq!(symbols.refresh, files.refresh);
+        assert_eq!(symbols.source, files.source);
+    }
+
+    #[test]
+    fn surface_freshness_zero_row_routes_up_to_date_when_heads_match() {
+        let mut input = mapping_stale_input();
+        input.compared_head = Some("250c7afe");
+        let rows = classify_surface_freshness(input);
+        let routes = row(&rows, "routes");
+        assert_eq!(routes.status, SurfaceFreshnessStatus::Available);
         assert_eq!(
             routes.reason,
             "0 routes registered; up to date with index head"
         );
-        assert!(routes.refresh.is_none());
+    }
+
+    #[test]
+    fn surface_freshness_zero_row_embeddings_head_mismatch() {
+        let mut input = mapping_stale_input();
+        input.embeddings = EmbeddingsProbe::Rows(0);
+        let rows = classify_surface_freshness(input);
+        let embeddings = row(&rows, "embeddings");
+        assert_eq!(embeddings.status, SurfaceFreshnessStatus::Available);
+        assert_eq!(embeddings.reason, "0 embeddings registered");
+        assert!(!embeddings.reason.contains("up to date"));
+    }
+
+    #[test]
+    fn surface_freshness_zero_row_embeddings_heads_match() {
+        let mut input = mapping_stale_input();
+        input.compared_head = Some("250c7afe");
+        input.embeddings = EmbeddingsProbe::Rows(0);
+        let rows = classify_surface_freshness(input);
+        let embeddings = row(&rows, "embeddings");
+        assert_eq!(embeddings.status, SurfaceFreshnessStatus::Available);
+        assert_eq!(
+            embeddings.reason,
+            "0 embeddings registered; up to date with index head"
+        );
+    }
+
+    #[test]
+    fn surface_freshness_zero_row_mapping_head_mismatch() {
+        let mut input = mapping_stale_input();
+        input.mapping = SurfaceTableProbe {
+            exists: true,
+            rows: 0,
+            query_failed: false,
+        };
+        let rows = classify_surface_freshness(input);
+        let mapping = row(&rows, "mapping");
+        assert_eq!(mapping.status, SurfaceFreshnessStatus::Available);
+        assert_eq!(mapping.reason, "0 mappings registered");
+        assert!(!mapping.reason.contains("up to date"));
+    }
+
+    #[test]
+    fn surface_freshness_zero_row_compared_head_missing() {
+        let mut input = mapping_stale_input();
+        input.compared_head = None;
+        let rows = classify_surface_freshness(input);
+        let routes = row(&rows, "routes");
+        assert_eq!(routes.status, SurfaceFreshnessStatus::Available);
+        assert_eq!(routes.reason, "0 routes registered");
+        assert!(!routes.reason.contains("up to date"));
+
+        let mut blank_compared = mapping_stale_input();
+        blank_compared.compared_head = Some("");
+        let rows = classify_surface_freshness(blank_compared);
+        let routes = row(&rows, "routes");
+        assert_eq!(routes.reason, "0 routes registered");
+
+        let mut blank_indexed = mapping_stale_input();
+        blank_indexed.indexed_head = Some("");
+        let rows = classify_surface_freshness(blank_indexed);
+        let routes = row(&rows, "routes");
+        assert!(
+            routes.reason.contains(INDEX_HEAD_UNKNOWN),
+            "empty indexed head is unknown: {}",
+            routes.reason
+        );
+    }
+
+    #[test]
+    fn surface_freshness_format_human_lag_lines_omits_available() {
+        let mut input = mapping_stale_input();
+        input.files_stale = Some(2);
+        let rows = classify_surface_freshness(input);
+        let lines = format_human_lag_lines(&rows);
+        let symbols_line = format!("Surface symbols: stale — {SYMBOLS_STALE_REASON}");
+        assert!(
+            lines.iter().any(|l| l == &symbols_line),
+            "expected {symbols_line:?} in {lines:?}"
+        );
+        assert!(
+            lines
+                .iter()
+                .any(|l| l.starts_with("Surface mapping: stale")),
+            "mapping lag still prints: {lines:?}"
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("Surface routes:")),
+            "available empty routes must not print: {lines:?}"
+        );
     }
 
     #[test]

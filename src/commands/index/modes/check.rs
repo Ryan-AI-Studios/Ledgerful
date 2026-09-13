@@ -458,7 +458,8 @@ mod tests {
     use super::*;
     use crate::index::staleness::IndexFreshnessState;
     use crate::index::surface_freshness::{
-        ClassifySurfaceFreshness, EmbeddingsProbe, SurfaceTableProbe, classify_surface_freshness,
+        ClassifySurfaceFreshness, EmbeddingsProbe, SYMBOLS_STALE_REASON, SurfaceTableProbe,
+        classify_surface_freshness,
     };
 
     fn fresh_status() -> crate::index::orchestrator::IndexStatus {
@@ -559,5 +560,42 @@ mod tests {
             "exit-1 must not print surfaces:\n{silent}"
         );
         assert!(!silent.contains("Surface "));
+    }
+
+    #[test]
+    fn index_check_json_and_human_emit_stale_symbols() {
+        let status = fresh_status();
+        let surfaces = classify_surface_freshness(ClassifySurfaceFreshness {
+            files_stale: Some(2),
+            compared_head: Some("96d46c10"),
+            indexed_head: Some("250c7afe"),
+            mapping: SurfaceTableProbe {
+                exists: true,
+                rows: 2,
+                query_failed: false,
+            },
+            routes: SurfaceTableProbe {
+                exists: true,
+                rows: 0,
+                query_failed: false,
+            },
+            embeddings: EmbeddingsProbe::NotConfigured,
+            permission_denied: false,
+        });
+        let dto = index_check_json(&status, surfaces.clone());
+        let v = serde_json::to_value(&dto).expect("json");
+        let symbols = v["surfaces"]
+            .as_array()
+            .expect("surfaces")
+            .iter()
+            .find(|s| s["id"] == "symbols")
+            .expect("symbols");
+        assert_eq!(symbols["status"], "stale");
+        assert_eq!(symbols["reason"], SYMBOLS_STALE_REASON);
+        let human = format_check_human(&status, &dto.surfaces, false);
+        assert!(
+            human.contains(&format!("Surface symbols: stale — {SYMBOLS_STALE_REASON}")),
+            "human lag:\n{human}"
+        );
     }
 }

@@ -118,6 +118,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Freshness reason vs status (0337):** `index --check` `surfaces[]`
+  `symbols.reason` no longer claims a content-hash match when status is
+  `stale`. Empty derived rows (`mapping` / `routes` / `embeddings`, and
+  `tests --json` / change-context `freshness`) stay `available` and
+  append “up to date with index head” only when both heads are present
+  and equal.
+
 - **Data-models `--changed` empty fixture note (0336):** Human
   `data-models impact --changed` empty with omitted fixtures prints
   the omit footer after CleanDiff. JSON stays `cleanDiff` /

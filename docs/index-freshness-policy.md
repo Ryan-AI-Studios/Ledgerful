@@ -108,6 +108,9 @@ Additive `surfaces[]` (0313) reports derived-table provenance (`mapping` /
 `routes` / `embeddings`) against `index_metadata.head_hash`. It does **not**
 run a second content-hash walk. `surfaces.files` reuses the Full `--check`
 byte walk. Mapping/route lag cannot flip `--strict` or `FreshPopulated`.
+`symbols.reason` agrees with copied files status (match vs drifted). Empty
+derived rows stay `available` and claim “up to date with index head” only
+when both heads are present and equal.
 
 ## Search `--auto-index` and Tantivy (full-text)
 
