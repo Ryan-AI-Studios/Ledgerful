@@ -2,14 +2,6 @@ use std::fs;
 use std::io;
 use std::path::Path;
 
-pub fn read_utf8_if_exists(path: &Path) -> io::Result<Option<String>> {
-    match fs::read_to_string(path) {
-        Ok(content) => Ok(Some(content)),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(err) => Err(err),
-    }
-}
-
 /// Read a file to a `String`, detecting common Windows encodings.
 ///
 /// Detection order:
@@ -22,15 +14,6 @@ pub fn read_utf8_if_exists(path: &Path) -> io::Result<Option<String>> {
 pub fn read_to_string_with_encoding(path: &Path) -> io::Result<String> {
     let bytes = fs::read(path)?;
     decode_bytes_with_encoding(&bytes)
-}
-
-/// Like `read_utf8_if_exists` but also handles UTF-16/BOM files.
-pub fn read_with_encoding_if_exists(path: &Path) -> io::Result<Option<String>> {
-    match fs::read(path) {
-        Ok(bytes) => Ok(Some(decode_bytes_with_encoding(&bytes)?)),
-        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
-        Err(e) => Err(e),
-    }
 }
 
 fn decode_bytes_with_encoding(bytes: &[u8]) -> io::Result<String> {

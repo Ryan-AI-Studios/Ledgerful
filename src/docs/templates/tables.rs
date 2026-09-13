@@ -5,7 +5,6 @@ use miette::Result;
 
 pub struct SymbolTableTemplate;
 pub struct SymbolIndexTemplate;
-pub struct ApiContractIndexTemplate;
 
 impl DocTemplate for SymbolTableTemplate {
     fn name(&self) -> &'static str {
@@ -99,25 +98,6 @@ impl DocTemplate for SymbolIndexTemplate {
         let content = lines.join("\n") + "\n";
         let path = output_dir.join("symbol_index.md");
         write_file(&path, &content)?;
-        Ok(path)
-    }
-}
-
-impl DocTemplate for ApiContractIndexTemplate {
-    fn name(&self) -> &'static str {
-        "api_contract"
-    }
-
-    fn description(&self) -> &'static str {
-        "Index of API contracts and endpoints"
-    }
-
-    fn generate(&self, _storage: &CozoStorage, output_dir: &Utf8Path) -> Result<Utf8PathBuf> {
-        // Mocking metadata extraction for now
-        let content =
-            "# API Contract Index\n\n*API documentation pending metadata extraction logic.*\n";
-        let path = output_dir.join("api_contract_index.md");
-        write_file(&path, content)?;
         Ok(path)
     }
 }

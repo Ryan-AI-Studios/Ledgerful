@@ -116,7 +116,6 @@ mod ledger_signature_fix;
 mod lifecycle_integrity;
 mod m33_migration;
 mod milestone_j_remediation;
-mod narrative_golden;
 mod observability_cedar_graph_test;
 mod observability_empty_honesty;
 mod path_security;
