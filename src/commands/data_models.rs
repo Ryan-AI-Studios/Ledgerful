@@ -199,9 +199,19 @@ fn data_model_row_to_impact_json(r: &DataModelRow, is_changed: bool) -> serde_js
     })
 }
 
-fn print_data_models_omit_footer(omitted: usize) {
+fn data_models_omit_footer_line(omitted: usize) -> Option<String> {
     if omitted > 0 {
-        println!("  {omitted} fixture models omitted. Pass --include-fixtures to show them.");
+        Some(format!(
+            "{omitted} fixture models omitted. Pass --include-fixtures to show them."
+        ))
+    } else {
+        None
+    }
+}
+
+fn print_data_models_omit_footer(omitted: usize) {
+    if let Some(line) = data_models_omit_footer_line(omitted) {
+        println!("  {line}");
     }
 }
 
@@ -241,6 +251,28 @@ fn impact_json_empty_reason(
                 .to_string(),
         )
     }
+}
+
+fn impact_human_empty_copy(
+    changed: bool,
+    total_models: i64,
+    fixtures_omitted: usize,
+) -> (crate::output::empty::EmptyReason, String, Option<String>) {
+    let (reason, primary) = impact_json_empty_reason(changed, total_models, fixtures_omitted);
+    let footer = if reason == crate::output::empty::EmptyReason::CleanDiff {
+        data_models_omit_footer_line(fixtures_omitted)
+    } else {
+        None
+    };
+    (reason, primary, footer)
+}
+
+fn impact_human_empty_dim(reason: &crate::output::empty::EmptyReason) -> bool {
+    *reason != crate::output::empty::EmptyReason::NoMatches
+}
+
+fn impact_human_empty_line(message: &str) -> String {
+    format!("  {message}")
 }
 
 pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
@@ -386,22 +418,16 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
                         .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
                 );
                 if impacted.is_empty() {
-                    if changed && total_models > 0 {
-                        println!(
-                            "{}",
-                            "  No changed data models found."
-                                .if_supports_color(Stream::Stdout, |s| s.dimmed())
-                        );
-                    } else if !changed && fixtures_omitted > 0 {
-                        println!("  {}", product_empty_omit_message(fixtures_omitted));
+                    let (reason, primary, footer) =
+                        impact_human_empty_copy(changed, total_models, fixtures_omitted);
+                    let line = impact_human_empty_line(&primary);
+                    if impact_human_empty_dim(&reason) {
+                        println!("{}", line.if_supports_color(Stream::Stdout, |s| s.dimmed()));
                     } else {
-                        println!(
-                            "{}",
-                            "  No data models indexed. Data models are extracted from ORM structs, \
-                             SQL table definitions, and migration files. Run `ledgerful index \
-                             --incremental` if models exist, or confirm your ORM/framework is supported.".if_supports_color(Stream::Stdout, |s| s.dimmed())
-
-                        );
+                        println!("{line}");
+                    }
+                    if let Some(f) = footer {
+                        println!("  {f}");
                     }
                 } else {
                     let mut table =
@@ -974,5 +1000,67 @@ mod tests {
         assert_eq!(reason, crate::output::empty::EmptyReason::CleanDiff);
         assert_eq!(message, "No changed data models found.");
         assert!(!message.contains("no compatibility risk"));
+    }
+
+    #[test]
+    fn data_models_impact_changed_empty_mentions_fixture_omit() {
+        let src = include_str!("data_models.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
+        assert!(
+            prod.contains("impact_human_empty_copy(changed, total_models, fixtures_omitted)"),
+            "execute_data_models must wire impact_human_empty_copy"
+        );
+        assert!(
+            prod.contains("impact_json_empty_reason(changed, total_models, fixtures_omitted)"),
+            "JSON call token must stay verbatim"
+        );
+
+        let (reason, primary, footer) = impact_human_empty_copy(true, 4, 3);
+        assert_eq!(reason, crate::output::empty::EmptyReason::CleanDiff);
+        assert_eq!(primary, "No changed data models found.");
+        assert!(
+            !primary.contains("fixture"),
+            "JSON/human primary must not grow omit prose: {primary}"
+        );
+        let foot = footer.expect("CleanDiff with N>0 must have footer");
+        assert!(foot.contains("3 fixture models omitted"), "footer: {foot}");
+        assert!(foot.contains("--include-fixtures"), "footer: {foot}");
+        assert!(
+            !foot.starts_with(' '),
+            "footer line helper is unpadded: {foot:?}"
+        );
+        assert!(impact_human_empty_dim(&reason));
+        assert_eq!(
+            impact_human_empty_line(&primary),
+            "  No changed data models found."
+        );
+
+        let (reason0, primary0, footer0) = impact_human_empty_copy(true, 4, 0);
+        assert_eq!(reason0, crate::output::empty::EmptyReason::CleanDiff);
+        assert_eq!(primary0, "No changed data models found.");
+        assert!(footer0.is_none());
+        assert!(impact_human_empty_dim(&reason0));
+
+        let (reason_nm, primary_nm, footer_nm) = impact_human_empty_copy(false, 1, 3);
+        assert_eq!(reason_nm, crate::output::empty::EmptyReason::NoMatches);
+        assert!(
+            primary_nm.contains("No product data models indexed"),
+            "product-empty primary: {primary_nm}"
+        );
+        assert!(
+            footer_nm.is_none(),
+            "NoMatches must not grow a second footer"
+        );
+        assert!(!impact_human_empty_dim(&reason_nm));
+
+        let (reason_raw, _, footer_raw) = impact_human_empty_copy(false, 0, 0);
+        assert_eq!(reason_raw, crate::output::empty::EmptyReason::NoIndexedData);
+        assert!(footer_raw.is_none());
+        assert!(impact_human_empty_dim(&reason_raw));
+
+        let (json_reason, json_message) = impact_json_empty_reason(true, 4, 3);
+        assert_eq!(json_reason, crate::output::empty::EmptyReason::CleanDiff);
+        assert_eq!(json_message, "No changed data models found.");
+        assert!(!json_message.contains("fixture"));
     }
 }
