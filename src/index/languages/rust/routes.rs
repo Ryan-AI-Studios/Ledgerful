@@ -333,53 +333,31 @@ fn collect_router_idents(node: Node, content: &str, out: &mut HashSet<String>) {
 }
 
 fn builder_layer_is_secured(route_node: Node, content: &str) -> bool {
-    if let Some(value) = enclosing_let_value(route_node) {
-        return walk_layer_calls_secured(value, content);
-    }
-    // Unbound `Router::new().route(...).layer(...)` chains (no `let`).
-    let mut current = route_node.parent();
-    while let Some(n) = current {
-        if n.kind() == "function_item" || n.kind() == "source_file" {
+    let mut current = route_node;
+    while let Some(parent) = current.parent() {
+        if parent.kind() == "let_declaration"
+            || parent.kind() == "function_item"
+            || parent.kind() == "source_file"
+        {
             break;
         }
-        if n.kind() == "call_expression" {
-            let callee = call_callee_name(n, content);
-            if (callee == "layer" || callee == "route_layer") && layer_args_look_secured(n, content)
+        if parent.kind() == "call_expression" {
+            let callee = call_callee_name(parent, content);
+            if (callee == "layer" || callee == "route_layer")
+                && arrived_via_receiver(parent, current)
+                && layer_args_look_secured(parent, content)
             {
                 return true;
             }
         }
-        current = n.parent();
+        current = parent;
     }
     false
 }
 
-fn enclosing_let_value(node: Node) -> Option<Node> {
-    let mut current = node.parent();
-    while let Some(n) = current {
-        if n.kind() == "let_declaration" {
-            return n.child_by_field_name("value");
-        }
-        current = n.parent();
-    }
-    None
-}
-
-fn walk_layer_calls_secured(node: Node, content: &str) -> bool {
-    if node.kind() == "call_expression" {
-        let callee = call_callee_name(node, content);
-        if (callee == "layer" || callee == "route_layer") && layer_args_look_secured(node, content)
-        {
-            return true;
-        }
-    }
-    let mut cursor = node.walk();
-    for child in node.children(&mut cursor) {
-        if walk_layer_calls_secured(child, content) {
-            return true;
-        }
-    }
-    false
+fn arrived_via_receiver(call: Node, child: Node) -> bool {
+    call.child_by_field_name("function")
+        .is_some_and(|func| func.id() == child.id())
 }
 
 fn layer_args_look_secured(call: Node, content: &str) -> bool {
@@ -733,5 +711,68 @@ mod routes_unwrap_tests {
             Some(["secured".to_string()].as_slice())
         );
         assert_eq!(health.auth_requirements, None);
+    }
+
+    #[test]
+    fn axum_inline_nest_route_layer_does_not_secure_outer_health() {
+        let content = r#"
+            pub fn router() -> Router {
+                let mut app = Router::new()
+                    .route("/health", get(health_handler))
+                    .nest("/api", Router::new()
+                        .route("/session", get(session_handler))
+                        .route_layer(middleware::from_fn_with_state(state.clone(), token_layer)));
+                app
+            }
+        "#;
+        let routes = extract_routes(content, &[]).expect("extract");
+        let session = routes
+            .iter()
+            .find(|r| r.path_pattern == "/session")
+            .expect("session");
+        let health = routes
+            .iter()
+            .find(|r| r.path_pattern == "/health")
+            .expect("health");
+        assert_eq!(
+            session.auth_requirements.as_deref(),
+            Some(["secured".to_string()].as_slice())
+        );
+        assert_eq!(
+            health.auth_requirements, None,
+            "inline nest route_layer must not secure sibling /health: {:?}",
+            health.auth_requirements
+        );
+    }
+
+    #[test]
+    fn axum_route_after_route_layer_is_not_secured() {
+        let content = r#"
+            pub fn router() -> Router {
+                let api_router = Router::new()
+                    .route("/session", get(session_handler))
+                    .route_layer(middleware::from_fn_with_state(state.clone(), token_layer))
+                    .route("/later", get(later_handler));
+                api_router
+            }
+        "#;
+        let routes = extract_routes(content, &[]).expect("extract");
+        let session = routes
+            .iter()
+            .find(|r| r.path_pattern == "/session")
+            .expect("session");
+        let later = routes
+            .iter()
+            .find(|r| r.path_pattern == "/later")
+            .expect("later");
+        assert_eq!(
+            session.auth_requirements.as_deref(),
+            Some(["secured".to_string()].as_slice())
+        );
+        assert_eq!(
+            later.auth_requirements, None,
+            "route registered after route_layer must not inherit it: {:?}",
+            later.auth_requirements
+        );
     }
 }

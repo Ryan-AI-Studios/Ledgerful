@@ -118,6 +118,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Endpoints post-omit empty and nest layer order (0335):** Default
+  `endpoints` after fixture omit is `emptyReason: noMatches` (not
+  CleanDiff without `--changed`). Axum inferred auth follows layer
+  order: `.layer` / `.route_layer` apply only to routes registered
+  before that call (inline nest does not secure sibling `/health`).
+  schemaVersion 1. `GET /api/endpoints/changed` unchanged.
+
 - **Hotspot presence when HEAD is missing (0333):** CLI
   `hotspots --json` and session `files[]` omit emit-time
   `presence` when HEAD is unborn or unresolvable. `presence:

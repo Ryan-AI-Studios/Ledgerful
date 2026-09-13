@@ -305,20 +305,7 @@ pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
             results.push(endpoint_row_to_json(row));
         }
         let mut output = crate::output::empty::format_json_empty_state(results, "results", || {
-            if all_rows_empty {
-                (
-                    crate::output::empty::EmptyReason::NoIndexedData,
-                    "No endpoints indexed. Endpoints are extracted from HTTP route registrations \
-                     (Axum, Express, etc.). Run `ledgerful index --incremental` if routes exist, \
-                     or confirm your framework is supported."
-                        .to_string(),
-                )
-            } else {
-                (
-                    crate::output::empty::EmptyReason::CleanDiff,
-                    "No endpoints changed in the current diff.".to_string(),
-                )
-            }
+            endpoints_json_empty_reason(all_rows_empty, args.changed, fixtures_omitted)
         });
         attach_fixture_flags(&mut output, args.include_fixtures, fixtures_omitted);
         println!(
@@ -361,27 +348,72 @@ pub fn execute_endpoints(args: EndpointsArgs) -> Result<()> {
             ]);
         }
         if rows.is_empty() {
-            if all_rows_empty {
-                println!(
-                    "{}",
-                    "  No endpoints indexed. Endpoints are extracted from HTTP route registrations \
-                     (Axum, Express, etc.). Run `ledgerful index --incremental` if routes exist, \
-                     or confirm your framework is supported.".if_supports_color(Stream::Stdout, |s| s.dimmed())
-
-                );
-            } else {
-                println!(
-                    "{}",
-                    "  No endpoints changed in the current diff."
-                        .if_supports_color(Stream::Stdout, |s| s.dimmed())
-                );
+            let (reason, message) =
+                endpoints_json_empty_reason(all_rows_empty, args.changed, fixtures_omitted);
+            println!(
+                "{}",
+                endpoints_human_empty_line(&message)
+                    .if_supports_color(Stream::Stdout, |s| s.dimmed())
+            );
+            println!("{}", table);
+            if endpoints_should_print_omit_footer(true, &reason) {
+                print_endpoints_omit_footer(fixtures_omitted);
             }
+        } else {
+            println!("{}", table);
+            print_endpoints_omit_footer(fixtures_omitted);
         }
-        println!("{}", table);
-        print_endpoints_omit_footer(fixtures_omitted);
     }
 
     Ok(())
+}
+
+fn endpoints_json_empty_reason(
+    all_rows_empty: bool,
+    changed: bool,
+    fixtures_omitted: usize,
+) -> (crate::output::empty::EmptyReason, String) {
+    use crate::output::empty::EmptyReason;
+    if all_rows_empty {
+        (
+            EmptyReason::NoIndexedData,
+            "No endpoints indexed. Endpoints are extracted from HTTP route registrations \
+             (Axum, Express, etc.). Run `ledgerful index --incremental` if routes exist, \
+             or confirm your framework is supported."
+                .to_string(),
+        )
+    } else if changed {
+        (
+            EmptyReason::CleanDiff,
+            "No endpoints changed in the current diff.".to_string(),
+        )
+    } else if fixtures_omitted > 0 {
+        (
+            EmptyReason::NoMatches,
+            format!(
+                "No product endpoints indexed. {fixtures_omitted} fixture routes omitted. Pass --include-fixtures to show them."
+            ),
+        )
+    } else {
+        // Defensive fence: after method/path SQL, a non-`--changed` non-empty
+        // result with fixtures_omitted == 0 cannot be emit-empty (0130 dedupe
+        // never drops every key). Not a live default-inventory branch.
+        (
+            EmptyReason::CleanDiff,
+            "No endpoints changed in the current diff.".to_string(),
+        )
+    }
+}
+
+fn endpoints_human_empty_line(message: &str) -> String {
+    format!("  {message}")
+}
+
+fn endpoints_should_print_omit_footer(
+    rows_empty: bool,
+    reason: &crate::output::empty::EmptyReason,
+) -> bool {
+    !(rows_empty && *reason == crate::output::empty::EmptyReason::NoMatches)
 }
 
 fn omit_fixture_endpoint_rows(
@@ -564,7 +596,8 @@ fn format_auth_requirements(aj: &str) -> String {
 mod tests {
     use super::{
         EndpointRow, attach_fixture_flags, dedupe_endpoint_rows, endpoint_row_better_than,
-        endpoint_row_to_json, format_auth_requirements, omit_fixture_endpoint_rows,
+        endpoint_row_to_json, endpoints_human_empty_line, endpoints_json_empty_reason,
+        endpoints_should_print_omit_footer, format_auth_requirements, omit_fixture_endpoint_rows,
         query_filter_and_dedupe_endpoints,
     };
     use crate::state::migrations::get_migrations;
@@ -1235,6 +1268,42 @@ mod tests {
         attach_fixture_flags(&mut envelope, true, omitted);
         assert_eq!(envelope["includeFixtures"], true);
         assert_eq!(envelope["fixturesOmitted"], 0);
+    }
+
+    #[test]
+    fn endpoints_post_omit_empty_is_no_matches() {
+        let (reason, message) = endpoints_json_empty_reason(false, false, 2);
+        assert_eq!(reason, crate::output::empty::EmptyReason::NoMatches);
+        assert_eq!(
+            message,
+            "No product endpoints indexed. 2 fixture routes omitted. Pass --include-fixtures to show them."
+        );
+        assert!(
+            !message.starts_with(' '),
+            "JSON message must be unpadded: {message:?}"
+        );
+        assert_eq!(endpoints_human_empty_line(&message), format!("  {message}"));
+        assert!(
+            !endpoints_should_print_omit_footer(true, &reason),
+            "noMatches empty must not also print the omit footer"
+        );
+        assert!(
+            endpoints_should_print_omit_footer(false, &reason),
+            "populated table still prints the footer when N>0"
+        );
+
+        let (changed_reason, changed_message) = endpoints_json_empty_reason(false, true, 2);
+        assert_eq!(changed_reason, crate::output::empty::EmptyReason::CleanDiff);
+        assert_eq!(changed_message, "No endpoints changed in the current diff.");
+        assert!(endpoints_should_print_omit_footer(true, &changed_reason));
+
+        let (raw_reason, raw_message) = endpoints_json_empty_reason(true, false, 0);
+        assert_eq!(raw_reason, crate::output::empty::EmptyReason::NoIndexedData);
+        assert!(
+            raw_message.starts_with("No endpoints indexed."),
+            "raw-empty message: {raw_message}"
+        );
+        assert!(endpoints_should_print_omit_footer(true, &raw_reason));
     }
 
     #[test]
