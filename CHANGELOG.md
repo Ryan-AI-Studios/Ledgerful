@@ -118,6 +118,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Hotspot presence when HEAD is missing (0333):** CLI
+  `hotspots --json` and session `files[]` omit emit-time
+  `presence` when HEAD is unborn or unresolvable. `presence:
+  "historical"` is only for a path absent from a readable HEAD.
+  Shared `Hotspot` / MCP / `GET /api/hotspots` stay without the
+  key.
+
 - **Unix Latest extract resource bound (0332):** `update --binary`
   extracts `{stem}/ledgerful` in memory (`tar` + `flate2`) instead of
   host `tar -xzf` into staging. Declared size is checked before the

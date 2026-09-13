@@ -188,6 +188,85 @@ fn session_hotspot_file_from_copies_stored_display_score_not_recomputed_ln() {
 }
 
 #[test]
+fn session_hotspot_file_with_head_omits_presence_when_head_unborn() {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path();
+    std::process::Command::new("git")
+        .args(["init", "-b", "main"])
+        .current_dir(dir)
+        .output()
+        .expect("git init");
+    let repo = crate::git::repo::open_repo(dir).expect("unborn");
+    let hotspot = Hotspot {
+        path: std::path::PathBuf::from("gone.rs"),
+        score: 0.2,
+        display_score: 1.0,
+        complexity: 1,
+        frequency: 1.0,
+        centrality: None,
+    };
+    let file = session_hotspot_file_with_head(&hotspot, &repo);
+    assert!(
+        file.presence.is_none(),
+        "unborn HEAD must omit presence, not mark historical"
+    );
+    let v = serde_json::to_value(&file).expect("serialize");
+    assert!(v.get("presence").is_none(), "{v}");
+}
+
+#[test]
+fn session_hotspot_file_with_head_historical_on_deleted_path() {
+    let tmp = tempdir().unwrap();
+    let dir = tmp.path();
+    init_git_repo(dir);
+    fs::write(dir.join("gone.rs"), "fn gone() {}\n").expect("gone");
+    fs::write(dir.join("stay.rs"), "fn stay() {}\n").expect("stay");
+    std::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(dir)
+        .output()
+        .expect("add stay/gone");
+    std::process::Command::new("git")
+        .args(["commit", "-m", "add files"])
+        .current_dir(dir)
+        .output()
+        .expect("commit add");
+    fs::remove_file(dir.join("gone.rs")).expect("delete gone");
+    std::process::Command::new("git")
+        .args(["add", "-A"])
+        .current_dir(dir)
+        .output()
+        .expect("stage delete");
+    std::process::Command::new("git")
+        .args(["commit", "-m", "delete gone"])
+        .current_dir(dir)
+        .output()
+        .expect("commit delete");
+
+    let repo = crate::git::repo::open_repo(dir).expect("open");
+    let gone = Hotspot {
+        path: std::path::PathBuf::from("gone.rs"),
+        score: 0.2,
+        display_score: 1.0,
+        complexity: 1,
+        frequency: 1.0,
+        centrality: None,
+    };
+    let stay = Hotspot {
+        path: std::path::PathBuf::from("stay.rs"),
+        score: 0.3,
+        display_score: 1.1,
+        complexity: 1,
+        frequency: 1.0,
+        centrality: None,
+    };
+    let gone_file = session_hotspot_file_with_head(&gone, &repo);
+    let stay_file = session_hotspot_file_with_head(&stay, &repo);
+    assert_eq!(gone_file.presence.as_deref(), Some("historical"));
+    assert!(stay_file.presence.is_none());
+}
+
+#[test]
 fn session_hotspot_file_deserializes_missing_display_score_to_zero() {
     let file: SessionHotspotFile = serde_json::from_value(serde_json::json!({
         "path": "a.rs",
