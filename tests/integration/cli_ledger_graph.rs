@@ -534,6 +534,11 @@ fn graph_json_omits_completeness_under_cap() {
         json.get("completeness").is_none(),
         "under-cap heuristic graph must omit completeness: {json}"
     );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("truncated: neighborhood capped"),
+        "under-cap JSON must not write cap stderr: {stderr}"
+    );
 }
 
 #[test]
@@ -637,6 +642,27 @@ fn graph_json_completeness_when_capped() {
     assert_eq!(json["completeness"]["stop"], "cap");
     assert_eq!(json["completeness"]["maxDepth"], 2);
     assert_eq!(json["completeness"]["maxNodes"], 150);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("truncated: neighborhood capped at maxDepth 2 / maxNodes 150"),
+        "capped JSON must write cap stderr: {stderr}"
+    );
+
+    let human = Command::new(env!("CARGO_BIN_EXE_ledgerful"))
+        .args(["ledger", "graph", &tx_id])
+        .current_dir(&root)
+        .output()
+        .unwrap();
+    assert!(
+        human.status.success(),
+        "{:?}",
+        String::from_utf8_lossy(&human.stderr)
+    );
+    let human_stderr = String::from_utf8_lossy(&human.stderr);
+    assert!(
+        human_stderr.contains("truncated: neighborhood capped at maxDepth 2 / maxNodes 150"),
+        "capped human must write cap stderr: {human_stderr}"
+    );
 }
 
 #[test]
@@ -735,4 +761,9 @@ fn graph_json_completeness_when_depth_capped() {
     assert_eq!(json["completeness"]["stop"], "cap");
     assert_eq!(json["completeness"]["maxDepth"], 2);
     assert_eq!(json["completeness"]["maxNodes"], 150);
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("truncated: neighborhood capped at maxDepth 2 / maxNodes 150"),
+        "depth-capped JSON must write cap stderr: {stderr}"
+    );
 }

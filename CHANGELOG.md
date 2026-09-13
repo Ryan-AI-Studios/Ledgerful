@@ -118,6 +118,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Graph JSON cap stderr and provenance page cost (0339):** `ledger
+  graph --json` writes the documented neighborhood-cap stderr line when
+  `completeness` is present (JSON `completeness` stays). `ledger
+  export-provenance --limit` / `--offset` pages with SQL `COUNT` +
+  `LIMIT`/`OFFSET` instead of loading the full genesis→head vec.
+
 - **Security impact labels and coverage coupling (0338):** `security
   impact` resolves policy labels with the same
   `annotations → raw @id → cedar_id → stored` chain as

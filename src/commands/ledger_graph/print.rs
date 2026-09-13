@@ -23,35 +23,34 @@ pub(super) fn print_ledger_graph(
             "{}",
             serde_json::to_string_pretty(&filtered).into_diagnostic()?
         );
-        return Ok(());
-    }
-
-    println!(
-        "{} {}",
-        "Graph neighborhood for transaction:".if_supports_color(Stream::Stdout, |s| s.bold()),
-        full_id.if_supports_color(Stream::Stdout, |s| s.cyan())
-    );
-
-    if args.compact {
-        print_compact_bucket("Exact Relations", &filtered.exact);
-        print_compact_bucket("Derived Relations", &filtered.derived);
-        print_compact_bucket("Heuristic Fallbacks", &filtered.heuristic);
     } else {
-        print_full_bucket(
-            "Exact Relations",
-            Style::new().green().bold(),
-            &filtered.exact,
+        println!(
+            "{} {}",
+            "Graph neighborhood for transaction:".if_supports_color(Stream::Stdout, |s| s.bold()),
+            full_id.if_supports_color(Stream::Stdout, |s| s.cyan())
         );
-        print_full_bucket(
-            "Derived Relations (Transitive / Structural Neighborhood)",
-            Style::new().yellow().bold(),
-            &filtered.derived,
-        );
-        print_full_bucket(
-            "Heuristic Fallbacks",
-            Style::new().red().bold(),
-            &filtered.heuristic,
-        );
+
+        if args.compact {
+            print_compact_bucket("Exact Relations", &filtered.exact);
+            print_compact_bucket("Derived Relations", &filtered.derived);
+            print_compact_bucket("Heuristic Fallbacks", &filtered.heuristic);
+        } else {
+            print_full_bucket(
+                "Exact Relations",
+                Style::new().green().bold(),
+                &filtered.exact,
+            );
+            print_full_bucket(
+                "Derived Relations (Transitive / Structural Neighborhood)",
+                Style::new().yellow().bold(),
+                &filtered.derived,
+            );
+            print_full_bucket(
+                "Heuristic Fallbacks",
+                Style::new().red().bold(),
+                &filtered.heuristic,
+            );
+        }
     }
 
     if data.completeness.is_some() {
@@ -220,5 +219,28 @@ mod tests {
         assert_eq!(filtered.derived.len(), 1);
         assert!(filtered.heuristic.is_empty());
         assert!(filtered.completeness.is_some());
+    }
+
+    #[test]
+    fn print_ledger_graph_wires_cap_stderr_without_early_return() {
+        let src = include_str!("print.rs");
+        let start = src
+            .find("fn print_ledger_graph(")
+            .expect("print_ledger_graph must exist");
+        let after = &src[start..];
+        let next_fn = after
+            .find("\nfn selected_layers")
+            .expect("selected_layers must follow print_ledger_graph");
+        let body = &after[..next_fn];
+        assert!(
+            body.contains(
+                "eprintln!(\"truncated: neighborhood capped at maxDepth 2 / maxNodes 150\")"
+            ),
+            "print_ledger_graph must write the cap stderr line: {body}"
+        );
+        assert!(
+            !body.contains("return Ok"),
+            "print_ledger_graph must not return before the cap stderr: {body}"
+        );
     }
 }
