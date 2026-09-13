@@ -27,8 +27,9 @@ Notes:
   not a substring filter like `endpoints --path`.
   When prefix yields zero matches, file-form resolve applies (unique only):
   X.rs ↔ X/mod.rs, extensionless, unique suffix; ambiguous refuses.
-  Class and Interface kinds are accepted but currently unpopulated by extractors
-  (reserved vocabulary).
+  Class is populated by C++/TS extractors; Interface is populated by TS/Go
+  (this index may have zero Interface rows).
+  Rust inherent impl methods are Function + Type.method; trait methods are Method.
   --changed includes Deleted paths that are still in the index until re-index
   (use --auto-index to refresh).
 
@@ -50,8 +51,9 @@ pub struct SymbolsArgs {
     pub changed: bool,
 
     /// Filter by symbol kind (case-insensitive; aliases: fn, struct, enum, trait,
-    /// mod/module, method, class, type, const, var, interface). Class/Interface
-    /// are reserved (unpopulated today).
+    /// mod/module, method, class, type, const, var, interface). Class is populated
+    /// (C++/TS); Interface is populated (TS/Go). Rust inherent impl methods stay
+    /// Function + Type.method; trait methods are Method.
     #[arg(long)]
     pub kind: Option<String>,
 
@@ -302,7 +304,9 @@ struct QueriedSymbol {
 
 impl QueriedSymbol {
     fn into_wire(self) -> SymbolInventoryRow {
-        let qn = self.qualified_name.filter(|q| !q.is_empty());
+        let qn = self
+            .qualified_name
+            .filter(|q| !q.is_empty() && q != &self.name);
         SymbolInventoryRow {
             name: self.name,
             kind: self.kind,
@@ -312,6 +316,13 @@ impl QueriedSymbol {
             qualified_name: qn,
         }
     }
+}
+
+/// Stored QN is useful only when non-empty and different from `name`.
+fn qualified_display<'a>(name: &'a str, qualified_name: Option<&'a str>) -> &'a str {
+    qualified_name
+        .filter(|q| !q.is_empty() && *q != name)
+        .unwrap_or(name)
 }
 
 fn build_where_and_params(filters: &QueryFilters) -> (String, Vec<String>) {
@@ -592,7 +603,8 @@ fn print_human(
                     None => String::new(),
                 };
                 let vis = if r.is_public { "pub " } else { "" };
-                println!("  {vis}{} {}{line}", r.kind, r.name);
+                let display = qualified_display(&r.name, r.qualified_name.as_deref());
+                println!("  {vis}{} {}{line}", r.kind, display);
             }
             println!();
         }
@@ -1128,19 +1140,83 @@ mod tests {
         assert!(rows.is_empty());
     }
 
+    fn queried(
+        name: &str,
+        kind: &str,
+        path: &str,
+        line: Option<i64>,
+        is_public: bool,
+        qualified_name: Option<&str>,
+    ) -> QueriedSymbol {
+        QueriedSymbol {
+            id: 1,
+            name: name.into(),
+            kind: kind.into(),
+            path: path.into(),
+            line,
+            is_public,
+            qualified_name: qualified_name.map(str::to_string),
+        }
+    }
+
     #[test]
-    fn line_omitted_when_null_in_json() {
-        let row = SymbolInventoryRow {
-            name: "epsilon".into(),
-            kind: "Module".into(),
-            path: "src/commands/foo.rs".into(),
-            line: None,
-            is_public: true,
-            qualified_name: Some("epsilon".into()),
-        };
-        let v = serde_json::to_value(&row).unwrap();
+    fn into_wire_omits_qualified_name_when_equal_to_name() {
+        let v = serde_json::to_value(
+            queried(
+                "epsilon",
+                "Module",
+                "src/commands/foo.rs",
+                None,
+                true,
+                Some("epsilon"),
+            )
+            .into_wire(),
+        )
+        .unwrap();
         assert!(v.get("line").is_none());
+        assert!(v.get("qualifiedName").is_none());
+        assert_eq!(v["name"], "epsilon");
         assert_eq!(v["isPublic"], true);
+    }
+
+    #[test]
+    fn into_wire_emits_type_method_when_different() {
+        let v = serde_json::to_value(
+            queried(
+                "from_row",
+                "Function",
+                "src/state/storage/timings.rs",
+                Some(204),
+                true,
+                Some("TimingSample.from_row"),
+            )
+            .into_wire(),
+        )
+        .unwrap();
+        assert_eq!(v["qualifiedName"], "TimingSample.from_row");
+        assert_eq!(v["name"], "from_row");
+        assert_eq!(v["line"], 204);
+    }
+
+    #[test]
+    fn into_wire_omits_empty_qualified_name() {
+        let v = serde_json::to_value(
+            queried("alpha", "Function", "src/a.rs", Some(1), true, Some("")).into_wire(),
+        )
+        .unwrap();
+        assert!(v.get("qualifiedName").is_none());
+        assert_eq!(v["name"], "alpha");
+    }
+
+    #[test]
+    fn qualified_display_skips_empty_and_equal() {
+        assert_eq!(
+            qualified_display("from_row", Some("TimingSample.from_row")),
+            "TimingSample.from_row"
+        );
+        assert_eq!(qualified_display("alpha", Some("alpha")), "alpha");
+        assert_eq!(qualified_display("alpha", Some("")), "alpha");
+        assert_eq!(qualified_display("alpha", None), "alpha");
     }
 
     #[test]

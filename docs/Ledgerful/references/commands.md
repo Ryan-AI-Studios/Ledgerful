@@ -49,6 +49,10 @@ Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/ch
 
 Requires `-e` / `--entity` or a positional entity. Missing entity is a usage error (exit 2, empty stdout) — not an empty `mappings` envelope. Structural mapping includes in-file unit tests (`SAME_FILE`); still not LCOV.
 
+## `ledgerful symbols`
+
+Scoped index inventory (not search). `--path` is a **prefix**. JSON `schemaVersion` 1. `qualifiedName` omits when empty, absent, or equal to `name` (not a vault key; identity is `(path, name, kind)` + `line`). Human prints stored `Type.method` when it differs. Class is populated (C++/TS); Interface is populated (TS/Go; this index may be 0). Rust inherent impl methods are Function + `Type.method`; trait methods are Method. Default limit 200 / max 5000. See `docs/agent-output-contract.md`.
+
 ## `ledger start --force` vs `ledger commit --force`
 
 - **`ledger start --force`:** bypasses the **pending-entity collision lock** (0223). A PENDING TX whose entity overlaps the new `--entity` or any current dirty path otherwise refuses with `[Ledgerful] Collision:` (exit 2). Owner self-collision is intended — commit/abort first, or pass `--force`.

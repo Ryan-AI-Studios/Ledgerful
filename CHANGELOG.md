@@ -118,6 +118,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Symbol identity readout (0331):** `symbols --json` omits `qualifiedName`
+  when it equals `name` (persist fallback is not a qualified identity).
+  Human lines print stored `Type.method` when it differs. Class/Interface
+  help matches extractors (C++/TS Class; TS/Go Interface). JSON
+  `schemaVersion` stays 1. T233 identity stays `(path, name, kind)`.
+
 - **Timings workload comparability (0330):** `timings` summaries qualify
   by `argv_hash`, success-only percentiles, sample size, and duration
   spread (`comparable` always serializes). `--explain` uses p50 and
