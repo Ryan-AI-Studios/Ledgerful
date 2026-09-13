@@ -58,7 +58,7 @@ pub(super) fn list_hotspot_json(repo: &gix::Repository, hotspot: &Hotspot) -> se
             "frequency": hotspot.frequency,
         }),
     };
-    if !head_path_exists(repo, &hotspot.path.to_string_lossy())
+    if head_path_exists(repo, &hotspot.path.to_string_lossy()) == Some(false)
         && let Some(obj) = value.as_object_mut()
     {
         obj.insert(

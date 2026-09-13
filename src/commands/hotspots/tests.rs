@@ -536,6 +536,10 @@ fn semantic_json_omits_provenance() {
     let output = wrap_hotspots_list_json(vec![serde_json::json!({"path": "dup.rs"})], 10);
     assert!(output.get("provenance").is_none(), "{output}");
     assert!(output.get("completeness").is_none(), "{output}");
+    assert!(
+        output["files"][0].get("presence").is_none(),
+        "semantic wrap must not invent presence: {output}"
+    );
 }
 
 #[test]
@@ -737,6 +741,38 @@ fn presence_historical_on_deleted_git_path() {
     assert_eq!(gone_json["presence"], "historical");
     assert!(stay_json.get("presence").is_none(), "{stay_json}");
     assert_eq!(gone_json["path"], "gone.rs");
+}
+
+#[test]
+fn presence_omitted_when_head_unborn() {
+    use crate::impact::packet::Hotspot;
+    use std::path::PathBuf;
+    use std::process::Command;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    assert!(
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let repo = crate::git::repo::open_repo(dir).expect("unborn");
+    let hotspot = Hotspot {
+        path: PathBuf::from("gone.rs"),
+        score: 0.2,
+        display_score: 1.0,
+        complexity: 1,
+        frequency: 1.0,
+        centrality: None,
+    };
+    let json = list_hotspot_json(&repo, &hotspot);
+    assert!(
+        json.get("presence").is_none(),
+        "unborn HEAD must omit presence, not mark historical: {json}"
+    );
 }
 
 #[test]

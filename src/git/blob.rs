@@ -41,21 +41,25 @@ pub fn normalize_tree_path(path: &str) -> String {
         .to_string()
 }
 
-/// True when `path` exists as a tree entry at HEAD. Unborn / missing HEAD
-/// returns `false` (callers omit `presence` rather than marking every row
-/// historical).
-pub fn head_path_exists(repo: &gix::Repository, path: &str) -> bool {
-    let Ok(tree) = repo.head_tree() else {
-        return false;
-    };
+/// Whether `path` exists as a tree entry at HEAD.
+///
+/// - `None` — HEAD is unborn / missing / not a tree, the normalized path is
+///   empty, or lookup failed. Callers **omit** `presence`.
+/// - `Some(true)` — the path is present at HEAD. Callers omit `presence`
+///   (`current` is implicit).
+/// - `Some(false)` — HEAD is readable and the path is absent. Callers emit
+///   `presence: "historical"`.
+pub fn head_path_exists(repo: &gix::Repository, path: &str) -> Option<bool> {
+    let tree = repo.head_tree().ok()?;
     let path_str = normalize_tree_path(path);
     if path_str.is_empty() {
-        return false;
+        return None;
     }
-    tree.lookup_entry_by_path(path_str.as_str())
-        .ok()
-        .flatten()
-        .is_some()
+    match tree.lookup_entry_by_path(path_str.as_str()) {
+        Ok(Some(_)) => Some(true),
+        Ok(None) => Some(false),
+        Err(_) => None,
+    }
 }
 
 #[cfg(test)]
@@ -157,22 +161,31 @@ mod tests {
     }
 
     #[test]
-    fn head_path_exists_normalizes_and_fail_opens() {
+    fn head_path_exists_tri_state_including_unborn() {
         let dir = tempdir().unwrap();
         init_repo_with_commit(dir.path());
         let repo = crate::git::repo::open_repo(dir.path()).expect("open");
-        assert!(head_path_exists(&repo, "tracked.txt"));
-        assert!(head_path_exists(&repo, r"sub\nested.txt"));
-        assert!(head_path_exists(&repo, "./sub/nested.txt"));
-        assert!(head_path_exists(&repo, "/sub/nested.txt"));
-        assert!(!head_path_exists(&repo, "brand_new.txt"));
+        assert_eq!(head_path_exists(&repo, "tracked.txt"), Some(true));
+        assert_eq!(head_path_exists(&repo, r"sub\nested.txt"), Some(true));
+        assert_eq!(head_path_exists(&repo, "./sub/nested.txt"), Some(true));
+        assert_eq!(head_path_exists(&repo, "/sub/nested.txt"), Some(true));
+        assert_eq!(head_path_exists(&repo, "brand_new.txt"), Some(false));
+        assert_eq!(
+            head_path_exists(&repo, "tracked.txt/child.txt"),
+            Some(false),
+            "blob-as-intermediate is Ok(None) in gix 0.84, not Err"
+        );
+        assert_eq!(head_path_exists(&repo, ""), None);
+        assert_eq!(head_path_exists(&repo, "./"), None);
+        assert_eq!(head_path_exists(&repo, "/"), None);
 
         let unborn = tempdir().unwrap();
         assert!(git(unborn.path(), &["init", "-b", "main"]).status.success());
         let unborn_repo = crate::git::repo::open_repo(unborn.path()).expect("unborn");
-        assert!(
-            !head_path_exists(&unborn_repo, "tracked.txt"),
-            "unborn HEAD must fail-open (omit presence)"
+        assert_eq!(
+            head_path_exists(&unborn_repo, "tracked.txt"),
+            None,
+            "unborn HEAD must omit presence (None, not Some(false))"
         );
     }
 }

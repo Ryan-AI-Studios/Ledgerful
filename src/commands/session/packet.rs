@@ -156,7 +156,7 @@ pub(crate) fn session_hotspot_file_with_head(
     repo: &gix::Repository,
 ) -> SessionHotspotFile {
     let mut file = session_hotspot_file_from(h);
-    if !crate::git::blob::head_path_exists(repo, &file.path) {
+    if crate::git::blob::head_path_exists(repo, &file.path) == Some(false) {
         file.presence = Some("historical".to_string());
     }
     file
