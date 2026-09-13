@@ -50,20 +50,8 @@ jobs:
         run: cargo install cargo-audit --locked
       - run: cargo audit
 
-  cargo-deny:
-    name: Cargo deny
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9
-        with:
-          toolchain: 1.98.1
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32
-      - name: Install cargo-deny
-        run: cargo install cargo-deny --locked
-      - run: cargo deny check advisories bans licenses sources
+  # `cargo deny check` lives in ci.yml `deny` (required merge context).
+  # Do not re-add a Security-workflow duplicate of the same four checks.
 
   semgrep:
     # Required merge context on main (exact name). Do not rename this job.
