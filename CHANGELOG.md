@@ -118,6 +118,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Verify unquoted backslash escape (0340):** Unquoted `\` in the
+  verify argv scan skips the next character (POSIX/shlex), so `\"`
+  cannot open a phantom quote that hides a later `|` / `;`. Quoted
+  nextest filtersets stay Direct.
+
 - **Graph JSON cap stderr and provenance page cost (0339):** `ledger
   graph --json` writes the documented neighborhood-cap stderr line when
   `completeness` is present (JSON `completeness` stays). `ledger

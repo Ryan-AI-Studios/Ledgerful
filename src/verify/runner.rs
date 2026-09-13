@@ -217,6 +217,8 @@ fn is_unquoted_shell_metachar(ch: char) -> bool {
 /// (`test()` / `+` / `|`) can prepare as Direct argv. An unclosed quote
 /// is not itself a metachar — `shlex::split` owns that fail-closed path.
 /// Inside `"…"`, `\"` does not end the quote. Single quotes are literal.
+/// Unquoted `\` skips the next character (POSIX/shlex), so `\"` cannot
+/// open a phantom quote that hides a later `|` / `;`.
 fn contains_shell_metacharacters(command: &str) -> bool {
     let mut quote: Option<char> = None;
     let mut escaped = false;
@@ -230,6 +232,7 @@ fn contains_shell_metacharacters(command: &str) -> bool {
             Some('\'') if ch == '\'' => quote = None,
             Some('"') if ch == '\\' => escaped = true,
             Some('"') if ch == '"' => quote = None,
+            None if ch == '\\' => escaped = true,
             None if ch == '\'' || ch == '"' => quote = Some(ch),
             None if is_unquoted_shell_metachar(ch) => return true,
             _ => {}
@@ -750,6 +753,160 @@ mod tests {
         assert!(
             !err_text.contains("metacharacters"),
             "unclosed quote must not use the metachar message: {err_text}"
+        );
+    }
+
+    #[test]
+    fn contains_shell_metacharacters_unquoted_escaped_quote_does_not_hide_pipe() {
+        assert!(
+            contains_shell_metacharacters(r#"echo \"hello\" | wc"#),
+            "unquoted escaped quotes must not hide a later pipe"
+        );
+    }
+
+    #[test]
+    fn contains_shell_metacharacters_unquoted_escaped_quote_does_not_hide_semicolon() {
+        assert!(
+            contains_shell_metacharacters(r#"cargo \"test\" ; curl evil"#),
+            "unquoted escaped quotes must not hide a later semicolon"
+        );
+    }
+
+    #[test]
+    fn prepare_rule_step_unquoted_escaped_quotes_then_pipe_still_refuse() {
+        let err = prepare_rule_step(
+            &base_step(r#"echo \"hello\" | wc"#, 5),
+            false,
+            &default_strict_policy(),
+        )
+        .unwrap_err();
+        let err_text = format!("{err}");
+        assert!(
+            err_text.contains("shell metacharacters"),
+            "expected metachar refuse, got {err_text}"
+        );
+    }
+
+    #[test]
+    fn prepare_rule_step_unquoted_escaped_quotes_then_semicolon_still_refuse() {
+        let err = prepare_rule_step(
+            &base_step(r#"cargo \"test\" ; curl evil"#, 5),
+            false,
+            &default_strict_policy(),
+        )
+        .unwrap_err();
+        let err_text = format!("{err}");
+        assert!(
+            err_text.contains("shell metacharacters"),
+            "expected metachar refuse, got {err_text}"
+        );
+    }
+
+    #[test]
+    fn prepare_rule_step_unquoted_escaped_quotes_without_meta_direct() {
+        let prepared = prepare_rule_step(
+            &base_step(r#"echo \"hello\""#, 5),
+            false,
+            &default_strict_policy(),
+        )
+        .unwrap();
+        assert_eq!(prepared.execution_mode, ExecutionMode::Direct);
+        assert_eq!(prepared.executable, "echo");
+        assert_eq!(
+            prepared.args.last().map(String::as_str),
+            Some(r#""hello""#),
+            "shlex keeps literal quotes; got {:?}",
+            prepared.args
+        );
+    }
+
+    #[test]
+    fn prepare_rule_step_unquoted_escaped_pipe_is_literal_argv() {
+        let prepared = prepare_rule_step(
+            &base_step(r#"echo hello \| sort"#, 5),
+            false,
+            &default_strict_policy(),
+        )
+        .unwrap();
+        assert_eq!(prepared.execution_mode, ExecutionMode::Direct);
+        assert_eq!(prepared.executable, "echo");
+        assert!(
+            prepared.args.iter().any(|a| a == "|"),
+            "escaped pipe must be a literal | argv token, got {:?}",
+            prepared.args
+        );
+        assert!(
+            !prepared.args.iter().any(|a| a == r"\|"),
+            "shlex drops the backslash; got {:?}",
+            prepared.args
+        );
+    }
+
+    #[test]
+    fn prepare_rule_step_even_backslashes_before_pipe_still_refuse() {
+        let err = prepare_rule_step(
+            &base_step(r#"echo \\| wc"#, 5),
+            false,
+            &default_strict_policy(),
+        )
+        .unwrap_err();
+        let err_text = format!("{err}");
+        assert!(
+            err_text.contains("shell metacharacters"),
+            "even backslashes must leave | unescaped, got {err_text}"
+        );
+    }
+
+    #[test]
+    fn prepare_rule_step_even_backslashes_before_quote_then_pipe_still_refuse() {
+        let err = prepare_rule_step(
+            &base_step(r#"echo \\"hello" | wc"#, 5),
+            false,
+            &default_strict_policy(),
+        )
+        .unwrap_err();
+        let err_text = format!("{err}");
+        assert!(
+            err_text.contains("shell metacharacters"),
+            "even backslashes must leave a later pipe unquoted, got {err_text}"
+        );
+    }
+
+    #[test]
+    fn prepare_rule_step_dangling_unquoted_backslash_parse_tokens_not_metachar() {
+        let err = prepare_rule_step(&base_step("echo \\", 5), false, &default_strict_policy())
+            .unwrap_err();
+        let err_text = format!("{err}");
+        assert!(
+            err_text.contains("Unable to parse command into argv tokens"),
+            "expected shlex parse error, got {err_text}"
+        );
+        assert!(
+            !err_text.contains("metacharacters"),
+            "dangling backslash must not use the metachar message: {err_text}"
+        );
+    }
+
+    #[test]
+    fn contains_shell_metacharacters_wires_unquoted_backslash_escape_before_quote_open() {
+        let src = include_str!("runner.rs");
+        let start = src
+            .find("fn contains_shell_metacharacters(")
+            .expect("contains_shell_metacharacters must exist");
+        let after = &src[start..];
+        let next_fn = after
+            .find("pub fn split_command_string")
+            .expect("split_command_string must follow contains_shell_metacharacters");
+        let body = &after[..next_fn];
+        let escape_arm = r#"None if ch == '\\' => escaped = true"#;
+        let quote_open = r#"None if ch == '\'' || ch == '"'"#;
+        let escape_pos = body
+            .find(escape_arm)
+            .expect("unquoted backslash must set escaped");
+        let quote_pos = body.find(quote_open).expect("quote-open arm must remain");
+        assert!(
+            escape_pos < quote_pos,
+            "unquoted \\\\ arm must appear before quote-open: {body}"
         );
     }
 }
