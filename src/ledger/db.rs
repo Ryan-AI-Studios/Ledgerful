@@ -312,6 +312,14 @@ impl<'a> LedgerDb<'a> {
         transactions::get_committed_ledger_entries_paginated(self.conn, category, limit, offset)
     }
 
+    pub fn get_committed_ledger_entries_page(
+        &self,
+        limit: Option<usize>,
+        offset: usize,
+    ) -> Result<(Vec<LedgerEntry>, usize), LedgerError> {
+        transactions::get_committed_ledger_entries_page(self.conn, limit, offset)
+    }
+
     pub fn update_ledger_entry_signature(
         &self,
         tx_id: &str,

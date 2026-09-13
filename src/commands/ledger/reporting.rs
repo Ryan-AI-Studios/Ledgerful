@@ -750,21 +750,28 @@ fn print_pending_sidecar(layout: &crate::state::layout::Layout) {
 /// Export stable provenance as pretty-printed JSON.
 ///
 /// When `output` is `None`, writes JSON to stdout. When `Some(path)`, writes
-/// to the specified file path. `--limit` / `--offset` page the live
-/// genesis→head (`committed_at ASC, tx_id ASC`) array.
+/// to the specified file path. `--limit` / `--offset` page via SQL COUNT +
+/// LIMIT/OFFSET (`committed_at ASC, tx_id ASC`).
 pub fn execute_ledger_export_provenance(
     output: Option<String>,
     limit: Option<usize>,
     offset: usize,
 ) -> Result<()> {
+    if limit == Some(0) {
+        miette::bail!("--limit must be at least 1");
+    }
     let layout = get_layout()?;
     let storage = StorageManager::open_read_only(&layout)?;
     let db = LedgerDb::new(storage.get_connection());
-    let entries = db
-        .get_all_committed_ledger_entries()
+    let (page, total) = db
+        .get_committed_ledger_entries_page(limit, offset)
         .map_err(|e| miette::miette!("{}", e))?;
 
-    let page = page_provenance_entries(entries, limit, offset)?;
+    if let Some(lim) = limit
+        && offset.saturating_add(lim) < total
+    {
+        eprintln!("truncated: offset={offset} limit={lim} total={total}");
+    }
 
     if let Some(output_path) = output {
         let file = std::fs::File::create(&output_path).into_diagnostic()?;
@@ -778,24 +785,6 @@ pub fn execute_ledger_export_provenance(
         serde_json::to_writer_pretty(std::io::stdout(), &page).into_diagnostic()?;
     }
     Ok(())
-}
-
-fn page_provenance_entries(
-    entries: Vec<crate::ledger::types::LedgerEntry>,
-    limit: Option<usize>,
-    offset: usize,
-) -> Result<Vec<crate::ledger::types::LedgerEntry>> {
-    let Some(lim) = limit else {
-        return Ok(entries);
-    };
-    if lim == 0 {
-        miette::bail!("--limit must be at least 1");
-    }
-    let total = entries.len();
-    if offset.saturating_add(lim) < total {
-        eprintln!("truncated: offset={offset} limit={lim} total={total}");
-    }
-    Ok(entries.into_iter().skip(offset).take(lim).collect())
 }
 
 /// Export a redacted, cryptographically verifiable public ledger bundle.
@@ -875,6 +864,32 @@ mod status_json_tests {
         assert!(
             apply_body.contains("tracing::warn!"),
             "apply_exit_code must warn! on cli_summary"
+        );
+    }
+
+    #[test]
+    fn execute_ledger_export_provenance_wires_page_helper_without_full_scan() {
+        let src = include_str!("reporting.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
+        let start = prod
+            .find("fn execute_ledger_export_provenance(")
+            .expect("execute_ledger_export_provenance must exist");
+        let after = &prod[start..];
+        let next_fn = after
+            .find("\npub fn execute_ledger_export_public")
+            .expect("execute_ledger_export_public must follow execute_ledger_export_provenance");
+        let body = &after[..next_fn];
+        assert!(
+            body.contains("get_committed_ledger_entries_page"),
+            "execute must call the page helper: {body}"
+        );
+        assert!(
+            !body.contains("get_all_committed_ledger_entries"),
+            "execute must not load the full chain: {body}"
+        );
+        assert!(
+            !body.contains("page_provenance_entries"),
+            "page_provenance_entries must be deleted: {body}"
         );
     }
 

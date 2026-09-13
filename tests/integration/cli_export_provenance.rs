@@ -94,8 +94,8 @@ fn export_provenance_truncated_stderr() {
     assert!(output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
-        stderr.contains("truncated:"),
-        "expected truncated line, got {stderr}"
+        stderr.contains("truncated: offset=0 limit=2 total="),
+        "expected truncated line with offset/limit/total, got {stderr}"
     );
 }
 
@@ -139,6 +139,28 @@ fn export_provenance_page_is_oldest_first() {
     assert_eq!(page_rows[1]["tx_id"], full_rows[1]["tx_id"]);
     assert_eq!(page_rows[0]["committed_at"], full_rows[0]["committed_at"]);
     assert_ne!(page_rows[0]["tx_id"], ids[2]);
+
+    let offset_page = Command::new(env!("CARGO_BIN_EXE_ledgerful"))
+        .args([
+            "ledger",
+            "export-provenance",
+            "--limit",
+            "1",
+            "--offset",
+            "1",
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        offset_page.status.success(),
+        "{:?}",
+        String::from_utf8_lossy(&offset_page.stderr)
+    );
+    let offset_json: serde_json::Value = serde_json::from_slice(&offset_page.stdout).unwrap();
+    let offset_rows = offset_json.as_array().expect("offset page array");
+    assert_eq!(offset_rows.len(), 1);
+    assert_eq!(offset_rows[0]["tx_id"], full_rows[1]["tx_id"]);
 }
 
 #[test]

@@ -505,6 +505,30 @@ pub fn update_ledger_entry_prev_hash(
     Ok(count)
 }
 
+pub fn get_committed_ledger_entries_page(
+    conn: &Connection,
+    limit: Option<usize>,
+    offset: usize,
+) -> Result<(Vec<LedgerEntry>, usize), LedgerError> {
+    match limit {
+        None => {
+            let entries = get_all_committed_ledger_entries(conn)?;
+            let total = entries.len();
+            Ok((entries, total))
+        }
+        Some(lim) => {
+            let tx = conn.unchecked_transaction()?;
+            let total_i64: i64 =
+                tx.query_row("SELECT COUNT(*) FROM ledger_entries", [], |row| row.get(0))?;
+            let total = usize::try_from(total_i64.max(0))
+                .map_err(|e| LedgerError::Validation(e.to_string()))?;
+            let entries = get_committed_ledger_entries_paginated(&tx, None, lim, offset)?;
+            tx.commit()?;
+            Ok((entries, total))
+        }
+    }
+}
+
 pub fn get_committed_ledger_entries_paginated(
     conn: &Connection,
     category: Option<&str>,
@@ -713,5 +737,74 @@ mod tests {
         let entries = get_ledger_entries_for_tx(&conn, &tx.tx_id).unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].summary, "test");
+    }
+
+    fn sample_committed_entry(tx_id: &str, committed_at: &str) -> LedgerEntry {
+        LedgerEntry {
+            id: 0,
+            tx_id: tx_id.to_string(),
+            category: Category::Feature,
+            entry_type: EntryType::Implementation,
+            entity: "src/a.rs".to_string(),
+            entity_normalized: "src/a.rs".to_string(),
+            change_type: ChangeType::Modify,
+            summary: tx_id.to_string(),
+            reason: "page".to_string(),
+            is_breaking: false,
+            committed_at: committed_at.to_string(),
+            verification_status: None,
+            verification_basis: None,
+            outcome_notes: None,
+            origin: "LOCAL".to_string(),
+            trace_id: None,
+            signature: None,
+            public_key: None,
+            risk: None,
+            related_tickets: None,
+            author: "Test User".to_string(),
+            observed: None,
+            prev_hash: None,
+            sig_version: 1,
+        }
+    }
+
+    #[test]
+    fn committed_ledger_entries_page_limit_returns_slice_and_total() {
+        let conn = setup_in_memory_db();
+        let times = [
+            "2026-01-01T00:00:00Z",
+            "2026-01-02T00:00:00Z",
+            "2026-01-03T00:00:00Z",
+            "2026-01-04T00:00:00Z",
+            "2026-01-05T00:00:00Z",
+        ];
+        for (i, committed_at) in times.iter().enumerate() {
+            let tx_id = format!("tx-{i}");
+            insert_ledger_entry(&conn, &sample_committed_entry(&tx_id, committed_at)).unwrap();
+        }
+
+        let all = get_all_committed_ledger_entries(&conn).unwrap();
+        assert_eq!(all.len(), 5);
+
+        let (page, total) = get_committed_ledger_entries_page(&conn, Some(2), 0).unwrap();
+        assert_eq!(total, 5);
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].tx_id, all[0].tx_id);
+        assert_eq!(page[1].tx_id, all[1].tx_id);
+
+        let (second, total) = get_committed_ledger_entries_page(&conn, Some(1), 1).unwrap();
+        assert_eq!(total, 5);
+        assert_eq!(second.len(), 1);
+        assert_eq!(second[0].tx_id, all[1].tx_id);
+
+        let (full, total) = get_committed_ledger_entries_page(&conn, None, 0).unwrap();
+        assert_eq!(total, 5);
+        assert_eq!(full.len(), 5);
+        assert_eq!(full[0].tx_id, all[0].tx_id);
+        assert_eq!(full[4].tx_id, all[4].tx_id);
+
+        let (empty, total) = get_committed_ledger_entries_page(&conn, Some(2), 5).unwrap();
+        assert_eq!(total, 5);
+        assert!(empty.is_empty());
     }
 }
