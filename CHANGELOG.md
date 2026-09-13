@@ -118,6 +118,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Data-models `--changed` empty fixture note (0336):** Human
+  `data-models impact --changed` empty with omitted fixtures prints
+  the omit footer after CleanDiff. JSON stays `cleanDiff` /
+  `No changed data models found.` and still echoes
+  `includeFixtures` / `fixturesOmitted`.
+
 - **Endpoints post-omit empty and nest layer order (0335):** Default
   `endpoints` after fixture omit is `emptyReason: noMatches` (not
   CleanDiff without `--changed`). Axum inferred auth follows layer
