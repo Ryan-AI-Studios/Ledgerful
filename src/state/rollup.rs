@@ -378,24 +378,31 @@ pub fn build_global_timings_summary(
     let top = args.top.unwrap_or(20);
     let collected = collect_global_timings(config, Some(days), args.command.as_deref())?;
 
-    // Pool outer duration samples by command across all repos.
-    let mut by_cmd: BTreeMap<String, Vec<i64>> = BTreeMap::new();
+    // Pool outer samples by command across all repos (duration + exit + hash).
+    let mut by_cmd: BTreeMap<String, Vec<crate::state::storage::timings::TimingSample>> =
+        BTreeMap::new();
     let mut per_repo: Vec<RepoCommandTiming> = Vec::new();
 
     for repo in &collected.repos {
-        let mut repo_by_cmd: BTreeMap<String, Vec<i64>> = BTreeMap::new();
+        let mut repo_by_cmd: BTreeMap<String, Vec<crate::state::storage::timings::TimingSample>> =
+            BTreeMap::new();
         for row in &repo.outer {
+            let sample = crate::state::storage::timings::TimingSample::from_row(row);
             by_cmd
                 .entry(row.command.clone())
                 .or_default()
-                .push(row.duration_ms);
+                .push(sample.clone());
             repo_by_cmd
                 .entry(row.command.clone())
                 .or_default()
-                .push(row.duration_ms);
+                .push(sample);
         }
-        for (command, durs) in repo_by_cmd {
-            let s = crate::state::storage::timings::summarize_from_samples(command, &durs);
+        for (command, samples) in repo_by_cmd {
+            let s = crate::state::storage::timings::summarize_from_samples(
+                command,
+                &samples,
+                u64::from(days),
+            );
             per_repo.push(RepoCommandTiming {
                 repo_path: repo.repo_path.clone(),
                 command: s.command,
@@ -410,8 +417,12 @@ pub fn build_global_timings_summary(
 
     let mut data: Vec<crate::state::storage::timings::CommandTimingSummary> = by_cmd
         .into_iter()
-        .map(|(command, durs)| {
-            crate::state::storage::timings::summarize_from_samples(command, &durs)
+        .map(|(command, samples)| {
+            crate::state::storage::timings::summarize_from_samples(
+                command,
+                &samples,
+                u64::from(days),
+            )
         })
         .collect();
     data.sort_by(|a, b| {
@@ -497,20 +508,31 @@ fn print_global_timings_text(summary: &GlobalTimingsSummary, args: &GlobalTiming
         }
     }
 
-    let mut table = crate::output::table::build_table(vec![
-        "Command", "Runs", "p50 ms", "p95 ms", "p99 ms", "Total ms",
+    let mut table = crate::output::table::build_premium_table([
+        "Command", "Runs", "p50", "p95", "p99", "Total",
     ]);
     for s in &summary.data {
         table.add_row(vec![
             s.command.clone(),
             s.runs.to_string(),
-            s.p50_ms.to_string(),
-            s.p95_ms.to_string(),
-            s.p99_ms.to_string(),
-            s.total_ms.to_string(),
+            crate::output::table::format_timing_millis(s.p50_ms),
+            crate::output::table::format_timing_millis(s.p95_ms),
+            crate::output::table::format_timing_millis(s.p99_ms),
+            crate::output::table::format_timing_millis(s.total_ms),
         ]);
     }
     println!("\n{table}");
+    for s in &summary.data {
+        if s.comparable {
+            continue;
+        }
+        let reason = s
+            .incomparable_reason
+            .as_deref()
+            .or(s.sample_note.as_deref())
+            .unwrap_or("incomparable");
+        println!("  {}: not comparable ({reason})", s.command);
+    }
 }
 
 fn empty_timings_message(collected: &CollectedGlobalTimings, data_empty: bool) -> Option<String> {
@@ -882,7 +904,7 @@ fn execute_timings_global_explain(
     }
 
     // ISO-8601 UTC timestamps sort lexicographically; cutoff is 7 days ago.
-    // build_explain_sentence splits prior-week from the 14d pool via run_id set.
+    // explain_command splits prior-week from the 14d pool via run_id set.
     let cutoff_7d = (chrono::Utc::now() - chrono::Duration::days(7))
         .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
     let recent: Vec<_> = all_outer
@@ -891,7 +913,8 @@ fn execute_timings_global_explain(
         .cloned()
         .collect();
 
-    let sentence = build_explain_sentence(command, &recent, &all_outer);
+    let report =
+        crate::state::storage::timings::explain_command(command, &recent, &all_outer, true);
 
     if args.json {
         let message = if recent.is_empty() && collected.repos_with_timings == 0 {
@@ -907,78 +930,39 @@ fn execute_timings_global_explain(
             "timingsAbsent": collected.timings_absent,
             "warnings": collected.warnings,
             "message": message,
-            "data": { "explain": sentence },
+            "data": crate::state::storage::timings::explain_report_json(&report),
         });
         println!(
             "{}",
             serde_json::to_string_pretty(&envelope).into_diagnostic()?
         );
     } else {
-        println!("{sentence}");
+        println!("{}", report.sentence);
         print_timings_degradation(&collected);
     }
     Ok(())
 }
 
-fn build_explain_sentence(
+/// Structured global explain for tests (0044 P3 / 0330). Does not print.
+pub fn build_global_timings_explain(
+    config: &GlobalRollupConfig,
     command: &str,
-    recent: &[crate::state::storage::timings::TimingRow],
-    prior_14d: &[crate::state::storage::timings::TimingRow],
-) -> String {
-    if recent.is_empty() {
-        return format!(
-            "No recorded runs of `{command}` in the last 7 days across discovered repos."
-        );
+) -> Result<crate::state::storage::timings::ExplainReport> {
+    let collected = collect_global_timings(config, Some(14), Some(command))?;
+    let mut all_outer: Vec<crate::state::storage::timings::TimingRow> = Vec::new();
+    for repo in &collected.repos {
+        all_outer.extend(repo.outer.iter().cloned());
     }
-
-    let recent_avg = mean_duration_ms(recent);
-    let recent_ids: std::collections::HashSet<&str> =
-        recent.iter().map(|r| r.run_id.as_str()).collect();
-    let prior_only: Vec<&crate::state::storage::timings::TimingRow> = prior_14d
+    let cutoff_7d = (chrono::Utc::now() - chrono::Duration::days(7))
+        .to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    let recent: Vec<_> = all_outer
         .iter()
-        .filter(|r| !recent_ids.contains(r.run_id.as_str()))
+        .filter(|r| r.ts_utc.as_str() >= cutoff_7d.as_str())
+        .cloned()
         .collect();
-
-    if prior_only.is_empty() {
-        format!(
-            "`{command}` averaged {recent_avg:.0} ms over {} run(s) in the last 7 days across repos; no prior-week baseline yet.",
-            recent.len()
-        )
-    } else {
-        let prior_avg = mean_duration_ms_refs(&prior_only);
-        let delta_pct = if prior_avg > 0.0 {
-            ((recent_avg - prior_avg) / prior_avg) * 100.0
-        } else {
-            0.0
-        };
-        let direction = if delta_pct > 1.0 {
-            "up"
-        } else if delta_pct < -1.0 {
-            "down"
-        } else {
-            "flat"
-        };
-        format!(
-            "`{command}` averaged {recent_avg:.0} ms over {} run(s) this week across repos, {direction} {delta_pct:.0}% vs the prior week ({prior_avg:.0} ms).",
-            recent.len()
-        )
-    }
-}
-
-fn mean_duration_ms(rows: &[crate::state::storage::timings::TimingRow]) -> f64 {
-    if rows.is_empty() {
-        return 0.0;
-    }
-    let sum: i64 = rows.iter().map(|r| r.duration_ms).sum();
-    sum as f64 / rows.len() as f64
-}
-
-fn mean_duration_ms_refs(rows: &[&crate::state::storage::timings::TimingRow]) -> f64 {
-    if rows.is_empty() {
-        return 0.0;
-    }
-    let sum: i64 = rows.iter().map(|r| r.duration_ms).sum();
-    sum as f64 / rows.len() as f64
+    Ok(crate::state::storage::timings::explain_command(
+        command, &recent, &all_outer, true,
+    ))
 }
 
 /// Returns true if the user's `--repo` filter should select `repo_path`.

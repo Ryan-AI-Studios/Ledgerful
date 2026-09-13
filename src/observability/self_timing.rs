@@ -16,6 +16,7 @@
 //! inspecting local history does not pollute the series with self-observation.
 
 use crate::state::storage::timings::{TimingRow, insert_timing_batch, is_self_timing_enabled};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::HashMap;
 #[cfg(test)]
@@ -149,6 +150,7 @@ pub struct TimedCommand {
     run_id: String,
     command: String,
     argv_hash: Option<String>,
+    argv_shape: Option<String>,
     started: Instant,
     exit_code: i32,
     active: bool,
@@ -165,6 +167,7 @@ impl TimedCommand {
                 run_id: String::new(),
                 command: command.to_string(),
                 argv_hash: None,
+                argv_shape: None,
                 started: Instant::now(),
                 exit_code: 0,
                 active: false,
@@ -185,6 +188,7 @@ impl TimedCommand {
             run_id,
             command: command.to_string(),
             argv_hash: Some(hash_argv_shape(argv_shape)),
+            argv_shape: Some(argv_shape.to_string()),
             started: Instant::now(),
             exit_code: 0,
             active: true,
@@ -256,7 +260,10 @@ impl TimedCommand {
             // Outer command row: no parent.
             parent_span_id: None,
             span_name: None,
-            notes: None,
+            notes: self
+                .argv_shape
+                .as_ref()
+                .map(|shape| json!({ "shape": shape }).to_string()),
         });
 
         for span in inner_spans {
@@ -1038,5 +1045,18 @@ mod tests {
         assert_eq!(ledger_before, ledger_after);
         assert_eq!(chain_before, chain_after);
         assert_eq!(count_timings(&conn).unwrap(), 2);
+    }
+
+    #[test]
+    fn notes_shape_contains_flag_names_not_values() {
+        let shape = "scan|impact,out";
+        let notes = json!({ "shape": shape }).to_string();
+        assert!(notes.contains("impact,out"));
+        assert!(!notes.contains("/tmp/report.json"));
+        assert!(!notes.contains("--out"));
+        assert!(!notes.contains("C:\\"));
+        let hash = hash_argv_shape(shape);
+        assert_ne!(notes, hash);
+        assert!(!notes.contains(&hash));
     }
 }

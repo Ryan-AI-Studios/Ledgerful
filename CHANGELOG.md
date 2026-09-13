@@ -118,6 +118,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Timings workload comparability (0330):** `timings` summaries qualify
+  by `argv_hash`, success-only percentiles, sample size, and duration
+  spread (`comparable` always serializes). `--explain` uses p50 and
+  refuses an incomparable percent (no `up 128104%` class). Local explain
+  is not LIMIT-truncated. JSON `schemaVersion` stays 1. `timings-0` is
+  not pruned.
+
 - **Windows human chrome (0329):** Doctor marks/bullets/rules/trailers,
   schema lock cell, security caption arrows/dashes, setup banners, and
   the staleness arrow follow 0181 `LEDGERFUL_TABLE_STYLE` (Ascii fallback

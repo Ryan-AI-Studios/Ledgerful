@@ -1730,6 +1730,13 @@ fn global_timings_inner_and_explain_include_skip_warnings() {
     let summary = build_global_timings_summary(&config, &GlobalTimingsArgs::default()).unwrap();
     assert_eq!(summary.skipped_repos, 1);
     assert!(!summary.warnings.is_empty());
+
+    let report = ledgerful::state::rollup::build_global_timings_explain(&config, "verify").unwrap();
+    let data = ledgerful::state::storage::timings::explain_report_json(&report);
+    assert!(data.get("explain").is_some());
+    assert!(data.get("command").is_some());
+    assert!(data.get("runs").is_some());
+    assert!(data.get("comparable").is_some());
 }
 
 #[test]

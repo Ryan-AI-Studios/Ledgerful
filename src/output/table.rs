@@ -285,6 +285,31 @@ pub fn build_premium_table(headers: impl IntoIterator<Item = impl ToString>) -> 
     build_premium_table_with_style(resolve_table_style(), headers)
 }
 
+/// Human duration for timings tables (Track 0330). JSON stays integer `*_ms`.
+///
+/// - `<1000` → `Nms`
+/// - `<60s` → `N.Ns`
+/// - `<60m` → `Nm Ns`
+/// - else → `Nh Nm`
+///
+/// Do **not** change [`crate::output::verification::format_duration_compact`].
+pub fn format_timing_millis(ms: i64) -> String {
+    let ms = ms.max(0);
+    if ms < 1000 {
+        format!("{ms}ms")
+    } else if ms < 60_000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else if ms < 3_600_000 {
+        let minutes = ms / 60_000;
+        let seconds = (ms % 60_000) / 1000;
+        format!("{minutes}m {seconds}s")
+    } else {
+        let hours = ms / 3_600_000;
+        let minutes = (ms % 3_600_000) / 60_000;
+        format!("{hours}h {minutes}m")
+    }
+}
+
 /// Build a premium table with an explicit style (tests + hermetic callers).
 pub fn build_premium_table_with_style(
     style: TableStyleKind,
@@ -602,5 +627,13 @@ mod tests {
         assert_eq!(out, "αβ...");
         let intact = truncate_chars(s, 20, TableStyleKind::Ascii);
         assert_eq!(intact, s);
+    }
+
+    #[test]
+    fn format_timing_millis_units() {
+        assert_eq!(format_timing_millis(256), "256ms");
+        assert_eq!(format_timing_millis(2200), "2.2s");
+        assert_eq!(format_timing_millis(451_691), "7m 31s");
+        assert_eq!(format_timing_millis(3_600_000), "1h 0m");
     }
 }
