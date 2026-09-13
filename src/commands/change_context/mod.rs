@@ -9,7 +9,7 @@ mod emit;
 mod packet;
 mod storage;
 
-pub use build::{build_change_context, build_change_context_from_cwd};
+pub use build::build_change_context;
 pub(crate) use build::{not_ready_packet, read_doctor_section};
 pub(crate) use emit::emit_packet;
 pub(crate) use packet::NotReadyErrorClass;

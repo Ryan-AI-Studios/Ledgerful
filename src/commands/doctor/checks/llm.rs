@@ -229,17 +229,6 @@ impl CompletionReadiness {
     }
 }
 
-#[cfg(test)]
-pub(crate) fn completion_probe_failure_kind(
-    tcp_ok: bool,
-) -> (&'static str, &'static str, &'static str) {
-    completion_probe_failure_kind_for(if tcp_ok {
-        CompletionReadiness::FallbackFailed
-    } else {
-        CompletionReadiness::Unreachable
-    })
-}
-
 pub(crate) fn completion_probe_failure_kind_for(
     readiness: CompletionReadiness,
 ) -> (&'static str, &'static str, &'static str) {
@@ -682,13 +671,14 @@ pub(crate) fn parse_url_host(url: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        CompletionPingClass, classify_completion_ping_error, completion_finding_message,
-        completion_probe_failure_kind,
+        CompletionPingClass, CompletionReadiness, classify_completion_ping_error,
+        completion_finding_message, completion_probe_failure_kind_for,
     };
 
     #[test]
     fn listening_local_router_is_not_unreachable() {
-        let (code, status, lead) = completion_probe_failure_kind(true);
+        let (code, status, lead) =
+            completion_probe_failure_kind_for(CompletionReadiness::FallbackFailed);
         assert_eq!(code, "completion-not-ready");
         assert!(status.contains("listening"));
         assert!(lead.contains("listening"));
@@ -697,7 +687,8 @@ mod tests {
 
     #[test]
     fn tcp_down_stays_unreachable() {
-        let (code, status, lead) = completion_probe_failure_kind(false);
+        let (code, status, lead) =
+            completion_probe_failure_kind_for(CompletionReadiness::Unreachable);
         assert_eq!(code, "completion-unreachable");
         assert_eq!(status, "unreachable");
         assert!(lead.contains("unreachable"));
@@ -910,7 +901,7 @@ mod tests {
         );
         assert_eq!(class, CompletionPingClass::Timeout);
         assert!(class.tcp_ok());
-        let (code, _, lead) = completion_probe_failure_kind(class.tcp_ok());
+        let (code, _, lead) = completion_probe_failure_kind_for(CompletionReadiness::FallbackFailed);
         assert_eq!(code, "completion-not-ready");
         assert!(!lead.to_lowercase().contains("unreachable"));
     }
@@ -922,7 +913,8 @@ mod tests {
             classify_completion_ping_error(false, Some(ureq::ErrorKind::ConnectionFailed), None);
         assert_eq!(class, CompletionPingClass::ConnectionFailed);
         assert!(!class.tcp_ok());
-        let (code, status, lead) = completion_probe_failure_kind(class.tcp_ok());
+        let (code, status, lead) =
+            completion_probe_failure_kind_for(CompletionReadiness::Unreachable);
         assert_eq!(code, "completion-unreachable");
         assert_eq!(status, "unreachable");
         assert!(lead.contains("unreachable"));
@@ -934,7 +926,7 @@ mod tests {
         let class = classify_completion_ping_error(true, None, None);
         assert_eq!(class, CompletionPingClass::EmptyUrl);
         assert!(!class.tcp_ok());
-        let (code, _, _) = completion_probe_failure_kind(class.tcp_ok());
+        let (code, _, _) = completion_probe_failure_kind_for(CompletionReadiness::Unreachable);
         assert_eq!(code, "completion-unreachable");
     }
 

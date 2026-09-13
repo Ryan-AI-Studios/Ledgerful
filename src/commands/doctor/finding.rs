@@ -82,13 +82,6 @@ pub enum SessionPriority {
 }
 
 impl SessionPriority {
-    pub fn as_str(self) -> &'static str {
-        match self {
-            Self::Now => "now",
-            Self::Later => "later",
-        }
-    }
-
     pub fn is_later(self) -> bool {
         matches!(self, Self::Later)
     }

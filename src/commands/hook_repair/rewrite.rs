@@ -60,15 +60,6 @@ impl HookRepairReport {
             ..Default::default()
         }
     }
-
-    /// True when there is nothing to report as a problem and nothing was done.
-    pub fn is_silent_clean(&self) -> bool {
-        self.repaired.is_empty()
-            && self.residual_invocations.is_empty()
-            && self.near_miss_blocks.is_empty()
-            && self.discovery_notes.is_empty()
-            && self.third_party_manager.is_none()
-    }
 }
 
 // ---------------------------------------------------------------------------
