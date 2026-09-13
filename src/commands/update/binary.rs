@@ -3,13 +3,12 @@
 use crate::commands::doctor::binary_latest::{GITHUB_OWNER_REPO, parse_release_tag_name};
 use crate::commands::doctor::is_ledgerful_engine_worktree;
 use crate::util::network::network_disabled_from_env;
-use crate::util::path::ensure_path_within_root;
 use miette::{IntoDiagnostic, Result, miette};
 use owo_colors::{OwoColorize, Stream, Style};
 use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
-use std::io::Read;
+use std::io::{Cursor, Read};
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
@@ -510,102 +509,79 @@ fn extract_unix_tarball(archive: &str, bytes: &[u8], dest: &Path) -> Result<Vec<
     extract_unix_tarball_with_cap(archive, bytes, dest, MAX_EXTRACTED_BYTES)
 }
 
+fn tar_failed(archive: &str) -> miette::Report {
+    miette!(
+        "tar failed to extract {archive}.\nSee {}",
+        latest_page_url()
+    )
+}
+
+fn normalize_tar_member_name(raw: &[u8]) -> Option<String> {
+    let s = std::str::from_utf8(raw).ok()?;
+    let mut name = s.replace('\\', "/");
+    if let Some(rest) = name.strip_prefix("./") {
+        name = rest.to_string();
+    }
+    if name.split('/').any(|seg| seg == "..") {
+        return None;
+    }
+    Some(name)
+}
+
 fn extract_unix_tarball_with_cap(
     archive: &str,
     bytes: &[u8],
-    dest: &Path,
+    _dest: &Path,
     max_extracted: u64,
 ) -> Result<Vec<u8>> {
     let stem = archive
         .strip_suffix(".tar.gz")
         .ok_or_else(|| miette!("Invalid tarball name {archive}"))?;
     let member = unix_tar_member(stem);
-    let staging = unique_staging_dir(dest)?;
-    fs::create_dir_all(&staging).into_diagnostic()?;
-    let archive_path = staging.join("archive.tar.gz");
-    let write_result = (|| -> Result<Vec<u8>> {
-        fs::write(&archive_path, bytes).into_diagnostic()?;
-        let status = Command::new("tar")
-            .arg("-xzf")
-            .arg(&archive_path)
-            .arg(&member)
-            .current_dir(&staging)
-            .status()
-            .map_err(|_| {
-                miette!(
-                    "tar is required to extract {archive}.\nSee {}",
-                    latest_page_url()
-                )
-            })?;
-        let nested = staging.join(stem).join("ledgerful");
-        let meta = match fs::symlink_metadata(&nested) {
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+    let decoder = flate2::read::MultiGzDecoder::new(Cursor::new(bytes));
+    let mut tarball = tar::Archive::new(decoder);
+    let entries = tarball.entries().map_err(|_| tar_failed(archive))?;
+    for entry in entries {
+        let mut entry = entry.map_err(|_| tar_failed(archive))?;
+        let name = normalize_tar_member_name(entry.path_bytes().as_ref());
+        if name.as_deref() == Some(member.as_str()) {
+            let ty = entry.header().entry_type();
+            if !matches!(ty, tar::EntryType::Regular | tar::EntryType::Continuous) {
                 return Err(miette!(
-                    "Latest tarball is missing {member}.\nSee {}",
+                    "Latest tarball member {member} is not a regular file.\nSee {}",
                     latest_page_url()
                 ));
             }
-            Err(e) => return Err(e).into_diagnostic(),
-            Ok(m) => m,
-        };
-        if !status.success() {
+            if entry.size() > max_extracted {
+                return Err(miette!(
+                    "ledgerful in Latest tarball exceeds the extracted size cap.\nSee {}",
+                    latest_page_url()
+                ));
+            }
+            let mut limited = (&mut entry).take(max_extracted.saturating_add(1));
+            let mut payload = Vec::new();
+            limited
+                .read_to_end(&mut payload)
+                .map_err(|_| tar_failed(archive))?;
+            if payload.len() as u64 > max_extracted {
+                return Err(miette!(
+                    "ledgerful in Latest tarball exceeds the extracted size cap.\nSee {}",
+                    latest_page_url()
+                ));
+            }
+            return Ok(payload);
+        }
+        if entry.size() > max_extracted {
             return Err(miette!(
-                "tar failed to extract {archive}.\nSee {}",
+                "tarball member exceeds the extracted size cap.\nSee {}",
                 latest_page_url()
             ));
         }
-        let stem_dir = staging.join(stem);
-        if let Ok(stem_meta) = fs::symlink_metadata(&stem_dir)
-            && stem_meta.file_type().is_symlink()
-        {
-            return Err(miette!(
-                "Latest tarball member {member} is not a regular file.\nSee {}",
-                latest_page_url()
-            ));
-        }
-        if meta.file_type().is_symlink() || !meta.file_type().is_file() {
-            return Err(miette!(
-                "Latest tarball member {member} is not a regular file.\nSee {}",
-                latest_page_url()
-            ));
-        }
-        if let Err(e) = ensure_path_within_root(&staging, &nested) {
-            return Err(miette!("{e}"));
-        }
-        if meta.len() > max_extracted {
-            return Err(miette!(
-                "ledgerful in Latest tarball exceeds the extracted size cap.\nSee {}",
-                latest_page_url()
-            ));
-        }
-        let file = fs::File::open(&nested).into_diagnostic()?;
-        let mut limited = file.take(max_extracted.saturating_add(1));
-        let mut payload = Vec::new();
-        limited.read_to_end(&mut payload).into_diagnostic()?;
-        if payload.len() as u64 > max_extracted {
-            return Err(miette!(
-                "ledgerful in Latest tarball exceeds the extracted size cap.\nSee {}",
-                latest_page_url()
-            ));
-        }
-        Ok(payload)
-    })();
-    let _ = fs::remove_dir_all(&staging);
-    write_result
-}
-
-fn unique_staging_dir(dest: &Path) -> Result<PathBuf> {
-    let parent = dest.parent().ok_or_else(|| {
-        miette!(
-            "Destination path has no parent directory for extract staging.\nSee {}",
-            latest_page_url()
-        )
-    })?;
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    Ok(parent.join(format!(".ledgerful-upd-{}-{nanos}", std::process::id())))
+    }
+    Err(miette!(
+        "Latest tarball is missing {member}.\nSee {}",
+        latest_page_url()
+    ))
 }
 
 fn replace_dest_bytes(dest: &Path, payload: &[u8]) -> Result<()> {
@@ -660,7 +636,6 @@ fn shadow_copy_path(bin_path: &Path) -> Option<PathBuf> {
 mod tests {
     use super::*;
     use serial_test::serial;
-    #[cfg(any(feature = "export", feature = "web", feature = "sync"))]
     use std::io::Write;
 
     mod env_guard {
@@ -1165,6 +1140,14 @@ mod tests {
             .map(|c| if c.is_ascii_alphanumeric() { c } else { ' ' })
             .collect::<String>()
             .split_whitespace()
+            .filter(|tok| {
+                !tok.ends_with('m')
+                    || tok
+                        .as_bytes()
+                        .iter()
+                        .take(tok.len().saturating_sub(1))
+                        .any(|b| !b.is_ascii_digit())
+            })
             .collect::<Vec<_>>()
             .join(" ")
     }
@@ -1301,16 +1284,40 @@ mod tests {
             .expect_err("symlink member");
         let msg = compact_diagnostic_debug(&format!("{err:?}"));
         assert!(
-            msg.contains("not a regular file") || msg.contains("missing"),
-            "symlink member must be refused (regular-file or missing after tar cannot lay the link): {msg}"
+            msg.contains("not a regular file"),
+            "symlink member must be refused as not a regular file: {msg}"
         );
         assert_eq!(fs::read(&dest).unwrap(), b"keep");
+    }
+
+    fn no_staging_leftover(parent: &Path) {
+        let leftovers: Vec<_> = fs::read_dir(parent)
+            .unwrap()
+            .filter_map(|e| e.ok())
+            .filter(|e| {
+                e.file_name()
+                    .to_string_lossy()
+                    .starts_with(".ledgerful-upd-")
+            })
+            .map(|e| e.file_name())
+            .collect();
+        assert!(
+            leftovers.is_empty(),
+            "extract must not write staging dirs: {leftovers:?}"
+        );
+    }
+
+    fn gzip_bytes(payload: &[u8]) -> Vec<u8> {
+        let mut encoder = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        encoder.write_all(payload).expect("gzip write");
+        encoder.finish().expect("gzip finish")
     }
 
     #[test]
     fn update_binary_unix_extract_refuses_oversize_payload() {
         let tmp = tempfile::tempdir().unwrap();
         let dest = tmp.path().join("dest");
+        fs::write(&dest, b"untouched").unwrap();
         let stem = ARCHIVE_LINUX
             .strip_suffix(".tar.gz")
             .expect("linux archive suffix");
@@ -1319,8 +1326,77 @@ mod tests {
             extract_unix_tarball_with_cap(ARCHIVE_LINUX, &tarball, &dest, 8).expect_err("oversize");
         let msg = format!("{err:?}");
         assert!(
-            msg.contains("extracted size cap"),
-            "oversize must name the cap: {msg}"
+            msg.contains("ledgerful in Latest tarball exceeds the extracted size cap"),
+            "target oversize must name ledgerful cap: {msg}"
         );
+        assert_eq!(fs::read(&dest).unwrap(), b"untouched");
+        no_staging_leftover(tmp.path());
+    }
+
+    #[test]
+    fn update_binary_unix_extract_refuses_oversize_decoy_member() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+        fs::write(&dest, b"untouched").unwrap();
+        let stem = ARCHIVE_LINUX
+            .strip_suffix(".tar.gz")
+            .expect("linux archive suffix");
+        let tarball = fixture_tar_gz(
+            stem,
+            &[("aaa.bin", b"0123456789abcdef"), ("ledgerful", b"ok")],
+        );
+        let err = extract_unix_tarball_with_cap(ARCHIVE_LINUX, &tarball, &dest, 8)
+            .expect_err("decoy oversize");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("tarball member exceeds the extracted size cap"),
+            "decoy oversize must use generic cap token: {msg}"
+        );
+        assert!(
+            !msg.contains("ledgerful in Latest tarball"),
+            "decoy must not blame ledgerful: {msg}"
+        );
+        assert_eq!(fs::read(&dest).unwrap(), b"untouched");
+        no_staging_leftover(tmp.path());
+    }
+
+    #[test]
+    fn update_binary_unix_extract_corrupt_gzip_is_tar_failed_not_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+        fs::write(&dest, b"untouched").unwrap();
+        let err =
+            extract_unix_tarball(ARCHIVE_LINUX, b"not gzip", &dest).expect_err("corrupt gzip");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("tar failed to extract"),
+            "garbage gzip must be tar failed: {msg}"
+        );
+        assert!(
+            !msg.contains("missing"),
+            "garbage gzip must not be missing member: {msg}"
+        );
+        assert_eq!(fs::read(&dest).unwrap(), b"untouched");
+        no_staging_leftover(tmp.path());
+    }
+
+    #[test]
+    fn update_binary_unix_extract_truncated_tar_is_tar_failed_not_missing() {
+        let tmp = tempfile::tempdir().unwrap();
+        let dest = tmp.path().join("dest");
+        fs::write(&dest, b"untouched").unwrap();
+        let tarball = gzip_bytes(&[0xFFu8; 64]);
+        let err = extract_unix_tarball(ARCHIVE_LINUX, &tarball, &dest).expect_err("truncated tar");
+        let msg = format!("{err:?}");
+        assert!(
+            msg.contains("tar failed to extract"),
+            "truncated tar must be tar failed: {msg}"
+        );
+        assert!(
+            !msg.contains("missing"),
+            "truncated tar must not be missing member: {msg}"
+        );
+        assert_eq!(fs::read(&dest).unwrap(), b"untouched");
+        no_staging_leftover(tmp.path());
     }
 }
