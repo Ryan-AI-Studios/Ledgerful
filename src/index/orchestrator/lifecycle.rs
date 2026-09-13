@@ -353,7 +353,6 @@ pub fn collect_results(
                 warn!("Parallel index failure for {}: {}", path, err);
                 parse_failures += 1;
             }
-            _ => {}
         }
     }
 
