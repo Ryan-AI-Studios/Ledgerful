@@ -104,6 +104,151 @@ pub fn icons_use_nerd_glyphs() -> bool {
     resolve_table_style() == TableStyleKind::Utf8
 }
 
+/// Thin alias of [`resolve_table_style`] `== Utf8` (same predicate as
+/// [`icons_use_nerd_glyphs`]). Residual human chrome uses this switch.
+pub fn human_unicode_ok() -> bool {
+    resolve_table_style() == TableStyleKind::Utf8
+}
+
+/// Doctor pass/fail mark. Ascii: `OK` / `FAIL`. Utf8: `✓` / `✗`.
+pub fn status_mark(ok: bool) -> &'static str {
+    status_mark_with_style(ok, resolve_table_style())
+}
+
+pub fn status_mark_with_style(ok: bool, style: TableStyleKind) -> &'static str {
+    match (style, ok) {
+        (TableStyleKind::Utf8, true) => "✓",
+        (TableStyleKind::Utf8, false) => "✗",
+        (TableStyleKind::Ascii, true) => "OK",
+        (TableStyleKind::Ascii, false) => "FAIL",
+    }
+}
+
+/// Doctor middle-dot separator. Ascii: `-`. Utf8: `·`.
+pub fn middle_dot() -> &'static str {
+    middle_dot_with_style(resolve_table_style())
+}
+
+pub fn middle_dot_with_style(style: TableStyleKind) -> &'static str {
+    match style {
+        TableStyleKind::Utf8 => "·",
+        TableStyleKind::Ascii => "-",
+    }
+}
+
+/// Finding / setup bullet. Ascii: `*`. Utf8: `•`.
+pub fn bullet() -> &'static str {
+    bullet_with_style(resolve_table_style())
+}
+
+pub fn bullet_with_style(style: TableStyleKind) -> &'static str {
+    match style {
+        TableStyleKind::Utf8 => "•",
+        TableStyleKind::Ascii => "*",
+    }
+}
+
+/// Em dash in trailers and captions. Ascii: `--`. Utf8: `—`.
+pub fn em_dash() -> &'static str {
+    em_dash_with_style(resolve_table_style())
+}
+
+pub fn em_dash_with_style(style: TableStyleKind) -> &'static str {
+    match style {
+        TableStyleKind::Utf8 => "—",
+        TableStyleKind::Ascii => "--",
+    }
+}
+
+/// Arrow in captions / staleness / setup. Ascii: `->`. Utf8: `→` (or `➜` at
+/// the staleness call site via this helper — 0181-B maps both to `->`).
+pub fn arrow() -> &'static str {
+    arrow_with_style(resolve_table_style())
+}
+
+pub fn arrow_with_style(style: TableStyleKind) -> &'static str {
+    match style {
+        TableStyleKind::Utf8 => "→",
+        TableStyleKind::Ascii => "->",
+    }
+}
+
+/// Staleness stderr arrow. Utf8 keeps `➜`; Ascii is `->`.
+pub fn heavy_arrow() -> &'static str {
+    heavy_arrow_with_style(resolve_table_style())
+}
+
+pub fn heavy_arrow_with_style(style: TableStyleKind) -> &'static str {
+    match style {
+        TableStyleKind::Utf8 => "➜",
+        TableStyleKind::Ascii => "->",
+    }
+}
+
+/// Schema secret cell. Ascii: `Y`. Utf8: `🔒`. Non-secret stays caller `-`.
+pub fn lock_mark() -> &'static str {
+    lock_mark_with_style(resolve_table_style())
+}
+
+pub fn lock_mark_with_style(style: TableStyleKind) -> &'static str {
+    match style {
+        TableStyleKind::Utf8 => "🔒",
+        TableStyleKind::Ascii => "Y",
+    }
+}
+
+/// Setup git-discovery warning. Ascii: `[!]`. Utf8: `⚠`.
+pub fn warning_mark() -> &'static str {
+    warning_mark_with_style(resolve_table_style())
+}
+
+pub fn warning_mark_with_style(style: TableStyleKind) -> &'static str {
+    match style {
+        TableStyleKind::Utf8 => "⚠",
+        TableStyleKind::Ascii => "[!]",
+    }
+}
+
+/// Truncation ellipsis. Ascii: `...` (0181-I never U+2026). Utf8: `…`.
+pub fn ellipsis() -> &'static str {
+    ellipsis_with_style(resolve_table_style())
+}
+
+pub fn ellipsis_with_style(style: TableStyleKind) -> &'static str {
+    match style {
+        TableStyleKind::Utf8 => "…",
+        TableStyleKind::Ascii => "...",
+    }
+}
+
+/// Doctor “Optional Accelerators” rule. Ascii uses `=`; Utf8 keeps `─`.
+pub fn doctor_section_rule(title: &str, style: TableStyleKind) -> String {
+    match style {
+        TableStyleKind::Utf8 => format!("── {title} ──────────────────────"),
+        TableStyleKind::Ascii => format!("== {title} ======================"),
+    }
+}
+
+/// Map rounded box-drawing to ASCII `+` `-` `|` under Ascii style.
+pub fn asciiize_box_drawing(s: &str, style: TableStyleKind) -> String {
+    if style == TableStyleKind::Utf8 {
+        return s.to_string();
+    }
+    s.replace(['╭', '╮', '╰', '╯'], "+")
+        .replace('│', "|")
+        .replace('─', "-")
+}
+
+/// Char-safe truncate that appends a style-aware ellipsis.
+pub fn truncate_chars(s: &str, max_len: usize, style: TableStyleKind) -> String {
+    if s.chars().count() <= max_len {
+        s.to_string()
+    } else {
+        let prefix: String = s.chars().take(max_len).collect();
+        format!("{}{}", prefix, ellipsis_with_style(style))
+    }
+}
+
 /// Apply border preset for the given style (no headers).
 pub fn apply_table_style(table: &mut Table, style: TableStyleKind) {
     match style {
@@ -371,5 +516,91 @@ mod tests {
             rendered.contains('…'),
             "expected UTF-8 truncation U+2026, got:\n{rendered}"
         );
+    }
+
+    const ASCII_FORBIDDEN_CHROME: &[char] = &[
+        '✓', '✗', '🔒', '→', '—', '•', '·', '➜', '…', '─', '⚠', '╭', '╮', '╰', '╯',
+    ];
+
+    fn assert_no_utf8_chrome(s: &str) {
+        for ch in ASCII_FORBIDDEN_CHROME {
+            assert!(
+                !s.contains(*ch),
+                "Ascii chrome leaked {ch:?} (U+{:04X}) in {s}",
+                *ch as u32
+            );
+        }
+    }
+
+    #[test]
+    fn glyph_helpers_ascii_have_no_forbidden_codepoints() {
+        let s = TableStyleKind::Ascii;
+        assert_eq!(status_mark_with_style(true, s), "OK");
+        assert_eq!(status_mark_with_style(false, s), "FAIL");
+        assert_eq!(middle_dot_with_style(s), "-");
+        assert_eq!(bullet_with_style(s), "*");
+        assert_eq!(em_dash_with_style(s), "--");
+        assert_eq!(arrow_with_style(s), "->");
+        assert_eq!(heavy_arrow_with_style(s), "->");
+        assert_eq!(lock_mark_with_style(s), "Y");
+        assert_eq!(warning_mark_with_style(s), "[!]");
+        assert_eq!(ellipsis_with_style(s), "...");
+        let rule = doctor_section_rule("Optional Accelerators", s);
+        assert!(rule.starts_with("== Optional Accelerators"));
+        assert_no_utf8_chrome(status_mark_with_style(true, s));
+        assert_no_utf8_chrome(status_mark_with_style(false, s));
+        assert_no_utf8_chrome(middle_dot_with_style(s));
+        assert_no_utf8_chrome(bullet_with_style(s));
+        assert_no_utf8_chrome(em_dash_with_style(s));
+        assert_no_utf8_chrome(arrow_with_style(s));
+        assert_no_utf8_chrome(heavy_arrow_with_style(s));
+        assert_no_utf8_chrome(lock_mark_with_style(s));
+        assert_no_utf8_chrome(warning_mark_with_style(s));
+        assert_no_utf8_chrome(ellipsis_with_style(s));
+        assert_no_utf8_chrome(&rule);
+        assert_no_utf8_chrome(&asciiize_box_drawing(
+            "╭──────────────────────────────────────────────────────╮",
+            s,
+        ));
+        assert_eq!(truncate_chars("abcdefghij", 4, s), "abcd...");
+        assert!(!truncate_chars("abcdefghij", 4, s).contains('…'));
+    }
+
+    #[test]
+    fn glyph_helpers_utf8_keep_today_marks() {
+        let s = TableStyleKind::Utf8;
+        assert_eq!(status_mark_with_style(true, s), "✓");
+        assert_eq!(status_mark_with_style(false, s), "✗");
+        assert_eq!(middle_dot_with_style(s), "·");
+        assert_eq!(bullet_with_style(s), "•");
+        assert_eq!(em_dash_with_style(s), "—");
+        assert_eq!(arrow_with_style(s), "→");
+        assert_eq!(heavy_arrow_with_style(s), "➜");
+        assert_eq!(lock_mark_with_style(s), "🔒");
+        assert_eq!(warning_mark_with_style(s), "⚠");
+        assert_eq!(ellipsis_with_style(s), "…");
+        assert_eq!(
+            doctor_section_rule("Optional Accelerators", s),
+            "── Optional Accelerators ──────────────────────"
+        );
+        assert_eq!(truncate_chars("abcdefghij", 4, s), "abcd…");
+    }
+
+    #[test]
+    fn human_unicode_ok_matches_icons_predicate() {
+        assert_eq!(human_unicode_ok(), icons_use_nerd_glyphs());
+        assert_eq!(
+            human_unicode_ok(),
+            resolve_table_style() == TableStyleKind::Utf8
+        );
+    }
+
+    #[test]
+    fn truncate_chars_does_not_panic_on_multibyte() {
+        let s = "αβγδε";
+        let out = truncate_chars(s, 2, TableStyleKind::Ascii);
+        assert_eq!(out, "αβ...");
+        let intact = truncate_chars(s, 20, TableStyleKind::Ascii);
+        assert_eq!(intact, s);
     }
 }

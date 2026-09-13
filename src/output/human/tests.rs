@@ -1,5 +1,7 @@
+use super::doctor::print_doctor_report_to_with_style;
 use super::*;
 use crate::exec::ExecutionResult;
+use crate::output::table::TableStyleKind;
 use crate::platform::env::ExecutableStatus;
 
 #[test]
@@ -51,59 +53,134 @@ fn print_verify_result_quiet_suppresses_success_keeps_failure() {
 
 #[test]
 fn doctor_summary_text_four_way() {
+    let u = TableStyleKind::Utf8;
     assert_eq!(
-        format_doctor_summary_text(1, 0, 0, 0),
+        format_doctor_summary_text_with(u, 1, 0, 0, 0),
         "✗ Doctor: 1 block issue(s)"
     );
     assert_eq!(
-        format_doctor_summary_text(0, 2, 0, 0),
+        format_doctor_summary_text_with(u, 0, 2, 0, 0),
         "✓ Doctor: ready for publish env · 2 warning(s)"
     );
     assert_eq!(
-        format_doctor_summary_text(0, 0, 0, 3),
+        format_doctor_summary_text_with(u, 0, 0, 0, 3),
         "✓ Doctor: ready for publish env · 3 hint(s)"
     );
     assert_eq!(
-        format_doctor_summary_text(0, 0, 0, 0),
+        format_doctor_summary_text_with(u, 0, 0, 0, 0),
         "✓ Doctor: all checks passed"
     );
     // Block wins over warn/info when present.
-    assert!(format_doctor_summary_text(1, 9, 0, 9).contains("block issue"));
+    assert!(format_doctor_summary_text_with(u, 1, 9, 0, 9).contains("block issue"));
     // Warn uses ready shape — never red soft-fail wording.
-    assert!(!format_doctor_summary_text(0, 2, 0, 0).contains("issue(s) found"));
+    assert!(!format_doctor_summary_text_with(u, 0, 2, 0, 0).contains("issue(s) found"));
+}
+
+#[test]
+fn doctor_summary_text_ascii_ok_fail() {
+    let a = TableStyleKind::Ascii;
+    assert_eq!(
+        format_doctor_summary_text_with(a, 0, 0, 0, 0),
+        "OK Doctor: all checks passed"
+    );
+    assert_eq!(
+        format_doctor_summary_text_with(a, 1, 0, 0, 0),
+        "FAIL Doctor: 1 block issue(s)"
+    );
+    let warn = format_doctor_summary_text_with(a, 0, 2, 0, 0);
+    assert_eq!(warn, "OK Doctor: ready for publish env - 2 warning(s)");
+    assert!(!warn.contains('✓'));
+    assert!(!warn.contains('·'));
+}
+
+#[test]
+fn print_doctor_report_ascii_chrome_only() {
+    use crate::commands::doctor::{DoctorCategory, DoctorFinding, summarize};
+
+    let findings = vec![
+        DoctorFinding::warn("hook-template-stale", DoctorCategory::Gate, "hooks stale"),
+        DoctorFinding::info("sccache-hint", DoctorCategory::Optional, "sccache"),
+    ];
+    let tools: Vec<(String, ExecutableStatus)> = Vec::new();
+    let report = DoctorReport {
+        platform: "test",
+        shell: "test",
+        tools: &tools,
+        path_display: "test",
+        path_kind: "test",
+        work_root: "test",
+        state_dir: "test/.ledgerful",
+        is_wsl_mounted: false,
+        embedding_model_status: "OK".to_string(),
+        embedding_model_failed: false,
+        completion_model_status: "OK".to_string(),
+        native_graph_status: "Ready".to_string(),
+        active_ask_backend: "test".to_string(),
+        index_health: vec!["Search index: OK (1 documents)".to_string()],
+        target_triple: "test",
+    };
+    let counts = summarize(&findings);
+    let summary = DoctorSummaryCounts {
+        block: counts.block,
+        warn: counts.warn,
+        info: counts.info,
+    };
+    let mut buf = Vec::new();
+    print_doctor_report_to_with_style(
+        &mut buf,
+        &report,
+        &summary,
+        &findings,
+        DoctorHumanProfile::default(),
+        TableStyleKind::Ascii,
+    )
+    .expect("write");
+    let text = String::from_utf8(buf).expect("utf8");
+    assert!(text.contains("OK Doctor:"), "{text}");
+    assert!(text.contains("== Optional Accelerators"), "{text}");
+    assert!(
+        text.contains("hygiene finding(s) collapsed -- run doctor --full"),
+        "{text}"
+    );
+    assert!(text.contains("* ") && text.contains("[warn]"), "{text}");
+    assert!(!text.contains('✓'), "{text}");
+    assert!(!text.contains('•'), "{text}");
+    assert!(!text.contains('—'), "{text}");
+    assert!(!text.contains('─'), "{text}");
 }
 
 /// 0209 DoD-1 six-row header copy (unit fixtures, not live dogfood).
 #[test]
 fn doctor_summary_text_warn_split_six_row() {
     // Row 1: 3 action + 1 optional
-    let row1 = format_doctor_summary_text(0, 3, 1, 0);
+    let u = TableStyleKind::Utf8;
+    let row1 = format_doctor_summary_text_with(u, 0, 3, 1, 0);
     assert!(row1.contains("3 warning(s) · 1 optional"), "{row1}");
     assert!(!row1.contains("optional warning(s)"), "{row1}");
 
     // Row 2: 3 action only
-    let row2 = format_doctor_summary_text(0, 3, 0, 0);
+    let row2 = format_doctor_summary_text_with(u, 0, 3, 0, 0);
     assert!(row2.contains("3 warning(s)"), "{row2}");
     assert!(!row2.contains("optional"), "{row2}");
 
     // Row 3: 1 optional only — no "0 warning", no "optional warning(s)"
-    let row3 = format_doctor_summary_text(0, 0, 1, 0);
+    let row3 = format_doctor_summary_text_with(u, 0, 0, 1, 0);
     assert!(row3.contains("· 1 optional"), "{row3}");
     assert!(!row3.contains("0 warning"), "{row3}");
     assert!(!row3.contains("optional warning(s)"), "{row3}");
     assert!(!row3.contains("warning(s)"), "{row3}");
 
     // Row 4: block wins; no ready-shape
-    let row4 = format_doctor_summary_text(1, 2, 1, 0);
+    let row4 = format_doctor_summary_text_with(u, 1, 2, 1, 0);
     assert!(row4.contains("block issue(s)"), "{row4}");
     assert!(!row4.contains("ready for publish"), "{row4}");
 
     // Row 5: empty
-    let row5 = format_doctor_summary_text(0, 0, 0, 0);
+    let row5 = format_doctor_summary_text_with(u, 0, 0, 0, 0);
     assert!(row5.contains("all checks passed"), "{row5}");
 
     // Row 6: info only
-    let row6 = format_doctor_summary_text(0, 0, 0, 3);
+    let row6 = format_doctor_summary_text_with(u, 0, 0, 0, 3);
     assert!(row6.contains("3 hint(s)"), "{row6}");
 }
 
@@ -160,30 +237,43 @@ fn format_doctor_tool_line_gemini_cli_vs_cloud_ask() {
 
 #[test]
 fn format_hygiene_collapse_trailer_optional_clause() {
-    let t11 = format_hygiene_collapse_trailer(11, 1);
+    let u = TableStyleKind::Utf8;
+    let t11 = format_hygiene_collapse_trailer_with(u, 11, 1);
     assert!(t11.contains("11 hygiene finding(s) collapsed"), "{t11}");
     assert!(t11.contains("1 optional warning"), "{t11}");
     assert!(t11.contains("doctor --full"), "{t11}");
 
-    let t12 = format_hygiene_collapse_trailer(12, 2);
+    let t12 = format_hygiene_collapse_trailer_with(u, 12, 2);
     assert!(t12.contains("2 optional warnings"), "{t12}");
 
-    let t10 = format_hygiene_collapse_trailer(10, 0);
+    let t10 = format_hygiene_collapse_trailer_with(u, 10, 0);
     assert_eq!(t10, "10 hygiene finding(s) collapsed — run doctor --full");
     assert!(!t10.contains("optional"), "{t10}");
+
+    let ascii = format_hygiene_collapse_trailer_with(TableStyleKind::Ascii, 10, 0);
+    assert_eq!(
+        ascii,
+        "10 hygiene finding(s) collapsed -- run doctor --full"
+    );
+    assert!(!ascii.contains('—'), "{ascii}");
 }
 
 #[test]
 fn format_signing_deferred_trailer_exact() {
+    let u = TableStyleKind::Utf8;
     assert_eq!(
-        format_signing_deferred_trailer(3),
+        format_signing_deferred_trailer_with(u, 3),
         "3 signing finding(s) deferred (observe) — run doctor --full"
     );
     assert_eq!(
-        format_signing_deferred_trailer(1),
+        format_signing_deferred_trailer_with(u, 1),
         "1 signing finding(s) deferred (observe) — run doctor --full"
     );
-    let hygiene = format_hygiene_collapse_trailer(10, 0);
+    assert_eq!(
+        format_signing_deferred_trailer_with(TableStyleKind::Ascii, 3),
+        "3 signing finding(s) deferred (observe) -- run doctor --full"
+    );
+    let hygiene = format_hygiene_collapse_trailer_with(u, 10, 0);
     assert_eq!(
         hygiene,
         "10 hygiene finding(s) collapsed — run doctor --full"
@@ -237,7 +327,7 @@ fn doctor_human_partition_three_tier() {
     assert!(full_opt_codes.contains(&"completion-unreachable"));
     assert!(full_opt_codes.contains(&"sccache-hint"));
 
-    let trailer = format_hygiene_collapse_trailer(3, 1);
+    let trailer = format_hygiene_collapse_trailer_with(TableStyleKind::Utf8, 3, 1);
     assert!(trailer.contains("3 hygiene finding(s) collapsed"));
     assert!(trailer.contains("doctor --full"));
 }
@@ -346,7 +436,7 @@ fn print_doctor_report_later_trailer_and_full_expand() {
     };
 
     let mut default_buf = Vec::new();
-    print_doctor_report_to(
+    print_doctor_report_to_with_style(
         &mut default_buf,
         &report,
         &summary,
@@ -355,6 +445,7 @@ fn print_doctor_report_later_trailer_and_full_expand() {
             full: false,
             quiet: true,
         },
+        TableStyleKind::Utf8,
     )
     .expect("write default");
     let default = String::from_utf8(default_buf).expect("utf8");
@@ -443,7 +534,7 @@ fn signing_deferred_trailer_counts_only_signing_later() {
         info: counts.info,
     };
     let mut buf = Vec::new();
-    print_doctor_report_to(
+    print_doctor_report_to_with_style(
         &mut buf,
         &report,
         &summary,
@@ -452,6 +543,7 @@ fn signing_deferred_trailer_counts_only_signing_later() {
             full: false,
             quiet: true,
         },
+        TableStyleKind::Utf8,
     )
     .expect("write");
     let text = String::from_utf8(buf).expect("utf8");
@@ -551,12 +643,13 @@ fn print_doctor_report_hygiene_only_trailer_byte_stable_without_later() {
         info: counts.info,
     };
     let mut buf = Vec::new();
-    print_doctor_report_to(
+    print_doctor_report_to_with_style(
         &mut buf,
         &report,
         &summary,
         &findings,
         DoctorHumanProfile::default(),
+        TableStyleKind::Utf8,
     )
     .expect("write");
     let text = String::from_utf8(buf).expect("utf8");
@@ -595,7 +688,8 @@ fn doctor_mixed_info_tool_gemini_trailer_uses_warn_optional() {
     assert_eq!(split.action, 0);
     assert_eq!(split.total, 1);
     let hygiene = findings.len();
-    let trailer = format_hygiene_collapse_trailer(hygiene, split.optional);
+    let trailer =
+        format_hygiene_collapse_trailer_with(TableStyleKind::Utf8, hygiene, split.optional);
     assert!(trailer.contains("1 optional warning"), "{trailer}");
     assert!(!trailer.contains("3 optional"), "{trailer}");
     assert!(trailer.contains("doctor --full"), "{trailer}");

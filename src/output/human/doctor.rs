@@ -1,4 +1,8 @@
 use crate::commands::doctor::{READY_SCOPE_HUMAN_LINE, is_observe_signing_later_code};
+use crate::output::table::{
+    TableStyleKind, bullet_with_style, doctor_section_rule, em_dash_with_style,
+    middle_dot_with_style, resolve_table_style, status_mark_with_style,
+};
 use crate::platform::env::ExecutableStatus;
 use owo_colors::{OwoColorize, Stream, Style};
 use std::io::{self, Write};
@@ -37,20 +41,39 @@ pub fn format_doctor_summary_text(
     warn_optional: u64,
     info: u64,
 ) -> String {
+    format_doctor_summary_text_with(
+        resolve_table_style(),
+        block,
+        warn_action,
+        warn_optional,
+        info,
+    )
+}
+
+/// Hermetic summary text (tests must pass [`TableStyleKind`], not host CP).
+pub fn format_doctor_summary_text_with(
+    style: TableStyleKind,
+    block: u64,
+    warn_action: u64,
+    warn_optional: u64,
+    info: u64,
+) -> String {
+    let mark = status_mark_with_style(block == 0, style);
+    let dot = middle_dot_with_style(style);
     if block > 0 {
-        format!("✗ Doctor: {block} block issue(s)")
+        format!("{mark} Doctor: {block} block issue(s)")
     } else if warn_action > 0 && warn_optional > 0 {
         format!(
-            "✓ Doctor: ready for publish env · {warn_action} warning(s) · {warn_optional} optional"
+            "{mark} Doctor: ready for publish env {dot} {warn_action} warning(s) {dot} {warn_optional} optional"
         )
     } else if warn_action > 0 {
-        format!("✓ Doctor: ready for publish env · {warn_action} warning(s)")
+        format!("{mark} Doctor: ready for publish env {dot} {warn_action} warning(s)")
     } else if warn_optional > 0 {
-        format!("✓ Doctor: ready for publish env · {warn_optional} optional")
+        format!("{mark} Doctor: ready for publish env {dot} {warn_optional} optional")
     } else if info > 0 {
-        format!("✓ Doctor: ready for publish env · {info} hint(s)")
+        format!("{mark} Doctor: ready for publish env {dot} {info} hint(s)")
     } else {
-        "✓ Doctor: all checks passed".to_string()
+        format!("{mark} Doctor: all checks passed")
     }
 }
 
@@ -79,8 +102,17 @@ pub struct DoctorHumanProfile {
 /// When `warn_optional == 0`, byte-stable with the 0174 string. Optional
 /// warns add `(1 optional warning)` / `(N optional warnings)` (0209-C).
 pub fn format_hygiene_collapse_trailer(hygiene_count: usize, warn_optional: u64) -> String {
+    format_hygiene_collapse_trailer_with(resolve_table_style(), hygiene_count, warn_optional)
+}
+
+pub fn format_hygiene_collapse_trailer_with(
+    style: TableStyleKind,
+    hygiene_count: usize,
+    warn_optional: u64,
+) -> String {
+    let dash = em_dash_with_style(style);
     if warn_optional == 0 {
-        format!("{hygiene_count} hygiene finding(s) collapsed — run doctor --full")
+        format!("{hygiene_count} hygiene finding(s) collapsed {dash} run doctor --full")
     } else {
         let warning_word = if warn_optional == 1 {
             "warning"
@@ -88,7 +120,7 @@ pub fn format_hygiene_collapse_trailer(hygiene_count: usize, warn_optional: u64)
             "warnings"
         };
         format!(
-            "{hygiene_count} hygiene finding(s) collapsed ({warn_optional} optional {warning_word}) — run doctor --full"
+            "{hygiene_count} hygiene finding(s) collapsed ({warn_optional} optional {warning_word}) {dash} run doctor --full"
         )
     }
 }
@@ -98,7 +130,14 @@ pub fn format_hygiene_collapse_trailer(hygiene_count: usize, warn_optional: u64)
 /// Separate from [`format_hygiene_collapse_trailer`] — never fold `later`
 /// into `hygiene_count`.
 pub fn format_signing_deferred_trailer(later_count: usize) -> String {
-    format!("{later_count} signing finding(s) deferred (observe) — run doctor --full")
+    format_signing_deferred_trailer_with(resolve_table_style(), later_count)
+}
+
+pub fn format_signing_deferred_trailer_with(style: TableStyleKind, later_count: usize) -> String {
+    format!(
+        "{later_count} signing finding(s) deferred (observe) {} run doctor --full",
+        em_dash_with_style(style)
+    )
 }
 
 /// Tools-table label + uncoloured status text (0209-B).
@@ -197,6 +236,9 @@ pub fn print_doctor_report(
 }
 
 /// Write the human doctor report to `out` (0225 tests capture this path).
+///
+/// Resolves process table style. Exact-string tests must call
+/// [`print_doctor_report_to_with_style`] with an explicit [`TableStyleKind`].
 pub(crate) fn print_doctor_report_to(
     out: &mut dyn Write,
     report: &DoctorReport,
@@ -204,10 +246,33 @@ pub(crate) fn print_doctor_report_to(
     findings: &[crate::commands::doctor::DoctorFinding],
     profile: DoctorHumanProfile,
 ) -> io::Result<()> {
+    print_doctor_report_to_with_style(
+        out,
+        report,
+        summary,
+        findings,
+        profile,
+        resolve_table_style(),
+    )
+}
+
+pub(crate) fn print_doctor_report_to_with_style(
+    out: &mut dyn Write,
+    report: &DoctorReport,
+    summary: &DoctorSummaryCounts,
+    findings: &[crate::commands::doctor::DoctorFinding],
+    profile: DoctorHumanProfile,
+    style: TableStyleKind,
+) -> io::Result<()> {
     let split = crate::commands::doctor::split_doctor_warns(findings);
     debug_assert_eq!(split.total, summary.warn);
-    let summary_text =
-        format_doctor_summary_text(summary.block, split.action, split.optional, summary.info);
+    let summary_text = format_doctor_summary_text_with(
+        style,
+        summary.block,
+        split.action,
+        split.optional,
+        summary.info,
+    );
     if summary.block > 0 {
         writeln!(
             out,
@@ -275,17 +340,22 @@ pub(crate) fn print_doctor_report_to(
     let (index_findings, optional_findings, hygiene_count) =
         partition_doctor_findings_for_human(findings, profile.full);
 
+    let finding_bullet = format!("  {} ", bullet_with_style(style));
     if !report.index_health.is_empty() || !index_findings.is_empty() {
         writeln!(out, "\nIndex Health:")?;
         for health in &report.index_health {
-            writeln!(out, "  • {}", health)?;
+            writeln!(out, "{finding_bullet}{health}")?;
         }
         for f in &index_findings {
-            print_doctor_finding_line(out, f, "  • ", profile.quiet)?;
+            print_doctor_finding_line(out, f, &finding_bullet, profile.quiet)?;
         }
     }
 
-    writeln!(out, "\n── Optional Accelerators ──────────────────────")?;
+    writeln!(
+        out,
+        "\n{}",
+        doctor_section_rule("Optional Accelerators", style)
+    )?;
     writeln!(
         out,
         "Embedding Model:     {}",
@@ -304,7 +374,7 @@ pub(crate) fn print_doctor_report_to(
         writeln!(
             out,
             "\n{}",
-            format_hygiene_collapse_trailer(hygiene_count, split.optional)
+            format_hygiene_collapse_trailer_with(style, hygiene_count, split.optional)
         )?;
     }
     if !profile.full {
@@ -317,7 +387,11 @@ pub(crate) fn print_doctor_report_to(
             })
             .count();
         if later_count > 0 {
-            writeln!(out, "\n{}", format_signing_deferred_trailer(later_count))?;
+            writeln!(
+                out,
+                "\n{}",
+                format_signing_deferred_trailer_with(style, later_count)
+            )?;
         }
     }
     Ok(())

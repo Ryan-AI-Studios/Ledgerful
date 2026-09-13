@@ -19,8 +19,10 @@ pub(crate) use doctor::doctor_should_print_remediation;
 pub(crate) use doctor::print_doctor_report_to;
 pub use doctor::{
     DoctorHumanProfile, DoctorReport, DoctorSummaryCounts, format_doctor_summary_text,
-    format_doctor_tool_line, format_hygiene_collapse_trailer, format_signing_deferred_trailer,
-    partition_doctor_findings_for_human, print_doctor_report, wsl_support_line,
+    format_doctor_summary_text_with, format_doctor_tool_line, format_hygiene_collapse_trailer,
+    format_hygiene_collapse_trailer_with, format_signing_deferred_trailer,
+    format_signing_deferred_trailer_with, partition_doctor_findings_for_human, print_doctor_report,
+    wsl_support_line,
 };
 pub use hotspots::{
     HOTSPOT_DISPLAY_HEADER, print_hotspots, print_hotspots_table,

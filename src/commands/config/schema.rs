@@ -2,7 +2,10 @@ use crate::commands::helpers::get_layout;
 use crate::index::env_schema::EnvSourceKind;
 use crate::index::staleness::check_index_staleness;
 use crate::output::empty::{EmptyReason, format_json_empty_state};
-use crate::output::table::Table;
+use crate::output::table::{
+    build_premium_table_with_style, lock_mark_with_style, prepare_width_aware_table,
+    resolve_table_style,
+};
 use crate::state::storage::StorageManager;
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream};
@@ -132,17 +135,25 @@ pub fn execute_config_schema(json: bool) -> Result<()> {
             .filter(|d| d.requiredness == Some("unknown"))
             .count();
 
-        let mut table = Table::new();
-        table.set_header(vec![
-            "Variable", "Source", "Req", "Sec", "Default", "Owner", "File",
-        ]);
+        let style = resolve_table_style();
+        let mut table = build_premium_table_with_style(
+            style,
+            [
+                "Variable", "Source", "Req", "Sec", "Default", "Owner", "File",
+            ],
+        );
+        prepare_width_aware_table(&mut table, style);
 
         for d in results {
             table.add_row(vec![
                 d.var_name,
                 d.source_kind.to_string(),
                 if d.required { "YES" } else { "no" }.to_string(),
-                if d.is_secret { "🔒" } else { "-" }.to_string(),
+                if d.is_secret {
+                    lock_mark_with_style(style).to_string()
+                } else {
+                    "-".to_string()
+                },
                 d.default_value_redacted.unwrap_or_else(|| "-".to_string()),
                 d.owner.unwrap_or_else(|| "-".to_string()),
                 d.file_path.unwrap_or_else(|| "-".to_string()),

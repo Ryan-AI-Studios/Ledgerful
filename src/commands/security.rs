@@ -1,6 +1,8 @@
 use crate::commands::dx1_templates::write_cedar_template;
 use crate::commands::helpers::get_layout;
-use crate::output::table::Table;
+use crate::output::table::{
+    Table, arrow_with_style, em_dash_with_style, resolve_table_style, truncate_chars,
+};
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use crate::util::term::prompt_yes_no;
@@ -52,13 +54,9 @@ fn collect_changed_files(layout: &Layout) -> Result<HashSet<String>> {
     Ok(changed)
 }
 
-/// Truncate a string to `max_len` characters, appending "…" if it was cut.
+/// Truncate a string to `max_len` characters, appending a style-aware ellipsis.
 fn truncate(s: &str, max_len: usize) -> String {
-    if s.len() <= max_len {
-        s.to_string()
-    } else {
-        format!("{}…", &s[..max_len])
-    }
+    truncate_chars(s, max_len, resolve_table_style())
 }
 
 /// CG-F35 (requirement #2): is the knowledge graph populated at all? Used to
@@ -84,8 +82,12 @@ pub(crate) fn graph_has_any_nodes(cozo: &crate::state::storage_cozo::CozoStorage
 const COVERAGE_LIMITATION: &str =
     "Declared Cedar @id coverage only. Daemon auth is Bearer (0090), not a PDP.";
 
-const DECLARED_NOT_ENFORCED: &str =
-    "declared Cedar coverage only — not runtime enforcement (daemon auth is Bearer).";
+fn declared_not_enforced() -> String {
+    format!(
+        "declared Cedar coverage only {} not runtime enforcement (daemon auth is Bearer).",
+        em_dash_with_style(resolve_table_style())
+    )
+}
 
 /// Declared Cedar coverage counts (CLI impact + CLI boundaries). REST does not emit this.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -394,7 +396,7 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
         );
         println!(
             "{}",
-            DECLARED_NOT_ENFORCED.if_supports_color(Stream::Stdout, |s| s.dimmed())
+            declared_not_enforced().if_supports_color(Stream::Stdout, |s| s.dimmed())
         );
         let mut table = Table::new();
         table.set_header(vec!["Policy", "Source", "Effect", "Changed?"]);
@@ -675,9 +677,10 @@ fn execute_boundaries(
                     .map(|p| p.to_string())
                     .unwrap_or_else(|_| written.to_string());
                 println!(
-                    "Generated {} permissive Cedar permit policies at {} — edit to scope principal/resource, then run ledgerful index --analyze-graph.",
+                    "Generated {} permissive Cedar permit policies at {} {} edit to scope principal/resource, then run ledgerful index --analyze-graph.",
                     routes.len(),
-                    display_path
+                    display_path,
+                    em_dash_with_style(resolve_table_style())
                 );
             } else {
                 println!(
@@ -695,7 +698,10 @@ fn execute_boundaries(
         } else {
             println!(
                 "{}",
-                "No security boundary data found — the knowledge graph has not been built yet."
+                format!(
+                    "No security boundary data found {} the knowledge graph has not been built yet.",
+                    em_dash_with_style(resolve_table_style())
+                )
                     .if_supports_color(Stream::Stdout, |s| s.yellow())
             );
             println!(
@@ -717,14 +723,20 @@ fn execute_boundaries(
         );
         println!(
             "{}",
-            "not a live PDP — daemon auth is Bearer (0090)."
-                .if_supports_color(Stream::Stdout, |s| s.dimmed())
+            format!(
+                "not a live PDP {} daemon auth is Bearer (0090).",
+                em_dash_with_style(resolve_table_style())
+            )
+            .if_supports_color(Stream::Stdout, |s| s.dimmed())
         );
 
         println!(
             "\n{} ({} total)",
-            "Cross-Surface Boundary Links (policy → protected entity):"
-                .if_supports_color(Stream::Stdout, |s| s.bold()),
+            format!(
+                "Cross-Surface Boundary Links (policy {} protected entity):",
+                arrow_with_style(resolve_table_style())
+            )
+            .if_supports_color(Stream::Stdout, |s| s.bold()),
             boundary_edges
                 .len()
                 .to_string()

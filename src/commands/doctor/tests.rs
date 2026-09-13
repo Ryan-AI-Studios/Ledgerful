@@ -50,26 +50,32 @@ fn doctor_json_plus_apply_hook_refresh_rejected() {
 
 #[test]
 fn doctor_summary_four_way_priority() {
-    use crate::output::human::format_doctor_summary_text;
+    use crate::output::human::format_doctor_summary_text_with;
+    use crate::output::table::TableStyleKind;
+    let u = TableStyleKind::Utf8;
     assert_eq!(
-        format_doctor_summary_text(2, 5, 0, 3),
+        format_doctor_summary_text_with(u, 2, 5, 0, 3),
         "✗ Doctor: 2 block issue(s)"
     );
     assert_eq!(
-        format_doctor_summary_text(0, 3, 0, 2),
+        format_doctor_summary_text_with(u, 0, 3, 0, 2),
         "✓ Doctor: ready for publish env · 3 warning(s)"
     );
     assert_eq!(
-        format_doctor_summary_text(0, 0, 0, 4),
+        format_doctor_summary_text_with(u, 0, 0, 0, 4),
         "✓ Doctor: ready for publish env · 4 hint(s)"
     );
     assert_eq!(
-        format_doctor_summary_text(0, 0, 0, 0),
+        format_doctor_summary_text_with(u, 0, 0, 0, 0),
         "✓ Doctor: all checks passed"
     );
     // Block wins; warn never uses red soft-fail "issue(s) found".
-    assert!(!format_doctor_summary_text(0, 1, 0, 9).contains("issue(s) found"));
-    assert!(format_doctor_summary_text(0, 1, 0, 9).contains("ready for publish"));
+    assert!(!format_doctor_summary_text_with(u, 0, 1, 0, 9).contains("issue(s) found"));
+    assert!(format_doctor_summary_text_with(u, 0, 1, 0, 9).contains("ready for publish"));
+    assert_eq!(
+        format_doctor_summary_text_with(TableStyleKind::Ascii, 0, 0, 0, 0),
+        "OK Doctor: all checks passed"
+    );
 }
 
 /// 0209 DoD-1 row 1 JSON object: additive warnAction/warnOptional, schemaVersion 1.

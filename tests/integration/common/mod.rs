@@ -88,11 +88,18 @@ pub fn git_cmd(dir: &Path, args: &[&str]) {
 /// Required for paths that call `process::exit` (e.g. `index --check --strict`).
 #[allow(dead_code)]
 pub fn run_cli(dir: &Path, args: &[&str]) -> (String, String, i32) {
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_ledgerful"))
-        .args(args)
-        .current_dir(dir)
-        .output()
-        .expect("failed to run ledgerful");
+    run_cli_env(dir, args, &[])
+}
+
+/// Like [`run_cli`] but sets extra env on the **child** process (not parent TempEnv).
+#[allow(dead_code)]
+pub fn run_cli_env(dir: &Path, args: &[&str], extra: &[(&str, &str)]) -> (String, String, i32) {
+    let mut cmd = std::process::Command::new(env!("CARGO_BIN_EXE_ledgerful"));
+    cmd.args(args).current_dir(dir);
+    for (k, v) in extra {
+        cmd.env(k, v);
+    }
+    let output = cmd.output().expect("failed to run ledgerful");
     (
         String::from_utf8_lossy(&output.stdout).into_owned(),
         String::from_utf8_lossy(&output.stderr).into_owned(),
