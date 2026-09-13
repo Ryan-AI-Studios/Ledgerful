@@ -5,10 +5,11 @@
 
 use crate::output::table::build_premium_table;
 
+use crate::output::table::format_timing_millis;
 use crate::state::storage::StorageManager;
 use crate::state::storage::timings::{
-    TimingQuery, count_timings, is_self_timing_enabled, prune_timings, query_timings,
-    set_self_timing_enabled, summarize_outer, table_exists,
+    TimingQuery, count_timings, explain_command, explain_report_json, is_self_timing_enabled,
+    prune_timings, query_timings, set_self_timing_enabled, summarize_outer, table_exists,
 };
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
@@ -156,20 +157,51 @@ fn execute_summary(conn: &rusqlite::Connection, args: &TimingsArgs) -> Result<()
         "Command timings"
             .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
     );
-    let mut table =
-        build_premium_table(["Command", "Runs", "p50 ms", "p95 ms", "p99 ms", "Total ms"]);
+    let mut table = build_premium_table(["Command", "Runs", "p50", "p95", "p99", "Total"]);
     for s in &summaries {
         table.add_row(vec![
             s.command.clone(),
             s.runs.to_string(),
-            s.p50_ms.to_string(),
-            s.p95_ms.to_string(),
-            s.p99_ms.to_string(),
-            s.total_ms.to_string(),
+            format_timing_millis(s.p50_ms),
+            format_timing_millis(s.p95_ms),
+            format_timing_millis(s.p99_ms),
+            format_timing_millis(s.total_ms),
         ]);
     }
     println!("{table}");
+    print_incomparable_notes(&summaries);
     Ok(())
+}
+
+fn print_incomparable_notes(summaries: &[crate::state::storage::timings::CommandTimingSummary]) {
+    for s in summaries {
+        if s.comparable {
+            continue;
+        }
+        let reason = s
+            .incomparable_reason
+            .as_deref()
+            .or(s.sample_note.as_deref())
+            .unwrap_or("incomparable");
+        let extra = s
+            .workloads
+            .as_ref()
+            .map(|ws| {
+                let hashes: Vec<String> = ws
+                    .iter()
+                    .map(|w| {
+                        if w.argv_hash.len() > 12 {
+                            w.argv_hash[..12].to_string()
+                        } else {
+                            w.argv_hash.clone()
+                        }
+                    })
+                    .collect();
+                format!(" [{}]", hashes.join(", "))
+            })
+            .unwrap_or_default();
+        println!("  {}: not comparable ({reason}){extra}", s.command);
+    }
 }
 
 fn execute_inner(conn: &rusqlite::Connection, args: &TimingsArgs) -> Result<()> {
@@ -315,7 +347,7 @@ fn execute_explain(conn: &rusqlite::Connection, args: &TimingsArgs) -> Result<()
             outer_only: true,
             command: Some(command.to_string()),
             days: Some(7),
-            limit: Some(100),
+            limit: None,
             ..Default::default()
         },
     )?;
@@ -325,87 +357,33 @@ fn execute_explain(conn: &rusqlite::Connection, args: &TimingsArgs) -> Result<()
             outer_only: true,
             command: Some(command.to_string()),
             days: Some(14),
-            limit: Some(200),
+            limit: None,
             ..Default::default()
         },
     )?;
 
-    if recent.is_empty() {
-        let sentence = format!("No recorded runs of `{command}` in the last 7 days.");
-        if args.json {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&envelope(serde_json::json!({ "explain": sentence })))
-                    .into_diagnostic()?
-            );
-        } else {
-            println!("{sentence}");
-        }
-        return Ok(());
+    let report = explain_command(command, &recent, &prior, false);
+    if !recent.is_empty() {
+        debug_assert!(
+            !report.sentence.contains(". `") && report.sentence.matches('.').count() <= 2
+        );
+        debug_assert!(
+            report.sentence.contains("prior week")
+                || report.sentence.contains("no prior-week baseline yet"),
+            "explain must always mention WoW delta or explicit no-baseline"
+        );
     }
-
-    let recent_avg = mean_duration(&recent);
-    // Prior week = rows in 14d that are not in the recent 7d set by ts.
-    let recent_ids: std::collections::HashSet<&str> =
-        recent.iter().map(|r| r.run_id.as_str()).collect();
-    let prior_only: Vec<_> = prior
-        .iter()
-        .filter(|r| !recent_ids.contains(r.run_id.as_str()))
-        .cloned()
-        .collect();
-
-    // Always include a WoW delta *or* an explicit no-baseline clause so readers
-    // never mistake a single-week sample for a completed week-over-week compare.
-    let sentence = if prior_only.is_empty() {
-        format!(
-            "`{command}` averaged {recent_avg:.0} ms over {} run(s) in the last 7 days; no prior-week baseline yet.",
-            recent.len()
-        )
-    } else {
-        let prior_avg = mean_duration(&prior_only);
-        let delta_pct = if prior_avg > 0.0 {
-            ((recent_avg - prior_avg) / prior_avg) * 100.0
-        } else {
-            0.0
-        };
-        let direction = if delta_pct > 1.0 {
-            "up"
-        } else if delta_pct < -1.0 {
-            "down"
-        } else {
-            "flat"
-        };
-        format!(
-            "`{command}` averaged {recent_avg:.0} ms over {} run(s) this week, {direction} {delta_pct:.0}% vs the prior week ({prior_avg:.0} ms).",
-            recent.len()
-        )
-    };
-
-    // One explanatory sentence (may contain a clause separator `;`).
-    debug_assert!(!sentence.contains(". `") && sentence.matches('.').count() <= 2);
-    debug_assert!(
-        sentence.contains("prior week") || sentence.contains("no prior-week baseline yet"),
-        "explain must always mention WoW delta or explicit no-baseline"
-    );
 
     if args.json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&envelope(serde_json::json!({ "explain": sentence })))
+            serde_json::to_string_pretty(&envelope(explain_report_json(&report)))
                 .into_diagnostic()?
         );
     } else {
-        println!("{sentence}");
+        println!("{}", report.sentence);
     }
     Ok(())
-}
-
-fn mean_duration(rows: &[crate::state::storage::timings::TimingRow]) -> f64 {
-    if rows.is_empty() {
-        return 0.0;
-    }
-    let sum: i64 = rows.iter().map(|r| r.duration_ms).sum();
-    sum as f64 / rows.len() as f64
 }
 
 fn execute_prune(args: &TimingsArgs) -> Result<()> {
@@ -574,7 +552,7 @@ mod tests {
     fn explain_one_sentence_with_number() {
         let mut conn = setup();
         let mut rows = Vec::new();
-        for i in 0..3 {
+        for i in 0..5 {
             rows.push(TimingRow {
                 run_id: format!("r{i}"),
                 ts_utc: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
@@ -582,7 +560,7 @@ mod tests {
                 duration_ms: 100 + i * 10,
                 exit_code: 0,
                 repo_size_bytes: None,
-                argv_hash: None,
+                argv_hash: Some("h".into()),
                 ledger_tx_id: None,
                 parent_span_id: None,
                 span_name: None,
@@ -591,38 +569,35 @@ mod tests {
         }
         insert_timing_batch(&mut conn, &rows).unwrap();
 
-        // Mirror execute_explain no-baseline sentence construction and assert shape.
         let recent = crate::state::storage::timings::query_timings(
             &conn,
             &crate::state::storage::timings::TimingQuery {
                 outer_only: true,
                 command: Some("verify".into()),
                 days: Some(7),
-                limit: Some(100),
+                limit: None,
                 ..Default::default()
             },
         )
         .unwrap();
-        assert!(!recent.is_empty());
-        let avg = mean_duration(&recent);
-        let sentence = format!(
-            "`verify` averaged {avg:.0} ms over {} run(s) in the last 7 days; no prior-week baseline yet.",
-            recent.len()
+        let report =
+            crate::state::storage::timings::explain_command("verify", &recent, &recent, false);
+        assert!(
+            report.sentence.ends_with('.'),
+            "explain must end with '.': {}",
+            report.sentence
         );
         assert!(
-            sentence.ends_with('.'),
-            "explain must end with '.': {sentence}"
+            report.sentence.chars().any(|c| c.is_ascii_digit()),
+            "explain must include a number: {}",
+            report.sentence
         );
         assert!(
-            sentence.chars().any(|c| c.is_ascii_digit()),
-            "explain must include a number: {sentence}"
+            report.sentence.contains("no prior-week baseline yet"),
+            "no prior week must be explicit: {}",
+            report.sentence
         );
-        assert!(
-            sentence.contains("no prior-week baseline yet"),
-            "no prior week must be explicit: {sentence}"
-        );
-        // One terminal period (clause uses `;`).
-        assert_eq!(sentence.matches('.').count(), 1);
+        assert_eq!(report.sentence.matches('.').count(), 1);
 
         let args = TimingsArgs {
             global: false,
@@ -646,7 +621,7 @@ mod tests {
     fn explain_no_prior_week_baseline_is_explicit() {
         let mut conn = setup();
         // Only recent-week rows → no prior-week baseline.
-        for i in 0..2 {
+        for i in 0..5 {
             rows_insert_outer(
                 &mut conn,
                 &format!("recent-{i}"),
@@ -683,12 +658,9 @@ mod tests {
         )
         .unwrap();
         assert!(!recent.is_empty());
-        let avg = mean_duration(&recent);
-        let expected = format!(
-            "`scan` averaged {avg:.0} ms over {} run(s) in the last 7 days; no prior-week baseline yet.",
-            recent.len()
-        );
-        assert!(expected.contains("no prior-week baseline yet"));
+        let report =
+            crate::state::storage::timings::explain_command("scan", &recent, &recent, false);
+        assert!(report.sentence.contains("no prior-week baseline yet"));
         execute_explain(&conn, &args).unwrap();
     }
 
@@ -716,6 +688,76 @@ mod tests {
             }],
         )
         .unwrap();
+    }
+
+    #[test]
+    fn explain_does_not_treat_unqueried_recent_as_prior() {
+        let mut conn = setup();
+        let now = chrono::Utc::now();
+        let recent_ts = now.to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let prior_ts =
+            (now - chrono::Duration::days(10)).to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+        let mut rows = Vec::new();
+        for i in 0..120 {
+            rows.push(TimingRow {
+                run_id: format!("cur-{i}"),
+                ts_utc: recent_ts.clone(),
+                command: "hotspots".into(),
+                duration_ms: 200,
+                exit_code: 0,
+                repo_size_bytes: None,
+                argv_hash: Some("h".into()),
+                ledger_tx_id: None,
+                parent_span_id: None,
+                span_name: None,
+                notes: None,
+            });
+        }
+        for i in 0..10 {
+            rows.push(TimingRow {
+                run_id: format!("old-{i}"),
+                ts_utc: prior_ts.clone(),
+                command: "hotspots".into(),
+                duration_ms: 50,
+                exit_code: 0,
+                repo_size_bytes: None,
+                argv_hash: Some("h".into()),
+                ledger_tx_id: None,
+                parent_span_id: None,
+                span_name: None,
+                notes: None,
+            });
+        }
+        insert_timing_batch(&mut conn, &rows).unwrap();
+        let recent = crate::state::storage::timings::query_timings(
+            &conn,
+            &crate::state::storage::timings::TimingQuery {
+                outer_only: true,
+                command: Some("hotspots".into()),
+                days: Some(7),
+                limit: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let prior = crate::state::storage::timings::query_timings(
+            &conn,
+            &crate::state::storage::timings::TimingQuery {
+                outer_only: true,
+                command: Some("hotspots".into()),
+                days: Some(14),
+                limit: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(recent.len(), 120);
+        let report =
+            crate::state::storage::timings::explain_command("hotspots", &recent, &prior, false);
+        assert!(report.comparable, "{}", report.sentence);
+        assert_eq!(report.p50_ms, Some(200));
+        assert_eq!(report.prior_p50_ms, Some(50));
+        assert!(report.sentence.contains("up "));
     }
 
     #[test]

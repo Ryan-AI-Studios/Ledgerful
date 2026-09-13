@@ -87,9 +87,11 @@ discovery walk, and derived cache for repo discovery).
 - If `command_timings` is **absent** on a repo (pre-m52 / not yet migrated), that
   repo is skipped for timings — not an error.
 - Per-repo open/query failures are **warn-and-skip** (non-fatal).
-- Outer summaries **pool raw duration samples** across repos, then recompute
-  p50/p95/p99/total/runs on the pooled set (they do **not** average per-repo
-  percentiles).
+- Outer summaries **pool raw samples** (`duration_ms`, `exit_code`,
+  `argv_hash`) across repos, then recompute success-only
+  p50/p95/p99/total/runs plus comparability fields on the pooled set (they
+  do **not** average per-repo percentiles). A pooled `duration_spread=mixed`
+  may be per-workload or per-repo; `repos[]` is the disambiguator.
 - Sorted by `total_ms` DESC, then `command` ASC; `--top` applies after sort.
 - If no discovered repo has the table: honest message
   `per-repo timing not enabled (… see 0043 / self-timing)` and exit 0.
@@ -109,7 +111,7 @@ discovery walk, and derived cache for repo discovery).
 | `--inner` | Aggregate `span_name` samples across repos |
 | `--command NAME` | Filter `--inner` / `--flame` to one command |
 | `--flame` | Collapsed stacks with `{repo_basename};{command}[;span] duration` |
-| `--explain COMMAND` | Pool last 7d + prior 7d outer samples across repos; one sentence |
+| `--explain COMMAND` | Pool last 7d + prior 7d outer samples across repos; p50 sentence; refuses incomparable percents |
 | `--opt-in` / `--opt-out` | User-config self-timing capture (same as local; works with or without `--global`) |
 | `--prune` | **Refused** — global path never writes per-repo DBs |
 

@@ -28,6 +28,7 @@ enough, per inner span:
 | `ts_utc` | UTC timestamp |
 | `run_id` | Links outer + inner rows for one invocation |
 | `argv_hash` | Hash of *canonicalized* command shape (subcommand + sorted flag **names**; values stripped) |
+| `notes` | JSON `{"shape":"<argv_shape>"}` on **new** outer rows (flag names only). Historical rows stay NULL. |
 | `repo_size_bytes` | Usually `NULL`. Filled only when **`index`** reports size opportunistically as `SUM(file_size)` from already-indexed `project_files` rows — **never** a dedicated walk, and **`scan` does not set it** (no free byte total during scan). File counts alone are not written here. |
 | `ledger_tx_id` | Optional association to a ledger transaction **only** when the host command calls `set_current_ledger_tx_id` (explicit API). Schema contract: `NULL` unless the command intentionally produced or bound a tx. There is **no** automatic `pending_hook_tx` sidecar attribution. Best-effort; never fails the host command. |
 | `span_name` / `parent_span_id` | Engine-internal span names from existing `#[instrument]` / `info_span!` hooks. Inner `parent_span_id` is **run-scoped** (`{run_id}:{tracing_span_id}`) so concurrent runs never collide; outer rows keep `parent_span_id = NULL`. |
@@ -115,6 +116,27 @@ ledgerful timings --explain verify
 ledgerful timings --export out.json
 ledgerful timings --opt-out
 ```
+
+## Comparability (0330)
+
+Summaries group by **command** still (one JSON row per command) but qualify
+the success cohort (`exit_code == 0`):
+
+- `comparable` always serializes (`true` only when one `argv_hash`, n≥5,
+  and `p95_ms < 10 * p50_ms.max(1)`).
+- Mixed hashes → `incomparable_reason: mixedWorkloads`. Same hash with a
+  huge p95/p50 (history-walk vs fast list) → `mixedDurations`. That mix is
+  **not** a second hash.
+- `--explain` uses **p50**, not the mean. Calendar windows stay 7d vs prior
+  7d; query `LIMIT` is not the window (local explain uses `limit: None`).
+  A percent is emitted only when both windows are comparable, share one
+  hash, and `prior_p50_ms > 0`.
+- Human table cells use `Nms` / `N.Ns` / `Nm Ns` / `Nh Nm` (JSON stays
+  `*_ms`). Post-table notes mark incomparable commands.
+
+`--global` pooled `data[]` uses the same helper. A pooled
+`duration_spread=mixed` may be per-workload **or** per-repo; use `repos[]`
+to disambiguate.
 
 ## Global timings rollup
 

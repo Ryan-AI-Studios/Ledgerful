@@ -388,7 +388,7 @@ fn explain_no_prior_week_baseline_clause() {
     {
         let mut conn = Connection::open(&db_path).unwrap();
         // Only recent rows — no prior-week set.
-        for i in 0..3 {
+        for i in 0..5 {
             insert_timing_batch(
                 &mut conn,
                 &[outer(&format!("nb{i}"), "index", 80 + i * 5, None)],
@@ -417,6 +417,8 @@ fn explain_no_prior_week_baseline_clause() {
         "must mention missing baseline: {sentence}"
     );
     assert!(sentence.ends_with('.'), "got {sentence}");
+    assert_eq!(v["data"]["comparable"], false);
+    assert_eq!(v["data"]["incomparable_reason"], "noPriorBaseline");
 }
 
 #[test]
