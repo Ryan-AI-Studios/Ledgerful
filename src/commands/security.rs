@@ -82,6 +82,8 @@ pub(crate) fn graph_has_any_nodes(cozo: &crate::state::storage_cozo::CozoStorage
 const COVERAGE_LIMITATION: &str =
     "Declared Cedar @id coverage only. Daemon auth is Bearer (0090), not a PDP.";
 
+pub(crate) const COVERAGE_PROBE_FAILED_LIMITATION: &str = "Declared Cedar @id coverage only. Daemon auth is Bearer (0090), not a PDP. Coverage probes failed; linkedEndpoints and indexedEndpoints are unavailable.";
+
 fn declared_not_enforced() -> String {
     format!(
         "declared Cedar coverage only {} not runtime enforcement (daemon auth is Bearer).",
@@ -100,7 +102,7 @@ pub(crate) struct SecurityCoverage {
 }
 
 fn complete_policy_query() -> &'static str {
-    "?[id, label, raw, effect, source_file] := *node{id, label, category: 'policy', metadata: meta}, \
+    "?[id, label, raw, effect, source_file, meta] := *node{id, label, category: 'policy', metadata: meta}, \
      raw = get(meta, 'raw'), \
      effect = get(meta, 'effect'), \
      source_file = get(meta, 'source_file')"
@@ -173,6 +175,34 @@ fn security_coverage(
     })
 }
 
+fn degraded_impact_coverage(indexed: usize) -> SecurityCoverage {
+    SecurityCoverage {
+        policies: indexed,
+        linked_endpoints: 0,
+        indexed_endpoints: 0,
+        limitation: COVERAGE_PROBE_FAILED_LIMITATION.to_string(),
+    }
+}
+
+fn impact_coverage(
+    cozo: &crate::state::storage_cozo::CozoStorage,
+    indexed: usize,
+) -> SecurityCoverage {
+    match assemble_security_boundaries(cozo) {
+        Ok((_, _, edges)) => match security_coverage(cozo, &edges, indexed) {
+            Ok(coverage) => coverage,
+            Err(e) => {
+                tracing::warn!("Coverage probes failed: {e}");
+                degraded_impact_coverage(indexed)
+            }
+        },
+        Err(e) => {
+            tracing::warn!("Coverage probes failed: {e}");
+            degraded_impact_coverage(indexed)
+        }
+    }
+}
+
 fn coverage_json(coverage: &SecurityCoverage) -> Result<serde_json::Value> {
     serde_json::to_value(coverage).into_diagnostic()
 }
@@ -196,8 +226,10 @@ fn impact_policy_item(
     effect: &str,
     source_file: &str,
     is_changed: bool,
+    (cedar_id, annotations_id): (Option<&str>, Option<&str>),
 ) -> serde_json::Value {
-    let resolved = crate::policy::cedar::policy_operator_label(label, None, None, Some(raw));
+    let resolved =
+        crate::policy::cedar::policy_operator_label(label, cedar_id, annotations_id, Some(raw));
     let mut item = serde_json::json!({
         "id": id,
         "label": resolved,
@@ -292,8 +324,22 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
         {
             let source_norm = source_file.as_str().replace('\\', "/");
             let is_changed = changed_files.contains(source_norm.as_str());
+            let meta = row.get(5).and_then(datavalue_json);
+            let cedar_id = meta
+                .as_ref()
+                .and_then(|m| m.get("cedar_id"))
+                .and_then(|v| v.as_str());
+            let annotations_id = meta.as_ref().and_then(|m| annotations_id(m));
             indexed_rows.push((
-                impact_policy_item(id, label, raw, effect, source_norm.as_str(), is_changed),
+                impact_policy_item(
+                    id,
+                    label,
+                    raw,
+                    effect,
+                    source_norm.as_str(),
+                    is_changed,
+                    (cedar_id, annotations_id),
+                ),
                 is_changed,
             ));
         }
@@ -317,8 +363,7 @@ fn execute_impact(changed: bool, json: bool, layout: &crate::state::layout::Layo
         .map(|(item, _)| item)
         .collect();
 
-    let (_, _, boundary_edges) = assemble_security_boundaries(cozo)?;
-    let coverage = security_coverage(cozo, &boundary_edges, indexed)?;
+    let coverage = impact_coverage(cozo, indexed);
 
     if displayed.is_empty() {
         let on_disk = crate::commands::surfaces::repo_root_cedar_present(&layout.root);
@@ -830,8 +875,8 @@ pub fn execute_security(args: SecurityArgs) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::{
-        COVERAGE_LIMITATION, SecurityCoverage, coverage_json, impact_policy_item, impact_title,
-        linked_endpoint_count, urn_table_from_args,
+        COVERAGE_LIMITATION, COVERAGE_PROBE_FAILED_LIMITATION, SecurityCoverage, coverage_json,
+        impact_policy_item, impact_title, linked_endpoint_count, urn_table_from_args,
     };
     use clap::CommandFactory;
 
@@ -881,6 +926,7 @@ mod tests {
             "permit",
             "policies/unconstrained.cedar",
             false,
+            (None, None),
         );
         assert!(
             item.get("declaredAction").is_none(),
@@ -904,6 +950,7 @@ permit (
             "permit",
             "policies/daemon-api.cedar",
             false,
+            (None, None),
         );
         assert_eq!(item["declaredAction"], "GET /api/status");
         assert_eq!(item["label"], "route_get_api_status");
@@ -959,6 +1006,125 @@ permit (
         assert!(
             !COVERAGE_LIMITATION.contains("0186"),
             "limitation must stay repo-general"
+        );
+    }
+
+    #[test]
+    fn security_impact_label_uses_stored_cedar_id_when_raw_has_no_at_id() {
+        let item = impact_policy_item(
+            "urn:ledgerful:policy:status",
+            "Policy: permit 6",
+            "permit(principal, action, resource);",
+            "permit",
+            "policies/daemon-api.cedar",
+            false,
+            (Some("route_get_api_status"), None),
+        );
+        assert_eq!(item["label"], "route_get_api_status");
+        assert_eq!(item["id"], "urn:ledgerful:policy:status");
+        assert!(item.get("declaredAction").is_none());
+    }
+
+    #[test]
+    fn security_impact_label_annotations_win_over_cedar_id() {
+        let item = impact_policy_item(
+            "urn:ledgerful:policy:status",
+            "Policy: permit 6",
+            "permit(principal, action, resource);",
+            "permit",
+            "policies/daemon-api.cedar",
+            false,
+            (Some("stale_auto_id"), Some("route_get_api_status")),
+        );
+        assert_eq!(item["label"], "route_get_api_status");
+    }
+
+    #[test]
+    fn security_impact_label_empty_annotations_fall_through_to_cedar_id() {
+        let item = impact_policy_item(
+            "urn:ledgerful:policy:status",
+            "Policy: permit 6",
+            "permit(principal, action, resource);",
+            "permit",
+            "policies/daemon-api.cedar",
+            false,
+            (Some("route_get_api_hotspots"), Some("")),
+        );
+        assert_eq!(item["label"], "route_get_api_hotspots");
+    }
+
+    #[test]
+    fn security_impact_label_raw_at_id_wins_over_cedar_id() {
+        let item = impact_policy_item(
+            "urn:ledgerful:policy:status",
+            "Policy: permit 0",
+            r#"@id("route_get_api_status")
+permit (
+    principal,
+    action == Action::"GET /api/status",
+    resource
+);"#,
+            "permit",
+            "policies/daemon-api.cedar",
+            false,
+            (Some("stored_id"), None),
+        );
+        assert_eq!(item["label"], "route_get_api_status");
+        assert_eq!(item["declaredAction"], "GET /api/status");
+    }
+
+    #[test]
+    fn security_impact_coverage_degrades_when_probes_fail() {
+        let cozo = crate::state::storage_cozo::CozoStorage::new_in_memory_bare()
+            .expect("bare in-memory Cozo");
+        let coverage = super::impact_coverage(&cozo, 8);
+        assert_eq!(coverage.policies, 8);
+        assert_eq!(coverage.linked_endpoints, 0);
+        assert_eq!(coverage.indexed_endpoints, 0);
+        assert_eq!(coverage.limitation, COVERAGE_PROBE_FAILED_LIMITATION);
+        assert!(
+            COVERAGE_PROBE_FAILED_LIMITATION.contains("unavailable"),
+            "probe-fail limitation must name unavailability"
+        );
+        assert_ne!(COVERAGE_PROBE_FAILED_LIMITATION, COVERAGE_LIMITATION);
+    }
+
+    #[test]
+    fn security_impact_execute_wires_label_chain_and_coverage() {
+        let src = include_str!("security.rs");
+        let prod = src.split("#[cfg(test)]").next().unwrap_or(src);
+        let start = prod
+            .find("fn execute_impact(")
+            .expect("execute_impact must exist");
+        let after = &prod[start..];
+        let next_fn = after[1..]
+            .find("\nfn ")
+            .map(|i| i + 1)
+            .unwrap_or(after.len());
+        let body = &after[..next_fn];
+        assert!(
+            body.contains("impact_coverage(cozo, indexed)"),
+            "execute_impact must call impact_coverage: {body}"
+        );
+        assert!(
+            body.contains("impact_policy_item("),
+            "execute_impact must call impact_policy_item: {body}"
+        );
+        assert!(
+            body.contains("cedar_id") && body.contains("annotations_id"),
+            "execute_impact must pass extracted cedar_id and annotations_id"
+        );
+        assert!(
+            !body.contains("None, None"),
+            "execute_impact must not pass None, None into impact_policy_item"
+        );
+        assert!(
+            !body.contains("assemble_security_boundaries"),
+            "execute_impact must not assemble boundaries itself"
+        );
+        assert!(
+            !body.contains("security_coverage("),
+            "execute_impact must not call security_coverage directly"
         );
     }
 

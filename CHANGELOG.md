@@ -118,6 +118,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Security impact labels and coverage coupling (0338):** `security
+  impact` resolves policy labels with the same
+  `annotations → raw @id → cedar_id → stored` chain as
+  `security boundaries`. Coverage probe failure degrades JSON
+  `coverage` (`linkedEndpoints`/`indexedEndpoints` unavailable)
+  instead of hiding the inventory. REST `{meta, boundaries}`
+  unchanged.
+
 - **Freshness reason vs status (0337):** `index --check` `surfaces[]`
   `symbols.reason` no longer claims a content-hash match when status is
   `stale`. Empty derived rows (`mapping` / `routes` / `embeddings`, and
