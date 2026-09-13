@@ -278,19 +278,6 @@ pub fn resolve_split_semantic_concurrency(
     }
 }
 
-/// Legacy resolver wrapping the split implementation for compatibility.
-pub fn resolve_semantic_concurrency(
-    cli_override: Option<usize>,
-    config_value: Option<usize>,
-    opts: ResolveOptions,
-) -> ResolvedConcurrency {
-    let config = SemanticConfig {
-        concurrency: config_value,
-        ..Default::default()
-    };
-    resolve_split_semantic_concurrency(cli_override, &config, None, opts)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -388,16 +388,6 @@ impl<'a> SemanticDiscovery<'a> {
         self.vector_store.query(query_vector, k)
     }
 
-    /// Work-root-scoped raw vector query (no embed).
-    pub fn query_raw_scoped(
-        &self,
-        work_root: &std::path::Path,
-        query_vector: Vec<f32>,
-        k: usize,
-    ) -> Result<crate::semantic::vector_store::ScopedQueryResult> {
-        self.vector_store.query_scoped(work_root, query_vector, k)
-    }
-
     pub fn get_vector_count(&self) -> Result<usize> {
         self.vector_store.get_vector_count()
     }

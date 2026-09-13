@@ -168,12 +168,6 @@ pub(crate) fn print_dead_code_grouped_to(
     let _ = writeln!(w, "  {DEAD_CODE_HONESTY_FOOTER}");
 }
 
-pub fn print_dead_code_explanation(findings: &[DeadCodeFinding], file_path: &str) {
-    let explanation =
-        crate::impact::analysis::dead_code::compute_dead_code_explanation(file_path, findings);
-    print_dead_code_explanation_struct(&explanation);
-}
-
 pub fn print_dead_code_explanation_struct(
     explanation: &crate::impact::analysis::dead_code::DeadCodeExplanation,
 ) {
