@@ -17,8 +17,6 @@ pub struct ParsedFileJob {
 
 pub enum JobResult {
     Parsed(Box<ParsedFileJob>),
-    Indexed(i64), // file_id
-    Enriched,
     Failure(Utf8PathBuf, String),
 }
 
