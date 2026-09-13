@@ -689,12 +689,12 @@ Identity for consumers (e.g. AI-Brains T233): **`(path, name, kind)`** (+
   "totalMatching": 12,
   "symbols": [
     {
-      "name": "execute_step",
+      "name": "from_row",
       "kind": "Function",
-      "path": "src/verify/engine.rs",
-      "line": 40,
+      "path": "src/state/storage/timings.rs",
+      "line": 204,
       "isPublic": true,
-      "qualifiedName": "execute_step"
+      "qualifiedName": "TimingSample.from_row"
     }
   ],
   "indexStatus": {
@@ -713,7 +713,7 @@ Identity for consumers (e.g. AI-Brains T233): **`(path, name, kind)`** (+
 | `resultCount` | `symbols.len()` (≤ limit) |
 | `totalMatching` | **COUNT** before limit (same filters) |
 | `symbols[].line` | **omit** when unknown — never JSON `null` |
-| `symbols[].qualifiedName` | omit when empty/absent; not a global vault key |
+| `symbols[].qualifiedName` | omit when empty, absent, or equal to `name`; not a global vault key |
 | `indexStatus` | **optional**; omit when index usable. When present: `state` + optional `remediation`. Used when `ledger.db` is **missing** without `--auto-index` (exit **0**, empty `symbols`). Other open failures propagate as errors (not silent empty). |
 | Empty | full envelope, `symbols: []`, exit **0** |
 
@@ -723,7 +723,7 @@ Identity for consumers (e.g. AI-Brains T233): **`(path, name, kind)`** (+
 |---|---|
 | `--path` | **Prefix** (`file_path == prefix` OR starts with `prefix/`); not endpoints substring. Trailing `/` trimmed; empty-after-trim → error |
 | `--changed` | WT change set ∩ indexed paths; empty change set → empty inventory exit 0; **includes Deleted** and rename **old_path** still in index until re-index; membership **case-insensitive on Windows only** |
-| `--kind` | Single kind; aliases (`fn`→`Function`, `mod`/`module`→`Module`, …); Class/Interface reserved/unpopulated |
+| `--kind` | Single kind; aliases (`fn`→`Function`, `mod`/`module`→`Module`, …); Class populated (C++/TS); Interface populated (TS/Go; an index may have 0 rows). Rust inherent impl methods are Function + `Type.method`; trait methods are Method |
 | `--pub` | `is_public = 1` |
 | `-l/--limit` | default 200; range `1..=5000` |
 | `--auto-index` | bootstrap missing DB + `try_auto_index`; fatal under `--json` emits no partial machine stdout |

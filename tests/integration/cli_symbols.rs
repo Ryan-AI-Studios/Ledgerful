@@ -26,7 +26,8 @@ fn seed_symbols_fixture(root: &Path) {
          (1, 'src/commands/foo.rs', '2026-01-01T00:00:00Z'), \
          (2, 'src/commands/bar.rs', '2026-01-01T00:00:00Z'), \
          (3, 'src/cli/args.rs', '2026-01-01T00:00:00Z'), \
-         (4, 'tests/integration/cli.rs', '2026-01-01T00:00:00Z')",
+         (4, 'tests/integration/cli.rs', '2026-01-01T00:00:00Z'), \
+         (5, 'src/state/storage/timings.rs', '2026-01-01T00:00:00Z')",
         [],
     )
     .unwrap();
@@ -41,6 +42,26 @@ fn seed_symbols_fixture(root: &Path) {
         (7, 4, "test_a", "Function", Some(1), 0, "test_a"),
         (8, 1, "twin", "Function", Some(99), 1, "a::twin"),
         (9, 1, "twin", "Function", Some(99), 1, "b::twin"),
+        (
+            10,
+            5,
+            "from_row",
+            "Function",
+            Some(204),
+            1,
+            "TimingSample.from_row",
+        ),
+        (
+            11,
+            5,
+            "summarize_outer",
+            "Function",
+            Some(271),
+            1,
+            "summarize_outer",
+        ),
+        (12, 5, "new", "Function", Some(10), 1, "TimingSample.new"),
+        (13, 5, "new", "Function", Some(20), 1, "StorageManager.new"),
     ];
     for (id, file_id, name, kind, line, is_pub, qn) in rows {
         conn.execute(
@@ -662,4 +683,130 @@ fn symbols_changed_path_file_form_after_rename_to_rs() {
     );
     assert_eq!(v["pathResolve"]["status"], "resolved");
     assert_eq!(v["pathResolve"]["resolvedPath"], "src/pkg/mod.rs");
+}
+
+#[test]
+fn symbols_json_omits_qualified_name_when_equal_to_name() {
+    let tmp = setup_seeded_repo();
+    let root = tmp.path();
+
+    let (stdout, stderr, code) = run_cli(
+        root,
+        &[
+            "symbols",
+            "--path",
+            "src/commands/foo.rs",
+            "--json",
+            "--limit",
+            "50",
+        ],
+    );
+    assert_eq!(code, 0, "stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["schemaVersion"], 1);
+    let symbols = v["symbols"].as_array().unwrap();
+    let alpha = symbols
+        .iter()
+        .find(|s| s["name"] == "alpha")
+        .expect("alpha");
+    assert!(
+        alpha.get("qualifiedName").is_none(),
+        "free function must omit equal qualifiedName; row={alpha}"
+    );
+    let twins: Vec<_> = symbols.iter().filter(|s| s["name"] == "twin").collect();
+    assert_eq!(twins.len(), 2);
+    assert_eq!(twins[0]["qualifiedName"], "a::twin");
+    assert_eq!(twins[1]["qualifiedName"], "b::twin");
+}
+
+#[test]
+fn symbols_json_emits_type_method_when_different() {
+    let tmp = setup_seeded_repo();
+    let root = tmp.path();
+
+    let (stdout, stderr, code) = run_cli(
+        root,
+        &[
+            "symbols",
+            "--path",
+            "src/state/storage/timings.rs",
+            "--json",
+        ],
+    );
+    assert_eq!(code, 0, "stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    let symbols = v["symbols"].as_array().unwrap();
+    let from_row = symbols
+        .iter()
+        .find(|s| s["name"] == "from_row")
+        .expect("from_row");
+    assert_eq!(from_row["qualifiedName"], "TimingSample.from_row");
+    let summarize = symbols
+        .iter()
+        .find(|s| s["name"] == "summarize_outer")
+        .expect("summarize_outer");
+    assert!(
+        summarize.get("qualifiedName").is_none(),
+        "eq-name free function must omit; row={summarize}"
+    );
+    let news: Vec<_> = symbols.iter().filter(|s| s["name"] == "new").collect();
+    assert_eq!(news.len(), 2);
+    let qns: Vec<&str> = news
+        .iter()
+        .filter_map(|s| s["qualifiedName"].as_str())
+        .collect();
+    assert!(qns.contains(&"TimingSample.new"));
+    assert!(qns.contains(&"StorageManager.new"));
+}
+
+#[test]
+fn symbols_human_shows_stored_qualification() {
+    let tmp = setup_seeded_repo();
+    let root = tmp.path();
+
+    let (stdout, stderr, code) = run_cli(
+        root,
+        &["symbols", "--path", "src/commands/foo.rs", "--limit", "50"],
+    );
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(
+        stdout.contains("pub Function a::twin:99"),
+        "human must print stored twin QN; stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("pub Function b::twin:99"),
+        "human must print stored twin QN; stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("pub Function alpha:10"),
+        "free function stays bare name; stdout={stdout}"
+    );
+    assert!(
+        !stdout.contains("pub Function twin:99"),
+        "must not print unqualified twin; stdout={stdout}"
+    );
+
+    let (stdout, stderr, code) =
+        run_cli(root, &["symbols", "--path", "src/state/storage/timings.rs"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(
+        stdout.contains("pub Function TimingSample.from_row:204"),
+        "human must print Type.method; stdout={stdout}"
+    );
+    assert!(
+        !stdout.contains("Function from_row:204"),
+        "must not print bare from_row; stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("pub Function summarize_outer:271"),
+        "eq-name free function stays bare; stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("pub Function TimingSample.new:10"),
+        "two-impl new distinguishable; stdout={stdout}"
+    );
+    assert!(
+        stdout.contains("pub Function StorageManager.new:20"),
+        "two-impl new distinguishable; stdout={stdout}"
+    );
 }
