@@ -118,6 +118,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Unix Latest extract resource bound (0332):** `update --binary`
+  extracts `{stem}/ledgerful` in memory (`tar` + `flate2`) instead of
+  host `tar -xzf` into staging. Declared size is checked before the
+  payload; a missing member is distinct from a parse failure. Extra
+  members above the extracted-size cap are refused without naming
+  `ledgerful`. The 150 MiB extracted / 80 MiB download caps are
+  unchanged.
+
 - **Symbol identity readout (0331):** `symbols --json` omits `qualifiedName`
   when it equals `name` (persist fallback is not a qualified identity).
   Human lines print stored `Type.method` when it differs. Class/Interface
