@@ -144,12 +144,13 @@ pub fn parse_github_actions(content: &str, filename: Option<&str>) -> Vec<Parsed
                 continue;
             }
 
-            if draft.name.is_some() && line_indent == job_prop_indent && !draft.in_steps {
+            if draft.name.is_some() && line_indent == job_prop_indent {
                 if stripped.starts_with("environment:") {
                     let env = unquote(stripped.strip_prefix("environment:").unwrap_or(""));
                     if !env.is_empty() {
                         draft.env = Some(env);
                     }
+                    continue;
                 }
 
                 if stripped == "if:" || stripped.starts_with("if:") {
@@ -338,7 +339,8 @@ fn strip_unquoted_comment(s: &str) -> &str {
 }
 
 fn mapping_key(stripped: &str) -> Option<&str> {
-    let key = stripped.strip_suffix(':')?;
+    let (key, _rest) = stripped.split_once(':')?;
+    let key = key.trim();
     if key.is_empty() || key.starts_with('#') || key.contains(' ') {
         None
     } else {

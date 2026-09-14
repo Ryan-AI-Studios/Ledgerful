@@ -111,7 +111,7 @@ Deep visibility into the engineering context of the repository.
 
 *   **Service-Map Derivation**: Infers service boundaries and cross-service dependencies from route/data-model topology.
 *   **Data-Flow Coupling**: Flags call chains where route handlers and their data models co-change.
-*   **CI Pipeline Awareness**: Detects and surfaces risk when CI configuration itself changes or co-changes with source code.
+*   **CI Pipeline Awareness**: Detects and surfaces risk when CI configuration itself changes or co-changes with source code. `ci list` `triggers[]` records GitHub event names for children at the standard two-space `on:` indent even when the mapping value is inline (`push: {branches: [main]}`, `push: null`, `workflow_dispatch: {}`). Nested filter keys are not events. GHA `triggers: []` can mean no `on:` **or** an unrecognized shape (whole-line `on: {…}`, four-space children).
 *   **ADR Staleness**: Flags retrieved architectural decisions that exceed age thresholds or lack recent updates.
 
 ## 6. AI & LLM Integration

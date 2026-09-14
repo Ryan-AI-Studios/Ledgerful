@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **GHA inline `on:` events (0344):** `ci list` `triggers[]` records
+  event names when a two-space `on:` child has an inline value
+  (`push: {branches: [main]}`, `push: null`, `workflow_dispatch: {}`).
+  Nested filter keys stay non-events. Job `if` / `needs` / scalar
+  `environment:` after `steps:` at job indent are captured.
+
 - **Deploy-manifest inventory (0343):** `index --incremental` (and
   `index --analyze-graph` extract) writes `deploy_manifests`, so a
   deploy-only repo can show gated `coverage.global` and `surfaces`
