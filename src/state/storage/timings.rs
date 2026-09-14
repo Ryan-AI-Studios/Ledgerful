@@ -254,6 +254,7 @@ pub const REASON_SMALL_SAMPLE: &str = "smallSample";
 pub const REASON_WORKLOAD_MISMATCH: &str = "workloadMismatch";
 pub const REASON_NO_PRIOR: &str = "noPriorBaseline";
 pub const REASON_ZERO_BASELINE: &str = "zeroBaseline";
+pub const REASON_UNHASHED: &str = "unhashedArgv";
 
 fn argv_bucket(hash: &Option<String>) -> String {
     match hash {
@@ -371,6 +372,7 @@ pub fn summarize_from_samples(
             .push(s.duration_ms);
     }
     let workload_count = by_hash.len() as u64;
+    let unhashed_only = workload_count == 1 && by_hash.contains_key(UNHASHED_ARGV);
 
     let mut workloads: Vec<WorkloadSlice> = by_hash
         .into_iter()
@@ -397,6 +399,8 @@ pub fn summarize_from_samples(
 
     let incomparable_reason = if workload_count > 1 {
         Some(REASON_MIXED_WORKLOADS.to_string())
+    } else if unhashed_only {
+        Some(REASON_UNHASHED.to_string())
     } else if !spread_single {
         Some(REASON_MIXED_DURATIONS.to_string())
     } else if runs < 5 {
@@ -409,6 +413,7 @@ pub fn summarize_from_samples(
         REASON_MIXED_WORKLOADS => format!("{workload_count} workloads (argv_hash)"),
         REASON_MIXED_DURATIONS => "duration mix on the same argv_hash".to_string(),
         REASON_SMALL_SAMPLE => format!("n={runs} too small for p95"),
+        REASON_UNHASHED => "argv_hash missing; not a single workload".to_string(),
         other => other.to_string(),
     });
 
@@ -436,6 +441,9 @@ fn single_argv_hash(samples: &[TimingSample]) -> Option<String> {
         return None;
     }
     let first = argv_bucket(&success[0].argv_hash);
+    if first == UNHASHED_ARGV {
+        return None;
+    }
     if success.iter().all(|s| argv_bucket(&s.argv_hash) == first) {
         Some(first)
     } else {
@@ -468,6 +476,24 @@ fn incomparable_sentence(
     format!(
         "`{command}` p50 {recent_p50} ms over {n} run(s) this week vs prior week ({prior_p50} ms); not comparable ({reason})."
     )
+}
+
+fn no_prior_sentence(
+    command: &str,
+    recent_p50: i64,
+    n: u64,
+    across_repos: bool,
+    reason: Option<&str>,
+) -> String {
+    let across = if across_repos { " across repos" } else { "" };
+    match reason {
+        Some(r) if r != REASON_NO_PRIOR => format!(
+            "`{command}` p50 {recent_p50} ms over {n} run(s) in the last 7 days{across}; no prior-week baseline yet ({r})."
+        ),
+        _ => format!(
+            "`{command}` p50 {recent_p50} ms over {n} run(s) in the last 7 days{across}; no prior-week baseline yet."
+        ),
+    }
 }
 
 /// Explain last-7d vs prior-7d using p50 of the success cohort.
@@ -519,12 +545,21 @@ pub fn explain_command(
             7,
         ))
     };
-    let prior_p50 = prior_sum.as_ref().map(|s| s.p50_ms);
+    let prior_has_baseline = prior_sum.as_ref().is_some_and(|s| s.runs > 0);
+    let prior_p50 = if prior_has_baseline {
+        prior_sum.as_ref().map(|s| s.p50_ms)
+    } else {
+        None
+    };
 
     let (comparable, reason) = if let Some(ref r) = recent_sum.incomparable_reason {
         (false, Some(r.clone()))
-    } else if prior_sum.is_none() {
-        (false, Some(REASON_NO_PRIOR.to_string()))
+    } else if !prior_has_baseline {
+        let token = prior_sum
+            .as_ref()
+            .and_then(|p| p.incomparable_reason.clone())
+            .unwrap_or_else(|| REASON_NO_PRIOR.to_string());
+        (false, Some(token))
     } else if let Some(ref p) = prior_sum
         && let Some(ref pr) = p.incomparable_reason
     {
@@ -543,10 +578,9 @@ pub fn explain_command(
 
     let n = recent_sum.runs;
     let recent_p50 = recent_sum.p50_ms;
-    let prior_p50_val = prior_p50.unwrap_or(0);
 
     let sentence = if comparable {
-        let prior = prior_p50_val;
+        let prior = prior_p50.unwrap_or(0);
         let delta_pct = if prior > 0 {
             ((recent_p50 - prior) as f64 / prior as f64) * 100.0
         } else {
@@ -563,17 +597,14 @@ pub fn explain_command(
         format!(
             "`{command}` p50 {recent_p50} ms over {n} run(s) this week{across}, {direction} {delta_pct:.0}% vs the prior week ({prior} ms)."
         )
-    } else if reason.as_deref() == Some(REASON_NO_PRIOR) {
-        let across = if across_repos { " across repos" } else { "" };
-        format!(
-            "`{command}` p50 {recent_p50} ms over {n} run(s) in the last 7 days{across}; no prior-week baseline yet."
-        )
+    } else if !prior_has_baseline {
+        no_prior_sentence(command, recent_p50, n, across_repos, reason.as_deref())
     } else {
         incomparable_sentence(
             command,
             recent_p50,
             n,
-            prior_p50_val,
+            prior_p50.unwrap_or(0),
             reason.as_deref().unwrap_or("unknown"),
         )
     };
@@ -974,6 +1005,265 @@ mod tests {
         let v = explain_report_json(&report);
         assert_eq!(v["comparable"], false);
         assert_eq!(v["incomparable_reason"], REASON_NO_RECENT);
+    }
+
+    fn explain_row(
+        run_id: &str,
+        command: &str,
+        duration_ms: i64,
+        ts: &str,
+        hash: Option<&str>,
+        exit_code: i32,
+    ) -> TimingRow {
+        let mut r = sample_outer(run_id, command, duration_ms);
+        r.ts_utc = ts.into();
+        r.argv_hash = hash.map(str::to_string);
+        r.exit_code = exit_code;
+        r
+    }
+
+    #[test]
+    fn explain_recent_small_sample_empty_prior_does_not_invent_zero_ms() {
+        let recent: Vec<TimingRow> = (0..3)
+            .map(|i| {
+                explain_row(
+                    &format!("r{i}"),
+                    "hotspots",
+                    100,
+                    "2026-09-12T00:00:00.000Z",
+                    Some("h"),
+                    0,
+                )
+            })
+            .collect();
+        let report = explain_command("hotspots", &recent, &recent, false);
+        assert!(!report.comparable);
+        assert_eq!(
+            report.incomparable_reason.as_deref(),
+            Some(REASON_SMALL_SAMPLE)
+        );
+        assert!(
+            report
+                .sentence
+                .ends_with("no prior-week baseline yet (smallSample).")
+        );
+        assert!(!report.sentence.contains("vs prior week (0 ms)"));
+        let v = explain_report_json(&report);
+        assert!(v.get("prior_p50_ms").is_none());
+        assert_eq!(v["comparable"], false);
+    }
+
+    #[test]
+    fn explain_recent_mixed_empty_prior_uses_no_prior_sentence() {
+        let recent = vec![
+            explain_row(
+                "a",
+                "hotspots",
+                100,
+                "2026-09-12T00:00:00.000Z",
+                Some("aaa"),
+                0,
+            ),
+            explain_row(
+                "b",
+                "hotspots",
+                110,
+                "2026-09-12T00:00:00.000Z",
+                Some("aaa"),
+                0,
+            ),
+            explain_row(
+                "c",
+                "hotspots",
+                120,
+                "2026-09-12T00:00:00.000Z",
+                Some("bbb"),
+                0,
+            ),
+            explain_row(
+                "d",
+                "hotspots",
+                200,
+                "2026-09-12T00:00:00.000Z",
+                Some("bbb"),
+                0,
+            ),
+        ];
+        let report = explain_command("hotspots", &recent, &recent, false);
+        assert!(!report.comparable);
+        assert_eq!(
+            report.incomparable_reason.as_deref(),
+            Some(REASON_MIXED_WORKLOADS)
+        );
+        assert!(
+            report
+                .sentence
+                .ends_with("no prior-week baseline yet (mixedWorkloads).")
+        );
+        assert!(!report.sentence.contains("vs prior week (0 ms)"));
+    }
+
+    #[test]
+    fn explain_prior_all_failed_does_not_invent_zero_ms() {
+        let recent: Vec<TimingRow> = (0..5)
+            .map(|i| {
+                explain_row(
+                    &format!("r{i}"),
+                    "hotspots",
+                    100 + i,
+                    "2026-09-12T00:00:00.000Z",
+                    Some("h"),
+                    0,
+                )
+            })
+            .collect();
+        let prior: Vec<TimingRow> = (0..3)
+            .map(|i| {
+                explain_row(
+                    &format!("p{i}"),
+                    "hotspots",
+                    50,
+                    "2026-09-04T00:00:00.000Z",
+                    Some("h"),
+                    1,
+                )
+            })
+            .collect();
+        let mut pool = prior.clone();
+        pool.extend(recent.clone());
+        let report = explain_command("hotspots", &recent, &pool, false);
+        assert!(!report.comparable);
+        assert_eq!(
+            report.incomparable_reason.as_deref(),
+            Some(REASON_NO_SUCCESS)
+        );
+        assert!(
+            report
+                .sentence
+                .ends_with("no prior-week baseline yet (noSuccessSamples).")
+        );
+        assert!(!report.sentence.contains("vs prior week (0 ms)"));
+        let v = explain_report_json(&report);
+        assert!(v.get("prior_p50_ms").is_none());
+    }
+
+    #[test]
+    fn unhashed_null_n5_tight_spread_is_not_comparable() {
+        let samples: Vec<TimingSample> = (0..5)
+            .map(|_| sample_with("x", "hotspots", 100, 0, None))
+            .collect();
+        let s = summarize_from_samples("hotspots".into(), &samples, 30);
+        assert!(!s.comparable);
+        assert_eq!(s.incomparable_reason.as_deref(), Some(REASON_UNHASHED));
+        assert_eq!(
+            s.sample_note.as_deref(),
+            Some("argv_hash missing; not a single workload")
+        );
+        let json = serde_json::to_string(&s).unwrap();
+        assert!(json.contains("\"comparable\":false"));
+    }
+
+    #[test]
+    fn unhashed_empty_string_hash_is_not_comparable() {
+        let samples: Vec<TimingSample> = (0..5)
+            .map(|_| sample_with("x", "hotspots", 100, 0, Some("")))
+            .collect();
+        let s = summarize_from_samples("hotspots".into(), &samples, 30);
+        assert!(!s.comparable);
+        assert_eq!(s.incomparable_reason.as_deref(), Some(REASON_UNHASHED));
+    }
+
+    #[test]
+    fn unhashed_n3_is_unhashed_argv_not_small_sample() {
+        let samples: Vec<TimingSample> = (0..3)
+            .map(|_| sample_with("x", "hotspots", 100, 0, None))
+            .collect();
+        let s = summarize_from_samples("hotspots".into(), &samples, 30);
+        assert!(!s.comparable);
+        assert_eq!(s.incomparable_reason.as_deref(), Some(REASON_UNHASHED));
+        assert_ne!(s.incomparable_reason.as_deref(), Some(REASON_SMALL_SAMPLE));
+    }
+
+    #[test]
+    fn explain_unhashed_windows_refuse_percent() {
+        let recent: Vec<TimingRow> = (0..5)
+            .map(|i| {
+                explain_row(
+                    &format!("r{i}"),
+                    "hotspots",
+                    100,
+                    "2026-09-12T00:00:00.000Z",
+                    None,
+                    0,
+                )
+            })
+            .collect();
+        let prior: Vec<TimingRow> = (0..5)
+            .map(|i| {
+                explain_row(
+                    &format!("p{i}"),
+                    "hotspots",
+                    110,
+                    "2026-09-04T00:00:00.000Z",
+                    None,
+                    0,
+                )
+            })
+            .collect();
+        let mut pool = prior.clone();
+        pool.extend(recent.clone());
+        let report = explain_command("hotspots", &recent, &pool, false);
+        assert!(!report.comparable);
+        assert_eq!(report.incomparable_reason.as_deref(), Some(REASON_UNHASHED));
+        assert!(report.sentence.contains("(unhashedArgv)"));
+        assert!(report.sentence.contains("not comparable"));
+        assert!(!report.sentence.contains("up "));
+        assert!(!report.sentence.contains("down "));
+    }
+
+    #[test]
+    fn explain_hashed_recent_unhashed_prior_is_unhashed_argv() {
+        let recent: Vec<TimingRow> = (0..5)
+            .map(|i| {
+                explain_row(
+                    &format!("r{i}"),
+                    "hotspots",
+                    100,
+                    "2026-09-12T00:00:00.000Z",
+                    Some("h"),
+                    0,
+                )
+            })
+            .collect();
+        let prior: Vec<TimingRow> = (0..5)
+            .map(|i| {
+                explain_row(
+                    &format!("p{i}"),
+                    "hotspots",
+                    110,
+                    "2026-09-04T00:00:00.000Z",
+                    None,
+                    0,
+                )
+            })
+            .collect();
+        let mut pool = prior.clone();
+        pool.extend(recent.clone());
+        let report = explain_command("hotspots", &recent, &pool, false);
+        assert!(!report.comparable);
+        assert_eq!(report.incomparable_reason.as_deref(), Some(REASON_UNHASHED));
+        assert_ne!(
+            report.incomparable_reason.as_deref(),
+            Some(REASON_WORKLOAD_MISMATCH)
+        );
+    }
+
+    #[test]
+    fn single_argv_hash_all_unhashed_is_none() {
+        let samples: Vec<TimingSample> = (0..5)
+            .map(|_| sample_with("x", "hotspots", 100, 0, None))
+            .collect();
+        assert!(single_argv_hash(&samples).is_none());
     }
 
     #[test]

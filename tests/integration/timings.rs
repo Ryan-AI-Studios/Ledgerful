@@ -391,7 +391,7 @@ fn explain_no_prior_week_baseline_clause() {
         for i in 0..5 {
             insert_timing_batch(
                 &mut conn,
-                &[outer(&format!("nb{i}"), "index", 80 + i * 5, None)],
+                &[outer(&format!("nb{i}"), "index", 80 + i * 5, Some("h"))],
             )
             .unwrap();
         }
@@ -419,6 +419,44 @@ fn explain_no_prior_week_baseline_clause() {
     assert!(sentence.ends_with('.'), "got {sentence}");
     assert_eq!(v["data"]["comparable"], false);
     assert_eq!(v["data"]["incomparable_reason"], "noPriorBaseline");
+}
+
+#[test]
+fn explain_small_sample_empty_prior_appends_token() {
+    let (tmp, db_path) = temp_repo_with_db();
+    {
+        let mut conn = Connection::open(&db_path).unwrap();
+        for i in 0..3 {
+            insert_timing_batch(
+                &mut conn,
+                &[outer(&format!("ss{i}"), "index", 80 + i * 5, Some("h"))],
+            )
+            .unwrap();
+        }
+    }
+    let _guard = DirGuard::new(tmp.path());
+    let bin = env!("CARGO_BIN_EXE_ledgerful");
+    let out = Command::new(bin)
+        .args(["timings", "--explain", "index", "--json"])
+        .current_dir(tmp.path())
+        .output()
+        .expect("run timings --explain");
+    assert!(
+        out.status.success(),
+        "explain failed: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let v: serde_json::Value = serde_json::from_str(&stdout).expect("explain json");
+    let sentence = v["data"]["explain"].as_str().expect("explain string");
+    assert!(
+        sentence.contains("no prior-week baseline yet (smallSample)"),
+        "must append smallSample: {sentence}"
+    );
+    assert_eq!(sentence.matches('.').count(), 1);
+    assert!(sentence.ends_with('.'), "got {sentence}");
+    assert_eq!(v["data"]["comparable"], false);
+    assert_eq!(v["data"]["incomparable_reason"], "smallSample");
 }
 
 #[test]

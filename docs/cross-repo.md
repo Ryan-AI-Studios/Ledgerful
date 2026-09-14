@@ -111,7 +111,7 @@ discovery walk, and derived cache for repo discovery).
 | `--inner` | Aggregate `span_name` samples across repos |
 | `--command NAME` | Filter `--inner` / `--flame` to one command |
 | `--flame` | Collapsed stacks with `{repo_basename};{command}[;span] duration` |
-| `--explain COMMAND` | Pool last 7d + prior 7d outer samples across repos; p50 sentence; refuses incomparable percents |
+| `--explain COMMAND` | Pool last 7d + prior 7d outer samples across repos; p50 sentence; refuses incomparable percents. No success prior (empty or all-failed) does not invent `0 ms`; sole `"<unhashed>"` is not comparable (`unhashedArgv`); one-sided unhashed is that token, not `workloadMismatch` |
 | `--opt-in` / `--opt-out` | User-config self-timing capture (same as local; works with or without `--global`) |
 | `--prune` | **Refused** — global path never writes per-repo DBs |
 
