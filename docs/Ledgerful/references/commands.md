@@ -43,7 +43,7 @@ Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/ch
 
 ## `ledgerful federate` / `sync cursor` / `sync log`
 
-`federate status --json` (0327) is schemaVersion 1 live-peer provenance (`freshness` from sibling `schema.generated_at`, not required checks). Bare `federate` stays human status (0179). `sync cursor --json` / `sync log --json` (`feature = "sync"`) name missing vs never-run vs unreadable; lag is always `unknown`. Do not `federate scan` or `sync init` unless the owner named that HITL.
+`federate status --json` (0327) is schemaVersion 1 live-peer provenance (`freshness` from sibling `schema.generated_at`, not required checks). Among Live dups, `lastScanned` is the later parsed RFC3339 instant. Bare `federate` stays human status (0179). `sync cursor --json` / `sync log --json` (`feature = "sync"`) name missing vs never-run vs unreadable; lag is always `unknown`. Do not `federate scan` or `sync init` unless the owner named that HITL.
 
 ## `ledgerful tests`
 
