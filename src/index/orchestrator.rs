@@ -271,6 +271,12 @@ impl ProjectIndexer {
         extraction::extract_ci_gates(self)
     }
 
+    pub fn extract_deploy_manifests(
+        &self,
+    ) -> Result<crate::index::deploy_manifests::DeployManifestStats> {
+        extraction::extract_deploy_manifests(self)
+    }
+
     pub fn extract_env_schema(&self) -> Result<crate::index::env_schema::EnvSchemaStats> {
         extraction::extract_env_schema(self)
     }

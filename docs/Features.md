@@ -39,6 +39,9 @@ Understand the "blast radius" of any change before it is committed.
     *   **Infrastructure**: Docker, Kubernetes, Terraform, and Helm manifest awareness.
         `deploy impact` disabled-by-config empty states name the coverage switch
         and do not lead with “No deployment impact detected.”
+        `index --incremental` writes `deploy_manifests` so a deploy-only
+        repo (Dockerfile, no HTTP) can show gated `coverage.global`;
+        `surfaces` empty `next` (`ledgerful index --incremental`) is honest.
     *   **Observability**: Trace config drift and SDK dependency detection.
         Coverage inventory reads repo-root `observability/` OpenSLO
         (`kind: Service` + matching SLO, or `[services]`) after
