@@ -118,6 +118,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Config verify empty/whitespace `base_url` origin (0342):** `config
+  verify` attributes `local_model.base_url` with the same emptiness as
+  `resolve_string` (no TOML trim). Whitespace TOML is `origin: file`
+  even when env is set. Empty TOML after env/dotenv miss is
+  `origin: default` (omitted without `--verbose`), not `file` for a
+  placeholder cell.
+
 - **Verify unsigned+chain JSON exit (0341):** `verify --json
   --signatures --chain` keeps unsigned-required exit **3** when the
   chain is structurally intact. `chain_break` is structural /

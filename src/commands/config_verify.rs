@@ -165,6 +165,10 @@ fn apply_provenance(row: &mut ConfigRow, ctx: &ProvenanceContext) {
             row.source = ValueSource::Explicit;
             return;
         }
+        row.origin = Some(RowOrigin::Default);
+        row.location = None;
+        row.source = ValueSource::Default;
+        return;
     }
     if ctx.keys.contains(toml_key) {
         row.origin = Some(RowOrigin::File);
@@ -188,7 +192,7 @@ fn toml_string_nonempty(root: Option<&toml::Value>, dotted: &str) -> bool {
             None => return false,
         }
     }
-    cur.as_str().is_some_and(|s| !s.trim().is_empty())
+    cur.as_str().is_some_and(|s| !s.is_empty())
 }
 
 fn source_cell(row: &ConfigRow) -> String {
@@ -677,6 +681,14 @@ impl ConfigSection for GateSection {
 mod tests {
     use super::*;
 
+    mod env_guard {
+        include!(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tests/integration/common/env_guard.rs"
+        ));
+    }
+    use env_guard::TempEnv;
+
     #[test]
     fn test_sections_returns_all_implementations() {
         let sections = all_sections();
@@ -878,5 +890,82 @@ mod tests {
         apply_provenance(&mut row, &ctx);
         assert_eq!(row.value, "http://host:1");
         assert_eq!(row.origin, Some(RowOrigin::File));
+    }
+
+    #[test]
+    fn toml_string_nonempty_whitespace_is_nonempty() {
+        let raw = toml::from_str::<toml::Value>("[local_model]\nbase_url = \"   \"\n")
+            .expect("valid toml fixture");
+        assert!(toml_string_nonempty(Some(&raw), "local_model.base_url"));
+    }
+
+    #[test]
+    fn toml_string_nonempty_does_not_trim_toml_string() {
+        let src = include_str!("config_verify.rs");
+        let needle = "fn toml_string_nonempty(";
+        let start = src.find(needle).expect("toml_string_nonempty") + needle.len();
+        let rest = &src[start..];
+        let end = rest
+            .find("fn ")
+            .expect("next fn after toml_string_nonempty");
+        let slice = &rest[..end];
+        assert!(
+            !slice.contains(".trim()"),
+            "toml_string_nonempty must match resolve_string is_empty (no trim): {slice}"
+        );
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn apply_provenance_whitespace_toml_is_file_not_env() {
+        let _env = TempEnv::set("LEDGERFUL_LOCAL_MODEL_URL", "http://env-origin:11434");
+        let ctx = ctx_from_toml(
+            "[local_model]\nbase_url = \"   \"\n",
+            ".ledgerful/config.toml",
+        );
+        let mut row = ConfigRow::new(
+            "base_url",
+            "   ",
+            ValueSource::Explicit,
+            Some("local_model.base_url"),
+        );
+        apply_provenance(&mut row, &ctx);
+        assert_eq!(row.origin, Some(RowOrigin::File));
+        assert_eq!(row.value, "   ");
+        assert_eq!(row.source, ValueSource::Explicit);
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn apply_provenance_empty_toml_is_default_not_file() {
+        let _unset = TempEnv::remove("LEDGERFUL_LOCAL_MODEL_URL");
+        let ctx = ctx_from_toml("[local_model]\nbase_url = \"\"\n", ".ledgerful/config.toml");
+        let mut row = ConfigRow::new(
+            "base_url",
+            "",
+            ValueSource::Explicit,
+            Some("local_model.base_url"),
+        );
+        apply_provenance(&mut row, &ctx);
+        assert_eq!(row.origin, Some(RowOrigin::Default));
+        assert!(row.location.is_none());
+        assert_eq!(row.source, ValueSource::Default);
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn apply_provenance_empty_toml_plus_env_stays_env() {
+        let _env = TempEnv::set("LEDGERFUL_LOCAL_MODEL_URL", "http://env-origin:11434");
+        let ctx = ctx_from_toml("[local_model]\nbase_url = \"\"\n", ".ledgerful/config.toml");
+        let mut row = ConfigRow::new(
+            "base_url",
+            "",
+            ValueSource::Explicit,
+            Some("local_model.base_url"),
+        );
+        apply_provenance(&mut row, &ctx);
+        assert_eq!(row.origin, Some(RowOrigin::Env));
+        assert_eq!(row.location.as_deref(), Some("LEDGERFUL_LOCAL_MODEL_URL"));
+        assert_eq!(row.source, ValueSource::Explicit);
     }
 }
