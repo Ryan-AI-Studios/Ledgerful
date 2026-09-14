@@ -293,6 +293,11 @@ chain head exists. Fields: `signatureValid`, `hashMatch`, `lengthMatch`.
 A stored-head signature / hash / length fail can be `ok: false` with
 `signatures.invalid == 0` and `breaks: []` — do not treat empty `breaks`
 as a silent pass. `--chain`-only keeps `signatures.checked: false`.
+Unsigned-required with `--chain` stays `exitCode` 3 / `ok: false` when
+`breakCount` is 0, checkpoint is pass-or-absent, and `chain.head` (if
+present) is all-true. Do not treat signature-only `first_human` as a
+chain break. Stdout JSON is authoritative if stderr first-write still
+mentions exit 3.
 
 Reject (miette, empty stdout, no partial JSON) mixed diagnostic modes:
 
