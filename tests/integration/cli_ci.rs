@@ -125,6 +125,33 @@ jobs:
 }
 
 #[test]
+fn ci_list_json_inline_valued_on_emits_push_trigger() {
+    let yaml = r#"
+name: CI
+on:
+  push: {branches: [main]}
+  workflow_dispatch: {}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+"#;
+    let tmp = init_repo_with_workflow(yaml);
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["ci", "list", "--json"]);
+    assert_eq!(code, 0, "ci list --json; stderr={stderr}");
+    let v = parse_object(&stdout, "ci list --json inline on");
+    assert_eq!(v["schemaVersion"], 1);
+    let gates = v["gates"].as_array().expect("gates");
+    assert_eq!(gates.len(), 1, "{stdout}");
+    let triggers = gates[0]["triggers"].as_array().expect("triggers");
+    let names: Vec<&str> = triggers.iter().filter_map(|t| t.as_str()).collect();
+    assert!(names.contains(&"push"), "{stdout}");
+    assert!(names.contains(&"workflow_dispatch"), "{stdout}");
+    assert!(!names.iter().any(|n| n.contains("branches")), "{stdout}");
+}
+
+#[test]
 fn data_models_list_json_does_not_gain_ci_scope() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();

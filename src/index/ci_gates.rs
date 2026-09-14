@@ -546,6 +546,126 @@ jobs:
     }
 
     #[test]
+    fn parse_github_actions_inline_flow_push_is_trigger() {
+        let content = r#"
+on:
+  push: {branches: [main]}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+"#;
+        let gates = parse_github_actions(content, Some("ci.yml"));
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].trigger.as_deref(), Some("push"));
+        let t = gates[0].trigger.as_deref().unwrap_or("");
+        assert!(!t.contains("branches"));
+        assert!(!t.contains("main"));
+    }
+
+    #[test]
+    fn parse_github_actions_inline_null_push_is_trigger() {
+        let content = r#"
+on:
+  push: null
+jobs:
+  build:
+    runs-on: ubuntu-latest
+"#;
+        let gates = parse_github_actions(content, Some("ci.yml"));
+        assert_eq!(gates[0].trigger.as_deref(), Some("push"));
+    }
+
+    #[test]
+    fn parse_github_actions_inline_empty_dispatch_is_trigger() {
+        let content = r#"
+on:
+  workflow_dispatch: {}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+"#;
+        let gates = parse_github_actions(content, Some("ci.yml"));
+        assert_eq!(gates[0].trigger.as_deref(), Some("workflow_dispatch"));
+    }
+
+    #[test]
+    fn parse_github_actions_space_before_colon_is_trigger() {
+        let content = r#"
+on:
+  push : {branches: [main]}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+"#;
+        let gates = parse_github_actions(content, Some("ci.yml"));
+        assert_eq!(gates[0].trigger.as_deref(), Some("push"));
+        let t = gates[0].trigger.as_deref().unwrap_or("");
+        assert!(!t.contains("branches"));
+    }
+
+    #[test]
+    fn parse_github_actions_job_if_needs_after_steps() {
+        let content = r#"
+on: push
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+    if: github.event_name == 'push'
+    needs: build
+    environment: production
+"#;
+        let gates = parse_github_actions(content, Some("ci.yml"));
+        assert_eq!(gates.len(), 1);
+        assert_eq!(
+            gates[0].job_if.as_deref(),
+            Some("github.event_name == 'push'")
+        );
+        assert_eq!(gates[0].needs.as_deref(), Some("build"));
+        assert_eq!(gates[0].environment.as_deref(), Some("production"));
+        assert_eq!(gates[0].steps.as_deref(), Some("echo hi"));
+    }
+
+    #[test]
+    fn parse_github_actions_on_flow_map_is_not_name_list() {
+        let content = r#"
+on: {push: {branches: [main]}}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+"#;
+        let gates = parse_github_actions(content, Some("ci.yml"));
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].job_name, "build");
+        assert!(gates[0].trigger.is_none());
+    }
+
+    #[test]
+    fn parse_github_actions_four_space_on_child_is_not_trigger() {
+        let content =
+            "on:\n    push: {branches: [main]}\njobs:\n  build:\n    runs-on: ubuntu-latest\n";
+        let gates = parse_github_actions(content, Some("ci.yml"));
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].job_name, "build");
+        assert!(gates[0].trigger.is_none());
+    }
+
+    #[test]
+    fn parse_github_actions_quoted_push_key_is_known_limit() {
+        let content = r#"
+on:
+  "push": {branches: [main]}
+jobs:
+  build:
+    runs-on: ubuntu-latest
+"#;
+        let gates = parse_github_actions(content, Some("ci.yml"));
+        assert_eq!(gates.len(), 1);
+        assert_eq!(gates[0].trigger.as_deref(), Some("\"push\""));
+    }
+
+    #[test]
     fn parse_github_actions_job_if_needs_uses() {
         let content = r#"
 on: push
