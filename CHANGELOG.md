@@ -118,6 +118,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Verify unsigned+chain JSON exit (0341):** `verify --json
+  --signatures --chain` keeps unsigned-required exit **3** when the
+  chain is structurally intact. `chain_break` is structural /
+  stored-head / checkpoint / missing-head-downgrade, not every
+  `first_human`.
+
 - **Verify unquoted backslash escape (0340):** Unquoted `\` in the
   verify argv scan skips the next character (POSIX/shlex), so `\"`
   cannot open a phantom quote that hides a later `|` / `;`. Quoted

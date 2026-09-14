@@ -1304,7 +1304,13 @@ fn collect_chain_and_checkpoint_for_json(
         None
     };
     let checkpoint_fail = checkpoint.as_ref().is_some_and(|c| !c.result.is_pass());
-    let chain_break = break_count > 0 || first_human.is_some() || checkpoint_fail;
+    let head_fail = chain
+        .head
+        .as_ref()
+        .is_some_and(|h| !h.signature_valid || !h.hash_match || !h.length_match);
+    let missing_head_downgrade =
+        !head_is_real && !entries.is_empty() && entries.iter().any(|e| e.prev_hash.is_some());
+    let chain_break = break_count > 0 || head_fail || checkpoint_fail || missing_head_downgrade;
 
     Ok((chain, checkpoint, first_human, chain_break))
 }
@@ -2230,5 +2236,219 @@ mod verify_signatures_json_collect_tests {
             "no stored head → omit chain.head"
         );
         assert!(!json.contains("\"signatureValid\""));
+    }
+
+    fn signed_head(latest: &str, genesis: &str, length: i64) -> crate::ledger::types::ChainHead {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let keys = tmp.path().join("keys");
+        std::fs::create_dir_all(&keys).expect("keys dir");
+        let (head_sig, head_pub) =
+            crate::ledger::crypto::sign_chain_head(&keys, latest, genesis, length)
+                .expect("sign head");
+        crate::ledger::types::ChainHead {
+            latest_entry_hash: latest.to_string(),
+            genesis: genesis.to_string(),
+            length,
+            head_signature: head_sig,
+            head_public_key: head_pub,
+            updated_at: genesis.to_string(),
+        }
+    }
+
+    #[test]
+    fn signatures_json_unsigned_required_plus_chain_stays_exit_3() {
+        let a = entry("tx1", None, "LOCAL");
+        let a_hash = compute_entry_hash_for_entry(&a).expect("hash");
+        let genesis = "2026-01-01T00:00:00Z";
+        let local = signed_head(&a_hash, genesis, 1);
+        let (payload, _) = build_verify_signatures_json(
+            &[a],
+            Some(&local),
+            true,
+            true,
+            None,
+            false,
+            true,
+            &[],
+            1,
+            false,
+        )
+        .expect("payload");
+        assert_eq!(payload.exit_code, sig_exit::UNSIGNED);
+        assert!(!payload.ok);
+        assert!(payload.signatures.unsigned > 0);
+        assert_eq!(payload.chain.break_count, 0);
+    }
+
+    #[test]
+    fn signatures_json_unsigned_plus_extra_genesis_stays_exit_1() {
+        let a = entry("tx1", None, "LOCAL");
+        let a_hash = compute_entry_hash_for_entry(&a).expect("hash");
+        let b = entry("tx2", Some(&a_hash), "LOCAL");
+        let extra = entry("tx9", None, "LOCAL");
+        let (payload, _) = build_verify_signatures_json(
+            &[a, b, extra],
+            None,
+            true,
+            true,
+            None,
+            false,
+            true,
+            &[],
+            1,
+            false,
+        )
+        .expect("payload");
+        assert_eq!(payload.exit_code, sig_exit::INVALID_OR_CHAIN);
+        assert!(!payload.ok);
+        assert!(payload.signatures.unsigned > 0);
+        assert!(payload.chain.break_count > 0);
+    }
+
+    #[test]
+    fn signatures_json_head_hash_mismatch_stays_exit_1() {
+        let a = entry("tx1", None, "LOCAL");
+        let genesis = "2026-01-01T00:00:00Z";
+        let dummy = "ab".repeat(32);
+        let local = signed_head(&dummy, genesis, 1);
+        let (payload, _) = build_verify_signatures_json(
+            &[a],
+            Some(&local),
+            true,
+            true,
+            None,
+            false,
+            false,
+            &[],
+            1,
+            false,
+        )
+        .expect("payload");
+        let head = payload.chain.head.as_ref().expect("stored head");
+        assert!(head.signature_valid, "sig is over the stored dummy hash");
+        assert!(!head.hash_match);
+        assert!(head.length_match);
+        assert_eq!(payload.exit_code, sig_exit::INVALID_OR_CHAIN);
+        assert!(!payload.ok);
+    }
+
+    #[test]
+    fn signatures_json_head_length_mismatch_stays_exit_1() {
+        let a = entry("tx1", None, "LOCAL");
+        let a_hash = compute_entry_hash_for_entry(&a).expect("hash");
+        let genesis = "2026-01-01T00:00:00Z";
+        let local = signed_head(&a_hash, genesis, 99);
+        let (payload, _) = build_verify_signatures_json(
+            &[a],
+            Some(&local),
+            true,
+            true,
+            None,
+            false,
+            false,
+            &[],
+            1,
+            false,
+        )
+        .expect("payload");
+        let head = payload.chain.head.as_ref().expect("stored head");
+        assert!(head.signature_valid, "sig is over stored length 99");
+        assert!(head.hash_match);
+        assert!(!head.length_match);
+        assert_eq!(payload.exit_code, sig_exit::INVALID_OR_CHAIN);
+        assert!(!payload.ok);
+    }
+
+    #[test]
+    fn signatures_json_missing_head_downgrade_is_chain_break_exit_1() {
+        let a = entry("tx1", None, "LOCAL");
+        let a_hash = compute_entry_hash_for_entry(&a).expect("hash");
+        let b = entry("tx2", Some(&a_hash), "LOCAL");
+        let (payload, first) = build_verify_signatures_json(
+            &[a, b],
+            None,
+            true,
+            true,
+            None,
+            false,
+            false,
+            &[],
+            1,
+            false,
+        )
+        .expect("payload");
+        assert_eq!(payload.exit_code, sig_exit::INVALID_OR_CHAIN);
+        assert!(!payload.ok);
+        assert!(payload.chain.head.is_none());
+        assert!(
+            first
+                .as_deref()
+                .unwrap_or("")
+                .contains("downgrade detected"),
+            "{first:?}"
+        );
+    }
+
+    #[test]
+    fn signatures_json_invalid_crypto_plus_chain_stays_exit_1() {
+        let mut a = entry("tx-bad", None, "LOCAL");
+        a.signature = Some("00".repeat(64));
+        a.public_key = Some("11".repeat(32));
+        let a_hash = compute_entry_hash_for_entry(&a).expect("hash");
+        let genesis = "2026-01-01T00:00:00Z";
+        let local = signed_head(&a_hash, genesis, 1);
+        let (payload, first) = build_verify_signatures_json(
+            &[a],
+            Some(&local),
+            true,
+            true,
+            None,
+            false,
+            false,
+            &[],
+            2,
+            false,
+        )
+        .expect("payload");
+        assert_eq!(payload.exit_code, sig_exit::INVALID_OR_CHAIN);
+        assert!(!payload.ok);
+        assert_eq!(payload.chain.break_count, 0);
+        assert!(payload.signatures.invalid >= 1);
+        let head = payload.chain.head.as_ref().expect("stored head");
+        assert!(head.signature_valid);
+        assert!(head.hash_match);
+        assert!(head.length_match);
+        assert!(
+            first
+                .as_deref()
+                .unwrap_or("")
+                .contains("Signature verification failed"),
+            "walk must set first_human for Invalid so dropping it from chain_break is pinned: {first:?}"
+        );
+    }
+
+    #[test]
+    fn collect_chain_and_checkpoint_for_json_chain_break_ignores_signature_only_first_human() {
+        let src = include_str!("signatures.rs");
+        let start = src
+            .find("fn collect_chain_and_checkpoint_for_json(")
+            .expect("collect_chain_and_checkpoint_for_json must exist");
+        let after = &src[start..];
+        let next_fn = after
+            .find("fn collect_checkpoint_for_json")
+            .expect("collect_checkpoint_for_json must follow");
+        let body = &after[..next_fn];
+        assert!(
+            body.contains("head_fail"),
+            "chain_break must use head_fail: missing token"
+        );
+        assert!(
+            body.contains("missing_head_downgrade"),
+            "chain_break must use missing_head_downgrade: missing token"
+        );
+        assert!(
+            !body.contains("first_human.is_some()"),
+            "collect-fn slice must not treat first_human as chain_break"
+        );
     }
 }
