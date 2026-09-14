@@ -28,6 +28,7 @@ mod cli_cwd_honesty;
 mod cli_dead_code;
 mod cli_dead_code_prune;
 mod cli_dependencies;
+mod cli_deploy_manifests;
 mod cli_doctor;
 mod cli_dogfood_0186;
 mod cli_dx1_prompts;

@@ -8,6 +8,7 @@ pub mod centrality;
 pub mod ci_gates;
 pub mod content_cache;
 pub mod data_models;
+pub mod deploy_manifests;
 pub mod docs;
 pub mod entrypoint;
 pub mod env_patterns;

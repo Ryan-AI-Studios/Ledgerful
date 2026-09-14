@@ -101,6 +101,7 @@ pub fn run_graph_analysis(
         indexer.extract_observability()?;
         indexer.extract_test_mappings()?;
         indexer.extract_ci_gates()?;
+        indexer.extract_deploy_manifests()?;
         indexer.extract_env_schema()?;
 
         if indexer.config.coverage.service_inference_state()

@@ -6,6 +6,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Deploy-manifest inventory (0343):** `index --incremental` (and
+  `index --analyze-graph` extract) writes `deploy_manifests`, so a
+  deploy-only repo can show gated `coverage.global` and `surfaces`
+  deploy empty `next` is honest. Coverage flags do not gate the write.
+  Stored `risk_tier` is the base map, not `deploy impact` coupling.
+
 ### Added
 
 - **Verification diagnostic contracts (0321):** `--json --dry-run` /

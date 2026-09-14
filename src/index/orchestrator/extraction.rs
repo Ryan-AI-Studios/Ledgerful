@@ -2,6 +2,7 @@ use super::ProjectIndexer;
 use crate::index::call_graph::CallGraphBuilder;
 use crate::index::ci_gates::CIGateExtractor;
 use crate::index::data_models::DataModelExtractor;
+use crate::index::deploy_manifests::DeployManifestExtractor;
 use crate::index::env_schema::EnvSchemaIndexer;
 use crate::index::observability::ObservabilityExtractor;
 use crate::index::routes::RouteExtractor;
@@ -82,6 +83,17 @@ pub fn extract_ci_gates(indexer: &ProjectIndexer) -> Result<crate::index::ci_gat
     CIGateExtractor::new(
         &indexer.storage,
         indexer.repo_path.as_std_path().to_path_buf(),
+    )
+    .extract()
+}
+
+pub fn extract_deploy_manifests(
+    indexer: &ProjectIndexer,
+) -> Result<crate::index::deploy_manifests::DeployManifestStats> {
+    DeployManifestExtractor::new(
+        &indexer.storage,
+        indexer.repo_path.as_std_path().to_path_buf(),
+        indexer.config.coverage.deploy.patterns.clone(),
     )
     .extract()
 }

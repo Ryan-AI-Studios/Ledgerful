@@ -181,6 +181,8 @@ fn execute_main_mode(
     // Extract CI/CD workflow gates
     let ci_stats = indexer.extract_ci_gates()?;
 
+    indexer.extract_deploy_manifests()?;
+
     // Extract env schema (declarations and references)
     let env_stats = indexer.extract_env_schema()?;
 
