@@ -8,6 +8,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Federated Live-dup `lastScanned` (0345):** `federate status` keeps the
+  later *parsed* RFC3339 instant among same-path Live cache rows
+  (`…00.5Z` beats lexicographically greater `…00Z`). Unparseable stamps
+  fall back to lex; equal instants keep the first string.
+
 - **GHA inline `on:` events (0344):** `ci list` `triggers[]` records
   event names when a two-space `on:` child has an inline value
   (`push: {branches: [main]}`, `push: null`, `workflow_dispatch: {}`).

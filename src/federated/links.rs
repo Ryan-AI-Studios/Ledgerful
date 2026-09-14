@@ -126,7 +126,8 @@ pub fn classify_link(path: &str, repo_root: &str) -> LinkClass {
 /// Collapse raw `(name, path, last_scanned)` rows to Live peers by path key.
 ///
 /// Display name is the directory basename of the live path. When multiple Live
-/// rows share a key, keeps `max(last_scanned)` (lexicographic RFC3339).
+/// rows share a key, keeps the later **parsed** RFC3339 instant (lex only when
+/// a side is unparseable).
 pub fn present_federated_links(
     raw: &[(String, String, String)],
     repo_root: &str,
@@ -149,7 +150,7 @@ pub fn present_federated_links(
                 match live_by_key.get_mut(&key) {
                     Some((_n, _p, prev_scan, count)) => {
                         *count += 1;
-                        if last_scanned.as_str() > prev_scan.as_str() {
+                        if scan_is_later(last_scanned, prev_scan) {
                             *prev_scan = last_scanned.clone();
                             *_n = basename;
                             *_p = path.clone();
@@ -217,6 +218,15 @@ fn parse_instant(raw: &str) -> Option<DateTime<Utc>> {
     DateTime::parse_from_rfc3339(raw)
         .ok()
         .map(|dt| dt.with_timezone(&Utc))
+}
+
+fn scan_is_later(candidate: &str, incumbent: &str) -> bool {
+    match (parse_instant(candidate), parse_instant(incumbent)) {
+        (Some(c), Some(i)) => c > i,
+        (Some(_), None) => true,
+        (None, Some(_)) => false,
+        (None, None) => candidate > incumbent,
+    }
 }
 
 /// Classify one live peer. Fail-soft: one unreadable schema does not abort.
@@ -373,6 +383,146 @@ mod tests {
         assert_eq!(presented.live[0].last_scanned, "2026-08-12T00:00:00Z");
         assert_eq!(presented.omitted_dup_extra, 1);
         assert_eq!(presented.omitted_total(), 1);
+    }
+
+    fn collapse_two_scans(
+        peer_path: &str,
+        root: &str,
+        first: &str,
+        second: &str,
+    ) -> PresentedLinks {
+        let raw = vec![
+            ("a".into(), peer_path.to_string(), first.into()),
+            ("b".into(), peer_path.to_string(), second.into()),
+        ];
+        present_federated_links(&raw, root)
+    }
+
+    #[test]
+    fn collapse_live_dups_keeps_later_frac_when_z_is_lex_greater() {
+        let peer = tempdir().unwrap();
+        write_schema(peer.path());
+        let root = tempdir().unwrap();
+        let peer_path = peer.path().to_str().unwrap().to_string();
+        let presented = collapse_two_scans(
+            &peer_path,
+            root.path().to_str().unwrap(),
+            "2026-09-12T12:00:00Z",
+            "2026-09-12T12:00:00.5Z",
+        );
+        assert_eq!(presented.live.len(), 1);
+        assert_eq!(presented.live[0].last_scanned, "2026-09-12T12:00:00.5Z");
+        assert_eq!(presented.omitted_dup_extra, 1);
+    }
+
+    #[test]
+    fn collapse_live_dups_keeps_later_frac_when_frac_arrives_first() {
+        let peer = tempdir().unwrap();
+        write_schema(peer.path());
+        let root = tempdir().unwrap();
+        let peer_path = peer.path().to_str().unwrap().to_string();
+        let presented = collapse_two_scans(
+            &peer_path,
+            root.path().to_str().unwrap(),
+            "2026-09-12T12:00:00.5Z",
+            "2026-09-12T12:00:00Z",
+        );
+        assert_eq!(presented.live.len(), 1);
+        assert_eq!(presented.live[0].last_scanned, "2026-09-12T12:00:00.5Z");
+        assert_eq!(presented.omitted_dup_extra, 1);
+    }
+
+    #[test]
+    fn collapse_live_dups_feeds_freshness_later_scan() {
+        let peer = tempdir().unwrap();
+        write_schema_with_generated_at(peer.path(), "2026-09-12T12:00:00.2Z");
+        let root = tempdir().unwrap();
+        let peer_path = peer.path().to_str().unwrap().to_string();
+        let presented = collapse_two_scans(
+            &peer_path,
+            root.path().to_str().unwrap(),
+            "2026-09-12T12:00:00Z",
+            "2026-09-12T12:00:00.5Z",
+        );
+        assert_eq!(presented.live[0].last_scanned, "2026-09-12T12:00:00.5Z");
+        let kept = classify_peer_freshness(&peer_path, &presented.live[0].last_scanned);
+        assert_eq!(kept.status, FreshnessStatus::Available);
+        assert_eq!(kept.reason, "scanCapturedSchema");
+        let lex_winner = classify_peer_freshness(&peer_path, "2026-09-12T12:00:00Z");
+        assert_eq!(lex_winner.status, FreshnessStatus::Stale);
+        assert_eq!(lex_winner.reason, "schemaExportedAfterScan");
+    }
+
+    #[test]
+    fn collapse_live_dups_parsed_beats_unparseable() {
+        let peer = tempdir().unwrap();
+        write_schema(peer.path());
+        let root = tempdir().unwrap();
+        let peer_path = peer.path().to_str().unwrap().to_string();
+        let root_s = root.path().to_str().unwrap();
+        let parsed = "2026-09-12T12:00:00Z";
+        let garbage = "not-a-time";
+        assert!(garbage.as_bytes()[0] > b'2');
+        let a = collapse_two_scans(&peer_path, root_s, parsed, garbage);
+        assert_eq!(a.live[0].last_scanned, parsed);
+        let b = collapse_two_scans(&peer_path, root_s, garbage, parsed);
+        assert_eq!(b.live[0].last_scanned, parsed);
+    }
+
+    #[test]
+    fn collapse_live_dups_two_unparseable_uses_lex() {
+        let peer = tempdir().unwrap();
+        write_schema(peer.path());
+        let root = tempdir().unwrap();
+        let peer_path = peer.path().to_str().unwrap().to_string();
+        let presented = collapse_two_scans(&peer_path, root.path().to_str().unwrap(), "aaa", "bbb");
+        assert_eq!(presented.live[0].last_scanned, "bbb");
+        assert_eq!(presented.omitted_dup_extra, 1);
+    }
+
+    #[test]
+    fn collapse_live_dups_equal_instant_keeps_incumbent() {
+        let peer = tempdir().unwrap();
+        write_schema(peer.path());
+        let root = tempdir().unwrap();
+        let peer_path = peer.path().to_str().unwrap().to_string();
+        let root_s = root.path().to_str().unwrap();
+        let z = "2026-09-12T12:00:00Z";
+        let offset = "2026-09-12T12:00:00+00:00";
+        let z_first = collapse_two_scans(&peer_path, root_s, z, offset);
+        assert_eq!(z_first.live[0].last_scanned, z);
+        let offset_first = collapse_two_scans(&peer_path, root_s, offset, z);
+        assert_eq!(offset_first.live[0].last_scanned, offset);
+    }
+
+    #[test]
+    fn scan_is_later_matrix() {
+        let z = "2026-09-12T12:00:00Z";
+        let frac = "2026-09-12T12:00:00.5Z";
+        assert!(scan_is_later(frac, z));
+        assert!(!scan_is_later(z, frac));
+        assert!(scan_is_later(
+            "2026-09-12T12:00:00.8Z",
+            "2026-09-12T12:00:00.750Z",
+        ));
+        assert!(!scan_is_later(
+            "2026-09-12T12:00:00.750Z",
+            "2026-09-12T12:00:00.8Z",
+        ));
+        let zurich = "2026-09-12T14:00:00+02:00";
+        assert!(!scan_is_later(zurich, z));
+        assert!(!scan_is_later(z, zurich));
+        let earlier_offset = "2026-09-12T13:00:00+02:00";
+        assert!(scan_is_later(z, earlier_offset));
+        assert!(!scan_is_later(earlier_offset, z));
+        assert!(!scan_is_later(z, z));
+        assert!(scan_is_later(z, "not-a-time"));
+        assert!(!scan_is_later("not-a-time", z));
+        assert!(scan_is_later("zzz", "aaa"));
+        assert!(!scan_is_later("aaa", "zzz"));
+        assert!(!scan_is_later("", ""));
+        assert!(scan_is_later("not-a-time", ""));
+        assert!(!scan_is_later("", "not-a-time"));
     }
 
     #[test]
