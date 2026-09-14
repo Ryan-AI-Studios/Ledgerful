@@ -8,6 +8,11 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Timings missing-prior / unhashed honesty (0346):** `timings --explain`
+  no longer invents `vs prior week (0 ms)` when there is no success prior
+  baseline (empty week **or** all failed). A sole missing/empty `argv_hash`
+  bucket is `incomparable_reason: unhashedArgv` and never `comparable: true`.
+
 - **Federated Live-dup `lastScanned` (0345):** `federate status` keeps the
   later *parsed* RFC3339 instant among same-path Live cache rows
   (`…00.5Z` beats lexicographically greater `…00Z`). Unparseable stamps

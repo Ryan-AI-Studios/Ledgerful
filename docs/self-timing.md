@@ -122,15 +122,19 @@ ledgerful timings --opt-out
 Summaries group by **command** still (one JSON row per command) but qualify
 the success cohort (`exit_code == 0`):
 
-- `comparable` always serializes (`true` only when one `argv_hash`, n≥5,
-  and `p95_ms < 10 * p50_ms.max(1)`).
+- `comparable` always serializes (`true` only when one **real** `argv_hash`
+  — not `"<unhashed>"` — n≥5, and `p95_ms < 10 * p50_ms.max(1)`). A sole
+  missing/empty hash bucket is `incomparable_reason: unhashedArgv`.
 - Mixed hashes → `incomparable_reason: mixedWorkloads`. Same hash with a
   huge p95/p50 (history-walk vs fast list) → `mixedDurations`. That mix is
-  **not** a second hash.
+  **not** a second hash. One-sided unhashed (hashed recent vs unhashed
+  prior, or the reverse) is `unhashedArgv`, not `workloadMismatch`.
 - `--explain` uses **p50**, not the mean. Calendar windows stay 7d vs prior
   7d; query `LIMIT` is not the window (local explain uses `limit: None`).
   A percent is emitted only when both windows are comparable, share one
-  hash, and `prior_p50_ms > 0`.
+  hash, and `prior_p50_ms > 0`. No success prior baseline (empty prior
+  **or** all failed) never invents `vs prior week (0 ms)` and omits
+  `prior_p50_ms`.
 - Human table cells use `Nms` / `N.Ns` / `Nm Ns` / `Nh Nm` (JSON stays
   `*_ms`). Post-table notes mark incomparable commands.
 
