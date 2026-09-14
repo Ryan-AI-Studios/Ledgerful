@@ -71,53 +71,13 @@ fn report_was_durable(outcome: ImpactReportWriteOutcome) -> bool {
     )
 }
 
-/// Run impact analysis using a pre-built `RepoSnapshot`.
+/// Snapshot silent path with 0173 pathMode / analysisMode and an optional
+/// pre-opened `StorageManager` (scan auto-graph reuse, 0259).
 ///
 /// Used by `execute_scan` when `--base-ref` is supplied: the caller has already
 /// computed the changed file list via `git diff --name-only` and assembled the
 /// snapshot; this function takes ownership and continues with the standard
 /// enrichment pipeline.
-pub fn execute_impact_silent_with_snapshot(
-    snapshot: crate::git::RepoSnapshot,
-) -> Result<(
-    crate::impact::packet::ImpactPacket,
-    ImpactReportWriteOutcome,
-)> {
-    execute_impact_silent_with_snapshot_and_depth(snapshot, None)
-}
-
-/// Like [`execute_impact_silent_with_snapshot`] with optional CLI `--blast-depth`.
-pub fn execute_impact_silent_with_snapshot_and_depth(
-    snapshot: crate::git::RepoSnapshot,
-    blast_depth: Option<u32>,
-) -> Result<(
-    crate::impact::packet::ImpactPacket,
-    ImpactReportWriteOutcome,
-)> {
-    execute_impact_silent_with_snapshot_opts(snapshot, blast_depth, false, "base_ref")
-}
-
-/// Snapshot silent path with 0173 pathMode / analysisMode.
-pub fn execute_impact_silent_with_snapshot_opts(
-    snapshot: crate::git::RepoSnapshot,
-    blast_depth: Option<u32>,
-    include_governance: bool,
-    analysis_mode: &str,
-) -> Result<(
-    crate::impact::packet::ImpactPacket,
-    ImpactReportWriteOutcome,
-)> {
-    execute_impact_silent_with_snapshot_opts_storage(
-        snapshot,
-        blast_depth,
-        include_governance,
-        analysis_mode,
-        None,
-    )
-}
-
-/// Like [`execute_impact_silent_with_snapshot_opts`] with an optional
-/// pre-opened `StorageManager` (scan auto-graph reuse, 0259).
 pub fn execute_impact_silent_with_snapshot_opts_storage(
     snapshot: crate::git::RepoSnapshot,
     blast_depth: Option<u32>,
@@ -352,24 +312,6 @@ pub fn compute_impact_in_memory_at(
         changes,
     };
 
-    compute_impact_from_snapshot_in_memory(storage, config, project_root, snapshot)
-}
-
-/// In-memory impact from a pre-built [`RepoSnapshot`] (e.g. `--base-ref` diff).
-///
-/// Mirrors [`compute_impact_in_memory_at`]'s enrich → finalize → redact path
-/// and **never** calls `save_packet` or `write_impact_report`. Used by
-/// `change-context` so base-ref structure can time-travel without clobbering
-/// `latest-impact.json`.
-///
-/// Defaults: `pathMode=code`, `analysisMode=working_tree`. Prefer
-/// [`compute_impact_from_snapshot_in_memory_with_mode`] when flags are known.
-pub fn compute_impact_from_snapshot_in_memory(
-    storage: &crate::state::storage::StorageManager,
-    config: &crate::config::model::Config,
-    project_root: &std::path::Path,
-    snapshot: RepoSnapshot,
-) -> Result<crate::impact::packet::ImpactPacket> {
     compute_impact_from_snapshot_in_memory_with_mode(
         storage,
         config,
@@ -596,29 +538,6 @@ pub fn execute_impact(
         json,
         out,
         None,
-        Vec::new(),
-        false,
-    )
-}
-
-/// Impact entrypoint with optional CLI `--blast-depth` (DoD-9 dual surface).
-pub fn execute_impact_with_blast_depth(
-    all_parents: bool,
-    summary: bool,
-    telemetry_coverage: bool,
-    dead_code: bool,
-    json: bool,
-    out: Option<std::path::PathBuf>,
-    blast_depth: Option<u32>,
-) -> Result<()> {
-    execute_impact_with_opts(
-        all_parents,
-        summary,
-        telemetry_coverage,
-        dead_code,
-        json,
-        out,
-        blast_depth,
         Vec::new(),
         false,
     )

@@ -57,8 +57,7 @@ pub(crate) fn format_evidence_line(counts: &EvidenceCounts) -> String {
     )
 }
 
-/// Auto-scan / latest packet / prune / QueryIntent / stale-warn / bridge
-/// (today `execute.rs` :205–337).
+/// Auto-scan / latest packet / prune / QueryIntent / stale-warn / bridge.
 pub(crate) fn gather_impact_and_bridge(
     storage: &StorageManager,
     layout: &Layout,
@@ -222,7 +221,7 @@ pub(crate) fn gather_impact_and_bridge(
     })
 }
 
-/// Semantic readiness WARN + KG fallback (today `execute.rs` :393–513).
+/// Semantic readiness WARN + KG fallback.
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn gather_semantic_and_kg(
     gathered: &mut GatherResult,

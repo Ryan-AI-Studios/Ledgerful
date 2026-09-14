@@ -222,34 +222,6 @@ pub fn execute_scan(
     )
 }
 
-/// Scan entrypoint with optional CLI `--blast-depth` (DoD-9 dual surface).
-#[allow(clippy::too_many_arguments)]
-pub fn execute_scan_with_blast_depth(
-    run_impact: bool,
-    summary: bool,
-    json: bool,
-    out: Option<PathBuf>,
-    base_ref: Option<String>,
-    pr: Option<String>,
-    format: Option<String>,
-    blast_depth: Option<u32>,
-) -> Result<()> {
-    execute_scan_with_opts(
-        run_impact,
-        summary,
-        json,
-        out,
-        base_ref,
-        pr,
-        format,
-        blast_depth,
-        Vec::new(),
-        false,
-        None,
-        false,
-    )
-}
-
 /// Scan entrypoint with 0173 `--paths` / `--include-governance` and 0227 `--mode`.
 #[allow(clippy::too_many_arguments)]
 pub fn execute_scan_with_opts(

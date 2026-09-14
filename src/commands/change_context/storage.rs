@@ -81,7 +81,7 @@ pub(crate) fn classify_storage_error(err: &miette::Report, db_exists: bool) -> N
 ///
 /// On RO permission/schema failure, do **not** fall through to write-open.
 /// When the DB is missing, attempt write init (writable env creates state).
-/// Shared by CLI, `build_change_context_from_cwd`, and MCP `change_context`.
+/// Shared by CLI and MCP `change_context`.
 pub(crate) fn open_storage_for_change_context(
     layout: &Layout,
 ) -> std::result::Result<StorageManager, (miette::Report, NotReadyErrorClass)> {

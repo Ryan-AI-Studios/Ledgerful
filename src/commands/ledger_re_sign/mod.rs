@@ -7,8 +7,6 @@ mod backup;
 mod mutate;
 mod preview;
 
-pub use preview::enumerate_upgrade_candidates;
-
 use crate::commands::helpers::{get_layout, load_ledger_config};
 use crate::ledger::db::LedgerDb;
 use crate::state::storage::StorageManager;

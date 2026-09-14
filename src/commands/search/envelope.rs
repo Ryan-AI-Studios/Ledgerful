@@ -28,11 +28,6 @@ impl SearchJsonMode {
     pub fn is_envelope(self) -> bool {
         matches!(self, Self::Envelope)
     }
-
-    #[inline]
-    pub fn is_lines(self) -> bool {
-        matches!(self, Self::Lines)
-    }
 }
 
 /// Wire shape for `search --json` (v1).
@@ -119,11 +114,6 @@ impl SearchSemantic {
             filtered_foreign_count: None,
         }
     }
-
-    pub fn with_error(mut self, error: String) -> Self {
-        self.error = Some(error);
-        self
-    }
 }
 
 fn backend_status_wire(status: BackendStatus) -> String {
@@ -177,26 +167,6 @@ impl SearchCollector {
             semantic: None,
             fallback_used: None,
         }
-    }
-
-    #[inline]
-    pub fn mode(&self) -> SearchJsonMode {
-        self.mode
-    }
-
-    #[inline]
-    pub fn is_machine(&self) -> bool {
-        self.mode.is_machine()
-    }
-
-    #[inline]
-    pub fn is_envelope(&self) -> bool {
-        self.mode.is_envelope()
-    }
-
-    #[inline]
-    pub fn is_lines(&self) -> bool {
-        self.mode.is_lines()
     }
 
     pub fn set_engine_mode(&mut self, engine_mode: &str) {
