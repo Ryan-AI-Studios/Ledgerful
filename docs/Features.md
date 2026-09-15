@@ -35,6 +35,13 @@ Understand the "blast radius" of any change before it is committed.
     *   **Structural**: Symbol, import, and call-graph impact.
     *   **Temporal**: Coupling patterns derived from Git history (who changes with whom).
     *   **Complexity**: Cognitive and cyclomatic complexity hotspots.
+    *   **Hotspot budget inspectability (0310/0353):** `hotspots budget`
+        compares persisted `hotspot_history.score` (0–1) to an explicit
+        threshold. Empty history is `NO_DATA`, not a vacuous pass.
+        `--json` always names `dataset: hotspot_history`; on an empty
+        snapshot it adds omit-empty `emptyReason: noSnapshot` and
+        print-only `next: ledgerful hotspots --snapshot` (do not auto-run).
+        `--fail` still requires `--threshold` or `[hotspots] budget_threshold`.
     *   **Contracts**: OpenAPI/Swagger contract risk matching.
     *   **Infrastructure**: Docker, Kubernetes, Terraform, and Helm manifest awareness.
         `deploy impact` disabled-by-config empty states name the coverage switch

@@ -925,6 +925,7 @@ fn budget_over_threshold_is_violation() {
     assert_eq!(report.violations[0].path, "src/hot.rs");
     assert!((report.violations[0].score - 0.9).abs() < f64::EPSILON);
     assert!((report.violations[0].threshold - 0.5).abs() < f64::EPSILON);
+    assert!(report.next.is_none(), "{report:?}");
     let human = format_budget_human(&report);
     assert!(human.contains("exceeds budget"), "{human}");
     let _ = storage.shutdown();
@@ -943,6 +944,164 @@ fn budget_empty_history_is_no_data_not_ok() {
     let human = format_budget_human(&report);
     assert!(human.contains("No hotspot_history snapshot"), "{human}");
     assert!(!human.contains("within budget"), "{human}");
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn budget_json_empty_names_dataset_and_snapshot_next() {
+    use super::budget::{BudgetEmptyReason, BudgetStatus, evaluate_hotspot_budget};
+    use chrono::Utc;
+
+    let (_tmp, storage) = budget_storage();
+    let report =
+        evaluate_hotspot_budget(&storage, Some(0.5), None, false, None, Utc::now()).unwrap();
+    assert_eq!(report.status, BudgetStatus::NoData);
+    assert_eq!(report.dataset, "hotspot_history");
+    assert_eq!(report.empty_reason, Some(BudgetEmptyReason::NoSnapshot));
+    assert_eq!(
+        report.next.as_deref(),
+        Some("ledgerful hotspots --snapshot")
+    );
+    let v = serde_json::to_value(&report).expect("json");
+    assert_eq!(v["dataset"], "hotspot_history");
+    assert_eq!(v["emptyReason"], "noSnapshot");
+    assert_eq!(v["next"], "ledgerful hotspots --snapshot");
+    assert!(v.get("schemaVersion").is_none(), "{v}");
+    assert!(v.get("provenance").is_none(), "{v}");
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn budget_human_no_snapshot_keeps_snapshot_command() {
+    use super::budget::{evaluate_hotspot_budget, format_budget_human};
+    use chrono::Utc;
+
+    let (_tmp, storage) = budget_storage();
+    let report =
+        evaluate_hotspot_budget(&storage, Some(0.5), None, false, None, Utc::now()).unwrap();
+    let human = format_budget_human(&report);
+    assert!(human.contains("No hotspot_history snapshot"), "{human}");
+    assert!(human.contains("ledgerful hotspots --snapshot"), "{human}");
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn budget_populated_ok_omits_next_and_empty_reason() {
+    use super::budget::evaluate_hotspot_budget;
+    use chrono::{TimeZone, Utc};
+
+    let (_tmp, storage) = budget_storage();
+    insert_history(&storage, "src/a.rs", 0.1, "2026-01-01T00:00:00Z");
+    let now = Utc.with_ymd_and_hms(2026, 1, 1, 1, 0, 0).unwrap();
+    let report = evaluate_hotspot_budget(&storage, Some(0.5), None, false, None, now).unwrap();
+    assert_eq!(report.dataset, "hotspot_history");
+    assert!(report.next.is_none(), "{report:?}");
+    assert!(report.empty_reason.is_none(), "{report:?}");
+    let v = serde_json::to_value(&report).expect("json");
+    assert_eq!(v["dataset"], "hotspot_history");
+    assert!(v.get("next").is_none(), "{v}");
+    assert!(v.get("emptyReason").is_none(), "{v}");
+    assert_eq!(v["snapshotAt"], "2026-01-01T00:00:00Z");
+    assert!(v["snapshotAgeSecs"].as_u64().expect("age") >= 3600);
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn budget_stale_snapshot_age_is_informational() {
+    use super::budget::{BudgetStatus, evaluate_hotspot_budget};
+    use chrono::{TimeZone, Utc};
+
+    let (_tmp, storage) = budget_storage();
+    insert_history(&storage, "src/a.rs", 0.1, "2026-01-01T00:00:00Z");
+    let now = Utc.with_ymd_and_hms(2026, 1, 1, 1, 0, 0).unwrap();
+    let report = evaluate_hotspot_budget(&storage, Some(0.5), None, false, None, now).unwrap();
+    assert_eq!(report.status, BudgetStatus::Ok);
+    assert!(report.snapshot_age_secs.expect("age") >= 3600);
+    let _ = storage.shutdown();
+}
+
+#[test]
+fn classify_persisted_score_non_finite_is_skipped() {
+    use super::budget::{PersistedScoreClass, classify_persisted_score};
+
+    assert_eq!(classify_persisted_score(0.5), PersistedScoreClass::Finite);
+    assert_eq!(
+        classify_persisted_score(f64::NAN),
+        PersistedScoreClass::NonFinite
+    );
+    assert_eq!(
+        classify_persisted_score(f64::INFINITY),
+        PersistedScoreClass::NonFinite
+    );
+    assert_eq!(
+        classify_persisted_score(f64::NEG_INFINITY),
+        PersistedScoreClass::NonFinite
+    );
+}
+
+#[test]
+fn budget_all_non_finite_report_human_and_json_direct() {
+    use super::budget::{BudgetEmptyReason, BudgetReport, BudgetStatus, format_budget_human};
+
+    let report = BudgetReport {
+        status: BudgetStatus::NoData,
+        dataset: "hotspot_history",
+        score_unit: "score",
+        threshold: Some(0.5),
+        threshold_source: None,
+        evaluated: 0,
+        violations: Vec::new(),
+        snapshot_at: Some("2026-01-01T00:00:00Z".to_string()),
+        snapshot_age_secs: Some(3600),
+        head: None,
+        legacy_score_count: 0,
+        skipped_non_finite: 2,
+        empty_reason: Some(BudgetEmptyReason::AllNonFinite),
+        next: None,
+    };
+    let human = format_budget_human(&report);
+    assert!(
+        human.contains(
+            "Latest hotspot_history snapshot has no finite scores (skippedNonFinite=2). Not a pass."
+        ),
+        "{human}"
+    );
+    assert!(
+        human.contains("Evaluated: 0 (snapshot 2026-01-01T00:00:00Z age 3600s)"),
+        "{human}"
+    );
+    assert!(!human.contains("No hotspot_history snapshot"), "{human}");
+    let v = serde_json::to_value(&report).expect("json");
+    assert_eq!(v["emptyReason"], "allNonFinite");
+    assert_eq!(v["dataset"], "hotspot_history");
+    assert!(v.get("next").is_none(), "{v}");
+}
+
+#[test]
+fn budget_all_non_finite_via_inf_bind() {
+    use super::budget::{BudgetEmptyReason, BudgetStatus, evaluate_hotspot_budget};
+    use chrono::Utc;
+
+    let (_tmp, storage) = budget_storage();
+    let inserted = storage.get_connection().execute(
+        "INSERT INTO hotspot_history (file_path, score, display_score, complexity, frequency, timestamp) \
+         VALUES (?1, ?2, 1.0, 1, 1.0, ?3)",
+        rusqlite::params!["src/inf.rs", f64::INFINITY, "2026-01-01T00:00:00Z"],
+    );
+    match inserted {
+        Ok(_) => {
+            let report =
+                evaluate_hotspot_budget(&storage, Some(0.5), None, false, None, Utc::now())
+                    .unwrap();
+            assert_eq!(report.status, BudgetStatus::NoData);
+            assert_eq!(report.empty_reason, Some(BudgetEmptyReason::AllNonFinite));
+            assert!(report.next.is_none(), "{report:?}");
+            assert!(report.skipped_non_finite >= 1);
+        }
+        Err(err) => {
+            eprintln!("inf bind skipped: {err}");
+        }
+    }
     let _ = storage.shutdown();
 }
 
@@ -979,6 +1138,13 @@ fn budget_fail_without_threshold_is_not_configured() {
     let report = evaluate_hotspot_budget(&storage, None, None, true, None, Utc::now()).unwrap();
     assert_eq!(report.status, BudgetStatus::NotConfigured);
     assert!(report.threshold.is_none());
+    assert_eq!(report.dataset, "hotspot_history");
+    assert!(report.empty_reason.is_none(), "{report:?}");
+    assert!(report.next.is_none(), "{report:?}");
+    let v = serde_json::to_value(&report).expect("json");
+    assert_eq!(v["dataset"], "hotspot_history");
+    assert!(v.get("emptyReason").is_none(), "{v}");
+    assert!(v.get("next").is_none(), "{v}");
     let human = format_budget_human(&report);
     assert!(human.contains("--fail requires --threshold"), "{human}");
     assert!(request_fail_exit(&report, true).is_err());
@@ -989,6 +1155,8 @@ fn budget_fail_without_threshold_is_not_configured() {
     insert_history(&storage, "src/a.rs", 0.1, "2026-01-01T00:00:00Z");
     let with_rows = evaluate_hotspot_budget(&storage, None, None, true, None, Utc::now()).unwrap();
     assert_eq!(with_rows.status, BudgetStatus::NotConfigured);
+    assert!(with_rows.empty_reason.is_none(), "{with_rows:?}");
+    assert!(with_rows.next.is_none(), "{with_rows:?}");
     let _ = crate::output::requested_exit::take_requested_exit_code();
     let _ = storage.shutdown();
 }

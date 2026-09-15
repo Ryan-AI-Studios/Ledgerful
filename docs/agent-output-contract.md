@@ -54,7 +54,7 @@ contract and follows `LEDGERFUL_TABLE_STYLE`. Purity inventory unchanged
 | `hotspots --json` | yes | yes | schemaVersion 1 object; collection `files`; list and `--semantic` echo `limit` (0207). Additive `completeness` (0308) only when the history walk stops early (`stop`: `budget`\|`cancelled`\|`error`); omitted on a complete window. Additive `provenance` (0309) is **always** on the live list (`source: live`; `commitsRequested`; `daysRequested` only with `--days`; `limit`; `filter`; `head` when known; `snapshotAt`/`snapshotAgeSecs` when `hotspot_history` has a row). `--semantic --json` omits `provenance`. Per-file `presence: "historical"` is emit-time only when HEAD is resolvable and the ranked path is absent from HEAD (omit when current, when HEAD is unborn/unresolvable, or on `--semantic`). CLI default list omits test/example/bench paths (0222; `--include tests` restores) **and** markdown (0293; `--include docs` is a frequency lane) **and** vendored `deps_src`/`vendor`/… (0297; `--include vendor` restores `f×c`). **`score` is 0–1**; `displayScore` is ln display. No `scoreUnit`. **MCP `hotspots` stays an in-process array** and stays unfiltered. `--semantic` ignores `--include`. `--timeout` is the **overall list/explain emit** budget (default 25s; `0` disables; env `LEDGERFUL_HOTSPOTS_OVERALL_BUDGET_SECS` / `[hotspots] overall_budget_secs`). History stays `[hotspots] history_budget_secs` (default 45) / `LEDGERFUL_HISTORY_BUDGET_SECS`, capped by the overall Instant. Additive `completeness.scope=overall` + `stage` slug when that deadline fires; history-only 0308 objects omit `scope`. Token `hotspots stopped: overall budget` is stderr-only on overall stop. Place `--timeout` / `--commits` **before** `explain`. `--semantic` honors the same overall Instant. `hotspots trend` / `hotspots budget` ignore parent `--timeout` (documented no-op). |
 | `hotspots trend --json` | yes (0151) | yes | schemaVersion 1; modes summary/full/entity; additive `provenance` (0309, `source: trends`) always present — see schema below |
 | `hotspots explain --json` | yes (0349) | yes | schemaVersion 1 object `kind: "hotspotExplanation"`. Parent `hotspots --json explain PATH` **or** `hotspots explain PATH --json`. `--timeout` / `--commits` / `--days` stay on the parent (place them **before** `explain`). Additive omit-empty `completeness` (0347 tokens). `score` is 0–1 when a breakdown exists; `displayScore` is ln. `couplingsWarning` omit-empty (overall skip is untrusted, not a trusted empty list). No MCP tool. See schema below. |
-| `hotspots budget --json` | yes | yes | Versionless object (no `schemaVersion`). `status`: `OK` \| `VIOLATION` \| `NO_DATA` \| `NOT_CONFIGURED`. Always `scoreUnit: "score"` (persisted `hotspot_history.score`, 0–1). `threshold` + `thresholdSource` (`cli` \| `config` \| `default`) omit on `NOT_CONFIGURED`. Informational default threshold **0.5**. `--fail` is the only exit-1 gate and requires `--threshold` or `[hotspots] budget_threshold`. Only `status == "OK"` is in-budget. Always `evaluated` + `violations[]` (`path` / `score` / `threshold`). Additive `snapshotAt` / `snapshotAgeSecs` / `head` / `legacyScoreCount` / `skippedNonFinite`. No `provenance`. List / session / trend / MCP / `GET /api/hotspots` stay without `scoreUnit`. See schema below. |
+| `hotspots budget --json` | yes | yes | Versionless object (no `schemaVersion`). `status`: `OK` \| `VIOLATION` \| `NO_DATA` \| `NOT_CONFIGURED`. Always `dataset: "hotspot_history"` and `scoreUnit: "score"` (persisted `hotspot_history.score`, 0–1). `threshold` + `thresholdSource` (`cli` \| `config` \| `default`) omit on `NOT_CONFIGURED`. Informational default threshold **0.5**. `--fail` is the only exit-1 gate and requires `--threshold` or `[hotspots] budget_threshold`. Only `status == "OK"` is in-budget. Always `evaluated` + `violations[]` (`path` / `score` / `threshold`). Additive `snapshotAt` / `snapshotAgeSecs` / `head` / `legacyScoreCount` / `skippedNonFinite`. Omit-empty `emptyReason` (`noSnapshot` \| `allNonFinite`) and `next` (`ledgerful hotspots --snapshot`) only on `NO_DATA` (`next` only for `noSnapshot`; print-only, do not auto-run). No `provenance`. List / session / trend / MCP / `GET /api/hotspots` stay without `scoreUnit`. See schema below. |
 | `endpoints --json` | yes | yes | schemaVersion 1 object; collection `results` (0207). Always echoes `includeFixtures` + `fixturesOmitted` (empty and populated). Default omits test-path + `route_source=TEST`; `--include-fixtures` restores. Post-omit product-empty without `--changed` is `emptyReason: noMatches` (after the current SQL/filter + omit — not a catalog-wide “zero product routes” claim). `--changed` empty stays `cleanDiff`. Additive item keys: `registrationFile`, `handlerFile`, `handlerUnresolvedReason`, `mountPrefix`, `mountedPath`, `mountProvenance`, `authSource: "inferred"`, `authParse`/`consumersParse`. MCP `endpoints_changed` re-execs CLI default omit (no extra flags) |
 | `symbols --json` | yes (0163) | yes | schemaVersion **1** inventory; path/changed/kind/pub filters; COUNT-backed `totalMatching`; optional `indexStatus`; see schema below |
 | `data-models list --json` | yes | yes | schemaVersion 1 object; collection `models` (0207); item `file_path` stays snake (0155); one row per logical model identity. Always echoes `includeFixtures` + `fixturesOmitted` (empty and populated). Default omits `is_test_path`; `--include-fixtures` restores. Item `fieldImpact: "unsupported"` on `models[]` (absent when empty). No MCP tool; no `/api/data-models*` |
@@ -666,17 +666,21 @@ ledgerful hotspots --timeout 5 --commits 20 explain src/lib.rs --json
 
 ## `hotspots budget --json` schema (versionless)
 
-Track **0310**. Bare object (do **not** add `schemaVersion`). Compares persisted
+Track **0310** / **0353**. Bare object (do **not** add `schemaVersion`). Compares persisted
 `hotspot_history.score` (0–1) to an explicit threshold. Informational default
 is **0.5**. `--fail` exits **1** on `VIOLATION`, `NO_DATA`, and
 `NOT_CONFIGURED`; without `--fail` those statuses still exit **0**. `--fail`
 without `--threshold` and without `[hotspots] budget_threshold` is
 `NOT_CONFIGURED` (do not invent 0.5 as a CI gate). Only `status == "OK"` is
-in-budget.
+in-budget. `next` is print-only; do **not** auto-run `hotspots --snapshot`
+(writes `.ledgerful/`). Informational `--json` has no budget-owned stderr
+tokens; a pre-existing parent `[STALE]` banner from `warn_if_stale` is not
+budget-owned.
 
 ```json
 {
   "status": "OK",
+  "dataset": "hotspot_history",
   "scoreUnit": "score",
   "threshold": 0.5,
   "thresholdSource": "default",
@@ -691,6 +695,7 @@ in-budget.
 | Key | Rules |
 |---|---|
 | `status` | always `OK` \| `VIOLATION` \| `NO_DATA` \| `NOT_CONFIGURED` |
+| `dataset` | always `"hotspot_history"` (including `NOT_CONFIGURED`) |
 | `scoreUnit` | always `"score"` — do **not** emit on list / session / trend / MCP / API |
 | `threshold` / `thresholdSource` | omit on `NOT_CONFIGURED`; source is `cli` \| `config` \| `default` |
 | `evaluated` | finite rows in the latest snapshot (0 on `NO_DATA`) |
@@ -698,6 +703,8 @@ in-budget.
 | `snapshotAt` / `snapshotAgeSecs` | latest `MAX(timestamp)` when present and parseable |
 | `head` | omit when HEAD id unknown |
 | `legacyScoreCount` / `skippedNonFinite` | omit when 0 |
+| `emptyReason` | omit-empty; `noSnapshot` \| `allNonFinite` only when `status` is `NO_DATA` (camelCase like `noMatches` / `emptyIndex`) |
+| `next` | omit-empty; only `ledgerful hotspots --snapshot` when `emptyReason` is `noSnapshot`. Print only; do not auto-run. Omit on `NOT_CONFIGURED` |
 | `schemaVersion` / `provenance` | **never** |
 
 Invalid `--threshold` is clap usage (exit **2**), not a status.
