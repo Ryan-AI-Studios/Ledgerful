@@ -149,17 +149,6 @@ impl ProjectIndexer {
     // Parsing
     // -----------------------------------------------------------------------
 
-    pub fn index_file(
-        &self,
-        path: &camino::Utf8Path,
-    ) -> Result<(
-        crate::index::types::ProjectFile,
-        Vec<crate::index::types::ProjectSymbol>,
-        Vec<crate::index::bindings::FileBinding>,
-    )> {
-        parsing::index_file(self, path)
-    }
-
     pub fn index_file_with_edges(&self, path: &camino::Utf8Path) -> Result<IndexedFileWithEdges> {
         parsing::index_file_with_edges(self, path)
     }

@@ -368,31 +368,6 @@ pub fn is_ci_config_changed(changed_files: &[ChangedFile]) -> Option<CiConfigCha
     }
 }
 
-pub fn detect_pre_commit_changes(changed_files: &[ChangedFile]) -> Vec<String> {
-    let mut result = Vec::new();
-    for file in changed_files {
-        let path_str = file.path.to_string_lossy().replace('\\', "/");
-        if is_pre_commit_path(&path_str) {
-            result.push(path_str);
-        }
-    }
-    result.sort();
-    result
-}
-
-pub fn is_generated_ci_file(content: &str) -> bool {
-    for line in content.lines().take(10) {
-        let trimmed = line.trim();
-        if trimmed.starts_with("# auto-generated")
-            || trimmed.starts_with("# generated")
-            || trimmed.contains("@generated")
-        {
-            return true;
-        }
-    }
-    false
-}
-
 pub fn makefile_has_ci_targets(content: &str) -> bool {
     let ci_targets: &[&str] = &["test", "build", "deploy", "lint", "ci"];
     let gates = parse_makefile(content);
