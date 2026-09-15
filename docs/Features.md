@@ -61,6 +61,7 @@ Understand the "blast radius" of any change before it is committed.
 Compiler-grade search and conceptual discovery.
 
 *   **Trigram Regex Search**: Sub-millisecond regex discovery using Tantivy and custom Trigram pre-filters.
+*   **Hidden `search-trigrams` (0352):** low-level content-trigram AND path list (hidden from root `--help`). Each argument is one 3-character content trigram — not `search` BM25 and not snippets. Human stdout stays one path per line; count/truncation/empty diagnostics go to stderr (or `--json` `kind: searchTrigrams`). Ordinary source search is `ledgerful search`.
 *   **Unquoted multi-word `search` (0187):** `ledgerful search foo bar` joins tokens
     (`"foo bar"`) the same as quoted argv. Flags (`--json`, `--limit`, …) may appear
     before or after query words. Hyphen-leading tokens need `--`

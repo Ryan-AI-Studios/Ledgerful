@@ -45,6 +45,7 @@ contract and follows `LEDGERFUL_TABLE_STYLE`. Purity inventory unchanged
 | `ledger stack --json` | yes (0281) | yes | schemaVersion 1 object `kind: "ledgerStack"`; `empty` true iff filtered rules/validators/mappings are all empty; `next` is the two clap register commands only when empty; `enforcementEnabled` from live config; item structs stay snake_case. No `emptyReason`. Not Daily 5 |
 | `status --json` | yes (0149) | yes | **same payload** as `ledger status --json` |
 | `search --json` | yes | yes | 0136 envelope; empty results OK |
+| `search-trigrams --json` | yes (0352) | yes | schemaVersion 1 object `kind: "searchTrigrams"`. Hidden CLI. Count-backed `totalMatching` is **not** an 0136 `search` key. `emptyReason` omit when `resultCount > 0`. `next` omit unless runnable (`ledgerful index` or `ledgerful search {accepted…}`). No `line`/`content`. CLI-only; no MCP. |
 | `verify --json` | yes | yes* | plan-execution payload; see rejected combos |
 | `index --check --json` | yes | yes (0149) | schemaVersion 1 + `kind: "indexCheck"` camelCase DTO (0207); Info suppressed under json; Error still on stderr |
 | `index --semantic --json` | yes (0161) | yes | One final JSON object (`schemaVersion`, `mode`, `reason`, counts, `upToDate`); zero human mid-run lines on stdout |
@@ -1074,6 +1075,57 @@ trailing newline. Whole-document parse still required. `--json-lines` stays
 compact NDJSON (one BridgeRecord per line).
 
 MCP tool `search` spawns `search --json` (envelope; never `--json-lines`).
+
+---
+
+## `search-trigrams --json` schema (v1)
+
+Track **0352**. Hidden CLI. Single camelCase object (`output::json::emit`).
+`totalMatching` is Count-backed and is **not** an 0136 `search --json` key.
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "searchTrigrams",
+  "query": ["led", "ger"],
+  "accepted": ["led", "ger"],
+  "rejected": [],
+  "limit": 3,
+  "resultCount": 3,
+  "totalMatching": 12,
+  "truncated": true,
+  "documentCount": 12345,
+  "next": "ledgerful search led ger",
+  "results": [
+    { "path": "src/ledger.rs", "score": 1.23 }
+  ]
+}
+```
+
+| Field | Type | Notes |
+|---|---|---|
+| `schemaVersion` | number | Always **1** |
+| `kind` | string | Always `"searchTrigrams"` |
+| `query` | string[] | Raw argv tokens (not a joined 0136 `query` string) |
+| `accepted` | string[] | Lowercased 3-character terms actually queried |
+| `rejected` | string[] | Trimmed originals that were not 3 characters |
+| `limit` | number | Requested `--limit` (clap `1..=5000`) |
+| `resultCount` | number | `results.len()` |
+| `totalMatching` | number | Tantivy `Count`; `0` when no search ran |
+| `truncated` | bool | `resultCount < totalMatching` |
+| `documentCount` | number | Tantivy `num_docs` |
+| `emptyReason` | string \| **omitted** | `emptyQuery` \| `invalidTrigrams` \| `emptyIndex` \| `noMatches`. Omit when `resultCount > 0` |
+| `next` | string \| **omitted** | `ledgerful index` on emptyIndex; `ledgerful search {accepted…}` when accepted is non-empty. Omit on emptyQuery/invalidTrigrams |
+| `results[].path` | string | Repo-relative `/` (0298) |
+| `results[].score` | number | IDF-only (`IndexRecordOption::Basic`); not a relevance ranking signal |
+| `results[].line` / `content` | absent | Do not fabricate |
+
+**Empty results:** full envelope, `results: []`, `resultCount: 0`, exit **0**.
+**Success stderr:** empty (diagnostics live in the envelope).
+**Clap `--limit` refuse:** empty stdout, exit 2.
+**Engine `Err`:** no machine stdout, non-zero, diagnostic on stderr.
+
+No MCP tool. Not Daily 5.
 
 ---
 

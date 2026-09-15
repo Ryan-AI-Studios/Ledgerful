@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Trigram search diagnostic readout (0352):** hidden `search-trigrams`
+  stays a content-trigram AND path list (stdout one path per line) and
+  now reports count, truncation, empty/invalid/empty-index states on
+  stderr. `--json` emits `schemaVersion` 1 `kind: searchTrigrams` with
+  Count-backed `totalMatching` (not an 0136 `search --json` key).
+  `--limit` is clap `1..=5000`. Ordinary source search is
+  `ledgerful search`.
+
 - **Semantic Ask retrieval parity (0351):** `ask` and `search --semantic`
   share embedding-dimension resolution (configured > probed > stored
   `snippet_embedding` column). Unset no longer guesses 384 or opens a

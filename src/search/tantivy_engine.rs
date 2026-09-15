@@ -1,7 +1,7 @@
 use miette::{IntoDiagnostic, Result};
 use serde::{Deserialize, Serialize};
 use std::path::Path;
-use tantivy::collector::TopDocs;
+use tantivy::collector::{Count, TopDocs};
 use tantivy::query::QueryParser;
 use tantivy::schema::*;
 use tantivy::snippet::SnippetGenerator;
@@ -146,6 +146,21 @@ pub struct TantivySearchEngine {
     index: Index,
     reader: IndexReader,
     schema: Schema,
+}
+
+/// One scored path from [`TantivySearchEngine::search_trigrams_page`].
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrigramPageHit {
+    pub path: String,
+    pub score: f32,
+}
+
+/// Count-backed page of content-trigram AND hits.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TrigramPage {
+    pub hits: Vec<TrigramPageHit>,
+    pub total_matching: usize,
+    pub document_count: usize,
 }
 
 impl TantivySearchEngine {
@@ -469,11 +484,33 @@ impl TantivySearchEngine {
         Ok(results)
     }
 
+    /// Path-only wrapper for [`RegexFilter`] (`REGEX_CANDIDATE_CAP`).
     pub fn search_trigrams(&self, trigrams: &[String], limit: usize) -> Result<Vec<String>> {
+        Ok(self
+            .search_trigrams_page(trigrams, limit)?
+            .hits
+            .into_iter()
+            .map(|hit| hit.path)
+            .collect())
+    }
+
+    /// AND of lowercase content-trigram terms; Count + TopDocs page.
+    ///
+    /// Does not call `TopDocs::with_limit(0)` (tantivy 0.26 panics).
+    pub fn search_trigrams_page(&self, trigrams: &[String], limit: usize) -> Result<TrigramPage> {
         use tantivy::query::BooleanQuery;
         use tantivy::query::TermQuery;
 
         let searcher = self.reader.searcher();
+        let document_count = searcher.num_docs() as usize;
+        if limit == 0 || trigrams.is_empty() {
+            return Ok(TrigramPage {
+                hits: Vec::new(),
+                total_matching: 0,
+                document_count,
+            });
+        }
+
         let trigrams_field = self.schema.get_field("trigrams").into_diagnostic()?;
         let path_field = self.schema.get_field("path").into_diagnostic()?;
 
@@ -486,27 +523,30 @@ impl TantivySearchEngine {
             subqueries.push((tantivy::query::Occur::Must, Box::new(query)));
         }
 
-        if subqueries.is_empty() {
-            return Ok(Vec::new());
-        }
-
         let query = BooleanQuery::new(subqueries);
-        let top_docs = searcher
-            .search(&query, &TopDocs::with_limit(limit).order_by_score())
+        let (total_matching, top_docs) = searcher
+            .search(
+                &query,
+                &(Count, TopDocs::with_limit(limit).order_by_score()),
+            )
             .into_diagnostic()?;
 
-        let mut results = Vec::new();
-        for (_score, doc_address) in top_docs {
+        let mut hits = Vec::new();
+        for (score, doc_address) in top_docs {
             let retrieved_doc: TantivyDocument = searcher.doc(doc_address).into_diagnostic()?;
             let path = retrieved_doc
                 .get_first(path_field)
                 .and_then(|v| v.as_str())
                 .unwrap_or_default()
                 .to_string();
-            results.push(path);
+            hits.push(TrigramPageHit { path, score });
         }
 
-        Ok(results)
+        Ok(TrigramPage {
+            hits,
+            total_matching,
+            document_count,
+        })
     }
 
     pub fn all_paths(&self, limit: usize) -> Result<Vec<String>> {
@@ -935,6 +975,63 @@ mod tests {
             .search_trigrams(&tgrams, 10)
             .expect("search_trigrams");
         assert!(!results.is_empty());
+    }
+
+    #[test]
+    fn search_trigrams_page_counts_and_truncates() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = make_engine(&dir);
+        index_doc(&engine, "src/ledger.rs", "fn ledger_commit() {}");
+        index_doc(
+            &engine,
+            "tests/fixtures/checksum.sha256",
+            "ledger checksum body",
+        );
+        let page = engine
+            .search_trigrams_page(&["led".into(), "ger".into()], 1)
+            .expect("search_trigrams_page");
+        assert_eq!(page.hits.len(), 1);
+        assert!(
+            page.total_matching >= 2,
+            "total_matching={}",
+            page.total_matching
+        );
+        assert!(page.hits.len() < page.total_matching);
+        assert!(page.hits[0].score > 0.0 && page.hits[0].score.is_finite());
+        let paths: Vec<String> = page.hits.iter().map(|h| h.path.clone()).collect();
+        let wrapped = engine
+            .search_trigrams(&["led".into(), "ger".into()], 1)
+            .expect("wrapper");
+        assert_eq!(wrapped, paths);
+    }
+
+    #[test]
+    fn search_trigrams_wrapper_still_returns_paths() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = make_engine(&dir);
+        index_doc(&engine, "src/ledger.rs", "fn ledger_commit() {}");
+        let wrapped = engine
+            .search_trigrams(&["led".into(), "ger".into()], 10)
+            .expect("wrapper");
+        let page = engine
+            .search_trigrams_page(&["led".into(), "ger".into()], 10)
+            .expect("page");
+        let page_paths: Vec<String> = page.hits.iter().map(|h| h.path.clone()).collect();
+        assert_eq!(wrapped, page_paths);
+        assert!(wrapped.iter().any(|p| p == "src/ledger.rs"));
+    }
+
+    #[test]
+    fn search_trigrams_page_limit_zero_skips_topdocs() {
+        let dir = TempDir::new().expect("tempdir");
+        let engine = make_engine(&dir);
+        index_doc(&engine, "src/ledger.rs", "fn ledger_commit() {}");
+        let page = engine
+            .search_trigrams_page(&["led".into()], 0)
+            .expect("limit 0");
+        assert!(page.hits.is_empty());
+        assert_eq!(page.total_matching, 0);
+        assert_eq!(page.document_count, 1);
     }
 
     fn collect_tokens(text: &str) -> Vec<Token> {
