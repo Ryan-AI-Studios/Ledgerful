@@ -18,6 +18,18 @@ This document tracks dependency and project-level compatibility concerns for the
 
 ## Project-Level Changes
 
+### `hotspots` list/explain `--timeout` is overall emit (0349)
+
+**Breaking for scripts that treated `hotspots --timeout` as the 0308 history-walk budget:**
+
+| Before | After |
+|---|---|
+| `--timeout` wrote `[hotspots] history_budget_secs` for the git walk | `--timeout` is the **overall list/explain emit** budget (default 25s omitted; `0` disables) |
+| Explain ignored parent `--timeout` / `--commits` / `--json` | Explain honors parent flags; `--json` emits `kind: hotspotExplanation` |
+| History-only `completeness` | Overall stop is `completeness.scope=overall` + stderr `hotspots stopped: overall budget` |
+
+History-walk seconds stay `[hotspots] history_budget_secs` (default 45) / `LEDGERFUL_HISTORY_BUDGET_SECS`. Place `--timeout` / `--commits` **before** `explain`. `hotspots trend` / `hotspots budget` still accept parent `--timeout` as a documented no-op. Audit `--timeout` stays history-walk.
+
 ### `hotspots trend` default bounds (0151)
 
 **Breaking for scripts that parse the default dump:**

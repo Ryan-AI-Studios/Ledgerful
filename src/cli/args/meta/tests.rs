@@ -25,6 +25,25 @@ fn machine_mode_selected_for_json_flags() {
     assert!(parse(&["index", "--check", "--json"]).is_machine_output());
     assert!(parse(&["timings", "--json"]).is_machine_output());
     assert!(parse(&["hotspots", "--json"]).is_machine_output());
+    assert!(parse(&["hotspots", "explain", "src/lib.rs", "--json"]).is_machine_output());
+    assert!(parse(&["hotspots", "--json", "explain", "src/lib.rs"]).is_machine_output());
+    assert!(!parse(&["hotspots", "explain", "src/lib.rs"]).is_machine_output());
+    match parse(&["hotspots", "explain", "src/lib.rs", "--json"]) {
+        Commands::Hotspots { args } => {
+            assert!(args.command.as_ref().is_some_and(|c| matches!(
+                c,
+                crate::cli::HotspotSubcommands::Explain { json: true, .. }
+            )),);
+            assert!(
+                parse(&["hotspots", "explain", "src/lib.rs", "--json"])
+                    .argv_shape()
+                    .contains("json"),
+                "{}",
+                parse(&["hotspots", "explain", "src/lib.rs", "--json"]).argv_shape()
+            );
+        }
+        other => panic!("expected explain, got {other:?}"),
+    }
     match parse(&["hotspots", "--include", "tests"]) {
         Commands::Hotspots { args } => {
             assert_eq!(args.include, Some(crate::cli::HotspotIncludeScope::Tests));

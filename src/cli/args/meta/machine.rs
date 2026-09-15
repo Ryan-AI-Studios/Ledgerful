@@ -46,7 +46,7 @@ impl Commands {
                     || match &args.command {
                         Some(HotspotSubcommands::Trend { json, .. }) => *json,
                         Some(HotspotSubcommands::Budget { json, .. }) => *json,
-                        Some(HotspotSubcommands::Explain { .. }) => false,
+                        Some(HotspotSubcommands::Explain { json, .. }) => *json,
                         None => false,
                     }
             }

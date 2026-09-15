@@ -1,8 +1,9 @@
 use crate::cli::{HotspotArgs, HotspotIncludeScope};
 use crate::git::blob::head_path_exists;
 use crate::impact::budget::{
-    AnalysisBudget, HotspotProvenance, HotspotProvenanceSource, completeness_for_walk,
-    eprint_walk_stop, filter_for_cli_include, format_provenance_footer,
+    AnalysisBudget, CompletenessStop, HotspotProvenance, HotspotProvenanceSource,
+    completeness_for_overall, completeness_for_walk, eprint_walk_stop, filter_for_cli_include,
+    format_provenance_footer, is_overall_stop, overall_deadline_fired,
 };
 use crate::impact::hotspots::{HotspotQuery, calculate_hotspots_detailed};
 use crate::impact::packet::Hotspot;
@@ -12,6 +13,9 @@ use crate::state::storage::StorageManager;
 use chrono::{DateTime, Utc};
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
+use std::sync::Arc;
+use std::sync::atomic::AtomicBool;
+use std::time::Instant;
 
 /// Truncate to `limit`, wrap as the hotspots list envelope, and echo `limit`.
 /// Shared by list and `--semantic` JSON printers so the two arms cannot drift.
@@ -112,14 +116,38 @@ pub(super) fn live_list_provenance(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(super) fn execute_hotspots_list(
     args: HotspotArgs,
     storage: &StorageManager,
     repo: &gix::Repository,
     config: &crate::config::model::Config,
     layout: &Layout,
+    cancel: Arc<AtomicBool>,
+    overall_deadline: Option<Instant>,
+    overall_secs: u64,
+    json_out: Option<&mut Vec<u8>>,
 ) -> Result<()> {
     if args.semantic {
+        if overall_deadline_fired(overall_deadline) {
+            let completeness = completeness_for_overall(
+                CompletenessStop::Budget,
+                Some(overall_secs).filter(|s| *s > 0),
+                "semantic",
+            );
+            super::eprint_hotspots_overall_stop();
+            if args.json {
+                let limit = args.limit.unwrap_or(config.hotspots.limit);
+                let output = wrap_hotspots_list_json_with_completeness(
+                    Vec::<serde_json::Value>::new(),
+                    limit,
+                    Some(&completeness),
+                    None,
+                );
+                return super::write_json(&output, json_out);
+            }
+            return Ok(());
+        }
         let cozo = storage
             .cozo()
             .ok_or_else(|| miette::miette!("CozoDB storage not initialized"))?;
@@ -140,10 +168,28 @@ pub(super) fn execute_hotspots_list(
             // truncates the already-computed Vec so echoing `limit` matches
             // the serialized `files` (no extra scan).
             let output = wrap_hotspots_list_json(matches, limit);
-            crate::output::json::emit(&output)
-                .map_err(|e| miette::miette!("Failed to serialize semantic hotspots: {}", e))?;
-        } else {
-            crate::output::human::print_semantic_hotspots(&matches);
+            return super::write_json(&output, json_out);
+        }
+        crate::output::human::print_semantic_hotspots(&matches);
+        return Ok(());
+    }
+
+    if overall_deadline_fired(overall_deadline) {
+        let completeness = completeness_for_overall(
+            CompletenessStop::Budget,
+            Some(overall_secs).filter(|s| *s > 0),
+            "git",
+        );
+        super::eprint_hotspots_overall_stop();
+        if args.json {
+            let limit = args.limit.unwrap_or(config.hotspots.limit);
+            let output = wrap_hotspots_list_json_with_completeness(
+                Vec::<serde_json::Value>::new(),
+                limit,
+                Some(&completeness),
+                None,
+            );
+            return super::write_json(&output, json_out);
         }
         return Ok(());
     }
@@ -156,7 +202,6 @@ pub(super) fn execute_hotspots_list(
             Some(HotspotIncludeScope::Vendor) => (true, true, false, false),
             None => (true, true, false, true),
         };
-    let cancel = crate::impact::budget::install_cancel_flag();
     let query = HotspotQuery {
         limit: args.limit.unwrap_or(config.hotspots.limit),
         commits: args.commits.unwrap_or(config.hotspots.max_commits),
@@ -168,8 +213,9 @@ pub(super) fn execute_hotspots_list(
         exclude_docs_paths,
         docs_frequency_lane,
         exclude_vendor_paths,
-        budget: Some(AnalysisBudget::from_secs(
+        budget: Some(AnalysisBudget::capped_by_overall(
             config.hotspots.history_budget_secs,
+            overall_deadline,
             cancel,
         )),
         ..Default::default()
@@ -177,35 +223,49 @@ pub(super) fn execute_hotspots_list(
 
     let calculated = calculate_hotspots_detailed(storage, &history_provider, &query)?;
     let hotspots = calculated.hotspots;
-    let completeness = completeness_for_walk(
+    let completeness = list_completeness_after_walk(
         calculated.walk_stop,
         query.commits as u64,
         calculated.commits_walked as u64,
         query.days,
         filter_for_cli_include(args.include),
         calculated.head.clone(),
-        Some(config.hotspots.history_budget_secs).filter(|s| *s > 0),
+        config.hotspots.history_budget_secs,
+        overall_deadline,
+        overall_secs,
     );
-    eprint_walk_stop(
-        calculated.walk_stop,
-        calculated.commits_walked,
-        query.commits,
-    );
+    if completeness.as_ref().is_some_and(is_overall_stop) {
+        super::eprint_hotspots_overall_stop();
+    } else {
+        eprint_walk_stop(
+            calculated.walk_stop,
+            calculated.commits_walked,
+            query.commits,
+        );
+    }
 
+    let overall_stop = completeness.as_ref().is_some_and(is_overall_stop);
     if args.snapshot {
         if matches!(args.include, Some(HotspotIncludeScope::Docs)) {
             return Err(miette::miette!(
                 "--snapshot cannot be combined with --include docs (docs lane score is frequency-only; hotspot_history stores f×c)"
             ));
         }
-        let couplings_persisted = persist_hotspots_and_couplings(storage, repo, &hotspots, config)?;
-        if !args.json {
-            if couplings_persisted {
-                println!("Hotspot and temporal coupling snapshot persisted to SQLite.");
-            } else {
-                println!(
-                    "Hotspot snapshot persisted to SQLite (temporal coupling history skipped: repository has fewer than 10 commits)."
-                );
+        if overall_stop {
+            if !args.json {
+                println!("Hotspot snapshot skipped: overall budget.");
+            }
+        } else {
+            let couplings_persisted =
+                persist_hotspots_and_couplings(storage, repo, &hotspots, config)?;
+            if !args.json {
+                if couplings_persisted {
+                    println!("Hotspot and temporal coupling snapshot persisted to SQLite.");
+                } else {
+                    println!(
+                        "Hotspot snapshot persisted to SQLite (temporal coupling history skipped: repository has fewer than 10 commits)."
+                    );
+                }
             }
         }
     }
@@ -234,7 +294,7 @@ pub(super) fn execute_hotspots_list(
             completeness.as_ref(),
             Some(&provenance),
         );
-        crate::output::json::emit(&output).map_err(|e| miette::miette!("{}", e))?;
+        super::write_json(&output, json_out)?;
     } else if args.centrality {
         crate::output::human::print_hotspots_table_with_centrality(&hotspots);
         print_omit_footers(
@@ -256,6 +316,36 @@ pub(super) fn execute_hotspots_list(
     }
 
     Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(super) fn list_completeness_after_walk(
+    walk_stop: crate::impact::budget::HistoryWalkStop,
+    commits_requested: u64,
+    commits_walked: u64,
+    days_requested: Option<u64>,
+    filter: crate::impact::budget::CompletenessFilter,
+    head: Option<String>,
+    history_budget_secs: u64,
+    overall_deadline: Option<Instant>,
+    overall_secs: u64,
+) -> Option<crate::impact::budget::AnalysisCompleteness> {
+    if overall_deadline_fired(overall_deadline) {
+        return Some(completeness_for_overall(
+            CompletenessStop::Budget,
+            Some(overall_secs).filter(|s| *s > 0),
+            "hotspots",
+        ));
+    }
+    completeness_for_walk(
+        walk_stop,
+        commits_requested,
+        commits_walked,
+        days_requested,
+        filter,
+        head,
+        Some(history_budget_secs).filter(|s| *s > 0),
+    )
 }
 
 fn print_omit_footers(

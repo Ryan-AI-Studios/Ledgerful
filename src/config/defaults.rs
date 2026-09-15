@@ -26,6 +26,7 @@ decay_half_life = 100
 max_commits = 500
 limit = 10
 history_budget_secs = 45
+overall_budget_secs = 25
 # budget_threshold = 0.5  # informational default when omitted; required for --fail
 
 [verify]
@@ -178,6 +179,8 @@ mod tests {
         );
         assert_eq!(config.gate.mode, "observe");
         assert_eq!(config.review.overall_budget_secs, 25);
+        assert_eq!(config.hotspots.overall_budget_secs, 25);
+        assert_eq!(config.hotspots.history_budget_secs, 45);
         assert_eq!(config.impact.prospective_budget_secs, 25);
     }
 

@@ -504,8 +504,11 @@ impl Commands {
                             f.push("force");
                         }
                     }
-                    Some(HotspotSubcommands::Explain { .. }) => {
+                    Some(HotspotSubcommands::Explain { json, .. }) => {
                         f.push("explain");
+                        if *json {
+                            f.push("json");
+                        }
                     }
                     Some(HotspotSubcommands::Budget {
                         json,

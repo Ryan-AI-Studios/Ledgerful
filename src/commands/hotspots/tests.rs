@@ -1148,3 +1148,349 @@ fn list_session_trend_omit_score_unit() {
     assert!(budget_json.get("provenance").is_none(), "{budget_json}");
     let _ = storage.shutdown();
 }
+
+#[test]
+#[allow(non_snake_case)]
+fn hotspots_config_default__overall_25_history_45() {
+    let config = crate::config::model::Config::default();
+    assert_eq!(config.hotspots.overall_budget_secs, 25);
+    assert_eq!(config.hotspots.history_budget_secs, 45);
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hotspots_list__completeness_history_only_copy_omits_scope() {
+    use crate::impact::budget::{CompletenessFilter, CompletenessScope, HistoryWalkStop};
+    let c = super::list::list_completeness_after_walk(
+        HistoryWalkStop::Budget,
+        500,
+        3,
+        None,
+        CompletenessFilter::Default,
+        Some("abc".into()),
+        45,
+        None,
+        25,
+    )
+    .expect("history completeness");
+    assert!(c.scope.is_none() || c.scope != Some(CompletenessScope::Overall));
+    assert_eq!(c.budget_secs, Some(45));
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hotspots_list__overall_stop_not_overwritten_by_later_history_object() {
+    use crate::impact::budget::{
+        CompletenessFilter, CompletenessScope, CompletenessStop, HistoryWalkStop,
+        overall_deadline_fired,
+    };
+    let expired = std::time::Instant::now()
+        .checked_sub(std::time::Duration::from_secs(1))
+        .unwrap_or_else(std::time::Instant::now);
+    assert!(overall_deadline_fired(Some(expired)));
+    let c = super::list::list_completeness_after_walk(
+        HistoryWalkStop::Budget,
+        500,
+        3,
+        None,
+        CompletenessFilter::Default,
+        Some("abc".into()),
+        45,
+        Some(expired),
+        25,
+    )
+    .expect("overall");
+    assert_eq!(c.scope, Some(CompletenessScope::Overall));
+    assert_eq!(c.stop, CompletenessStop::Budget);
+    assert_eq!(c.stage.as_deref(), Some("hotspots"));
+    assert_eq!(c.budget_secs, Some(25));
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hotspots_explain_json_envelope_kind() {
+    use crate::impact::budget::{CompletenessStop, completeness_for_overall};
+    let c = completeness_for_overall(CompletenessStop::Budget, Some(25), "git");
+    let v = super::explain::explanation_json_envelope(
+        "src/lib.rs",
+        1,
+        0.0,
+        None,
+        Vec::new(),
+        Some("temporal couplings untrusted: overall budget".into()),
+        Some(&c),
+    );
+    assert_eq!(v["schemaVersion"], 1);
+    assert_eq!(v["kind"], "hotspotExplanation");
+    assert_eq!(v["entity"], "src/lib.rs");
+    assert_eq!(v["completeness"]["scope"], "overall");
+    assert_eq!(v["completeness"]["stage"], "git");
+    assert_eq!(
+        v["couplingsWarning"],
+        "temporal couplings untrusted: overall budget"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+#[serial_test::serial(cwd)]
+fn hotspots_list__overall_expired__emits_json_with_scope_overall() {
+    use super::{HotspotRunOpts, execute_hotspots_with_opts};
+    use crate::cli::HotspotArgs;
+    use crate::tests::DirGuard;
+    use std::fs;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    assert!(
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    Command::new("git")
+        .args(["config", "user.email", "t@t.com"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "t"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    fs::write(root.join("README.md"), "one\n").unwrap();
+    assert!(
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["commit", "-m", "first"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let _guard = DirGuard::new(root);
+    let mut buf = Vec::new();
+    let args = HotspotArgs {
+        json: true,
+        limit: Some(5),
+        ..Default::default()
+    };
+    let expired = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
+    execute_hotspots_with_opts(
+        args,
+        HotspotRunOpts {
+            overall_deadline_override: Some(expired),
+            ..Default::default()
+        },
+        Some(&mut buf),
+    )
+    .expect("emit");
+    let stdout = String::from_utf8_lossy(&buf);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect(&stdout);
+    assert_eq!(v["schemaVersion"], 1);
+    assert_eq!(v["completeness"]["scope"], "overall");
+    assert_eq!(v["completeness"]["stage"], "storage");
+    assert_eq!(v["files"].as_array().map(Vec::len), Some(0));
+}
+
+#[test]
+#[allow(non_snake_case)]
+#[serial_test::serial(cwd)]
+fn hotspots_explain__overall_expired__emits_json_kind_hotspot_explanation() {
+    use super::{HotspotRunOpts, execute_hotspots_with_opts};
+    use crate::cli::{HotspotArgs, HotspotSubcommands};
+    use crate::tests::DirGuard;
+    use std::fs;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    assert!(
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    Command::new("git")
+        .args(["config", "user.email", "t@t.com"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "t"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    fs::write(root.join("README.md"), "one\n").unwrap();
+    assert!(
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["commit", "-m", "first"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let _guard = DirGuard::new(root);
+    let mut buf = Vec::new();
+    let args = HotspotArgs {
+        command: Some(HotspotSubcommands::Explain {
+            entity: "README.md".into(),
+            json: true,
+        }),
+        ..Default::default()
+    };
+    let expired = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
+    execute_hotspots_with_opts(
+        args,
+        HotspotRunOpts {
+            overall_deadline_override: Some(expired),
+            ..Default::default()
+        },
+        Some(&mut buf),
+    )
+    .expect("emit");
+    let stdout = String::from_utf8_lossy(&buf);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect(&stdout);
+    assert_eq!(v["kind"], "hotspotExplanation");
+    assert_eq!(v["schemaVersion"], 1);
+    assert_eq!(v["completeness"]["scope"], "overall");
+    assert_eq!(
+        v["couplingsWarning"],
+        "temporal couplings untrusted: overall budget"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hotspots_cli_timeout__does_not_write_history_budget_secs() {
+    let mut config = crate::config::model::Config::default();
+    crate::impact::budget::apply_resolved_history_budget(&mut config, None);
+    assert_eq!(config.hotspots.history_budget_secs, 45);
+    assert_eq!(
+        crate::impact::budget::resolve_hotspots_overall_budget_secs(Some(5), 25),
+        5
+    );
+    assert_eq!(config.hotspots.history_budget_secs, 45);
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hotspots_timeout_zero__disables_overall_wall_clock() {
+    assert_eq!(
+        crate::impact::budget::resolve_hotspots_overall_budget_secs(Some(0), 25),
+        0
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn hotspots_list__omitted_timeout__uses_overall_default_not_history_only() {
+    assert_eq!(
+        crate::impact::budget::resolve_hotspots_overall_budget_secs(None, 25),
+        25
+    );
+    assert_eq!(
+        crate::impact::budget::resolve_history_budget_secs(None, 45),
+        45
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+#[serial_test::serial(cwd)]
+fn hotspots_semantic__overall_expired__emits_empty_files_stage_semantic() {
+    use super::{HotspotRunOpts, execute_hotspots_with_opts};
+    use crate::cli::HotspotArgs;
+    use crate::tests::DirGuard;
+    use std::fs;
+    use std::process::Command;
+    use std::time::{Duration, Instant};
+
+    let tmp = tempfile::tempdir().unwrap();
+    let root = tmp.path();
+    assert!(
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    Command::new("git")
+        .args(["config", "user.email", "t@t.com"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    Command::new("git")
+        .args(["config", "user.name", "t"])
+        .current_dir(root)
+        .status()
+        .unwrap();
+    fs::write(root.join("README.md"), "one\n").unwrap();
+    assert!(
+        Command::new("git")
+            .args(["add", "README.md"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["commit", "-m", "first"])
+            .current_dir(root)
+            .status()
+            .unwrap()
+            .success()
+    );
+    let _guard = DirGuard::new(root);
+    let mut buf = Vec::new();
+    let args = HotspotArgs {
+        json: true,
+        semantic: true,
+        ..Default::default()
+    };
+    let expired = Instant::now()
+        .checked_sub(Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
+    execute_hotspots_with_opts(
+        args,
+        HotspotRunOpts {
+            overall_deadline_override: Some(expired),
+            ..Default::default()
+        },
+        Some(&mut buf),
+    )
+    .expect("emit");
+    let stdout = String::from_utf8_lossy(&buf);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect(&stdout);
+    assert_eq!(v["completeness"]["stage"], "semantic");
+    assert_eq!(v["completeness"]["scope"], "overall");
+    assert_eq!(v["files"].as_array().map(Vec::len), Some(0));
+}
