@@ -56,7 +56,7 @@ install_from_release() {
     return 1
   fi
 
-  for name in ledgerful ledgerful ldg; do
+  for name in ledgerful ldg; do
     cp "$bin_path" "$INSTALL_DIR/bin/$name"
     chmod +x "$INSTALL_DIR/bin/$name"
   done
@@ -77,6 +77,12 @@ install_from_cargo() {
     step "Installing Ledgerful from https://github.com/$REPO"
     # shellcheck disable=SC2086
     cargo install ledgerful --git "https://github.com/$REPO" --branch main --locked --root "$INSTALL_DIR" $FEATURES
+  fi
+
+  # cargo install only publishes the crate binary name.
+  if [ -f "$INSTALL_DIR/bin/ledgerful" ]; then
+    cp "$INSTALL_DIR/bin/ledgerful" "$INSTALL_DIR/bin/ldg"
+    chmod +x "$INSTALL_DIR/bin/ldg"
   fi
 }
 
@@ -187,7 +193,7 @@ if [ "$NO_PATH_UPDATE" != "1" ]; then
 fi
 
 step "Verifying installation"
-for name in ledgerful ledgerful ldg; do
+for name in ledgerful ldg; do
   "$INSTALL_DIR/bin/$name" --version | sed -n '1p'
 done
 

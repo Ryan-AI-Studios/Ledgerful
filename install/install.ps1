@@ -51,7 +51,7 @@ function Install-FromRelease {
         throw "Release archive did not contain ledgerful.exe"
     }
 
-    foreach ($name in @("ledgerful.exe")) {
+    foreach ($name in @("ledgerful.exe", "ldg.exe")) {
         Copy-Item -Path $exe.FullName -Destination (Join-Path $binDir $name) -Force
     }
     Remove-Item -Path $tmp -Force -ErrorAction SilentlyContinue
@@ -74,6 +74,12 @@ function Install-FromCargo {
     } else {
         Write-Step "Installing Ledgerful from https://github.com/$Repo"
         cargo install ledgerful --git "https://github.com/$Repo" --branch main --locked --root $InstallDir @features
+    }
+
+    # cargo install only publishes the crate binary name.
+    $installed = Join-Path $InstallDir "bin\ledgerful.exe"
+    if (Test-Path $installed) {
+        Copy-Item -Path $installed -Destination (Join-Path $InstallDir "bin\ldg.exe") -Force
     }
 }
 
@@ -172,7 +178,7 @@ if (-not $NoPathUpdate) {
 }
 
 Write-Step "Verifying installation"
-foreach ($name in @("ledgerful.exe")) {
+foreach ($name in @("ledgerful.exe", "ldg.exe")) {
     $command = Join-Path $binDir $name
     if (-not (Test-Path $command)) {
         throw "Installed command was not found: $command"
