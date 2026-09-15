@@ -10,6 +10,10 @@ use crate::commands::scan::{
 use crate::config::model::{Config, ReviewConfig};
 use crate::git::repo::{get_head_info, open_repo};
 use crate::git::{ChangeType, FileChange, RepoSnapshot};
+use crate::impact::budget::{
+    AnalysisCompleteness, CompletenessScope, CompletenessStop, REVIEW_BUDGET_WARN,
+    completeness_for_overall, is_overall_stop, resolve_review_budget_secs,
+};
 use crate::impact::enrichment::affected_flows::AffectedFlowsReport;
 use crate::impact::enrichment::test_gaps::TestGapsReport;
 use crate::ledger::db::LedgerDb;
@@ -23,6 +27,9 @@ use std::cmp::Reverse;
 use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 pub const REVIEW_SCHEMA_VERSION: u32 = 1;
 pub const REVIEW_KIND: &str = "review";
@@ -41,13 +48,17 @@ const MAX_CI: usize = 10;
 const MAX_CONTRACTS: usize = 20;
 const MAX_SEARCH_STEMS: usize = 3;
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct ReviewOpts {
     pub range: String,
     pub json: bool,
     pub requirements: Vec<String>,
     pub id: Option<String>,
     pub timeout: Option<u64>,
+    /// Test injection. CLI leaves `None`; `execute_review_in` installs Ctrl-C.
+    pub cancel: Option<Arc<AtomicBool>>,
+    /// Test injection. CLI leaves `None`.
+    pub overall_deadline_override: Option<Instant>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -87,6 +98,8 @@ pub struct ReviewEnvelope {
     pub ci_evidence: ReviewCiEvidence,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub coordinated: Option<ReviewCoordinated>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub completeness: Option<AnalysisCompleteness>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -250,7 +263,7 @@ pub fn execute_review(
     let layout = crate::commands::helpers::get_layout()
         .map_err(|e| miette::miette!("review: layout unavailable: {e}"))?;
     let mut config = crate::config::load::load_config_or_default_warn(&layout);
-    crate::impact::budget::apply_resolved_history_budget(&mut config, timeout);
+    crate::impact::budget::apply_resolved_history_budget(&mut config, None);
     let work_dir = layout.root.as_std_path().to_path_buf();
     let opts = ReviewOpts {
         range,
@@ -258,6 +271,8 @@ pub fn execute_review(
         requirements,
         id,
         timeout,
+        cancel: None,
+        overall_deadline_override: None,
     };
     let mut out = std::io::stdout();
     execute_review_in(&layout, &work_dir, &config, &opts, &mut out)
@@ -277,6 +292,21 @@ pub fn execute_review_in(
         return Err(miette::miette!("--id requires a configured review backend"));
     }
 
+    let cancel = match &opts.cancel {
+        Some(flag) => Arc::clone(flag),
+        None => crate::impact::budget::install_cancel_flag(),
+    };
+    let overall_secs = resolve_review_budget_secs(opts.timeout, config.review.overall_budget_secs);
+    let deadline = if let Some(over) = opts.overall_deadline_override {
+        Some(over)
+    } else if overall_secs == 0 {
+        None
+    } else {
+        Some(Instant::now() + Duration::from_secs(overall_secs))
+    };
+    let budget_secs = (overall_secs > 0).then_some(overall_secs);
+    let mut completeness: Option<AnalysisCompleteness> = None;
+
     let (base_ref, head_ref, git_range) = parse_review_range(&opts.range)?;
 
     let raw_changes = files_changed_between(work_dir, &git_range, &base_ref)?;
@@ -286,7 +316,6 @@ pub fn execute_review_in(
         &config.watch.ignore_patterns,
         true,
     )?;
-
     let mut files_changed = file_changes_to_review(&filtered);
     files_changed.sort_by(|a, b| a.path.cmp(&b.path));
     files_changed.dedup_by(|a, b| a.path == b.path && a.change_type == b.change_type);
@@ -294,6 +323,11 @@ pub fn execute_review_in(
     if files_changed_truncated {
         files_changed.truncate(MAX_FILES_CHANGED);
     }
+
+    completeness = merge_completeness(
+        completeness,
+        overall_stage_stop(deadline, &cancel, budget_secs, "git"),
+    );
 
     let (requirements_files_truncated, promised) =
         load_promised_requirements(layout, work_dir, review_cfg, opts)?;
@@ -307,18 +341,33 @@ pub fn execute_review_in(
             (None, None, false, false)
         };
 
-    let storage = open_review_storage(layout);
-    let snapshot = build_range_snapshot(work_dir, filtered, &head_ref);
+    completeness = merge_completeness(
+        completeness,
+        overall_stage_stop(deadline, &cancel, budget_secs, "storage"),
+    );
 
-    let (blast, affected_symbols, tests, contracts) = match &storage {
+    let snapshot = build_range_snapshot(work_dir, filtered, &head_ref);
+    let skip_compose = completeness_is_overall(&completeness);
+    let storage = if skip_compose {
+        None
+    } else {
+        open_review_storage(layout)
+    };
+
+    let (blast, affected_symbols, tests, contracts, impact_c) = match &storage {
         Some(storage) => compose_impact(
             layout,
             work_dir,
             config,
             storage,
             &snapshot,
-            files_total,
-            files_changed_truncated,
+            ComposeParams {
+                files_total,
+                files_changed_truncated,
+                cancel: Arc::clone(&cancel),
+                overall_deadline: deadline,
+                overall_budget_secs: budget_secs,
+            },
         ),
         None => (
             ReviewBlast {
@@ -328,25 +377,43 @@ pub fn execute_review_in(
                 files_capped: files_changed_truncated,
                 nodes: 0,
                 edges: 0,
-                reason: Some("ledger.db unavailable".to_string()),
+                reason: Some(
+                    completeness
+                        .as_ref()
+                        .filter(|c| c.scope == Some(CompletenessScope::Overall))
+                        .map(blast_reason_for)
+                        .unwrap_or_else(|| "ledger.db unavailable".to_string()),
+                ),
             },
             Vec::new(),
             ReviewTests {
                 status: "unavailable".to_string(),
                 exercising: Vec::new(),
                 untested: Vec::new(),
-                notes: Some("ledger.db unavailable".to_string()),
+                notes: Some(
+                    completeness
+                        .as_ref()
+                        .filter(|c| c.scope == Some(CompletenessScope::Overall))
+                        .map(blast_reason_for)
+                        .unwrap_or_else(|| "ledger.db unavailable".to_string()),
+                ),
             },
             ReviewContracts {
                 status: "unavailable".to_string(),
                 items: Vec::new(),
                 truncated: false,
             },
+            None,
         ),
     };
+    completeness = merge_completeness(completeness, impact_c);
 
+    completeness = merge_completeness(
+        completeness,
+        overall_stage_stop(deadline, &cancel, budget_secs, "ledger_search"),
+    );
     let (prior_decisions, prior_decisions_truncated, claims, claims_truncated) = match &storage {
-        Some(storage) if !files_changed.is_empty() => {
+        Some(storage) if !files_changed.is_empty() && !completeness_is_overall(&completeness) => {
             search_ledger_overlap(storage, &files_changed)
         }
         _ => (Vec::new(), false, Vec::new(), false),
@@ -358,7 +425,26 @@ pub fn execute_review_in(
         merge_promised(&mut promised_out, items);
     }
 
-    let suppress_github = suppress_github_http(coordinated.is_some(), &findings.status);
+    let suppress_github_policy = suppress_github_http(coordinated.is_some(), &findings.status);
+    let would_fetch_github =
+        github_backend_on(review_cfg) && opts.id.is_some() && !suppress_github_policy;
+    let github_deadline_skip = would_fetch_github && github_helpers_should_skip(deadline, &cancel);
+    if github_deadline_skip {
+        completeness = merge_completeness(
+            completeness,
+            Some(completeness_for_overall(
+                if cancel.load(Ordering::Relaxed) {
+                    CompletenessStop::Cancelled
+                } else {
+                    CompletenessStop::Budget
+                },
+                budget_secs,
+                "github",
+            )),
+        );
+    }
+
+    let suppress_github = suppress_github_policy || github_deadline_skip;
     let github_bits = if suppress_github {
         GithubBits {
             attempted: false,
@@ -366,7 +452,7 @@ pub fn execute_review_in(
             findings: Vec::new(),
         }
     } else {
-        load_github(work_dir, review_cfg, opts.id.as_deref())
+        load_github(work_dir, review_cfg, opts.id.as_deref(), deadline, &cancel)
     };
     if let Some(items) = github_bits.requirements {
         merge_promised(&mut promised_out, items);
@@ -393,6 +479,10 @@ pub fn execute_review_in(
         suppress_github,
         snapshot.head_hash.as_deref(),
         files_changed.len(),
+        DeadlineCancel {
+            deadline,
+            cancel: &cancel,
+        },
     );
 
     let envelope = ReviewEnvelope {
@@ -421,6 +511,7 @@ pub fn execute_review_in(
         unresolved_findings: findings,
         ci_evidence,
         coordinated,
+        completeness,
     };
 
     emit_review(&envelope, opts.json, out)
@@ -498,17 +589,31 @@ fn open_review_storage(layout: &Layout) -> Option<StorageManager> {
     StorageManager::open_read_only_sqlite_only(layout).ok()
 }
 
+struct ComposeParams {
+    files_total: usize,
+    files_changed_truncated: bool,
+    cancel: Arc<AtomicBool>,
+    overall_deadline: Option<Instant>,
+    overall_budget_secs: Option<u64>,
+}
+
 fn compose_impact(
     layout: &Layout,
     work_dir: &Path,
     config: &Config,
     storage: &StorageManager,
     snapshot: &RepoSnapshot,
-    files_total: usize,
-    files_changed_truncated: bool,
-) -> (ReviewBlast, Vec<String>, ReviewTests, ReviewContracts) {
+    params: ComposeParams,
+) -> (
+    ReviewBlast,
+    Vec<String>,
+    ReviewTests,
+    ReviewContracts,
+    Option<AnalysisCompleteness>,
+) {
     let files_scanned = snapshot.changes.len();
-    let cancel = crate::impact::budget::install_cancel_flag();
+    let files_total = params.files_total;
+    let files_changed_truncated = params.files_changed_truncated;
     let impact = crate::commands::impact::compute_impact_from_snapshot_in_memory_with_history(
         storage,
         config,
@@ -519,11 +624,12 @@ fn compose_impact(
         Vec::new(),
         crate::impact::orchestrator::ImpactHistoryOpts {
             skip_git_history_enrichment: false,
-            cancel,
-            ..Default::default()
+            cancel: params.cancel,
+            overall_budget_secs: params.overall_budget_secs,
+            overall_deadline: params.overall_deadline,
         },
     );
-    let (blast, symbols) = match impact {
+    let (blast, symbols, completeness) = match impact {
         Ok(packet) => {
             let edges = packet
                 .blast_radius
@@ -537,16 +643,7 @@ fn compose_impact(
                 .unwrap_or(0);
             let mut symbols = top_symbols_from_packet(&packet);
             symbols.truncate(MAX_AFFECTED_SYMBOLS);
-            let reason = packet.completeness.as_ref().map(|c| {
-                format!(
-                    "history walk stopped ({})",
-                    match c.stop {
-                        crate::impact::budget::CompletenessStop::Budget => "budget",
-                        crate::impact::budget::CompletenessStop::Cancelled => "cancelled",
-                        crate::impact::budget::CompletenessStop::Error => "error",
-                    }
-                )
-            });
+            let reason = packet.completeness.as_ref().map(blast_reason_for);
             (
                 ReviewBlast {
                     status: "ok".to_string(),
@@ -558,6 +655,7 @@ fn compose_impact(
                     reason,
                 },
                 symbols,
+                packet.completeness,
             )
         }
         Err(e) => (
@@ -571,6 +669,7 @@ fn compose_impact(
                 reason: Some(format!("impact compose failed: {e}")),
             },
             Vec::new(),
+            None,
         ),
     };
 
@@ -578,7 +677,91 @@ fn compose_impact(
     let tests = tests_from_gaps(&gaps);
     let flows = compute_pr_scan_affected_flows(layout, snapshot);
     let contracts = contracts_from_flows(&flows);
-    (blast, symbols, tests, contracts)
+    (blast, symbols, tests, contracts, completeness)
+}
+
+fn blast_reason_for(c: &AnalysisCompleteness) -> String {
+    let stop = match c.stop {
+        CompletenessStop::Budget => "budget",
+        CompletenessStop::Cancelled => "cancelled",
+        CompletenessStop::Error => "error",
+    };
+    if c.scope == Some(CompletenessScope::Overall) {
+        format!("overall analysis stopped ({stop})")
+    } else {
+        format!("history walk stopped ({stop})")
+    }
+}
+
+fn overall_stage_stop(
+    deadline: Option<Instant>,
+    cancel: &AtomicBool,
+    budget_secs: Option<u64>,
+    stage: &str,
+) -> Option<AnalysisCompleteness> {
+    if cancel.load(Ordering::Relaxed) {
+        return Some(completeness_for_overall(
+            CompletenessStop::Cancelled,
+            budget_secs,
+            stage,
+        ));
+    }
+    if deadline.is_some_and(|d| Instant::now() >= d) {
+        return Some(completeness_for_overall(
+            CompletenessStop::Budget,
+            budget_secs,
+            stage,
+        ));
+    }
+    None
+}
+
+fn merge_completeness(
+    existing: Option<AnalysisCompleteness>,
+    incoming: Option<AnalysisCompleteness>,
+) -> Option<AnalysisCompleteness> {
+    match incoming {
+        None => existing,
+        Some(new) => match existing {
+            Some(old) if old.scope == Some(CompletenessScope::Overall) => Some(old),
+            _ => Some(new),
+        },
+    }
+}
+
+fn completeness_is_overall(c: &Option<AnalysisCompleteness>) -> bool {
+    c.as_ref().is_some_and(is_overall_stop)
+}
+
+/// `request_count` is the ureq calls for one helper (PR+comments or PR+checks = 2).
+pub(crate) fn should_skip_github_for_deadline(
+    remaining: Option<Duration>,
+    request_count: u32,
+) -> bool {
+    let Some(remaining) = remaining else {
+        return false;
+    };
+    let budget = Duration::from_secs(8).saturating_mul(request_count);
+    remaining < budget
+}
+
+fn remaining_until(deadline: Option<Instant>) -> Option<Duration> {
+    deadline.map(|d| d.saturating_duration_since(Instant::now()))
+}
+
+fn github_helpers_should_skip(deadline: Option<Instant>, cancel: &AtomicBool) -> bool {
+    if cancel.load(Ordering::Relaxed) {
+        return true;
+    }
+    if deadline.is_some_and(|d| Instant::now() >= d) {
+        return true;
+    }
+    should_skip_github_for_deadline(remaining_until(deadline), 2)
+}
+
+struct DeadlineCancel<'a> {
+    deadline: Option<Instant>,
+    cancel: &'a AtomicBool,
 }
 
 fn top_symbols_from_packet(packet: &crate::impact::packet::ImpactPacket) -> Vec<String> {
@@ -1129,7 +1312,20 @@ struct GithubBits {
     findings: Vec<ReviewFindingItem>,
 }
 
-fn load_github(work_dir: &Path, cfg: &ReviewConfig, id: Option<&str>) -> GithubBits {
+fn load_github(
+    work_dir: &Path,
+    cfg: &ReviewConfig,
+    id: Option<&str>,
+    deadline: Option<Instant>,
+    cancel: &AtomicBool,
+) -> GithubBits {
+    if github_helpers_should_skip(deadline, cancel) {
+        return GithubBits {
+            attempted: false,
+            requirements: None,
+            findings: Vec::new(),
+        };
+    }
     if !cfg.github.enabled {
         return GithubBits {
             attempted: false,
@@ -1301,6 +1497,7 @@ fn github_get_json(
     resp.into_json().map_err(|e| format!("github json: {e}"))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn load_ci_evidence(
     layout: &Layout,
     cfg: &ReviewConfig,
@@ -1309,6 +1506,7 @@ fn load_ci_evidence(
     suppress_github: bool,
     bound_head: Option<&str>,
     files_changed_len: usize,
+    clock: DeadlineCancel<'_>,
 ) -> ReviewCiEvidence {
     let bound_head = bound_head
         .map(str::trim)
@@ -1350,7 +1548,8 @@ fn load_ci_evidence(
 
     if !suppress_github
         && should_fetch_github_checks(cfg)
-        && let Some((pr_sha, extra)) = fetch_github_checks(work_dir, cfg, id)
+        && let Some((pr_sha, extra)) =
+            fetch_github_checks(work_dir, cfg, id, clock.deadline, clock.cancel)
     {
         if github_checks_target_bound(&pr_sha, bound) {
             items.extend(extra);
@@ -1440,7 +1639,12 @@ fn fetch_github_checks(
     work_dir: &Path,
     cfg: &ReviewConfig,
     id: Option<&str>,
+    deadline: Option<Instant>,
+    cancel: &AtomicBool,
 ) -> Option<(String, Vec<ReviewCiItem>)> {
+    if github_helpers_should_skip(deadline, cancel) {
+        return None;
+    }
     let token = std::env::var("GITHUB_TOKEN")
         .or_else(|_| std::env::var("GH_TOKEN"))
         .ok()?;
@@ -1475,6 +1679,13 @@ fn fetch_github_checks(
 
 fn emit_review(envelope: &ReviewEnvelope, json: bool, out: &mut impl Write) -> Result<()> {
     if json {
+        if envelope
+            .completeness
+            .as_ref()
+            .is_some_and(|c| c.stop == CompletenessStop::Budget && is_overall_stop(c))
+        {
+            eprintln!("{REVIEW_BUDGET_WARN}");
+        }
         let body = crate::output::json::format_json(envelope)?;
         write!(out, "{body}").map_err(|e| miette::miette!("review json write: {e}"))?;
         return Ok(());
@@ -1486,12 +1697,22 @@ fn emit_review(envelope: &ReviewEnvelope, json: bool, out: &mut impl Write) -> R
         envelope.files_changed.len()
     )
     .map_err(|e| miette::miette!("review write: {e}"))?;
+    if let Some(c) = envelope
+        .completeness
+        .as_ref()
+        .filter(|c| c.scope == Some(CompletenessScope::Overall))
+    {
+        let stage = c.stage.as_deref().unwrap_or("unknown");
+        writeln!(out, "overall stop ({stage}).")
+            .map_err(|e| miette::miette!("review write: {e}"))?;
+    }
     writeln!(out, "Use --json for the agent envelope.")
         .map_err(|e| miette::miette!("review write: {e}"))?;
     Ok(())
 }
 
 #[allow(dead_code)]
+#[allow(non_snake_case)] // project test naming: feature__condition__expected
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1500,6 +1721,8 @@ mod tests {
     use clap::{CommandFactory, Parser};
     use std::fs;
     use std::process::Command;
+    use std::sync::atomic::AtomicBool;
+    use std::time::{Duration, Instant};
     use tempfile::tempdir;
 
     mod env_guard {
@@ -1551,6 +1774,19 @@ mod tests {
         (tmp, layout, work, Config::default())
     }
 
+    fn harness_with_storage() -> (tempfile::TempDir, Layout, PathBuf, Config) {
+        let (tmp, layout, work, config) = harness();
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path())
+            .expect("ledger.db");
+        (tmp, layout, work, config)
+    }
+
+    fn expired_deadline() -> Instant {
+        Instant::now()
+            .checked_sub(Duration::from_secs(1))
+            .unwrap_or_else(Instant::now)
+    }
+
     fn run(
         layout: &Layout,
         work: &Path,
@@ -1578,11 +1814,381 @@ mod tests {
         assert!(help.contains("--json"), "{help}");
         assert!(help.contains("--requirements"), "{help}");
         assert!(help.contains("--id"), "{help}");
+        assert!(help.contains("Overall review emit budget"), "{help}");
+        assert!(
+            !help.contains("History-walk wall-clock"),
+            "review --timeout is overall emit, not history-walk:\n{help}"
+        );
         assert!(
             !review
                 .get_arguments()
                 .any(|a| a.get_long() == Some("track")),
             "review must not grow a --track flag:\n{help}"
+        );
+    }
+
+    #[test]
+    fn review_config_default__overall_budget_secs_is_25() {
+        assert_eq!(Config::default().review.overall_budget_secs, 25);
+        assert_eq!(
+            Config::default().review.overall_budget_secs,
+            crate::impact::budget::DEFAULT_REVIEW_BUDGET_SECS
+        );
+    }
+
+    #[test]
+    fn should_skip_github_for_deadline__remaining_below_two_request_budget__true() {
+        assert!(!should_skip_github_for_deadline(None, 2));
+        assert!(!should_skip_github_for_deadline(
+            Some(Duration::from_secs(16)),
+            2
+        ));
+        assert!(should_skip_github_for_deadline(
+            Some(Duration::from_secs(15)),
+            2
+        ));
+        assert!(should_skip_github_for_deadline(Some(Duration::ZERO), 2));
+        assert!(!github_helpers_should_skip(
+            Some(Instant::now() + Duration::from_secs(60)),
+            &AtomicBool::new(false)
+        ));
+        assert!(github_helpers_should_skip(
+            Some(expired_deadline()),
+            &AtomicBool::new(false)
+        ));
+        assert!(github_helpers_should_skip(
+            Some(Instant::now() + Duration::from_secs(60)),
+            &AtomicBool::new(true)
+        ));
+    }
+
+    #[test]
+    fn review_pipeline__storage_gate_sets_stage_storage() {
+        let c = overall_stage_stop(
+            Some(expired_deadline()),
+            &AtomicBool::new(false),
+            Some(25),
+            "storage",
+        )
+        .expect("stop");
+        assert_eq!(c.scope, Some(CompletenessScope::Overall));
+        assert_eq!(c.stage.as_deref(), Some("storage"));
+        assert_eq!(c.stop, CompletenessStop::Budget);
+    }
+
+    #[test]
+    fn review_pipeline__ledger_search_gate_sets_stage_ledger_search() {
+        let c = overall_stage_stop(
+            Some(expired_deadline()),
+            &AtomicBool::new(false),
+            Some(25),
+            "ledger_search",
+        )
+        .expect("stop");
+        assert_eq!(c.stage.as_deref(), Some("ledger_search"));
+    }
+
+    #[test]
+    fn review_completeness__overall_stop_not_overwritten_by_later_github_skip() {
+        let federated = completeness_for_overall(CompletenessStop::Budget, Some(25), "federated");
+        let github = completeness_for_overall(CompletenessStop::Budget, Some(25), "github");
+        let merged = merge_completeness(Some(federated.clone()), Some(github));
+        assert_eq!(
+            merged.as_ref().and_then(|c| c.stage.as_deref()),
+            Some("federated")
+        );
+        let history = crate::impact::budget::completeness_for_walk(
+            crate::impact::budget::HistoryWalkStop::Budget,
+            500,
+            10,
+            None,
+            crate::impact::budget::CompletenessFilter::Default,
+            None,
+            Some(45),
+        );
+        let overwritten = merge_completeness(history, Some(federated));
+        assert_eq!(
+            overwritten.as_ref().and_then(|c| c.stage.as_deref()),
+            Some("federated")
+        );
+        assert_eq!(
+            overwritten.as_ref().and_then(|c| c.scope),
+            Some(CompletenessScope::Overall)
+        );
+    }
+
+    #[test]
+    fn review_one_commit__overall_expired__emits_core_json_with_scope_overall() {
+        let (_tmp, layout, work, config) = harness_with_storage();
+        let (result, stdout) = run(
+            &layout,
+            &work,
+            &config,
+            ReviewOpts {
+                range: "HEAD~1..HEAD".to_string(),
+                json: true,
+                overall_deadline_override: Some(expired_deadline()),
+                ..Default::default()
+            },
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let env = parse_env(&stdout);
+        let c = env.completeness.expect("completeness");
+        assert_eq!(c.scope, Some(CompletenessScope::Overall));
+        assert_eq!(c.stop, CompletenessStop::Budget);
+        assert_eq!(c.stage.as_deref(), Some("git"));
+        assert_eq!(env.kind, "review");
+        assert_eq!(env.schema_version, 1);
+        assert!(
+            env.files_changed.iter().any(|f| f.path == "README.md"),
+            "expired overall still lists the range: {:?}",
+            env.files_changed
+        );
+        assert!(
+            env.tests
+                .notes
+                .as_deref()
+                .is_some_and(|n| n.contains("overall analysis stopped")),
+            "budget skip must not claim missing db: {:?}",
+            env.tests.notes
+        );
+        assert!(
+            !env.tests
+                .notes
+                .as_deref()
+                .is_some_and(|n| n.contains("ledger.db unavailable")),
+            "budget skip must not claim missing db: {:?}",
+            env.tests.notes
+        );
+    }
+
+    #[test]
+    fn review_one_commit__cooperative_stalled_provider__retains_files_changed() {
+        let (_tmp, layout, work, config) = harness_with_storage();
+        let (result, stdout) = run(
+            &layout,
+            &work,
+            &config,
+            ReviewOpts {
+                range: "HEAD~1..HEAD".to_string(),
+                json: true,
+                overall_deadline_override: Some(expired_deadline()),
+                ..Default::default()
+            },
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let env = parse_env(&stdout);
+        assert!(
+            !env.files_changed.is_empty(),
+            "range files retained: {:?}",
+            env.files_changed
+        );
+        assert_eq!(
+            env.completeness.as_ref().and_then(|c| c.scope),
+            Some(CompletenessScope::Overall)
+        );
+    }
+
+    #[test]
+    fn review_ci_bound_head__unchanged_on_overall_stop() {
+        let (_tmp, layout, work, config) = harness();
+        let head = rev_parse_head(&work);
+        write_history(
+            &layout,
+            &format!(
+                r#"[{{"timestamp":"2026-09-09T00:00:00Z","passed":true,"duration_secs":3,"tx_id":"a","head":"{head}"}}]"#
+            ),
+        );
+        let (result, stdout) = run(
+            &layout,
+            &work,
+            &config,
+            ReviewOpts {
+                range: "HEAD~1..HEAD".to_string(),
+                json: true,
+                overall_deadline_override: Some(expired_deadline()),
+                ..Default::default()
+            },
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let env = parse_env(&stdout);
+        assert_eq!(env.ci_evidence.bound_head.as_deref(), Some(head.as_str()));
+        assert_eq!(env.ci_evidence.status, "ok");
+        assert_eq!(
+            env.completeness.as_ref().and_then(|c| c.scope),
+            Some(CompletenessScope::Overall)
+        );
+    }
+
+    #[test]
+    fn review_omitted_timeout__uses_review_default_not_federation_only() {
+        assert_eq!(resolve_review_budget_secs(None, 25), 25);
+        assert_eq!(Config::default().review.overall_budget_secs, 25);
+        assert_eq!(Config::default().federation.scan_timeout_secs, 120);
+        assert_ne!(
+            Config::default().review.overall_budget_secs,
+            Config::default().federation.scan_timeout_secs
+        );
+    }
+
+    #[test]
+    fn github_helpers_consult_deadline_predicate() {
+        let src = include_str!("review.rs");
+        let load = src
+            .split("fn load_github(")
+            .nth(1)
+            .and_then(|s| s.split("fn github_get_json(").next())
+            .unwrap_or("");
+        assert!(
+            load.contains("github_helpers_should_skip"),
+            "load_github must consult the deadline predicate"
+        );
+        let checks = src
+            .split("fn fetch_github_checks(")
+            .nth(1)
+            .and_then(|s| s.split("fn emit_review(").next())
+            .unwrap_or("");
+        assert!(
+            checks.contains("github_helpers_should_skip"),
+            "fetch_github_checks must consult the deadline predicate"
+        );
+    }
+
+    #[test]
+    fn review_timeout_zero__disables_overall_wall_clock() {
+        let (_tmp, layout, work, config) = harness();
+        let (result, stdout) = run(
+            &layout,
+            &work,
+            &config,
+            ReviewOpts {
+                range: "HEAD~1..HEAD".to_string(),
+                json: true,
+                timeout: Some(0),
+                ..Default::default()
+            },
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let env = parse_env(&stdout);
+        assert!(
+            env.completeness
+                .as_ref()
+                .is_none_or(|c| c.scope != Some(CompletenessScope::Overall)),
+            "timeout 0 must not fire overall: {:?}",
+            env.completeness
+        );
+    }
+
+    #[test]
+    fn review_human_partial__two_to_four_lines_names_stage() {
+        let (_tmp, layout, work, config) = harness();
+        let (result, stdout) = run(
+            &layout,
+            &work,
+            &config,
+            ReviewOpts {
+                range: "HEAD~1..HEAD".to_string(),
+                json: false,
+                overall_deadline_override: Some(expired_deadline()),
+                ..Default::default()
+            },
+        );
+        assert!(result.is_ok(), "{result:?}\n{stdout}");
+        let lines: Vec<&str> = stdout.lines().collect();
+        assert!(
+            (2..=4).contains(&lines.len()),
+            "human path 2–4 lines, got {}: {stdout}",
+            lines.len()
+        );
+        assert!(
+            stdout.contains("overall stop (git)"),
+            "partial human names stage: {stdout}"
+        );
+    }
+
+    #[test]
+    fn review_completeness__history_only_copy_omits_scope() {
+        let history = crate::impact::budget::completeness_for_walk(
+            crate::impact::budget::HistoryWalkStop::Budget,
+            500,
+            12,
+            None,
+            crate::impact::budget::CompletenessFilter::Default,
+            None,
+            Some(45),
+        )
+        .expect("walk");
+        assert!(history.scope.is_none());
+        let env = ReviewEnvelope {
+            schema_version: 1,
+            kind: "review".into(),
+            analysis_mode: "range".into(),
+            range: "HEAD~1...HEAD".into(),
+            base_ref: "HEAD~1".into(),
+            head_ref: "HEAD".into(),
+            files_changed: vec![],
+            files_changed_truncated: false,
+            blast: ReviewBlast {
+                status: "ok".into(),
+                files_scanned: 1,
+                files_total: 1,
+                files_capped: false,
+                nodes: 0,
+                edges: 0,
+                reason: Some(blast_reason_for(&history)),
+            },
+            affected_symbols: vec![],
+            tests: ReviewTests {
+                status: "unavailable".into(),
+                exercising: vec![],
+                untested: vec![],
+                notes: None,
+            },
+            contracts: ReviewContracts {
+                status: "unavailable".into(),
+                items: vec![],
+                truncated: false,
+            },
+            promised_requirements: ReviewRequirements {
+                status: "none".into(),
+                items: vec![],
+                truncated: false,
+            },
+            requirements_files_truncated: false,
+            files_intended: None,
+            files_unexpected: None,
+            files_intended_truncated: false,
+            files_unexpected_truncated: false,
+            prior_decisions: vec![],
+            prior_decisions_truncated: false,
+            implementation_claims: vec![],
+            implementation_claims_truncated: false,
+            unresolved_findings: ReviewFindings {
+                status: "none".into(),
+                items: vec![],
+                truncated: false,
+            },
+            ci_evidence: ReviewCiEvidence {
+                status: "unavailable".into(),
+                items: vec![],
+                truncated: false,
+                bound_head: None,
+                historical: vec![],
+                historical_truncated: false,
+            },
+            coordinated: None,
+            completeness: Some(history),
+        };
+        let json = serde_json::to_value(&env).expect("json");
+        assert!(json.get("completeness").is_some(), "{json}");
+        assert!(json["completeness"].get("scope").is_none(), "{json}");
+        assert_eq!(json["completeness"]["stop"], "budget");
+        assert!(
+            json["blast"]["reason"]
+                .as_str()
+                .unwrap_or("")
+                .contains("history walk stopped"),
+            "{json}"
         );
     }
 
@@ -1623,6 +2229,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: Some("0304".to_string()),
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_err(), "{result:?}");
@@ -1644,6 +2251,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: None,
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -1667,6 +2275,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: None,
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -1695,10 +2304,26 @@ mod tests {
                 requirements: Vec::new(),
                 id: None,
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}");
         assert!(!impact.exists());
+
+        let (_tmp2, layout2, work2, config2) = harness_with_storage();
+        let impact2 = layout2.reports_dir().join("latest-impact.json");
+        let (result2, _) = run(
+            &layout2,
+            &work2,
+            &config2,
+            ReviewOpts {
+                range: "HEAD~1..HEAD".to_string(),
+                json: true,
+                ..Default::default()
+            },
+        );
+        assert!(result2.is_ok(), "{result2:?}");
+        assert!(!impact2.exists());
     }
 
     #[test]
@@ -1715,6 +2340,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: None,
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -1747,6 +2373,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: None,
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -1785,6 +2412,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: None,
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -1820,6 +2448,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: Some("0304".to_string()),
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -1874,6 +2503,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: None,
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -1921,6 +2551,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: None,
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -1961,6 +2592,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: None,
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -1983,6 +2615,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: None,
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2006,6 +2639,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: None,
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2105,6 +2739,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: None,
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2158,6 +2793,7 @@ mod tests {
                 requirements: vec![padded],
                 id: None,
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2189,6 +2825,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: Some("0304".to_string()),
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2229,6 +2866,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: Some("0304".to_string()),
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2334,6 +2972,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: None,
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2371,6 +3010,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: Some("0304-AgentReviewPacket".to_string()),
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2416,6 +3056,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: Some("0304".to_string()),
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2459,6 +3100,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: Some("323".to_string()),
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2491,6 +3133,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: Some("323".to_string()),
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2523,6 +3166,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: Some("0999-NoSuch".to_string()),
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2580,6 +3224,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: Some("0304".to_string()),
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2648,6 +3293,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: Some("1".to_string()),
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2702,6 +3348,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: Some("1".to_string()),
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2740,6 +3387,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: None,
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2779,6 +3427,7 @@ mod tests {
                 requirements: Vec::new(),
                 id: None,
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2822,6 +3471,7 @@ mod tests {
                 requirements: reqs,
                 id: None,
                 timeout: None,
+                ..Default::default()
             },
         );
         assert!(result.is_ok(), "{result:?}\n{stdout}");
@@ -2888,6 +3538,7 @@ mod tests {
                 historical_truncated: false,
             },
             coordinated: None,
+            completeness: None,
         };
         let omitted = serde_json::to_string(&quiet).expect("json");
         assert!(
@@ -2956,6 +3607,7 @@ mod tests {
                 historical_truncated: false,
             },
             coordinated: None,
+            completeness: None,
         };
         env.blast.reason = Some("history walk stopped (budget)".into());
         let json = serde_json::to_value(&env).expect("json");
@@ -2970,7 +3622,25 @@ mod tests {
         );
         assert!(
             json.get("completeness").is_none(),
-            "review envelope must not grow a completeness key: {json}"
+            "complete review envelope omits completeness: {json}"
+        );
+
+        env.completeness = Some(completeness_for_overall(
+            CompletenessStop::Budget,
+            Some(25),
+            "federated",
+        ));
+        env.blast.reason = Some(blast_reason_for(env.completeness.as_ref().expect("c")));
+        let overall = serde_json::to_value(&env).expect("json");
+        assert_eq!(overall["completeness"]["scope"], "overall");
+        assert_eq!(overall["completeness"]["stage"], "federated");
+        assert_eq!(overall["completeness"]["stop"], "budget");
+        assert!(
+            overall["blast"]["reason"]
+                .as_str()
+                .unwrap_or("")
+                .contains("overall analysis stopped"),
+            "{overall}"
         );
     }
 }
