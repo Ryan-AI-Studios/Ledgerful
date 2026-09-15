@@ -11,6 +11,17 @@ fn parse(args: &[&str]) -> Commands {
 }
 
 #[test]
+fn search_trigrams_json_is_machine_output() {
+    assert!(parse(&["search-trigrams", "led", "--json"]).is_machine_output());
+    assert!(!parse(&["search-trigrams", "led"]).is_machine_output());
+    let shape = parse(&["search-trigrams", "led", "--json"]).argv_shape();
+    assert!(
+        shape.contains("json"),
+        "argv_shape must record json: {shape}"
+    );
+}
+
+#[test]
 fn machine_mode_selected_for_json_flags() {
     assert!(parse(&["verify", "--json"]).is_machine_output());
     assert!(parse(&["ledger", "status", "--json"]).is_machine_output());

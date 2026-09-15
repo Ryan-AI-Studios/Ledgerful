@@ -1492,8 +1492,11 @@ impl Commands {
                     f.push("force");
                 }
             }
-            Commands::SearchTrigrams(SearchTrigramsArgs { limit, .. }) => {
-                if *limit != 100 {
+            Commands::SearchTrigrams(SearchTrigramsArgs { limit, json, .. }) => {
+                if *json {
+                    f.push("json");
+                }
+                if *limit != super::super::SEARCH_TRIGRAMS_DEFAULT_LIMIT {
                     f.push("limit");
                 }
             }

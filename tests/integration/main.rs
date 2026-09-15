@@ -51,6 +51,7 @@ mod cli_reset;
 mod cli_scan;
 mod cli_scannability;
 mod cli_search;
+mod cli_search_trigrams;
 mod cli_semantic_honesty;
 mod cli_semantic_progress_0161;
 mod cli_services_diff_messaging;

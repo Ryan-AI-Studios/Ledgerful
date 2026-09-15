@@ -340,12 +340,34 @@ pub struct DemoArgs {
     pub force: bool,
 }
 
-/// High-performance trigram-based search (low-level, hidden).
+/// Default `--limit` for `search-trigrams`.
+pub const SEARCH_TRIGRAMS_DEFAULT_LIMIT: u64 = 100;
+/// Hard maximum accepted by clap `range(1..=5000)` (same cap as regex candidate scan).
+pub const SEARCH_TRIGRAMS_MAX_LIMIT: u64 = 5000;
+
+/// High-performance content-trigram path search (low-level, hidden).
+///
+/// Each positional argument is one 3-character content trigram (AND).
+/// Ordinary source search: `ledgerful search <query>`.
 #[derive(Args, Debug)]
+#[command(after_help = "\
+Each positional argument is one 3-character content trigram, AND-combined
+against indexed file contents (not path names, not snippets).
+Ordinary source search: ledgerful search <query>
+Hyphen-leading tokens need -- (same as search).
+")]
 pub struct SearchTrigramsArgs {
-    /// Trigrams to search for (space separated)
+    /// Trigrams to search for (space separated; each must be 3 characters)
     pub trigrams: Vec<String>,
-    /// Limit results
-    #[arg(long, short, default_value_t = 100)]
-    pub limit: usize,
+    /// Limit results (1..=5000)
+    #[arg(
+        long,
+        short,
+        default_value_t = SEARCH_TRIGRAMS_DEFAULT_LIMIT,
+        value_parser = clap::value_parser!(u64).range(1..=SEARCH_TRIGRAMS_MAX_LIMIT)
+    )]
+    pub limit: u64,
+    /// Machine-readable envelope (schemaVersion 1, kind searchTrigrams)
+    #[arg(long)]
+    pub json: bool,
 }

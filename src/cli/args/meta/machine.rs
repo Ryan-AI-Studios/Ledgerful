@@ -165,7 +165,7 @@ impl Commands {
                 SyncSubcommands::Log { json, .. } => *json,
                 _ => false,
             },
-            Commands::SearchTrigrams(SearchTrigramsArgs { .. }) => false,
+            Commands::SearchTrigrams(SearchTrigramsArgs { json, .. }) => *json,
             Commands::Audit(AuditArgs { json, .. }) => *json,
             Commands::Schedule { .. } => false,
             #[cfg(feature = "daemon")]

@@ -335,9 +335,16 @@ pub fn run_with(cli: Cli) -> Result<()> {
         }) => crate::commands::watch::execute_watch(interval, json, no_graph_sync),
         #[cfg(feature = "sync")]
         Commands::Sync { subcommand } => crate::commands::sync::handle(subcommand),
-        Commands::SearchTrigrams(SearchTrigramsArgs { trigrams, limit }) => {
-            crate::commands::search::execute_search_trigrams(trigrams, limit)
-        }
+        Commands::SearchTrigrams(SearchTrigramsArgs {
+            trigrams,
+            limit,
+            json,
+        }) => crate::commands::search::execute_search_trigrams(
+            trigrams,
+            limit,
+            json,
+            crate::cli::resolve_quiet(cli.quiet),
+        ),
         Commands::Audit(AuditArgs {
             entity,
             pos_entity,
