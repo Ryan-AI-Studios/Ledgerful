@@ -43,6 +43,15 @@ fn machine_mode_selected_for_json_flags() {
     assert!(parse(&["hotspots", "explain", "src/lib.rs", "--json"]).is_machine_output());
     assert!(parse(&["hotspots", "--json", "explain", "src/lib.rs"]).is_machine_output());
     assert!(!parse(&["hotspots", "explain", "src/lib.rs"]).is_machine_output());
+    assert!(parse(&["hotspots", "budget", "--json"]).is_machine_output());
+    assert!(!parse(&["hotspots", "budget"]).is_machine_output());
+    assert!(
+        parse(&["hotspots", "budget", "--json"])
+            .argv_shape()
+            .contains("json"),
+        "{}",
+        parse(&["hotspots", "budget", "--json"]).argv_shape()
+    );
     match parse(&["hotspots", "explain", "src/lib.rs", "--json"]) {
         Commands::Hotspots { args } => {
             assert!(args.command.as_ref().is_some_and(|c| matches!(

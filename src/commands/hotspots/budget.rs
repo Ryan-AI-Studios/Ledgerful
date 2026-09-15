@@ -45,6 +45,30 @@ impl ThresholdSource {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(super) enum BudgetEmptyReason {
+    NoSnapshot,
+    AllNonFinite,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PersistedScoreClass {
+    Finite,
+    NonFinite,
+}
+
+pub(super) fn classify_persisted_score(score: f64) -> PersistedScoreClass {
+    if score.is_finite() {
+        PersistedScoreClass::Finite
+    } else {
+        PersistedScoreClass::NonFinite
+    }
+}
+
+const HOTSPOT_HISTORY_DATASET: &str = "hotspot_history";
+const SNAPSHOT_NEXT: &str = "ledgerful hotspots --snapshot";
+
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct BudgetViolation {
@@ -57,6 +81,7 @@ pub(super) struct BudgetViolation {
 #[serde(rename_all = "camelCase")]
 pub(super) struct BudgetReport {
     pub status: BudgetStatus,
+    pub dataset: &'static str,
     pub score_unit: &'static str,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub threshold: Option<f64>,
@@ -74,6 +99,10 @@ pub(super) struct BudgetReport {
     pub legacy_score_count: u64,
     #[serde(skip_serializing_if = "is_zero_u64")]
     pub skipped_non_finite: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub empty_reason: Option<BudgetEmptyReason>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub next: Option<String>,
 }
 
 fn is_zero_u64(n: &u64) -> bool {
@@ -115,15 +144,19 @@ pub(super) fn evaluate_hotspot_budget(
 
     for row in rows {
         let (path, score) = row.into_diagnostic()?;
-        if !score.is_finite() {
-            skipped_non_finite += 1;
-            continue;
+        match classify_persisted_score(score) {
+            PersistedScoreClass::NonFinite => {
+                skipped_non_finite += 1;
+                continue;
+            }
+            PersistedScoreClass::Finite => {
+                evaluated += 1;
+                if score > 1.0 {
+                    legacy_score_count += 1;
+                }
+                finite_scores.push((path, score));
+            }
         }
-        evaluated += 1;
-        if score > 1.0 {
-            legacy_score_count += 1;
-        }
-        finite_scores.push((path, score));
     }
 
     let resolved = resolve_threshold(cli_threshold, config_threshold, fail);
@@ -164,8 +197,19 @@ pub(super) fn evaluate_hotspot_budget(
         }
     };
 
+    let empty_reason = match status {
+        BudgetStatus::NoData if snapshot_at.is_none() => Some(BudgetEmptyReason::NoSnapshot),
+        BudgetStatus::NoData if skipped_non_finite > 0 => Some(BudgetEmptyReason::AllNonFinite),
+        _ => None,
+    };
+    let next = match empty_reason {
+        Some(BudgetEmptyReason::NoSnapshot) => Some(SNAPSHOT_NEXT.to_string()),
+        _ => None,
+    };
+
     Ok(BudgetReport {
         status,
+        dataset: HOTSPOT_HISTORY_DATASET,
         score_unit: "score",
         threshold,
         threshold_source,
@@ -176,6 +220,8 @@ pub(super) fn evaluate_hotspot_budget(
         head,
         legacy_score_count,
         skipped_non_finite,
+        empty_reason,
+        next,
     })
 }
 
@@ -242,9 +288,17 @@ pub(super) fn format_budget_human(report: &BudgetReport) -> String {
             }
         }
         BudgetStatus::NoData => {
-            lines.push(
-                "  No hotspot_history snapshot. Run `ledgerful hotspots --snapshot`.".to_string(),
-            );
+            if report.empty_reason == Some(BudgetEmptyReason::AllNonFinite) {
+                lines.push(format!(
+                    "  Latest hotspot_history snapshot has no finite scores (skippedNonFinite={}). Not a pass.",
+                    report.skipped_non_finite
+                ));
+            } else {
+                lines.push(
+                    "  No hotspot_history snapshot. Run `ledgerful hotspots --snapshot`."
+                        .to_string(),
+                );
+            }
         }
         BudgetStatus::NotConfigured => {
             lines.push("  --fail requires --threshold or [hotspots] budget_threshold.".to_string());
@@ -260,8 +314,10 @@ pub(super) fn format_budget_human(report: &BudgetReport) -> String {
 }
 
 fn evaluated_snapshot_suffix(report: &BudgetReport) -> String {
+    let show_age = report.status != BudgetStatus::NoData
+        || report.empty_reason == Some(BudgetEmptyReason::AllNonFinite);
     match (&report.snapshot_at, report.snapshot_age_secs) {
-        (Some(ts), Some(age)) if report.status != BudgetStatus::NoData => {
+        (Some(ts), Some(age)) if show_age => {
             format!(" (snapshot {ts} age {age}s)")
         }
         _ => String::new(),

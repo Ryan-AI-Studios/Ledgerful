@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Hotspot budget data readiness (0353):** `hotspots budget --json` always
+  names `dataset: hotspot_history`. Empty snapshots add omit-empty
+  `emptyReason: noSnapshot` and print-only `next: ledgerful hotspots --snapshot`
+  (do not auto-run). All-non-finite stays `NO_DATA` without claiming the
+  snapshot is missing. 0310 statuses, `--fail`, and default 0.5 are unchanged.
+
 - **Trigram search diagnostic readout (0352):** hidden `search-trigrams`
   stays a content-trigram AND path list (stdout one path per line) and
   now reports count, truncation, empty/invalid/empty-index states on

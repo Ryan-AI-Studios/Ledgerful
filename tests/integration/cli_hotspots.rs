@@ -1257,8 +1257,11 @@ fn hotspots_budget_fail_empty_exits_1() {
         serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).unwrap();
     assert_eq!(json["status"], "NOT_CONFIGURED");
     assert_eq!(json["scoreUnit"], "score");
+    assert_eq!(json["dataset"], "hotspot_history");
     assert!(json.get("threshold").is_none(), "{json}");
     assert!(json.get("schemaVersion").is_none(), "{json}");
+    assert!(json.get("emptyReason").is_none(), "{json}");
+    assert!(json.get("next").is_none(), "{json}");
 }
 
 #[test]
@@ -1309,4 +1312,97 @@ fn hotspots_budget_fail_violation_exits_1() {
     let info_json: serde_json::Value =
         serde_json::from_str(&String::from_utf8_lossy(&informational.stdout)).unwrap();
     assert_eq!(info_json["status"], "VIOLATION");
+}
+
+#[test]
+fn hotspots_budget_empty_json_envelope() {
+    let tmp = setup_young_indexed_repo();
+    let root = tmp.path();
+    assert_eq!(hotspot_history_count(root), 0);
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+    let output = Command::new(ledgerful_bin)
+        .args(["hotspots", "budget", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert_eq!(
+        output.status.code(),
+        Some(0),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&output.stderr),
+        String::from_utf8_lossy(&output.stdout)
+    );
+    let json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&output.stdout)).unwrap();
+    assert_eq!(json["status"], "NO_DATA");
+    assert_eq!(json["dataset"], "hotspot_history");
+    assert_eq!(json["emptyReason"], "noSnapshot");
+    assert_eq!(json["next"], "ledgerful hotspots --snapshot");
+    assert!(json.get("schemaVersion").is_none(), "{json}");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("hotspots budget failed"),
+        "budget-owned fail line: {stderr}"
+    );
+    assert!(
+        !stderr.contains("Hotspot Budget Check"),
+        "human table on stderr: {stderr}"
+    );
+}
+
+#[test]
+fn hotspots_budget_populated_pass_and_violation() {
+    let tmp = setup_young_indexed_repo();
+    let root = tmp.path();
+    seed_hotspot_history_score(root, "src/ok.rs", 0.1, "2026-01-01T00:00:00Z");
+    let before = hotspot_history_count(root);
+    let ledgerful_bin = env!("CARGO_BIN_EXE_ledgerful");
+
+    let pass = Command::new(ledgerful_bin)
+        .args(["hotspots", "budget", "--threshold", "0.5", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert_eq!(
+        pass.status.code(),
+        Some(0),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&pass.stderr),
+        String::from_utf8_lossy(&pass.stdout)
+    );
+    let pass_json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&pass.stdout)).unwrap();
+    assert_eq!(pass_json["status"], "OK");
+    assert_eq!(pass_json["dataset"], "hotspot_history");
+    assert!(pass_json.get("next").is_none(), "{pass_json}");
+    assert!(pass_json.get("emptyReason").is_none(), "{pass_json}");
+
+    seed_hotspot_history_score(root, "src/hot.rs", 0.9, "2026-01-02T00:00:00Z");
+    let fail = Command::new(ledgerful_bin)
+        .args([
+            "hotspots",
+            "budget",
+            "--fail",
+            "--threshold",
+            "0.5",
+            "--json",
+        ])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert_eq!(
+        fail.status.code(),
+        Some(1),
+        "stderr={} stdout={}",
+        String::from_utf8_lossy(&fail.stderr),
+        String::from_utf8_lossy(&fail.stdout)
+    );
+    let fail_json: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&fail.stdout)).unwrap();
+    assert_eq!(fail_json["status"], "VIOLATION");
+    assert_eq!(
+        hotspot_history_count(root),
+        before + 1,
+        "budget inspect must not write extra hotspot_history rows"
+    );
 }
