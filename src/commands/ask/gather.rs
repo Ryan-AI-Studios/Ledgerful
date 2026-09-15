@@ -240,6 +240,7 @@ pub(crate) fn gather_semantic_and_kg(
     if semantic
         && !auto_index
         && let Some(cozo) = storage.cozo()
+        && cozo.snippet_embedding_dim().ok().flatten().is_some()
         && let Ok(semantic_engine) =
             crate::semantic::SemanticDiscovery::new(config.local_model.clone(), cozo)
         && let Ok(readiness) = semantic_engine.check_readiness()
@@ -309,19 +310,23 @@ pub(crate) fn gather_semantic_and_kg(
     };
 
     if relevant_chunks.is_empty() {
-        relevant_chunks = pruner::query_relevant_chunks(
-            &gathered.query_string,
-            &config.local_model,
-            storage.get_connection(),
-            limit,
-            config.local_model.chunk_min_similarity,
-            config.local_model.chunk_dedup_threshold,
-        )
-        .unwrap_or_else(|e| {
-            tracing::warn!("Chunk retrieval failed: {e}, proceeding without chunks");
-            Vec::new()
-        });
+        relevant_chunks = tantivy_fallback_chunks(layout, &gathered.query_string, limit);
         evidence.bm25 = relevant_chunks.len();
+
+        if relevant_chunks.is_empty() {
+            relevant_chunks = pruner::query_relevant_chunks(
+                &gathered.query_string,
+                &config.local_model,
+                storage.get_connection(),
+                limit,
+                config.local_model.chunk_min_similarity,
+                config.local_model.chunk_dedup_threshold,
+            )
+            .unwrap_or_else(|e| {
+                tracing::warn!("Chunk retrieval failed: {e}, proceeding without chunks");
+                Vec::new()
+            });
+        }
 
         // KG Fallback logic — wording must not claim "index empty" on failure/skip.
         if gathered.is_global
@@ -375,6 +380,47 @@ pub(crate) fn gather_semantic_and_kg(
     gathered.relevant_chunks = relevant_chunks;
     gathered.semantic_gather_kind = semantic_gather_kind;
     gathered.evidence = evidence;
+}
+
+fn tantivy_fallback_chunks(layout: &Layout, query: &str, limit: usize) -> Vec<RankedChunk> {
+    let Ok(engine) =
+        crate::search::TantivySearchEngine::open_or_create(layout.search_index_dir().as_std_path())
+    else {
+        return Vec::new();
+    };
+    let mut queries = Vec::new();
+    if !query.trim().is_empty() {
+        queries.push(query.to_string());
+    }
+    queries.extend(crate::commands::search::tokenize_search_query(query));
+    let mut merged: std::collections::BTreeMap<String, RankedChunk> =
+        std::collections::BTreeMap::new();
+    for q in queries {
+        let Ok(hits) = engine.search(&q, limit.saturating_mul(2).max(1)) else {
+            continue;
+        };
+        for hit in hits {
+            let path = crate::search::tantivy_engine::normalize_search_path(&hit.path);
+            let content = hit.snippet.unwrap_or_default();
+            if content.is_empty() {
+                continue;
+            }
+            merged.entry(path.clone()).or_insert(RankedChunk {
+                source: path,
+                content,
+                score: hit.score,
+            });
+        }
+    }
+    let mut out: Vec<RankedChunk> = merged.into_values().collect();
+    out.sort_by(|a, b| {
+        b.score
+            .partial_cmp(&a.score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.source.cmp(&b.source))
+    });
+    out.truncate(limit);
+    out
 }
 
 #[cfg(test)]

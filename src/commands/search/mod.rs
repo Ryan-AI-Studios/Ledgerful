@@ -14,6 +14,7 @@ pub use envelope::{
     SearchSemantic,
 };
 pub(crate) use preview::{ASK_PREVIEW_CHARS, preview_semantic_hit};
+pub(crate) use retrieve::{collect_token_lexical_hits, tokenize_search_query};
 pub use retrieve::{is_identifier_likely, is_regex_likely};
 pub use trigrams::execute_search_trigrams;
 
@@ -152,84 +153,108 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
             .cozo()
             .ok_or_else(|| miette::miette!("CozoDB storage not initialized"))?;
 
-        let semantic_engine =
-            crate::semantic::SemanticDiscovery::new(config.local_model.clone(), cozo)?;
-
-        // --- Phase 1: Readiness Check ---
-        // Interactive auto-index prompt removed (0096 DoD-5): it named
-        // `index --semantic` but ran incremental without semantic, and
-        // re-prompted forever on repos with nothing to index. Explicit
-        // state-driven warnings replace it.
-        let readiness = semantic_engine.check_readiness()?;
-
-        if args.is_machine() {
-            collector.set_semantic_readiness(&readiness);
-        } else {
-            for msg in crate::semantic::semantic_readiness_messages(&readiness) {
-                let is_error = msg.contains("dimension mismatch") || msg.contains("Dimension");
-                if is_error {
-                    println!(
-                        "{} {}",
-                        "ERROR".if_supports_color(Stream::Stdout, |s| s
-                            .style(Style::new().red().bold())),
-                        msg
-                    );
-                } else {
-                    println!(
-                        "{} {}",
-                        "WARN".if_supports_color(Stream::Stdout, |s| s
-                            .style(Style::new().yellow().bold())),
-                        msg
-                    );
-                }
-            }
-        }
-
-        debug!("Performing semantic search for: {}", args.query);
-        if !args.is_machine() {
-            println!("[Search Mode: Semantic]");
-        }
-        // On Err: print *failure* message (never Ready "no matches") and fall through.
-        // On Ok([]): print empty-result once in the empty branch below.
-        // Never both (P3 double-emit). JSON Err emits semantic.error / semantic_error.
-        // Overfetch limit+1 so human output can show "and more" without claiming K (0100 DoD-8).
-        let semantic_fetch = args.limit.saturating_add(1);
-        let (mut results, query_succeeded) = match semantic_engine.query(
-            layout.root.as_std_path(),
-            &args.query,
-            semantic_fetch,
-        ) {
-            Ok((r, filtered_foreign)) => {
-                if filtered_foreign > 0 {
-                    collector.set_filtered_foreign_count(filtered_foreign);
-                    debug!(
-                        "Semantic query filtered {filtered_foreign} foreign path hit(s) outside work root"
-                    );
-                }
-                (r, true)
-            }
-            Err(e) => {
-                // Unconfigured / unreachable / Ready runtime failure: degrade to BM25
-                // with honesty about whether the search ran or failed.
-                let failure_msg = crate::semantic::semantic_query_failure_message(&readiness, &e);
+        let emit_readiness =
+            |collector: &mut SearchCollector,
+             args: &SearchArgs,
+             readiness: &crate::semantic::SemanticReadiness| {
                 if args.is_machine() {
-                    collector.set_semantic_error(failure_msg);
+                    collector.set_semantic_readiness(readiness);
                 } else {
-                    println!(
-                        "{} {}",
-                        "WARN".if_supports_color(Stream::Stdout, |s| s
-                            .style(Style::new().yellow().bold())),
-                        failure_msg
-                    );
+                    for msg in crate::semantic::semantic_readiness_messages(readiness) {
+                        let is_error =
+                            msg.contains("dimension mismatch") || msg.contains("Dimension");
+                        if is_error {
+                            println!(
+                                "{} {}",
+                                "ERROR".if_supports_color(Stream::Stdout, |s| s
+                                    .style(Style::new().red().bold())),
+                                msg
+                            );
+                        } else {
+                            println!(
+                                "{} {}",
+                                "WARN".if_supports_color(Stream::Stdout, |s| s
+                                    .style(Style::new().yellow().bold())),
+                                msg
+                            );
+                        }
+                    }
                 }
-                debug!("Semantic query failed: {e}");
-                (Vec::new(), false)
-            }
-        };
+            };
+
+        let (mut results, query_succeeded, semantic_readiness) =
+            match crate::semantic::SemanticDiscovery::new(config.local_model.clone(), cozo) {
+                Ok(semantic_engine) => {
+                    let readiness = semantic_engine.check_readiness()?;
+                    emit_readiness(&mut collector, &args, &readiness);
+                    debug!("Performing semantic search for: {}", args.query);
+                    if !args.is_machine() {
+                        println!("[Search Mode: Semantic]");
+                    }
+                    let semantic_fetch = args.limit.saturating_add(1);
+                    match semantic_engine.query(
+                        layout.root.as_std_path(),
+                        &args.query,
+                        semantic_fetch,
+                    ) {
+                        Ok((r, filtered_foreign)) => {
+                            if filtered_foreign > 0 {
+                                collector.set_filtered_foreign_count(filtered_foreign);
+                                debug!(
+                                    "Semantic query filtered {filtered_foreign} foreign path hit(s) outside work root"
+                                );
+                            }
+                            (r, true, Some(readiness.clone()))
+                        }
+                        Err(e) => {
+                            let failure_msg =
+                                crate::semantic::semantic_query_failure_message(&readiness, &e);
+                            if args.is_machine() {
+                                collector.set_semantic_error(failure_msg);
+                            } else {
+                                println!(
+                                    "{} {}",
+                                    "WARN".if_supports_color(Stream::Stdout, |s| s
+                                        .style(Style::new().yellow().bold())),
+                                    failure_msg
+                                );
+                            }
+                            debug!("Semantic query failed: {e}");
+                            (Vec::new(), false, Some(readiness))
+                        }
+                    }
+                }
+                Err(e) => {
+                    let probe = crate::embed::client::check_local_model(&config.local_model);
+                    let backend_status =
+                        crate::semantic::backend_status_from_probe(&config.local_model, &probe);
+                    let readiness = crate::semantic::SemanticReadiness {
+                        backend_status,
+                        model_name: config.local_model.embedding_model.clone(),
+                        dimensions: 0,
+                        vector_count: 0,
+                        zero_vector_count: 0,
+                        is_stale: false,
+                        dimension_mismatch: false,
+                    };
+                    emit_readiness(&mut collector, &args, &readiness);
+                    if args.is_machine() {
+                        collector.set_semantic_error(format!("{e:#}"));
+                    }
+                    debug!("Semantic engine unavailable ({e}); falling through to BM25");
+                    (Vec::new(), false, Some(readiness))
+                }
+            };
 
         if !results.is_empty() {
+            let extra_lexical =
+                collect_token_lexical_hits(&layout, &args.query, &results, args.limit);
+            // Keep semantic primary but reserve at least one slot so a
+            // token-FTS path (e.g. config_verify.rs) can enter a full top-k.
+            let reserved = extra_lexical.len().min(1).min(args.limit.saturating_sub(1));
             let truncated = results.len() > args.limit;
-            results.truncate(args.limit);
+            results.truncate(args.limit.saturating_sub(reserved));
+            let extra_lexical: Vec<_> = extra_lexical.into_iter().take(reserved).collect();
             collector.set_truncated(truncated);
             let work_root = layout.root.as_std_path();
             if args.is_machine() {
@@ -260,6 +285,23 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                         bridge_memory_id: memory_id,
                     });
                 }
+                for (path, score, snippet, line) in extra_lexical {
+                    let path = crate::search::tantivy_engine::normalize_search_path(&path);
+                    let bridge_content = match line {
+                        Some(n) => format!("{path}:{n}: {snippet}"),
+                        None => format!("{path}: {snippet}"),
+                    };
+                    collector.push_hit(HitEmit {
+                        kind: "bm25_match",
+                        path: path.clone(),
+                        line,
+                        score: Some(score as f64),
+                        content: snippet,
+                        bridge_content,
+                        bridge_relevance: score as f64,
+                        bridge_memory_id: path,
+                    });
+                }
             } else {
                 println!(
                     "\n{}",
@@ -287,6 +329,14 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                         println!("  (source unavailable)");
                     }
                 }
+                for (path, score, snippet, line) in extra_lexical {
+                    let path = crate::search::tantivy_engine::normalize_search_path(&path);
+                    let line_bit = line.map(|n| format!(":{n}")).unwrap_or_default();
+                    println!("- {path}{line_bit} [bm25: {score:.4}]");
+                    if !snippet.is_empty() {
+                        println!("  {}", snippet.replace('\n', "\n  "));
+                    }
+                }
                 if truncated {
                     print_search_truncation_affordance();
                 }
@@ -297,11 +347,14 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         }
 
         // Only after a successful query that returned no hits (true empty / no-matches).
-        if query_succeeded && !args.is_machine() {
+        if query_succeeded
+            && !args.is_machine()
+            && let Some(ref readiness) = semantic_readiness
+        {
             println!(
                 "{} ⚠️ {}",
                 "WARN".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold())),
-                crate::semantic::semantic_empty_result_message(&readiness)
+                crate::semantic::semantic_empty_result_message(readiness)
             );
         }
     }

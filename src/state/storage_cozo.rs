@@ -201,6 +201,26 @@ impl CozoStorage {
         Ok(indices)
     }
 
+    /// Stored `snippet_embedding.embedding` F32 width, if the relation exists.
+    /// Walks `::columns` and selects the `embedding` column (not the first row).
+    pub fn snippet_embedding_dim(&self) -> Result<Option<usize>> {
+        let relations = self.get_relations()?;
+        if !relations.contains(&"snippet_embedding".to_string()) {
+            return Ok(None);
+        }
+        let res = self.run_script("::columns snippet_embedding")?;
+        for row in res.rows {
+            let Some((name, typ)) = cozo_column_name_and_type(&row) else {
+                continue;
+            };
+            if name != "embedding" {
+                continue;
+            }
+            return Ok(parse_f32_vec_dim(&typ).filter(|d| *d > 0));
+        }
+        Ok(None)
+    }
+
     pub fn verify_embedding_dimension(&self, relation: &str, expected_dim: usize) -> Result<()> {
         if expected_dim == 0 {
             return Err(miette::miette!(
@@ -528,6 +548,23 @@ mod tests {
         assert_eq!(parse_f32_vec_dim("<F32;0>"), Some(0));
         assert_eq!(parse_f32_vec_dim("  <F32; 384>  "), Some(384));
         assert_eq!(parse_f32_vec_dim("Vec<F32>"), None);
+    }
+
+    #[test]
+    fn snippet_embedding_dim_none_when_relation_missing() {
+        let storage = CozoStorage::new_in_memory().unwrap();
+        assert_eq!(storage.snippet_embedding_dim().unwrap(), None);
+    }
+
+    #[test]
+    fn snippet_embedding_dim_selects_embedding_column() {
+        let storage = CozoStorage::new_in_memory().unwrap();
+        storage
+            .run_script(
+                ":create snippet_embedding {file_path, name, line_offset => embedding: <F32; 768>}",
+            )
+            .expect("create snippet_embedding");
+        assert_eq!(storage.snippet_embedding_dim().unwrap(), Some(768));
     }
 
     #[test]

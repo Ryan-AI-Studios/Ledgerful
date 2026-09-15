@@ -18,6 +18,10 @@ This document tracks dependency and project-level compatibility concerns for the
 
 ## Project-Level Changes
 
+### Semantic query no longer guesses 384 (0351)
+
+**`SemanticDiscovery::new` no longer defaults unset `local_model.dimensions` to 384.** Query paths resolve configured > probed > stored `snippet_embedding` width. If none of those is a positive dim, construction returns an error; `search --semantic` falls through to BM25 instead of exiting. Ask does not create or drop the stored relation on mismatch. Sample config uses `dimensions` (not `embedding_dimensions`).
+
 ### Unscoped `audit` / `ledger audit` `--timeout` is overall emit (0350)
 
 **Breaking for scripts that treated `audit --timeout` / `ledger audit --timeout` as the 0308 history-walk budget:**
