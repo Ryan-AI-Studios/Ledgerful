@@ -678,7 +678,10 @@ fn session_skips_git_history_enrichment() {
     );
     assert!(envelope.change_context.read_set.len() <= SESSION_MAX_FILES);
     if let Some(c) = &envelope.hotspots.completeness {
-        assert_eq!(c.filter, crate::impact::budget::CompletenessFilter::Session);
+        assert_eq!(
+            c.filter,
+            Some(crate::impact::budget::CompletenessFilter::Session)
+        );
     }
     let after = fs::read_to_string(report_path.as_std_path()).unwrap();
     assert_eq!(before, after, "session must not rewrite latest-impact.json");

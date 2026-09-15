@@ -81,6 +81,10 @@ pub struct ImpactConfig {
     /// Max total edges across all hops.
     #[serde(default = "default_blast_total_edges")]
     pub blast_total_edges: usize,
+    /// Prospective `--paths` overall emit budget (0347). Distinct from
+    /// `[hotspots] history_budget_secs`. `0` disables the wall clock.
+    #[serde(default = "default_prospective_budget_secs")]
+    pub prospective_budget_secs: u64,
 }
 
 fn default_risk_weights() -> HashMap<String, f64> {
@@ -113,6 +117,10 @@ fn default_blast_total_edges() -> usize {
     200
 }
 
+fn default_prospective_budget_secs() -> u64 {
+    25
+}
+
 impl Default for ImpactConfig {
     fn default() -> Self {
         Self {
@@ -121,6 +129,7 @@ impl Default for ImpactConfig {
             blast_depth_max: default_blast_depth_max(),
             blast_fanout_per_hop: default_blast_fanout_per_hop(),
             blast_total_edges: default_blast_total_edges(),
+            prospective_budget_secs: default_prospective_budget_secs(),
         }
     }
 }

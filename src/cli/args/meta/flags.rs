@@ -25,6 +25,7 @@ impl Commands {
                 blast_depth,
                 paths,
                 include_governance,
+                timeout,
             }) => {
                 if *json {
                     f.push("json");
@@ -46,6 +47,9 @@ impl Commands {
                 }
                 if *include_governance {
                     f.push("include_governance");
+                }
+                if timeout.is_some() {
+                    f.push("timeout");
                 }
             }
             Commands::Session(SessionArgs { json }) => {
@@ -94,6 +98,7 @@ impl Commands {
                 include_governance,
                 mode,
                 full,
+                timeout,
             }) => {
                 if *impact {
                     f.push("impact");
@@ -131,6 +136,9 @@ impl Commands {
                 if *full {
                     f.push("full");
                 }
+                if timeout.is_some() {
+                    f.push("timeout");
+                }
             }
             Commands::Impact(ImpactArgs {
                 all_parents,
@@ -142,6 +150,7 @@ impl Commands {
                 blast_depth,
                 paths,
                 include_governance,
+                timeout,
             }) => {
                 if *all_parents {
                     f.push("all_parents");
@@ -169,6 +178,9 @@ impl Commands {
                 }
                 if *include_governance {
                     f.push("include_governance");
+                }
+                if timeout.is_some() {
+                    f.push("timeout");
                 }
             }
             Commands::Index(IndexArgs {

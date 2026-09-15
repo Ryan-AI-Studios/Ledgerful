@@ -1,6 +1,7 @@
 use super::git::{files_changed_between, files_changed_since, parse_pr_range};
 use super::validate::{
     validate_blast_depth_requires_impact, validate_mode_requires_impact, validate_scan_args,
+    validate_timeout_requires_impact,
 };
 use crate::cli::args::ScanImpactMode;
 use crate::commands::scan_pr::{HistoryEnrichment, PrScanContext, PrScanReport};
@@ -219,6 +220,7 @@ pub fn execute_scan(
         false,
         None,
         false,
+        None,
     )
 }
 
@@ -247,6 +249,7 @@ pub fn execute_scan_with_blast_depth(
         false,
         None,
         false,
+        None,
     )
 }
 
@@ -265,6 +268,7 @@ pub fn execute_scan_with_opts(
     include_governance: bool,
     mode: Option<ScanImpactMode>,
     full: bool,
+    timeout: Option<u64>,
 ) -> Result<()> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
@@ -272,6 +276,7 @@ pub fn execute_scan_with_opts(
     validate_scan_args(&pr, &base_ref, &format, run_impact, summary, json, &out)?;
     validate_blast_depth_requires_impact(run_impact, &pr, blast_depth)?;
     validate_mode_requires_impact(run_impact, mode)?;
+    validate_timeout_requires_impact(run_impact, timeout)?;
 
     if !paths.is_empty() {
         if !run_impact {
@@ -475,7 +480,11 @@ pub fn execute_scan_with_opts(
         // impact path below handles uninitialized state on its own terms, and
         // auto-analysis is strictly an optimization for the observability-diff
         // empty-state case.
-        let auto_graph_storage = if !snapshot.changes.is_empty() {
+        // Prospective / explicit `--timeout` must not spend unbounded time in
+        // observability auto-graph before the overall analysis Instant starts.
+        let auto_graph_storage = if prospective || timeout.is_some() {
+            None
+        } else if !snapshot.changes.is_empty() {
             maybe_auto_analyze_graph(&snapshot.changes, &current_dir, &config, &layout)?
         } else {
             None
@@ -495,6 +504,8 @@ pub fn execute_scan_with_opts(
             // normally creates `.ledgerful/state` before sqlite open.
             layout.ensure_state_dir()?;
             let mut config = load_config(&layout).unwrap_or_default();
+            crate::impact::budget::apply_resolved_history_budget(&mut config, None);
+            crate::impact::budget::apply_resolved_prospective_budget(&mut config, timeout);
             let depth_note = crate::impact::enrichment::blast::apply_cli_blast_depth(
                 &mut config.impact.blast_depth,
                 config.impact.blast_depth_max,
@@ -504,27 +515,37 @@ pub fn execute_scan_with_opts(
                 Some(s) => s,
                 None => crate::commands::impact::open_storage_for_impact(&layout)?,
             };
+            let analysis_mode = if prospective {
+                "prospective"
+            } else if base_ref.is_some() {
+                "base_ref"
+            } else {
+                "working_tree"
+            };
+            let history_opts = crate::impact::orchestrator::ImpactHistoryOpts::for_run(
+                false,
+                crate::impact::budget::install_cancel_flag(),
+                analysis_mode,
+                timeout,
+                &config,
+            );
             let mut impact_packet = if prospective {
                 let parsed = prospective_parsed
                     .clone()
                     .ok_or_else(|| miette::miette!("internal: prospective paths missing"))?;
                 let snap = crate::commands::impact::build_prospective_snapshot(work_dir, &parsed)?;
-                crate::commands::impact::compute_impact_from_snapshot_in_memory_with_mode(
+                crate::commands::impact::compute_impact_from_snapshot_in_memory_with_history(
                     &storage,
                     &config,
                     work_dir,
                     snap,
                     include_governance,
-                    "prospective",
+                    analysis_mode,
                     parsed,
+                    history_opts,
                 )?
             } else {
-                let analysis_mode = if base_ref.is_some() {
-                    "base_ref"
-                } else {
-                    "working_tree"
-                };
-                crate::commands::impact::compute_impact_from_snapshot_in_memory_with_mode(
+                crate::commands::impact::compute_impact_from_snapshot_in_memory_with_history(
                     &storage,
                     &config,
                     work_dir,
@@ -532,6 +553,7 @@ pub fn execute_scan_with_opts(
                     include_governance,
                     analysis_mode,
                     Vec::new(),
+                    history_opts,
                 )?
             };
             if let Some(note) = depth_note {
@@ -551,6 +573,89 @@ pub fn execute_scan_with_opts(
                 full,
                 prospective,
             )?;
+            return Ok(());
+        }
+
+        if timeout.is_some() {
+            let mut config = load_config(&layout).unwrap_or_default();
+            crate::impact::budget::apply_resolved_history_budget(&mut config, None);
+            crate::impact::budget::apply_resolved_prospective_budget(&mut config, timeout);
+            let depth_note = crate::impact::enrichment::blast::apply_cli_blast_depth(
+                &mut config.impact.blast_depth,
+                config.impact.blast_depth_max,
+                blast_depth,
+            );
+            let storage = match auto_graph_storage {
+                Some(s) => s,
+                None => crate::commands::impact::open_storage_for_impact(&layout)?,
+            };
+            let analysis_mode = if base_ref.is_some() {
+                "base_ref"
+            } else {
+                "working_tree"
+            };
+            let history_opts = crate::impact::orchestrator::ImpactHistoryOpts::for_run(
+                false,
+                crate::impact::budget::install_cancel_flag(),
+                analysis_mode,
+                timeout,
+                &config,
+            );
+            let mut impact_packet =
+                crate::commands::impact::compute_impact_from_snapshot_in_memory_with_history(
+                    &storage,
+                    &config,
+                    work_dir,
+                    snapshot,
+                    include_governance,
+                    analysis_mode,
+                    Vec::new(),
+                    history_opts,
+                )?;
+            if let Some(note) = depth_note {
+                impact_packet.analysis_warnings.push(note);
+                impact_packet.analysis_warnings.sort();
+                impact_packet.analysis_warnings.dedup();
+            }
+            let skip_persist = impact_packet
+                .completeness
+                .as_ref()
+                .is_some_and(crate::impact::budget::is_overall_stop);
+            if skip_persist {
+                let _ = storage.shutdown();
+                emit_scan_impact_in_memory(
+                    &impact_packet,
+                    write_impact_json,
+                    out,
+                    summary,
+                    full,
+                    false,
+                )?;
+                return Ok(());
+            }
+            if let Err(e) = storage.save_packet(&impact_packet) {
+                tracing::warn!("SQLite save failed: {e}");
+            }
+            let report_write_outcome = crate::state::reports::soft_write_impact_report(
+                &layout,
+                &impact_packet,
+                storage.is_read_only(),
+            )?;
+            crate::commands::impact::apply_report_skip_honesty(
+                &mut impact_packet,
+                report_write_outcome,
+            );
+            let _ = storage.shutdown();
+            if write_impact_json {
+                crate::output::json::emit_to(&impact_packet, out.as_deref())?;
+            } else {
+                crate::commands::impact::execute_impact_human(
+                    &impact_packet,
+                    summary,
+                    base_ref.is_some(),
+                    report_write_outcome,
+                )?;
+            }
             return Ok(());
         }
 

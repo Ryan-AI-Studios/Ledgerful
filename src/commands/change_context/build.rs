@@ -157,6 +157,7 @@ pub fn build_change_context(
         freshness: classify_change_context_freshness(layout, storage, &config, false),
         next_actions,
         impact_schema_version: Some(impact.schema_version.clone()),
+        completeness: impact.completeness.clone(),
     })
 }
 
@@ -183,7 +184,7 @@ pub(crate) fn compute_structural_impact(
             opts.include_governance,
             "prospective",
             parsed,
-            history_opts_from(opts),
+            history_opts_from(opts, config, "prospective"),
         );
     }
 
@@ -197,7 +198,7 @@ pub(crate) fn compute_structural_impact(
             opts.include_governance,
             "base_ref",
             Vec::new(),
-            history_opts_from(opts),
+            history_opts_from(opts, config, "base_ref"),
         );
     }
 
@@ -225,15 +226,22 @@ pub(crate) fn compute_structural_impact(
         opts.include_governance,
         "working_tree",
         Vec::new(),
-        history_opts_from(opts),
+        history_opts_from(opts, config, "working_tree"),
     )
 }
 
-fn history_opts_from(opts: &ChangeContextOpts) -> crate::impact::orchestrator::ImpactHistoryOpts {
-    crate::impact::orchestrator::ImpactHistoryOpts {
-        skip_git_history_enrichment: opts.skip_git_history_enrichment,
-        cancel: std::sync::Arc::clone(&opts.cancel),
-    }
+fn history_opts_from(
+    opts: &ChangeContextOpts,
+    config: &Config,
+    analysis_mode: &str,
+) -> crate::impact::orchestrator::ImpactHistoryOpts {
+    crate::impact::orchestrator::ImpactHistoryOpts::for_run(
+        opts.skip_git_history_enrichment,
+        std::sync::Arc::clone(&opts.cancel),
+        analysis_mode,
+        opts.timeout,
+        config,
+    )
 }
 
 /// Build a [`RepoSnapshot`] from `git diff base_ref...HEAD` (structure only).
@@ -289,6 +297,7 @@ pub(crate) fn not_ready_packet(
         freshness: Vec::new(),
         next_actions: next_actions_for_class(class),
         impact_schema_version: None,
+        completeness: None,
     }
 }
 

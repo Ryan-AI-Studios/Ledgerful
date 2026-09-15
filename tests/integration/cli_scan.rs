@@ -297,6 +297,7 @@ fn test_scan_json_paths_still_requires_impact() {
         false,
         None,
         false,
+        None,
     )
     .unwrap_err();
     assert!(
@@ -569,6 +570,7 @@ fn scan_docs_mode_does_not_clobber_latest_impact_mtime() {
         false,
         Some(ScanImpactMode::Docs),
         false,
+        None,
     )
     .expect("scan --impact --mode docs on source dirty tree");
 
@@ -613,6 +615,7 @@ fn scan_docs_auto_detect_does_not_clobber_latest_impact_mtime() {
         false,
         None,
         false,
+        None,
     )
     .expect("scan --impact auto-detect docs-only dirty tree");
 
@@ -646,6 +649,7 @@ fn execute_scan_mode_docs_without_impact_errors_before_open_repo() {
         false,
         Some(ScanImpactMode::Docs),
         false,
+        None,
     )
     .unwrap_err();
     let msg = error.to_string();
@@ -690,6 +694,7 @@ fn scan_impact_paths_docs_only_emits_glossary_mixed_does_not() {
         false,
         None,
         false,
+        None,
     )
     .expect("scan --impact --json --paths docs-only");
     let docs_packet: serde_json::Value =
@@ -731,6 +736,7 @@ fn scan_impact_paths_docs_only_emits_glossary_mixed_does_not() {
         false,
         None,
         false,
+        None,
     )
     .expect("scan --impact --json --paths mixed");
     let mixed_packet: serde_json::Value =

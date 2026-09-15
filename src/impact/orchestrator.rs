@@ -1,7 +1,10 @@
 use crate::config::model::Config;
 use crate::git::{ChangeType, RepoSnapshot};
 use crate::impact::analysis::AnalysisRegistry;
-use crate::impact::budget::AnalysisBudget;
+use crate::impact::budget::{
+    AnalysisBudget, CompletenessStop, PROSPECTIVE_BUDGET_WARN, completeness_for_overall,
+    stage_slug_for_provider,
+};
 use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
 use crate::impact::packet::{ChangedFile, FileAnalysisStatus, ImpactPacket};
 use crate::index::analysis::{AnalysisOutcome, analyze_file};
@@ -10,9 +13,9 @@ use crate::util::clock::SystemClock;
 use indicatif::{ProgressBar, ProgressStyle};
 use miette::Result;
 use std::path::Path;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tracing::{debug, warn};
 
 /// Plumbing for history-backed enrichment (0308). Not hung on Config or ImpactPacket.
@@ -20,6 +23,11 @@ use tracing::{debug, warn};
 pub struct ImpactHistoryOpts {
     pub skip_git_history_enrichment: bool,
     pub cancel: Arc<AtomicBool>,
+    /// Overall emit budget seconds (`Some(0)` = no wall clock). `None` = not an
+    /// overall-deadline run (keep 0034 federation 120s).
+    pub overall_budget_secs: Option<u64>,
+    /// Resolved Instant for `overall_budget_secs` (`None` when disabled).
+    pub overall_deadline: Option<Instant>,
 }
 
 impl Default for ImpactHistoryOpts {
@@ -27,6 +35,8 @@ impl Default for ImpactHistoryOpts {
         Self {
             skip_git_history_enrichment: false,
             cancel: Arc::new(AtomicBool::new(false)),
+            overall_budget_secs: None,
+            overall_deadline: None,
         }
     }
 }
@@ -38,7 +48,34 @@ impl std::fmt::Debug for ImpactHistoryOpts {
                 "skip_git_history_enrichment",
                 &self.skip_git_history_enrichment,
             )
+            .field("overall_budget_secs", &self.overall_budget_secs)
             .finish_non_exhaustive()
+    }
+}
+
+impl ImpactHistoryOpts {
+    pub fn for_run(
+        skip_git_history_enrichment: bool,
+        cancel: Arc<AtomicBool>,
+        analysis_mode: &str,
+        cli_timeout: Option<u64>,
+        config: &Config,
+    ) -> Self {
+        let overall_budget_secs = crate::impact::budget::overall_budget_secs_for_mode(
+            analysis_mode,
+            cli_timeout,
+            config.impact.prospective_budget_secs,
+        );
+        let overall_deadline = match overall_budget_secs {
+            Some(0) | None => None,
+            Some(secs) => Some(Instant::now() + Duration::from_secs(secs)),
+        };
+        Self {
+            skip_git_history_enrichment,
+            cancel,
+            overall_budget_secs,
+            overall_deadline,
+        }
     }
 }
 
@@ -229,11 +266,14 @@ impl ImpactOrchestrator {
         // bounded separately (scanner.rs:run_federate_export and
         // scan_dependency_dir), so this deadline is a backstop, not the
         // primary fix.
-        let deadline = std::time::Instant::now() + config.federation.scan_timeout();
+        let overall_deadline = opts.overall_deadline;
+        let deadline =
+            overall_deadline.unwrap_or_else(|| Instant::now() + config.federation.scan_timeout());
 
-        let history_budget = Some(AnalysisBudget::from_secs(
+        let history_budget = Some(AnalysisBudget::capped_by_overall(
             config.hotspots.history_budget_secs,
-            opts.cancel,
+            opts.overall_deadline,
+            Arc::clone(&opts.cancel),
         ));
         let context = EnrichmentContext {
             storage,
@@ -249,13 +289,34 @@ impl ImpactOrchestrator {
         // 2. Execute Enrichment Providers (Resilient Execution)
         for provider in &self.enrichment_providers {
             let name = provider.name();
-            if std::time::Instant::now() >= deadline {
-                let msg = format!(
-                    "Impact scan exceeded overall timeout ({}s); stopping before provider '{}'. Partial results retained.",
-                    config.federation.scan_timeout_secs, name
-                );
-                warn!("{}", msg);
-                context.add_warning(msg);
+            let slug = stage_slug_for_provider(name);
+            if opts.cancel.load(Ordering::Relaxed) {
+                if opts.overall_deadline.is_some() {
+                    apply_overall_stop(
+                        packet,
+                        CompletenessStop::Cancelled,
+                        opts.overall_budget_secs,
+                        slug,
+                    );
+                }
+                break;
+            }
+            if Instant::now() >= deadline {
+                if opts.overall_deadline.is_some() {
+                    apply_overall_stop(
+                        packet,
+                        CompletenessStop::Budget,
+                        opts.overall_budget_secs,
+                        slug,
+                    );
+                } else {
+                    let msg = format!(
+                        "Impact scan exceeded overall timeout ({}s); stopping before provider '{}'. Partial results retained.",
+                        config.federation.scan_timeout_secs, name
+                    );
+                    warn!("{}", msg);
+                    context.add_warning(msg);
+                }
                 break;
             }
             debug!("Running enrichment provider: {}", name);
@@ -263,6 +324,29 @@ impl ImpactOrchestrator {
             if let Err(e) = provider.enrich(&context, packet) {
                 warn!("Enrichment provider '{}' failed: {}", name, e);
                 context.add_warning(format!("Provider '{}' failed: {}", name, e));
+            }
+            // In-flight providers are not killed. If the last (or current)
+            // provider returns after the overall Instant, still record the
+            // stop so persist is skipped and completeness is honest.
+            if opts.overall_deadline.is_some() {
+                if opts.cancel.load(Ordering::Relaxed) {
+                    apply_overall_stop(
+                        packet,
+                        CompletenessStop::Cancelled,
+                        opts.overall_budget_secs,
+                        slug,
+                    );
+                    break;
+                }
+                if Instant::now() >= deadline {
+                    apply_overall_stop(
+                        packet,
+                        CompletenessStop::Budget,
+                        opts.overall_budget_secs,
+                        slug,
+                    );
+                    break;
+                }
             }
         }
 
@@ -298,6 +382,22 @@ impl ImpactOrchestrator {
     }
 }
 
+fn apply_overall_stop(
+    packet: &mut ImpactPacket,
+    stop: CompletenessStop,
+    budget_secs: Option<u64>,
+    stage: &str,
+) {
+    let secs = budget_secs.filter(|s| *s > 0);
+    packet.completeness = Some(completeness_for_overall(stop, secs, stage));
+    if stop == CompletenessStop::Budget {
+        warn!(stage, ?stop, "{PROSPECTIVE_BUDGET_WARN}");
+        eprintln!("{PROSPECTIVE_BUDGET_WARN}");
+    } else {
+        warn!(stage, ?stop, "prospective analysis stopped");
+    }
+}
+
 /// Apply empty-tree impact defaults when there are no structural seeds.
 ///
 /// Only meaningful when `tree_clean && changes.is_empty()`; no-ops otherwise.
@@ -318,6 +418,18 @@ pub(crate) fn map_snapshot_to_packet(
     snapshot: RepoSnapshot,
     base_dir: &Path,
 ) -> Result<ImpactPacket> {
+    map_snapshot_to_packet_with_progress(snapshot, base_dir, false)
+}
+
+/// Map a git snapshot to an impact packet.
+///
+/// `hide_progress` is the explicit `--json` / silent-path flag (0347): do not
+/// rely on TTY auto-hide. Machine stdout must stay spinner-free.
+pub(crate) fn map_snapshot_to_packet_with_progress(
+    snapshot: RepoSnapshot,
+    base_dir: &Path,
+    hide_progress: bool,
+) -> Result<ImpactPacket> {
     let mut packet = ImpactPacket {
         head_hash: snapshot.head_hash,
         branch_name: snapshot.branch_name,
@@ -325,13 +437,18 @@ pub(crate) fn map_snapshot_to_packet(
         ..ImpactPacket::with_clock(&SystemClock)
     };
 
-    let pb = ProgressBar::new(snapshot.changes.len() as u64);
-    pb.set_style(
-        ProgressStyle::default_bar()
-            .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
-            .unwrap_or_else(|_| ProgressStyle::default_bar()),
-    );
-    pb.set_message("Extracting symbols...");
+    let pb = if hide_progress {
+        ProgressBar::hidden()
+    } else {
+        let pb = ProgressBar::new(snapshot.changes.len() as u64);
+        pb.set_style(
+            ProgressStyle::default_bar()
+                .template("{spinner:.green} [{elapsed_precise}] [{bar:40.cyan/blue}] {pos}/{len} ({eta}) {msg}")
+                .unwrap_or_else(|_| ProgressStyle::default_bar()),
+        );
+        pb.set_message("Extracting symbols...");
+        pb
+    };
 
     packet.changes = snapshot
         .changes
@@ -725,6 +842,465 @@ mod tests {
         assert!(
             called.load(Ordering::SeqCst),
             "enrichment provider must be called when changes are non-empty"
+        );
+    }
+
+    #[test]
+    fn overall_expired_stops_before_cooperative_provider() {
+        use crate::impact::budget::{CompletenessScope, CompletenessStop, PROSPECTIVE_BUDGET_WARN};
+        use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
+        use crate::impact::packet::RiskLevel;
+        use std::sync::atomic::{AtomicBool, Ordering};
+
+        let called = Arc::new(AtomicBool::new(false));
+        struct CooperativeSpy {
+            called: Arc<AtomicBool>,
+        }
+        impl EnrichmentProvider for CooperativeSpy {
+            fn name(&self) -> &'static str {
+                "Federated Intelligence Enrichment Provider"
+            }
+            fn enrich(
+                &self,
+                context: &EnrichmentContext,
+                _packet: &mut ImpactPacket,
+            ) -> Result<()> {
+                if std::time::Instant::now() >= context.deadline {
+                    return Ok(());
+                }
+                self.called.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::state::migrations::get_migrations()
+            .to_latest(&mut conn)
+            .unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        let config = Config::default();
+        let temp = tempfile::tempdir().unwrap();
+        let mut packet = ImpactPacket {
+            tree_clean: false,
+            changes: vec![ChangedFile {
+                path: std::path::PathBuf::from("src/lib.rs"),
+                status: "Modified".to_string(),
+                ..ChangedFile::default()
+            }],
+            ..ImpactPacket::default()
+        };
+        let mut orchestrator = ImpactOrchestrator::new();
+        orchestrator.register_enrichment_provider(Box::new(CooperativeSpy {
+            called: Arc::clone(&called),
+        }));
+        let opts = ImpactHistoryOpts {
+            overall_budget_secs: Some(25),
+            overall_deadline: Some(
+                Instant::now()
+                    .checked_sub(Duration::from_secs(1))
+                    .unwrap_or_else(Instant::now),
+            ),
+            ..ImpactHistoryOpts::default()
+        };
+        orchestrator
+            .run_with_history_opts(&mut packet, &storage, &config, temp.path(), opts)
+            .expect("overall stop should return Ok");
+        assert!(
+            !called.load(Ordering::SeqCst),
+            "expired overall must skip the provider"
+        );
+        let c = packet.completeness.expect("overall completeness");
+        assert_eq!(c.stop, CompletenessStop::Budget);
+        assert_eq!(c.scope, Some(CompletenessScope::Overall));
+        assert_eq!(c.stage.as_deref(), Some("federated"));
+        assert_eq!(c.budget_secs, Some(25));
+        assert!(c.filter.is_none());
+        assert!(c.commits_requested.is_none());
+        assert!(
+            !packet
+                .analysis_warnings
+                .iter()
+                .any(|w| w == PROSPECTIVE_BUDGET_WARN),
+            "warn token must not appear in JSON analysisWarnings: {:?}",
+            packet.analysis_warnings
+        );
+        assert_eq!(packet.risk_level, RiskLevel::Low);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn prospective_one_file__overall_expired__emits_core_json_with_scope_overall() {
+        overall_expired_stops_before_cooperative_provider();
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn timeout_zero__disables_overall_wall_clock() {
+        use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
+        use std::sync::atomic::{AtomicBool, Ordering};
+        let called = Arc::new(AtomicBool::new(false));
+        struct Spy {
+            called: Arc<AtomicBool>,
+        }
+        impl EnrichmentProvider for Spy {
+            fn name(&self) -> &'static str {
+                "FlagSpy"
+            }
+            fn enrich(
+                &self,
+                _context: &EnrichmentContext,
+                _packet: &mut ImpactPacket,
+            ) -> Result<()> {
+                self.called.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::state::migrations::get_migrations()
+            .to_latest(&mut conn)
+            .unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        let config = Config::default();
+        let temp = tempfile::tempdir().unwrap();
+        let mut packet = ImpactPacket {
+            tree_clean: false,
+            changes: vec![ChangedFile {
+                path: std::path::PathBuf::from("src/lib.rs"),
+                status: "Modified".to_string(),
+                ..ChangedFile::default()
+            }],
+            ..ImpactPacket::default()
+        };
+        let mut orchestrator = ImpactOrchestrator::new();
+        orchestrator.register_enrichment_provider(Box::new(Spy {
+            called: Arc::clone(&called),
+        }));
+        let opts = ImpactHistoryOpts {
+            overall_budget_secs: Some(0),
+            overall_deadline: None,
+            ..ImpactHistoryOpts::default()
+        };
+        orchestrator
+            .run_with_history_opts(&mut packet, &storage, &config, temp.path(), opts)
+            .expect("timeout 0 should not overall-stop");
+        assert!(called.load(Ordering::SeqCst));
+        assert!(
+            packet
+                .completeness
+                .as_ref()
+                .is_none_or(|c| c.scope.is_none()),
+            "timeout 0 must not emit scope=overall: {:?}",
+            packet.completeness
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn map_snapshot_to_packet__json__hides_spinner() {
+        let src = include_str!("orchestrator.rs");
+        assert!(
+            src.contains("ProgressBar::hidden()"),
+            "json/silent path must construct ProgressBar::hidden, not TTY auto-hide"
+        );
+        assert!(
+            src.contains("hide_progress"),
+            "map_snapshot_to_packet must take an explicit hide_progress flag"
+        );
+        let snapshot = RepoSnapshot {
+            head_hash: Some("abc123".to_string()),
+            branch_name: Some("main".to_string()),
+            is_clean: false,
+            changes: vec![make_added("src/lib.rs")],
+        };
+        let temp = tempfile::tempdir().unwrap();
+        let packet = map_snapshot_to_packet_with_progress(snapshot, temp.path(), true).unwrap();
+        assert_eq!(packet.changes.len(), 1);
+    }
+
+    fn dirty_one_file_packet() -> ImpactPacket {
+        ImpactPacket {
+            tree_clean: false,
+            changes: vec![ChangedFile {
+                path: std::path::PathBuf::from("src/lib.rs"),
+                status: "Modified".to_string(),
+                ..ChangedFile::default()
+            }],
+            ..ImpactPacket::default()
+        }
+    }
+
+    fn memory_storage() -> (StorageManager, tempfile::TempDir) {
+        let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+        crate::state::migrations::get_migrations()
+            .to_latest(&mut conn)
+            .unwrap();
+        let storage = StorageManager::init_from_conn(conn);
+        (storage, tempfile::tempdir().unwrap())
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn prospective_one_file__cooperative_stalled_provider__retains_changes_and_risk_reasons() {
+        use crate::impact::budget::{CompletenessScope, CompletenessStop};
+        use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
+        use crate::impact::packet::TemporalCoupling;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let coupling_called = Arc::new(AtomicBool::new(false));
+        let stalled_called = Arc::new(AtomicBool::new(false));
+        let analyze_count = Arc::new(AtomicUsize::new(0));
+
+        struct CouplingSpy {
+            called: Arc<AtomicBool>,
+        }
+        impl EnrichmentProvider for CouplingSpy {
+            fn name(&self) -> &'static str {
+                "Coupling Enrichment Provider"
+            }
+            fn enrich(&self, context: &EnrichmentContext, packet: &mut ImpactPacket) -> Result<()> {
+                self.called.store(true, Ordering::SeqCst);
+                packet.risk_reasons.push("coupling-seed-reason".to_string());
+                packet.temporal_couplings.push(TemporalCoupling {
+                    file_a: std::path::PathBuf::from("src/a.rs"),
+                    file_b: std::path::PathBuf::from("src/b.rs"),
+                    score: 0.91,
+                });
+                let give_up = Instant::now() + Duration::from_secs(2);
+                while Instant::now() < context.deadline && Instant::now() < give_up {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Ok(())
+            }
+        }
+
+        struct StalledSpy {
+            called: Arc<AtomicBool>,
+        }
+        impl EnrichmentProvider for StalledSpy {
+            fn name(&self) -> &'static str {
+                "Federated Intelligence Enrichment Provider"
+            }
+            fn enrich(
+                &self,
+                context: &EnrichmentContext,
+                _packet: &mut ImpactPacket,
+            ) -> Result<()> {
+                if Instant::now() >= context.deadline {
+                    return Ok(());
+                }
+                self.called.store(true, Ordering::SeqCst);
+                Ok(())
+            }
+        }
+
+        struct CountAnalysis {
+            n: Arc<AtomicUsize>,
+        }
+        impl crate::impact::analysis::ImpactProvider for CountAnalysis {
+            fn name(&self) -> &'static str {
+                "CountAnalysis"
+            }
+            fn analyze(
+                &self,
+                _packet: &ImpactPacket,
+                _rules: &crate::policy::rules::Rules,
+                _config: &Config,
+            ) -> Result<crate::impact::packet::RiskImpact> {
+                self.n.fetch_add(1, Ordering::SeqCst);
+                Ok(crate::impact::packet::RiskImpact::default())
+            }
+        }
+
+        let (storage, temp) = memory_storage();
+        let config = Config::default();
+        let mut packet = dirty_one_file_packet();
+        let mut orchestrator = ImpactOrchestrator::new();
+        orchestrator.register_enrichment_provider(Box::new(CouplingSpy {
+            called: Arc::clone(&coupling_called),
+        }));
+        orchestrator.register_enrichment_provider(Box::new(StalledSpy {
+            called: Arc::clone(&stalled_called),
+        }));
+        orchestrator.register_analysis_provider(Box::new(CountAnalysis {
+            n: Arc::clone(&analyze_count),
+        }));
+        let opts = ImpactHistoryOpts {
+            overall_budget_secs: Some(25),
+            overall_deadline: Some(Instant::now() + Duration::from_millis(150)),
+            ..ImpactHistoryOpts::default()
+        };
+        orchestrator
+            .run_with_history_opts(&mut packet, &storage, &config, temp.path(), opts)
+            .expect("cooperative stall should return Ok");
+        assert!(
+            coupling_called.load(Ordering::SeqCst),
+            "first provider must run and honor context.deadline"
+        );
+        assert!(
+            !stalled_called.load(Ordering::SeqCst),
+            "later provider must not start after overall Instant"
+        );
+        assert_eq!(packet.changes.len(), 1);
+        assert!(
+            packet
+                .risk_reasons
+                .iter()
+                .any(|r| r == "coupling-seed-reason"),
+            "seed risk reasons must survive the overall stop: {:?}",
+            packet.risk_reasons
+        );
+        assert!(
+            packet.risk_reasons.iter().any(|r| r.contains("temporal")),
+            "scoring after stop must keep coupling-backed temporal reasons: {:?}",
+            packet.risk_reasons
+        );
+        assert_eq!(analyze_count.load(Ordering::SeqCst), 1);
+        let c = packet.completeness.expect("overall completeness");
+        assert_eq!(c.stop, CompletenessStop::Budget);
+        assert_eq!(c.scope, Some(CompletenessScope::Overall));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn analysis_registry__runs_once_after_stop__temporal_reasons_present_when_coupling_finished() {
+        prospective_one_file__cooperative_stalled_provider__retains_changes_and_risk_reasons();
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn completeness__overall_stop_overwrites_history_object() {
+        use crate::impact::budget::{
+            CompletenessFilter, CompletenessScope, CompletenessStop, completeness_for_error,
+        };
+        use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
+
+        struct SkipSpy;
+        impl EnrichmentProvider for SkipSpy {
+            fn name(&self) -> &'static str {
+                "Hotspot Enrichment Provider"
+            }
+            fn enrich(
+                &self,
+                _context: &EnrichmentContext,
+                _packet: &mut ImpactPacket,
+            ) -> Result<()> {
+                panic!("expired overall must not start providers");
+            }
+        }
+
+        let (storage, temp) = memory_storage();
+        let config = Config::default();
+        let mut packet = dirty_one_file_packet();
+        packet.completeness = Some(completeness_for_error(
+            500,
+            None,
+            CompletenessFilter::Default,
+            Some(45),
+        ));
+        let mut orchestrator = ImpactOrchestrator::new();
+        orchestrator.register_enrichment_provider(Box::new(SkipSpy));
+        let opts = ImpactHistoryOpts {
+            overall_budget_secs: Some(25),
+            overall_deadline: Some(
+                Instant::now()
+                    .checked_sub(Duration::from_secs(1))
+                    .unwrap_or_else(Instant::now),
+            ),
+            ..ImpactHistoryOpts::default()
+        };
+        orchestrator
+            .run_with_history_opts(&mut packet, &storage, &config, temp.path(), opts)
+            .expect("overall overwrite should return Ok");
+        let c = packet.completeness.expect("overwritten completeness");
+        assert_eq!(c.scope, Some(CompletenessScope::Overall));
+        assert_eq!(c.stop, CompletenessStop::Budget);
+        assert_eq!(c.stage.as_deref(), Some("hotspots"));
+        assert_eq!(c.budget_secs, Some(25));
+        assert!(c.filter.is_none());
+        assert!(c.commits_requested.is_none());
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn final_provider__returns_after_deadline__records_overall_stop() {
+        use crate::impact::budget::{CompletenessScope, CompletenessStop, is_overall_stop};
+        use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let called = Arc::new(AtomicBool::new(false));
+        let analyze_count = Arc::new(AtomicUsize::new(0));
+
+        struct LastSpy {
+            called: Arc<AtomicBool>,
+        }
+        impl EnrichmentProvider for LastSpy {
+            fn name(&self) -> &'static str {
+                "Hotspot Enrichment Provider"
+            }
+            fn enrich(&self, context: &EnrichmentContext, packet: &mut ImpactPacket) -> Result<()> {
+                self.called.store(true, Ordering::SeqCst);
+                packet.risk_reasons.push("last-provider-seed".to_string());
+                let give_up = Instant::now() + Duration::from_secs(2);
+                while Instant::now() < context.deadline && Instant::now() < give_up {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                std::thread::sleep(Duration::from_millis(20));
+                Ok(())
+            }
+        }
+
+        struct CountAnalysis {
+            n: Arc<AtomicUsize>,
+        }
+        impl crate::impact::analysis::ImpactProvider for CountAnalysis {
+            fn name(&self) -> &'static str {
+                "CountAnalysis"
+            }
+            fn analyze(
+                &self,
+                _packet: &ImpactPacket,
+                _rules: &crate::policy::rules::Rules,
+                _config: &Config,
+            ) -> Result<crate::impact::packet::RiskImpact> {
+                self.n.fetch_add(1, Ordering::SeqCst);
+                Ok(crate::impact::packet::RiskImpact::default())
+            }
+        }
+
+        let (storage, temp) = memory_storage();
+        let config = Config::default();
+        let mut packet = dirty_one_file_packet();
+        let mut orchestrator = ImpactOrchestrator::new();
+        orchestrator.register_enrichment_provider(Box::new(LastSpy {
+            called: Arc::clone(&called),
+        }));
+        orchestrator.register_analysis_provider(Box::new(CountAnalysis {
+            n: Arc::clone(&analyze_count),
+        }));
+        let opts = ImpactHistoryOpts {
+            overall_budget_secs: Some(8),
+            overall_deadline: Some(Instant::now() + Duration::from_millis(40)),
+            ..ImpactHistoryOpts::default()
+        };
+        orchestrator
+            .run_with_history_opts(&mut packet, &storage, &config, temp.path(), opts)
+            .expect("last-provider over deadline should return Ok");
+        assert!(called.load(Ordering::SeqCst));
+        let c = packet
+            .completeness
+            .expect("overall completeness after last provider");
+        assert_eq!(c.stop, CompletenessStop::Budget);
+        assert_eq!(c.scope, Some(CompletenessScope::Overall));
+        assert_eq!(c.stage.as_deref(), Some("hotspots"));
+        assert!(is_overall_stop(&c));
+        assert_eq!(analyze_count.load(Ordering::SeqCst), 1);
+        assert!(
+            packet
+                .risk_reasons
+                .iter()
+                .any(|r| r == "last-provider-seed"),
+            "partial enrichment must be retained: {:?}",
+            packet.risk_reasons
         );
     }
 

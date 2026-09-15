@@ -1044,6 +1044,53 @@ mod tests {
     }
 
     #[test]
+    fn change_context_timeout_is_machine_flag() {
+        let without = Cli::try_parse_from(["ledgerful", "change-context", "--json"]).unwrap();
+        match &without.command {
+            Commands::ChangeContext(args) => {
+                assert_eq!(args.timeout, None, "omitted --timeout must be None");
+            }
+            _ => panic!("expected ChangeContext"),
+        }
+        assert!(
+            !without.command.argv_shape().contains("timeout"),
+            "omitted timeout must not appear in argv shape: {}",
+            without.command.argv_shape()
+        );
+        let with =
+            Cli::try_parse_from(["ledgerful", "change-context", "--json", "--timeout", "25"])
+                .unwrap();
+        match &with.command {
+            Commands::ChangeContext(args) => {
+                assert_eq!(args.timeout, Some(25));
+            }
+            _ => panic!("expected ChangeContext"),
+        }
+        assert!(
+            with.command.argv_shape().contains("timeout"),
+            "explicit --timeout must appear in argv shape: {}",
+            with.command.argv_shape()
+        );
+    }
+
+    #[test]
+    fn impact_and_scan_timeout_are_machine_flags() {
+        let impact = Cli::try_parse_from(["ledgerful", "impact", "--timeout", "10"]).unwrap();
+        match &impact.command {
+            Commands::Impact(args) => assert_eq!(args.timeout, Some(10)),
+            _ => panic!("expected Impact"),
+        }
+        assert!(impact.command.argv_shape().contains("timeout"));
+        let scan =
+            Cli::try_parse_from(["ledgerful", "scan", "--impact", "--timeout", "10"]).unwrap();
+        match &scan.command {
+            Commands::Scan(args) => assert_eq!(args.timeout, Some(10)),
+            _ => panic!("expected Scan"),
+        }
+        assert!(scan.command.argv_shape().contains("timeout"));
+    }
+
+    #[test]
     fn audit_timeout_is_machine_flag() {
         let without = Cli::try_parse_from(["ledgerful", "audit"]).unwrap();
         match &without.command {

@@ -49,7 +49,7 @@ pub(crate) fn open_storage_for_impact(layout: &Layout) -> Result<StorageManager>
 }
 
 /// Append greppable RO report-write honesty to the packet when write was skipped.
-fn apply_report_skip_honesty(
+pub(crate) fn apply_report_skip_honesty(
     packet: &mut crate::impact::packet::ImpactPacket,
     outcome: ImpactReportWriteOutcome,
 ) {
@@ -133,7 +133,11 @@ pub fn execute_impact_silent_with_snapshot_opts_storage(
 
     let layout = get_layout()?;
 
-    let mut packet = crate::impact::orchestrator::map_snapshot_to_packet(snapshot, &current_dir)?;
+    let mut packet = crate::impact::orchestrator::map_snapshot_to_packet_with_progress(
+        snapshot,
+        &current_dir,
+        true,
+    )?;
     apply_impact_honesty_fields(&mut packet, include_governance, analysis_mode, Vec::new());
 
     // Load main config for temporal analysis
@@ -154,7 +158,20 @@ pub fn execute_impact_silent_with_snapshot_opts_storage(
     };
 
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
-    orchestrator.run(&mut packet, &storage, &config, &current_dir)?;
+    let history_opts = crate::impact::orchestrator::ImpactHistoryOpts::for_run(
+        false,
+        crate::impact::budget::install_cancel_flag(),
+        analysis_mode,
+        None,
+        &config,
+    );
+    orchestrator.run_with_history_opts(
+        &mut packet,
+        &storage,
+        &config,
+        &current_dir,
+        history_opts,
+    )?;
 
     // Post-processing: Finalize and Redact
     packet.finalize();
@@ -237,7 +254,11 @@ pub fn execute_impact_silent_with_depth_opts_storage(
         changes,
     };
 
-    let mut packet = crate::impact::orchestrator::map_snapshot_to_packet(snapshot, &current_dir)?;
+    let mut packet = crate::impact::orchestrator::map_snapshot_to_packet_with_progress(
+        snapshot,
+        &current_dir,
+        true,
+    )?;
     apply_impact_honesty_fields(&mut packet, include_governance, "working_tree", Vec::new());
 
     // Load main config for temporal analysis
@@ -258,7 +279,20 @@ pub fn execute_impact_silent_with_depth_opts_storage(
     };
 
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
-    orchestrator.run(&mut packet, &storage, &config, &current_dir)?;
+    let history_opts = crate::impact::orchestrator::ImpactHistoryOpts::for_run(
+        false,
+        crate::impact::budget::install_cancel_flag(),
+        "working_tree",
+        None,
+        &config,
+    );
+    orchestrator.run_with_history_opts(
+        &mut packet,
+        &storage,
+        &config,
+        &current_dir,
+        history_opts,
+    )?;
 
     // Post-processing: Finalize and Redact
     packet.finalize();
@@ -419,7 +453,11 @@ pub fn compute_impact_from_snapshot_in_memory_with_history(
     prospective_paths: Vec<String>,
     history_opts: crate::impact::orchestrator::ImpactHistoryOpts,
 ) -> Result<crate::impact::packet::ImpactPacket> {
-    let mut packet = crate::impact::orchestrator::map_snapshot_to_packet(snapshot, project_root)?;
+    let mut packet = crate::impact::orchestrator::map_snapshot_to_packet_with_progress(
+        snapshot,
+        project_root,
+        true,
+    )?;
     apply_impact_honesty_fields(
         &mut packet,
         include_governance,
@@ -598,6 +636,7 @@ pub fn execute_impact(
         None,
         Vec::new(),
         false,
+        None,
     )
 }
 
@@ -621,6 +660,7 @@ pub fn execute_impact_with_blast_depth(
         blast_depth,
         Vec::new(),
         false,
+        None,
     )
 }
 
@@ -636,6 +676,7 @@ pub fn execute_impact_with_opts(
     blast_depth: Option<u32>,
     paths: Vec<String>,
     include_governance: bool,
+    timeout: Option<u64>,
 ) -> Result<()> {
     let current_dir = env::current_dir()
         .map_err(|e| miette::miette!("Failed to get current directory: {}", e))?;
@@ -643,6 +684,8 @@ pub fn execute_impact_with_opts(
     let layout = get_layout()?;
     let mut config =
         load_config(&layout).unwrap_or_else(|_| crate::config::model::Config::default());
+    crate::impact::budget::apply_resolved_history_budget(&mut config, None);
+    crate::impact::budget::apply_resolved_prospective_budget(&mut config, timeout);
 
     if all_parents {
         config.temporal.all_parents = true;
@@ -689,6 +732,14 @@ pub fn execute_impact_with_opts(
 
     // Write-first open with RO fallback when write open fails (0174 B7).
     let storage = open_storage_for_impact(&layout)?;
+    let cancel = crate::impact::budget::install_cancel_flag();
+    let history_opts = crate::impact::orchestrator::ImpactHistoryOpts::for_run(
+        false,
+        cancel,
+        analysis_mode,
+        timeout,
+        &config,
+    );
 
     // Prospective: in-memory only — no save_packet / latest-impact.json clobber (0173-G).
     if prospective {
@@ -701,7 +752,7 @@ pub fn execute_impact_with_opts(
         ) {
             depth_note = Some(note);
         }
-        let mut packet = compute_impact_from_snapshot_in_memory_with_mode(
+        let mut packet = compute_impact_from_snapshot_in_memory_with_history(
             &storage,
             &config,
             work_dir,
@@ -709,6 +760,7 @@ pub fn execute_impact_with_opts(
             include_governance,
             analysis_mode,
             prospective_paths,
+            history_opts,
         )?;
         if let Some(note) = depth_note {
             packet.analysis_warnings.push(note);
@@ -719,7 +771,9 @@ pub fn execute_impact_with_opts(
         return emit_impact_output(&packet, summary, json, out, false, None);
     }
 
-    let mut packet = crate::impact::orchestrator::map_snapshot_to_packet(snapshot, work_dir)?;
+    let mut packet = crate::impact::orchestrator::map_snapshot_to_packet_with_progress(
+        snapshot, work_dir, json,
+    )?;
     apply_impact_honesty_fields(
         &mut packet,
         include_governance,
@@ -736,7 +790,7 @@ pub fn execute_impact_with_opts(
     }
 
     let orchestrator = crate::impact::orchestrator::ImpactOrchestrator::with_builtins();
-    orchestrator.run(&mut packet, &storage, &config, work_dir)?;
+    orchestrator.run_with_history_opts(&mut packet, &storage, &config, work_dir, history_opts)?;
 
     packet.finalize();
     let redactions = crate::impact::redact::redact_secrets(&mut packet);
@@ -744,16 +798,27 @@ pub fn execute_impact_with_opts(
         tracing::info!("Redacted {} secret(s) from impact packet", redactions.len());
     }
 
-    if let Err(e) = storage.save_packet(&packet) {
+    let skip_persist = packet
+        .completeness
+        .as_ref()
+        .is_some_and(crate::impact::budget::is_overall_stop);
+    if !skip_persist && let Err(e) = storage.save_packet(&packet) {
         tracing::warn!("SQLite save failed: {e}");
     }
 
-    let write_outcome = soft_write_impact_report(&layout, &packet, storage.is_read_only())?;
-    apply_report_skip_honesty(&mut packet, write_outcome);
+    // Overall-stop must not persist a truncated packet, must not claim a
+    // durable write (`Unchanged` is still "wrote"), and must not emit RO honesty.
+    let write_outcome = if skip_persist {
+        None
+    } else {
+        let outcome = soft_write_impact_report(&layout, &packet, storage.is_read_only())?;
+        apply_report_skip_honesty(&mut packet, outcome);
+        Some(outcome)
+    };
     storage.shutdown()?;
 
-    let wrote = report_was_durable(write_outcome);
-    emit_impact_output(&packet, summary, json, out, wrote, Some(write_outcome))
+    let wrote = write_outcome.is_some_and(report_was_durable);
+    emit_impact_output(&packet, summary, json, out, wrote, write_outcome)
 }
 
 /// Emit impact JSON or human output.
@@ -918,6 +983,12 @@ mod prospective_tests {
     }
 
     #[test]
+    #[allow(non_snake_case)]
+    fn empty_paths__still_usage_error() {
+        parse_prospective_paths_rejects_empty_and_cap();
+    }
+
+    #[test]
     fn parse_prospective_paths_dedups_before_cap() {
         // 51 entries of the same path should collapse to 1 unique path.
         let dups: Vec<String> = (0..51).map(|_| "src/a.rs".into()).collect();
@@ -926,7 +997,8 @@ mod prospective_tests {
     }
 
     #[test]
-    fn prospective_impact_in_memory_does_not_clobber_latest_impact() {
+    #[allow(non_snake_case)]
+    fn prospective_paths__does_not_rewrite_latest_impact() {
         use crate::state::layout::Layout;
         use crate::state::reports::{LATEST_IMPACT_REPORT, write_impact_report};
         use crate::state::storage::StorageManager;
@@ -1000,6 +1072,53 @@ mod prospective_tests {
             "prospective impact must not rewrite latest-impact.json"
         );
         let _ = storage.shutdown();
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn working_tree_impact__explicit_timeout__applies_overall_and_skips_persist_on_stop() {
+        use crate::impact::budget::{
+            CompletenessStop, completeness_for_overall, is_overall_stop,
+            overall_budget_secs_for_mode,
+        };
+        assert_eq!(
+            overall_budget_secs_for_mode("working_tree", Some(8), 25),
+            Some(8)
+        );
+        let overall = completeness_for_overall(CompletenessStop::Budget, Some(8), "federated");
+        assert!(is_overall_stop(&overall));
+        let mut packet = crate::impact::packet::ImpactPacket {
+            completeness: Some(overall),
+            ..Default::default()
+        };
+        assert!(
+            packet.completeness.as_ref().is_some_and(is_overall_stop),
+            "overall-stop packet must skip durable persist"
+        );
+        packet.completeness = None;
+        assert!(
+            !packet.completeness.as_ref().is_some_and(is_overall_stop),
+            "complete working-tree packet must persist"
+        );
+        let src = include_str!("impact.rs");
+        let skip_at = src
+            .find("let skip_persist")
+            .expect("working-tree overall stop must gate persist");
+        let skip_block = src.get(skip_at..skip_at.saturating_add(900)).unwrap_or("");
+        assert!(skip_block.contains("is_overall_stop"));
+        assert!(
+            !skip_block.contains("ImpactReportWriteOutcome::Unchanged"),
+            "skip persist must not map to Unchanged (that claims a durable write)"
+        );
+        assert!(
+            skip_block.contains("wrote = write_outcome.is_some_and(report_was_durable)"),
+            "overall-stop must pass wrote_report=false so human output does not claim a write"
+        );
+        let scan_src = include_str!("scan/execute.rs");
+        assert!(
+            scan_src.contains("apply_report_skip_honesty"),
+            "scan --timeout persist arm must apply 0174 RO honesty"
+        );
     }
 
     /// 0174 T8/T9/T11: soft-write under RO storage skips report + honesty.

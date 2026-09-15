@@ -54,10 +54,12 @@ pub(super) fn handle_change_context(params: Value) -> Value {
         Ok(l) => l,
         Err(e) => return error_response(format!("Failed to get layout: {}", e)),
     };
-    let config = match crate::config::load_config(&layout) {
+    let mut config = match crate::config::load_config(&layout) {
         Ok(c) => c,
         Err(e) => return error_response(format!("Failed to load config: {e}")),
     };
+    crate::impact::budget::apply_resolved_history_budget(&mut config, None);
+    crate::impact::budget::apply_resolved_prospective_budget(&mut config, None);
     // Soft-open (B6): prefer true RO when ledger.db exists so pure-RO MCP works.
     let storage = match open_storage_for_change_context(&layout) {
         Ok(s) => s,
