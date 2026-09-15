@@ -26,6 +26,15 @@ pub const PROSPECTIVE_BUDGET_ENV: &str = "LEDGERFUL_PROSPECTIVE_BUDGET_SECS";
 /// Greppable stderr token when the overall emit deadline fires (0347). Never stdout.
 pub const PROSPECTIVE_BUDGET_WARN: &str = "prospective analysis stopped: overall budget";
 
+/// Review overall emit budget (0348). Distinct from history and prospective.
+pub const DEFAULT_REVIEW_BUDGET_SECS: u64 = 25;
+
+/// Env override for the review overall emit budget. Unparseable values warn and fall through.
+pub const REVIEW_BUDGET_ENV: &str = "LEDGERFUL_REVIEW_BUDGET_SECS";
+
+/// Greppable stderr token when a review overall emit deadline fires (0348). Never stdout.
+pub const REVIEW_BUDGET_WARN: &str = "review stopped: overall budget";
+
 /// Greppable string for 0243 config-load absorb (stderr + tracing).
 pub const CONFIG_LOAD_WARN: &str = "config load failed; using defaults";
 
@@ -327,6 +336,37 @@ pub fn apply_resolved_prospective_budget(
 ) {
     config.impact.prospective_budget_secs =
         resolve_prospective_budget_secs(cli_timeout, config.impact.prospective_budget_secs);
+}
+
+/// CLI > env > config.toml > 25. Unparseable env warns and falls through.
+/// Distinct from [`resolve_prospective_budget_secs`].
+pub fn resolve_review_budget_secs(cli_timeout: Option<u64>, config_secs: u64) -> u64 {
+    if let Some(cli) = cli_timeout {
+        return cli;
+    }
+    match std::env::var(REVIEW_BUDGET_ENV) {
+        Ok(raw) if !raw.trim().is_empty() => match raw.trim().parse::<u64>() {
+            Ok(v) => v,
+            Err(_) => {
+                tracing::warn!(
+                    value = %raw,
+                    "{REVIEW_BUDGET_ENV} is not a valid u64; falling through to config"
+                );
+                config_secs
+            }
+        },
+        _ => config_secs,
+    }
+}
+
+/// Stderr token for an overall budget stop. `range` (review) is owned by
+/// `emit_review` — the orchestrator must not print the prospective token.
+pub fn overall_stop_stderr_token(analysis_mode: &str) -> Option<&'static str> {
+    if analysis_mode == "range" {
+        None
+    } else {
+        Some(PROSPECTIVE_BUDGET_WARN)
+    }
 }
 
 /// Overall seconds for this run: prospective always resolves; working-tree only
@@ -673,6 +713,38 @@ mod tests {
         assert_eq!(
             overall_budget_secs_for_mode("working_tree", Some(8), 25),
             Some(8)
+        );
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    #[serial_test::serial(env)]
+    fn resolve_review_budget_secs__cli_timeout_does_not_write_history_budget() {
+        let _clear = TempEnv::remove(REVIEW_BUDGET_ENV);
+        let _hist = TempEnv::remove(HISTORY_BUDGET_ENV);
+        assert_eq!(resolve_review_budget_secs(None, 25), 25);
+        assert_eq!(resolve_review_budget_secs(Some(0), 25), 0);
+        assert_eq!(resolve_review_budget_secs(Some(5), 25), 5);
+        assert_eq!(resolve_history_budget_secs(None, 45), 45);
+        let _env = TempEnv::set(REVIEW_BUDGET_ENV, "12");
+        assert_eq!(resolve_review_budget_secs(None, 25), 12);
+        assert_eq!(resolve_history_budget_secs(None, 45), 45);
+        drop(_env);
+        let _bad = TempEnv::set(REVIEW_BUDGET_ENV, "nope");
+        assert_eq!(resolve_review_budget_secs(None, 25), 25);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn apply_overall_stop__range_mode__does_not_eprintln_prospective_token() {
+        assert_eq!(overall_stop_stderr_token("range"), None);
+        assert_eq!(
+            overall_stop_stderr_token("prospective"),
+            Some(PROSPECTIVE_BUDGET_WARN)
+        );
+        assert_eq!(
+            overall_stop_stderr_token("working_tree"),
+            Some(PROSPECTIVE_BUDGET_WARN)
         );
     }
 

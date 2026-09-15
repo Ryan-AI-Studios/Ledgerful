@@ -81,7 +81,9 @@ threshold_days = 365
 # Optional review backends (0304). Omit the table for git+impact join only.
 # expected_path_globs uses globset full-path match: * does not cross /.
 # Nested sources need **/*.rs (*.rs matches only repo-root files).
+# overall_budget_secs is the review overall emit budget (0348); 0 disables.
 # [review]
+# overall_budget_secs = 25
 # requirements_files = []
 # expected_path_globs = ["**/*.rs"]
 #

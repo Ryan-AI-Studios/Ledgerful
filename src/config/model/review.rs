@@ -1,9 +1,13 @@
 use serde::{Deserialize, Serialize};
 
+fn default_review_overall_budget_secs() -> u64 {
+    25
+}
+
 /// `[review]` configuration — opt-in backends for `ledgerful review`.
 ///
 /// Empty / omitted table is valid. The command still emits git + impact join.
-#[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq)]
 pub struct ReviewConfig {
     /// Extra markdown/text files to load as promised requirements.
     #[serde(default)]
@@ -17,6 +21,22 @@ pub struct ReviewConfig {
     pub conductor: ReviewConductorConfig,
     #[serde(default)]
     pub ci: ReviewCiConfig,
+    /// Overall review emit budget in seconds (0348). `0` disables the wall clock.
+    #[serde(default = "default_review_overall_budget_secs")]
+    pub overall_budget_secs: u64,
+}
+
+impl Default for ReviewConfig {
+    fn default() -> Self {
+        Self {
+            requirements_files: Vec::new(),
+            expected_path_globs: Vec::new(),
+            github: ReviewGithubConfig::default(),
+            conductor: ReviewConductorConfig::default(),
+            ci: ReviewCiConfig::default(),
+            overall_budget_secs: default_review_overall_budget_secs(),
+        }
+    }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, Default, PartialEq, Eq)]

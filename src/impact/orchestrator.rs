@@ -2,8 +2,8 @@ use crate::config::model::Config;
 use crate::git::{ChangeType, RepoSnapshot};
 use crate::impact::analysis::AnalysisRegistry;
 use crate::impact::budget::{
-    AnalysisBudget, CompletenessStop, PROSPECTIVE_BUDGET_WARN, completeness_for_overall,
-    stage_slug_for_provider,
+    AnalysisBudget, CompletenessStop, PROSPECTIVE_BUDGET_WARN, REVIEW_BUDGET_WARN,
+    completeness_for_overall, overall_stop_stderr_token, stage_slug_for_provider,
 };
 use crate::impact::enrichment::{EnrichmentContext, EnrichmentProvider};
 use crate::impact::packet::{ChangedFile, FileAnalysisStatus, ImpactPacket};
@@ -391,8 +391,16 @@ fn apply_overall_stop(
     let secs = budget_secs.filter(|s| *s > 0);
     packet.completeness = Some(completeness_for_overall(stop, secs, stage));
     if stop == CompletenessStop::Budget {
-        warn!(stage, ?stop, "{PROSPECTIVE_BUDGET_WARN}");
-        eprintln!("{PROSPECTIVE_BUDGET_WARN}");
+        if packet.analysis_mode == "range" {
+            warn!(stage, ?stop, "{REVIEW_BUDGET_WARN}");
+        } else {
+            warn!(stage, ?stop, "{PROSPECTIVE_BUDGET_WARN}");
+        }
+        if let Some(token) = overall_stop_stderr_token(&packet.analysis_mode) {
+            eprintln!("{token}");
+        }
+    } else if packet.analysis_mode == "range" {
+        warn!(stage, ?stop, "review analysis stopped");
     } else {
         warn!(stage, ?stop, "prospective analysis stopped");
     }

@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Range review deadline (0348):** `review --timeout` is an overall emit
+  budget (default 25s; `0` disables). Additive JSON `completeness` on the
+  `kind: review` envelope (`scope=overall` + `stage` slug). Token
+  `review stopped: overall budget` is stderr-only. Does not rewrite
+  `latest-impact.json`. History-walk `--timeout` remains on `hotspots` /
+  `audit` only.
+
 - **Prospective analysis deadline (0347):** `change-context`, `impact`, and
   `scan --impact` take `--timeout` as an overall analysis budget (default 25s
   on `--paths`). Enrichment stops cooperatively; scoring runs once on the
@@ -324,7 +331,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 - **History-walk budget (0308):** Cooperative `AnalysisBudget` (default
   45s via `[hotspots] history_budget_secs`, CLI `--timeout` on
-  `hotspots` / `audit` / `review`, env `LEDGERFUL_HISTORY_BUDGET_SECS`).
+  `hotspots` / `audit` / `review` at ship time; **0348** moved review
+  `--timeout` to an overall emit budget), env `LEDGERFUL_HISTORY_BUDGET_SECS`).
   `0` disables the wall clock; Ctrl-C still stops the walk. Dirty
   `session` performs exactly one git history walk. Additive CLI
   `completeness` when a walk stops early (`schemaVersion` stays 1).

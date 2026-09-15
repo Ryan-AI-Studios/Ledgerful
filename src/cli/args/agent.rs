@@ -168,7 +168,7 @@ pub struct ReviewArgs {
     /// Opaque backend id (PR number or conductor track). Never implies `--track`.
     #[arg(long, value_name = "ID")]
     pub id: Option<String>,
-    /// History-walk wall-clock seconds. `0` disables the clock (Ctrl-C still works).
+    /// Overall review emit budget in seconds (not the history-walk budget on hotspots/audit). `0` disables the clock (Ctrl-C still works).
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
 }
