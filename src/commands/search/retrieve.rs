@@ -25,6 +25,103 @@ pub fn is_identifier_likely(query: &str) -> bool {
             .all(|c| c.is_alphanumeric() || c == '_' || c == ':')
 }
 
+/// Whitespace tokens for FTS interleave (E017 `"configuration provenance"`).
+pub(crate) fn tokenize_search_query(query: &str) -> Vec<String> {
+    let mut tokens: Vec<String> = query
+        .split_whitespace()
+        .map(|t| {
+            t.trim_matches(|c: char| !c.is_alphanumeric() && c != '_' && c != '-')
+                .to_string()
+        })
+        .filter(|t| t.len() >= 2)
+        .collect();
+    tokens.sort();
+    tokens.dedup();
+    tokens
+}
+
+/// Lexical (path, score) not already in `semantic_paths`, highest score first,
+/// stable path tie-break, capped at `remaining`.
+pub(crate) fn lexical_paths_to_interleave(
+    semantic_paths: &[String],
+    lexical: Vec<(String, f32)>,
+    remaining: usize,
+) -> Vec<(String, f32)> {
+    let mut seen: std::collections::HashSet<String> = semantic_paths
+        .iter()
+        .map(|p| p.replace('\\', "/"))
+        .collect();
+    let mut extra: Vec<(String, f32)> = lexical
+        .into_iter()
+        .map(|(p, s)| (p.replace('\\', "/"), s))
+        .filter(|(p, _)| seen.insert(p.clone()))
+        .collect();
+    extra.sort_by(|a, b| {
+        b.1.partial_cmp(&a.1)
+            .unwrap_or(std::cmp::Ordering::Equal)
+            .then_with(|| a.0.cmp(&b.0))
+    });
+    extra.truncate(remaining);
+    extra
+}
+
+/// Token FTS hits whose paths are not already in `semantic` results.
+pub(crate) fn collect_token_lexical_hits(
+    layout: &crate::state::layout::Layout,
+    query: &str,
+    semantic: &[(String, String, usize, f32)],
+    remaining: usize,
+) -> Vec<(String, f32, String, Option<usize>)> {
+    if remaining == 0 {
+        return Vec::new();
+    }
+    let Ok(engine) =
+        crate::search::TantivySearchEngine::open_or_create(layout.search_index_dir().as_std_path())
+    else {
+        return Vec::new();
+    };
+    let mut lexical: Vec<(String, f32, String, Option<usize>)> = Vec::new();
+    let mut queries = vec![query.to_string()];
+    queries.extend(tokenize_search_query(query));
+    for q in queries {
+        let Ok(hits) = engine.search(&q, remaining.saturating_add(4)) else {
+            continue;
+        };
+        for hit in hits {
+            lexical.push((
+                hit.path,
+                hit.score,
+                hit.snippet.unwrap_or_default(),
+                hit.line_number,
+            ));
+        }
+    }
+    let semantic_paths: Vec<String> = semantic.iter().map(|(p, _, _, _)| p.clone()).collect();
+    let scored: Vec<(String, f32)> = lexical.iter().map(|(p, s, _, _)| (p.clone(), *s)).collect();
+    let chosen = lexical_paths_to_interleave(&semantic_paths, scored, remaining);
+    let mut by_path: std::collections::BTreeMap<String, (f32, String, Option<usize>)> =
+        std::collections::BTreeMap::new();
+    for (path, score, snippet, line) in lexical {
+        let path = path.replace('\\', "/");
+        by_path
+            .entry(path)
+            .and_modify(|e| {
+                if score > e.0 {
+                    *e = (score, snippet.clone(), line);
+                }
+            })
+            .or_insert((score, snippet, line));
+    }
+    chosen
+        .into_iter()
+        .filter_map(|(path, _)| {
+            by_path
+                .remove(&path)
+                .map(|(score, snippet, line)| (path, score, snippet, line))
+        })
+        .collect()
+}
+
 pub(crate) fn perform_search(
     engine: TantivySearchEngine,
     root: &Utf8Path,
@@ -591,6 +688,48 @@ fn handle_fuzzy_fallback(
             }
             println!();
         }
+    }
+}
+
+#[cfg(test)]
+mod tokenize_interleave_tests {
+    use super::{lexical_paths_to_interleave, tokenize_search_query};
+
+    #[test]
+    fn tokenize_search_query_splits_configuration_provenance() {
+        let tokens = tokenize_search_query("configuration provenance");
+        assert!(tokens.contains(&"configuration".to_string()));
+        assert!(tokens.contains(&"provenance".to_string()));
+        assert!(!is_identifier_likely_for_query());
+    }
+
+    fn is_identifier_likely_for_query() -> bool {
+        super::is_identifier_likely("configuration provenance")
+    }
+
+    #[test]
+    fn lexical_paths_to_interleave_skips_semantic_and_caps() {
+        let semantic = vec!["src/ledger.rs".to_string()];
+        let lexical = vec![
+            ("src/ledger.rs".to_string(), 9.0),
+            ("src/commands/config_verify.rs".to_string(), 4.0),
+            ("src/other.rs".to_string(), 5.0),
+        ];
+        let extra = lexical_paths_to_interleave(&semantic, lexical, 1);
+        assert_eq!(extra.len(), 1);
+        assert_eq!(extra[0].0, "src/other.rs");
+    }
+
+    #[test]
+    fn lexical_paths_to_interleave_includes_config_verify() {
+        let semantic = vec!["src/ledger/db.rs".to_string()];
+        let lexical = vec![
+            ("src/commands/config_verify.rs".to_string(), 8.0),
+            ("src/ledger/db.rs".to_string(), 12.0),
+        ];
+        let extra = lexical_paths_to_interleave(&semantic, lexical, 2);
+        assert_eq!(extra.len(), 1);
+        assert_eq!(extra[0].0, "src/commands/config_verify.rs");
     }
 }
 

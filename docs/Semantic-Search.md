@@ -74,7 +74,7 @@ Backend health and index emptiness are **orthogonal**:
 | **Unreachable** | any | Check the model server at the configured URL. |
 | **Ready** | empty | Run `ledgerful index --semantic` to populate (auto full when cold). |
 | **Ready** | populated | Semantic ranking runs; “no matches” means the query found nothing, not that semantic search was skipped. |
-| dimension mismatch | — | Run `ledgerful update --migrate` after aligning dimensions. |
+| dimension mismatch | — | Query does not recreate the index. Set `local_model.dimensions` to match the stored embeddings, or re-index after confirming the embedding model. |
 
 ### Ban the absence claim
 

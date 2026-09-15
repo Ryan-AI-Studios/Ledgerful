@@ -92,18 +92,54 @@ pub(crate) fn gather_semantic_chunks(
         };
     }
 
-    let vector_store = match crate::semantic::vector_store::VectorStore::new(
-        cozo,
-        config.dimensions,
-        config.disable_hnsw,
-    ) {
-        Ok(vs) => vs,
-        Err(e) => {
-            return SemanticGather::Failed {
-                reason: format!("vector store open failed: {e}"),
+    let resolved = crate::semantic::resolve_query_dimensions(config, cozo);
+    if resolved.dimension_mismatch {
+        return SemanticGather::Failed {
+            reason:
+                "embedding dimension mismatch with stored snippet_embedding (index not modified)"
+                    .to_string(),
+        };
+    }
+    let Some(dim) = resolved.open_dim else {
+        return SemanticGather::Skipped {
+            reason: "embedding dimension unset and no stored snippet_embedding".to_string(),
+        };
+    };
+    if resolved.stored_read_failed {
+        return SemanticGather::Failed {
+            reason: "stored embedding dimension read failed (index not modified)".to_string(),
+        };
+    }
+    match cozo.snippet_embedding_dim() {
+        Ok(None) => {
+            return SemanticGather::Skipped {
+                reason: "semantic index not present".to_string(),
             };
         }
-    };
+        Ok(Some(stored)) if stored == dim => {}
+        Ok(Some(stored)) => {
+            return SemanticGather::Failed {
+                reason: format!(
+                    "embedding dimension mismatch with stored snippet_embedding ({stored} vs {dim}; index not modified)"
+                ),
+            };
+        }
+        Err(e) => {
+            return SemanticGather::Failed {
+                reason: format!("stored embedding dimension read failed: {e}"),
+            };
+        }
+    }
+
+    let vector_store =
+        match crate::semantic::vector_store::VectorStore::new(cozo, dim, config.disable_hnsw) {
+            Ok(vs) => vs,
+            Err(e) => {
+                return SemanticGather::Failed {
+                    reason: format!("vector store open failed: {e}"),
+                };
+            }
+        };
 
     let query_vector = match crate::semantic::embedder::SemanticEmbedder::new(config.clone())
         .embed(query_string)
@@ -289,6 +325,48 @@ mod tests {
         assert!(
             !std::path::Path::new(rel).is_absolute(),
             "relative key is not absolute"
+        );
+    }
+
+    #[test]
+    fn gather_semantic_chunks_mismatch_is_failed_not_drop() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = camino::Utf8Path::from_path(tmp.path()).expect("utf8 path");
+        let layout = Layout::new(root);
+        layout.ensure_state_dir().expect("state dir");
+        let db_path = layout.state_subdir().join("ledger.db");
+        let storage = StorageManager::init(db_path.as_std_path()).expect("storage init");
+        let cozo = storage.cozo().expect("cozo");
+        crate::semantic::vector_store::VectorStore::new_without_hnsw(cozo, 768).expect("768 store");
+
+        let config = LocalModelConfig {
+            dimensions: 384,
+            base_url: "http://127.0.0.1:1".to_string(),
+            embedding_model: "nomic-embed-text".to_string(),
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let outcome = gather_semantic_chunks(
+            &storage,
+            tmp.path(),
+            "configuration provenance",
+            3,
+            &config,
+            true,
+        );
+        match outcome {
+            SemanticGather::Failed { reason } => {
+                assert!(
+                    reason.contains("mismatch"),
+                    "expected mismatch failure, got: {reason}"
+                );
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+        assert_eq!(
+            cozo.snippet_embedding_dim().expect("dim"),
+            Some(768),
+            "Ask gather must not drop stored 768"
         );
     }
 

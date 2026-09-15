@@ -25,7 +25,7 @@ pub enum BackendStatus {
     Ready,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SemanticReadiness {
     /// Backend health axis (replaces collapsed `endpoint_available: bool`).
     pub backend_status: BackendStatus,
@@ -80,10 +80,10 @@ pub fn semantic_readiness_messages(readiness: &SemanticReadiness) -> Vec<String>
         BackendStatus::Ready => {}
     }
     if readiness.dimension_mismatch {
-        msgs.push(format!(
-            "Model/Index dimension mismatch ({} vs {}). Run `ledgerful update --migrate` to fix.",
-            readiness.model_name, readiness.dimensions
-        ));
+        msgs.push(
+            "Model/Index dimension mismatch (preferred vs stored width). The stored index was not modified. Set `local_model.dimensions` to match the stored embeddings or re-index after confirming the embedding model."
+                .to_string(),
+        );
     }
     if readiness.zero_vector_count > 0 {
         // Gate index --semantic remediation on Ready only. Under
@@ -203,10 +203,60 @@ pub fn semantic_no_results_message(
     }
 }
 
+/// Query-path embedding dimension: configured > probed > stored column.
+/// Never guesses 384. `open_dim` is the width to open `VectorStore` with
+/// (stored wins so a mismatch cannot HP3-drop the relation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct QueryDimResolution {
+    pub open_dim: Option<usize>,
+    pub dimension_mismatch: bool,
+    pub preferred: Option<usize>,
+    pub stored: Option<usize>,
+    pub stored_read_failed: bool,
+}
+
+pub fn resolve_query_dimensions(
+    config: &LocalModelConfig,
+    storage: &CozoStorage,
+) -> QueryDimResolution {
+    let (stored, stored_read_failed) = match storage.snippet_embedding_dim() {
+        Ok(d) => (d, false),
+        Err(_) => (None, true),
+    };
+    let configured = (config.dimensions > 0).then_some(config.dimensions);
+    let probed = if is_embedding_backend_configured(config) {
+        match crate::embed::client::check_local_model(config) {
+            Ok(d) if d.dimensions > 0 => Some(d.dimensions),
+            _ => None,
+        }
+    } else {
+        None
+    };
+    let preferred = configured.or(probed);
+    let dimension_mismatch = match (preferred, stored) {
+        (Some(a), Some(b)) => a != b,
+        _ => false,
+    };
+    // Never open with preferred when stored-dim read failed (would HP3-drop).
+    let open_dim = if stored_read_failed {
+        None
+    } else {
+        stored.or(preferred)
+    };
+    QueryDimResolution {
+        open_dim,
+        dimension_mismatch,
+        preferred,
+        stored,
+        stored_read_failed,
+    }
+}
+
 pub struct SemanticDiscovery<'a> {
     pub embedder: SemanticEmbedder,
     vector_store: VectorStore<'a>,
     config: LocalModelConfig,
+    query_mismatch: bool,
 }
 
 impl<'a> SemanticDiscovery<'a> {
@@ -219,36 +269,23 @@ impl<'a> SemanticDiscovery<'a> {
         semantic_config: SemanticConfig,
         storage: &'a CozoStorage,
     ) -> Result<Self> {
-        if config.dimensions == 0 && !config.base_url.is_empty() {
-            match crate::embed::client::check_local_model(&config) {
-                Ok(dims) if dims.dimensions > 0 => {
-                    tracing::debug!(
-                        "Probed local model: {} ({} dimensions)",
-                        dims.model_name,
-                        dims.dimensions
-                    );
-                    config.dimensions = dims.dimensions;
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        "Failed to probe local model at {}: {}. Defaulting to 384.",
-                        config.base_url,
-                        e
-                    );
-                    config.dimensions = 384;
-                }
-                _ => {
-                    tracing::warn!("Probed model returned zero dimensions. Defaulting to 384.");
-                    config.dimensions = 384;
-                }
-            }
-        } else if config.dimensions == 0 {
-            config.dimensions = 384;
+        let resolved = resolve_query_dimensions(&config, storage);
+        if resolved.stored_read_failed {
+            return Err(miette::miette!(
+                "Could not read stored snippet_embedding dimension; refusing to open the vector store (index not modified)."
+            ));
         }
-
-        let dim = config.dimensions;
+        let dim = match resolved.open_dim {
+            Some(d) if d > 0 => d,
+            _ => {
+                return Err(miette::miette!(
+                    "Cannot create snippet_embedding with dimension 0. Set `local_model.dimensions` (nomic-embed-text is 768) or ensure the embedding probe returns a non-zero size. Inspect with `ledgerful index --semantic-dry-run`."
+                ));
+            }
+        };
+        config.dimensions = dim;
         let skip_hnsw = config.disable_hnsw;
-        tracing::debug!("Initializing VectorStore with {} dimensions", dim);
+        tracing::debug!("Initializing VectorStore with {dim} dimensions");
         let embedder = SemanticEmbedder::new(config.clone());
         let vector_store = VectorStore::new_with_hnsw_threshold(
             storage,
@@ -260,6 +297,7 @@ impl<'a> SemanticDiscovery<'a> {
             embedder,
             vector_store,
             config,
+            query_mismatch: resolved.dimension_mismatch,
         })
     }
 
@@ -281,12 +319,12 @@ impl<'a> SemanticDiscovery<'a> {
         let vector_count = self.vector_store.get_vector_count().unwrap_or(0);
         let zero_vector_count = self.vector_store.count_zero_vectors().unwrap_or(0);
 
-        // Check for dimension mismatch between model and store
-        let dimension_mismatch = if model_dims > 0 && self.config.dimensions > 0 {
-            model_dims != self.config.dimensions
-        } else {
-            false
-        };
+        // Probe vs opened (stored-preferred) dim. `query_mismatch` covers
+        // explicit config vs stored when the probe is absent.
+        let dimension_mismatch = self.query_mismatch
+            || (model_dims > 0
+                && self.config.dimensions > 0
+                && model_dims != self.config.dimensions);
 
         Ok(SemanticReadiness {
             backend_status,
@@ -806,8 +844,13 @@ mod tests {
             "must report dimension mismatch: {msgs:?}"
         );
         assert!(
-            msgs.iter().any(|m| m.contains("update --migrate")),
-            "must name migrate remediation: {msgs:?}"
+            msgs.iter()
+                .any(|m| m.contains("was not modified") || m.contains("stored")),
+            "query-path mismatch must not recommend update --migrate: {msgs:?}"
+        );
+        assert!(
+            !msgs.iter().any(|m| m.contains("update --migrate")),
+            "query-path mismatch must not recommend update --migrate: {msgs:?}"
         );
     }
 
@@ -1260,5 +1303,74 @@ mod tests {
             0,
             "no vectors before or after"
         );
+    }
+
+    #[test]
+    fn resolve_query_dimensions_prefers_stored_when_config_unset() {
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        VectorStore::new_without_hnsw(&storage, 768).expect("768 store");
+        let config = LocalModelConfig {
+            dimensions: 0,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let resolved = resolve_query_dimensions(&config, &storage);
+        assert_eq!(resolved.open_dim, Some(768));
+        assert!(!resolved.dimension_mismatch);
+        assert!(!resolved.stored_read_failed);
+        assert_eq!(resolved.stored, Some(768));
+    }
+
+    #[test]
+    fn resolve_query_dimensions_prefers_config_when_set_and_no_store() {
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let config = LocalModelConfig {
+            dimensions: 768,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let resolved = resolve_query_dimensions(&config, &storage);
+        assert_eq!(resolved.open_dim, Some(768));
+        assert!(!resolved.dimension_mismatch);
+    }
+
+    #[test]
+    fn resolve_query_dimensions_mismatch_does_not_drop_relation() {
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        VectorStore::new_without_hnsw(&storage, 768).expect("768 store");
+        let config = LocalModelConfig {
+            dimensions: 384,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let resolved = resolve_query_dimensions(&config, &storage);
+        assert_eq!(resolved.open_dim, Some(768));
+        assert!(resolved.dimension_mismatch);
+        SemanticDiscovery::new(config, &storage).expect("open stored dim");
+        assert_eq!(
+            storage.snippet_embedding_dim().expect("dim"),
+            Some(768),
+            "writable new() must not HP3-drop 768 to 384"
+        );
+    }
+
+    #[test]
+    fn semantic_discovery_new_does_not_default_to_384() {
+        let storage = CozoStorage::new_in_memory().expect("cozo");
+        let config = LocalModelConfig {
+            dimensions: 0,
+            disable_hnsw: true,
+            ..Default::default()
+        };
+        let err = match SemanticDiscovery::new(config, &storage) {
+            Ok(_) => panic!("dim 0 must fail"),
+            Err(e) => e,
+        };
+        let msg = format!("{err:#}");
+        assert!(
+            msg.contains("dimension 0"),
+            "expected dimension 0 refusal, got: {msg}"
+        );
+        assert_eq!(storage.snippet_embedding_dim().expect("dim"), None);
     }
 }

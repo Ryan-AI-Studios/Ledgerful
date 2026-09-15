@@ -6,6 +6,18 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Changed
+
+- **Semantic Ask retrieval parity (0351):** `ask` and `search --semantic`
+  share embedding-dimension resolution (configured > probed > stored
+  `snippet_embedding` column). Unset no longer guesses 384 or opens a
+  0-width store. Ask falls back to Tantivy BM25 when vectors cannot run;
+  empty evidence still refuses generation (0312). `search --semantic`
+  unresolvable-dim falls through to BM25 instead of exiting. Query-path
+  dimension mismatch does not recommend `update --migrate`. Sample
+  `docs/examples/config.toml` uses live `dimensions = 768` for
+  nomic-embed-text.
+
 ### Added
 
 - **Ledger audit traversal deadline (0350):** unscoped `audit` /

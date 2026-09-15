@@ -119,7 +119,7 @@ Deep visibility into the engineering context of the repository.
 Ledgerful is "Gemini-ready," providing high-signal, sanitized context to Large Language Models.
 
 *   **Local-First Backend**: OpenAI-compatible completions client for running models locally (e.g., via llama-server).
-*   **Semantic Context Assembly**: Budget-aware assembly of structural, semantic, and historical context for prompts.
+*   **Semantic Context Assembly**: Budget-aware assembly of structural, semantic, and historical context for prompts. `search --semantic` and `ask --semantic` resolve embedding dimensions from config, probe, or the stored index (never a 384 guess); Ask falls back to Tantivy when vectors cannot run.
 *   **Modes of Assistance**:
     *   `analyze`: Detailed blast-radius and risk reasoning.
     *   `suggest`: Targeted verification and fix recommendations.
