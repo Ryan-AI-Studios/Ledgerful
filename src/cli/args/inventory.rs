@@ -24,7 +24,7 @@ pub enum HotspotIncludeScope {
     Vendor,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone, Default)]
 pub struct HotspotArgs {
     #[command(subcommand)]
     pub command: Option<HotspotSubcommands>,
@@ -77,12 +77,14 @@ pub struct HotspotArgs {
     #[arg(long, value_enum, value_name = "SCOPE")]
     pub include: Option<HotspotIncludeScope>,
 
-    /// History-walk wall-clock seconds. `0` disables the clock (Ctrl-C still works).
+    /// Overall list/explain emit budget in seconds. `0` disables that clock (Ctrl-C still works).
+    /// History-walk seconds stay `[hotspots] history_budget_secs` / `LEDGERFUL_HISTORY_BUDGET_SECS`.
+    /// Place this flag before `explain` (`hotspots --timeout 5 explain PATH`).
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
 }
 
-#[derive(Subcommand, Debug)]
+#[derive(Subcommand, Debug, Clone)]
 pub enum HotspotSubcommands {
     /// Top-file hotspot trend summary (default); full matrix via --all
     Trend {
@@ -123,6 +125,9 @@ pub enum HotspotSubcommands {
     Explain {
         /// Entity path to explain
         entity: String,
+        /// Output as JSON (`kind: hotspotExplanation`)
+        #[arg(long)]
+        json: bool,
     },
     /// Check hotspot score budget
     Budget {

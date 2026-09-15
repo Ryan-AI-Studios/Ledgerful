@@ -1041,6 +1041,17 @@ mod tests {
             "explicit --timeout must appear in argv shape: {}",
             with.command.argv_shape()
         );
+        let help = Cli::command()
+            .find_subcommand("hotspots")
+            .expect("hotspots")
+            .clone()
+            .render_help()
+            .to_string();
+        assert!(help.contains("Overall list/explain emit budget"), "{help}");
+        assert!(
+            !help.contains("History-walk wall-clock"),
+            "hotspots --timeout is overall emit:\n{help}"
+        );
     }
 
     #[test]
