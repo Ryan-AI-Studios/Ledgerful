@@ -390,7 +390,13 @@ pub fn execute_review_in(
                 status: "unavailable".to_string(),
                 exercising: Vec::new(),
                 untested: Vec::new(),
-                notes: Some("ledger.db unavailable".to_string()),
+                notes: Some(
+                    completeness
+                        .as_ref()
+                        .filter(|c| c.scope == Some(CompletenessScope::Overall))
+                        .map(blast_reason_for)
+                        .unwrap_or_else(|| "ledger.db unavailable".to_string()),
+                ),
             },
             ReviewContracts {
                 status: "unavailable".to_string(),
@@ -1937,6 +1943,22 @@ mod tests {
             env.files_changed.iter().any(|f| f.path == "README.md"),
             "expired overall still lists the range: {:?}",
             env.files_changed
+        );
+        assert!(
+            env.tests
+                .notes
+                .as_deref()
+                .is_some_and(|n| n.contains("overall analysis stopped")),
+            "budget skip must not claim missing db: {:?}",
+            env.tests.notes
+        );
+        assert!(
+            !env.tests
+                .notes
+                .as_deref()
+                .is_some_and(|n| n.contains("ledger.db unavailable")),
+            "budget skip must not claim missing db: {:?}",
+            env.tests.notes
         );
     }
 
