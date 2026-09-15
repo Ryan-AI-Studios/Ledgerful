@@ -136,50 +136,6 @@ pub fn generate_suggestions(
     suggestions
 }
 
-/// Generate health-related suggestions even on a clean verify pass.
-///
-/// This is intended for use with the `--health` flag.
-pub fn generate_health_suggestions(ledger_status: &LedgerStatus) -> Vec<Suggestion> {
-    let mut suggestions: Vec<Suggestion> = Vec::new();
-
-    if ledger_status.has_stale_pending {
-        suggestions.push(Suggestion {
-            id: "stale-pending-status".to_string(),
-            description: "Stale PENDING transaction(s) (>24h) — inspect then commit or rollback"
-                .to_string(),
-            command: concat!(
-                "ledgerful ledger status   # list pending transactions\n",
-                "# then:\n",
-                "#   ledgerful ledger commit <tx-id> --summary \"...\"\n",
-                "#   ledgerful ledger rollback <tx-id> --reason \"stale\""
-            )
-            .to_string(),
-            severity: SuggestionSeverity::Warning,
-        });
-    }
-
-    if ledger_status.unaudited_count > 0 {
-        suggestions.push(Suggestion {
-            id: "unaudited-drift-reconcile".to_string(),
-            description: format!(
-                "{} UNAUDITED drift transaction(s) detected — reconcile the ledger",
-                ledger_status.unaudited_count
-            ),
-            command: "ledgerful ledger reconcile --all --reason \"verify follow-up\"".to_string(),
-            severity: SuggestionSeverity::ActionRequired,
-        });
-    }
-
-    // Sort: severity descending, then description ascending
-    suggestions.sort_by(|a, b| {
-        b.severity
-            .cmp(&a.severity)
-            .then_with(|| a.description.cmp(&b.description))
-    });
-
-    suggestions
-}
-
 /// Query the ledger database for the status snapshot needed by the suggestion engine.
 pub fn query_ledger_status(layout: &Layout) -> LedgerStatus {
     let storage = match StorageManager::init_with_layout(layout) {
@@ -390,28 +346,6 @@ mod tests {
     }
 
     // ------------------------------------------------------------------
-    // Health suggestions
-    // ------------------------------------------------------------------
-
-    #[test]
-    fn test_health_suggestions_on_clean_pass() {
-        let ledger = stale_ledger();
-        let health = generate_health_suggestions(&ledger);
-        assert!(!health.is_empty(), "health mode should surface warnings");
-        assert!(
-            health.iter().any(|s| s.id == "stale-pending-status"),
-            "should include stale-pending-status"
-        );
-    }
-
-    #[test]
-    fn test_health_suggestions_no_issues() {
-        let ledger = clean_ledger();
-        let health = generate_health_suggestions(&ledger);
-        assert!(health.is_empty());
-    }
-
-    // ------------------------------------------------------------------
     // Property-based safety invariants
     // ------------------------------------------------------------------
 
@@ -435,17 +369,6 @@ mod tests {
                 s.command
             );
         }
-
-        // Also check health suggestions
-        let health = generate_health_suggestions(&ledger);
-        for s in &health {
-            assert!(
-                !s.command.contains("--force"),
-                "health suggestion {} contains --force: {}",
-                s.id,
-                s.command
-            );
-        }
     }
 
     #[test]
@@ -464,15 +387,6 @@ mod tests {
             assert!(
                 !s.command.is_empty(),
                 "suggestion {} has empty command",
-                s.id
-            );
-        }
-
-        let health = generate_health_suggestions(&ledger);
-        for s in &health {
-            assert!(
-                !s.command.is_empty(),
-                "health suggestion {} has empty command",
                 s.id
             );
         }

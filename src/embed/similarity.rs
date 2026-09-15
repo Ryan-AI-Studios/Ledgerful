@@ -50,22 +50,6 @@ pub fn pairwise_cosine(query: &[f32], candidates: &[(String, Vec<f32>)]) -> Vec<
     scores
 }
 
-pub fn top_k(scores: Vec<(String, f32)>, k: usize) -> Vec<(String, f32)> {
-    let mut sorted = scores;
-    sorted.sort_by(|a, b| {
-        b.1.partial_cmp(&a.1)
-            .unwrap_or(std::cmp::Ordering::Equal)
-            .then_with(|| a.0.cmp(&b.0))
-    });
-
-    if k == 0 || k >= sorted.len() {
-        return sorted;
-    }
-
-    sorted.truncate(k);
-    sorted
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -128,45 +112,5 @@ mod tests {
         assert_eq!(results[2].0, "b");
         assert!(results[0].1 > results[1].1);
         assert!(results[1].1 > results[2].1);
-    }
-
-    #[test]
-    fn top_k_returns_at_most_k() {
-        let scores = vec![
-            ("a".to_string(), 0.9_f32),
-            ("b".to_string(), 0.8),
-            ("c".to_string(), 0.7),
-            ("d".to_string(), 0.6),
-            ("e".to_string(), 0.5),
-        ];
-        let result = top_k(scores, 3);
-        assert_eq!(result.len(), 3);
-    }
-
-    #[test]
-    fn top_k_zero_returns_all() {
-        let scores = vec![
-            ("a".to_string(), 0.9_f32),
-            ("b".to_string(), 0.8),
-            ("c".to_string(), 0.7),
-        ];
-        let result = top_k(scores, 0);
-        assert_eq!(result.len(), 3);
-    }
-
-    #[test]
-    fn top_k_stable_sort_on_ties() {
-        let scores = vec![
-            ("a".to_string(), 0.5_f32),
-            ("b".to_string(), 0.5),
-            ("c".to_string(), 0.9),
-        ];
-        let result = top_k(scores, 3);
-        assert_eq!(result.len(), 3);
-        // Highest score first
-        assert_eq!(result[0].0, "c");
-        // For ties, key ascending preserves insertion order with stable sort
-        assert_eq!(result[0].1, 0.9);
-        // The tied items should be sorted by key ascending after sort
     }
 }

@@ -5,45 +5,6 @@ use crate::policy::rules::Rules;
 use crate::verify::predict::PredictedFile;
 use crate::verify::timeouts::DEFAULT_AUTO_TIMEOUT_SECS;
 
-/// Resolve the test command based on nextest availability.
-///
-/// When `prefer_nextest` is `None` (default) or `Some(true)`, probes for
-/// `cargo nextest` on PATH and returns the nextest variant if found.
-/// When `prefer_nextest` is `Some(false)`, always falls back to `cargo test`.
-///
-/// The nextest variant uses the `ci` profile so the pre-push/verify gate
-/// respects the test-tier policy: it excludes `__slow` tests.
-pub fn resolve_default_test_command(
-    prefer_nextest: Option<bool>,
-    repo_root: &std::path::Path,
-) -> String {
-    let use_nextest = match prefer_nextest {
-        Some(false) => false,
-        _ => crate::verify::engine::probe_nextest(),
-    };
-    if use_nextest {
-        let nextest_config_content =
-            std::fs::read_to_string(repo_root.join(".config/nextest.toml")).unwrap_or_default();
-
-        // Use toml::from_str — str::parse::<toml::Value>() fails under toml 1.x on
-        // multi-table nextest configs, which silently disabled profile detection.
-        let has_ci = nextest_has_profile(&nextest_config_content, "ci");
-
-        if has_ci {
-            "cargo nextest run --workspace --all-features --profile ci".to_string()
-        } else {
-            "cargo nextest run --workspace --all-features".to_string()
-        }
-    } else {
-        "cargo test --workspace --all-features".to_string()
-    }
-}
-
-/// Resolve the doctest command used for full verification scope.
-pub fn resolve_doctest_command() -> String {
-    "cargo test --workspace --all-features --doc".to_string()
-}
-
 pub fn build_plan(
     packet: &ImpactPacket,
     rules: &Rules,

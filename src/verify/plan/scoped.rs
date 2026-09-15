@@ -471,19 +471,6 @@ fn build_fast_scoped_plan(
     }
 }
 
-/// Returns true if the test_mapping table is empty or otherwise unusable for
-/// the fast gate without repair. Thin wrapper over
-/// [`classify_test_mapping_freshness`].
-#[allow(dead_code)] // retained public-style API; production uses classify directly
-pub(crate) fn is_test_mapping_stale(conn: &rusqlite::Connection, packet: &ImpactPacket) -> bool {
-    matches!(
-        classify_test_mapping_freshness(conn, packet),
-        MappingFreshness::Empty
-            | MappingFreshness::HeadMismatch
-            | MappingFreshness::PacketHeadMissing
-    )
-}
-
 /// Whether the fast-scope freshness gate should attempt one bounded incremental
 /// repair before re-classifying / refusing.
 ///

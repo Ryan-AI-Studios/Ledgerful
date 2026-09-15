@@ -74,7 +74,7 @@ mod non_code;
 mod scoped;
 mod shared_infra;
 
-pub use full::{build_plan, resolve_default_test_command, resolve_doctest_command};
+pub use full::build_plan;
 pub use scoped::{build_plan_scoped, build_plan_scoped_with_options};
 
 pub(crate) use full::build_plan_with_scope;
@@ -84,8 +84,7 @@ pub(crate) use non_code::is_non_code_cheap_path;
 pub(crate) use scoped::test_file_to_nextest_stem;
 #[cfg(test)]
 pub(crate) use scoped::{
-    build_scoped_nextest_command, is_test_mapping_stale, query_scoped_test_files,
-    should_attempt_mapping_repair,
+    build_scoped_nextest_command, query_scoped_test_files, should_attempt_mapping_repair,
 };
 #[cfg(test)]
 pub(crate) use shared_infra::touches_shared_infra;
