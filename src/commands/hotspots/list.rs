@@ -459,21 +459,25 @@ pub(super) fn persist_hotspots_and_couplings(
     let engine = TemporalEngine::new(history_provider, config.temporal.clone());
     let couplings_persisted = match engine.calculate_couplings_budgeted(budget) {
         Ok(couplings) => {
-            for coupling in couplings {
-                conn.execute(
-                    "INSERT INTO temporal_coupling_history (snapshot_id, file_a, file_b, score, timestamp) \
-                     VALUES (?1, ?2, ?3, ?4, ?5)",
-                    rusqlite::params![
-                        snapshot_id,
-                        coupling.file_a.to_string_lossy().to_string(),
-                        coupling.file_b.to_string_lossy().to_string(),
-                        coupling.score,
-                        timestamp
-                    ],
-                )
-                .into_diagnostic()?;
+            if budget.is_some_and(|b| b.should_stop().is_some()) {
+                false
+            } else {
+                for coupling in couplings {
+                    conn.execute(
+                        "INSERT INTO temporal_coupling_history (snapshot_id, file_a, file_b, score, timestamp) \
+                         VALUES (?1, ?2, ?3, ?4, ?5)",
+                        rusqlite::params![
+                            snapshot_id,
+                            coupling.file_a.to_string_lossy().to_string(),
+                            coupling.file_b.to_string_lossy().to_string(),
+                            coupling.score,
+                            timestamp
+                        ],
+                    )
+                    .into_diagnostic()?;
+                }
+                true
             }
-            true
         }
         Err(crate::git::GitError::InsufficientHistory { .. }) => false,
         Err(e) => {
