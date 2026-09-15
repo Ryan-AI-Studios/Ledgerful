@@ -32,7 +32,8 @@ pub struct AuditArgs {
     /// Output as JSON
     #[arg(long)]
     pub json: bool,
-    /// History-walk wall-clock seconds. `0` disables the clock (Ctrl-C still works).
+    /// Overall unscoped audit emit budget in seconds (not the 0308 history-walk
+    /// budget). `0` disables the clock (Ctrl-C still works).
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
 }
@@ -393,7 +394,8 @@ pub enum LedgerCommands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
-        /// History-walk wall-clock seconds. `0` disables the clock (Ctrl-C still works).
+        /// Overall unscoped audit emit budget in seconds (not the 0308 history-walk
+        /// budget). `0` disables the clock (Ctrl-C still works).
         #[arg(long, value_name = "SECS")]
         timeout: Option<u64>,
     },

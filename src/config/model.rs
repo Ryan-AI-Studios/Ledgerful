@@ -1,4 +1,5 @@
 mod ask;
+mod audit;
 mod bridge;
 mod coverage;
 mod doctor;
@@ -16,6 +17,7 @@ mod sync;
 mod verify;
 
 pub use self::ask::*;
+pub use self::audit::*;
 pub use self::bridge::*;
 pub use self::coverage::*;
 pub use self::doctor::*;

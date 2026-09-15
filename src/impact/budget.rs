@@ -44,6 +44,15 @@ pub const HOTSPOTS_OVERALL_BUDGET_ENV: &str = "LEDGERFUL_HOTSPOTS_OVERALL_BUDGET
 /// Greppable stderr token when a hotspots overall emit deadline fires (0349). Never stdout.
 pub const HOTSPOTS_BUDGET_WARN: &str = "hotspots stopped: overall budget";
 
+/// Unscoped audit overall emit budget (0350). Distinct from history, prospective, review, and hotspots.
+pub const DEFAULT_AUDIT_OVERALL_BUDGET_SECS: u64 = 25;
+
+/// Env override for the unscoped-audit overall emit budget. Unparseable values warn and fall through.
+pub const AUDIT_OVERALL_BUDGET_ENV: &str = "LEDGERFUL_AUDIT_OVERALL_BUDGET_SECS";
+
+/// Greppable stderr token when an unscoped-audit overall emit deadline fires (0350). Never stdout.
+pub const AUDIT_BUDGET_WARN: &str = "audit stopped: overall budget";
+
 /// Greppable string for 0243 config-load absorb (stderr + tracing).
 pub const CONFIG_LOAD_WARN: &str = "config load failed; using defaults";
 
@@ -371,6 +380,27 @@ pub fn resolve_hotspots_overall_budget_secs(cli_timeout: Option<u64>, config_sec
 /// True when an overall Instant has already elapsed.
 pub fn overall_deadline_fired(deadline: Option<Instant>) -> bool {
     deadline.is_some_and(|d| Instant::now() >= d)
+}
+
+/// CLI > env > config.toml > 25. Unparseable env warns and falls through.
+/// Distinct from prospective / review / hotspots overall resolvers.
+pub fn resolve_audit_overall_budget_secs(cli_timeout: Option<u64>, config_secs: u64) -> u64 {
+    if let Some(cli) = cli_timeout {
+        return cli;
+    }
+    match std::env::var(AUDIT_OVERALL_BUDGET_ENV) {
+        Ok(raw) if !raw.trim().is_empty() => match raw.trim().parse::<u64>() {
+            Ok(v) => v,
+            Err(_) => {
+                tracing::warn!(
+                    value = %raw,
+                    "{AUDIT_OVERALL_BUDGET_ENV} is not a valid u64; falling through to config"
+                );
+                config_secs
+            }
+        },
+        _ => config_secs,
+    }
 }
 
 /// CLI > env > config.toml > 25. Unparseable env warns and falls through.
@@ -767,6 +797,26 @@ mod tests {
         drop(_env);
         let _bad = TempEnv::set(HOTSPOTS_OVERALL_BUDGET_ENV, "nope");
         assert_eq!(resolve_hotspots_overall_budget_secs(None, 25), 25);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    #[serial_test::serial(env)]
+    fn resolve_audit_overall_budget_secs__cli_timeout_does_not_write_history_budget() {
+        let _clear = TempEnv::remove(AUDIT_OVERALL_BUDGET_ENV);
+        let _hist = TempEnv::remove(HISTORY_BUDGET_ENV);
+        assert_eq!(resolve_audit_overall_budget_secs(None, 25), 25);
+        assert_eq!(resolve_audit_overall_budget_secs(Some(0), 25), 0);
+        assert_eq!(resolve_audit_overall_budget_secs(Some(5), 25), 5);
+        assert_eq!(resolve_history_budget_secs(None, 45), 45);
+        let _env = TempEnv::set(AUDIT_OVERALL_BUDGET_ENV, "12");
+        assert_eq!(resolve_audit_overall_budget_secs(None, 25), 12);
+        assert_eq!(resolve_history_budget_secs(None, 45), 45);
+        drop(_env);
+        let _bad = TempEnv::set(AUDIT_OVERALL_BUDGET_ENV, "nope");
+        assert_eq!(resolve_audit_overall_budget_secs(None, 25), 25);
+        assert_eq!(AUDIT_BUDGET_WARN, "audit stopped: overall budget");
+        assert_eq!(DEFAULT_AUDIT_OVERALL_BUDGET_SECS, 25);
     }
 
     #[test]

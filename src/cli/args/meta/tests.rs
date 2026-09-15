@@ -25,6 +25,10 @@ fn machine_mode_selected_for_json_flags() {
     assert!(parse(&["index", "--check", "--json"]).is_machine_output());
     assert!(parse(&["timings", "--json"]).is_machine_output());
     assert!(parse(&["hotspots", "--json"]).is_machine_output());
+    assert!(parse(&["audit", "--json"]).is_machine_output());
+    assert!(parse(&["ledger", "audit", "--json"]).is_machine_output());
+    assert!(!parse(&["audit"]).is_machine_output());
+    assert!(!parse(&["ledger", "audit"]).is_machine_output());
     assert!(parse(&["hotspots", "explain", "src/lib.rs", "--json"]).is_machine_output());
     assert!(parse(&["hotspots", "--json", "explain", "src/lib.rs"]).is_machine_output());
     assert!(!parse(&["hotspots", "explain", "src/lib.rs"]).is_machine_output());

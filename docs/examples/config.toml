@@ -100,6 +100,10 @@ threshold_days = 365
 # [review.ci]
 # github_checks = false
 
+# Overall unscoped audit emit budget (0350). Distinct from history_budget_secs.
+# [audit]
+# overall_budget_secs = 25
+
 [[services.definitions]]
 name = "ledgerful"
 root = "src"
