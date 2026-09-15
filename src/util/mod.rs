@@ -1,11 +1,9 @@
 pub mod cargo_lock;
 pub mod clock;
 pub mod fs;
-pub mod hashing;
 pub mod network;
 pub mod path;
 pub mod path_entity;
-pub mod process;
 pub mod query;
 pub mod term;
 pub mod text;

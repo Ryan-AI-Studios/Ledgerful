@@ -17,4 +17,4 @@ pub use resolver::{
     ResolveCallerOutcome, ResolveCallerResult, SCIP_EDGE_EVIDENCE, ScipNativeResolver,
     is_definition_role, resolve_caller_for_reference, resolve_innermost,
 };
-pub use stale_detect::{is_scip_stale, register_scip_index};
+pub use stale_detect::register_scip_index;

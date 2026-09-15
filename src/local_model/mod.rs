@@ -2,7 +2,6 @@ pub mod client;
 pub mod cloud_policy;
 pub mod context;
 pub mod pruner;
-pub mod rerank;
 
 pub use cloud_policy::{
     CLOUD_POLICY_ENV, CLOUD_POLICY_FORBIDDEN_CODE, CLOUD_POLICY_FORBIDDEN_VALUE, CloudPolicy,

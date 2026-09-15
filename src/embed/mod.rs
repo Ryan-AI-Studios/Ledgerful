@@ -1,4 +1,3 @@
-pub mod budget;
 pub mod client;
 pub mod similarity;
 pub mod storage;

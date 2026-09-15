@@ -33,7 +33,6 @@ impl DocRegistry {
         registry.register(Box::new(SemanticNeighborIndexTemplate));
         registry.register(Box::new(DataFlowDiagramTemplate));
         registry.register(Box::new(TestCoverageGapTemplate));
-        // ApiContractIndexTemplate is excluded until implementation is complete
         registry.register(Box::new(AdrStalenessReportTemplate));
         registry.register(Box::new(CiPipelineMapTemplate));
         registry.register(Box::new(TokenProvenanceMapTemplate));
