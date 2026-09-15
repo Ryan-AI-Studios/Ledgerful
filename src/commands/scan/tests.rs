@@ -6,6 +6,7 @@ use super::execute::{
 use super::git::{is_missing_base_commit_error, parse_pr_range, resolve_commit_oid};
 use super::validate::{
     validate_blast_depth_requires_impact, validate_mode_requires_impact, validate_scan_args,
+    validate_timeout_requires_impact,
 };
 use crate::cli::args::ScanImpactMode;
 use crate::git::{ChangeType, FileChange, RepoSnapshot};
@@ -440,6 +441,47 @@ fn mode_docs_requires_impact_before_gitscan() {
     );
     assert!(validate_mode_requires_impact(true, Some(ScanImpactMode::Docs)).is_ok());
     assert!(validate_mode_requires_impact(false, None).is_ok());
+}
+
+#[test]
+fn timeout_requires_impact() {
+    let err = validate_timeout_requires_impact(false, Some(25))
+        .unwrap_err()
+        .to_string();
+    assert!(
+        err.contains("--impact"),
+        "expected --timeout reject to mention --impact, got {err}"
+    );
+    assert!(validate_timeout_requires_impact(true, Some(25)).is_ok());
+    assert!(validate_timeout_requires_impact(false, None).is_ok());
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn scan_timeout__without_impact__errors() {
+    timeout_requires_impact();
+}
+
+#[test]
+fn scan_timeout_or_prospective_skips_auto_graph() {
+    let src = include_str!("execute.rs");
+    assert!(
+        src.contains("if prospective || timeout.is_some()"),
+        "timed/prospective scan must not run unbounded auto-graph before the overall Instant"
+    );
+}
+
+#[test]
+fn scan_timeout_path_keeps_blast_depth_warning() {
+    let src = include_str!("execute.rs");
+    assert!(
+        !src.contains("let _ = crate::impact::enrichment::blast::apply_cli_blast_depth"),
+        "timeout path must not discard blast-depth warning"
+    );
+    assert!(
+        src.contains("if let Some(note) = depth_note"),
+        "timeout path must append blast-depth note to analysis_warnings"
+    );
 }
 
 #[test]

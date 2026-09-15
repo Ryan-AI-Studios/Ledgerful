@@ -17,6 +17,15 @@ pub const DEFAULT_HISTORY_BUDGET_SECS: u64 = 45;
 /// Env override (step 2 of spec §3.2). Unparseable values warn and fall through.
 pub const HISTORY_BUDGET_ENV: &str = "LEDGERFUL_HISTORY_BUDGET_SECS";
 
+/// Prospective / explicit `--timeout` overall emit budget (0347). Distinct from history.
+pub const DEFAULT_PROSPECTIVE_BUDGET_SECS: u64 = 25;
+
+/// Env override for the overall emit budget. Unparseable values warn and fall through.
+pub const PROSPECTIVE_BUDGET_ENV: &str = "LEDGERFUL_PROSPECTIVE_BUDGET_SECS";
+
+/// Greppable stderr token when the overall emit deadline fires (0347). Never stdout.
+pub const PROSPECTIVE_BUDGET_WARN: &str = "prospective analysis stopped: overall budget";
+
 /// Greppable string for 0243 config-load absorb (stderr + tracing).
 pub const CONFIG_LOAD_WARN: &str = "config load failed; using defaults";
 
@@ -25,6 +34,8 @@ pub const CONFIG_LOAD_WARN: &str = "config load failed; using defaults";
 pub struct AnalysisBudget {
     pub deadline: Option<Instant>,
     pub cancel: Arc<AtomicBool>,
+    /// Effective wall seconds that produced `deadline` (`None` when unlimited).
+    pub budget_secs: Option<u64>,
 }
 
 impl AnalysisBudget {
@@ -32,6 +43,7 @@ impl AnalysisBudget {
         Self {
             deadline: None,
             cancel,
+            budget_secs: None,
         }
     }
 
@@ -42,7 +54,38 @@ impl AnalysisBudget {
         } else {
             Some(Instant::now() + Duration::from_secs(secs))
         };
-        Self { deadline, cancel }
+        Self {
+            deadline,
+            cancel,
+            budget_secs: (secs > 0).then_some(secs),
+        }
+    }
+
+    /// Cap a history-walk budget by an overall emit Instant (0347).
+    /// History `0` is unlimited except for a present overall Instant.
+    pub fn capped_by_overall(
+        history_secs: u64,
+        overall: Option<Instant>,
+        cancel: Arc<AtomicBool>,
+    ) -> Self {
+        let now = Instant::now();
+        let history_deadline = (history_secs > 0).then(|| now + Duration::from_secs(history_secs));
+        let deadline = match (history_deadline, overall) {
+            (None, None) => None,
+            (Some(h), None) => Some(h),
+            (None, Some(o)) => Some(o),
+            (Some(h), Some(o)) => Some(h.min(o)),
+        };
+        let budget_secs = deadline.map(|d| {
+            d.saturating_duration_since(now)
+                .as_secs()
+                .max(u64::from(d > now))
+        });
+        Self {
+            deadline,
+            cancel,
+            budget_secs,
+        }
     }
 
     /// Injected near-zero / already-expired deadline for tests (DoD-1).
@@ -54,6 +97,7 @@ impl AnalysisBudget {
                     .unwrap_or_else(Instant::now),
             ),
             cancel,
+            budget_secs: Some(0),
         }
     }
 
@@ -92,12 +136,14 @@ impl HistoryWalkStop {
 #[serde(rename_all = "camelCase")]
 pub struct AnalysisCompleteness {
     pub stop: CompletenessStop,
-    pub commits_requested: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commits_requested: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub commits_walked: Option<u64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub days_requested: Option<u64>,
-    pub filter: CompletenessFilter,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub filter: Option<CompletenessFilter>,
     #[serde(skip_serializing_if = "is_false")]
     #[serde(default)]
     pub cache_hit: bool,
@@ -105,6 +151,19 @@ pub struct AnalysisCompleteness {
     pub head: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub budget_secs: Option<u64>,
+    /// `overall` when the emit deadline fired. Omit on history-only 0308 objects.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub scope: Option<CompletenessScope>,
+    /// Stable provider slug (`federated`, `hotspots`, …). Omit when complete.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stage: Option<String>,
+}
+
+/// Emit-deadline vs history-walk completeness (0347). History-only objects omit this.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum CompletenessScope {
+    Overall,
 }
 
 fn is_false(v: &bool) -> bool {
@@ -241,6 +300,49 @@ pub fn apply_resolved_history_budget(
         resolve_history_budget_secs(cli_timeout, config.hotspots.history_budget_secs);
 }
 
+/// CLI > env > config.toml > 25. Unparseable env warns and falls through.
+pub fn resolve_prospective_budget_secs(cli_timeout: Option<u64>, config_secs: u64) -> u64 {
+    if let Some(cli) = cli_timeout {
+        return cli;
+    }
+    match std::env::var(PROSPECTIVE_BUDGET_ENV) {
+        Ok(raw) if !raw.trim().is_empty() => match raw.trim().parse::<u64>() {
+            Ok(v) => v,
+            Err(_) => {
+                tracing::warn!(
+                    value = %raw,
+                    "{PROSPECTIVE_BUDGET_ENV} is not a valid u64; falling through to config"
+                );
+                config_secs
+            }
+        },
+        _ => config_secs,
+    }
+}
+
+/// Resolve once into `Config.impact.prospective_budget_secs` (runtime only).
+pub fn apply_resolved_prospective_budget(
+    config: &mut crate::config::model::Config,
+    cli_timeout: Option<u64>,
+) {
+    config.impact.prospective_budget_secs =
+        resolve_prospective_budget_secs(cli_timeout, config.impact.prospective_budget_secs);
+}
+
+/// Overall seconds for this run: prospective always resolves; working-tree only
+/// when CLI `--timeout` is present. `Some(0)` disables the wall clock.
+pub fn overall_budget_secs_for_mode(
+    analysis_mode: &str,
+    cli_timeout: Option<u64>,
+    config_secs: u64,
+) -> Option<u64> {
+    if analysis_mode == "prospective" {
+        Some(resolve_prospective_budget_secs(cli_timeout, config_secs))
+    } else {
+        cli_timeout
+    }
+}
+
 /// Install Ctrl-C. Tolerates `MultipleHandlers` (ctrlc 3.5). Tests must not call this.
 pub fn install_cancel_flag() -> Arc<AtomicBool> {
     let flag = Arc::new(AtomicBool::new(false));
@@ -263,13 +365,15 @@ pub fn completeness_for_walk(
     let stop = stop.as_completeness_stop()?;
     Some(AnalysisCompleteness {
         stop,
-        commits_requested,
+        commits_requested: Some(commits_requested),
         commits_walked: Some(commits_walked),
         days_requested,
-        filter,
+        filter: Some(filter),
         cache_hit: false,
         head,
         budget_secs,
+        scope: None,
+        stage: None,
     })
 }
 
@@ -281,13 +385,68 @@ pub fn completeness_for_error(
 ) -> AnalysisCompleteness {
     AnalysisCompleteness {
         stop: CompletenessStop::Error,
-        commits_requested,
+        commits_requested: Some(commits_requested),
         commits_walked: None,
         days_requested,
-        filter,
+        filter: Some(filter),
         cache_hit: false,
         head: None,
         budget_secs,
+        scope: None,
+        stage: None,
+    }
+}
+
+/// Overall emit-deadline completeness (0347). Omits history-walk keys.
+pub fn completeness_for_overall(
+    stop: CompletenessStop,
+    budget_secs: Option<u64>,
+    stage: &str,
+) -> AnalysisCompleteness {
+    AnalysisCompleteness {
+        stop,
+        commits_requested: None,
+        commits_walked: None,
+        days_requested: None,
+        filter: None,
+        cache_hit: false,
+        head: None,
+        budget_secs,
+        scope: Some(CompletenessScope::Overall),
+        stage: Some(stage.to_string()),
+    }
+}
+
+/// True when the packet's completeness is an overall emit stop (skip durable persist).
+pub fn is_overall_stop(c: &AnalysisCompleteness) -> bool {
+    c.scope == Some(CompletenessScope::Overall)
+}
+
+/// Stable `stage` slugs for builtin enrichment providers (0347). Not `name()` prose.
+pub fn stage_slug_for_provider(name: &str) -> &'static str {
+    match name {
+        "Federated Intelligence Enrichment Provider" => "federated",
+        "API Enrichment Provider" => "api",
+        "Data Model Enrichment Provider" => "data_models",
+        "Contract Matching Enrichment Provider" => "contracts",
+        "CI Gate Enrichment Provider" => "ci_gates",
+        "Infrastructure Enrichment Provider" => "infrastructure",
+        "Environment Enrichment Provider" => "environment",
+        "Observability Enrichment Provider" => "observability",
+        "Coupling Enrichment Provider" => "coupling",
+        "Deployment Enrichment Provider" => "deploy",
+        "CI Self-Awareness Enrichment Provider" => "ci_self_awareness",
+        "CIPredictorProvider" => "ci_predictor",
+        "Hotspot Enrichment Provider" => "hotspots",
+        "Engineering Coverage Enrichment Provider" => "coverage",
+        "Service Enrichment Provider" => "services",
+        "Runtime Usage Enrichment Provider" => "runtime_usage",
+        "Signature Delta Enrichment Provider" => "signature_delta",
+        "DeadCode" => "dead_code",
+        "KnowledgeGraph" => "kg",
+        "ADR" => "adr",
+        "Knowledge Enrichment Provider" => "knowledge",
+        _ => "enrichment",
     }
 }
 
@@ -392,6 +551,129 @@ mod tests {
         assert_eq!(v["stop"], "error");
         assert!(v.get("commitsWalked").is_none());
         assert!(v.get("cacheHit").is_none());
+        assert!(v.get("scope").is_none());
+        assert_eq!(v["filter"], "default");
+        assert_eq!(v["commitsRequested"], 500);
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn history_completeness__omits_scope() {
+        completeness_omits_walked_on_error();
+    }
+
+    #[test]
+    fn completeness_for_overall_omits_filter_and_commits() {
+        let c = completeness_for_overall(CompletenessStop::Budget, Some(25), "federated");
+        let v = serde_json::to_value(&c).expect("json");
+        assert_eq!(v["stop"], "budget");
+        assert_eq!(v["scope"], "overall");
+        assert_eq!(v["stage"], "federated");
+        assert_eq!(v["budgetSecs"], 25);
+        assert!(v.get("filter").is_none());
+        assert!(v.get("commitsRequested").is_none());
+        assert!(v.get("commitsWalked").is_none());
+        assert!(is_overall_stop(&c));
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn completeness_for_overall__omits_filter_and_commits_requested() {
+        completeness_for_overall_omits_filter_and_commits();
+    }
+
+    #[test]
+    #[allow(non_snake_case)]
+    fn working_tree_impact__omitted_timeout__does_not_use_prospective_default() {
+        assert_eq!(overall_budget_secs_for_mode("working_tree", None, 25), None);
+        assert_eq!(
+            overall_budget_secs_for_mode("prospective", None, 25),
+            Some(25)
+        );
+    }
+
+    #[test]
+    fn stage_slug_for_provider_pins_locked_tokens() {
+        assert_eq!(
+            stage_slug_for_provider("Federated Intelligence Enrichment Provider"),
+            "federated"
+        );
+        assert_eq!(
+            stage_slug_for_provider("Hotspot Enrichment Provider"),
+            "hotspots"
+        );
+        assert_eq!(
+            stage_slug_for_provider("Coupling Enrichment Provider"),
+            "coupling"
+        );
+        assert_eq!(stage_slug_for_provider("KnowledgeGraph"), "kg");
+        assert_eq!(stage_slug_for_provider("FlagSpy"), "enrichment");
+        let contract = include_str!("../../docs/agent-output-contract.md");
+        for slug in [
+            "federated",
+            "api",
+            "data_models",
+            "contracts",
+            "ci_gates",
+            "infrastructure",
+            "environment",
+            "observability",
+            "coupling",
+            "deploy",
+            "ci_self_awareness",
+            "ci_predictor",
+            "hotspots",
+            "coverage",
+            "services",
+            "runtime_usage",
+            "signature_delta",
+            "dead_code",
+            "kg",
+            "adr",
+            "knowledge",
+            "enrichment",
+        ] {
+            assert!(
+                contract.contains(&format!("`{slug}`")),
+                "agent-output-contract must name stage slug {slug}"
+            );
+        }
+    }
+
+    #[test]
+    fn capped_by_overall_uses_min() {
+        let cancel = Arc::new(AtomicBool::new(false));
+        let overall = Instant::now() + Duration::from_secs(25);
+        let b = AnalysisBudget::capped_by_overall(45, Some(overall), Arc::clone(&cancel));
+        let secs = b.budget_secs.expect("capped secs");
+        assert!(secs <= 25, "capped history must be ≤ overall, got {secs}");
+        let unlimited_history =
+            AnalysisBudget::capped_by_overall(0, Some(overall), Arc::clone(&cancel));
+        assert!(unlimited_history.budget_secs.is_some());
+        let no_overall = AnalysisBudget::capped_by_overall(45, None, cancel);
+        assert_eq!(no_overall.budget_secs, Some(45));
+    }
+
+    #[test]
+    #[serial_test::serial(env)]
+    fn prospective_budget_precedence_cli_env_config() {
+        let _clear = TempEnv::remove(PROSPECTIVE_BUDGET_ENV);
+        assert_eq!(resolve_prospective_budget_secs(None, 25), 25);
+        assert_eq!(overall_budget_secs_for_mode("working_tree", None, 25), None);
+        assert_eq!(
+            overall_budget_secs_for_mode("prospective", None, 25),
+            Some(25)
+        );
+        let _env = TempEnv::set(PROSPECTIVE_BUDGET_ENV, "12");
+        assert_eq!(resolve_prospective_budget_secs(None, 25), 12);
+        assert_eq!(resolve_prospective_budget_secs(Some(3), 25), 3);
+        drop(_env);
+        let _bad = TempEnv::set(PROSPECTIVE_BUDGET_ENV, "nope");
+        assert_eq!(resolve_prospective_budget_secs(None, 25), 25);
+        assert_eq!(
+            overall_budget_secs_for_mode("working_tree", Some(8), 25),
+            Some(8)
+        );
     }
 
     #[test]

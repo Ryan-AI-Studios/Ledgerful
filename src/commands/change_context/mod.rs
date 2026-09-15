@@ -51,6 +51,7 @@ pub fn execute_change_context(opts: ChangeContextOpts, json: bool) -> Result<()>
 
     let mut config = crate::config::load::load_config_or_default_warn(&layout);
     crate::impact::budget::apply_resolved_history_budget(&mut config, None);
+    crate::impact::budget::apply_resolved_prospective_budget(&mut config, opts.timeout);
     let storage = match open_storage_for_change_context(&layout) {
         Ok(s) => s,
         Err((e, class)) => {

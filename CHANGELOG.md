@@ -6,6 +6,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Added
+
+- **Prospective analysis deadline (0347):** `change-context`, `impact`, and
+  `scan --impact` take `--timeout` as an overall analysis budget (default 25s
+  on `--paths`). Enrichment stops cooperatively; scoring runs once on the
+  partial packet. Additive JSON `completeness.scope=overall` + `stage` slug.
+  Does not rewrite `latest-impact.json` on prospective or on overall-stop
+  working-tree runs.
+
 ### Fixed
 
 - **Timings missing-prior / unhashed honesty (0346):** `timings --explain`

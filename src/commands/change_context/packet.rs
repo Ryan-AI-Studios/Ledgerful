@@ -66,6 +66,9 @@ pub struct ChangeContextOpts {
     pub skip_git_history_enrichment: bool,
     /// Cooperative Ctrl-C flag. Tests inject; CLI installs via `install_cancel_flag`.
     pub cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    /// Overall analysis wall-clock seconds (0347). `None` = omit on working-tree;
+    /// prospective still resolves config/env/default.
+    pub timeout: Option<u64>,
 }
 
 impl Default for ChangeContextOpts {
@@ -79,6 +82,7 @@ impl Default for ChangeContextOpts {
             include_governance: false,
             skip_git_history_enrichment: false,
             cancel: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            timeout: None,
         }
     }
 }
@@ -131,6 +135,10 @@ pub struct ChangeContextPacket {
     pub next_actions: Vec<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub impact_schema_version: Option<String>,
+    /// Additive 0308/0347 completeness. Omit when the overall deadline did not
+    /// fire and any history walk completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub completeness: Option<crate::impact::budget::AnalysisCompleteness>,
 }
 
 /// Structured agent scannable header (0173). Coexists with freeform `summary`.
@@ -242,6 +250,7 @@ impl ChangeContextOpts {
         blast_depth: Option<u32>,
         paths: Vec<String>,
         include_governance: bool,
+        timeout: Option<u64>,
     ) -> Result<Self> {
         if !paths.is_empty() && base_ref.is_some() {
             return Err(miette::miette!(
@@ -260,6 +269,7 @@ impl ChangeContextOpts {
             blast_depth,
             paths,
             include_governance,
+            timeout,
             ..Self::default()
         })
     }

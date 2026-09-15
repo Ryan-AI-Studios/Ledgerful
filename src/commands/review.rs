@@ -520,6 +520,7 @@ fn compose_impact(
         crate::impact::orchestrator::ImpactHistoryOpts {
             skip_git_history_enrichment: false,
             cancel,
+            ..Default::default()
         },
     );
     let (blast, symbols) = match impact {

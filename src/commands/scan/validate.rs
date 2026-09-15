@@ -97,3 +97,16 @@ pub(super) fn validate_mode_requires_impact(
     }
     Ok(())
 }
+
+/// Reject `--timeout` without `--impact` (0347 overall analysis budget).
+pub(super) fn validate_timeout_requires_impact(
+    run_impact: bool,
+    timeout: Option<u64>,
+) -> Result<()> {
+    if timeout.is_some() && !run_impact {
+        return Err(miette::miette!(
+            "--timeout requires --impact (overall analysis budget)"
+        ));
+    }
+    Ok(())
+}

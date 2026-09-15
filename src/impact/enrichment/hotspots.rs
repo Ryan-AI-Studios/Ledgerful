@@ -43,7 +43,13 @@ impl EnrichmentProvider for HotspotProvider {
                     query.days,
                     CompletenessFilter::Unfiltered,
                     calc.head.clone(),
-                    Some(context.config.hotspots.history_budget_secs).filter(|s| *s > 0),
+                    context
+                        .history_budget
+                        .as_ref()
+                        .and_then(|b| b.budget_secs)
+                        .or_else(|| {
+                            Some(context.config.hotspots.history_budget_secs).filter(|s| *s > 0)
+                        }),
                 ) {
                     let msg = format!(
                         "history walk stopped ({}): walked {} of {} commits",

@@ -574,6 +574,7 @@ mod tests {
         let budget = AnalysisBudget {
             deadline: None,
             cancel: std::sync::Arc::clone(&cancel),
+            budget_secs: None,
         };
         let provider = CountingHistoryProvider {
             commits: dummy_commits(20),

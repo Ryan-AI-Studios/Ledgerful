@@ -783,6 +783,7 @@ fn prospective_paths_produce_non_empty_analysis_mode() {
     let config = Config::default();
     let opts = ChangeContextOpts {
         paths: vec!["src/exists.rs".into(), "src/missing.rs".into()],
+        timeout: Some(0),
         ..ChangeContextOpts::default()
     };
     let packet = build_change_context(&opts, &layout, &storage, &config).unwrap();
@@ -866,6 +867,7 @@ fn change_context_does_not_rewrite_latest_impact() {
     // Prospective --paths must also leave the durable report untouched (0173-G).
     let opts_paths = ChangeContextOpts {
         paths: vec!["src/missing.rs".into()],
+        timeout: Some(0),
         ..ChangeContextOpts::default()
     };
     let packet = build_change_context(&opts_paths, &layout, &storage, &config).unwrap();
@@ -1383,6 +1385,7 @@ fn change_context_schema_version_stays_one_with_affected_flows_key() {
         freshness: vec![],
         next_actions: vec![],
         impact_schema_version: Some("v1".into()),
+        completeness: None,
     };
     let v = serde_json::to_value(&packet).unwrap();
     assert_eq!(v["schemaVersion"], 1);
@@ -1581,6 +1584,7 @@ fn change_context_json_emits_freshness_rows() {
         freshness: vec![stale_mapping_freshness()],
         next_actions: vec![],
         impact_schema_version: Some("v1".into()),
+        completeness: None,
     };
     let v = serde_json::to_value(&packet).unwrap();
     assert_eq!(v["schemaVersion"], 1);
@@ -1609,6 +1613,57 @@ fn change_context_json_emits_freshness_rows() {
     let missing = serde_json::from_str::<ChangeContextPacket>(r#"{"schemaVersion":1,"status":"empty","summary":"x","readSet":[],"readSetCapped":false,"readSetTotalCandidates":0,"doctor":{"status":"ok","readyForPublish":true,"block":0,"warn":0,"info":0},"ledger":{"pendingCount":0}}"#)
         .expect("older packet deserializes");
     assert!(missing.freshness.is_empty());
+    assert!(missing.completeness.is_none());
+    let v = serde_json::to_value(&packet).unwrap();
+    assert!(
+        v.get("completeness").is_none(),
+        "complete packet omits completeness: {v}"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn change_context_packet__additive_completeness_omit_when_complete() {
+    let packet = ChangeContextPacket {
+        schema_version: CHANGE_CONTEXT_SCHEMA_VERSION,
+        status: "ready".into(),
+        summary: "test".into(),
+        agent_summary: None,
+        reason: None,
+        head_hash: None,
+        base_ref: None,
+        risk_level: None,
+        risk_reasons: vec![],
+        read_set: vec![],
+        read_set_capped: false,
+        read_set_total_candidates: 0,
+        blast: None,
+        test_coverage: None,
+        affected_flows: None,
+        change_hints: None,
+        doctor: DoctorSection {
+            status: "ok".into(),
+            ready_for_publish: true,
+            block: 0,
+            warn: 0,
+            info: 0,
+            top_findings: vec![],
+        },
+        ledger: LedgerSection {
+            pending_count: 0,
+            active_tx: vec![],
+        },
+        analysis_warnings: vec![],
+        freshness: vec![],
+        next_actions: vec![],
+        impact_schema_version: None,
+        completeness: None,
+    };
+    let v = serde_json::to_value(&packet).unwrap();
+    assert!(
+        v.get("completeness").is_none(),
+        "complete packet omits completeness: {v}"
+    );
 }
 
 #[test]
@@ -1646,6 +1701,7 @@ fn change_context_human_prints_freshness_block() {
         freshness: vec![stale_mapping_freshness()],
         next_actions: vec![],
         impact_schema_version: None,
+        completeness: None,
     };
     let lines = super::emit::freshness_block_lines(&packet);
     assert!(lines.iter().any(|l| l.contains("freshness:")));

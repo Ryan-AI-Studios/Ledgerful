@@ -98,6 +98,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
             include_governance,
             mode,
             full,
+            timeout,
         }) => crate::commands::scan::execute_scan_with_opts(
             impact,
             summary,
@@ -111,6 +112,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
             include_governance,
             mode,
             full,
+            timeout,
         ),
         Commands::Impact(ImpactArgs {
             all_parents,
@@ -122,6 +124,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
             blast_depth,
             paths,
             include_governance,
+            timeout,
         }) => crate::commands::impact::execute_impact_with_opts(
             all_parents,
             summary,
@@ -132,6 +135,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
             blast_depth,
             paths,
             include_governance,
+            timeout,
         ),
         Commands::ChangeContext(ChangeContextArgs {
             json,
@@ -141,6 +145,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
             blast_depth,
             paths,
             include_governance,
+            timeout,
         }) => {
             let opts = crate::commands::change_context::ChangeContextOpts::from_cli(
                 Some(detail),
@@ -149,6 +154,7 @@ pub fn run_with(cli: Cli) -> Result<()> {
                 blast_depth,
                 paths,
                 include_governance,
+                timeout,
             )?;
             crate::commands::change_context::execute_change_context(opts, json)
         }
