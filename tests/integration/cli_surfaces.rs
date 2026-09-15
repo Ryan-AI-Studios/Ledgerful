@@ -375,6 +375,32 @@ fn seed_data_models_ready(root: &std::path::Path) {
     storage.shutdown().unwrap();
 }
 
+fn seed_data_models_fixture_only(root: &std::path::Path) {
+    use camino::Utf8Path;
+    use ledgerful::state::layout::Layout;
+    use ledgerful::state::storage::StorageManager;
+
+    let root_utf8 = Utf8Path::from_path(root).expect("utf8 root");
+    let layout = Layout::new(root_utf8);
+    layout.ensure_state_dir().unwrap();
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    let conn = storage.get_connection();
+    conn.execute(
+        "INSERT INTO project_files (id, file_path, last_indexed_at)
+         VALUES (1, 'tests/fixtures/go_sample/pkg/user.go', '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    conn.execute(
+        "INSERT INTO data_models (model_name, model_file_id, language, model_kind, confidence, last_indexed_at)
+         VALUES ('User', 1, 'go', 'STRUCT', 1.0, '2026-01-01T00:00:00Z')",
+        [],
+    )
+    .unwrap();
+    storage.shutdown().unwrap();
+}
+
 fn setup_surfaces_mint_repo() -> tempfile::TempDir {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
@@ -432,6 +458,62 @@ fn surfaces_json_default_config_is_two_gated_three_empty_one_ready() {
     assert_eq!(v["surfaces"][5]["status"], "ready");
     assert_eq!(v["surfaces"][0]["gate"], "coverage.global");
     assert_eq!(v["surfaces"][5]["gate"], "none");
+}
+
+#[test]
+fn surfaces_json_fixture_only_data_models_is_empty() {
+    use crate::common::run_cli;
+
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+    git_add_and_commit(root, "initial");
+    let _guard = DirGuard::new(root);
+    execute_init(false, false).unwrap();
+    seed_data_models_fixture_only(root);
+
+    let (stdout, stderr, code) = run_cli(root, &["surfaces", "--json"]);
+    assert_eq!(code, 0, "surfaces --json must succeed; stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("pure JSON envelope");
+    assert_eq!(v["schemaVersion"], 1);
+    assert_eq!(v["kind"], "surfaces");
+    assert_eq!(v["counts"]["ready"], 0);
+    assert_eq!(v["counts"]["empty"], 4);
+    assert_eq!(v["counts"]["gated"], 2);
+    let dm = &v["surfaces"][5];
+    assert_eq!(dm["id"], "data-models");
+    assert_eq!(dm["status"], "empty");
+    assert_eq!(dm["gate"], "none");
+    assert_eq!(
+        dm["reason"],
+        "No product data models indexed (1 fixture models omitted)"
+    );
+    assert_eq!(dm["next"], "ledgerful data-models list --include-fixtures");
+
+    let (list_out, list_err, list_code) = run_cli(root, &["data-models", "list", "--json"]);
+    assert_eq!(
+        list_code, 0,
+        "data-models list --json must succeed; stderr={list_err}"
+    );
+    let list: serde_json::Value =
+        serde_json::from_str(list_out.trim()).expect("list JSON envelope");
+    assert!(
+        list["fixturesOmitted"].as_u64().expect("omitted") >= 1,
+        "{list}"
+    );
+
+    let layout = Layout::new(root.to_string_lossy().as_ref());
+    let cookie = layout.cli_session_file();
+    if cookie.exists() {
+        fs::remove_file(&cookie).expect("reset session cookie so tour is also first-show");
+    }
+    let (tour, tour_err, tour_code) = run_cli(root, &["tour", "--json"]);
+    assert_eq!(tour_code, 0, "tour --json must succeed; stderr={tour_err}");
+    let tour_v: serde_json::Value = serde_json::from_str(tour.trim()).expect("tour JSON");
+    assert_eq!(tour_v["counts"], v["counts"]);
+    assert_eq!(tour_v["surfaces"][5]["status"], "empty");
+    assert_eq!(tour_v["surfaces"][5]["next"], dm["next"]);
 }
 
 #[test]

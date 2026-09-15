@@ -49,6 +49,9 @@ Understand the "blast radius" of any change before it is committed.
         `index --incremental` writes `deploy_manifests` so a deploy-only
         repo (Dockerfile, no HTTP) can show gated `coverage.global`;
         `surfaces` empty `next` (`ledgerful index --incremental`) is honest.
+        Catalog `data-models` ready matches default `data-models list`
+        product scope; fixture-only is empty with
+        `ledgerful data-models list --include-fixtures`.
     *   **Observability**: Trace config drift and SDK dependency detection.
         Coverage inventory reads repo-root `observability/` OpenSLO
         (`kind: Service` + matching SLO, or `[services]`) after

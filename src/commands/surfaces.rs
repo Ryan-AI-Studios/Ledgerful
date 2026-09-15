@@ -17,9 +17,6 @@ use chrono::Utc;
 use miette::{IntoDiagnostic, Result};
 use serde::Serialize;
 
-/// Default `data-models list` confidence floor — ready must match that command.
-const DATA_MODELS_LIST_MIN_CONFIDENCE: f64 = 0.5;
-
 /// Wire form: `"gated" | "empty" | "ready"`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -82,6 +79,7 @@ pub struct SurfaceProbes {
     pub slo_nodes: usize,
     pub env_declarations: usize,
     pub data_models: usize,
+    pub data_models_fixtures_omitted: usize,
     pub index_missing: bool,
     pub index_stale: bool,
     pub policies_cedar_on_disk: bool,
@@ -102,6 +100,7 @@ impl SurfaceProbes {
             slo_nodes: 0,
             env_declarations: 0,
             data_models: 1,
+            data_models_fixtures_omitted: 0,
             index_missing: false,
             index_stale: false,
             policies_cedar_on_disk: false,
@@ -357,13 +356,22 @@ fn classify_data_models(probes: &SurfaceProbes) -> SurfaceItem {
     let (status, reason, next) = if probes.data_models > 0 {
         (
             SurfaceStatus::Ready,
-            "Extracted data models present",
+            "Extracted data models present".to_string(),
             "ledgerful data-models list",
+        )
+    } else if probes.data_models_fixtures_omitted > 0 {
+        (
+            SurfaceStatus::Empty,
+            format!(
+                "No product data models indexed ({} fixture models omitted)",
+                probes.data_models_fixtures_omitted
+            ),
+            "ledgerful data-models list --include-fixtures",
         )
     } else {
         (
             SurfaceStatus::Empty,
-            "No extracted data models",
+            "No extracted data models".to_string(),
             "ledgerful index --incremental",
         )
     };
@@ -374,7 +382,7 @@ fn classify_data_models(probes: &SurfaceProbes) -> SurfaceItem {
         "ledgerful data-models list",
         status,
         "none",
-        reason,
+        &reason,
         next,
     )
 }
@@ -432,6 +440,8 @@ fn gather_probes(
         Some(_) => (false, true),
         None => (false, false),
     };
+    let (product_count, fixtures_omitted) =
+        crate::commands::data_models::product_data_model_counts(conn, 0.5)?;
 
     Ok(SurfaceProbes {
         coverage_enabled: config.coverage.enabled,
@@ -446,26 +456,14 @@ fn gather_probes(
         cedar_auth_nodes: count_cozo_auth_nodes(storage)?,
         slo_nodes: count_cozo_slo_nodes(storage)?,
         env_declarations: count_sql(conn, "SELECT COUNT(*) FROM env_declarations")?,
-        data_models: count_data_models_threshold(conn)?,
+        data_models: product_count,
+        data_models_fixtures_omitted: fixtures_omitted,
         index_missing,
         index_stale,
         policies_cedar_on_disk: repo_root_cedar_present(&layout.root),
         openslo_on_disk: repo_root_openslo_present(&layout.root),
         env_example_on_disk: layout.root.join(".env.example").is_file(),
     })
-}
-
-fn count_data_models_threshold(conn: &rusqlite::Connection) -> Result<usize> {
-    let n: i64 = conn
-        .query_row(
-            "SELECT COUNT(*) FROM data_models dm \
-             INNER JOIN project_files pf ON dm.model_file_id = pf.id \
-             WHERE dm.confidence >= ?1",
-            [DATA_MODELS_LIST_MIN_CONFIDENCE],
-            |row| row.get(0),
-        )
-        .into_diagnostic()?;
-    Ok(n.max(0) as usize)
 }
 
 fn count_sql(conn: &rusqlite::Connection, sql: &str) -> Result<usize> {
@@ -772,14 +770,61 @@ mod tests {
         probes.data_models = 4;
         let report = classify_from_probes(&probes);
         assert_eq!(status_of(&report, "data-models"), SurfaceStatus::Ready);
+        assert_eq!(
+            item_of(&report, "data-models").next,
+            "ledgerful data-models list"
+        );
     }
 
     #[test]
     fn data_models_zero_is_empty() {
         let mut probes = SurfaceProbes::default_mint();
         probes.data_models = 0;
+        probes.data_models_fixtures_omitted = 0;
         let report = classify_from_probes(&probes);
         assert_eq!(status_of(&report, "data-models"), SurfaceStatus::Empty);
+        assert_eq!(
+            item_of(&report, "data-models").reason,
+            "No extracted data models"
+        );
+        assert_eq!(
+            item_of(&report, "data-models").next,
+            "ledgerful index --incremental"
+        );
+    }
+
+    #[test]
+    fn data_models_fixture_only_is_empty_not_ready() {
+        let mut probes = SurfaceProbes::default_mint();
+        probes.data_models = 0;
+        probes.data_models_fixtures_omitted = 1;
+        let report = classify_from_probes(&probes);
+        assert_eq!(status_of(&report, "data-models"), SurfaceStatus::Empty);
+        assert_eq!(
+            item_of(&report, "data-models").reason,
+            "No product data models indexed (1 fixture models omitted)"
+        );
+        assert_eq!(
+            item_of(&report, "data-models").next,
+            "ledgerful data-models list --include-fixtures"
+        );
+    }
+
+    #[test]
+    fn data_models_product_and_fixtures_is_ready() {
+        let mut probes = SurfaceProbes::default_mint();
+        probes.data_models = 2;
+        probes.data_models_fixtures_omitted = 1;
+        let report = classify_from_probes(&probes);
+        assert_eq!(status_of(&report, "data-models"), SurfaceStatus::Ready);
+        assert_eq!(
+            item_of(&report, "data-models").reason,
+            "Extracted data models present"
+        );
+        assert_eq!(
+            item_of(&report, "data-models").next,
+            "ledgerful data-models list"
+        );
     }
 
     #[test]
