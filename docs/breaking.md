@@ -18,6 +18,18 @@ This document tracks dependency and project-level compatibility concerns for the
 
 ## Project-Level Changes
 
+### Unscoped `audit` / `ledger audit` `--timeout` is overall emit (0350)
+
+**Breaking for scripts that treated `audit --timeout` / `ledger audit --timeout` as the 0308 history-walk budget:**
+
+| Before | After |
+|---|---|
+| `--timeout` wrote `[hotspots] history_budget_secs` for the unscoped hotspot walk | `--timeout` is the **overall unscoped audit emit** budget (default 25s omitted; `0` disables) |
+| Instant started after storage + SQL | Instant + cancel before sqlite-only open |
+| History-only `completeness` | Overall stop is `completeness.scope=overall` + stderr `audit stopped: overall budget` |
+
+History-walk seconds stay `[hotspots] history_budget_secs` (default 45) / `LEDGERFUL_HISTORY_BUDGET_SECS`, capped by the overall Instant. Entity-scoped `ledger audit <entity>` still ignores `--timeout`. Env `LEDGERFUL_AUDIT_OVERALL_BUDGET_SECS` / `[audit] overall_budget_secs`.
+
 ### `hotspots` list/explain `--timeout` is overall emit (0349)
 
 **Breaking for scripts that treated `hotspots --timeout` as the 0308 history-walk budget:**
@@ -28,7 +40,7 @@ This document tracks dependency and project-level compatibility concerns for the
 | Explain ignored parent `--timeout` / `--commits` / `--json` | Explain honors parent flags; `--json` emits `kind: hotspotExplanation` |
 | History-only `completeness` | Overall stop is `completeness.scope=overall` + stderr `hotspots stopped: overall budget` |
 
-History-walk seconds stay `[hotspots] history_budget_secs` (default 45) / `LEDGERFUL_HISTORY_BUDGET_SECS`. Place `--timeout` / `--commits` **before** `explain`. `hotspots trend` / `hotspots budget` still accept parent `--timeout` as a documented no-op. Audit `--timeout` stays history-walk.
+History-walk seconds stay `[hotspots] history_budget_secs` (default 45) / `LEDGERFUL_HISTORY_BUDGET_SECS`. Place `--timeout` / `--commits` **before** `explain`. `hotspots trend` / `hotspots budget` still accept parent `--timeout` as a documented no-op. Unscoped `audit` `--timeout` is an overall emit budget (0350).
 
 ### `hotspots trend` default bounds (0151)
 

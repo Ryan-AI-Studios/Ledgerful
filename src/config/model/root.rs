@@ -53,6 +53,8 @@ pub struct Config {
     #[serde(default)]
     pub review: super::review::ReviewConfig,
     #[serde(default)]
+    pub audit: super::audit::AuditConfig,
+    #[serde(default)]
     pub bridge: super::bridge::BridgeConfig,
     #[serde(default)]
     pub global_rollup: super::rollup::GlobalRollupConfig,

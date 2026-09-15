@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Ledger audit traversal deadline (0350):** unscoped `audit` /
+  `ledger audit --timeout` is an overall emit budget (default 25s; `0`
+  disables). Additive JSON `completeness` (`scope=overall` + pipeline
+  `stage` slug) on the bare `ProjectAuditReport`. Token
+  `audit stopped: overall budget` is stderr-only under `--json`. History
+  stays `[hotspots] history_budget_secs` (default 45). Entity-scoped
+  `ledger audit <entity>` still ignores `--timeout`.
+
 - **Hotspot interactive deadline (0349):** `hotspots --timeout` is an
   overall list/explain emit budget (default 25s; `0` disables). Additive
   JSON `completeness` (`scope=overall` + `stage` slug) on the list
@@ -21,8 +29,9 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   budget (default 25s; `0` disables). Additive JSON `completeness` on the
   `kind: review` envelope (`scope=overall` + `stage` slug). Token
   `review stopped: overall budget` is stderr-only. Does not rewrite
-  `latest-impact.json`. History-walk `--timeout` remains on `audit`;
-  **0349** moved hotspots list/explain `--timeout` to overall emit.
+  `latest-impact.json`. **0349** moved hotspots list/explain `--timeout`
+  to overall emit; **0350** moved unscoped `audit` `--timeout` to overall
+  emit.
 
 - **Prospective analysis deadline (0347):** `change-context`, `impact`, and
   `scan --impact` take `--timeout` as an overall analysis budget (default 25s

@@ -1127,6 +1127,37 @@ mod tests {
             "{}",
             with.command.argv_shape()
         );
+        let help = Cli::command()
+            .find_subcommand("audit")
+            .expect("audit")
+            .clone()
+            .render_help()
+            .to_string();
+        assert!(
+            help.contains("Overall unscoped audit emit"),
+            "audit --timeout is overall emit:\n{help}"
+        );
+        assert!(
+            !help.contains("History-walk wall-clock"),
+            "audit --timeout is overall emit:\n{help}"
+        );
+        let ledger_help = Cli::command()
+            .find_subcommand("ledger")
+            .expect("ledger")
+            .clone()
+            .find_subcommand("audit")
+            .expect("ledger audit")
+            .clone()
+            .render_help()
+            .to_string();
+        assert!(
+            ledger_help.contains("Overall unscoped audit emit"),
+            "ledger audit --timeout is overall emit:\n{ledger_help}"
+        );
+        assert!(
+            !ledger_help.contains("History-walk wall-clock"),
+            "ledger audit --timeout is overall emit:\n{ledger_help}"
+        );
     }
 
     #[test]

@@ -55,7 +55,7 @@ pub struct ScanArgs {
     #[arg(long)]
     pub full: bool,
     /// Overall analysis wall-clock seconds for `--impact` (not the history-walk
-    /// budget used by `hotspots`/`audit`/`review`). `0` disables the clock.
+    /// budget). `0` disables the clock.
     /// Requires `--impact`.
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
@@ -94,9 +94,9 @@ pub struct ImpactArgs {
     /// Include process/governance temporal couplings in risk (pathMode=all)
     #[arg(long)]
     pub include_governance: bool,
-    /// Overall analysis wall-clock seconds (not the history-walk budget used by
-    /// `hotspots`/`audit`/`review`). `0` disables the clock. Prospective `--paths`
-    /// uses this (default 25s) even when the flag is omitted.
+    /// Overall analysis wall-clock seconds (not the history-walk budget). `0`
+    /// disables the clock. Prospective `--paths` uses this (default 25s) even
+    /// when the flag is omitted.
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
 }
@@ -126,9 +126,9 @@ pub struct ChangeContextArgs {
     /// Include process/governance temporal couplings in risk + readSet (pathMode=all)
     #[arg(long)]
     pub include_governance: bool,
-    /// Overall analysis wall-clock seconds (not the history-walk budget used by
-    /// `hotspots`/`audit`/`review`). `0` disables the clock. Prospective `--paths`
-    /// uses this (default 25s) even when the flag is omitted.
+    /// Overall analysis wall-clock seconds (not the history-walk budget). `0`
+    /// disables the clock. Prospective `--paths` uses this (default 25s) even
+    /// when the flag is omitted.
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
 }
@@ -168,7 +168,7 @@ pub struct ReviewArgs {
     /// Opaque backend id (PR number or conductor track). Never implies `--track`.
     #[arg(long, value_name = "ID")]
     pub id: Option<String>,
-    /// Overall review emit budget in seconds (not the history-walk budget on hotspots/audit). `0` disables the clock (Ctrl-C still works).
+    /// Overall review emit budget in seconds (not the history-walk budget). `0` disables the clock (Ctrl-C still works).
     #[arg(long, value_name = "SECS")]
     pub timeout: Option<u64>,
 }

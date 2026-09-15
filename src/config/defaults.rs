@@ -126,6 +126,12 @@ prospective_budget_secs = 25
 # `0` disables the wall clock. CLI `--timeout` on `review` is this budget.
 overall_budget_secs = 25
 
+[audit]
+# Overall emit budget for unscoped `audit` / `ledger audit` (0350). Distinct
+# from `[hotspots] history_budget_secs`. `0` disables the wall clock.
+# CLI `--timeout` on unscoped audit is this budget, not the history walk.
+overall_budget_secs = 25
+
 [impact.risk_weights]
 rs = 1.0
 toml = 0.8
@@ -179,6 +185,7 @@ mod tests {
         );
         assert_eq!(config.gate.mode, "observe");
         assert_eq!(config.review.overall_budget_secs, 25);
+        assert_eq!(config.audit.overall_budget_secs, 25);
         assert_eq!(config.hotspots.overall_budget_secs, 25);
         assert_eq!(config.hotspots.history_budget_secs, 45);
         assert_eq!(config.impact.prospective_budget_secs, 25);
