@@ -189,7 +189,7 @@ fn run_bootstrap_compute(
             };
             let hotspots = calculate_hotspots(storage, &history_provider, &query)?;
             let couplings_persisted =
-                persist_hotspots_and_couplings(storage, repo, &hotspots, config)?;
+                persist_hotspots_and_couplings(storage, repo, &hotspots, config, None)?;
             // The trend view reads from `hotspot_trends` (populated by the
             // post-commit hook); make the bootstrapped snapshot visible there
             // too.

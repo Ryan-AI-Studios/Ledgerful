@@ -138,12 +138,24 @@ pub(crate) fn compute_hotspot_explanation_in(
         )
     } else {
         let engine = TemporalEngine::new(history_provider, config.temporal.clone());
-        let (couplings, warning) =
+        let (couplings, mut warning) =
             annotate_couplings(engine.calculate_couplings_budgeted(Some(&AnalysisBudget {
                 deadline: overall_deadline,
                 cancel,
                 budget_secs: Some(overall_secs).filter(|s| *s > 0),
             })));
+        if overall_deadline_fired(overall_deadline) {
+            if completeness.as_ref().is_none_or(|c| c.scope.is_none()) {
+                completeness = Some(completeness_for_overall(
+                    CompletenessStop::Budget,
+                    Some(overall_secs).filter(|s| *s > 0),
+                    "coupling",
+                ));
+            }
+            if warning.is_none() {
+                warning = Some("temporal couplings untrusted: overall budget".to_string());
+            }
+        }
         let entity_couplings: Vec<_> = couplings
             .into_iter()
             .filter(|c| {

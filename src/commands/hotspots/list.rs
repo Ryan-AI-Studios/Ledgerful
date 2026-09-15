@@ -216,7 +216,7 @@ pub(super) fn execute_hotspots_list(
         budget: Some(AnalysisBudget::capped_by_overall(
             config.hotspots.history_budget_secs,
             overall_deadline,
-            cancel,
+            cancel.clone(),
         )),
         ..Default::default()
     };
@@ -251,13 +251,23 @@ pub(super) fn execute_hotspots_list(
                 "--snapshot cannot be combined with --include docs (docs lane score is frequency-only; hotspot_history stores f×c)"
             ));
         }
-        if overall_stop {
+        if overall_stop || overall_deadline_fired(overall_deadline) {
             if !args.json {
                 println!("Hotspot snapshot skipped: overall budget.");
             }
         } else {
-            let couplings_persisted =
-                persist_hotspots_and_couplings(storage, repo, &hotspots, config)?;
+            let persist_budget = AnalysisBudget::capped_by_overall(
+                config.hotspots.history_budget_secs,
+                overall_deadline,
+                cancel.clone(),
+            );
+            let couplings_persisted = persist_hotspots_and_couplings(
+                storage,
+                repo,
+                &hotspots,
+                config,
+                Some(&persist_budget),
+            )?;
             if !args.json {
                 if couplings_persisted {
                     println!("Hotspot and temporal coupling snapshot persisted to SQLite.");
@@ -408,6 +418,7 @@ pub(super) fn persist_hotspots_and_couplings(
     repo: &gix::Repository,
     hotspots: &[crate::impact::packet::Hotspot],
     config: &crate::config::model::Config,
+    budget: Option<&AnalysisBudget>,
 ) -> Result<bool> {
     let conn = storage.get_connection();
     let timestamp = Utc::now().to_rfc3339();
@@ -446,7 +457,7 @@ pub(super) fn persist_hotspots_and_couplings(
     // still propagates as a hard failure.
     let history_provider = GixHistoryProvider::new(repo);
     let engine = TemporalEngine::new(history_provider, config.temporal.clone());
-    let couplings_persisted = match engine.calculate_couplings() {
+    let couplings_persisted = match engine.calculate_couplings_budgeted(budget) {
         Ok(couplings) => {
             for coupling in couplings {
                 conn.execute(
