@@ -54,6 +54,13 @@ Understand the "blast radius" of any change before it is committed.
         Catalog `data-models` ready matches default `data-models list`
         product scope; fixture-only is empty with
         `ledgerful data-models list --include-fixtures`.
+    *   **Data-model extract inspectability (0357):** `data-models list` /
+        `impact` always name supported extractors (Rust persistence
+        derives, Go json-tagged structs, TypeScript entity/model-dir,
+        Python model-path) and `notWired` limits (SQL migrations, C++
+        walker, JavaScript). Product-empty copy does not claim
+        SQL/migrations are extracted. `--changed` is dirty-path ∩
+        indexed models; field-level impact stays `unsupported`.
     *   **Observability**: Trace config drift and SDK dependency detection.
         Coverage inventory reads repo-root `observability/` OpenSLO
         (`kind: Service` + matching SLO, or `[services]`) after

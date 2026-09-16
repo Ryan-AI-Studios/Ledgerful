@@ -25,6 +25,7 @@ mod cli_config;
 mod cli_config_set;
 mod cli_configure;
 mod cli_cwd_honesty;
+mod cli_data_models_populated;
 mod cli_dead_code;
 mod cli_dead_code_prune;
 mod cli_dependencies;

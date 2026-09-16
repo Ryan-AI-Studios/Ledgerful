@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Data-model extract inspectability (0357):** `data-models list` /
+  `impact` always emit `supportedExtractors` / `notWired`. Product-empty
+  copy names Rust persistence derives and says SQL migrations are not
+  extracted. `--changed` remains a dirty-path filter (0146) with
+  extract-backed `is_changed` evidence. `fieldImpact: unsupported`
+  stays; SQL/migrations stay unwired.
+
 - **Service topology inspectability (0356):** `services list` / `diff`
   stay a gated inventory. `--preview` infers topology in memory and
   never writes `service_name` or the 0300 session cookie. `--full`
