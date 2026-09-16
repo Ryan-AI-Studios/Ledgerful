@@ -93,8 +93,8 @@ impl Commands {
                 }) => *json,
             },
             Commands::Observability(args) => match &args.command {
-                ObservabilitySubcommands::Coverage { json } => *json,
-                ObservabilitySubcommands::Diff { json } => *json,
+                ObservabilitySubcommands::Coverage { json, .. } => *json,
+                ObservabilitySubcommands::Diff { json, .. } => *json,
             },
             Commands::Security(args) => match &args.command {
                 SecuritySubcommands::Impact { json, .. } => *json,

@@ -1407,10 +1407,13 @@ impl Commands {
                 }
             },
             Commands::Observability(args) => match &args.command {
-                ObservabilitySubcommands::Coverage { json }
-                | ObservabilitySubcommands::Diff { json } => {
+                ObservabilitySubcommands::Coverage { json, preview }
+                | ObservabilitySubcommands::Diff { json, preview } => {
                     if *json {
                         f.push("json");
+                    }
+                    if *preview {
+                        f.push("preview");
                     }
                 }
             },

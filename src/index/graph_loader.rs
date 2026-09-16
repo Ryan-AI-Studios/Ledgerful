@@ -805,230 +805,237 @@ fn phase_observability(ctx: &mut GraphLoadContext) -> Result<()> {
                     .strip_prefix(&root_prefix)
                     .unwrap_or(&abs_str)
                     .to_string();
-                if let Ok(entities) = crate::observability::openslo::parse_openslo(&content) {
-                    for mut entity in entities {
-                        if let serde_json::Value::Object(ref mut m) = entity.metadata {
-                            m.insert(
-                                "source_file".to_string(),
-                                serde_json::Value::String(source_file.clone()),
-                            );
-                        }
-                        match entity.kind.as_str() {
-                            "Service" => {
-                                obs_nodes.push(GraphNode {
-                                    id: entity.urn.clone(),
-                                    label: format!("Service: {}", entity.name),
-                                    category: NodeKind::Service,
-                                    risk_score: 0.0,
-                                    metadata: Some(entity.metadata.clone()),
-                                });
-
-                                if let Some(ref owner) = entity.owner {
-                                    let owner_urn =
-                                        crate::platform::urn::build_urn(NodeKind::Role, owner);
-                                    obs_nodes.push(GraphNode {
-                                        id: owner_urn.clone(),
-                                        label: format!("Owner: {}", owner),
-                                        category: NodeKind::Role,
-                                        risk_score: 0.0,
-                                        metadata: Some(json!({"schema_version": "v1"})),
-                                    });
-
-                                    obs_edges.push(GraphEdge {
-                                        source: owner_urn,
-                                        target: entity.urn.clone(),
-                                        relation: EdgeKind::Owns,
-                                        confidence: 1.0,
-                                        provenance_id: ctx.provenance_id.to_string(),
-                                    });
-                                }
+                match crate::observability::openslo::parse_openslo(&content) {
+                    Ok(entities) => {
+                        for mut entity in entities {
+                            if let serde_json::Value::Object(ref mut m) = entity.metadata {
+                                m.insert(
+                                    "source_file".to_string(),
+                                    serde_json::Value::String(source_file.clone()),
+                                );
                             }
-                            "SLI" => {
-                                obs_nodes.push(GraphNode {
-                                    id: entity.urn.clone(),
-                                    label: format!("SLI: {}", entity.name),
-                                    category: NodeKind::Metric,
-                                    risk_score: 0.0,
-                                    metadata: Some(entity.metadata.clone()),
-                                });
-
-                                if let Some(ref service_name) = entity.service_name {
-                                    let svc_urn = crate::platform::urn::build_urn(
-                                        NodeKind::Service,
-                                        service_name,
-                                    );
-                                    obs_edges.push(GraphEdge {
-                                        source: entity.urn.clone(),
-                                        target: svc_urn,
-                                        relation: EdgeKind::Monitors,
-                                        confidence: 1.0,
-                                        provenance_id: ctx.provenance_id.to_string(),
-                                    });
-                                }
-
-                                for metric in &entity.metrics {
+                            match entity.kind.as_str() {
+                                "Service" => {
                                     obs_nodes.push(GraphNode {
-                                        id: metric.urn.clone(),
-                                        label: format!("Metric: {}", metric.name),
+                                        id: entity.urn.clone(),
+                                        label: format!("Service: {}", entity.name),
+                                        category: NodeKind::Service,
+                                        risk_score: 0.0,
+                                        metadata: Some(entity.metadata.clone()),
+                                    });
+
+                                    if let Some(ref owner) = entity.owner {
+                                        let owner_urn =
+                                            crate::platform::urn::build_urn(NodeKind::Role, owner);
+                                        obs_nodes.push(GraphNode {
+                                            id: owner_urn.clone(),
+                                            label: format!("Owner: {}", owner),
+                                            category: NodeKind::Role,
+                                            risk_score: 0.0,
+                                            metadata: Some(json!({"schema_version": "v1"})),
+                                        });
+
+                                        obs_edges.push(GraphEdge {
+                                            source: owner_urn,
+                                            target: entity.urn.clone(),
+                                            relation: EdgeKind::Owns,
+                                            confidence: 1.0,
+                                            provenance_id: ctx.provenance_id.to_string(),
+                                        });
+                                    }
+                                }
+                                "SLI" => {
+                                    obs_nodes.push(GraphNode {
+                                        id: entity.urn.clone(),
+                                        label: format!("SLI: {}", entity.name),
                                         category: NodeKind::Metric,
                                         risk_score: 0.0,
-                                        metadata: Some(json!({
-                                            "query": metric.query,
-                                            "source": metric.source,
-                                            "schema_version": "v1"
-                                        })),
+                                        metadata: Some(entity.metadata.clone()),
                                     });
 
-                                    obs_edges.push(GraphEdge {
-                                        source: entity.urn.clone(),
-                                        target: metric.urn.clone(),
-                                        relation: EdgeKind::DependsOn,
-                                        confidence: 1.0,
-                                        provenance_id: ctx.provenance_id.to_string(),
-                                    });
+                                    if let Some(ref service_name) = entity.service_name {
+                                        let svc_urn = crate::platform::urn::build_urn(
+                                            NodeKind::Service,
+                                            service_name,
+                                        );
+                                        obs_edges.push(GraphEdge {
+                                            source: entity.urn.clone(),
+                                            target: svc_urn,
+                                            relation: EdgeKind::Monitors,
+                                            confidence: 1.0,
+                                            provenance_id: ctx.provenance_id.to_string(),
+                                        });
+                                    }
+
+                                    for metric in &entity.metrics {
+                                        obs_nodes.push(GraphNode {
+                                            id: metric.urn.clone(),
+                                            label: format!("Metric: {}", metric.name),
+                                            category: NodeKind::Metric,
+                                            risk_score: 0.0,
+                                            metadata: Some(json!({
+                                                "query": metric.query,
+                                                "source": metric.source,
+                                                "schema_version": "v1",
+                                                "source_file": source_file,
+                                            })),
+                                        });
+
+                                        obs_edges.push(GraphEdge {
+                                            source: entity.urn.clone(),
+                                            target: metric.urn.clone(),
+                                            relation: EdgeKind::DependsOn,
+                                            confidence: 1.0,
+                                            provenance_id: ctx.provenance_id.to_string(),
+                                        });
+                                    }
                                 }
-                            }
-                            "SLO" => {
-                                obs_nodes.push(GraphNode {
-                                    id: entity.urn.clone(),
-                                    label: format!("SLO: {}", entity.name),
-                                    category: NodeKind::Slo,
-                                    risk_score: 0.0,
-                                    metadata: Some(entity.metadata.clone()),
-                                });
-
-                                if let Some(ref service_name) = entity.service_name {
-                                    let svc_urn = crate::platform::urn::build_urn(
-                                        NodeKind::Service,
-                                        service_name,
-                                    );
-                                    obs_edges.push(GraphEdge {
-                                        source: entity.urn.clone(),
-                                        target: svc_urn,
-                                        relation: EdgeKind::Monitors,
-                                        confidence: 1.0,
-                                        provenance_id: ctx.provenance_id.to_string(),
-                                    });
-                                }
-
-                                for metric in &entity.metrics {
+                                "SLO" => {
                                     obs_nodes.push(GraphNode {
-                                        id: metric.urn.clone(),
-                                        label: format!("Metric: {}", metric.name),
-                                        category: NodeKind::Metric,
+                                        id: entity.urn.clone(),
+                                        label: format!("SLO: {}", entity.name),
+                                        category: NodeKind::Slo,
                                         risk_score: 0.0,
-                                        metadata: Some(json!({
-                                            "query": metric.query,
-                                            "source": metric.source,
-                                            "schema_version": "v1"
-                                        })),
+                                        metadata: Some(entity.metadata.clone()),
                                     });
 
-                                    obs_edges.push(GraphEdge {
-                                        source: entity.urn.clone(),
-                                        target: metric.urn.clone(),
-                                        relation: EdgeKind::DependsOn,
-                                        confidence: 1.0,
-                                        provenance_id: ctx.provenance_id.to_string(),
-                                    });
+                                    if let Some(ref service_name) = entity.service_name {
+                                        let svc_urn = crate::platform::urn::build_urn(
+                                            NodeKind::Service,
+                                            service_name,
+                                        );
+                                        obs_edges.push(GraphEdge {
+                                            source: entity.urn.clone(),
+                                            target: svc_urn,
+                                            relation: EdgeKind::Monitors,
+                                            confidence: 1.0,
+                                            provenance_id: ctx.provenance_id.to_string(),
+                                        });
+                                    }
+
+                                    for metric in &entity.metrics {
+                                        obs_nodes.push(GraphNode {
+                                            id: metric.urn.clone(),
+                                            label: format!("Metric: {}", metric.name),
+                                            category: NodeKind::Metric,
+                                            risk_score: 0.0,
+                                            metadata: Some(json!({
+                                                "query": metric.query,
+                                                "source": metric.source,
+                                                "schema_version": "v1",
+                                                "source_file": source_file,
+                                            })),
+                                        });
+
+                                        obs_edges.push(GraphEdge {
+                                            source: entity.urn.clone(),
+                                            target: metric.urn.clone(),
+                                            relation: EdgeKind::DependsOn,
+                                            confidence: 1.0,
+                                            provenance_id: ctx.provenance_id.to_string(),
+                                        });
+                                    }
+
+                                    for alert_policy in &entity.alerts {
+                                        let ap_urn = crate::platform::urn::build_urn(
+                                            NodeKind::Alert,
+                                            alert_policy,
+                                        );
+                                        obs_edges.push(GraphEdge {
+                                            source: ap_urn,
+                                            target: entity.urn.clone(),
+                                            relation: EdgeKind::AlertsOn,
+                                            confidence: 1.0,
+                                            provenance_id: ctx.provenance_id.to_string(),
+                                        });
+                                    }
+
+                                    if let Some(ref owner) = entity.owner {
+                                        let owner_urn =
+                                            crate::platform::urn::build_urn(NodeKind::Role, owner);
+                                        obs_nodes.push(GraphNode {
+                                            id: owner_urn.clone(),
+                                            label: format!("Owner: {}", owner),
+                                            category: NodeKind::Role,
+                                            risk_score: 0.0,
+                                            metadata: Some(json!({"schema_version": "v1"})),
+                                        });
+
+                                        obs_edges.push(GraphEdge {
+                                            source: owner_urn,
+                                            target: entity.urn.clone(),
+                                            relation: EdgeKind::Owns,
+                                            confidence: 1.0,
+                                            provenance_id: ctx.provenance_id.to_string(),
+                                        });
+                                    }
                                 }
-
-                                for alert_policy in &entity.alerts {
-                                    let ap_urn = crate::platform::urn::build_urn(
-                                        NodeKind::Alert,
-                                        alert_policy,
-                                    );
-                                    obs_edges.push(GraphEdge {
-                                        source: ap_urn,
-                                        target: entity.urn.clone(),
-                                        relation: EdgeKind::AlertsOn,
-                                        confidence: 1.0,
-                                        provenance_id: ctx.provenance_id.to_string(),
-                                    });
-                                }
-
-                                if let Some(ref owner) = entity.owner {
-                                    let owner_urn =
-                                        crate::platform::urn::build_urn(NodeKind::Role, owner);
+                                "DataSource" => {
                                     obs_nodes.push(GraphNode {
-                                        id: owner_urn.clone(),
-                                        label: format!("Owner: {}", owner),
+                                        id: entity.urn.clone(),
+                                        label: format!("DataSource: {}", entity.name),
+                                        category: NodeKind::ObservabilitySignal,
+                                        risk_score: 0.0,
+                                        metadata: Some(entity.metadata.clone()),
+                                    });
+                                }
+                                "AlertPolicy" => {
+                                    obs_nodes.push(GraphNode {
+                                        id: entity.urn.clone(),
+                                        label: format!("AlertPolicy: {}", entity.name),
+                                        category: NodeKind::Alert,
+                                        risk_score: 0.0,
+                                        metadata: Some(entity.metadata.clone()),
+                                    });
+
+                                    for target in &entity.alerts {
+                                        let target_urn =
+                                            crate::platform::urn::build_urn(NodeKind::Role, target);
+                                        obs_edges.push(GraphEdge {
+                                            source: target_urn,
+                                            target: entity.urn.clone(),
+                                            relation: EdgeKind::Owns,
+                                            confidence: 1.0,
+                                            provenance_id: ctx.provenance_id.to_string(),
+                                        });
+                                    }
+                                }
+                                "AlertCondition" => {
+                                    obs_nodes.push(GraphNode {
+                                        id: entity.urn.clone(),
+                                        label: format!("AlertCondition: {}", entity.name),
+                                        category: NodeKind::Alert,
+                                        risk_score: 0.0,
+                                        metadata: Some(entity.metadata.clone()),
+                                    });
+
+                                    for ap in &entity.alerts {
+                                        let ap_urn =
+                                            crate::platform::urn::build_urn(NodeKind::Alert, ap);
+                                        obs_edges.push(GraphEdge {
+                                            source: entity.urn.clone(),
+                                            target: ap_urn,
+                                            relation: EdgeKind::DependsOn,
+                                            confidence: 1.0,
+                                            provenance_id: ctx.provenance_id.to_string(),
+                                        });
+                                    }
+                                }
+                                "AlertNotificationTarget" => {
+                                    obs_nodes.push(GraphNode {
+                                        id: entity.urn.clone(),
+                                        label: format!("NotificationTarget: {}", entity.name),
                                         category: NodeKind::Role,
                                         risk_score: 0.0,
-                                        metadata: Some(json!({"schema_version": "v1"})),
-                                    });
-
-                                    obs_edges.push(GraphEdge {
-                                        source: owner_urn,
-                                        target: entity.urn.clone(),
-                                        relation: EdgeKind::Owns,
-                                        confidence: 1.0,
-                                        provenance_id: ctx.provenance_id.to_string(),
+                                        metadata: Some(entity.metadata.clone()),
                                     });
                                 }
+                                _ => {}
                             }
-                            "DataSource" => {
-                                obs_nodes.push(GraphNode {
-                                    id: entity.urn.clone(),
-                                    label: format!("DataSource: {}", entity.name),
-                                    category: NodeKind::ObservabilitySignal,
-                                    risk_score: 0.0,
-                                    metadata: Some(entity.metadata.clone()),
-                                });
-                            }
-                            "AlertPolicy" => {
-                                obs_nodes.push(GraphNode {
-                                    id: entity.urn.clone(),
-                                    label: format!("AlertPolicy: {}", entity.name),
-                                    category: NodeKind::Alert,
-                                    risk_score: 0.0,
-                                    metadata: Some(entity.metadata.clone()),
-                                });
-
-                                for target in &entity.alerts {
-                                    let target_urn =
-                                        crate::platform::urn::build_urn(NodeKind::Role, target);
-                                    obs_edges.push(GraphEdge {
-                                        source: target_urn,
-                                        target: entity.urn.clone(),
-                                        relation: EdgeKind::Owns,
-                                        confidence: 1.0,
-                                        provenance_id: ctx.provenance_id.to_string(),
-                                    });
-                                }
-                            }
-                            "AlertCondition" => {
-                                obs_nodes.push(GraphNode {
-                                    id: entity.urn.clone(),
-                                    label: format!("AlertCondition: {}", entity.name),
-                                    category: NodeKind::Alert,
-                                    risk_score: 0.0,
-                                    metadata: Some(entity.metadata.clone()),
-                                });
-
-                                for ap in &entity.alerts {
-                                    let ap_urn =
-                                        crate::platform::urn::build_urn(NodeKind::Alert, ap);
-                                    obs_edges.push(GraphEdge {
-                                        source: entity.urn.clone(),
-                                        target: ap_urn,
-                                        relation: EdgeKind::DependsOn,
-                                        confidence: 1.0,
-                                        provenance_id: ctx.provenance_id.to_string(),
-                                    });
-                                }
-                            }
-                            "AlertNotificationTarget" => {
-                                obs_nodes.push(GraphNode {
-                                    id: entity.urn.clone(),
-                                    label: format!("NotificationTarget: {}", entity.name),
-                                    category: NodeKind::Role,
-                                    risk_score: 0.0,
-                                    metadata: Some(entity.metadata.clone()),
-                                });
-                            }
-                            _ => {}
                         }
+                    }
+                    Err(e) => {
+                        tracing::warn!("Failed to parse OpenSLO file {:?}: {}", path, e);
                     }
                 }
             }

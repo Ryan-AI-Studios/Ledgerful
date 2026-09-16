@@ -111,7 +111,11 @@ Working-tree git-diff classify of deployment manifests (no impact orchestrator, 
 
 ## `ledgerful observability coverage`
 
-Empty OpenSLO inventory (any empty reason). Supported inputs are repo-root `observability/` OpenSLO YAML (`kind: Service` plus matching `kind: SLO`, or `[services]` that creates the service node) after `index --analyze-graph`. A SLO-only DX1 template stays empty. Coverage stays opt-in (`coverage.enabled` default false). Keep `hide` on root `--help` (0289). `--json`: schemaVersion 1 object, collection `results`; empty keeps `emptyReason`/`message`. Session-once (0300): second human contains `Already shown this session.` and skips the generate-template prompt; JSON `message` stays (including analyze-graph) and may add `sessionNotices.observability.empty`. `observability diff` does **not** participate. Honor `already_shown` — do not re-ask HITL.
+Empty OpenSLO inventory (any empty reason). Supported inputs are repo-root `observability/` OpenSLO YAML (`kind: Service` plus matching `kind: SLO`, or `[services]` that creates the service node) after `index --analyze-graph`. `--preview` parses that directory without opening Cozo or writing state. A SLO-only DX1 template stays empty on persist. Coverage stays opt-in (`coverage.enabled` default false). Keep `hide` on root `--help` (0289). `--json`: schemaVersion 1 object, collection `results`; always `inputs` / `notWired: ["endpoints"]`; empty keeps `emptyReason`/`message`. Persist session-once (0300): second human contains `Already shown this session.` and skips the generate-template prompt; JSON `message` stays (including analyze-graph) and may add `sessionNotices.observability.empty`. `--preview` never writes the cookie. Honor `already_shown` — do not re-ask HITL.
+
+## `ledgerful observability diff`
+
+Working-tree OpenSLO change list (0146 git-status path match on `sourceFile`). Persist reads graph nodes (`slo` / `metric` / `alert` / `observability_signal`). `--preview` parses disk YAML without Cozo. Keep `hide` on root `--help` (0289). `--json`: schemaVersion 1 object `kind: observabilityDiff`, collection `changed`; always `unchanged_count` / `indexedCount` / `resultCount`. Item omit-empty `sourceFile`. Persist empty keeps 0215 taxonomy; preview empty does not recommend `index --analyze-graph`.
 
 ## `ledgerful gate mode`
 
