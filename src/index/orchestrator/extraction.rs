@@ -7,6 +7,7 @@ use crate::index::env_schema::EnvSchemaIndexer;
 use crate::index::observability::ObservabilityExtractor;
 use crate::index::routes::RouteExtractor;
 use crate::index::test_mapping::TestMapper;
+use crate::state::storage::StorageManager;
 use miette::{IntoDiagnostic, Result};
 use std::path::PathBuf;
 
@@ -111,8 +112,14 @@ pub fn extract_env_schema(
 pub fn get_all_call_edges(
     indexer: &ProjectIndexer,
 ) -> Result<Vec<crate::index::call_graph::CallEdge>> {
+    get_all_call_edges_from_storage(&indexer.storage)
+}
+
+pub fn get_all_call_edges_from_storage(
+    storage: &StorageManager,
+) -> Result<Vec<crate::index::call_graph::CallEdge>> {
     use crate::index::call_graph::{CallEdge, CallKind, ResolutionStatus};
-    let conn = indexer.storage.get_connection();
+    let conn = storage.get_connection();
     let mut stmt = conn.prepare("SELECT COALESCE(ps_caller.qualified_name, ps_caller.symbol_name), pf_caller.file_path, COALESCE(ps_callee.qualified_name, ps_callee.symbol_name), pf_callee.file_path, se.call_kind, se.resolution_status, se.confidence, se.evidence FROM structural_edges se JOIN project_symbols ps_caller ON se.caller_symbol_id = ps_caller.id JOIN project_files pf_caller ON se.caller_file_id = pf_caller.id LEFT JOIN project_symbols ps_callee ON se.callee_symbol_id = ps_callee.id LEFT JOIN project_files pf_callee ON se.callee_file_id = pf_callee.id").into_diagnostic()?;
     let edges = stmt
         .query_map([], |row| {

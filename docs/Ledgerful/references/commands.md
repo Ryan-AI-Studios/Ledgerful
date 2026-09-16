@@ -99,7 +99,7 @@ Indexed CI-gate catalog (not a working-tree workflow diff). Alias: `diff`. Bare 
 
 ## `ledgerful services list`
 
-Index topology inventory (gated empty when `coverage.enabled` is false). Alias: `diff`. Keep `hide` on root `--help` (0289). `--json`: schemaVersion 1 object, collection `results`; gated empty keeps `emptyReason: "disabledByConfig"`. Session-once (0300): second human empty in one cookie contains `Already shown this session.` and omits `config set`; JSON `message` stays and may add `sessionNotices`. Honor `already_shown` — do not re-ask HITL.
+Index topology inventory (gated empty when `coverage.enabled` is false). Alias: `diff`. `--preview` infers from the current index without persisting `service_name` or flipping coverage. `--full` lists up to 200 files per service. Gated empty names declared `[services]` when present. Keep `hide` on root `--help` (0289). `--json`: schemaVersion 1 object, collection `results`; gated empty keeps `emptyReason: "disabledByConfig"`; additive `inferenceState` / omit-empty `declared` / `--preview` `preview: true` / item `source`. Session-once (0300): second human empty in one cookie contains `Already shown this session.` and omits `config set`; `--preview` never writes the cookie. JSON `message` stays and may add `sessionNotices`. Honor `already_shown` — do not re-ask HITL.
 
 ## `ledgerful deploy impact`
 

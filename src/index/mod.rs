@@ -47,7 +47,9 @@ pub mod worker_pool;
 pub use orchestrator::{
     BATCH_SIZE, BINARY_EXTENSIONS, MAX_FILES, PARSER_VERSION, SUPPORTED_EXTENSIONS,
 };
-pub use orchestrator::{IndexStats, IndexStatus, ProjectIndexer, ServiceIndexStats};
+pub use orchestrator::{
+    IndexStats, IndexStatus, ProjectIndexer, ServiceIndexStats, preview_inferred_services,
+};
 pub use staleness::{
     AutoIndexAction, ContentHashDrift, StalenessWarning, apply_content_drift_override,
     check_index_staleness, count_content_hash_drift, is_non_interactive, mark_index_stale,
