@@ -42,7 +42,8 @@ contract and follows `LEDGERFUL_TABLE_STYLE`. Purity inventory unchanged
 | `ledger export-provenance` | no `--json` (always JSON array) | no (truncate on stderr) | **Bare array** of `LedgerEntry` (oldest first). `--limit`/`--offset` page that array; `truncated: offset=… limit=… total=…` on stderr when more rows remain. Do not wrap in `schemaVersion`. |
 | `export head --stdout` / `-o -` | n/a | yes | 0182: exact `serialize_chain_head` bytes. File mode prints SUCCESS (checkpoint write, not a verification) on stdout and writes the same JSON body to the file. |
 | `ledger status --json` | yes | yes | schemaVersion 1 |
-| `ledger stack --json` | yes (0281) | yes | schemaVersion 1 object `kind: "ledgerStack"`; `empty` true iff filtered rules/validators/mappings are all empty; `next` is the two clap register commands only when empty; `enforcementEnabled` from live config; item structs stay snake_case. No `emptyReason`. Not Daily 5 |
+| `ledger stack --json` | yes (0281) | yes | schemaVersion 1 object `kind: "ledgerStack"`; `empty` true iff filtered rules/validators/mappings are all empty; `next` is the two clap register commands only when empty; `enforcementEnabled` from live config; omit-false `rulesNotEnforced` when rules exist and `start_change` would not block (`enforcementEnabled` and `gate.mode=enforce`). Item structs stay snake_case. No `emptyReason`. Not Daily 5 |
+| `ledger validator list --json` | yes | yes | **Bare array** of `CommitValidator` (snake_case). Empty catalog is `[]`. Not a schemaVersion object. Not Daily 5. Human empty is not a table (0 registered + next `--help`). |
 | `status --json` | yes (0149) | yes | **same payload** as `ledger status --json` |
 | `search --json` | yes | yes | 0136 envelope; empty results OK |
 | `search-trigrams --json` | yes (0352) | yes | schemaVersion 1 object `kind: "searchTrigrams"`. Hidden CLI. Count-backed `totalMatching` is **not** an 0136 `search` key. `emptyReason` omit when `resultCount > 0`. `next` omit unless runnable (`ledgerful index` or `ledgerful search {accepted…}`). No `line`/`content`. CLI-only; no MCP. |
@@ -172,7 +173,12 @@ Pure stdout. New envelope for this command (it had no `--json` before). Freeze
 ```
 
 `empty` is computed on the optional positional `[CATEGORY]` filter. `next` is
-non-empty only when `empty` is true.
+non-empty only when `empty` is true. JSON `next` strings stay the two bare
+clap commands (required flags are human/`--help` only). Additive omit-false
+`rulesNotEnforced: true` when `rules` is non-empty **and** start_change would
+not block (needs both `enforcementEnabled` and `gate.mode=enforce`). Empty
+catalog omits the key. `enforcementEnabled: true` with default
+`gate.mode=observe` still emits `rulesNotEnforced: true`.
 
 ### `release pins --json` schema (0201)
 

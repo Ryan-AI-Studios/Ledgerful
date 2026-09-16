@@ -64,7 +64,11 @@ Pending/drift slice of `ledger status` (`--json` / `--compact` only). Bare `ledg
 
 ## `ledgerful ledger stack`
 
-SQLite inspect of commit-path stack rules / validators / mappings — not verify auto-policy, not `.ledgerful/rules.toml`, not `policy check`. Empty next: `ledgerful ledger register rule` and `ledgerful ledger register validator` (no mapping CLI; no `config set`). `--json`: schemaVersion 1 object `kind: "ledgerStack"` (`empty` + `next`; snake_case item structs).
+SQLite inspect of commit-path stack rules / validators / mappings — not verify auto-policy, not `.ledgerful/rules.toml`, not `policy check`. Empty next: `ledgerful ledger register rule` and `ledgerful ledger register validator` (clap required flags on human/`--help` only; no mapping CLI; no `config set`). Human `TECH STACK RULES` prints `Blocking at start_change: yes|no` (two-factor: `ledger.enforcement_enabled` and `gate.mode=enforce`). `--json`: schemaVersion 1 object `kind: "ledgerStack"` (`empty` + `next`; snake_case item structs; omit-false `rulesNotEnforced`).
+
+## `ledgerful ledger validator list`
+
+Inventory of registered commit validators. Empty human: `0 registered`, consequence (none run at commit), next `ledgerful ledger register validator --help` — not an empty table. Populated table includes Args (`-` when CLI register stored the whole `-x` as executable). Footer `registered` / `enabled` only (doctor owns inspected/resolved). `--json`: bare array of `CommitValidator`; empty is `[]`.
 
 ## `ledgerful policy check`
 

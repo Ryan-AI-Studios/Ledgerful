@@ -16,10 +16,42 @@ struct LedgerStackJson {
     kind: &'static str,
     empty: bool,
     enforcement_enabled: bool,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    rules_not_enforced: bool,
     rules: Vec<TechStackRule>,
     validators: Vec<CommitValidator>,
     mappings: Vec<CategoryStackMapping>,
     next: Vec<String>,
+}
+
+fn blocking_at_start_change(
+    rules_empty: bool,
+    enforcement_enabled: bool,
+    gate_enforce: bool,
+) -> bool {
+    !rules_empty && enforcement_enabled && gate_enforce
+}
+
+fn blocking_status_line(
+    rules_empty: bool,
+    enforcement_enabled: bool,
+    gate_enforce: bool,
+    gate_mode: &str,
+) -> String {
+    if blocking_at_start_change(rules_empty, enforcement_enabled, gate_enforce) {
+        return "Blocking at start_change: yes".to_string();
+    }
+    if rules_empty {
+        return "Blocking at start_change: no".to_string();
+    }
+    let mut factors = Vec::new();
+    if !enforcement_enabled {
+        factors.push("enforcement_enabled=false".to_string());
+    }
+    if !gate_enforce {
+        factors.push(format!("gate.mode={gate_mode}"));
+    }
+    format!("Blocking at start_change: no ({})", factors.join("; "))
 }
 
 pub fn execute_ledger_stack(category: Option<String>, json_mode: bool) -> Result<()> {
@@ -38,7 +70,8 @@ pub fn execute_ledger_stack(category: Option<String>, json_mode: bool) -> Result
         .get_category_mappings(category.as_deref())
         .map_err(|e| miette::miette!("{}", e))?;
 
-    let empty = rules.is_empty() && validators.is_empty() && mappings.is_empty();
+    let rules_empty = rules.is_empty();
+    let empty = rules_empty && validators.is_empty() && mappings.is_empty();
     let next = if empty {
         vec![
             NEXT_REGISTER_RULE.to_string(),
@@ -47,13 +80,24 @@ pub fn execute_ledger_stack(category: Option<String>, json_mode: bool) -> Result
     } else {
         Vec::new()
     };
+    let enforcement_enabled = config.ledger.enforcement_enabled;
+    let gate_enforce = config.gate.is_enforce();
+    let rules_not_enforced =
+        !rules_empty && !blocking_at_start_change(rules_empty, enforcement_enabled, gate_enforce);
+    let blocking_line = blocking_status_line(
+        rules_empty,
+        enforcement_enabled,
+        gate_enforce,
+        &config.gate.mode,
+    );
 
     if json_mode {
         return json::emit(&LedgerStackJson {
             schema_version: 1,
             kind: "ledgerStack",
             empty,
-            enforcement_enabled: config.ledger.enforcement_enabled,
+            enforcement_enabled,
+            rules_not_enforced,
             rules,
             validators,
             mappings,
@@ -68,8 +112,9 @@ pub fn execute_ledger_stack(category: Option<String>, json_mode: bool) -> Result
     );
     println!(
         "SQLite inspect of commit-path enforcement. Not verify auto-policy, \
-not .ledgerful/rules.toml, not policy check. ledger.enforcement_enabled \
-defaults off (rules at start_change); validators still run at commit."
+not .ledgerful/rules.toml, not policy check. Tech-stack rules at start_change \
+block only when ledger.enforcement_enabled is true and gate.mode is enforce; \
+validators still run at commit."
     );
 
     println!(
@@ -77,7 +122,8 @@ defaults off (rules at start_change); validators still run at commit."
         "TECH STACK RULES"
             .if_supports_color(Stream::Stdout, |s| s.style(Style::new().cyan().bold()))
     );
-    if rules.is_empty() {
+    println!("  {}", blocking_line);
+    if rules_empty {
         println!("  None.");
     } else {
         for rule in rules {
@@ -170,7 +216,9 @@ Not config [[ledger.category_mappings]]."
     if empty {
         println!("\nNext:");
         println!("  {}", NEXT_REGISTER_RULE);
+        println!("    required: TERM --category --reason (see --help)");
         println!("  {}", NEXT_REGISTER_VALIDATOR);
+        println!("    required: NAME -x/--command --category (see --help)");
     }
 
     Ok(())
