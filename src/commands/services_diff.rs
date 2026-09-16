@@ -132,6 +132,10 @@ pub(crate) fn path_matches_dir(path: &str, dir: &str) -> bool {
     }
 }
 
+fn service_partition_key(svc: &crate::impact::packet::Service) -> String {
+    format!("{}\0{}", svc.name, slash_dir(&svc.directory))
+}
+
 fn partition_paths(
     services: &[crate::impact::packet::Service],
     paths: Vec<String>,
@@ -148,7 +152,7 @@ fn partition_paths(
     let mut assigned: std::collections::HashMap<String, Vec<String>> =
         std::collections::HashMap::new();
     for svc in services {
-        assigned.entry(svc.name.clone()).or_default();
+        assigned.entry(service_partition_key(svc)).or_default();
     }
     for path in paths {
         let slash = path.replace('\\', "/");
@@ -156,7 +160,10 @@ fn partition_paths(
             .iter()
             .find(|svc| path_matches_dir(&slash, &slash_dir(&svc.directory)))
         {
-            assigned.entry(svc.name.clone()).or_default().push(slash);
+            assigned
+                .entry(service_partition_key(svc))
+                .or_default()
+                .push(slash);
         }
     }
     for files in assigned.values_mut() {
@@ -191,10 +198,14 @@ fn load_file_paths(storage: &StorageManager) -> Result<Vec<String>> {
     Ok(out)
 }
 
-fn load_route_sources(storage: &StorageManager) -> Result<Vec<String>> {
+fn load_route_handler_paths(storage: &StorageManager) -> Result<Vec<String>> {
     let conn = storage.get_connection();
     let mut stmt = conn
-        .prepare("SELECT route_source FROM api_routes WHERE route_source IS NOT NULL")
+        .prepare(
+            "SELECT pf.file_path FROM api_routes ar
+             INNER JOIN project_files pf ON ar.handler_file_id = pf.id
+             WHERE pf.file_path IS NOT NULL",
+        )
         .into_diagnostic()?;
     let rows = stmt
         .query_map([], |row| row.get::<_, String>(0))
@@ -280,13 +291,14 @@ fn build_preview_rows(
 ) -> Result<Vec<ServiceRow>> {
     let inferred = crate::index::preview_inferred_services(storage, config)?;
     let file_map = partition_paths(&inferred, load_file_paths(storage)?, true);
-    let route_map = partition_paths(&inferred, load_route_sources(storage)?, false);
+    let route_map = partition_paths(&inferred, load_route_handler_paths(storage)?, false);
     let mut rows = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for svc in &inferred {
         seen.insert(svc.name.clone());
-        let files = file_map.get(&svc.name).cloned().unwrap_or_default();
-        let routes = route_map.get(&svc.name).cloned().unwrap_or_default();
+        let key = service_partition_key(svc);
+        let files = file_map.get(&key).cloned().unwrap_or_default();
+        let routes = route_map.get(&key).cloned().unwrap_or_default();
         let source = source_for(&svc.name, config, true);
         let root = declared_root(&svc.name, config).or_else(|| {
             let dir = slash_dir(&svc.directory);
@@ -665,33 +677,29 @@ mod services_diff_unit_tests {
             rpc_endpoints: vec![],
         };
         let routes = partition_paths(
-            &[svc],
+            std::slice::from_ref(&svc),
             vec![
                 "src/billing/mod.rs".to_string(),
                 "src/billing/mod.rs".to_string(),
             ],
             false,
         );
-        assert_eq!(routes.get("billing-api").map(Vec::len), Some(2));
+        assert_eq!(
+            routes.get(&service_partition_key(&svc)).map(Vec::len),
+            Some(2)
+        );
         let files = partition_paths(
-            &[crate::impact::packet::Service {
-                name: "billing-api".to_string(),
-                directory: std::path::PathBuf::from("src/billing"),
-                routes: vec![],
-                data_models: vec![],
-                owners: vec![],
-                runtime_name: None,
-                queues: vec![],
-                topics: vec![],
-                rpc_endpoints: vec![],
-            }],
+            std::slice::from_ref(&svc),
             vec![
                 "src/billing/mod.rs".to_string(),
                 "src/billing/mod.rs".to_string(),
             ],
             true,
         );
-        assert_eq!(files.get("billing-api").map(Vec::len), Some(1));
+        assert_eq!(
+            files.get(&service_partition_key(&svc)).map(Vec::len),
+            Some(1)
+        );
     }
 
     #[test]
