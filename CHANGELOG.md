@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Ledger stack/validator list readout (0361):** Empty `ledger validator
+  list` names `0 registered` and clap next (no empty table). `ledger
+  stack` names clap-required flags without invented terms and prints
+  `Blocking at start_change: yes|no` (rules block only when
+  `ledger.enforcement_enabled` and `gate.mode=enforce`). `--json` keeps
+  0281 `next` strings; omit-false `rulesNotEnforced`. List `--json` stays
+  a bare array. Enable/Disable/Remove open writable storage.
+
 - **Observability coverage/diff evidence (0360):** `--preview` parses
   repo-root OpenSLO YAML without opening Cozo or writing state.
   Coverage `--json` always names `inputs` / `notWired: ["endpoints"]`

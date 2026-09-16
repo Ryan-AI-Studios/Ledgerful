@@ -151,12 +151,14 @@ Sections: TECH STACK RULES, COMMIT VALIDATORS, CATEGORY MAPPINGS.
 
 Empty next:
   ledgerful ledger register rule
+    required: TERM --category --reason (see --help)
   ledgerful ledger register validator
+    required: NAME -x/--command --category (see --help)
 
 SQLite inspect of commit-path enforcement — not verify auto-policy, not \
-.ledgerful/rules.toml, not policy check. ledger.enforcement_enabled defaults \
-off (rules at start_change); validators still run at commit. No ledger \
-register mapping CLI.
+.ledgerful/rules.toml, not policy check. Tech-stack rules at start_change \
+block only when ledger.enforcement_enabled is true and gate.mode is enforce; \
+validators still run at commit. No ledger register mapping CLI.
 ";
 
 #[derive(Subcommand, Debug)]

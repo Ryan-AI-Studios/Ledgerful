@@ -13,64 +13,15 @@ use std::io::{self, Write};
 
 pub fn execute_validator_lifecycle(subcommand: ValidatorSubcommands) -> Result<()> {
     let layout = get_layout()?;
-    let storage = StorageManager::open_read_only(&layout)?;
-    let db = LedgerDb::new(storage.get_connection());
-
     match subcommand {
         ValidatorSubcommands::List { json } => {
-            let validators = db
-                .get_commit_validators(None)
-                .map_err(|e| miette::miette!("{}", e))?;
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&validators).into_diagnostic()?
-                );
-            } else {
-                println!(
-                    "{}",
-                    "Registered Commit Validators"
-                        .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
-                );
-                let mut table = Table::new();
-                table.set_header(vec!["Name", "Category", "Executable", "Enabled", "Level"]);
-                for v in validators {
-                    table.add_row(vec![
-                        v.name
-                            .if_supports_color(Stream::Stdout, |s| s.bold())
-                            .to_string(),
-                        v.category,
-                        v.executable,
-                        if v.enabled {
-                            "YES"
-                                .if_supports_color(Stream::Stdout, |s| s.green())
-                                .to_string()
-                        } else {
-                            "no".if_supports_color(Stream::Stdout, |s| s.red())
-                                .to_string()
-                        },
-                        format!("{:?}", v.validation_level),
-                    ]);
-                }
-                println!("{}", table);
-            }
-        }
-        ValidatorSubcommands::Enable { name } => {
-            db.set_validator_enabled(&name, true)
-                .map_err(|e| miette::miette!("{}", e))?;
-            println!("Enabled validator: {}", name);
-        }
-        ValidatorSubcommands::Disable { name } => {
-            db.set_validator_enabled(&name, false)
-                .map_err(|e| miette::miette!("{}", e))?;
-            println!("Disabled validator: {}", name);
-        }
-        ValidatorSubcommands::Remove { name } => {
-            db.remove_validator(&name)
-                .map_err(|e| miette::miette!("{}", e))?;
-            println!("Removed validator: {}", name);
+            let storage = StorageManager::open_read_only_sqlite_only(&layout)?;
+            let db = LedgerDb::new(storage.get_connection());
+            list_commit_validators(&db, json)
         }
         ValidatorSubcommands::Doctor => {
+            let storage = StorageManager::open_read_only_sqlite_only(&layout)?;
+            let db = LedgerDb::new(storage.get_connection());
             let validators = db
                 .get_commit_validators(None)
                 .map_err(|e| miette::miette!("{}", e))?;
@@ -83,9 +34,98 @@ pub fn execute_validator_lifecycle(subcommand: ValidatorSubcommands) -> Result<(
                 })
                 .collect();
             let mut stdout = io::stdout();
-            print_validator_doctor_report_to(&mut stdout, &rows).into_diagnostic()?;
+            print_validator_doctor_report_to(&mut stdout, &rows).into_diagnostic()
         }
+        ValidatorSubcommands::Enable { name } => mutate_validator(&layout, |db| {
+            db.set_validator_enabled(&name, true)
+                .map_err(|e| miette::miette!("{}", e))?;
+            println!("Enabled validator: {}", name);
+            Ok(())
+        }),
+        ValidatorSubcommands::Disable { name } => mutate_validator(&layout, |db| {
+            db.set_validator_enabled(&name, false)
+                .map_err(|e| miette::miette!("{}", e))?;
+            println!("Disabled validator: {}", name);
+            Ok(())
+        }),
+        ValidatorSubcommands::Remove { name } => mutate_validator(&layout, |db| {
+            db.remove_validator(&name)
+                .map_err(|e| miette::miette!("{}", e))?;
+            println!("Removed validator: {}", name);
+            Ok(())
+        }),
     }
+}
+
+fn mutate_validator(
+    layout: &crate::state::layout::Layout,
+    op: impl FnOnce(&LedgerDb) -> Result<()>,
+) -> Result<()> {
+    let storage = StorageManager::init_with_layout(layout)?;
+    let db = LedgerDb::new(storage.get_connection());
+    op(&db)
+}
+
+fn list_commit_validators(db: &LedgerDb, json: bool) -> Result<()> {
+    let validators = db
+        .get_commit_validators(None)
+        .map_err(|e| miette::miette!("{}", e))?;
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&validators).into_diagnostic()?
+        );
+        return Ok(());
+    }
+
+    println!(
+        "{}",
+        "Registered Commit Validators"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+    );
+    if validators.is_empty() {
+        println!("0 registered. None run at commit.");
+        println!("Next: ledgerful ledger register validator --help");
+        return Ok(());
+    }
+
+    let registered = validators.len();
+    let enabled = validators.iter().filter(|v| v.enabled).count();
+    let mut table = Table::new();
+    table.set_header(vec![
+        "Name",
+        "Category",
+        "Executable",
+        "Args",
+        "Enabled",
+        "Level",
+    ]);
+    for v in validators {
+        let args = if v.args.is_empty() {
+            "-".to_string()
+        } else {
+            v.args.join(" ")
+        };
+        table.add_row(vec![
+            v.name
+                .if_supports_color(Stream::Stdout, |s| s.bold())
+                .to_string(),
+            v.category,
+            v.executable,
+            args,
+            if v.enabled {
+                "YES"
+                    .if_supports_color(Stream::Stdout, |s| s.green())
+                    .to_string()
+            } else {
+                "no".if_supports_color(Stream::Stdout, |s| s.red())
+                    .to_string()
+            },
+            format!("{:?}", v.validation_level),
+        ]);
+    }
+    println!("{}", table);
+    println!("Validators: {registered} registered / {enabled} enabled");
     Ok(())
 }
 
