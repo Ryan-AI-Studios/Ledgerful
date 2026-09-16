@@ -29,6 +29,7 @@ mod cli_data_models_populated;
 mod cli_dead_code;
 mod cli_dead_code_prune;
 mod cli_dependencies;
+mod cli_deploy_impact_populated;
 mod cli_deploy_manifests;
 mod cli_doctor;
 mod cli_dogfood_0186;

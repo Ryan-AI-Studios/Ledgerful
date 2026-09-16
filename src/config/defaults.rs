@@ -132,6 +132,12 @@ overall_budget_secs = 25
 # CLI `--timeout` on unscoped audit is this budget, not the history walk.
 overall_budget_secs = 25
 
+[coverage.deploy]
+# Overall emit budget for `ledgerful deploy impact` (0358). Distinct from
+# `[impact] prospective_budget_secs`. `0` disables the wall clock.
+# CLI `--timeout` on `deploy impact` (not parent `deploy`) is this budget.
+overall_budget_secs = 25
+
 [impact.risk_weights]
 rs = 1.0
 toml = 0.8
@@ -189,6 +195,7 @@ mod tests {
         assert_eq!(config.hotspots.overall_budget_secs, 25);
         assert_eq!(config.hotspots.history_budget_secs, 45);
         assert_eq!(config.impact.prospective_budget_secs, 25);
+        assert_eq!(config.coverage.deploy.overall_budget_secs, 25);
     }
 
     #[test]

@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Deploy impact cheap detect (0358):** `deploy impact` classifies dirty
+  manifests from git status (no impact orchestrator / SQLite). Gated empty
+  stays 0324-honest. JSON always names `defaultPatterns` / `classifiers`.
+  `--timeout` on `impact` is an overall emit budget (default 25s; `0`
+  unlimited). Completeness `stage: deploy` on overall stop.
+
 - **Data-model extract inspectability (0357):** `data-models list` /
   `impact` always emit `supportedExtractors` / `notWired`. Product-empty
   copy names Rust persistence derives and says SQL migrations are not

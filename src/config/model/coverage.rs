@@ -761,6 +761,10 @@ impl Default for DataFlowConfig {
     }
 }
 
+fn default_deploy_overall_budget_secs() -> u64 {
+    25
+}
+
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct DeployConfig {
     #[serde(default)]
@@ -771,6 +775,9 @@ pub struct DeployConfig {
     pub risk_weight_per_manifest: u32,
     #[serde(default = "default_deploy_risk_cap")]
     pub risk_cap: u32,
+    /// Overall `deploy impact` emit budget in seconds (0358). `0` disables the wall clock.
+    #[serde(default = "default_deploy_overall_budget_secs")]
+    pub overall_budget_secs: u64,
 }
 
 fn default_deploy_patterns() -> Vec<String> {
@@ -797,6 +804,7 @@ impl Default for DeployConfig {
             patterns: default_deploy_patterns(),
             risk_weight_per_manifest: default_deploy_risk_weight_per_manifest(),
             risk_cap: default_deploy_risk_cap(),
+            overall_budget_secs: default_deploy_overall_budget_secs(),
         }
     }
 }
@@ -864,6 +872,12 @@ mod tests {
         // Regression: existing patterns still present
         assert!(config.ignore_patterns.iter().any(|p| p == "target/**"));
         assert!(config.ignore_patterns.iter().any(|p| p == ".git/**"));
+    }
+
+    #[test]
+    fn deploy_config_default_overall_budget_secs_is_25() {
+        assert_eq!(DeployConfig::default().overall_budget_secs, 25);
+        assert_eq!(default_deploy_overall_budget_secs(), 25);
     }
 
     #[test]

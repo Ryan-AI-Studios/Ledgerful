@@ -54,6 +54,12 @@ Understand the "blast radius" of any change before it is committed.
         Catalog `data-models` ready matches default `data-models list`
         product scope; fixture-only is empty with
         `ledgerful data-models list --include-fixtures`.
+    *   **Deploy impact inspectability (0358):** `deploy impact` is a
+        working-tree git-diff classify (Dockerfile, compose, Terraform,
+        k8s globs). It does not run the impact orchestrator. JSON always
+        names `defaultPatterns` and `classifiers`. `--timeout` on
+        `impact` is the overall emit budget (default 25s). Helm and
+        CiWorkflow classify only when a user glob matches.
     *   **Data-model extract inspectability (0357):** `data-models list` /
         `impact` always name supported extractors (Rust persistence
         derives, Go json-tagged structs, TypeScript entity/model-dir,

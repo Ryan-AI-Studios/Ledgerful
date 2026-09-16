@@ -1268,6 +1268,60 @@ mod tests {
     }
 
     #[test]
+    fn deploy_impact_timeout_is_machine_flag() {
+        let without = Cli::try_parse_from(["ledgerful", "deploy", "impact", "--json"]).unwrap();
+        match &without.command {
+            Commands::Deploy(args) => match args.command.as_ref() {
+                Some(crate::commands::deploy::DeploySubcommands::Impact { timeout, .. }) => {
+                    assert_eq!(*timeout, None, "omitted --timeout must be None");
+                }
+                other => panic!("expected Deploy Impact, got {other:?}"),
+            },
+            _ => panic!("expected Deploy"),
+        }
+        assert!(
+            !without.command.argv_shape().contains("timeout"),
+            "omitted timeout must not appear in argv shape: {}",
+            without.command.argv_shape()
+        );
+        let with =
+            Cli::try_parse_from(["ledgerful", "deploy", "impact", "--timeout", "8", "--json"])
+                .unwrap();
+        match &with.command {
+            Commands::Deploy(args) => match args.command.as_ref() {
+                Some(crate::commands::deploy::DeploySubcommands::Impact { timeout, .. }) => {
+                    assert_eq!(*timeout, Some(8));
+                }
+                other => panic!("expected Deploy Impact, got {other:?}"),
+            },
+            _ => panic!("expected Deploy"),
+        }
+        assert!(
+            with.command.argv_shape().contains("timeout"),
+            "explicit --timeout must appear in argv shape: {}",
+            with.command.argv_shape()
+        );
+        let help = Cli::command()
+            .find_subcommand("deploy")
+            .expect("deploy")
+            .find_subcommand("impact")
+            .expect("impact")
+            .clone()
+            .render_help()
+            .to_string();
+        assert!(help.contains("Overall deploy impact emit budget"), "{help}");
+        assert!(
+            !help.contains("History-walk wall-clock"),
+            "deploy impact --timeout is overall emit:\n{help}"
+        );
+        let parent_err = Cli::try_parse_from(["ledgerful", "deploy", "--timeout", "5"]);
+        assert!(
+            parent_err.is_err(),
+            "bare deploy --timeout must be a clap error"
+        );
+    }
+
+    #[test]
     fn ask_timeout_fingerprint_only_when_flag_present() {
         let without = Cli::try_parse_from(["ledgerful", "ask", "hello"]).unwrap();
         match &without.command {

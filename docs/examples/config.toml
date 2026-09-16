@@ -104,6 +104,11 @@ threshold_days = 365
 # Overall unscoped audit emit budget (0350). Distinct from history_budget_secs.
 # [audit]
 # overall_budget_secs = 25
+#
+# Overall `deploy impact` emit budget (0358). Distinct from prospective.
+# CLI `--timeout` is on `deploy impact`, not parent `deploy`. `0` disables.
+# [coverage.deploy]
+# overall_budget_secs = 25
 
 [[services.definitions]]
 name = "ledgerful"
