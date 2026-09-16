@@ -166,6 +166,18 @@ fn omit_fixture_data_model_rows(
     (kept, omitted)
 }
 
+/// Product-scope counts for `surfaces` ready: default `data-models list`
+/// pipeline (confidence threshold + emit-time `is_test_path` omit).
+/// Caller passes the list clap default (`0.5`), not `--all` (`0.0`).
+pub(crate) fn product_data_model_counts(
+    conn: &rusqlite::Connection,
+    threshold: f64,
+) -> Result<(usize, usize)> {
+    let rows = query_and_dedupe_data_models(conn, threshold)?;
+    let (kept, omitted) = omit_fixture_data_model_rows(rows, false);
+    Ok((kept.len(), omitted))
+}
+
 fn attach_fixture_flags(output: &mut serde_json::Value, include_fixtures: bool, omitted: usize) {
     if let Some(obj) = output.as_object_mut() {
         obj.insert(

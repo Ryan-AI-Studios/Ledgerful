@@ -8,6 +8,12 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Surface product readiness parity (0354):** `surfaces` / `tour` marks
+  `data-models` ready only when default `data-models list` would emit a
+  product row. Fixture-only inventories are empty with next
+  `ledgerful data-models list --include-fixtures`. 0185 keys and 0300
+  cookies are unchanged.
+
 - **Hotspot budget data readiness (0353):** `hotspots budget --json` always
   names `dataset: hotspot_history`. Empty snapshots add omit-empty
   `emptyReason: noSnapshot` and print-only `next: ledgerful hotspots --snapshot`
