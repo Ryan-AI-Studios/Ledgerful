@@ -68,6 +68,9 @@ enabled = true
 [coverage.deploy]
 enabled = true
 patterns = ["**/Dockerfile*", "**/docker-compose*.yml", "**/*.tf", "**/k8s/**/*.yaml"]
+# overall_budget_secs is the `deploy impact` emit budget (0358); 0 disables.
+# CLI `--timeout` is on `deploy impact`, not parent `deploy`.
+# overall_budget_secs = 25
 
 [coverage.ci_self_awareness]
 enabled = true
@@ -103,11 +106,6 @@ threshold_days = 365
 
 # Overall unscoped audit emit budget (0350). Distinct from history_budget_secs.
 # [audit]
-# overall_budget_secs = 25
-#
-# Overall `deploy impact` emit budget (0358). Distinct from prospective.
-# CLI `--timeout` is on `deploy impact`, not parent `deploy`. `0` disables.
-# [coverage.deploy]
 # overall_budget_secs = 25
 
 [[services.definitions]]

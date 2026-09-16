@@ -94,6 +94,7 @@ pub fn execute_deploy(args: DeployArgs) -> Result<()> {
                 timeout,
                 None,
                 None,
+                None,
                 &mut stdout,
                 &mut stderr,
             )
@@ -110,6 +111,7 @@ pub(crate) fn execute_deploy_impact_in(
     timeout: Option<u64>,
     cancel: Option<Arc<AtomicBool>>,
     overall_deadline_override: Option<Instant>,
+    post_classify_deadline_override: Option<Instant>,
     stdout: &mut impl Write,
     stderr: &mut impl Write,
 ) -> Result<()> {
@@ -126,14 +128,10 @@ pub(crate) fn execute_deploy_impact_in(
         .or_else(|| (overall_secs > 0).then(|| Instant::now() + Duration::from_secs(overall_secs)));
 
     if overall_deadline_fired(deadline) || cancel.load(Ordering::Relaxed) {
-        let stop = if cancel.load(Ordering::Relaxed) {
-            CompletenessStop::Cancelled
-        } else {
-            CompletenessStop::Budget
-        };
+        let stop = completeness_stop_from_cancel(&cancel);
         let completeness =
             completeness_for_overall(stop, Some(overall_secs).filter(|s| *s > 0), "deploy");
-        writeln!(stderr, "{DEPLOY_BUDGET_WARN}").into_diagnostic()?;
+        write_budget_warn_if_budget(stop, stderr)?;
         return emit_deploy_outcome(
             layout,
             &config,
@@ -151,13 +149,10 @@ pub(crate) fn execute_deploy_impact_in(
         Vec::new()
     };
 
-    let completeness = if overall_deadline_fired(deadline) || cancel.load(Ordering::Relaxed) {
-        let stop = if cancel.load(Ordering::Relaxed) {
-            CompletenessStop::Cancelled
-        } else {
-            CompletenessStop::Budget
-        };
-        writeln!(stderr, "{DEPLOY_BUDGET_WARN}").into_diagnostic()?;
+    let post_deadline = post_classify_deadline_override.or(deadline);
+    let completeness = if overall_deadline_fired(post_deadline) || cancel.load(Ordering::Relaxed) {
+        let stop = completeness_stop_from_cancel(&cancel);
+        write_budget_warn_if_budget(stop, stderr)?;
         Some(completeness_for_overall(
             stop,
             Some(overall_secs).filter(|s| *s > 0),
@@ -168,6 +163,21 @@ pub(crate) fn execute_deploy_impact_in(
     };
 
     emit_deploy_outcome(layout, &config, manifests, completeness, json, stdout)
+}
+
+fn completeness_stop_from_cancel(cancel: &Arc<AtomicBool>) -> CompletenessStop {
+    if cancel.load(Ordering::Relaxed) {
+        CompletenessStop::Cancelled
+    } else {
+        CompletenessStop::Budget
+    }
+}
+
+fn write_budget_warn_if_budget(stop: CompletenessStop, stderr: &mut impl Write) -> Result<()> {
+    if stop == CompletenessStop::Budget {
+        writeln!(stderr, "{DEPLOY_BUDGET_WARN}").into_diagnostic()?;
+    }
+    Ok(())
 }
 
 fn detect_enabled_manifests(
@@ -208,15 +218,23 @@ fn slash_path(raw: &str) -> String {
 }
 
 fn classifier_labels() -> Vec<String> {
-    let mut labels = vec![
-        manifest_type_label(&ManifestType::CiWorkflow),
-        manifest_type_label(&ManifestType::DockerCompose),
-        manifest_type_label(&ManifestType::Dockerfile),
-        manifest_type_label(&ManifestType::Helm),
-        manifest_type_label(&ManifestType::Kubernetes),
-        manifest_type_label(&ManifestType::Terraform),
-        manifest_type_label(&ManifestType::Unknown),
-    ];
+    fn next_after(mt: &ManifestType) -> Option<ManifestType> {
+        match mt {
+            ManifestType::CiWorkflow => Some(ManifestType::DockerCompose),
+            ManifestType::DockerCompose => Some(ManifestType::Dockerfile),
+            ManifestType::Dockerfile => Some(ManifestType::Helm),
+            ManifestType::Helm => Some(ManifestType::Kubernetes),
+            ManifestType::Kubernetes => Some(ManifestType::Terraform),
+            ManifestType::Terraform => Some(ManifestType::Unknown),
+            ManifestType::Unknown => None,
+        }
+    }
+    let mut labels = Vec::new();
+    let mut cur = Some(ManifestType::CiWorkflow);
+    while let Some(mt) = cur {
+        labels.push(manifest_type_label(&mt));
+        cur = next_after(&mt);
+    }
     labels.sort();
     labels
 }
@@ -760,6 +778,18 @@ mod tests {
     #[test]
     fn deploy_impact_classifiers_sorted_locked_vocab() {
         use crate::impact::packet::ManifestType;
+        fn exhaust(mt: ManifestType) {
+            match mt {
+                ManifestType::CiWorkflow
+                | ManifestType::DockerCompose
+                | ManifestType::Dockerfile
+                | ManifestType::Helm
+                | ManifestType::Kubernetes
+                | ManifestType::Terraform
+                | ManifestType::Unknown => {}
+            }
+        }
+        exhaust(ManifestType::Unknown);
         let mut expected = vec![
             super::manifest_type_label(&ManifestType::CiWorkflow),
             super::manifest_type_label(&ManifestType::DockerCompose),
@@ -832,6 +862,7 @@ mod tests {
                 false,
             ))),
             Some(elapsed),
+            None,
             &mut out,
             &mut err,
         )
@@ -849,5 +880,117 @@ mod tests {
         assert!(v.get("emptyReason").is_none(), "{v}");
         assert!(v.get("defaultPatterns").is_some(), "{v}");
         assert!(v.get("classifiers").is_some(), "{v}");
+    }
+
+    fn elapsed_instant() -> std::time::Instant {
+        std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .unwrap_or_else(std::time::Instant::now)
+    }
+
+    fn enabled_layout(root: &camino::Utf8Path) -> crate::state::layout::Layout {
+        let cg = root.join(".ledgerful");
+        std::fs::create_dir_all(&cg).expect("config dir");
+        std::fs::write(
+            cg.join("config.toml"),
+            "[coverage]\nenabled = true\n\n[coverage.deploy]\nenabled = true\n",
+        )
+        .expect("config");
+        crate::state::layout::Layout::new(root)
+    }
+
+    fn git_cmd(root: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[test]
+    fn deploy_impact_cancel_does_not_emit_budget_warn() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8 temp path");
+        let layout = enabled_layout(&root);
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        super::execute_deploy_impact_in(
+            &layout,
+            false,
+            true,
+            Some(0),
+            Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                true,
+            ))),
+            None,
+            None,
+            &mut out,
+            &mut err,
+        )
+        .expect("cancel should emit");
+        let stderr = String::from_utf8_lossy(&err);
+        assert!(
+            !stderr.contains(crate::impact::budget::DEPLOY_BUDGET_WARN),
+            "{stderr}"
+        );
+        let stdout = String::from_utf8_lossy(&out);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        assert_eq!(v["completeness"]["stop"], "cancelled");
+        assert_eq!(v["completeness"]["scope"], "overall");
+        assert_eq!(v["completeness"]["stage"], "deploy");
+        assert!(v.get("emptyReason").is_none(), "{v}");
+    }
+
+    #[test]
+    fn deploy_impact_post_classify_deadline_keeps_partial_results() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root_std = tmp.path();
+        git_cmd(root_std, &["init"]);
+        git_cmd(root_std, &["config", "user.email", "test@test.com"]);
+        git_cmd(root_std, &["config", "user.name", "Test"]);
+        std::fs::write(root_std.join("Dockerfile"), "FROM alpine:3.20\n").expect("dockerfile");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(root_std.to_path_buf()).expect("utf8 temp path");
+        let layout = enabled_layout(&root);
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        super::execute_deploy_impact_in(
+            &layout,
+            true,
+            true,
+            Some(0),
+            Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            ))),
+            None,
+            Some(elapsed_instant()),
+            &mut out,
+            &mut err,
+        )
+        .expect("post-classify deadline should emit");
+        let stderr = String::from_utf8_lossy(&err);
+        assert!(
+            stderr.contains(crate::impact::budget::DEPLOY_BUDGET_WARN),
+            "{stderr}"
+        );
+        let stdout = String::from_utf8_lossy(&out);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        let results = v["results"].as_array().expect("results");
+        assert!(
+            results
+                .iter()
+                .any(|r| r["type"] == "Dockerfile" && r["path"] == "Dockerfile"),
+            "{v}"
+        );
+        assert_eq!(v["completeness"]["stop"], "budget");
+        assert_eq!(v["completeness"]["scope"], "overall");
+        assert_eq!(v["completeness"]["stage"], "deploy");
+        assert!(v.get("emptyReason").is_none(), "{v}");
     }
 }

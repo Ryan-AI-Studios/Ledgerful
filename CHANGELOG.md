@@ -12,7 +12,8 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
   manifests from git status (no impact orchestrator / SQLite). Gated empty
   stays 0324-honest. JSON always names `defaultPatterns` / `classifiers`.
   `--timeout` on `impact` is an overall emit budget (default 25s; `0`
-  unlimited). Completeness `stage: deploy` on overall stop.
+  unlimited). Completeness `stage: deploy` on overall stop. Stderr
+  budget token is Budget-only (cancel is silent).
 
 - **Data-model extract inspectability (0357):** `data-models list` /
   `impact` always emit `supportedExtractors` / `notWired`. Product-empty

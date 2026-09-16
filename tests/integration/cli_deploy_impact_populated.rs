@@ -34,19 +34,6 @@ fn run_deploy_impact(root: &std::path::Path, json: bool) -> (bool, String, Strin
     )
 }
 
-fn seed_repo_and_init(root: &std::path::Path) {
-    setup_git_repo(root);
-    fs::write(root.join("README.md"), "# temp\n").unwrap();
-    git_cmd(root, &["add", "-A"]);
-    git_cmd(root, &["commit", "-m", "initial"]);
-    let init_status = Command::new(ledgerful_bin())
-        .arg("init")
-        .current_dir(root)
-        .status()
-        .expect("ledgerful init should run");
-    assert!(init_status.success(), "ledgerful init should succeed");
-}
-
 fn parse_object(stdout: &str, label: &str) -> Value {
     let v: Value = serde_json::from_str(stdout.trim())
         .unwrap_or_else(|e| panic!("{label} stdout must parse as JSON: {e}\n{stdout}"));
@@ -74,7 +61,10 @@ fn write_dockerfile_and_compose(root: &std::path::Path) {
 fn deploy_impact_dockerfile_and_compose_from_root_and_subdir() {
     let tmp = tempdir().unwrap();
     let root = tmp.path();
-    seed_repo_and_init(root);
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "# temp\n").unwrap();
+    git_cmd(root, &["add", "-A"]);
+    git_cmd(root, &["commit", "-m", "initial"]);
     write_temp_config(root, true, true);
     write_dockerfile_and_compose(root);
 
@@ -159,9 +149,11 @@ fn deploy_impact_dockerfile_and_compose_from_root_and_subdir() {
         .filter_map(|x| x.as_str())
         .collect::<Vec<_>>();
     assert!(
-        files
-            .iter()
-            .any(|p| *p == "src/app.rs" || *p == "src/" || p.starts_with("src")),
+        files.iter().all(|p| !p.contains('\\')),
+        "coupledFiles must be slash-normalized: {files:?}"
+    );
+    assert!(
+        files.iter().any(|p| *p == "src/app.rs" || *p == "src/"),
         "{docker}"
     );
     assert!(docker["risk_tier"].as_u64().unwrap_or(0) >= 2, "{docker}");
@@ -178,6 +170,19 @@ fn deploy_impact_dockerfile_and_compose_from_root_and_subdir() {
     assert!(
         !wrong.exists(),
         "wrong-path latest-impact.json must be absent"
+    );
+    let state = root.join(".ledgerful").join("state");
+    assert!(
+        !state.join("ledger.db").exists(),
+        "enabled populated must not create ledger.db"
+    );
+    assert!(
+        !state.join("ledger.cozo").exists(),
+        "enabled populated must not create ledger.cozo"
+    );
+    assert!(
+        !state.join("cli-session.json").exists(),
+        "enabled populated must not write cli-session.json"
     );
 }
 
@@ -216,4 +221,11 @@ fn deploy_impact_enabled_non_git_is_no_matches() {
     let v = parse_object(&stdout, "enabled-nongit");
     assert_eq!(v["emptyReason"], "noMatches");
     assert!(v.get("completeness").is_none(), "{v}");
+
+    let (ok, stdout, stderr) = run_deploy_impact(root, false);
+    assert!(ok, "enabled non-git human should exit 0; stderr={stderr}");
+    assert!(
+        stdout.contains("No deployment impact detected for current changes."),
+        "{stdout}"
+    );
 }
