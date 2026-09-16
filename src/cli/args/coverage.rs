@@ -5,11 +5,22 @@ pub enum FederateCommands {
     /// Export public interfaces for other repositories to consume
     Export {
         /// Preview the schema without writing to .ledgerful/state/schema.json
-        #[arg(long, short = 'd')]
+        #[arg(long, short = 'd', conflicts_with = "out")]
         dry_run: bool,
+        /// Pure camelCase preview JSON on stdout (`kind: federateExportPreview`); does not write
+        #[arg(long, conflicts_with = "out")]
+        json: bool,
         /// Custom output path for the schema file
         #[arg(long, short)]
         out: Option<String>,
+        /// Preview only: maximum interfaces to display (default 200; ignored on write)
+        #[arg(
+            short = 'l',
+            long,
+            default_value_t = 200,
+            value_parser = clap::value_parser!(u64).range(1..=5000)
+        )]
+        limit: u64,
     },
     /// Scan sibling directories for Ledgerful schemas
     Scan,

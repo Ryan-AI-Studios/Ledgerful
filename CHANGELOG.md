@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Federation export preview (0355):** `federate export --dry-run` is a
+  non-writing human summary (no `FEDERATED SCHEMA PREVIEW` banners and no
+  JSON dump). `--json` / `--dry-run --json` emit `schemaVersion` 1
+  `kind: federateExportPreview` with `--limit` (default 200, max 5000),
+  omit-empty `head` / `line`, and empty next `ledgerful scan --impact`.
+  Write path (`federate export` / `--out`) still writes the full
+  `schema.json` 1.1. `--dry-run` and `--json` conflict with `--out`.
+
 - **Surface product readiness parity (0354):** `surfaces` / `tour` marks
   `data-models` ready only when default `data-models list` would emit a
   product row. Fixture-only inventories are empty with next

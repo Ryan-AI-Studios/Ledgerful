@@ -448,6 +448,51 @@ mod tests {
     }
 
     #[test]
+    fn federate_export_preview_flags_parse_and_conflict_with_out() {
+        let json = Cli::try_parse_from(["ledgerful", "federate", "export", "--json"])
+            .expect("export --json");
+        match json.command {
+            Commands::Federate {
+                command:
+                    Some(FederateCommands::Export {
+                        json: true, limit, ..
+                    }),
+            } => assert_eq!(limit, 200),
+            other => panic!("expected Export json, got {other:?}"),
+        }
+        assert!(
+            Cli::try_parse_from(["ledgerful", "federate", "export", "--dry-run", "--out", "x"])
+                .is_err()
+        );
+        assert!(
+            Cli::try_parse_from(["ledgerful", "federate", "export", "--json", "--out", "x"])
+                .is_err()
+        );
+        assert!(Cli::try_parse_from(["ledgerful", "federate", "export", "--limit", "0"]).is_err());
+        assert!(
+            Cli::try_parse_from(["ledgerful", "federate", "export", "--limit", "5001"]).is_err()
+        );
+        let limited = Cli::try_parse_from(["ledgerful", "federate", "export", "--limit", "3"])
+            .expect("limit 3");
+        match limited.command {
+            Commands::Federate {
+                command:
+                    Some(FederateCommands::Export {
+                        limit,
+                        json,
+                        dry_run,
+                        ..
+                    }),
+            } => {
+                assert_eq!(limit, 3);
+                assert!(!json);
+                assert!(!dry_run);
+            }
+            other => panic!("expected Export limit, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn bare_dependencies_defaults_to_list_flags() {
         use crate::commands::dependencies::DependencySubcommands;
         let cli = Cli::try_parse_from(["ledgerful", "dependencies"]).expect("bare deps");

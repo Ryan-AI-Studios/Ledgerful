@@ -1284,12 +1284,23 @@ impl Commands {
                         f.push("json");
                     }
                 }
-                Some(FederateCommands::Export { dry_run, out }) => {
+                Some(FederateCommands::Export {
+                    dry_run,
+                    json,
+                    out,
+                    limit,
+                }) => {
                     if *dry_run {
                         f.push("dry_run");
                     }
+                    if *json {
+                        f.push("json");
+                    }
                     if out.is_some() {
                         f.push("out");
+                    }
+                    if *limit != 200 {
+                        f.push("limit");
                     }
                 }
             },

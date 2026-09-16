@@ -136,6 +136,8 @@ fn machine_mode_selected_for_json_flags() {
     assert!(!parse(&["federate"]).is_machine_output());
     assert!(!parse(&["federate", "status"]).is_machine_output());
     assert!(parse(&["federate", "status", "--json"]).is_machine_output());
+    assert!(parse(&["federate", "export", "--json"]).is_machine_output());
+    assert!(!parse(&["federate", "export", "--dry-run"]).is_machine_output());
     #[cfg(feature = "web")]
     {
         assert!(!parse(&["web", "status"]).is_machine_output());
