@@ -261,10 +261,10 @@ fn diff_nodes_from_disk(disk: &DiskOpenSlo) -> Vec<(String, String, String, Opti
                     ));
                 }
             }
-            "AlertPolicy" => {
+            "AlertPolicy" | "AlertCondition" => {
                 nodes.push((
                     entity.urn.clone(),
-                    format!("AlertPolicy: {}", entity.name),
+                    format!("{}: {}", entity.kind, entity.name),
                     "alert".to_string(),
                     source,
                 ));

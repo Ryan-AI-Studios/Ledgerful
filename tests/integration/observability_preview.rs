@@ -163,6 +163,10 @@ fn preview_empty_without_yaml_does_not_mention_analyze_graph() {
     assert!(human.contains("(preview)"), "got {human}");
     assert!(!human.contains("index --analyze-graph"), "got {human}");
     assert!(
+        !human.to_lowercase().contains("generate a base openslo"),
+        "preview must not call DX1, got {human}"
+    );
+    assert!(
         !root.join(".ledgerful").join("cli-session.json").exists(),
         "preview must not write the session cookie"
     );
@@ -239,12 +243,19 @@ fn persist_diff_after_analyze_graph_includes_metric_source_file() {
     assert_eq!(v["kind"], "observabilityDiff");
     assert!(v.get("preview").is_none());
     assert!(v["indexedCount"].as_u64().is_some(), "indexedCount always");
+    assert_eq!(v["resultCount"], v["changed"].as_array().unwrap().len());
     let changed = v["changed"].as_array().cloned().unwrap_or_default();
+    let slo = changed.iter().find(|x| x["category"] == "slo");
     let metric = changed.iter().find(|x| x["category"] == "metric");
+    assert!(
+        slo.is_some(),
+        "persist dirty YAML must mark SLO changed, got {v}"
+    );
     assert!(
         metric.is_some(),
         "persist dirty YAML must mark metric changed, got {v}"
     );
+    assert_eq!(slo.unwrap()["sourceFile"], "observability/dogfood_slo.yaml");
     assert_eq!(
         metric.unwrap()["sourceFile"],
         "observability/dogfood_slo.yaml"
@@ -272,6 +283,33 @@ fn garbage_yaml_emits_parse_errors_and_keeps_valid_docs() {
         herr.contains("OpenSLO parse errors") || herr.contains("bad.yaml"),
         "expected stderr banner, got {herr}"
     );
+
+    let (dprev, _, code) = run_cli(root, &["observability", "diff", "--preview", "--json"]);
+    assert_eq!(code, 0);
+    let dprev = parse_json(&dprev);
+    assert!(
+        dprev["parseErrors"]
+            .as_array()
+            .map(|a| !a.is_empty())
+            .unwrap_or(false),
+        "diff preview parseErrors, got {dprev}"
+    );
+}
+
+#[test]
+#[serial(cwd)]
+fn persist_coverage_json_includes_parse_errors() {
+    let tmp = new_git_repo();
+    let root = tmp.path();
+    let _guard = crate::common::DirGuard::new(root);
+    execute_init(false, false).unwrap();
+    copy_openslo_fixture(root);
+    fs::write(root.join("observability").join("bad.yaml"), ":::: not yaml").unwrap();
+    let (stdout, stderr, code) = run_cli(root, &["observability", "coverage", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr} stdout={stdout}");
+    let v = parse_json(&stdout);
+    let errors = v["parseErrors"].as_array().expect("parseErrors");
+    assert_eq!(errors[0]["path"], "observability/bad.yaml");
 }
 
 #[test]
