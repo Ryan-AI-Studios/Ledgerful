@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Observability coverage/diff evidence (0360):** `--preview` parses
+  repo-root OpenSLO YAML without opening Cozo or writing state.
+  Coverage `--json` always names `inputs` / `notWired: ["endpoints"]`
+  and item `health`. Diff `--json` is `schemaVersion` 1 /
+  `kind: observabilityDiff` with relative `sourceFile` (including
+  metrics). Unparseable YAML is `parseErrors[]`, not a silent skip.
+  Persist empty taxonomy stays 0215. Clap no longer claims endpoints.
+
 - **Security boundaries operator envelope (0359):** `security
   boundaries --json` is still the unwrapped object, plus additive
   `schemaVersion` 1 / `kind: securityBoundaries` / compact `links[]`

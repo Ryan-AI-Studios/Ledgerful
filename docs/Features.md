@@ -71,8 +71,11 @@ Understand the "blast radius" of any change before it is committed.
     *   **Observability**: Trace config drift and SDK dependency detection.
         Coverage inventory reads repo-root `observability/` OpenSLO
         (`kind: Service` + matching SLO, or `[services]`) after
-        `index --analyze-graph`.
-        Coverage stays opt-in; do not enable it on this engine tree to “see” data.
+        `index --analyze-graph`. `--preview` shows the same denominators
+        from disk without writing the graph. `observability diff --json`
+        is `schemaVersion` 1 `kind: observabilityDiff` with relative
+        `sourceFile`. Coverage stays opt-in; do not enable it on this
+        engine tree to “see” data.
     *   **Affected HTTP flows (0118)**: Change-set `affectedFlows` over indexed route
         registrations (handler symbol / impl file / registration file / optional blast
         edges). Surfaces: impact, change-context, `scan --pr`, and

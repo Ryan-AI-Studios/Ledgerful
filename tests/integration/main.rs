@@ -123,6 +123,7 @@ mod milestone_j_remediation;
 mod narrative_golden;
 mod observability_cedar_graph_test;
 mod observability_empty_honesty;
+mod observability_preview;
 mod path_security;
 mod pending_entity_collision;
 mod persistence;

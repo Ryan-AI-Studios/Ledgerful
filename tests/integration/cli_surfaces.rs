@@ -296,7 +296,10 @@ fn test_observability_coverage_json() {
     execute_init(false, false).unwrap();
 
     let args = ObservabilityArgs {
-        command: ObservabilitySubcommands::Coverage { json: true },
+        command: ObservabilitySubcommands::Coverage {
+            json: true,
+            preview: false,
+        },
     };
     let result = execute_observability(args);
     assert!(result.is_ok());
