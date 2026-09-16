@@ -8,6 +8,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Security boundaries operator envelope (0359):** `security
+  boundaries --json` is still the unwrapped object, plus additive
+  `schemaVersion` 1 / `kind: securityBoundaries` / compact `links[]`
+  (`@id`, relative `sourceFile`, `enforcement: none`). Bespoke
+  `freshness` (`cozoGraph` / `available`|`empty`) is not
+  `SurfaceFreshness`. Graph `auth_nodes` stay. REST
+  `{meta, boundaries}` is unchanged. Human table adds Source and
+  Enforcement. Not a live PDP.
+
 - **Deploy impact cheap detect (0358):** `deploy impact` classifies dirty
   manifests from git status (no impact orchestrator / SQLite). Gated empty
   stays 0324-honest. JSON always names `defaultPatterns` / `classifiers`.

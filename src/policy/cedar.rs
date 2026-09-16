@@ -334,7 +334,10 @@ pub struct BoundaryLink {
     pub target_category: String,
 }
 
-fn parse_endpoint_method_path(target_id: &str, target_label: &str) -> Option<(String, String)> {
+pub(crate) fn parse_endpoint_method_path(
+    target_id: &str,
+    target_label: &str,
+) -> Option<(String, String)> {
     const PREFIX: &str = "urn:ledgerful:endpoint:";
     if let Some(rest) = target_id.strip_prefix(PREFIX) {
         let (method, path) = rest.split_once(':')?;

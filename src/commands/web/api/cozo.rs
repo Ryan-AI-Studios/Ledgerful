@@ -37,7 +37,7 @@ pub(crate) fn fetch_security_boundaries(layout: &Layout) -> Result<SecurityBound
         }
     };
 
-    let (counts, auth_nodes, boundary_edges) =
+    let (counts, auth_nodes, boundary_edges, _) =
         crate::commands::security::assemble_security_boundaries(cozo)?;
 
     Ok(SecurityBoundariesResponse {
