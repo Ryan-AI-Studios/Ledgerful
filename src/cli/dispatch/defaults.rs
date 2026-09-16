@@ -5,9 +5,12 @@ use miette::Result;
 
 pub(super) fn dispatch_federate(command: FederateCommands) -> Result<()> {
     match command {
-        FederateCommands::Export { dry_run, out } => {
-            crate::commands::federate::execute_federate_export(dry_run, out)
-        }
+        FederateCommands::Export {
+            dry_run,
+            json,
+            out,
+            limit,
+        } => crate::commands::federate::execute_federate_export(dry_run, json, out, limit),
         FederateCommands::Scan => crate::commands::federate::execute_federate_scan(),
         FederateCommands::Status { json } => {
             crate::commands::federate::execute_federate_status(json)

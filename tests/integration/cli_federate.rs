@@ -315,3 +315,246 @@ fn test_federate_scan_auto_syncs_missing_sibling_schema__slow() {
          got: {stdout}"
     );
 }
+
+fn federate_bin() -> &'static str {
+    env!("CARGO_BIN_EXE_ledgerful")
+}
+
+fn init_git_repo_ready_for_dirty_pub_fn(root: &std::path::Path) {
+    setup_git_repo(root);
+    fs::write(root.join("README.md"), "fixture\n").unwrap();
+    git_add_and_commit(root, "initial");
+    let init_out = Command::new(federate_bin())
+        .arg("init")
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        init_out.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init_out.stderr)
+    );
+    git_add_and_commit(root, "after init");
+}
+
+fn write_dirty_pub_fn(root: &std::path::Path) {
+    let src = root.join("src");
+    fs::create_dir_all(&src).unwrap();
+    fs::write(src.join("lib.rs"), "pub fn hello() {}\n").unwrap();
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn federate_export_json_preview_is_bounded_envelope__slow() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    init_git_repo_ready_for_dirty_pub_fn(root);
+    write_dirty_pub_fn(root);
+
+    let index_out = Command::new(federate_bin())
+        .args(["index", "--incremental"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        index_out.status.success(),
+        "index --incremental failed: {}",
+        String::from_utf8_lossy(&index_out.stderr)
+    );
+    let scan_out = Command::new(federate_bin())
+        .args(["scan", "--impact"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        scan_out.status.success(),
+        "scan --impact failed: {}",
+        String::from_utf8_lossy(&scan_out.stderr)
+    );
+
+    let schema = root.join(".ledgerful").join("state").join("schema.json");
+    let before = schema
+        .exists()
+        .then(|| fs::metadata(&schema).unwrap().modified().unwrap());
+
+    for args in [
+        ["federate", "export", "--json"].as_slice(),
+        ["federate", "export", "--dry-run", "--json"].as_slice(),
+    ] {
+        let output = Command::new(federate_bin())
+            .args(args)
+            .current_dir(root)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{args:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(
+            !stdout.contains("Exporting"),
+            "preview must not print Exporting: {stdout}"
+        );
+        let json_at = stdout.find('{').expect("json object");
+        assert!(
+            stdout[..json_at].chars().all(char::is_whitespace),
+            "human text precedes JSON: {stdout}"
+        );
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        assert_eq!(v["schemaVersion"], 1);
+        assert_eq!(v["kind"], "federateExportPreview");
+        assert_eq!(v["dryRun"], true);
+        assert_eq!(v["wireSchemaVersion"], "1.1");
+        assert!(v["totalMatching"].as_u64().unwrap_or(0) >= 1);
+        let line = v["interfaces"][0]["line"].as_i64();
+        assert!(line.is_some_and(|n| n > 0), "expected line, got {v}");
+    }
+
+    let after = schema
+        .exists()
+        .then(|| fs::metadata(&schema).unwrap().modified().unwrap());
+    assert_eq!(before, after, "preview must not write schema.json");
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn federate_export_dry_run_human_has_no_json__slow() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    init_git_repo_ready_for_dirty_pub_fn(root);
+    write_dirty_pub_fn(root);
+    let _ = Command::new(federate_bin())
+        .args(["index", "--incremental"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    let _ = Command::new(federate_bin())
+        .args(["scan", "--impact"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+
+    let output = Command::new(federate_bin())
+        .args(["federate", "export", "--dry-run"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "dry-run failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.to_lowercase().contains("preview"));
+    assert!(!stdout.contains("FEDERATED SCHEMA PREVIEW"));
+    assert!(!stdout.contains('{'));
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn federate_export_preview_conflicts_with_out__slow() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let dry = Command::new(federate_bin())
+        .args(["federate", "export", "--dry-run", "--out", "x.json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(!dry.status.success());
+    let err = String::from_utf8_lossy(&dry.stderr);
+    assert!(
+        err.contains("cannot be used") || err.to_lowercase().contains("conflict"),
+        "expected clap conflict, got {err}"
+    );
+    let json = Command::new(federate_bin())
+        .args(["federate", "export", "--json", "--out", "x.json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(!json.status.success());
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn federate_export_json_init_only_is_empty_envelope__slow() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    let init_out = Command::new(federate_bin())
+        .arg("init")
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        init_out.status.success(),
+        "init failed: {}",
+        String::from_utf8_lossy(&init_out.stderr)
+    );
+
+    let output = Command::new(federate_bin())
+        .args(["federate", "export", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "init-only --json failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&output.stdout).trim()).expect("json");
+    assert_eq!(v["kind"], "federateExportPreview");
+    assert_eq!(v["totalMatching"], 0);
+    assert_eq!(v["next"], "ledgerful scan --impact");
+    let schema = root.join(".ledgerful").join("state").join("schema.json");
+    assert!(
+        !schema.exists(),
+        "init-only preview must not write schema.json"
+    );
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn federate_export_next_scan_impact_repopulates_preview__slow() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    init_git_repo_ready_for_dirty_pub_fn(root);
+
+    let before = Command::new(federate_bin())
+        .args(["federate", "export", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(before.status.success());
+    let before_v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&before.stdout).trim()).expect("json");
+    assert_eq!(before_v["totalMatching"], 0);
+    assert_eq!(before_v["next"], "ledgerful scan --impact");
+
+    write_dirty_pub_fn(root);
+    let scan_out = Command::new(federate_bin())
+        .args(["scan", "--impact"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(
+        scan_out.status.success(),
+        "scan --impact failed: {}",
+        String::from_utf8_lossy(&scan_out.stderr)
+    );
+
+    let after = Command::new(federate_bin())
+        .args(["federate", "export", "--json"])
+        .current_dir(root)
+        .output()
+        .unwrap();
+    assert!(after.status.success());
+    let after_v: serde_json::Value =
+        serde_json::from_str(String::from_utf8_lossy(&after.stdout).trim()).expect("json");
+    assert!(
+        after_v["totalMatching"].as_u64().unwrap_or(0) > 0,
+        "named next must populate snapshot symbols, got {after_v}"
+    );
+}

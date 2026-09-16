@@ -28,7 +28,7 @@ fn test_federate_export_from_subdirectory() {
     let _subguard = DirGuard::from_utf8(&subdir);
 
     // This should find the repo root and work correctly
-    execute_federate_export(false, None).unwrap();
+    execute_federate_export(false, false, None, 200).unwrap();
 
     assert!(
         root.join(".ledgerful")
@@ -53,7 +53,7 @@ fn test_federate_export_stamps_generated_at_and_binary_version() {
     let _guard = DirGuard::from_utf8(&root);
     execute_init(false, false).unwrap();
 
-    execute_federate_export(false, None).unwrap();
+    execute_federate_export(false, false, None, 200).unwrap();
 
     let schema_path = root.join(".ledgerful").join("state").join("schema.json");
     let schema_json = fs::read_to_string(&schema_path).unwrap();
@@ -117,7 +117,7 @@ fn test_federate_scan_from_subdirectory() {
     {
         let _guard = DirGuard::from_utf8(&repo2);
         execute_init(false, false).unwrap();
-        execute_federate_export(false, None).unwrap();
+        execute_federate_export(false, false, None, 200).unwrap();
     }
 
     // Init and scan from repo1 subdirectory
@@ -173,7 +173,7 @@ fn federate_status_collapses_dups_and_omits_husk() {
     {
         let _g = DirGuard::from_utf8(&peer);
         execute_init(false, false).unwrap();
-        execute_federate_export(false, None).unwrap();
+        execute_federate_export(false, false, None, 200).unwrap();
     }
     fs::write(husk.join("CLAUDE.md"), "residue").unwrap();
 
@@ -290,7 +290,7 @@ fn federate_scan_stores_basename_not_schema_repo_name() {
     {
         let _g = DirGuard::from_utf8(&folder);
         execute_init(false, false).unwrap();
-        execute_federate_export(false, None).unwrap();
+        execute_federate_export(false, false, None, 200).unwrap();
         // Overwrite export with a stale schema.repo_name (folder ≠ name).
         let schema_path = folder.join(".ledgerful").join("state").join("schema.json");
         let mut schema: FederatedSchema =

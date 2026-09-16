@@ -64,7 +64,8 @@ impl Commands {
             Commands::Federate { command } => match command {
                 None => false,
                 Some(FederateCommands::Status { json }) => *json,
-                Some(_) => false,
+                Some(FederateCommands::Export { json, .. }) => *json,
+                Some(FederateCommands::Scan) => false,
             },
             Commands::Services { command } => match command {
                 None => false,
