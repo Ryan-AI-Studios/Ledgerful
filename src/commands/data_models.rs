@@ -14,7 +14,7 @@ pub struct DataModelsArgs {
 
 #[derive(Subcommand, Debug)]
 pub enum DataModelSubcommands {
-    /// List extracted data models
+    /// List extracted persistence models (SQL migrations are not extracted)
     List {
         /// Show all candidate structs, even those with low confidence
         #[arg(long)]
@@ -188,6 +188,95 @@ fn attach_fixture_flags(output: &mut serde_json::Value, include_fixtures: bool, 
     }
 }
 
+const SUPPORTED_EXTRACTORS: &[&str] = &[
+    "goJsonTaggedStruct",
+    "pythonModelPath",
+    "rustPersistenceDerive",
+    "typescriptEntityOrModelDir",
+];
+
+const NOT_WIRED: &[&str] = &["cppWalker", "javascript", "sqlMigrations"];
+
+const PRODUCT_EMPTY_EXTRACTOR_SENTENCE: &str = "Rust persistence derives (FromRow, Queryable, Insertable) are extracted; SQL migrations are not.";
+
+const LIST_HUMAN_TRULY_EMPTY_EXTRACTOR_LINE: &str = "Rust persistence derives (FromRow, Queryable, Insertable), Go json-tagged structs, TypeScript @Entity or model-dir types, and Python model-path classes are extracted; SQL migrations are not.";
+
+const NO_INDEXED_DATA_MESSAGE: &str = "No data models indexed. Extracted from Rust \
+persistence derives (FromRow, Queryable, Insertable), \
+Go json-tagged structs, TypeScript @Entity or \
+model-dir types, and Python model-path classes. SQL \
+migrations are not extracted. Run `ledgerful index \
+--incremental` if models exist.";
+
+fn attach_extraction_limits(output: &mut serde_json::Value) {
+    if let Some(obj) = output.as_object_mut() {
+        obj.insert(
+            "supportedExtractors".to_string(),
+            serde_json::json!(SUPPORTED_EXTRACTORS),
+        );
+        obj.insert("notWired".to_string(), serde_json::json!(NOT_WIRED));
+    }
+}
+
+fn data_models_next(
+    include_fixtures: bool,
+    fixtures_omitted: usize,
+    collection_empty: bool,
+    reason: Option<&crate::output::empty::EmptyReason>,
+    is_list: bool,
+) -> Option<Vec<String>> {
+    if !collection_empty {
+        return None;
+    }
+    match reason {
+        Some(crate::output::empty::EmptyReason::CleanDiff) => None,
+        Some(crate::output::empty::EmptyReason::NoIndexedData) => {
+            Some(vec!["ledgerful index --incremental".to_string()])
+        }
+        Some(crate::output::empty::EmptyReason::NoMatches)
+            if !include_fixtures && fixtures_omitted > 0 =>
+        {
+            let cmd = if is_list {
+                "ledgerful data-models list --include-fixtures"
+            } else {
+                "ledgerful data-models impact --include-fixtures"
+            };
+            Some(vec![cmd.to_string()])
+        }
+        _ => None,
+    }
+}
+
+fn attach_next(output: &mut serde_json::Value, next: Option<Vec<String>>) {
+    if let Some(next) = next
+        && let Some(obj) = output.as_object_mut()
+    {
+        obj.insert("next".to_string(), serde_json::json!(next));
+    }
+}
+
+fn attach_data_models_envelope(
+    output: &mut serde_json::Value,
+    include_fixtures: bool,
+    fixtures_omitted: usize,
+    collection_empty: bool,
+    reason: Option<&crate::output::empty::EmptyReason>,
+    is_list: bool,
+) {
+    attach_fixture_flags(output, include_fixtures, fixtures_omitted);
+    attach_extraction_limits(output);
+    attach_next(
+        output,
+        data_models_next(
+            include_fixtures,
+            fixtures_omitted,
+            collection_empty,
+            reason,
+            is_list,
+        ),
+    );
+}
+
 fn data_model_row_to_list_json(r: &DataModelRow) -> serde_json::Value {
     serde_json::json!({
         "name": r.model_name,
@@ -229,7 +318,7 @@ fn print_data_models_omit_footer(omitted: usize) {
 
 fn product_empty_omit_message(omitted: usize) -> String {
     format!(
-        "No product data models indexed. {omitted} fixture models omitted. Pass --include-fixtures to show them."
+        "No product data models indexed. {omitted} fixture models omitted. Pass --include-fixtures to show them. {PRODUCT_EMPTY_EXTRACTOR_SENTENCE}"
     )
 }
 
@@ -257,10 +346,7 @@ fn impact_json_empty_reason(
     } else {
         (
             crate::output::empty::EmptyReason::NoIndexedData,
-            "No data models indexed. Data models are extracted from ORM structs, \
-             SQL table definitions, and migration files. Run `ledgerful index \
-             --incremental` if models exist, or confirm your ORM/framework is supported."
-                .to_string(),
+            NO_INDEXED_DATA_MESSAGE.to_string(),
         )
     }
 }
@@ -308,14 +394,29 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
             if json {
                 let results: Vec<serde_json::Value> =
                     model_rows.iter().map(data_model_row_to_list_json).collect();
-                let mut output = if results.is_empty() && fixtures_omitted > 0 {
-                    crate::output::empty::format_json_empty_state(results, "models", || {
-                        list_json_empty_reason(fixtures_omitted)
-                    })
+                let collection_empty = results.is_empty();
+                let (mut output, reason) = if collection_empty && fixtures_omitted > 0 {
+                    let (reason, _) = list_json_empty_reason(fixtures_omitted);
+                    (
+                        crate::output::empty::format_json_empty_state(results, "models", || {
+                            list_json_empty_reason(fixtures_omitted)
+                        }),
+                        Some(reason),
+                    )
                 } else {
-                    crate::output::empty::format_json_list_envelope(results, "models")
+                    (
+                        crate::output::empty::format_json_list_envelope(results, "models"),
+                        None,
+                    )
                 };
-                attach_fixture_flags(&mut output, include_fixtures, fixtures_omitted);
+                attach_data_models_envelope(
+                    &mut output,
+                    include_fixtures,
+                    fixtures_omitted,
+                    collection_empty,
+                    reason.as_ref(),
+                    true,
+                );
                 crate::output::json::emit(&output)?;
             } else {
                 println!(
@@ -328,6 +429,7 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
                         println!("  {}", product_empty_omit_message(fixtures_omitted));
                     } else {
                         println!("  No data models indexed.");
+                        println!("  {LIST_HUMAN_TRULY_EMPTY_EXTRACTOR_LINE}");
                     }
                 } else {
                     let mut table =
@@ -417,11 +519,20 @@ pub fn execute_data_models(args: DataModelsArgs) -> Result<()> {
                 .collect();
 
             if json {
+                let collection_empty = impacted.is_empty();
+                let (reason, _) = impact_json_empty_reason(changed, total_models, fixtures_omitted);
                 let mut output =
                     crate::output::empty::format_json_empty_state(impacted, "impacted", || {
                         impact_json_empty_reason(changed, total_models, fixtures_omitted)
                     });
-                attach_fixture_flags(&mut output, include_fixtures, fixtures_omitted);
+                attach_data_models_envelope(
+                    &mut output,
+                    include_fixtures,
+                    fixtures_omitted,
+                    collection_empty,
+                    collection_empty.then_some(&reason),
+                    false,
+                );
                 crate::output::json::emit(&output)?;
             } else {
                 println!(
@@ -1074,5 +1185,123 @@ mod tests {
         assert_eq!(json_reason, crate::output::empty::EmptyReason::CleanDiff);
         assert_eq!(json_message, "No changed data models found.");
         assert!(!json_message.contains("fixture"));
+    }
+
+    #[test]
+    fn data_models_no_indexed_copy_does_not_claim_sql_migrations() {
+        let (reason, message) = impact_json_empty_reason(false, 0, 0);
+        assert_eq!(reason, crate::output::empty::EmptyReason::NoIndexedData);
+        assert_eq!(message, NO_INDEXED_DATA_MESSAGE);
+        assert!(!message.contains("SQL table definitions"));
+        assert!(!message.contains("and migration files"));
+        assert!(message.contains("SQL migrations are not extracted"));
+        assert!(message.contains("FromRow"));
+    }
+
+    #[test]
+    fn data_models_product_empty_message_names_persistence_derives() {
+        let message = product_empty_omit_message(1);
+        assert!(message.contains("No product data models indexed"));
+        assert!(message.contains("1 fixture models omitted"));
+        assert!(message.contains(PRODUCT_EMPTY_EXTRACTOR_SENTENCE));
+        assert!(message.contains("FromRow, Queryable, Insertable"));
+        assert!(message.contains("SQL migrations are not"));
+        assert!(!message.contains("SQL table definitions"));
+    }
+
+    #[test]
+    fn data_models_list_human_truly_empty_names_extractors_not_sql() {
+        let first = "  No data models indexed.";
+        let second = format!("  {LIST_HUMAN_TRULY_EMPTY_EXTRACTOR_LINE}");
+        assert_eq!(first, "  No data models indexed.");
+        assert!(second.starts_with("  Rust persistence derives"));
+        assert!(second.contains("FromRow, Queryable, Insertable"));
+        assert!(second.contains("Go json-tagged structs"));
+        assert!(second.contains("SQL migrations are not."));
+        assert!(!second.contains("SQL table definitions"));
+        assert!(!second.contains("and migration files"));
+        let combined = format!("{first}\n{second}");
+        assert!(combined.starts_with("  No data models indexed.\n  Rust persistence derives"));
+    }
+
+    #[test]
+    fn data_models_supported_extractors_sorted_locked_vocab() {
+        let mut sorted_supported = SUPPORTED_EXTRACTORS.to_vec();
+        sorted_supported.sort_unstable();
+        assert_eq!(SUPPORTED_EXTRACTORS, sorted_supported.as_slice());
+        assert_eq!(
+            SUPPORTED_EXTRACTORS,
+            &[
+                "goJsonTaggedStruct",
+                "pythonModelPath",
+                "rustPersistenceDerive",
+                "typescriptEntityOrModelDir",
+            ]
+        );
+        let mut sorted_not_wired = NOT_WIRED.to_vec();
+        sorted_not_wired.sort_unstable();
+        assert_eq!(NOT_WIRED, sorted_not_wired.as_slice());
+        assert_eq!(NOT_WIRED, &["cppWalker", "javascript", "sqlMigrations"]);
+    }
+
+    #[test]
+    fn data_models_include_fixtures_omits_include_next() {
+        let next_list = data_models_next(
+            false,
+            1,
+            true,
+            Some(&crate::output::empty::EmptyReason::NoMatches),
+            true,
+        );
+        assert_eq!(
+            next_list,
+            Some(vec![
+                "ledgerful data-models list --include-fixtures".to_string()
+            ])
+        );
+
+        let next_on_flag = data_models_next(
+            true,
+            0,
+            true,
+            Some(&crate::output::empty::EmptyReason::NoIndexedData),
+            true,
+        );
+        assert_ne!(
+            next_on_flag,
+            Some(vec![
+                "ledgerful data-models list --include-fixtures".to_string()
+            ])
+        );
+
+        let next_impact_flag = data_models_next(
+            true,
+            0,
+            true,
+            Some(&crate::output::empty::EmptyReason::NoMatches),
+            false,
+        );
+        assert!(next_impact_flag.is_none());
+
+        let next_clean = data_models_next(
+            false,
+            0,
+            true,
+            Some(&crate::output::empty::EmptyReason::CleanDiff),
+            false,
+        );
+        assert!(next_clean.is_none());
+
+        let next_index = data_models_next(
+            false,
+            0,
+            true,
+            Some(&crate::output::empty::EmptyReason::NoIndexedData),
+            false,
+        );
+        assert_eq!(
+            next_index,
+            Some(vec!["ledgerful index --incremental".to_string()])
+        );
     }
 }

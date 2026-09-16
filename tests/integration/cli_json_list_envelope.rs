@@ -295,6 +295,20 @@ fn data_models_list_json_echoes_fixture_flags() {
     assert_eq!(v["models"][0]["name"], "UserRow");
     assert_eq!(v["models"][0]["fieldImpact"], "unsupported");
     assert!(v.get("fieldImpact").is_none());
+    assert_eq!(
+        v["supportedExtractors"],
+        serde_json::json!([
+            "goJsonTaggedStruct",
+            "pythonModelPath",
+            "rustPersistenceDerive",
+            "typescriptEntityOrModelDir"
+        ])
+    );
+    assert_eq!(
+        v["notWired"],
+        serde_json::json!(["cppWalker", "javascript", "sqlMigrations"])
+    );
+    assert!(v.get("next").is_none());
 
     let (stdout, stderr, code) = run_cli(
         tmp.path(),
@@ -308,6 +322,19 @@ fn data_models_list_json_echoes_fixture_flags() {
     assert_eq!(with["includeFixtures"], true);
     assert_eq!(with["fixturesOmitted"], 0);
     assert_eq!(with["resultCount"], 2);
+    assert_eq!(
+        with["supportedExtractors"],
+        serde_json::json!([
+            "goJsonTaggedStruct",
+            "pythonModelPath",
+            "rustPersistenceDerive",
+            "typescriptEntityOrModelDir"
+        ])
+    );
+    assert!(
+        with.get("next").is_none(),
+        "--include-fixtures must omit include-fixtures next: {with}"
+    );
 }
 
 #[test]
@@ -332,5 +359,30 @@ fn data_models_list_json_post_omit_empty_is_no_matches() {
             .as_str()
             .unwrap_or("")
             .contains("No product data models indexed")
+    );
+    assert!(
+        v["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("SQL migrations are not"),
+        "product-empty message must name extractors: {}",
+        v["message"]
+    );
+    assert_eq!(
+        v["next"],
+        serde_json::json!(["ledgerful data-models list --include-fixtures"])
+    );
+    assert_eq!(
+        v["supportedExtractors"],
+        serde_json::json!([
+            "goJsonTaggedStruct",
+            "pythonModelPath",
+            "rustPersistenceDerive",
+            "typescriptEntityOrModelDir"
+        ])
+    );
+    assert_eq!(
+        v["notWired"],
+        serde_json::json!(["cppWalker", "javascript", "sqlMigrations"])
     );
 }
