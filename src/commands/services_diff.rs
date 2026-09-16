@@ -135,6 +135,7 @@ pub(crate) fn path_matches_dir(path: &str, dir: &str) -> bool {
 fn partition_paths(
     services: &[crate::impact::packet::Service],
     paths: Vec<String>,
+    dedup: bool,
 ) -> std::collections::HashMap<String, Vec<String>> {
     let mut sorted: Vec<&crate::impact::packet::Service> = services.iter().collect();
     sorted.sort_by(|a, b| {
@@ -160,7 +161,9 @@ fn partition_paths(
     }
     for files in assigned.values_mut() {
         files.sort();
-        files.dedup();
+        if dedup {
+            files.dedup();
+        }
     }
     assigned
 }
@@ -276,8 +279,8 @@ fn build_preview_rows(
     full: bool,
 ) -> Result<Vec<ServiceRow>> {
     let inferred = crate::index::preview_inferred_services(storage, config)?;
-    let file_map = partition_paths(&inferred, load_file_paths(storage)?);
-    let route_map = partition_paths(&inferred, load_route_sources(storage)?);
+    let file_map = partition_paths(&inferred, load_file_paths(storage)?, true);
+    let route_map = partition_paths(&inferred, load_route_sources(storage)?, false);
     let mut rows = Vec::new();
     let mut seen = std::collections::HashSet::new();
     for svc in &inferred {
@@ -646,6 +649,49 @@ mod services_diff_unit_tests {
         assert!(path_matches_dir("src/billing", "src/billing"));
         assert!(!path_matches_dir("src/billing-extra/mod.rs", "src/billing"));
         assert!(path_matches_dir("src/billing/mod.rs", "src"));
+    }
+
+    #[test]
+    fn services_preview_route_count_keeps_duplicate_source_rows() {
+        let svc = crate::impact::packet::Service {
+            name: "billing-api".to_string(),
+            directory: std::path::PathBuf::from("src/billing"),
+            routes: vec![],
+            data_models: vec![],
+            owners: vec![],
+            runtime_name: None,
+            queues: vec![],
+            topics: vec![],
+            rpc_endpoints: vec![],
+        };
+        let routes = partition_paths(
+            &[svc],
+            vec![
+                "src/billing/mod.rs".to_string(),
+                "src/billing/mod.rs".to_string(),
+            ],
+            false,
+        );
+        assert_eq!(routes.get("billing-api").map(Vec::len), Some(2));
+        let files = partition_paths(
+            &[crate::impact::packet::Service {
+                name: "billing-api".to_string(),
+                directory: std::path::PathBuf::from("src/billing"),
+                routes: vec![],
+                data_models: vec![],
+                owners: vec![],
+                runtime_name: None,
+                queues: vec![],
+                topics: vec![],
+                rpc_endpoints: vec![],
+            }],
+            vec![
+                "src/billing/mod.rs".to_string(),
+                "src/billing/mod.rs".to_string(),
+            ],
+            true,
+        );
+        assert_eq!(files.get("billing-api").map(Vec::len), Some(1));
     }
 
     #[test]
