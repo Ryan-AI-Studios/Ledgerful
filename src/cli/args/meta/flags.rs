@@ -1313,6 +1313,9 @@ impl Commands {
                     if args.json {
                         f.push("json");
                     }
+                    if args.preview {
+                        f.push("preview");
+                    }
                 }
             },
             Commands::DataModels(args) => match &args.command {

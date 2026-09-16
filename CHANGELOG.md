@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Changed
 
+- **Service topology inspectability (0356):** `services list` / `diff`
+  stay a gated inventory. `--preview` infers topology in memory and
+  never writes `service_name` or the 0300 session cookie. `--full`
+  lists up to 200 files per service. Gated empty names declared
+  `[services]` and no longer prints a header-only table. JSON keeps
+  `emptyReason: disabledByConfig` when `results` is empty and adds
+  `inferenceState` / omit-empty `declared` / item `source`.
+
 - **Federation export preview (0355):** `federate export --dry-run` is a
   non-writing human summary (no `FEDERATED SCHEMA PREVIEW` banners and no
   JSON dump). `--json` / `--dry-run --json` emit `schemaVersion` 1

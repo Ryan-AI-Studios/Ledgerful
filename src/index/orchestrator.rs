@@ -285,3 +285,10 @@ impl ProjectIndexer {
         crate::index::rows::delete_file_symbols(&mut self.storage, file_path)
     }
 }
+
+pub fn preview_inferred_services(
+    storage: &StorageManager,
+    config: &Config,
+) -> Result<Vec<crate::impact::packet::Service>> {
+    topology::preview_inferred_services(storage, config)
+}

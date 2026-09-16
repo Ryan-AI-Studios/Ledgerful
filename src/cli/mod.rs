@@ -653,6 +653,39 @@ mod tests {
     }
 
     #[test]
+    fn services_list_preview_and_full_parse() {
+        let preview = Cli::try_parse_from(["ledgerful", "services", "list", "--preview"])
+            .expect("list --preview");
+        match preview.command {
+            Commands::Services {
+                command: Some(ServiceSubcommands::Diff(args)),
+            } => {
+                assert!(args.preview);
+                assert!(!args.json);
+                assert!(!args.full);
+            }
+            other => panic!("expected Diff, got {other:?}"),
+        }
+        let combo = Cli::try_parse_from([
+            "ledgerful",
+            "services",
+            "diff",
+            "--full",
+            "--preview",
+            "--json",
+        ])
+        .expect("diff --full --preview --json");
+        match combo.command {
+            Commands::Services {
+                command: Some(ServiceSubcommands::Diff(args)),
+            } => {
+                assert!(args.preview && args.full && args.json);
+            }
+            other => panic!("expected Diff, got {other:?}"),
+        }
+    }
+
+    #[test]
     fn services_list_help_is_inventory_not_changes() {
         let help = write_subcommand_help("services");
         assert_eq!(
@@ -1568,6 +1601,7 @@ mod tests {
             ServiceSubcommands::Diff(crate::commands::services_diff::ServicesDiffArgs {
                 full: false,
                 json: false,
+                preview: false,
             });
         let _: RegisterCommands = RegisterCommands::Rule {
             term: String::new(),

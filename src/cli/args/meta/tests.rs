@@ -138,6 +138,15 @@ fn machine_mode_selected_for_json_flags() {
     assert!(parse(&["federate", "status", "--json"]).is_machine_output());
     assert!(parse(&["federate", "export", "--json"]).is_machine_output());
     assert!(!parse(&["federate", "export", "--dry-run"]).is_machine_output());
+    assert!(parse(&["services", "list", "--preview", "--json"]).is_machine_output());
+    assert!(!parse(&["services", "list", "--preview"]).is_machine_output());
+    assert!(
+        parse(&["services", "list", "--preview"])
+            .argv_shape()
+            .contains("preview"),
+        "{}",
+        parse(&["services", "list", "--preview"]).argv_shape()
+    );
     #[cfg(feature = "web")]
     {
         assert!(!parse(&["web", "status"]).is_machine_output());

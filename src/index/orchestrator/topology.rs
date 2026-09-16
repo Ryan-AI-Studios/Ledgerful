@@ -388,12 +388,69 @@ pub fn classify_entrypoints(indexer: &mut ProjectIndexer) -> Result<EntrypointSt
     Ok(stats)
 }
 
+pub fn preview_inferred_services(
+    storage: &crate::state::storage::StorageManager,
+    config: &crate::config::model::Config,
+) -> Result<Vec<crate::impact::packet::Service>> {
+    let mut services = collect_inferred_services(storage, &config.services.definitions)?;
+    services.sort_by(|a, b| {
+        a.name.cmp(&b.name).then_with(|| {
+            a.directory
+                .to_string_lossy()
+                .cmp(&b.directory.to_string_lossy())
+        })
+    });
+    Ok(services)
+}
+
 pub fn infer_services(indexer: &mut ProjectIndexer) -> Result<super::ServiceIndexStats> {
+    let services =
+        collect_inferred_services(&indexer.storage, &indexer.config.services.definitions)?;
+    persist_service_assignments(indexer, &services)
+}
+
+fn persist_service_assignments(
+    indexer: &mut ProjectIndexer,
+    services: &[crate::impact::packet::Service],
+) -> Result<super::ServiceIndexStats> {
+    let mut files_assigned = 0;
+    let conn_mut = indexer.storage.get_connection_mut();
+    let tx = conn_mut.unchecked_transaction().into_diagnostic()?;
+    tx.execute("UPDATE project_files SET service_name = NULL", [])
+        .into_diagnostic()?;
+    let mut sorted_services = services.to_vec();
+    sorted_services.sort_by(|a, b| {
+        b.directory
+            .components()
+            .count()
+            .cmp(&a.directory.components().count())
+    });
+    for service in &sorted_services {
+        let dir_str = service.directory.to_string_lossy().replace('\\', "/");
+        let affected = if dir_str.is_empty() || dir_str == "." {
+            tx.execute("UPDATE project_files SET service_name = ?1 WHERE file_path NOT LIKE '%/%' AND service_name IS NULL", rusqlite::params![service.name])
+        } else {
+            let pattern = format!("{dir_str}/%");
+            tx.execute("UPDATE project_files SET service_name = ?1 WHERE (file_path LIKE ?2 OR file_path = ?3) AND service_name IS NULL", rusqlite::params![service.name, pattern, dir_str])
+        }.into_diagnostic()?;
+        files_assigned += affected;
+    }
+    tx.commit().into_diagnostic()?;
+    Ok(super::ServiceIndexStats {
+        services_inferred: services.len(),
+        files_assigned,
+    })
+}
+
+fn collect_inferred_services(
+    storage: &crate::state::storage::StorageManager,
+    declared: &[crate::config::model::ServiceDefinition],
+) -> Result<Vec<crate::impact::packet::Service>> {
     use crate::coverage::services::{DataModelSource, DirectoryTopology, infer_services};
     use crate::impact::packet::{ApiRoute, DataModel};
     use crate::index::call_graph::CallGraph;
-    let (routes, data_models, call_graph) = {
-        let conn = indexer.storage.get_connection();
+    let (routes, data_models) = {
+        let conn = storage.get_connection();
         let mut route_stmt = conn.prepare("SELECT method, path_pattern, handler_symbol_name, framework, route_source, mount_prefix, is_dynamic, route_confidence, evidence, \
                                                auth_requirements, schema_refs, owning_service, consumers FROM api_routes").into_diagnostic()?;
         let routes: Vec<ApiRoute> = route_stmt
@@ -441,53 +498,22 @@ pub fn infer_services(indexer: &mut ProjectIndexer) -> Result<super::ServiceInde
             .into_diagnostic()?
             .collect::<Result<Vec<_>, _>>()
             .into_diagnostic()?;
-        let call_graph = CallGraph {
-            edges: super::extraction::get_all_call_edges(indexer)?,
-        };
-        (routes, data_models, call_graph)
+        (routes, data_models)
+    };
+    let call_graph = CallGraph {
+        edges: super::extraction::get_all_call_edges_from_storage(storage)?,
     };
 
     let topology = DirectoryTopology {
-        classifications: indexer
-            .storage
-            .get_directory_classifications()
-            .unwrap_or_default(),
+        classifications: storage.get_directory_classifications().unwrap_or_default(),
     };
-    let services = infer_services(
+    Ok(infer_services(
         &routes,
         &data_models,
         &call_graph,
         &topology,
-        &indexer.config.services.definitions,
-    );
-
-    let mut files_assigned = 0;
-    let conn_mut = indexer.storage.get_connection_mut();
-    let tx = conn_mut.unchecked_transaction().into_diagnostic()?;
-    tx.execute("UPDATE project_files SET service_name = NULL", [])
-        .into_diagnostic()?;
-    let mut sorted_services = services.clone();
-    sorted_services.sort_by(|a, b| {
-        b.directory
-            .components()
-            .count()
-            .cmp(&a.directory.components().count())
-    });
-    for service in &sorted_services {
-        let dir_str = service.directory.to_string_lossy().replace('\\', "/");
-        let affected = if dir_str.is_empty() || dir_str == "." {
-            tx.execute("UPDATE project_files SET service_name = ?1 WHERE file_path NOT LIKE '%/%' AND service_name IS NULL", rusqlite::params![service.name])
-        } else {
-            let pattern = format!("{}/%", dir_str);
-            tx.execute("UPDATE project_files SET service_name = ?1 WHERE (file_path LIKE ?2 OR file_path = ?3) AND service_name IS NULL", rusqlite::params![service.name, pattern, dir_str])
-        }.into_diagnostic()?;
-        files_assigned += affected;
-    }
-    tx.commit().into_diagnostic()?;
-    Ok(super::ServiceIndexStats {
-        services_inferred: services.len(),
-        files_assigned,
-    })
+        declared,
+    ))
 }
 
 /// Cozo `:put` must warn **and** return `Err` (Q1). Never swallow with `Ok(())`.
