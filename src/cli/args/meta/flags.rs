@@ -1363,12 +1363,19 @@ impl Commands {
             },
             Commands::Deploy(args) => match &args.command {
                 None => {}
-                Some(crate::commands::deploy::DeploySubcommands::Impact { changed, json }) => {
+                Some(crate::commands::deploy::DeploySubcommands::Impact {
+                    changed,
+                    json,
+                    timeout,
+                }) => {
                     if *changed {
                         f.push("changed");
                     }
                     if *json {
                         f.push("json");
+                    }
+                    if timeout.is_some() {
+                        f.push("timeout");
                     }
                 }
             },

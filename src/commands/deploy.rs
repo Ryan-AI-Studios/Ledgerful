@@ -1,7 +1,18 @@
 use crate::commands::helpers::get_layout;
-use crate::config::load::load_config;
-use crate::impact::packet::{DeployManifestChange, ManifestType};
-use crate::output::empty::{EmptyReason, config_enable_hint, format_json_empty_state};
+use crate::config::load::load_config_or_default_warn;
+use crate::coverage::deploy::detect_deploy_manifest_changes;
+use crate::git::ignore::filter_ignored_changes;
+use crate::git::repo::open_repo;
+use crate::git::status::get_repo_status;
+use crate::git::{ChangeType, FileChange};
+use crate::impact::budget::{
+    AnalysisCompleteness, CompletenessStop, DEPLOY_BUDGET_WARN, completeness_for_overall,
+    install_cancel_flag, overall_deadline_fired, resolve_deploy_overall_budget_secs,
+};
+use crate::impact::packet::{ChangedFile, DeployManifestChange, ManifestType};
+use crate::output::empty::{
+    EmptyReason, config_enable_hint, format_json_empty_state, format_json_list_envelope,
+};
 use crate::output::session_notice::{apply_empty_notice, notice_id_for_deploy};
 use crate::output::table::Table;
 use crate::state::cli_session::{CliSession, env_session_id};
@@ -12,6 +23,11 @@ use clap::{Args, Subcommand};
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
 use serde::Serialize;
+use std::io::Write;
+use std::path::Path;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 #[derive(Args, Debug)]
 #[command(after_help = "Default when omitted: impact.")]
@@ -26,6 +42,7 @@ impl DeployArgs {
         self.command.unwrap_or(DeploySubcommands::Impact {
             changed: false,
             json: false,
+            timeout: None,
         })
     }
 }
@@ -42,21 +59,15 @@ pub enum DeploySubcommands {
         /// Output as JSON
         #[arg(long)]
         json: bool,
+        /// Overall deploy impact emit budget in seconds. `0` disables that clock (Ctrl-C still works).
+        #[arg(long, value_name = "SECS")]
+        timeout: Option<u64>,
     },
 }
 
 pub fn execute_deploy(args: DeployArgs) -> Result<()> {
-    // Determine the project root. Outside a git repository we fall back to the
-    // current directory so `deploy impact` still surfaces the config-gated
-    // empty-state message instead of erroring — the OLD code path read from
-    // SQLite and did not require a git repo, so we preserve that behavior.
     let current_dir = std::env::current_dir().into_diagnostic()?;
-    // Discriminate "not a git repo" (`RepoDiscoveryFailed`) from a broken
-    // repo (`RepoOpenFailed`, e.g. corrupt `.git` or permission failure).
-    // Only the former falls back to the config-gated empty state; every other
-    // git error surfaces to the caller instead of silently reporting a clean
-    // empty state (BLOCKER 2).
-    let in_git_repo = match crate::git::repo::open_repo(&current_dir) {
+    let in_git_repo = match open_repo(&current_dir) {
         Ok(_) => true,
         Err(crate::git::GitError::RepoDiscoveryFailed { .. }) => false,
         Err(e) => return Err(e.into()),
@@ -68,175 +79,354 @@ pub fn execute_deploy(args: DeployArgs) -> Result<()> {
             .map_err(|_| miette::miette!("Current directory is not valid UTF-8"))?;
         Layout::new(&root)
     };
-    let root = layout.root.clone();
-    let config = load_config(&layout).unwrap_or_default();
-    // Initialize the storage at the repo-root layout's ledger path so the
-    // deploy enrichment uses the SAME repo-root `config` for gating as for
-    // storage (BLOCKER 1) and avoids the snapshot-persist + report-rewrite
-    // side effects of `execute_impact_silent` (SHOULD-FIX 1) by routing
-    // through the non-persisting `compute_impact_in_memory`. Storage is only
-    // needed on the in-repo path (the non-repo fallback emits the config-gated
-    // empty state without analyzing a diff and must not require a
-    // `.ledgerful/state/` directory to exist).
-    let storage = if in_git_repo {
-        Some(StorageManager::init_with_layout(&layout)?)
+    match args.command_or_default() {
+        DeploySubcommands::Impact {
+            changed: _,
+            json,
+            timeout,
+        } => {
+            let mut stdout = std::io::stdout();
+            let mut stderr = std::io::stderr();
+            execute_deploy_impact_in(
+                &layout,
+                in_git_repo,
+                json,
+                timeout,
+                None,
+                None,
+                None,
+                &mut stdout,
+                &mut stderr,
+            )
+        }
+    }
+}
+
+/// Cheap `deploy impact` (0358): no SQLite, no impact orchestrator.
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn execute_deploy_impact_in(
+    layout: &Layout,
+    in_git_repo: bool,
+    json: bool,
+    timeout: Option<u64>,
+    cancel: Option<Arc<AtomicBool>>,
+    overall_deadline_override: Option<Instant>,
+    post_classify_deadline_override: Option<Instant>,
+    stdout: &mut impl Write,
+    stderr: &mut impl Write,
+) -> Result<()> {
+    let config = load_config_or_default_warn(layout);
+    let gated = !config.coverage.enabled || !config.coverage.deploy.enabled;
+    if gated {
+        return emit_deploy_outcome(layout, &config, Vec::new(), None, json, stdout);
+    }
+
+    let overall_secs =
+        resolve_deploy_overall_budget_secs(timeout, config.coverage.deploy.overall_budget_secs);
+    let cancel = cancel.unwrap_or_else(install_cancel_flag);
+    let deadline = overall_deadline_override
+        .or_else(|| (overall_secs > 0).then(|| Instant::now() + Duration::from_secs(overall_secs)));
+
+    if overall_deadline_fired(deadline) || cancel.load(Ordering::Relaxed) {
+        let stop = completeness_stop_from_cancel(&cancel);
+        let completeness =
+            completeness_for_overall(stop, Some(overall_secs).filter(|s| *s > 0), "deploy");
+        write_budget_warn_if_budget(stop, stderr)?;
+        return emit_deploy_outcome(
+            layout,
+            &config,
+            Vec::new(),
+            Some(completeness),
+            json,
+            stdout,
+        );
+    }
+
+    let project_root = layout.root.as_std_path();
+    let manifests = if in_git_repo {
+        detect_enabled_manifests(&config, project_root)?
+    } else {
+        Vec::new()
+    };
+
+    let post_deadline = post_classify_deadline_override.or(deadline);
+    let completeness = if overall_deadline_fired(post_deadline) || cancel.load(Ordering::Relaxed) {
+        let stop = completeness_stop_from_cancel(&cancel);
+        write_budget_warn_if_budget(stop, stderr)?;
+        Some(completeness_for_overall(
+            stop,
+            Some(overall_secs).filter(|s| *s > 0),
+            "deploy",
+        ))
     } else {
         None
     };
 
-    let result: Result<()> = (|| {
-        match args.command_or_default() {
-            DeploySubcommands::Impact { changed: _, json } => {
-                // The deploy enrichment that populates `deploy_manifest_changes`
-                // on the impact packet is gated by `coverage.enabled` AND
-                // `coverage.deploy.enabled` (see `src/impact/enrichment/deploy.rs`).
-                // We run the non-persisting in-memory impact pipeline
-                // (`compute_impact_in_memory`) feeding the SAME repo-root
-                // `config` and `storage` we resolved above, so the empty state
-                // reflects the actual gating policy and the CWD/repo-root split
-                // is eliminated (BLOCKER 1). When the gate is OFF, reindexing
-                // cannot change the outcome, so we emit a config hint instead of
-                // telling the user to reindex.
-                //
-                // `deploy_manifest_changes` already contains only deploy
-                // manifests that appear in the current diff (the enrichment
-                // detects them from `packet.changes`), so the `--changed` flag
-                // is redundant and kept only for CLI backward compatibility.
-                let manifests: Vec<DeployManifestChange> = if let Some(storage) = storage.as_ref() {
-                    // Route through the repo-root-aware variant so deploy
-                    // manifest detection resolves root-relative paths (e.g.
-                    // `docker-compose.yml`) against the resolved repo workdir
-                    // (`root`) instead of CWD. This matters when `deploy impact`
-                    // is invoked from a subdirectory: CWD=subdir but the repo
-                    // root is the parent, and YAML manifests require a content
-                    // read (`project_root.join(&file.path)`) to classify — the
-                    // CWD-based helper would read `subdir/<root-level-path>`
-                    // and miss them.
-                    crate::commands::impact::compute_impact_in_memory_at(
-                        storage,
-                        &config,
-                        root.as_std_path(),
-                    )?
-                    .deploy_manifest_changes
-                } else {
-                    // No git repo: no diff to analyze. Fall back to the
-                    // config-gated empty state so the command still succeeds
-                    // outside a repo.
-                    Vec::new()
-                };
+    emit_deploy_outcome(layout, &config, manifests, completeness, json, stdout)
+}
 
-                if !json && manifests.is_empty() {
-                    let (_, full) = deploy_empty_state_message(&config);
-                    let (msg, pending_session) = if let Some(id) = notice_id_for_deploy(
-                        config.coverage.enabled,
-                        config.coverage.deploy.enabled,
-                    ) {
-                        let mut session =
-                            CliSession::load(&layout, env_session_id().as_deref(), Utc::now());
-                        let applied =
-                            apply_empty_notice(&mut session, id, &full, serde_json::json!({}));
-                        (applied.human, Some(session))
-                    } else {
-                        (full, None)
-                    };
-                    println!(
-                        "  {}",
-                        msg.if_supports_color(Stream::Stdout, |s| s.yellow())
-                    );
-                    if let Some(session) = pending_session {
-                        session.persist();
-                    }
-                    return Ok(());
-                }
+fn completeness_stop_from_cancel(cancel: &Arc<AtomicBool>) -> CompletenessStop {
+    if cancel.load(Ordering::Relaxed) {
+        CompletenessStop::Cancelled
+    } else {
+        CompletenessStop::Budget
+    }
+}
 
-                if json {
-                    let results: Vec<_> = manifests
-                        .iter()
-                        .map(|m| {
-                            serde_json::json!({
-                                "path": m.file.to_string_lossy().replace('\\', "/"),
-                                "type": manifest_type_label(&m.manifest_type),
-                                "risk_tier": m.risk_tier,
-                                "service": m.service_name,
-                                "owner": m.owner,
-                            })
-                        })
-                        .collect();
-                    let mut output = format_json_empty_state(results, "results", || {
-                        deploy_empty_state_message(&config)
-                    });
-                    let pending_session = if output.get("emptyReason").is_some()
-                        && let Some(id) = notice_id_for_deploy(
-                            config.coverage.enabled,
-                            config.coverage.deploy.enabled,
-                        ) {
-                        let (_, full) = deploy_empty_state_message(&config);
-                        let mut session =
-                            CliSession::load(&layout, env_session_id().as_deref(), Utc::now());
-                        let applied = apply_empty_notice(&mut session, id, &full, output);
-                        output = applied.json;
-                        Some(session)
-                    } else {
-                        None
-                    };
-                    println!(
-                        "{}",
-                        serde_json::to_string_pretty(&output).into_diagnostic()?
-                    );
-                    if let Some(session) = pending_session {
-                        session.persist();
-                    }
-                } else {
-                    println!(
-                        "{}",
-                        "Deployment Manifest Impact".if_supports_color(Stream::Stdout, |s| s
-                            .style(Style::new().bold().cyan()))
-                    );
-                    let mut table = Table::new();
-                    table.set_header(vec!["Manifest", "Type", "Risk", "Service", "Owner"]);
+fn write_budget_warn_if_budget(stop: CompletenessStop, stderr: &mut impl Write) -> Result<()> {
+    if stop == CompletenessStop::Budget {
+        writeln!(stderr, "{DEPLOY_BUDGET_WARN}").into_diagnostic()?;
+    }
+    Ok(())
+}
 
-                    for m in &manifests {
-                        let risk_str = match m.risk_tier {
-                            3 => m
-                                .risk_tier
-                                .to_string()
-                                .if_supports_color(Stream::Stdout, |s| s.red())
-                                .to_string(),
-                            2 => m
-                                .risk_tier
-                                .to_string()
-                                .if_supports_color(Stream::Stdout, |s| s.yellow())
-                                .to_string(),
-                            _ => m
-                                .risk_tier
-                                .to_string()
-                                .if_supports_color(Stream::Stdout, |s| s.green())
-                                .to_string(),
-                        };
+fn detect_enabled_manifests(
+    config: &crate::config::model::Config,
+    project_root: &Path,
+) -> Result<Vec<DeployManifestChange>> {
+    let repo = open_repo(project_root)?;
+    let all_changes = get_repo_status(&repo).into_diagnostic()?;
+    let changes = filter_ignored_changes(all_changes, &config.watch.ignore_patterns, true)?;
+    let changed_files: Vec<ChangedFile> = changes.iter().map(file_change_to_changed_file).collect();
+    let mut manifests = detect_deploy_manifest_changes(
+        &changed_files,
+        &config.coverage.deploy.patterns,
+        project_root,
+    );
+    manifests.sort();
+    Ok(manifests)
+}
 
-                        table.add_row(vec![
-                            m.file.to_string_lossy().replace('\\', "/"),
-                            manifest_type_label(&m.manifest_type),
-                            risk_str,
-                            m.service_name.clone().unwrap_or_else(|| "-".to_string()),
-                            m.owner.clone().unwrap_or_else(|| "-".to_string()),
-                        ]);
-                    }
-                    println!("{}", table);
-                }
-            }
-        }
-        Ok(())
-    })();
-    // Shutdown storage on every return path (success or error) before
-    // propagating — mirrors `execute_impact_silent`, but unlike it we also shut
-    // down on the error path. On the error path the original error wins; on the
-    // success path a shutdown error propagates. Never `unwrap()`/`expect()`.
-    let shutdown_result = match storage {
-        Some(s) => s.shutdown(),
-        None => Ok(()),
+fn file_change_to_changed_file(change: &FileChange) -> ChangedFile {
+    let (status, old_path) = match &change.change_type {
+        ChangeType::Added => ("Added".to_string(), None),
+        ChangeType::Modified => ("Modified".to_string(), None),
+        ChangeType::Deleted => ("Deleted".to_string(), None),
+        ChangeType::Renamed { old_path } => ("Renamed".to_string(), Some(old_path.clone())),
     };
-    result.and(shutdown_result)
+    ChangedFile {
+        path: change.path.clone(),
+        status,
+        old_path,
+        is_staged: change.is_staged,
+        ..ChangedFile::default()
+    }
+}
+
+fn slash_path(raw: &str) -> String {
+    raw.replace('\\', "/")
+}
+
+fn classifier_labels() -> Vec<String> {
+    fn next_after(mt: &ManifestType) -> Option<ManifestType> {
+        match mt {
+            ManifestType::CiWorkflow => Some(ManifestType::DockerCompose),
+            ManifestType::DockerCompose => Some(ManifestType::Dockerfile),
+            ManifestType::Dockerfile => Some(ManifestType::Helm),
+            ManifestType::Helm => Some(ManifestType::Kubernetes),
+            ManifestType::Kubernetes => Some(ManifestType::Terraform),
+            ManifestType::Terraform => Some(ManifestType::Unknown),
+            ManifestType::Unknown => None,
+        }
+    }
+    let mut labels = Vec::new();
+    let mut cur = Some(ManifestType::CiWorkflow);
+    while let Some(mt) = cur {
+        labels.push(manifest_type_label(&mt));
+        cur = next_after(&mt);
+    }
+    labels.sort();
+    labels
+}
+
+fn default_patterns_for_envelope(patterns: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = patterns.iter().map(|p| slash_path(p)).collect();
+    out.sort();
+    out
+}
+
+fn attach_deploy_envelope(
+    output: &mut serde_json::Value,
+    patterns: &[String],
+    completeness: Option<&AnalysisCompleteness>,
+) {
+    if let Some(obj) = output.as_object_mut() {
+        obj.insert(
+            "defaultPatterns".to_string(),
+            serde_json::json!(default_patterns_for_envelope(patterns)),
+        );
+        obj.insert(
+            "classifiers".to_string(),
+            serde_json::json!(classifier_labels()),
+        );
+        if let Some(c) = completeness
+            && let Ok(v) = serde_json::to_value(c)
+        {
+            obj.insert("completeness".to_string(), v);
+        }
+    }
+}
+
+fn manifest_json(m: &DeployManifestChange) -> serde_json::Value {
+    let mut obj = serde_json::Map::new();
+    obj.insert(
+        "path".to_string(),
+        serde_json::json!(m.file.to_string_lossy().replace('\\', "/")),
+    );
+    obj.insert(
+        "type".to_string(),
+        serde_json::json!(manifest_type_label(&m.manifest_type)),
+    );
+    obj.insert("risk_tier".to_string(), serde_json::json!(m.risk_tier));
+    obj.insert("service".to_string(), serde_json::json!(m.service_name));
+    obj.insert("owner".to_string(), serde_json::json!(m.owner));
+    let coupled: Vec<String> = m
+        .coupled_files
+        .iter()
+        .map(|p| slash_path(p))
+        .filter(|p| !p.is_empty())
+        .collect();
+    if !coupled.is_empty() {
+        obj.insert("coupledFiles".to_string(), serde_json::json!(coupled));
+    }
+    let blast: Vec<String> = m
+        .high_blast_resources
+        .iter()
+        .map(|p| slash_path(p))
+        .filter(|p| !p.is_empty())
+        .collect();
+    if !blast.is_empty() {
+        obj.insert("highBlastResources".to_string(), serde_json::json!(blast));
+    }
+    serde_json::Value::Object(obj)
+}
+
+fn coupled_human_line(manifests: &[DeployManifestChange]) -> Option<String> {
+    let mut paths: Vec<String> = manifests
+        .iter()
+        .flat_map(|m| m.coupled_files.iter())
+        .map(|p| slash_path(p))
+        .filter(|p| !p.is_empty())
+        .collect();
+    if paths.is_empty() {
+        return None;
+    }
+    paths.sort();
+    paths.dedup();
+    Some(format!("Coupled: {}", paths.join(", ")))
+}
+
+fn emit_deploy_outcome(
+    layout: &Layout,
+    config: &crate::config::model::Config,
+    manifests: Vec<DeployManifestChange>,
+    completeness: Option<AnalysisCompleteness>,
+    json: bool,
+    stdout: &mut impl Write,
+) -> Result<()> {
+    if json {
+        let results: Vec<serde_json::Value> = manifests.iter().map(manifest_json).collect();
+        let mut output = if completeness.is_some() && results.is_empty() {
+            format_json_list_envelope(results, "results")
+        } else {
+            format_json_empty_state(results, "results", || deploy_empty_state_message(config))
+        };
+        let pending_session = if completeness.is_none()
+            && output.get("emptyReason").is_some()
+            && let Some(id) =
+                notice_id_for_deploy(config.coverage.enabled, config.coverage.deploy.enabled)
+        {
+            let (_, full) = deploy_empty_state_message(config);
+            let mut session = CliSession::load(layout, env_session_id().as_deref(), Utc::now());
+            let applied = apply_empty_notice(&mut session, id, &full, output);
+            output = applied.json;
+            Some(session)
+        } else {
+            None
+        };
+        attach_deploy_envelope(
+            &mut output,
+            &config.coverage.deploy.patterns,
+            completeness.as_ref(),
+        );
+        writeln!(
+            stdout,
+            "{}",
+            serde_json::to_string_pretty(&output).into_diagnostic()?
+        )
+        .into_diagnostic()?;
+        if let Some(session) = pending_session {
+            session.persist();
+        }
+        return Ok(());
+    }
+
+    if manifests.is_empty() {
+        if completeness.is_some() {
+            return Ok(());
+        }
+        let (_, full) = deploy_empty_state_message(config);
+        let (msg, pending_session) = if let Some(id) =
+            notice_id_for_deploy(config.coverage.enabled, config.coverage.deploy.enabled)
+        {
+            let mut session = CliSession::load(layout, env_session_id().as_deref(), Utc::now());
+            let applied = apply_empty_notice(&mut session, id, &full, serde_json::json!({}));
+            (applied.human, Some(session))
+        } else {
+            (full, None)
+        };
+        writeln!(
+            stdout,
+            "  {}",
+            msg.if_supports_color(Stream::Stdout, |s| s.yellow())
+        )
+        .into_diagnostic()?;
+        if let Some(session) = pending_session {
+            session.persist();
+        }
+        return Ok(());
+    }
+
+    writeln!(
+        stdout,
+        "{}",
+        "Deployment Manifest Impact"
+            .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().cyan()))
+    )
+    .into_diagnostic()?;
+    let mut table = Table::new();
+    table.set_header(vec!["Manifest", "Type", "Risk", "Service", "Owner"]);
+    for m in &manifests {
+        let risk_str = match m.risk_tier {
+            3 => m
+                .risk_tier
+                .to_string()
+                .if_supports_color(Stream::Stdout, |s| s.red())
+                .to_string(),
+            2 => m
+                .risk_tier
+                .to_string()
+                .if_supports_color(Stream::Stdout, |s| s.yellow())
+                .to_string(),
+            _ => m
+                .risk_tier
+                .to_string()
+                .if_supports_color(Stream::Stdout, |s| s.green())
+                .to_string(),
+        };
+        table.add_row(vec![
+            m.file.to_string_lossy().replace('\\', "/"),
+            manifest_type_label(&m.manifest_type),
+            risk_str,
+            m.service_name.clone().unwrap_or_else(|| "-".to_string()),
+            m.owner.clone().unwrap_or_else(|| "-".to_string()),
+        ]);
+    }
+    writeln!(stdout, "{table}").into_diagnostic()?;
+    if let Some(line) = coupled_human_line(&manifests) {
+        writeln!(stdout, "{line}").into_diagnostic()?;
+    }
+    Ok(())
 }
 
 /// Maps a `ManifestType` enum variant to the string label used in both the
@@ -573,5 +763,234 @@ mod tests {
             CI_DECLARED_SCOPE_SENTENCE,
             "Declared workflow jobs from the index — not GitHub required checks or live run status."
         );
+    }
+
+    #[test]
+    fn deploy_impact_gated_message_does_not_lead_with_no_deployment() {
+        let mut config = crate::config::model::Config::default();
+        config.coverage.enabled = false;
+        let (reason, msg) = super::deploy_empty_state_message(&config);
+        assert_eq!(reason, crate::output::empty::EmptyReason::DisabledByConfig);
+        assert!(!msg.starts_with("No deployment impact detected"), "{msg}");
+        assert!(!msg.starts_with(' '), "{msg}");
+    }
+
+    #[test]
+    fn deploy_impact_classifiers_sorted_locked_vocab() {
+        use crate::impact::packet::ManifestType;
+        fn exhaust(mt: ManifestType) {
+            match mt {
+                ManifestType::CiWorkflow
+                | ManifestType::DockerCompose
+                | ManifestType::Dockerfile
+                | ManifestType::Helm
+                | ManifestType::Kubernetes
+                | ManifestType::Terraform
+                | ManifestType::Unknown => {}
+            }
+        }
+        exhaust(ManifestType::Unknown);
+        let mut expected = vec![
+            super::manifest_type_label(&ManifestType::CiWorkflow),
+            super::manifest_type_label(&ManifestType::DockerCompose),
+            super::manifest_type_label(&ManifestType::Dockerfile),
+            super::manifest_type_label(&ManifestType::Helm),
+            super::manifest_type_label(&ManifestType::Kubernetes),
+            super::manifest_type_label(&ManifestType::Terraform),
+            super::manifest_type_label(&ManifestType::Unknown),
+        ];
+        expected.sort();
+        assert_eq!(super::classifier_labels(), expected);
+    }
+
+    #[test]
+    fn deploy_impact_default_patterns_sorted_for_envelope() {
+        let unsorted = vec!["**/k8s/**/*.yaml".to_string(), "**/Dockerfile*".to_string()];
+        let sorted = super::default_patterns_for_envelope(&unsorted);
+        let mut expect = unsorted.clone();
+        expect.sort();
+        assert_eq!(sorted, expect);
+        assert_eq!(unsorted[0], "**/k8s/**/*.yaml");
+    }
+
+    #[test]
+    fn deploy_impact_timeout_zero_is_unlimited() {
+        assert_eq!(
+            crate::impact::budget::resolve_deploy_overall_budget_secs(Some(0), 25),
+            0
+        );
+    }
+
+    #[test]
+    fn deploy_impact_completeness_overall_stage_is_deploy() {
+        let c = crate::impact::budget::completeness_for_overall(
+            crate::impact::budget::CompletenessStop::Budget,
+            Some(25),
+            "deploy",
+        );
+        let v = serde_json::to_value(&c).expect("json");
+        assert_eq!(v["stop"], "budget");
+        assert_eq!(v["scope"], "overall");
+        assert_eq!(v["stage"], "deploy");
+        assert_eq!(v["budgetSecs"], 25);
+    }
+
+    #[test]
+    fn deploy_impact_elapsed_instant_emits_completeness_without_empty_reason() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8 temp path");
+        let cg = root.join(".ledgerful");
+        std::fs::create_dir_all(&cg).expect("config dir");
+        std::fs::write(
+            cg.join("config.toml"),
+            "[coverage]\nenabled = true\n\n[coverage.deploy]\nenabled = true\n",
+        )
+        .expect("config");
+        let layout = crate::state::layout::Layout::new(&root);
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        let elapsed = std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .unwrap_or_else(std::time::Instant::now);
+        super::execute_deploy_impact_in(
+            &layout,
+            false,
+            true,
+            None,
+            Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            ))),
+            Some(elapsed),
+            None,
+            &mut out,
+            &mut err,
+        )
+        .expect("elapsed instant should emit");
+        let stderr = String::from_utf8_lossy(&err);
+        assert!(
+            stderr.contains(crate::impact::budget::DEPLOY_BUDGET_WARN),
+            "{stderr}"
+        );
+        let stdout = String::from_utf8_lossy(&out);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        assert_eq!(v["completeness"]["stop"], "budget");
+        assert_eq!(v["completeness"]["scope"], "overall");
+        assert_eq!(v["completeness"]["stage"], "deploy");
+        assert!(v.get("emptyReason").is_none(), "{v}");
+        assert!(v.get("defaultPatterns").is_some(), "{v}");
+        assert!(v.get("classifiers").is_some(), "{v}");
+    }
+
+    fn elapsed_instant() -> std::time::Instant {
+        std::time::Instant::now()
+            .checked_sub(std::time::Duration::from_secs(1))
+            .unwrap_or_else(std::time::Instant::now)
+    }
+
+    fn enabled_layout(root: &camino::Utf8Path) -> crate::state::layout::Layout {
+        let cg = root.join(".ledgerful");
+        std::fs::create_dir_all(&cg).expect("config dir");
+        std::fs::write(
+            cg.join("config.toml"),
+            "[coverage]\nenabled = true\n\n[coverage.deploy]\nenabled = true\n",
+        )
+        .expect("config");
+        crate::state::layout::Layout::new(root)
+    }
+
+    fn git_cmd(root: &std::path::Path, args: &[&str]) {
+        let out = std::process::Command::new("git")
+            .args(args)
+            .current_dir(root)
+            .output()
+            .expect("git");
+        assert!(
+            out.status.success(),
+            "git {args:?} failed: {}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+    }
+
+    #[test]
+    fn deploy_impact_cancel_does_not_emit_budget_warn() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(tmp.path().to_path_buf()).expect("utf8 temp path");
+        let layout = enabled_layout(&root);
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        super::execute_deploy_impact_in(
+            &layout,
+            false,
+            true,
+            Some(0),
+            Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                true,
+            ))),
+            None,
+            None,
+            &mut out,
+            &mut err,
+        )
+        .expect("cancel should emit");
+        let stderr = String::from_utf8_lossy(&err);
+        assert!(
+            !stderr.contains(crate::impact::budget::DEPLOY_BUDGET_WARN),
+            "{stderr}"
+        );
+        let stdout = String::from_utf8_lossy(&out);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        assert_eq!(v["completeness"]["stop"], "cancelled");
+        assert_eq!(v["completeness"]["scope"], "overall");
+        assert_eq!(v["completeness"]["stage"], "deploy");
+        assert!(v.get("emptyReason").is_none(), "{v}");
+    }
+
+    #[test]
+    fn deploy_impact_post_classify_deadline_keeps_partial_results() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root_std = tmp.path();
+        git_cmd(root_std, &["init"]);
+        git_cmd(root_std, &["config", "user.email", "test@test.com"]);
+        git_cmd(root_std, &["config", "user.name", "Test"]);
+        std::fs::write(root_std.join("Dockerfile"), "FROM alpine:3.20\n").expect("dockerfile");
+        let root =
+            camino::Utf8PathBuf::from_path_buf(root_std.to_path_buf()).expect("utf8 temp path");
+        let layout = enabled_layout(&root);
+        let mut out = Vec::new();
+        let mut err = Vec::new();
+        super::execute_deploy_impact_in(
+            &layout,
+            true,
+            true,
+            Some(0),
+            Some(std::sync::Arc::new(std::sync::atomic::AtomicBool::new(
+                false,
+            ))),
+            None,
+            Some(elapsed_instant()),
+            &mut out,
+            &mut err,
+        )
+        .expect("post-classify deadline should emit");
+        let stderr = String::from_utf8_lossy(&err);
+        assert!(
+            stderr.contains(crate::impact::budget::DEPLOY_BUDGET_WARN),
+            "{stderr}"
+        );
+        let stdout = String::from_utf8_lossy(&out);
+        let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("json");
+        let results = v["results"].as_array().expect("results");
+        assert!(
+            results
+                .iter()
+                .any(|r| r["type"] == "Dockerfile" && r["path"] == "Dockerfile"),
+            "{v}"
+        );
+        assert_eq!(v["completeness"]["stop"], "budget");
+        assert_eq!(v["completeness"]["scope"], "overall");
+        assert_eq!(v["completeness"]["stage"], "deploy");
+        assert!(v.get("emptyReason").is_none(), "{v}");
     }
 }

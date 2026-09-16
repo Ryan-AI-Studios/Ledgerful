@@ -336,9 +336,9 @@ pub fn execute_impact_silent_with_depth_opts_storage(
 /// `latest-impact.json` report, which this path does not touch.
 ///
 /// Delegates to [`compute_impact_in_memory_at`] with `env::current_dir()` as
-/// `project_root`. Callers that have already resolved the repo workdir (e.g.
-/// `deploy impact` from a subdirectory) should call `_at` directly so deploy
-/// manifest detection resolves root-relative paths against the repo root.
+/// `project_root`. Callers that have already resolved the repo workdir should
+/// call `_at` directly so path reads resolve against the repo root instead of
+/// CWD. `deploy impact` (0358) no longer uses this helper.
 pub fn compute_impact_in_memory(
     storage: &crate::state::storage::StorageManager,
     config: &crate::config::model::Config,
@@ -351,16 +351,14 @@ pub fn compute_impact_in_memory(
 /// Repo-root-aware variant of [`compute_impact_in_memory`].
 ///
 /// Used by callers that have already resolved the repository working directory
-/// (e.g. `ledgerful deploy impact` invoked from a subdirectory, where
-/// `env::current_dir()` is the subdir but the repo root is the parent). The
+/// (CWD may be a subdirectory while `project_root` is the repo workdir). The
 /// `project_root` argument is used consistently for git discovery
 /// (`open_repo`), snapshot-to-packet mapping (`map_snapshot_to_packet`), and
-/// orchestrator enrichment (`orchestrator.run`), so deploy manifest detection
-/// — which does `project_root.join(&file.path)` and reads root-relative paths
-/// like `docker-compose.yml` — resolves against the true repo root instead of
-/// the current directory. [`compute_impact_in_memory`] is the CWD-based
-/// convenience wrapper that delegates here with `env::current_dir()`, preserved
-/// for the DX6 `ask` callers whose signature must not change.
+/// orchestrator enrichment (`orchestrator.run`). [`compute_impact_in_memory`]
+/// is the CWD-based convenience wrapper that delegates here with
+/// `env::current_dir()`, preserved for the DX6 `ask` callers whose signature
+/// must not change. `deploy impact` (0358) classifies manifests from git
+/// status directly and does not call this helper.
 pub fn compute_impact_in_memory_at(
     storage: &crate::state::storage::StorageManager,
     config: &crate::config::model::Config,
