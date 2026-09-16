@@ -222,6 +222,16 @@ async fn session_exchange_handler() {}
         "index --analyze-graph failed; stdout={stdout} stderr={stderr}"
     );
 
+    let state = root.join(".ledgerful").join("state");
+    let db_len = std::fs::metadata(state.join("ledger.db"))
+        .map(|m| m.len())
+        .ok();
+    let cozo_len = std::fs::metadata(state.join("ledger.cozo"))
+        .map(|m| m.len())
+        .ok();
+    let session_existed = state.join("cli-session.json").exists()
+        || root.join(".ledgerful").join("cli-session.json").exists();
+
     let (stdout, stderr, code) = run_cli(root, &["security", "boundaries", "--json"]);
     assert_eq!(code, 0, "security boundaries --json; stderr={stderr}");
     let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("boundaries JSON");
@@ -237,6 +247,24 @@ async fn session_exchange_handler() {}
     assert_eq!(policy_n, 8, "expected 8 policy nodes: {stdout}");
     assert_eq!(action_n, 8, "expected 8 action nodes: {stdout}");
     assert_eq!(v["pdp"], false, "additive pdp:false: {stdout}");
+    assert_eq!(v["schemaVersion"], 1, "0359 freeze lift: {stdout}");
+    assert_eq!(v["kind"], "securityBoundaries", "{stdout}");
+    assert_eq!(v["authorization"], "declared", "{stdout}");
+    assert_eq!(v["freshness"]["status"], "available", "{stdout}");
+    assert_eq!(v["freshness"]["source"], "cozoGraph", "{stdout}");
+    let obj = v.as_object().expect("object");
+    let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+    assert_eq!(keys.first().copied(), Some("schemaVersion"), "{keys:?}");
+    let links_i = keys.iter().position(|k| *k == "links").expect("links key");
+    let meta_i = keys.iter().position(|k| *k == "meta").expect("meta key");
+    assert!(links_i < meta_i, "links before meta: {keys:?}");
+    let links = v["links"].as_array().expect("links");
+    assert_eq!(
+        v["resultCount"].as_u64().unwrap_or(0) as usize,
+        links.len(),
+        "resultCount counts links: {stdout}"
+    );
+    assert!(!links.is_empty(), "populated links: {stdout}");
     let expected_ids: [&str; 8] = [
         "route_get_api_status",
         "route_get_api_session",
@@ -265,6 +293,35 @@ async fn session_exchange_handler() {}
         assert!(
             policy_labels.contains(&want),
             "policy labels must include every @id (missing {want}): {stdout}"
+        );
+    }
+    for link in links {
+        let id = link["id"].as_str().unwrap_or_default();
+        assert!(
+            expected_ids.contains(&id),
+            "links[].id must be a known @id, got {id}: {stdout}"
+        );
+        assert_eq!(link["enforcement"], "none", "{stdout}");
+        assert_eq!(link["linkKind"], "inferred", "{stdout}");
+        let sf = link["sourceFile"]
+            .as_str()
+            .expect("populated links must join sourceFile");
+        assert_eq!(sf, "policies/daemon-api.cedar", "{link}");
+        assert!(!sf.contains('\\'), "sourceFile slash-relative: {sf}");
+        assert!(
+            link.get("sourceMissing").is_none(),
+            "present sourceFile omits sourceMissing: {link}"
+        );
+    }
+    for edge in v["boundaries"]["boundary_edges"]
+        .as_array()
+        .expect("boundary_edges for freeze")
+    {
+        assert!(
+            edge.get("source_file").is_none()
+                && edge.get("sourceFile").is_none()
+                && edge.get("effect").is_none(),
+            "boundary_edges value shape frozen: {edge}"
         );
     }
     assert!(
@@ -343,6 +400,44 @@ async fn session_exchange_handler() {}
     assert!(
         human.contains("GET /session"),
         "Target column is endpoint tlabel GET /session: {human}"
+    );
+    assert!(
+        human.contains("Source") && human.contains("Enforcement") && human.contains("none"),
+        "human Source/Enforcement columns: {human}"
+    );
+    assert!(
+        human.contains("policies/daemon-api.cedar"),
+        "human Source column shows cedar path: {human}"
+    );
+
+    let (json_verbose, stderr, code) =
+        run_cli(root, &["security", "boundaries", "--json", "--verbose"]);
+    assert_eq!(code, 0, "json --verbose; stderr={stderr}");
+    assert_eq!(
+        json_verbose.trim(),
+        stdout.trim(),
+        "--json --verbose must match --json"
+    );
+
+    let db_after = std::fs::metadata(state.join("ledger.db"))
+        .map(|m| m.len())
+        .ok();
+    let cozo_after = std::fs::metadata(state.join("ledger.cozo"))
+        .map(|m| m.len())
+        .ok();
+    assert_eq!(
+        db_after, db_len,
+        "security boundaries must not grow ledger.db"
+    );
+    assert_eq!(
+        cozo_after, cozo_len,
+        "security boundaries must not grow ledger.cozo"
+    );
+    assert!(
+        session_existed
+            || (!state.join("cli-session.json").exists()
+                && !root.join(".ledgerful").join("cli-session.json").exists()),
+        "security boundaries must not write cli-session.json"
     );
 
     let (verbose, stderr, code) = run_cli(root, &["security", "boundaries", "--verbose"]);
@@ -837,7 +932,16 @@ fn security_coverage_always_emitted() {
         assert_eq!(v["authorization"], "declared", "{stdout}");
         if args[1] == "boundaries" {
             assert_eq!(v["pdp"], false, "{stdout}");
-            assert!(v.get("schemaVersion").is_none(), "{stdout}");
+            assert_eq!(v["schemaVersion"], 1, "{stdout}");
+            assert_eq!(v["kind"], "securityBoundaries", "{stdout}");
+            assert_eq!(v["freshness"]["status"], "empty", "{stdout}");
+            assert_eq!(v["freshness"]["source"], "cozoGraph", "{stdout}");
+            assert!(v.get("emptyReason").is_some(), "{stdout}");
+            assert_eq!(v["resultCount"], 0, "{stdout}");
+            assert!(
+                v["links"].as_array().is_some_and(|a| a.is_empty()),
+                "{stdout}"
+            );
         }
     }
 
@@ -854,7 +958,9 @@ fn security_coverage_always_emitted() {
     let bounds: serde_json::Value = serde_json::from_str(stdout.trim()).expect("boundaries JSON");
     assert_coverage_shape(&bounds, &stdout);
     assert_eq!(bounds["pdp"], false, "{stdout}");
-    assert!(bounds.get("schemaVersion").is_none(), "{stdout}");
+    assert_eq!(bounds["schemaVersion"], 1, "{stdout}");
+    assert_eq!(bounds["kind"], "securityBoundaries", "{stdout}");
+    assert_eq!(bounds["freshness"]["status"], "available", "{stdout}");
     let linked = bounds["coverage"]["linkedEndpoints"]
         .as_u64()
         .expect("linkedEndpoints");

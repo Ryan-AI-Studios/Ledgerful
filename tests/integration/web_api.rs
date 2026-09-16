@@ -1168,6 +1168,14 @@ permit (
         json.get("coverage").is_none() && json.get("authorization").is_none(),
         "REST DTO must not grow CLI coverage keys: {json}"
     );
+    assert!(
+        json.get("schemaVersion").is_none()
+            && json.get("kind").is_none()
+            && json.get("links").is_none()
+            && json.get("freshness").is_none()
+            && json.get("resultCount").is_none(),
+        "REST DTO must not grow CLI envelope keys: {json}"
+    );
     let edges = json["boundaries"]["boundary_edges"]
         .as_array()
         .expect("boundary_edges");
@@ -1186,6 +1194,14 @@ permit (
         policy_label, "route_post_api_session_exchange",
         "REST resolves @id over the stale stored label: {json}"
     );
+    for edge in edges {
+        assert!(
+            edge.get("source_file").is_none()
+                && edge.get("sourceFile").is_none()
+                && edge.get("effect").is_none(),
+            "REST boundary_edges must not grow CLI meta keys: {edge}"
+        );
+    }
     handle.abort();
 }
 

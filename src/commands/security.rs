@@ -1,16 +1,19 @@
 use crate::commands::dx1_templates::write_cedar_template;
 use crate::commands::helpers::get_layout;
+use crate::output::empty::EmptyReason;
 use crate::output::table::{
     Table, arrow_with_style, em_dash_with_style, resolve_table_style, truncate_chars,
 };
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use crate::util::term::prompt_yes_no;
+use camino::Utf8Path;
 use clap::{Args, Subcommand};
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
 use serde::Serialize;
-use std::collections::HashSet;
+use serde_json::{Map, Value, json};
+use std::collections::{BTreeMap, HashSet};
 
 #[derive(Args, Debug)]
 pub struct SecurityArgs {
@@ -189,7 +192,7 @@ fn impact_coverage(
     indexed: usize,
 ) -> SecurityCoverage {
     match assemble_security_boundaries(cozo) {
-        Ok((_, _, edges)) => match security_coverage(cozo, &edges, indexed) {
+        Ok((_, _, edges, _)) => match security_coverage(cozo, &edges, indexed) {
             Ok(coverage) => coverage,
             Err(e) => {
                 tracing::warn!("Coverage probes failed: {e}");
@@ -516,11 +519,19 @@ fn annotations_id(meta: &serde_json::Value) -> Option<&str> {
         .and_then(|v| v.as_str())
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct PolicyMeta {
+    source_file: Option<String>,
+    effect: Option<String>,
+}
+
 /// Shared CLI/REST assembly: resolved `@id` labels + method-safe, `/api`-preferred edges.
+/// Fourth channel is CLI-only policy metadata keyed by policy node id (URN).
 pub(crate) type BoundaryAssembly = (
-    std::collections::BTreeMap<String, usize>,
-    Vec<serde_json::Value>,
-    Vec<serde_json::Value>,
+    BTreeMap<String, usize>,
+    Vec<Value>,
+    Vec<Value>,
+    BTreeMap<String, PolicyMeta>,
 );
 
 pub(crate) fn assemble_security_boundaries(
@@ -539,9 +550,10 @@ pub(crate) fn assemble_security_boundaries(
          relation = rel",
     )?;
 
-    let mut counts: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
+    let mut counts: BTreeMap<String, usize> = BTreeMap::new();
     let mut policy_actions: std::collections::HashMap<String, (String, String)> =
         std::collections::HashMap::new();
+    let mut policy_meta: BTreeMap<String, PolicyMeta> = BTreeMap::new();
     let mut auth_nodes = Vec::new();
     for row in &auth_res.rows {
         let (Some(id), Some(label), Some(cat)) = (
@@ -583,6 +595,21 @@ pub(crate) fn assemble_security_boundaries(
             {
                 policy_actions.insert(id.to_string(), action);
             }
+            policy_meta.insert(
+                id.to_string(),
+                PolicyMeta {
+                    source_file: meta
+                        .as_ref()
+                        .and_then(|m| m.get("source_file"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                    effect: meta
+                        .as_ref()
+                        .and_then(|m| m.get("effect"))
+                        .and_then(|v| v.as_str())
+                        .map(str::to_string),
+                },
+            );
         }
         auth_nodes.push(serde_json::json!({
             "id": id,
@@ -631,10 +658,10 @@ pub(crate) fn assemble_security_boundaries(
         });
     }
     let links = crate::policy::cedar::refine_boundary_links(links, &policy_actions);
-    let boundary_edges: Vec<serde_json::Value> = links
+    let boundary_edges: Vec<Value> = links
         .into_iter()
         .map(|l| {
-            serde_json::json!({
+            json!({
                 "policy_id": l.policy_id,
                 "policy_label": l.policy_label,
                 "relation": l.relation,
@@ -645,7 +672,159 @@ pub(crate) fn assemble_security_boundaries(
         })
         .collect();
 
-    Ok((counts, auth_nodes, boundary_edges))
+    Ok((counts, auth_nodes, boundary_edges, policy_meta))
+}
+
+fn relative_source_file(raw: Option<&str>) -> Option<String> {
+    let s = raw?.trim();
+    if s.is_empty() || s.contains('\\') {
+        return None;
+    }
+    if s.starts_with('/') {
+        return None;
+    }
+    let bytes = s.as_bytes();
+    if bytes.len() >= 2 && bytes[0].is_ascii_alphabetic() && bytes[1] == b':' {
+        return None;
+    }
+    Some(s.to_string())
+}
+
+struct OperatorLinkRow {
+    id: String,
+    source_file: Option<String>,
+    effect: Option<String>,
+    relation: String,
+    target_label: String,
+    target_category: String,
+    method: Option<String>,
+    path: Option<String>,
+    source_missing: bool,
+    target_id: String,
+}
+
+impl OperatorLinkRow {
+    fn sort_key(&self) -> (&str, &str, &str, &str, &str, &str, &str) {
+        (
+            self.id.as_str(),
+            self.relation.as_str(),
+            self.method.as_deref().unwrap_or(""),
+            self.path.as_deref().unwrap_or(""),
+            self.target_label.as_str(),
+            self.target_category.as_str(),
+            self.target_id.as_str(),
+        )
+    }
+
+    fn into_json(self) -> Value {
+        let mut item = Map::new();
+        item.insert("id".to_string(), json!(self.id));
+        if let Some(source_file) = self.source_file {
+            item.insert("sourceFile".to_string(), json!(source_file));
+        }
+        if let Some(effect) = self.effect.filter(|s| !s.is_empty()) {
+            item.insert("effect".to_string(), json!(effect));
+        }
+        item.insert("enforcement".to_string(), json!("none"));
+        item.insert("linkKind".to_string(), json!("inferred"));
+        item.insert("relation".to_string(), json!(self.relation));
+        item.insert("targetLabel".to_string(), json!(self.target_label));
+        item.insert("targetCategory".to_string(), json!(self.target_category));
+        if let Some(method) = self.method {
+            item.insert("method".to_string(), json!(method));
+        }
+        if let Some(path) = self.path {
+            item.insert("path".to_string(), json!(path));
+        }
+        if self.source_missing {
+            item.insert("sourceMissing".to_string(), json!(true));
+        }
+        Value::Object(item)
+    }
+}
+
+fn security_boundary_links(
+    edges: &[Value],
+    policy_meta: &BTreeMap<String, PolicyMeta>,
+    repo_root: &Utf8Path,
+) -> Vec<Value> {
+    let mut rows: Vec<OperatorLinkRow> = edges
+        .iter()
+        .map(|edge| {
+            let policy_id = edge["policy_id"].as_str().unwrap_or("");
+            let id = edge["policy_label"].as_str().unwrap_or("").to_string();
+            let meta = policy_meta.get(policy_id);
+            let source_file = relative_source_file(meta.and_then(|m| m.source_file.as_deref()));
+            let effect = meta.and_then(|m| m.effect.clone());
+            let relation = edge["relation"].as_str().unwrap_or("").to_string();
+            let target_label = edge["target_label"].as_str().unwrap_or("").to_string();
+            let target_category = edge["target_category"].as_str().unwrap_or("").to_string();
+            let target_id = edge["target_id"].as_str().unwrap_or("").to_string();
+            let (method, path) = if target_category == "endpoint" {
+                crate::policy::cedar::parse_endpoint_method_path(&target_id, &target_label)
+                    .map_or((None, None), |(m, p)| (Some(m), Some(p)))
+            } else {
+                (None, None)
+            };
+            let source_missing = source_file
+                .as_deref()
+                .is_some_and(|rel| !repo_root.join(rel).exists());
+            OperatorLinkRow {
+                id,
+                source_file,
+                effect,
+                relation,
+                target_label,
+                target_category,
+                method,
+                path,
+                source_missing,
+                target_id,
+            }
+        })
+        .collect();
+    rows.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
+    rows.into_iter().map(OperatorLinkRow::into_json).collect()
+}
+
+fn boundaries_cli_json(
+    counts: &BTreeMap<String, usize>,
+    auth_nodes: &[Value],
+    boundary_edges: &[Value],
+    operator_links: &[Value],
+    coverage: &SecurityCoverage,
+    empty: Option<(EmptyReason, String)>,
+) -> Result<Value> {
+    let freshness_status = if auth_nodes.is_empty() {
+        "empty"
+    } else {
+        "available"
+    };
+    let mut map = Map::new();
+    map.insert("schemaVersion".to_string(), json!(1u32));
+    map.insert("kind".to_string(), json!("securityBoundaries"));
+    map.insert("pdp".to_string(), json!(false));
+    map.insert("authorization".to_string(), json!("declared"));
+    map.insert("coverage".to_string(), coverage_json(coverage)?);
+    map.insert(
+        "freshness".to_string(),
+        json!({ "status": freshness_status, "source": "cozoGraph" }),
+    );
+    map.insert("links".to_string(), json!(operator_links));
+    map.insert("resultCount".to_string(), json!(operator_links.len()));
+    map.insert("meta".to_string(), json!({ "counts": counts }));
+    map.insert(
+        "boundaries".to_string(),
+        json!({
+            "auth_nodes": auth_nodes,
+            "boundary_edges": boundary_edges,
+        }),
+    );
+    if let Some((reason, message)) = empty {
+        map.insert("emptyReason".to_string(), json!(reason));
+        map.insert("message".to_string(), json!(message));
+    }
+    Ok(Value::Object(map))
 }
 
 fn execute_boundaries(
@@ -662,49 +841,40 @@ fn execute_boundaries(
         .cozo()
         .ok_or_else(|| miette::miette!("CozoDB not available"))?;
 
-    let (counts, auth_nodes, boundary_edges) = assemble_security_boundaries(cozo)?;
+    let (counts, auth_nodes, boundary_edges, policy_meta) = assemble_security_boundaries(cozo)?;
+    let operator_links = security_boundary_links(&boundary_edges, &policy_meta, &layout.root);
 
     if json {
-        let mut json_out = if auth_nodes.is_empty() {
-            let (reason, message) = if graph_has_any_nodes(cozo)? {
+        let empty = if auth_nodes.is_empty() {
+            Some(if graph_has_any_nodes(cozo)? {
                 (
-                    crate::output::empty::EmptyReason::NoMatches,
+                    EmptyReason::NoMatches,
                     "Knowledge graph is populated, but no Cedar policy/principal/action/resource nodes exist. \
                      This repo has no Cedar policy files configured — add them under 'policies/' and run \
-                     `ledgerful index --analyze-graph` to populate this surface.",
+                     `ledgerful index --analyze-graph` to populate this surface."
+                        .to_string(),
                 )
             } else {
                 (
-                    crate::output::empty::EmptyReason::NoIndexedData,
+                    EmptyReason::NoIndexedData,
                     "Knowledge graph has not been built yet. Run `ledgerful index --analyze-graph` first, \
-                     then add Cedar policy files to 'policies/' if this repo uses Cedar.",
+                     then add Cedar policy files to 'policies/' if this repo uses Cedar."
+                        .to_string(),
                 )
-            };
-            serde_json::json!({
-                "meta": { "counts": counts },
-                "boundaries": {
-                    "auth_nodes": auth_nodes,
-                    "boundary_edges": boundary_edges,
-                },
-                "emptyReason": reason,
-                "message": message
             })
         } else {
-            serde_json::json!({
-                "meta": { "counts": counts },
-                "boundaries": {
-                    "auth_nodes": auth_nodes,
-                    "boundary_edges": boundary_edges,
-                },
-            })
+            None
         };
         let policies = complete_policy_count(cozo)?;
         let coverage = security_coverage(cozo, &boundary_edges, policies)?;
-        if let Some(map) = json_out.as_object_mut() {
-            map.insert("pdp".to_string(), serde_json::json!(false));
-            map.insert("authorization".to_string(), serde_json::json!("declared"));
-            map.insert("coverage".to_string(), coverage_json(&coverage)?);
-        }
+        let json_out = boundaries_cli_json(
+            &counts,
+            &auth_nodes,
+            &boundary_edges,
+            &operator_links,
+            &coverage,
+            empty,
+        )?;
         crate::output::json::emit(&json_out)?;
     } else if auth_nodes.is_empty() {
         // CG-F35: empty taxonomy + DX1 prompt unchanged (no PDP one-liner).
@@ -782,12 +952,12 @@ fn execute_boundaries(
                 arrow_with_style(resolve_table_style())
             )
             .if_supports_color(Stream::Stdout, |s| s.bold()),
-            boundary_edges
+            operator_links
                 .len()
                 .to_string()
                 .if_supports_color(Stream::Stdout, |s| s.bold()),
         );
-        if boundary_edges.is_empty() {
+        if operator_links.is_empty() {
             println!(
                 "{}",
                 "  No cross-surface links found. Run `ledgerful index --incremental` to refresh."
@@ -795,16 +965,24 @@ fn execute_boundaries(
             );
         } else {
             let mut boundary_table = Table::new();
-            boundary_table.set_header(vec!["Policy", "Relation", "Target", "Target Category"]);
-            for edge in &boundary_edges {
+            boundary_table.set_header(vec![
+                "Policy",
+                "Source",
+                "Relation",
+                "Target",
+                "Enforcement",
+            ]);
+            for link in &operator_links {
+                let source = link["sourceFile"]
+                    .as_str()
+                    .map(|s| truncate(s, 32))
+                    .unwrap_or_else(|| em_dash_with_style(resolve_table_style()).to_string());
                 boundary_table.add_row(vec![
-                    truncate(edge["policy_label"].as_str().unwrap_or_default(), 50),
-                    edge["relation"].as_str().unwrap_or_default().to_string(),
-                    truncate(edge["target_label"].as_str().unwrap_or_default(), 50),
-                    edge["target_category"]
-                        .as_str()
-                        .unwrap_or_default()
-                        .to_string(),
+                    truncate(link["id"].as_str().unwrap_or_default(), 40),
+                    source,
+                    link["relation"].as_str().unwrap_or_default().to_string(),
+                    truncate(link["targetLabel"].as_str().unwrap_or_default(), 40),
+                    "none".to_string(),
                 ]);
             }
             println!("{}", boundary_table);
@@ -815,7 +993,7 @@ fn execute_boundaries(
         println!(
             "  Declared coverage: {} unique endpoint targets of {} cross-surface links; {} indexed endpoint nodes. Not all HTTP routes have a Cedar permit.",
             coverage.linked_endpoints,
-            boundary_edges.len(),
+            operator_links.len(),
             coverage.indexed_endpoints
         );
 
@@ -879,6 +1057,7 @@ mod tests {
         impact_policy_item, impact_title, linked_endpoint_count, urn_table_from_args,
     };
     use clap::CommandFactory;
+    use std::collections::BTreeMap;
 
     #[test]
     fn security_impact_clap_about_is_inventory() {
@@ -1172,5 +1351,187 @@ permit (
             urn_table_from_args(true, &lib_call),
             "library callers without argv `boundaries` keep the parsed flag"
         );
+    }
+
+    #[test]
+    fn security_boundaries_relative_source_file_omits_absolute() {
+        assert_eq!(
+            super::relative_source_file(Some("policies/daemon-api.cedar")),
+            Some("policies/daemon-api.cedar".to_string())
+        );
+        assert_eq!(
+            super::relative_source_file(Some(r"C:\dev\ledgerful\policies\x.cedar")),
+            None
+        );
+        assert_eq!(super::relative_source_file(Some("/abs/x.cedar")), None);
+        assert_eq!(super::relative_source_file(Some(r"policies\x.cedar")), None);
+        assert_eq!(super::relative_source_file(Some("")), None);
+        assert_eq!(super::relative_source_file(None), None);
+        assert_eq!(super::relative_source_file(Some("  ")), None);
+    }
+
+    #[test]
+    fn security_boundaries_links_omit_source_missing_when_file_exists() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let policies = tmp.path().join("policies");
+        std::fs::create_dir_all(&policies).expect("mkdir");
+        std::fs::write(policies.join("daemon-api.cedar"), "permit();").expect("write");
+        let root = camino::Utf8Path::from_path(tmp.path()).expect("utf8");
+        let mut meta = BTreeMap::new();
+        meta.insert(
+            "urn:ledgerful:policy:p1".to_string(),
+            super::PolicyMeta {
+                source_file: Some("policies/daemon-api.cedar".to_string()),
+                effect: Some("permit".to_string()),
+            },
+        );
+        let edges = vec![serde_json::json!({
+            "policy_id": "urn:ledgerful:policy:p1",
+            "policy_label": "route_get_api_config",
+            "relation": "protected_by",
+            "target_id": "urn:ledgerful:endpoint:GET:/config",
+            "target_label": "GET /config",
+            "target_category": "endpoint",
+        })];
+        let links = super::security_boundary_links(&edges, &meta, root);
+        assert_eq!(links.len(), 1);
+        assert_eq!(links[0]["id"], "route_get_api_config");
+        assert_eq!(links[0]["sourceFile"], "policies/daemon-api.cedar");
+        assert!(
+            links[0].get("sourceMissing").is_none(),
+            "existing file must omit sourceMissing: {}",
+            links[0]
+        );
+        assert_eq!(links[0]["enforcement"], "none");
+        assert_eq!(links[0]["linkKind"], "inferred");
+        assert_eq!(links[0]["method"], "GET");
+        assert_eq!(links[0]["path"], "/config");
+        assert!(
+            !links[0]["id"].as_str().unwrap_or_default().contains("urn:"),
+            "id must not be a URN"
+        );
+    }
+
+    #[test]
+    fn security_boundaries_links_source_missing_when_relative_absent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = camino::Utf8Path::from_path(tmp.path()).expect("utf8");
+        let mut meta = BTreeMap::new();
+        meta.insert(
+            "urn:ledgerful:policy:p1".to_string(),
+            super::PolicyMeta {
+                source_file: Some("policies/missing.cedar".to_string()),
+                effect: Some("permit".to_string()),
+            },
+        );
+        let edges = vec![serde_json::json!({
+            "policy_id": "urn:ledgerful:policy:p1",
+            "policy_label": "route_get_api_status",
+            "relation": "protected_by",
+            "target_id": "urn:ledgerful:endpoint:GET:/status",
+            "target_label": "GET /status",
+            "target_category": "endpoint",
+        })];
+        let links = super::security_boundary_links(&edges, &meta, root);
+        assert_eq!(links[0]["sourceFile"], "policies/missing.cedar");
+        assert_eq!(links[0]["sourceMissing"], true);
+    }
+
+    #[test]
+    fn security_boundaries_links_omit_absolute_source_file() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = camino::Utf8Path::from_path(tmp.path()).expect("utf8");
+        let mut meta = BTreeMap::new();
+        meta.insert(
+            "urn:ledgerful:policy:p1".to_string(),
+            super::PolicyMeta {
+                source_file: Some(r"C:\dev\ledgerful\policies\x.cedar".to_string()),
+                effect: Some("permit".to_string()),
+            },
+        );
+        let edges = vec![serde_json::json!({
+            "policy_id": "urn:ledgerful:policy:p1",
+            "policy_label": "route_get_api_ledger",
+            "relation": "protected_by",
+            "target_id": "urn:ledgerful:endpoint:GET:/ledger",
+            "target_label": "GET /ledger",
+            "target_category": "endpoint",
+        })];
+        let links = super::security_boundary_links(&edges, &meta, root);
+        assert!(links[0].get("sourceFile").is_none(), "{}", links[0]);
+        assert!(links[0].get("sourceMissing").is_none(), "{}", links[0]);
+    }
+
+    #[test]
+    fn security_boundaries_unparseable_endpoint_omits_method_path() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = camino::Utf8Path::from_path(tmp.path()).expect("utf8");
+        let meta = BTreeMap::new();
+        let edges = vec![serde_json::json!({
+            "policy_id": "urn:p",
+            "policy_label": "route_odd",
+            "relation": "protected_by",
+            "target_id": "not-an-endpoint-urn",
+            "target_label": "nopath",
+            "target_category": "endpoint",
+        })];
+        let links = super::security_boundary_links(&edges, &meta, root);
+        assert_eq!(links[0]["id"], "route_odd");
+        assert!(links[0].get("method").is_none(), "{}", links[0]);
+        assert!(links[0].get("path").is_none(), "{}", links[0]);
+    }
+
+    #[test]
+    fn security_boundaries_links_sort_uses_target_id_tiebreak() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let root = camino::Utf8Path::from_path(tmp.path()).expect("utf8");
+        let meta = BTreeMap::new();
+        let edges = vec![
+            serde_json::json!({
+                "policy_id": "urn:b",
+                "policy_label": "same",
+                "relation": "protected_by",
+                "target_id": "urn:ledgerful:endpoint:GET:/z",
+                "target_label": "GET /dup",
+                "target_category": "endpoint",
+            }),
+            serde_json::json!({
+                "policy_id": "urn:a",
+                "policy_label": "same",
+                "relation": "protected_by",
+                "target_id": "urn:ledgerful:endpoint:GET:/a",
+                "target_label": "GET /dup",
+                "target_category": "endpoint",
+            }),
+        ];
+        let links = super::security_boundary_links(&edges, &meta, root);
+        assert_eq!(links[0]["path"], "/a");
+        assert_eq!(links[1]["path"], "/z");
+    }
+
+    #[test]
+    fn security_boundaries_json_key_order_and_result_count() {
+        let coverage = SecurityCoverage {
+            policies: 8,
+            linked_endpoints: 0,
+            indexed_endpoints: 12,
+            limitation: COVERAGE_LIMITATION.to_string(),
+        };
+        let counts = BTreeMap::from([("policy".to_string(), 8usize)]);
+        let auth = vec![serde_json::json!({"id": "urn:p", "label": "p", "category": "policy"})];
+        let v =
+            super::boundaries_cli_json(&counts, &auth, &[], &[], &coverage, None).expect("json");
+        let obj = v.as_object().expect("object");
+        let keys: Vec<&str> = obj.keys().map(String::as_str).collect();
+        assert_eq!(keys.first().copied(), Some("schemaVersion"));
+        let links_i = keys.iter().position(|k| *k == "links").expect("links");
+        let meta_i = keys.iter().position(|k| *k == "meta").expect("meta");
+        assert!(links_i < meta_i, "links before meta: {keys:?}");
+        assert_eq!(v["schemaVersion"], 1);
+        assert_eq!(v["kind"], "securityBoundaries");
+        assert_eq!(v["resultCount"], 0);
+        assert_eq!(v["freshness"]["status"], "available");
+        assert_eq!(v["freshness"]["source"], "cozoGraph");
+        assert!(v.get("emptyReason").is_none());
     }
 }
