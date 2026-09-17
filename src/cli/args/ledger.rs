@@ -430,15 +430,15 @@ pub enum LedgerCommands {
         #[arg(long)]
         yes: bool,
     },
-    /// Garbage collect orphaned or stale ledger entries
+    /// Garbage collect stale PENDING ledger entries
     Gc {
-        /// Remove PENDING transactions older than TTL
+        /// Remove PENDING transactions older than TTL (same selector as --orphans)
         #[arg(long)]
         stale: bool,
-        /// Remove transactions with no corresponding git commit
+        /// Remove PENDING transactions older than TTL (same selector as --stale)
         #[arg(long)]
         orphans: bool,
-        /// Time-to-live for PENDING transactions in hours (used with --stale)
+        /// Time-to-live for PENDING transactions in hours (used with --stale and --orphans)
         #[arg(long, default_value_t = 72)]
         ttl_hours: u64,
         /// Force removal without confirmation

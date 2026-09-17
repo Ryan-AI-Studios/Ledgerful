@@ -33,6 +33,16 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Ledger GC preview selections (0372):**
+  `ledger gc --stale --orphans --dry-run`
+  prints every requested class (empty
+  included) plus Protected and an
+  unconditional no-write footer. `--orphans`
+  is TTL PENDING (same selector as
+  `--stale`), not a git-commit scan.
+  Preview never writes. Combined `--force`
+  dedupes the shared candidate set.
+
 - **Index repair preview JSON (0371):**
   `index --repair-metadata --dry-run --json`
   emits one pretty `schemaVersion` 1

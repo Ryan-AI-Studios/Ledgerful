@@ -142,6 +142,63 @@ fn gc_protected_sidecar_tx(
     Some((pending.tx_id, reason))
 }
 
+/// Locked `--dry-run` preview. `stale` / `orphans` `None` omits that class.
+/// Class `{n}` is the candidate count (protected already subtracted).
+/// Protected is always printed (empty → `(none)`). Footer is unconditional.
+pub(crate) fn format_gc_preview(
+    stale: Option<&[String]>,
+    orphans: Option<&[String]>,
+    protected: &[(String, &'static str)],
+    ttl_hours: u64,
+) -> String {
+    let mut out = String::new();
+    if let Some(ids) = stale {
+        let mut sorted = ids.to_vec();
+        sorted.sort();
+        out.push_str(&format!(
+            "Stale PENDING (older than {ttl_hours} hours): {}\n",
+            sorted.len()
+        ));
+        push_preview_ids(&mut out, &sorted);
+    }
+    if let Some(ids) = orphans {
+        let mut sorted = ids.to_vec();
+        sorted.sort();
+        out.push_str(&format!(
+            "Orphans (TTL PENDING scan; same selector as --stale): {}\n",
+            sorted.len()
+        ));
+        push_preview_ids(&mut out, &sorted);
+    }
+    let mut prot = protected.to_vec();
+    prot.sort_by(|a, b| a.0.cmp(&b.0));
+    out.push_str(&format!(
+        "Protected (recover-orphan; not candidates): {}\n",
+        prot.len()
+    ));
+    if prot.is_empty() {
+        out.push_str("  (none)\n");
+    } else {
+        for (id, reason) in prot {
+            out.push_str(&format!("  {id} ({reason})\n"));
+        }
+    }
+    out.push_str("Dry-run completed. No transactions were modified.\n");
+    out
+}
+
+fn push_preview_ids(out: &mut String, ids: &[String]) {
+    if ids.is_empty() {
+        out.push_str("  (none)\n");
+    } else {
+        for id in ids {
+            out.push_str("  ");
+            out.push_str(id);
+            out.push('\n');
+        }
+    }
+}
+
 fn refuse_gc_protected(
     id: &str,
     protected: &Option<(String, &'static str)>,
@@ -176,7 +233,7 @@ pub fn execute_ledger_gc(
     if !stale && !orphans {
         println!(
             "{}",
-            "Usage: ledgerful ledger gc --stale [--ttl-hours <N>] | --orphans [--force]"
+            "Usage: ledgerful ledger gc [--stale] [--orphans] [--ttl-hours <N>] [--force] [--dry-run]"
                 .if_supports_color(Stream::Stdout, |s| s.cyan())
         );
         println!();
@@ -185,7 +242,7 @@ pub fn execute_ledger_gc(
             "--stale".if_supports_color(Stream::Stdout, |s| s.bold())
         );
         println!(
-            "  {}  Remove transactions with no corresponding git commit",
+            "  {}  Remove PENDING transactions older than TTL (same selector as --stale)",
             "--orphans".if_supports_color(Stream::Stdout, |s| s.bold())
         );
         return Ok(());
@@ -198,220 +255,130 @@ pub fn execute_ledger_gc(
 
     let mut tx_mgr = TransactionManager::new(&mut storage, layout.root.into(), config);
 
-    if stale {
-        let stale_ids = {
-            let db = LedgerDb::new(tx_mgr.get_connection());
-            let ttl_days = ttl_hours.div_ceil(24);
-            db.get_stale_pending_transactions(ttl_days)
-                .map_err(|e| miette::miette!("Failed to scan for stale transactions: {}", e))?
-        };
+    let ttl_days = ttl_hours.div_ceil(24);
+    let mut scanned = {
+        let db = LedgerDb::new(tx_mgr.get_connection());
+        db.get_stale_pending_transactions(ttl_days)
+            .map_err(|e| miette::miette!("Failed to scan for stale transactions: {}", e))?
+    };
+    scanned.sort();
 
-        if stale_ids.is_empty() {
-            println!("No stale PENDING transactions found.");
-            return Ok(());
+    let mut protected_hits: Vec<(String, &'static str)> = Vec::new();
+    let mut candidates: Vec<String> = Vec::new();
+    for id in scanned {
+        if let Some((prot_id, reason)) = &protected
+            && &id == prot_id
+        {
+            protected_hits.push((id, *reason));
+            continue;
         }
+        candidates.push(id);
+    }
 
-        println!(
-            "Found {} stale PENDING transaction(s) (older than {} hours).",
-            stale_ids.len(),
-            ttl_hours
+    if dry_run {
+        for (id, _) in &protected_hits {
+            let _ = refuse_gc_protected(id, &protected, true);
+        }
+        print!(
+            "{}",
+            format_gc_preview(
+                stale.then_some(candidates.as_slice()),
+                orphans.then_some(candidates.as_slice()),
+                &protected_hits,
+                ttl_hours,
+            )
         );
+        return Ok(());
+    }
 
-        if !force && !dry_run {
-            println!(
-                "{} This will mark them as ROLLED_BACK in the ledger history.",
-                "WARNING"
-                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
-            );
-            if !crate::util::term::is_interactive() {
-                return Err(miette::miette!(
-                    "Use --force to run GC in non-interactive shells."
-                ));
-            }
+    for (id, _) in &protected_hits {
+        let _ = refuse_gc_protected(id, &protected, false);
+    }
 
-            print!("Proceed with cleanup? (y/N): ");
-            use std::io::Write;
-            std::io::stdout().flush().into_diagnostic()?;
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input).into_diagnostic()?;
-            if !input.trim().eq_ignore_ascii_case("y") {
-                println!("Aborted.");
-                return Ok(());
-            }
-        }
-
-        let mut count = 0;
-        let mut failures = 0;
-        let mut refused = 0;
-        for id in stale_ids {
-            if refuse_gc_protected(&id, &protected, dry_run) {
-                refused += 1;
-                continue;
-            }
-            if dry_run {
-                println!("Would rollback PENDING transaction {}", id);
-                count += 1;
-                continue;
-            }
-            if let Err(e) = tx_mgr.rollback_change(
-                id.clone(),
-                "Garbage collection of stale PENDING transaction".to_string(),
-            ) {
-                tracing::warn!("Failed to rollback tx {}: {}", id, e);
-                failures += 1;
-            } else {
-                count += 1;
-            }
-        }
-
-        if count > 0 {
-            if dry_run {
-                println!(
-                    "{} Dry-run completed. No transactions were modified. ({} stale transaction(s) would have been cleaned up)",
-                    "DONE".if_supports_color(Stream::Stdout, |s| s
-                        .style(Style::new().green().bold())),
-                    count
-                );
-            } else {
-                println!(
-                    "{} Successfully cleaned up {} stale transaction(s).",
-                    "DONE".if_supports_color(Stream::Stdout, |s| s
-                        .style(Style::new().green().bold())),
-                    count
-                );
-            }
-        }
-
-        if refused > 0 && count == 0 && failures == 0 {
+    if candidates.is_empty() {
+        if !protected_hits.is_empty() {
             return Err(miette::miette!(
                 "GC refused to clean {} promote-fail/HEAD-matching orphan(s). Use: ledgerful ledger recover-orphan --promote  OR  --abandon --reason \"...\"",
-                refused
+                protected_hits.len()
+            ));
+        }
+        if stale && !orphans {
+            println!("No stale PENDING transactions found.");
+        } else {
+            println!("No PENDING transactions older than TTL found.");
+        }
+        return Ok(());
+    }
+
+    let n = candidates.len();
+    if stale && !orphans {
+        println!("Found {n} stale PENDING transaction(s) (older than {ttl_hours} hours).");
+    } else {
+        println!("Found {n} PENDING transaction(s) (older than {ttl_hours} hours).");
+    }
+
+    if !force {
+        println!(
+            "{} This will mark them as ROLLED_BACK in the ledger history.",
+            "WARNING".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
+        );
+        if !crate::util::term::is_interactive() {
+            return Err(miette::miette!(
+                "Use --force to run GC in non-interactive shells."
             ));
         }
 
-        if failures > 0 {
-            if count == 0 {
-                return Err(miette::miette!(
-                    "GC failed to clean up any of the {} stale transaction(s). Check logs.",
-                    failures
-                ));
-            } else {
-                println!(
-                    "{} Failed to clean up {} transaction(s). Check logs for details.",
-                    "WARN:".if_supports_color(Stream::Stdout, |s| s
-                        .style(Style::new().yellow().bold())),
-                    failures
-                );
-            }
+        print!("Proceed with cleanup? (y/N): ");
+        use std::io::Write;
+        std::io::stdout().flush().into_diagnostic()?;
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).into_diagnostic()?;
+        if !input.trim().eq_ignore_ascii_case("y") {
+            println!("Aborted.");
+            return Ok(());
         }
     }
 
-    if orphans {
-        let stale_ids = {
-            let db = LedgerDb::new(tx_mgr.get_connection());
-            let ttl_days = ttl_hours.div_ceil(24);
-            db.get_stale_pending_transactions(ttl_days)
-                .map_err(|e| miette::miette!("Failed to scan for orphans: {}", e))?
-        };
-
-        if stale_ids.is_empty() {
-            println!("No orphaned transactions found.");
-            return Ok(());
+    let rollback_reason = if stale && !orphans {
+        "Garbage collection of stale PENDING transaction"
+    } else {
+        "Garbage collection of PENDING transaction"
+    };
+    let mut count = 0;
+    let mut failures = 0;
+    for id in candidates {
+        if let Err(e) = tx_mgr.rollback_change(id.clone(), rollback_reason.to_string()) {
+            tracing::warn!("Failed to rollback tx {}: {}", id, e);
+            failures += 1;
+        } else {
+            count += 1;
         }
+    }
 
-        println!(
-            "Found {} orphaned PENDING transaction(s) (older than {} hours).",
-            stale_ids.len(),
-            ttl_hours
-        );
-
-        if !force && !dry_run {
+    if count > 0 {
+        if stale && !orphans {
             println!(
-                "{} This will mark them as ROLLED_BACK in the ledger history.",
-                "WARNING"
-                    .if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
+                "{} Successfully cleaned up {count} stale transaction(s).",
+                "DONE".if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
             );
-            if !crate::util::term::is_interactive() {
-                return Err(miette::miette!(
-                    "Use --force to run GC in non-interactive shells."
-                ));
-            }
-
-            print!("Proceed with cleanup? (y/N): ");
-            use std::io::Write;
-            std::io::stdout().flush().into_diagnostic()?;
-            let mut input = String::new();
-            std::io::stdin().read_line(&mut input).into_diagnostic()?;
-            if !input.trim().eq_ignore_ascii_case("y") {
-                println!("Aborted.");
-                return Ok(());
-            }
+        } else {
+            println!(
+                "{} Successfully cleaned up {count} transaction(s).",
+                "DONE".if_supports_color(Stream::Stdout, |s| s.style(Style::new().green().bold()))
+            );
         }
+    }
 
-        let mut count = 0;
-        let mut failures = 0;
-        let mut refused = 0;
-        for id in stale_ids {
-            if refuse_gc_protected(&id, &protected, dry_run) {
-                refused += 1;
-                continue;
-            }
-            if dry_run {
-                println!("Would rollback PENDING transaction {}", id);
-                count += 1;
-                continue;
-            }
-            if let Err(e) = tx_mgr.rollback_change(
-                id.clone(),
-                "Garbage collection of orphaned PENDING transaction".to_string(),
-            ) {
-                tracing::warn!("Failed to rollback tx {}: {}", id, e);
-                failures += 1;
-            } else {
-                count += 1;
-            }
-        }
-
-        if count > 0 {
-            if dry_run {
-                println!(
-                    "{} Dry-run completed. No transactions were modified. ({} orphaned transaction(s) would have been cleaned up)",
-                    "DONE".if_supports_color(Stream::Stdout, |s| s
-                        .style(Style::new().green().bold())),
-                    count
-                );
-            } else {
-                println!(
-                    "{} Successfully cleaned up {} orphaned transaction(s).",
-                    "DONE".if_supports_color(Stream::Stdout, |s| s
-                        .style(Style::new().green().bold())),
-                    count
-                );
-            }
-        }
-
-        if refused > 0 && count == 0 && failures == 0 {
+    if failures > 0 {
+        if count == 0 {
             return Err(miette::miette!(
-                "GC refused to clean {} promote-fail/HEAD-matching orphan(s). Use: ledgerful ledger recover-orphan --promote  OR  --abandon --reason \"...\"",
-                refused
+                "GC failed to clean up any of the {failures} transaction(s). Check logs."
             ));
         }
-
-        if failures > 0 {
-            if count == 0 {
-                return Err(miette::miette!(
-                    "GC failed to clean up any of the {} orphaned transaction(s). Check logs.",
-                    failures
-                ));
-            } else {
-                println!(
-                    "{} Failed to clean up {} transaction(s). Check logs for details.",
-                    "WARN:".if_supports_color(Stream::Stdout, |s| s
-                        .style(Style::new().yellow().bold())),
-                    failures
-                );
-            }
-        }
+        println!(
+            "{} Failed to clean up {failures} transaction(s). Check logs for details.",
+            "WARN:".if_supports_color(Stream::Stdout, |s| s.style(Style::new().yellow().bold()))
+        );
     }
 
     Ok(())
@@ -514,10 +481,95 @@ pub fn execute_ledger_hook_repair(force: bool) -> Result<()> {
 }
 
 #[cfg(test)]
+#[allow(non_snake_case)]
 mod tests {
     use super::*;
     use camino::Utf8Path;
     use tempfile::tempdir;
+
+    #[test]
+    fn format_gc_preview__empty_stale_still_emits_orphans() {
+        let out = format_gc_preview(Some(&[]), Some(&["tx-1".to_string()]), &[], 72);
+        assert!(
+            out.contains("Stale PENDING (older than 72 hours): 0"),
+            "{out}"
+        );
+        assert!(out.contains("  (none)"), "{out}");
+        assert!(
+            out.contains("Orphans (TTL PENDING scan; same selector as --stale): 1"),
+            "{out}"
+        );
+        assert!(out.contains("  tx-1"), "{out}");
+        assert!(
+            out.contains("Protected (recover-orphan; not candidates): 0"),
+            "{out}"
+        );
+        assert!(
+            out.contains("Dry-run completed. No transactions were modified."),
+            "{out}"
+        );
+        assert!(!out.contains("no corresponding git commit"), "{out}");
+    }
+
+    #[test]
+    fn format_gc_preview__sorts_ids_lexically() {
+        let ids = ["tx-b".to_string(), "tx-a".to_string()];
+        let out = format_gc_preview(Some(&ids), None, &[], 1);
+        let a = out.find("  tx-a").expect("tx-a");
+        let b = out.find("  tx-b").expect("tx-b");
+        assert!(a < b, "{out}");
+        assert!(
+            !out.contains("Orphans (TTL PENDING scan"),
+            "orphans omitted when not requested: {out}"
+        );
+    }
+
+    #[test]
+    fn format_gc_preview__protected_excluded_from_class_count() {
+        let candidates = ["tx-keep".to_string()];
+        let protected = [("tx-prot".to_string(), "promote_failed")];
+        let out = format_gc_preview(Some(&candidates), Some(&candidates), &protected, 24);
+        assert!(
+            out.contains("Stale PENDING (older than 24 hours): 1"),
+            "{out}"
+        );
+        assert!(out.contains("  tx-keep"), "{out}");
+        assert!(
+            out.contains("Protected (recover-orphan; not candidates): 1"),
+            "{out}"
+        );
+        assert!(out.contains("  tx-prot (promote_failed)"), "{out}");
+        assert!(!out.contains("  tx-prot\n"), "{out}");
+    }
+
+    #[test]
+    fn format_gc_preview__both_empty_prints_footer_and_protected_none() {
+        let out = format_gc_preview(Some(&[]), Some(&[]), &[], 72);
+        assert!(
+            out.contains("Stale PENDING (older than 72 hours): 0"),
+            "{out}"
+        );
+        assert!(
+            out.contains("Orphans (TTL PENDING scan; same selector as --stale): 0"),
+            "{out}"
+        );
+        assert!(
+            out.contains("Protected (recover-orphan; not candidates): 0\n  (none)\n"),
+            "{out}"
+        );
+        assert!(
+            out.ends_with("Dry-run completed. No transactions were modified.\n"),
+            "{out}"
+        );
+    }
+
+    #[test]
+    fn format_gc_preview__quotes_live_head_matching_token() {
+        let protected = [("tx-1".to_string(), "HEAD-matching orphan")];
+        let out = format_gc_preview(None, Some(&[]), &protected, 72);
+        assert!(out.contains("  tx-1 (HEAD-matching orphan)"), "{out}");
+        assert!(!out.contains("Stale PENDING"), "{out}");
+    }
 
     struct CwdGuard {
         original: std::path::PathBuf,
