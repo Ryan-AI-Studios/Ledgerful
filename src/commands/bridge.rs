@@ -21,7 +21,7 @@ pub enum BridgeCommands {
         /// Include ledger entries
         #[arg(long)]
         ledger: bool,
-        /// Path prefixes for `--hotspots` (comma-separated; slash-normalized)
+        /// Path prefixes for `--hotspots` (comma-separated; slash-normalized; trailing `/` scopes a directory)
         #[arg(long, requires = "hotspots")]
         scope: Option<String>,
         /// Export structured MADR fields
@@ -78,17 +78,7 @@ pub fn execute(command: BridgeCommands) -> Result<()> {
 }
 
 fn normalize_export_scope(scope: Option<String>) -> Option<Vec<String>> {
-    let slash = char::from_u32(92).expect("backslash");
-    let prefixes: Vec<String> = scope?
-        .split(',')
-        .map(|p| p.trim().replace(slash, "/"))
-        .filter(|p| !p.is_empty())
-        .collect();
-    if prefixes.is_empty() {
-        None
-    } else {
-        Some(prefixes)
-    }
+    crate::bridge::export::normalize_scope_prefixes(scope.map(|s| vec![s]))
 }
 
 #[cfg(test)]

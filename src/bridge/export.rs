@@ -63,6 +63,31 @@ pub(crate) enum ExportDest {
     File(String),
 }
 
+/// Slash-normalize scope prefixes (`trim`, `\\` → `/`). Also splits
+/// leftover comma tokens so library callers cannot skip clap-layer
+/// normalize. Empty tokens drop; empty result is `None`.
+pub(crate) fn normalize_scope_prefixes(scope: Option<Vec<String>>) -> Option<Vec<String>> {
+    let prefixes: Vec<String> = scope?
+        .into_iter()
+        .flat_map(|raw| {
+            raw.split(',')
+                .map(|p| p.trim().replace('\\', "/"))
+                .filter(|p| !p.is_empty())
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    if prefixes.is_empty() {
+        None
+    } else {
+        Some(prefixes)
+    }
+}
+
+/// Shared machine predicate for `is_machine_output` and dest banners.
+pub(crate) fn export_machine_flags(json: bool, stdout: bool, out: Option<&str>) -> bool {
+    json || stdout || out == Some("-")
+}
+
 pub fn execute_export(args: ExportArgs) -> Result<()> {
     execute_export_with(
         args,
@@ -90,6 +115,9 @@ where
     ) -> Result<HotspotCalculation>,
     L: FnOnce(&StorageManager) -> Result<Vec<LedgerEntry>>,
 {
+    let mut args = args;
+    args.scope = normalize_scope_prefixes(args.scope);
+
     if args.stdout && args.out_path.as_ref().is_some_and(|p| p != "-") {
         return Err(miette!(
             "bridge export: --stdout cannot be combined with --out <path>; \
@@ -320,7 +348,7 @@ where
 }
 
 pub(crate) fn is_export_machine(args: &ExportArgs) -> bool {
-    args.json || args.stdout || args.out_path.as_deref() == Some("-")
+    export_machine_flags(args.json, args.stdout, args.out_path.as_deref())
 }
 
 pub(crate) fn resolve_export_dest(args: &ExportArgs, default_path: String) -> Result<ExportDest> {
@@ -705,5 +733,122 @@ mod tests {
         assert_eq!(madr["emptyReason"], "notWired");
         assert_eq!(madr["next"], "ledgerful ledger adr export");
         assert_eq!(madr["included"], false);
+    }
+
+    #[test]
+    fn normalize_scope_prefixes__backslash_comma_and_empty() {
+        assert_eq!(
+            normalize_scope_prefixes(Some(vec![" src\\bridge ".to_string(), "docs".to_string()])),
+            Some(vec!["src/bridge".to_string(), "docs".to_string()])
+        );
+        assert_eq!(
+            normalize_scope_prefixes(Some(vec!["src/,docs/".to_string()])),
+            Some(vec!["src/".to_string(), "docs/".to_string()])
+        );
+        assert_eq!(
+            normalize_scope_prefixes(Some(vec!["  ".to_string(), ",".to_string()])),
+            None
+        );
+        assert_eq!(normalize_scope_prefixes(None), None);
+    }
+
+    fn commit_file(dir: &std::path::Path, rel: &str, body: &str) {
+        if let Some(parent) = dir.join(rel).parent() {
+            fs::create_dir_all(parent).expect("parent");
+        }
+        fs::write(dir.join(rel), body).expect("write");
+        assert!(
+            Command::new("git")
+                .args(["add", "-A"])
+                .current_dir(dir)
+                .status()
+                .expect("git add")
+                .success()
+        );
+        assert!(
+            Command::new("git")
+                .args([
+                    "-c",
+                    "user.name=Test",
+                    "-c",
+                    "user.email=test@example.com",
+                    "commit",
+                    "-m",
+                    rel,
+                ])
+                .current_dir(dir)
+                .status()
+                .expect("git commit")
+                .success()
+        );
+    }
+
+    #[test]
+    #[serial(cwd)]
+    fn execute_export__hotspots_populated__count_and_metadata() {
+        let (dir, _cwd) = init_git_export_fixture();
+        commit_file(dir.path(), "src/lib.rs", "fn lib() {}\n");
+        let out = dir.path().join("snap.json");
+        let mut a = args();
+        a.hotspots = true;
+        a.ledger = true;
+        a.json = true;
+        a.out_path = Some(out.to_string_lossy().to_string());
+        execute_export(a).expect("export");
+        let raw = fs::read_to_string(&out).expect("read");
+        let v: serde_json::Value = serde_json::from_str(&raw).expect("json");
+        let datasets = v["payload"]["datasets"].as_array().expect("datasets");
+        let hotspots = datasets
+            .iter()
+            .find(|d| d["name"] == "hotspots")
+            .expect("hotspots row");
+        let count = hotspots["count"].as_u64().expect("count");
+        assert!(count > 0, "populated walk must emit count > 0: {hotspots}");
+        assert!(
+            hotspots["commitsWalked"].as_u64().expect("walked") > 0,
+            "{hotspots}"
+        );
+        assert!(hotspots.get("emptyReason").is_none() || hotspots["emptyReason"].is_null());
+        assert_eq!(
+            v["payload"]["metadata"]["hotspot_count"],
+            count.to_string(),
+            "metadata.hotspot_count must equal dataset count"
+        );
+        let ledger = datasets
+            .iter()
+            .find(|d| d["name"] == "ledger")
+            .expect("ledger row");
+        assert_eq!(
+            v["payload"]["metadata"]["ledger_count"],
+            ledger["count"].as_u64().expect("ledger count").to_string()
+        );
+        let payload_len = v["payload"]["hotspots"]
+            .as_array()
+            .map(|a| a.len())
+            .unwrap_or(0);
+        assert_eq!(payload_len as u64, count);
+    }
+
+    #[test]
+    #[serial(cwd)]
+    fn execute_export__hotspots_empty_history__no_matches() {
+        let (dir, _cwd) = init_git_export_fixture();
+        let out = dir.path().join("snap.json");
+        let mut a = args();
+        a.hotspots = true;
+        a.json = true;
+        a.out_path = Some(out.to_string_lossy().to_string());
+        execute_export(a).expect("export");
+        let datasets = snapshot_datasets(&out);
+        let hotspots = datasets
+            .iter()
+            .find(|d| d["name"] == "hotspots")
+            .expect("hotspots row");
+        assert_eq!(hotspots["emptyReason"], "noMatches");
+        assert_eq!(hotspots["count"], 0);
+        assert_eq!(hotspots["included"], true);
+        let raw = fs::read_to_string(&out).expect("read");
+        let v: serde_json::Value = serde_json::from_str(&raw).expect("json");
+        assert_eq!(v["payload"]["metadata"]["hotspot_count"], "0");
     }
 }

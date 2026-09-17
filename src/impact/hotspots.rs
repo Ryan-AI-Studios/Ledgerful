@@ -110,7 +110,8 @@ pub struct HotspotQuery {
     pub decay_half_life: usize,
     pub dir_filter: Option<String>,
     /// Additive multi-prefix crawl filter (0367 `bridge export --scope`).
-    /// When non-empty, a path matches if it `starts_with` **any** prefix.
+    /// When non-empty, a path matches if it `starts_with` **any** prefix
+    /// and `dir_filter` is ignored (do not combine).
     /// Existing `dir_filter` callers stay keep-green when this is empty.
     pub dir_filters: Vec<String>,
     pub lang_filter: Option<String>,

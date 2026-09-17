@@ -104,7 +104,7 @@ impl Commands {
             Commands::Bridge { subcommand } => match subcommand {
                 BridgeCommands::Export {
                     json, stdout, out, ..
-                } => *json || *stdout || out.as_deref() == Some("-"),
+                } => crate::bridge::export::export_machine_flags(*json, *stdout, out.as_deref()),
                 BridgeCommands::Import { .. } => false,
                 BridgeCommands::Query { json, .. } => *json,
             },

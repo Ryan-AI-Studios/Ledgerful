@@ -53,6 +53,10 @@ fn test_bridge_export_subcommand_exists() {
         "scope help should mention prefixes/comma: {stdout}"
     );
     assert!(
+        stdout.contains("trailing") || stdout.contains("directory"),
+        "scope help should mention trailing / for directory scoping: {stdout}"
+    );
+    assert!(
         !stdout.contains("as BridgeRecord NDJSON")
             || stdout.contains("NDJSON-compatible")
             || stdout.contains("JSON snapshot"),
@@ -308,4 +312,249 @@ fn bridge_export_compact_stdout__import_round_trip() {
         .output()
         .expect("import");
     assert!(import.status.success(), "import round-trip: {:?}", import);
+}
+
+fn git_commit_files(dir: &std::path::Path, files: &[(&str, &str)], message: &str) {
+    for (rel, body) in files {
+        let path = dir.join(rel);
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).unwrap();
+        }
+        fs::write(&path, body).unwrap();
+    }
+    assert!(
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args([
+                "-c",
+                "user.name=Test",
+                "-c",
+                "user.email=test@example.com",
+                "commit",
+                "-m",
+                message,
+            ])
+            .current_dir(dir)
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+}
+
+#[test]
+fn bridge_export_hotspots_populated__count_and_metadata() {
+    let dir = tempdir().unwrap();
+    git_init_commit(dir.path());
+    git_commit_files(dir.path(), &[("src/lib.rs", "fn lib() {}\n")], "files");
+    let init = Command::new(bin())
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .expect("init");
+    assert!(init.status.success(), "init: {:?}", init);
+    let out_path = dir.path().join("export.json");
+    let output = Command::new(bin())
+        .args([
+            "bridge",
+            "export",
+            "--hotspots",
+            "--ledger",
+            "--json",
+            "--out",
+            out_path.to_str().unwrap(),
+        ])
+        .current_dir(dir.path())
+        .output()
+        .expect("export");
+    assert!(output.status.success(), "export: {:?}", output);
+    let v: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).expect("json");
+    let datasets = v["payload"]["datasets"].as_array().expect("datasets");
+    let hotspots = datasets
+        .iter()
+        .find(|d| d["name"] == "hotspots")
+        .expect("hotspots");
+    let count = hotspots["count"].as_u64().expect("count");
+    assert!(count > 0, "{hotspots}");
+    assert!(
+        hotspots["commitsWalked"].as_u64().unwrap_or(0) > 0,
+        "{hotspots}"
+    );
+    assert!(hotspots.get("emptyReason").is_none() || hotspots["emptyReason"].is_null());
+    assert_eq!(v["payload"]["metadata"]["hotspot_count"], count.to_string());
+    let ledger = datasets
+        .iter()
+        .find(|d| d["name"] == "ledger")
+        .expect("ledger");
+    assert_eq!(
+        v["payload"]["metadata"]["ledger_count"],
+        ledger["count"].as_u64().expect("ledger count").to_string()
+    );
+}
+
+#[test]
+fn bridge_export_human_dataset_line__prefers_empty_reason() {
+    let dir = tempdir().unwrap();
+    git_init_commit(dir.path());
+    let init = Command::new(bin())
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .expect("init");
+    assert!(init.status.success(), "init: {:?}", init);
+    let out_path = dir.path().join("export.json");
+    let output = Command::new(bin())
+        .args([
+            "bridge",
+            "export",
+            "--hotspots",
+            "--out",
+            out_path.to_str().unwrap(),
+        ])
+        .current_dir(dir.path())
+        .output()
+        .expect("export");
+    assert!(output.status.success(), "export: {:?}", output);
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("Dataset: hotspots 0 (noMatches)"),
+        "human Dataset line must prefer emptyReason over source: {stdout}"
+    );
+    assert!(
+        !stdout.contains("Dataset: hotspots 0 (live)"),
+        "must not hide noMatches behind source=live: {stdout}"
+    );
+}
+
+#[test]
+fn bridge_export_hotspots_empty__no_matches() {
+    let dir = tempdir().unwrap();
+    git_init_commit(dir.path());
+    let init = Command::new(bin())
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .expect("init");
+    assert!(init.status.success(), "init: {:?}", init);
+    let out_path = dir.path().join("export.json");
+    let output = Command::new(bin())
+        .args([
+            "bridge",
+            "export",
+            "--hotspots",
+            "--json",
+            "--out",
+            out_path.to_str().unwrap(),
+        ])
+        .current_dir(dir.path())
+        .output()
+        .expect("export");
+    assert!(output.status.success(), "export: {:?}", output);
+    let v: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).expect("json");
+    let datasets = v["payload"]["datasets"].as_array().expect("datasets");
+    let hotspots = datasets
+        .iter()
+        .find(|d| d["name"] == "hotspots")
+        .expect("hotspots");
+    assert_eq!(hotspots["emptyReason"], "noMatches");
+    assert_eq!(hotspots["count"], 0);
+    assert_eq!(v["payload"]["metadata"]["hotspot_count"], "0");
+}
+
+#[test]
+fn bridge_export_scope_multi_prefix__cli_reaches_dir_filters() {
+    let dir = tempdir().unwrap();
+    git_init_commit(dir.path());
+    git_commit_files(
+        dir.path(),
+        &[
+            ("src/lib.rs", "fn src() {}\n"),
+            ("docs/note.md", "# note\n"),
+            ("tests/noise.rs", "fn noise() {}\n"),
+        ],
+        "scoped",
+    );
+    let init = Command::new(bin())
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .expect("init");
+    assert!(init.status.success(), "init: {:?}", init);
+    let out_path = dir.path().join("export.json");
+    let output = Command::new(bin())
+        .args([
+            "bridge",
+            "export",
+            "--hotspots",
+            "--scope",
+            "src/,docs/",
+            "--json",
+            "--out",
+            out_path.to_str().unwrap(),
+        ])
+        .current_dir(dir.path())
+        .output()
+        .expect("export");
+    assert!(output.status.success(), "export: {:?}", output);
+    let v: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&out_path).unwrap()).expect("json");
+    let datasets = v["payload"]["datasets"].as_array().expect("datasets");
+    let hotspots = datasets
+        .iter()
+        .find(|d| d["name"] == "hotspots")
+        .expect("hotspots");
+    assert_eq!(hotspots["filter"], "src/,docs/");
+    let rows = v["payload"]["hotspots"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default();
+    let paths: Vec<String> = rows
+        .iter()
+        .map(|h| h["path"].as_str().unwrap_or("").replace('\\', "/"))
+        .collect();
+    assert!(
+        paths
+            .iter()
+            .all(|p| p.starts_with("src/") || p.starts_with("docs/")),
+        "scoped export must not emit tests/: {paths:?}"
+    );
+    assert!(
+        paths.iter().any(|p| p.starts_with("src/")) || paths.iter().any(|p| p.starts_with("docs/")),
+        "scoped files must appear: {paths:?}"
+    );
+}
+
+#[test]
+fn bridge_export_bridge_off__exit_zero() {
+    let dir = tempdir().unwrap();
+    git_init_commit(dir.path());
+    let init = Command::new(bin())
+        .arg("init")
+        .current_dir(dir.path())
+        .output()
+        .expect("init");
+    assert!(init.status.success(), "init: {:?}", init);
+    let output = Command::new(bin())
+        .env("LEDGERFUL_BRIDGE", "0")
+        .args(["bridge", "export", "--hotspots", "--json", "--stdout"])
+        .current_dir(dir.path())
+        .output()
+        .expect("export");
+    assert!(
+        output.status.success(),
+        "export when bridge off must exit 0: {:?}",
+        output
+    );
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("bridge_version"), "{stdout}");
 }
