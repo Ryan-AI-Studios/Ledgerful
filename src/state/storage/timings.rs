@@ -7,6 +7,7 @@
 use miette::{IntoDiagnostic, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 /// One row in `command_timings` (outer or inner span).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -21,6 +22,10 @@ pub struct TimingRow {
     pub ledger_tx_id: Option<String>,
     pub parent_span_id: Option<String>,
     pub span_name: Option<String>,
+    /// Outer rows: JSON `{"shape":"<argv_shape>"}` (flag names only).
+    /// Inner rows (0364+): JSON `{"span_id":"{run_id}:{hex}"}` so parent walks
+    /// can match `parent_span_id` without a schema migration. Historical inner
+    /// rows are NULL and cannot be a parent.
     pub notes: Option<String>,
 }
 
@@ -37,6 +42,263 @@ pub struct TimingQuery {
     pub days: Option<u32>,
     /// Limit result count (applied after ordering by ts_utc DESC).
     pub limit: Option<u32>,
+}
+
+const FLAME_PARENT_WALK_CAP: usize = 16;
+
+/// Parse `{"span_id":"..."}` from an inner-row `notes` value (0364).
+/// Outer `{"shape":...}` JSON is ignored.
+pub fn inner_span_id_from_notes(notes: Option<&str>) -> Option<String> {
+    let raw = notes?.trim();
+    if raw.is_empty() {
+        return None;
+    }
+    let value: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let id = value.get("span_id")?.as_str()?.trim();
+    if id.is_empty() {
+        None
+    } else {
+        Some(id.to_string())
+    }
+}
+
+/// Aggregated inner-span row (`timings --inner` `data[]`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct InnerSpanAgg {
+    pub command: String,
+    pub span_name: String,
+    pub samples: u64,
+    pub total_ms: i64,
+    pub max_ms: i64,
+}
+
+/// Per-command wall-clock coverage (`timings --inner` `coverage[]`).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CommandTimingCoverage {
+    pub command: String,
+    pub outer_ms: i64,
+    pub inner_ms: i64,
+    pub uninstrumented_ms: i64,
+}
+
+/// Folded collapsed-stack body plus additive counts (`timings --flame`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FlameFold {
+    pub collapsed: String,
+    pub unique_stacks: u64,
+    pub total_weight_ms: i64,
+}
+
+fn is_outer_row(row: &TimingRow) -> bool {
+    row.span_name.is_none()
+}
+
+fn span_label(row: &TimingRow) -> String {
+    row.span_name
+        .clone()
+        .unwrap_or_else(|| "<unnamed>".to_string())
+}
+
+fn inner_ids_for_run<'a>(run_rows: impl Iterator<Item = &'a TimingRow>) -> HashSet<String> {
+    run_rows
+        .filter(|row| !is_outer_row(row))
+        .filter_map(|row| inner_span_id_from_notes(row.notes.as_deref()))
+        .collect()
+}
+
+fn is_top_level_inner(row: &TimingRow, run_ids: &HashSet<String>) -> bool {
+    if is_outer_row(row) {
+        return false;
+    }
+    match row.parent_span_id.as_deref() {
+        None | Some("") => true,
+        Some(parent) => !run_ids.contains(parent),
+    }
+}
+
+/// Aggregate inner spans by `(command, span_name)` and coverage by command.
+///
+/// `top` truncates `data[]` only. `coverage[]` lists every command that has
+/// outer rows in `rows` (zero inners → `inner_ms = 0`). Durations are
+/// wall-clock (all `exit_code`s).
+pub fn aggregate_inner_spans(
+    rows: &[TimingRow],
+    top: Option<u32>,
+) -> (Vec<InnerSpanAgg>, Vec<CommandTimingCoverage>) {
+    let mut by_run: HashMap<&str, Vec<&TimingRow>> = HashMap::new();
+    for row in rows {
+        by_run.entry(row.run_id.as_str()).or_default().push(row);
+    }
+    let run_ids: HashMap<&str, HashSet<String>> = by_run
+        .iter()
+        .map(|(run, run_rows)| (*run, inner_ids_for_run(run_rows.iter().copied())))
+        .collect();
+
+    let mut span_agg: BTreeMap<(String, String), (u64, i64, i64)> = BTreeMap::new();
+    let mut outer_ms: BTreeMap<String, i64> = BTreeMap::new();
+    let mut inner_ms: BTreeMap<String, i64> = BTreeMap::new();
+
+    for row in rows {
+        if is_outer_row(row) {
+            *outer_ms.entry(row.command.clone()).or_insert(0) += row.duration_ms;
+            continue;
+        }
+        let name = span_label(row);
+        let entry = span_agg
+            .entry((row.command.clone(), name))
+            .or_insert((0, 0, 0));
+        entry.0 += 1;
+        entry.1 += row.duration_ms;
+        entry.2 = entry.2.max(row.duration_ms);
+        let ids = run_ids.get(row.run_id.as_str());
+        if ids.is_some_and(|set| is_top_level_inner(row, set)) {
+            *inner_ms.entry(row.command.clone()).or_insert(0) += row.duration_ms;
+        }
+    }
+
+    let mut data: Vec<InnerSpanAgg> = span_agg
+        .into_iter()
+        .map(
+            |((command, span_name), (samples, total_ms, max_ms))| InnerSpanAgg {
+                command,
+                span_name,
+                samples,
+                total_ms,
+                max_ms,
+            },
+        )
+        .collect();
+    data.sort_by(|a, b| {
+        b.total_ms
+            .cmp(&a.total_ms)
+            .then_with(|| a.command.cmp(&b.command))
+            .then_with(|| a.span_name.cmp(&b.span_name))
+    });
+    if let Some(top) = top {
+        data.truncate(top as usize);
+    }
+
+    let mut coverage: Vec<CommandTimingCoverage> = outer_ms
+        .into_iter()
+        .map(|(command, outer)| {
+            let inner = inner_ms.get(&command).copied().unwrap_or(0);
+            CommandTimingCoverage {
+                command,
+                outer_ms: outer,
+                inner_ms: inner,
+                uninstrumented_ms: (outer - inner).max(0),
+            }
+        })
+        .collect();
+    coverage.sort_by(|a, b| a.command.cmp(&b.command));
+    (data, coverage)
+}
+
+fn flame_stack_frames(row: &TimingRow, by_id: &HashMap<String, &TimingRow>) -> Vec<String> {
+    let mut frames = vec![span_label(row)];
+    let mut current_parent = row.parent_span_id.clone();
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut depth = 0;
+    while let Some(parent_id) = current_parent {
+        if depth >= FLAME_PARENT_WALK_CAP {
+            break;
+        }
+        if !seen.insert(parent_id.clone()) {
+            break;
+        }
+        match by_id.get(&parent_id) {
+            Some(parent_row) => {
+                frames.push(span_label(parent_row));
+                current_parent = parent_row.parent_span_id.clone();
+                depth += 1;
+            }
+            None => break,
+        }
+    }
+    frames.reverse();
+    frames
+}
+
+fn exclusive_ms(duration_ms: i64, child_sum: i64) -> i64 {
+    (duration_ms - child_sum).max(1)
+}
+
+/// Fold collapsed stacks for `--flame`. `repo_prefix` is the global basename.
+pub fn fold_flame_stacks(rows: &[TimingRow], repo_prefix: Option<&str>) -> FlameFold {
+    if rows.is_empty() {
+        return FlameFold {
+            collapsed: String::new(),
+            unique_stacks: 0,
+            total_weight_ms: 0,
+        };
+    }
+
+    let mut by_run: HashMap<&str, Vec<&TimingRow>> = HashMap::new();
+    for row in rows {
+        by_run.entry(row.run_id.as_str()).or_default().push(row);
+    }
+
+    let mut weights: BTreeMap<String, i64> = BTreeMap::new();
+
+    for run_rows in by_run.values() {
+        let mut by_id: HashMap<String, &TimingRow> = HashMap::new();
+        let mut child_sum: HashMap<String, i64> = HashMap::new();
+        for row in run_rows.iter().copied().filter(|r| !is_outer_row(r)) {
+            if let Some(id) = inner_span_id_from_notes(row.notes.as_deref()) {
+                by_id.insert(id.clone(), row);
+                if let Some(parent) = row.parent_span_id.as_deref()
+                    && !parent.is_empty()
+                {
+                    *child_sum.entry(parent.to_string()).or_insert(0) += row.duration_ms;
+                }
+            }
+        }
+        let ids: HashSet<String> = by_id.keys().cloned().collect();
+        let mut top_level_sum: HashMap<&str, i64> = HashMap::new();
+        for row in run_rows.iter().copied().filter(|r| !is_outer_row(r)) {
+            if is_top_level_inner(row, &ids) {
+                *top_level_sum.entry(row.command.as_str()).or_insert(0) += row.duration_ms;
+            }
+            let own_id = inner_span_id_from_notes(row.notes.as_deref());
+            let kids = own_id
+                .as_ref()
+                .and_then(|id| child_sum.get(id).copied())
+                .unwrap_or(0);
+            let weight = exclusive_ms(row.duration_ms, kids);
+            let mut frames = vec![row.command.clone()];
+            frames.extend(flame_stack_frames(row, &by_id));
+            let mut stack = frames.join(";");
+            if let Some(prefix) = repo_prefix {
+                stack = format!("{prefix};{stack}");
+            }
+            *weights.entry(stack).or_insert(0) += weight;
+        }
+        for row in run_rows.iter().copied().filter(|r| is_outer_row(r)) {
+            let kids = top_level_sum
+                .get(row.command.as_str())
+                .copied()
+                .unwrap_or(0);
+            let weight = exclusive_ms(row.duration_ms, kids);
+            let mut stack = row.command.clone();
+            if let Some(prefix) = repo_prefix {
+                stack = format!("{prefix};{stack}");
+            }
+            *weights.entry(stack).or_insert(0) += weight;
+        }
+    }
+
+    let unique_stacks = weights.len() as u64;
+    let total_weight_ms: i64 = weights.values().copied().sum();
+    let collapsed = weights
+        .into_iter()
+        .map(|(stack, weight)| format!("{stack} {weight}"))
+        .collect::<Vec<_>>()
+        .join("\n");
+    FlameFold {
+        collapsed,
+        unique_stacks,
+        total_weight_ms,
+    }
 }
 
 /// Insert all rows for one invocation in a single transaction.
@@ -1255,6 +1517,278 @@ mod tests {
         assert_ne!(
             report.incomparable_reason.as_deref(),
             Some(REASON_WORKLOAD_MISMATCH)
+        );
+    }
+
+    #[test]
+    fn explain_unhashed_recent_hashed_prior_is_unhashed_argv() {
+        let recent: Vec<TimingRow> = (0..5)
+            .map(|i| {
+                explain_row(
+                    &format!("r{i}"),
+                    "hotspots",
+                    100,
+                    "2026-09-12T00:00:00.000Z",
+                    None,
+                    0,
+                )
+            })
+            .collect();
+        let prior: Vec<TimingRow> = (0..5)
+            .map(|i| {
+                explain_row(
+                    &format!("p{i}"),
+                    "hotspots",
+                    110,
+                    "2026-09-04T00:00:00.000Z",
+                    Some("h"),
+                    0,
+                )
+            })
+            .collect();
+        let mut pool = prior.clone();
+        pool.extend(recent.clone());
+        let report = explain_command("hotspots", &recent, &pool, false);
+        assert!(!report.comparable);
+        assert_eq!(report.incomparable_reason.as_deref(), Some(REASON_UNHASHED));
+        assert_ne!(
+            report.incomparable_reason.as_deref(),
+            Some(REASON_WORKLOAD_MISMATCH)
+        );
+    }
+
+    fn notes_span(id: &str) -> Option<String> {
+        Some(format!(r#"{{"span_id":"{id}"}}"#))
+    }
+
+    #[test]
+    fn inner_span_id_from_notes_reads_json_and_ignores_shape() {
+        assert_eq!(
+            inner_span_id_from_notes(Some(r#"{"span_id":"run:1"}"#)).as_deref(),
+            Some("run:1")
+        );
+        assert!(inner_span_id_from_notes(Some(r#"{"shape":"search"}"#)).is_none());
+        assert!(inner_span_id_from_notes(None).is_none());
+    }
+
+    #[test]
+    fn aggregate_inner_spans_groups_by_command_and_keeps_coverage() {
+        let parent = "r1:aa";
+        let child = "r1:bb";
+        let rows = vec![
+            TimingRow {
+                run_id: "r1".into(),
+                ts_utc: "2026-09-17T00:00:00.000Z".into(),
+                command: "search".into(),
+                duration_ms: 100,
+                exit_code: 0,
+                repo_size_bytes: None,
+                argv_hash: None,
+                ledger_tx_id: None,
+                parent_span_id: None,
+                span_name: None,
+                notes: None,
+            },
+            TimingRow {
+                run_id: "r1".into(),
+                ts_utc: "2026-09-17T00:00:00.000Z".into(),
+                command: "search".into(),
+                duration_ms: 40,
+                exit_code: 0,
+                repo_size_bytes: None,
+                argv_hash: None,
+                ledger_tx_id: None,
+                parent_span_id: None,
+                span_name: Some("lexical_query".into()),
+                notes: notes_span(parent),
+            },
+            TimingRow {
+                run_id: "r1".into(),
+                ts_utc: "2026-09-17T00:00:00.000Z".into(),
+                command: "search".into(),
+                duration_ms: 10,
+                exit_code: 0,
+                repo_size_bytes: None,
+                argv_hash: None,
+                ledger_tx_id: None,
+                parent_span_id: Some(parent.into()),
+                span_name: Some("nested".into()),
+                notes: notes_span(child),
+            },
+            TimingRow {
+                run_id: "r2".into(),
+                ts_utc: "2026-09-17T00:00:00.000Z".into(),
+                command: "verify".into(),
+                duration_ms: 50,
+                exit_code: 0,
+                repo_size_bytes: None,
+                argv_hash: None,
+                ledger_tx_id: None,
+                parent_span_id: None,
+                span_name: None,
+                notes: None,
+            },
+            TimingRow {
+                run_id: "r2".into(),
+                ts_utc: "2026-09-17T00:00:00.000Z".into(),
+                command: "verify".into(),
+                duration_ms: 5,
+                exit_code: 0,
+                repo_size_bytes: None,
+                argv_hash: None,
+                ledger_tx_id: None,
+                parent_span_id: None,
+                span_name: Some("wait".into()),
+                notes: notes_span("r2:w"),
+            },
+            TimingRow {
+                run_id: "r4".into(),
+                ts_utc: "2026-09-17T00:00:00.000Z".into(),
+                command: "search".into(),
+                duration_ms: 3,
+                exit_code: 0,
+                repo_size_bytes: None,
+                argv_hash: None,
+                ledger_tx_id: None,
+                parent_span_id: None,
+                span_name: Some("wait".into()),
+                notes: notes_span("r4:w"),
+            },
+            TimingRow {
+                run_id: "r3".into(),
+                ts_utc: "2026-09-17T00:00:00.000Z".into(),
+                command: "hotspots".into(),
+                duration_ms: 20,
+                exit_code: 1,
+                repo_size_bytes: None,
+                argv_hash: None,
+                ledger_tx_id: None,
+                parent_span_id: None,
+                span_name: None,
+                notes: None,
+            },
+        ];
+        let (data, coverage) = aggregate_inner_spans(&rows, Some(1));
+        assert_eq!(data.len(), 1, "--top truncates data[] only");
+        assert_eq!(data[0].command, "search");
+        assert_eq!(data[0].span_name, "lexical_query");
+        assert_eq!(coverage.len(), 3);
+        let search = coverage.iter().find(|c| c.command == "search").unwrap();
+        assert_eq!(search.outer_ms, 100);
+        assert_eq!(search.inner_ms, 43, "nested child not double-counted");
+        assert_eq!(search.uninstrumented_ms, 57);
+        let (all_data, _) = aggregate_inner_spans(&rows, None);
+        let wait_rows: Vec<_> = all_data.iter().filter(|d| d.span_name == "wait").collect();
+        assert_eq!(wait_rows.len(), 2, "same span_name still splits by command");
+        let hotspots = coverage.iter().find(|c| c.command == "hotspots").unwrap();
+        assert_eq!(hotspots.inner_ms, 0);
+        assert_eq!(hotspots.uninstrumented_ms, 20);
+    }
+
+    #[test]
+    fn fold_flame_stacks_folds_and_walks_parents() {
+        let parent = "r1:aa";
+        let child = "r1:bb";
+        let rows = vec![
+            TimingRow {
+                run_id: "a".into(),
+                ts_utc: "2026-09-17T00:00:00.000Z".into(),
+                command: "scan".into(),
+                duration_ms: 10,
+                exit_code: 0,
+                repo_size_bytes: None,
+                argv_hash: None,
+                ledger_tx_id: None,
+                parent_span_id: None,
+                span_name: None,
+                notes: None,
+            },
+            TimingRow {
+                run_id: "b".into(),
+                ts_utc: "2026-09-17T00:00:00.000Z".into(),
+                command: "scan".into(),
+                duration_ms: 15,
+                exit_code: 0,
+                repo_size_bytes: None,
+                argv_hash: None,
+                ledger_tx_id: None,
+                parent_span_id: None,
+                span_name: None,
+                notes: None,
+            },
+            TimingRow {
+                run_id: "r1".into(),
+                ts_utc: "2026-09-17T00:00:00.000Z".into(),
+                command: "search".into(),
+                duration_ms: 100,
+                exit_code: 0,
+                repo_size_bytes: None,
+                argv_hash: None,
+                ledger_tx_id: None,
+                parent_span_id: None,
+                span_name: None,
+                notes: None,
+            },
+            TimingRow {
+                run_id: "r1".into(),
+                ts_utc: "2026-09-17T00:00:00.000Z".into(),
+                command: "search".into(),
+                duration_ms: 40,
+                exit_code: 0,
+                repo_size_bytes: None,
+                argv_hash: None,
+                ledger_tx_id: None,
+                parent_span_id: None,
+                span_name: Some("lexical_query".into()),
+                notes: notes_span(parent),
+            },
+            TimingRow {
+                run_id: "r1".into(),
+                ts_utc: "2026-09-17T00:00:00.000Z".into(),
+                command: "search".into(),
+                duration_ms: 10,
+                exit_code: 0,
+                repo_size_bytes: None,
+                argv_hash: None,
+                ledger_tx_id: None,
+                parent_span_id: Some(parent.into()),
+                span_name: Some("nested".into()),
+                notes: notes_span(child),
+            },
+        ];
+        let fold = fold_flame_stacks(&rows, None);
+        assert!(
+            fold.collapsed.lines().any(|l| l == "scan 25"),
+            "identical outer stacks fold: {}",
+            fold.collapsed
+        );
+        assert!(
+            fold.collapsed
+                .lines()
+                .any(|l| l == "search;lexical_query;nested 10"),
+            "parent walk exclusive: {}",
+            fold.collapsed
+        );
+        assert!(
+            fold.collapsed
+                .lines()
+                .any(|l| l == "search;lexical_query 30"),
+            "parent exclusive minus child: {}",
+            fold.collapsed
+        );
+        assert!(
+            fold.collapsed.lines().any(|l| l == "search 60"),
+            "outer exclusive minus top-level inner: {}",
+            fold.collapsed
+        );
+        let prefixed = fold_flame_stacks(&rows, Some("ledgerful"));
+        assert!(
+            prefixed
+                .collapsed
+                .lines()
+                .any(|l| l.starts_with("ledgerful;search ")),
+            "repo prefix: {}",
+            prefixed.collapsed
         );
     }
 

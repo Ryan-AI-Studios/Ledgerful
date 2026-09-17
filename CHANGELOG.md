@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Timings inner/flame stage coverage (0364):**
+  Inner spans group by command with an
+  uninstrumented denominator; capture ignores
+  non-`ledgerful` tracing targets; flame folds
+  identical stacks and walks parent spans.
+  0330/0346 comparability unchanged.
+
 - **Dead-code trait dispatch (0363):** Trait-impl
   Methods with Ambiguous/unresolved method-call
   edges are unknown reachability, not 97% dead.

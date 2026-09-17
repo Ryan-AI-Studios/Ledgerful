@@ -297,7 +297,7 @@ pub struct TimingsCliArgs {
     /// Limit analysis to the last N days (default 30)
     #[arg(long)]
     pub days: Option<u32>,
-    /// Write output to PATH (JSON for summary; collapsed stacks for --flame)
+    /// Write output to PATH (JSON for summary and --inner; collapsed stacks for --flame)
     #[arg(long, value_name = "PATH")]
     pub export: Option<PathBuf>,
     /// Show aggregated inner-span breakdown

@@ -24,6 +24,7 @@ use crate::commands::helpers::get_layout;
 use crate::config::load::load_config;
 use crate::index::staleness::AutoIndexAction;
 use crate::index::warn_if_stale;
+use crate::observability::stage::stage_span;
 use crate::search::{TantivySearchEngine, needs_format_rebuild, rebuild_tantivy_index};
 use crate::state::storage::StorageManager;
 use miette::Result;
@@ -77,7 +78,11 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                     StorageManager::init_with_layout(&layout)?
                 }
             };
-            match crate::index::staleness::try_auto_index(storage, threshold, &layout) {
+            let auto_index_result = {
+                let _stage = stage_span!("auto_index").entered();
+                crate::index::staleness::try_auto_index(storage, threshold, &layout)
+            };
+            match auto_index_result {
                 Ok((_storage, action)) => {
                     auto_index_action = action;
                 }
@@ -98,7 +103,11 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                         .prompt()
                 {
                     println!("Running auto-indexing...");
-                    match crate::index::staleness::try_auto_index(storage, threshold, &layout) {
+                    let auto_index_result = {
+                        let _stage = stage_span!("auto_index").entered();
+                        crate::index::staleness::try_auto_index(storage, threshold, &layout)
+                    };
+                    match auto_index_result {
                         Ok((_storage, action)) => {
                             auto_index_action = action;
                         }
@@ -127,7 +136,11 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
             );
         }
         debug!("Post-auto-index full FTS rebuild (before semantic/BM25 query path)");
-        match rebuild_tantivy_index(&layout) {
+        let rebuild_result = {
+            let _stage = stage_span!("fts_rebuild").entered();
+            rebuild_tantivy_index(&layout)
+        };
+        match rebuild_result {
             Ok(()) => {
                 fts_rebuilt_for_auto_index = true;
                 if !args.is_machine() {
@@ -192,11 +205,15 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
                         println!("[Search Mode: Semantic]");
                     }
                     let semantic_fetch = args.limit.saturating_add(1);
-                    match semantic_engine.query(
-                        layout.root.as_std_path(),
-                        &args.query,
-                        semantic_fetch,
-                    ) {
+                    let query_result = {
+                        let _stage = stage_span!("semantic_query").entered();
+                        semantic_engine.query(
+                            layout.root.as_std_path(),
+                            &args.query,
+                            semantic_fetch,
+                        )
+                    };
+                    match query_result {
                         Ok((r, filtered_foreign)) => {
                             if filtered_foreign > 0 {
                                 collector.set_filtered_foreign_count(filtered_foreign);
@@ -414,7 +431,11 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
             );
         }
         debug!("Indexing repository for search...");
-        match rebuild_tantivy_index(&layout) {
+        let rebuild_result = {
+            let _stage = stage_span!("fts_rebuild").entered();
+            rebuild_tantivy_index(&layout)
+        };
+        match rebuild_result {
             Ok(()) => {
                 // write_stamp runs inside rebuild_tantivy_index on success.
                 if !args.is_machine() {
@@ -487,14 +508,17 @@ pub fn execute_search(args: SearchArgs) -> Result<()> {
         }
     }
 
-    perform_search(
-        engine,
-        &layout.root,
-        &args,
-        &mut collector,
-        use_regex,
-        use_hybrid,
-    )?;
+    {
+        let _stage = stage_span!("lexical_query").entered();
+        perform_search(
+            engine,
+            &layout.root,
+            &args,
+            &mut collector,
+            use_regex,
+            use_hybrid,
+        )?;
+    }
 
     collector.finish();
     Ok(())
