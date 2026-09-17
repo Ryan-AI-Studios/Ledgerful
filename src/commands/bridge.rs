@@ -41,6 +41,9 @@ pub enum BridgeCommands {
     Query {
         /// Query string
         query: String,
+        /// Output as JSON
+        #[arg(long)]
+        json: bool,
     },
 }
 
@@ -70,6 +73,6 @@ pub fn execute(command: BridgeCommands) -> Result<()> {
             crate::bridge::export::execute_export(args)
         }
         BridgeCommands::Import { input } => crate::bridge::import::execute_import(input),
-        BridgeCommands::Query { query } => crate::bridge::client::execute_query(query),
+        BridgeCommands::Query { query, json } => crate::bridge::client::execute_query(query, json),
     }
 }

@@ -8,6 +8,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Bridge query result states (0366):**
+  `bridge query --json` emits a closed
+  `kind: bridgeQuery` envelope
+  (`disabled` / `unavailable` / `failed` /
+  `empty` / `populated`). `ok` agrees with
+  process exit. Ask fail-open is unchanged.
+
 - **Sync operational evidence (0365):**
   `sync::run` appends JSON-line events
   to `sync.log`; `sync log --json`

@@ -1482,7 +1482,11 @@ impl Commands {
                 BridgeCommands::Import { .. } => {
                     f.push("input");
                 }
-                BridgeCommands::Query { .. } => {}
+                BridgeCommands::Query { json, .. } => {
+                    if *json {
+                        f.push("json");
+                    }
+                }
             },
             Commands::Intent { command } => match command {
                 IntentCommands::Demo => {}
