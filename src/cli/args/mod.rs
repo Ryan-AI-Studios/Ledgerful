@@ -190,7 +190,7 @@ or add content. Alias: tour."
     Security(crate::commands::security::SecurityArgs),
     /// List tests validating a specific entity
     Tests(crate::commands::test_mapping::TestsForEntityArgs),
-    /// Manage the data interchange bridge (export/import Ledgerful state as versioned NDJSON).
+    /// Manage the data interchange bridge (export/import Ledgerful state as versioned records; compact export is NDJSON-compatible).
     #[command(hide = true)]
     Bridge {
         #[command(subcommand)]

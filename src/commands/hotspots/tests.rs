@@ -838,6 +838,30 @@ fn entity_prefix_still_git_history_starts_with() {
         dir_filter: Some("src/".to_string()),
         ..HotspotQuery::default()
     };
+    let calc_filters = calculate_hotspots_detailed(
+        &storage,
+        &provider,
+        &HotspotQuery {
+            commits: 50,
+            limit: 10,
+            dir_filters: vec!["src/".to_string()],
+            ..HotspotQuery::default()
+        },
+    )
+    .expect("dir_filters calc");
+    assert!(
+        calc_filters.hotspots.iter().all(|h| h
+            .path
+            .to_string_lossy()
+            .replace('\\', "/")
+            .starts_with("src/")),
+        "dir_filters must crawl-filter like dir_filter: {:?}",
+        calc_filters
+            .hotspots
+            .iter()
+            .map(|h| h.path.clone())
+            .collect::<Vec<_>>()
+    );
     let calc = calculate_hotspots_detailed(&storage, &provider, &query).expect("calc");
     assert!(
         calc.hotspots.iter().all(|h| h
@@ -860,6 +884,119 @@ fn entity_prefix_still_git_history_starts_with() {
             .iter()
             .map(|h| h.path.clone())
             .collect::<Vec<_>>()
+    );
+    let _ = storage.shutdown();
+}
+
+#[test]
+#[allow(non_snake_case)]
+fn dir_filters_multi_prefix__does_not_false_empty_outside_top_n() {
+    use crate::impact::hotspots::{HotspotQuery, calculate_hotspots_detailed};
+    use crate::impact::temporal::GixHistoryProvider;
+    use crate::state::layout::Layout;
+    use crate::state::storage::StorageManager;
+    use std::fs;
+    use std::process::Command;
+
+    let tmp = tempfile::tempdir().unwrap();
+    let dir = tmp.path();
+    assert!(
+        Command::new("git")
+            .args(["init", "-b", "main"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success()
+    );
+    for (k, v) in [("user.email", "t@t.com"), ("user.name", "T")] {
+        assert!(
+            Command::new("git")
+                .args(["config", k, v])
+                .current_dir(dir)
+                .status()
+                .unwrap()
+                .success()
+        );
+    }
+    fs::create_dir_all(dir.join("src")).unwrap();
+    fs::create_dir_all(dir.join("docs")).unwrap();
+    fs::create_dir_all(dir.join("tests")).unwrap();
+    for i in 0..8 {
+        fs::write(
+            dir.join(format!("tests/noise{i}.rs")),
+            format!("fn n{i}() {{}}\n"),
+        )
+        .unwrap();
+    }
+    assert!(
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["commit", "-m", "noise"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success()
+    );
+    fs::write(dir.join("src/lib.rs"), "fn src() {}\n").unwrap();
+    fs::write(dir.join("docs/note.md"), "# note\n").unwrap();
+    assert!(
+        Command::new("git")
+            .args(["add", "-A"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success()
+    );
+    assert!(
+        Command::new("git")
+            .args(["commit", "-m", "scoped"])
+            .current_dir(dir)
+            .status()
+            .unwrap()
+            .success()
+    );
+
+    let root = camino::Utf8Path::from_path(dir).unwrap();
+    let layout = Layout::new(root);
+    layout.ensure_state_dir().unwrap();
+    let storage =
+        StorageManager::init(layout.state_subdir().join("ledger.db").as_std_path()).unwrap();
+    let repo = crate::git::repo::open_repo(dir).expect("open");
+    let provider = GixHistoryProvider::new(&repo);
+    let calc = calculate_hotspots_detailed(
+        &storage,
+        &provider,
+        &HotspotQuery {
+            commits: 50,
+            limit: 3,
+            dir_filters: vec!["src/".to_string(), "docs/".to_string()],
+            ..HotspotQuery::default()
+        },
+    )
+    .expect("multi-prefix calc");
+    let paths: Vec<String> = calc
+        .hotspots
+        .iter()
+        .map(|h| h.path.to_string_lossy().replace('\\', "/"))
+        .collect();
+    assert!(
+        paths.iter().any(|p| p.starts_with("src/")),
+        "src/ must survive in-engine filter when outside global top-N: {paths:?}"
+    );
+    assert!(
+        paths.iter().any(|p| p.starts_with("docs/")),
+        "docs/ must survive in-engine filter when outside global top-N: {paths:?}"
+    );
+    assert!(
+        paths.iter().all(|p| !p.starts_with("tests/")),
+        "tests/ must stay excluded: {paths:?}"
     );
     let _ = storage.shutdown();
 }

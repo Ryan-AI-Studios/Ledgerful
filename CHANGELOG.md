@@ -8,6 +8,14 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Added
 
+- **Bridge export dataset provenance (0367):**
+  `bridge export` stamps requested-versus-emitted
+  `payload.datasets[]` on the Snapshot
+  BridgeRecord. `--hotspots` uses
+  `config.hotspots` window/decay/limit plus
+  `history_budget_secs`. `--scope` filters
+  during the crawl; `--madr` is `notWired`.
+
 - **Bridge query result states (0366):**
   `bridge query --json` emits a closed
   `kind: bridgeQuery` envelope
