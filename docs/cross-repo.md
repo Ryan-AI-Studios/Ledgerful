@@ -108,7 +108,7 @@ discovery walk, and derived cache for repo discovery).
 | `--top N` | Cap commands after sort (default 20) |
 | `--days N` | Window for outer/inner/flame (default 30) |
 | `--export PATH` | Write JSON summary (or collapsed text with `--flame`) |
-| `--inner` | Aggregate `span_name` samples across repos |
+| `--inner` | Aggregate `(command, span_name)` samples across repos; coverage[] is wall-clock |
 | `--command NAME` | Filter `--inner` / `--flame` to one command |
 | `--flame` | Collapsed stacks with `{repo_basename};{command}[;span] duration` |
 | `--explain COMMAND` | Pool last 7d + prior 7d outer samples across repos; p50 sentence; refuses incomparable percents. No success prior (empty or all-failed) does not invent `0 ms`; sole `"<unhashed>"` is not comparable (`unhashedArgv`); one-sided unhashed is that token, not `workloadMismatch` |
@@ -126,7 +126,10 @@ to match the local timings schema (`command`, `runs`, `p50_ms`, … / `repo_path
 
 `--inner` uses the same camelCase envelope; each `data[]` element is a
 `GlobalInnerAgg` with snake_case keys matching local `timings --inner`
-(`span_name`, `samples`, `total_ms`, `max_ms`).
+(`command`, `span_name`, `samples`, `total_ms`, `max_ms`). Omit-empty
+`coverage[]` matches local inner (`command`, `outer_ms`, `inner_ms`,
+`uninstrumented_ms`). `--flame` folds identical `{repo_basename};command[;span]`
+stacks (exclusive ms).
 
 ### `GlobalTimingsSummary`
 
@@ -156,6 +159,7 @@ to match the local timings schema (`command`, `runs`, `p50_ms`, … / `repo_path
 
 | Field | Type | Description |
 |---|---|---|
+| `command` | `string` | Host command name. |
 | `span_name` | `string` | Engine-internal span label (or `<unnamed>`). |
 | `samples` | `number` | Count of inner rows across repos. |
 | `total_ms` | `number` | Sum of durations. |

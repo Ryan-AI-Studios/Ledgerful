@@ -1830,6 +1830,28 @@ fn global_timings_inner_rows_seeded_for_pool() {
     assert_eq!(summary.data.len(), 1);
     assert_eq!(summary.data[0].runs, 1);
     assert_eq!(summary.data[0].total_ms, 100);
+
+    let export_path = tmp.path().join("inner-outers-only.json");
+    seed_timing_rows(&root.join("repo_a"), &[sample_outer("r2", "scan", 40)]);
+    execute_timings_global(
+        &fixture_config(&root),
+        GlobalTimingsArgs {
+            json: true,
+            inner: true,
+            days: Some(30),
+            command: Some("scan".into()),
+            export: Some(export_path.clone()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let json: serde_json::Value =
+        serde_json::from_str(&fs::read_to_string(&export_path).unwrap()).unwrap();
+    assert!(json["data"].as_array().unwrap().is_empty());
+    assert!(json.get("message").is_none() || json["message"].is_null());
+    assert_eq!(json["coverage"][0]["command"], "scan");
+    assert_eq!(json["coverage"][0]["outer_ms"], 40);
+    assert_eq!(json["coverage"][0]["inner_ms"], 0);
 }
 
 #[test]
@@ -1885,21 +1907,82 @@ fn global_timings_inner_pools_spans_across_two_repos() {
     let data = json["data"].as_array().expect("inner data array");
     // Sorted by total_ms DESC: run_tests (40+50+30=120) then index_graph (20)
     assert_eq!(data.len(), 2);
+    assert_eq!(data[0]["command"], "verify");
     assert_eq!(data[0]["span_name"], "run_tests");
     assert_eq!(data[0]["samples"], 3);
     assert_eq!(data[0]["total_ms"], 120);
     assert_eq!(data[0]["max_ms"], 50);
+    assert_eq!(data[1]["command"], "verify");
     assert_eq!(data[1]["span_name"], "index_graph");
     assert_eq!(data[1]["samples"], 1);
     assert_eq!(data[1]["total_ms"], 20);
     assert_eq!(data[1]["max_ms"], 20);
 
+    let coverage = json["coverage"].as_array().expect("coverage array");
+    assert_eq!(coverage.len(), 1);
+    assert_eq!(coverage[0]["command"], "verify");
+    assert_eq!(coverage[0]["outer_ms"], 180);
+    assert_eq!(coverage[0]["inner_ms"], 140);
+    assert_eq!(coverage[0]["uninstrumented_ms"], 40);
+
     // Nested keys snake_case (not spanName / totalMs).
-    for key in ["span_name", "samples", "total_ms", "max_ms"] {
+    for key in ["command", "span_name", "samples", "total_ms", "max_ms"] {
         assert!(data[0].get(key).is_some(), "missing inner key {key}");
     }
     assert!(data[0].get("spanName").is_none());
     assert!(data[0].get("totalMs").is_none());
+}
+
+#[test]
+#[serial(env, cwd)]
+fn global_timings_flame_folds_prefixed_stacks() {
+    let _env_non_interactive = non_interactive();
+    let tmp = tempdir().unwrap();
+    let home = tmp.path().join("home");
+    fs::create_dir_all(&home).unwrap();
+    let root = tmp.path().join("roots");
+    fs::create_dir_all(&root).unwrap();
+
+    make_fixture_repo(&root, "repo_a", 0, 0, 0);
+    seed_timing_rows(
+        &root.join("repo_a"),
+        &[
+            sample_outer("a1", "search", 10),
+            sample_outer("a2", "search", 15),
+            sample_inner("a1", "search", "lexical_query", 4),
+        ],
+    );
+
+    let _env = setup_global_timings_env(&home, &root);
+    let export_path = tmp.path().join("flame.txt");
+    execute_timings_global(
+        &fixture_config(&root),
+        GlobalTimingsArgs {
+            json: false,
+            flame: true,
+            days: Some(30),
+            export: Some(export_path.clone()),
+            command: Some("search".into()),
+            ..Default::default()
+        },
+    )
+    .unwrap();
+    let body = fs::read_to_string(&export_path).unwrap();
+    assert!(
+        body.lines().any(|l| l == "repo_a;search 21"),
+        "duplicate outers must fold to exclusive sum: {body}"
+    );
+    assert!(
+        body.lines()
+            .any(|l| l.contains("repo_a;search;lexical_query ")),
+        "prefixed inner missing: {body}"
+    );
+    assert!(
+        !body
+            .lines()
+            .any(|l| l == "repo_a;search 10" || l == "repo_a;search 15"),
+        "unfolded duplicates must not remain: {body}"
+    );
 }
 
 #[test]

@@ -278,7 +278,7 @@ impl TimedCommand {
                 ledger_tx_id: None,
                 parent_span_id: span.parent_span_id,
                 span_name: Some(span.span_name),
-                notes: None,
+                notes: Some(json!({ "span_id": span.span_id }).to_string()),
             });
         }
 
@@ -361,6 +361,10 @@ where
                 None => return,
             }
         };
+
+        if !attrs.metadata().target().starts_with("ledgerful") {
+            return;
+        }
 
         let name = attrs.metadata().name().to_string();
         // Run-scoped so parent links never collide across concurrent CLI runs.
@@ -645,9 +649,43 @@ mod tests {
                     slow >= 1,
                     "at least one inner with span_name slow_work, rows={all:?}"
                 );
+                let inner = all.iter().find(|r| r.span_name.is_some()).unwrap();
+                let notes = inner.notes.as_deref().unwrap_or("");
+                assert!(
+                    notes.contains("span_id"),
+                    "inner notes must carry span_id JSON, got {notes}"
+                );
                 for r in &all {
                     assert_eq!(r.run_id, run_id);
                 }
+                test_clear_buffer();
+            });
+        });
+    }
+
+    #[test]
+    fn timing_layer_ignores_non_ledgerful_targets() {
+        use tracing_subscriber::layer::SubscriberExt;
+        use tracing_subscriber::registry;
+
+        with_isolated_config_home(|| {
+            with_min_span_ms(0, || {
+                assert!(is_self_timing_enabled());
+                test_clear_buffer();
+                let timed = TimedCommand::start("verify", "verify|scope");
+                assert!(timed.is_active());
+                let run_id = timed.run_id().to_string();
+                let subscriber = registry().with(TimingLayer::new());
+                tracing::subscriber::with_default(subscriber, || {
+                    let _g = tracing::info_span!(target: "tokio::task", "wrap_child").entered();
+                    std::thread::sleep(std::time::Duration::from_millis(1));
+                });
+                assert_eq!(
+                    test_buffer_len(&run_id),
+                    0,
+                    "non-ledgerful targets must not buffer"
+                );
+                timed.finish(0);
                 test_clear_buffer();
             });
         });

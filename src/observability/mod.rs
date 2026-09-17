@@ -4,6 +4,7 @@ pub mod prometheus;
 #[cfg(feature = "self-timing")]
 pub mod self_timing;
 pub mod signal;
+pub mod stage;
 
 use rusqlite::Connection;
 

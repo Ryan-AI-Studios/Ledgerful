@@ -285,9 +285,10 @@ pub struct RepoCommandTiming {
 
 /// Aggregated inner-span row across repos.
 ///
-/// Snake_case JSON keys match local `timings --inner` (`span_name`, `total_ms`, …).
+/// Snake_case JSON keys match local `timings --inner` (`command`, `span_name`, `total_ms`, …).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct GlobalInnerAgg {
+    pub command: String,
     pub span_name: String,
     pub samples: u64,
     pub total_ms: i64,
@@ -679,7 +680,7 @@ fn query_repo_timings(
             inner_only: false,
             command: cmd,
             days,
-            limit: Some(5000),
+            limit: None,
         },
     )?;
 
@@ -723,49 +724,43 @@ fn execute_timings_global_inner(
     let days = args.days.unwrap_or(30);
     let collected = collect_global_timings(config, Some(days), args.command.as_deref())?;
 
-    let mut agg: BTreeMap<String, (u64, i64, i64)> = BTreeMap::new();
+    let mut pooled: Vec<crate::state::storage::timings::TimingRow> = Vec::new();
     for repo in &collected.repos {
-        for r in &repo.inner {
-            let name = r
-                .span_name
-                .clone()
-                .unwrap_or_else(|| "<unnamed>".to_string());
-            let entry = agg.entry(name).or_insert((0, 0, 0));
-            entry.0 += 1;
-            entry.1 += r.duration_ms;
-            entry.2 = entry.2.max(r.duration_ms);
-        }
+        pooled.extend(repo.outer.iter().cloned());
+        pooled.extend(repo.inner.iter().cloned());
     }
-
-    let mut aggs: Vec<GlobalInnerAgg> = agg
+    let (local_aggs, coverage) =
+        crate::state::storage::timings::aggregate_inner_spans(&pooled, args.top);
+    let aggs: Vec<GlobalInnerAgg> = local_aggs
         .into_iter()
-        .map(|(span_name, (samples, total_ms, max_ms))| GlobalInnerAgg {
-            span_name,
-            samples,
-            total_ms,
-            max_ms,
+        .map(|a| GlobalInnerAgg {
+            command: a.command,
+            span_name: a.span_name,
+            samples: a.samples,
+            total_ms: a.total_ms,
+            max_ms: a.max_ms,
         })
         .collect();
-    aggs.sort_by(|a, b| {
-        b.total_ms
-            .cmp(&a.total_ms)
-            .then_with(|| a.span_name.cmp(&b.span_name))
-    });
-    if let Some(top) = args.top {
-        aggs.truncate(top as usize);
-    }
 
-    let message = empty_timings_message(&collected, aggs.is_empty());
-    let envelope = serde_json::json!({
+    let empty_window = aggs.is_empty() && coverage.is_empty();
+    let message = empty_timings_message(&collected, empty_window);
+    let mut envelope = serde_json::json!({
         "schemaVersion": 1,
         "totalRepos": collected.total_repos,
         "reposWithTimings": collected.repos_with_timings,
         "skippedRepos": collected.skipped_repos,
         "timingsAbsent": collected.timings_absent,
         "warnings": collected.warnings,
-        "message": message,
         "data": aggs,
     });
+    if let Some(msg) = &message {
+        envelope["message"] = serde_json::Value::String(msg.clone());
+    }
+    if !coverage.is_empty()
+        && let Ok(coverage_value) = serde_json::to_value(&coverage)
+    {
+        envelope["coverage"] = coverage_value;
+    }
 
     if let Some(ref path) = args.export {
         let json = serde_json::to_string_pretty(&envelope).into_diagnostic()?;
@@ -783,8 +778,19 @@ fn execute_timings_global_inner(
         return Ok(());
     }
 
-    if let Some(msg) = message {
-        println!("{msg}");
+    if aggs.is_empty() {
+        if let Some(msg) = message {
+            println!("{msg}");
+        }
+        for row in &coverage {
+            println!(
+                "'{}': {} inner / {} outer ({} uninstrumented).",
+                row.command,
+                crate::output::table::format_timing_millis(row.inner_ms),
+                crate::output::table::format_timing_millis(row.outer_ms),
+                crate::output::table::format_timing_millis(row.uninstrumented_ms)
+            );
+        }
         print_timings_degradation(&collected);
         return Ok(());
     }
@@ -796,16 +802,26 @@ fn execute_timings_global_inner(
             .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
     );
     let mut table =
-        crate::output::table::build_table(vec!["Span", "Samples", "Total ms", "Max ms"]);
+        crate::output::table::build_table(vec!["Command", "Span", "Samples", "Total", "Max"]);
     for a in &aggs {
         table.add_row(vec![
+            a.command.clone(),
             a.span_name.clone(),
             a.samples.to_string(),
-            a.total_ms.to_string(),
-            a.max_ms.to_string(),
+            crate::output::table::format_timing_millis(a.total_ms),
+            crate::output::table::format_timing_millis(a.max_ms),
         ]);
     }
     println!("{table}");
+    for row in &coverage {
+        println!(
+            "'{}': {} inner / {} outer ({} uninstrumented).",
+            row.command,
+            crate::output::table::format_timing_millis(row.inner_ms),
+            crate::output::table::format_timing_millis(row.outer_ms),
+            crate::output::table::format_timing_millis(row.uninstrumented_ms)
+        );
+    }
     print_timings_degradation(&collected);
     Ok(())
 }
@@ -817,30 +833,29 @@ fn execute_timings_global_flame(
     let days = args.days.unwrap_or(30);
     let collected = collect_global_timings(config, Some(days), args.command.as_deref())?;
 
-    // Collapsed stacks with repo basename prefix for cross-repo disambiguation:
-    //   {repo_basename};{command} duration
-    //   {repo_basename};{command};{span} duration
-    let mut lines: Vec<String> = Vec::new();
+    // Collapsed stacks with repo basename prefix, then folded (0364).
+    let mut weights: BTreeMap<String, i64> = BTreeMap::new();
     for repo in &collected.repos {
         let basename = Path::new(&repo.repo_path)
             .file_name()
             .and_then(|n| n.to_str())
             .unwrap_or("repo");
-        for r in &repo.all {
-            if let Some(ref span) = r.span_name {
-                lines.push(format!(
-                    "{basename};{};{} {}",
-                    r.command,
-                    span,
-                    r.duration_ms.max(1)
-                ));
-            } else {
-                lines.push(format!("{basename};{} {}", r.command, r.duration_ms.max(1)));
+        let fold = crate::state::storage::timings::fold_flame_stacks(&repo.all, Some(basename));
+        for line in fold.collapsed.lines() {
+            if let Some((stack, rest)) = line.rsplit_once(' ')
+                && let Ok(weight) = rest.parse::<i64>()
+            {
+                *weights.entry(stack.to_string()).or_insert(0) += weight;
             }
         }
     }
-    lines.sort();
-    let body = lines.join("\n");
+    let unique_stacks = weights.len() as u64;
+    let total_weight_ms: i64 = weights.values().copied().sum();
+    let body = weights
+        .into_iter()
+        .map(|(stack, weight)| format!("{stack} {weight}"))
+        .collect::<Vec<_>>()
+        .join("\n");
 
     if let Some(ref path) = args.export {
         // Export carries full honesty envelope for flame when JSON-shaped export
@@ -856,6 +871,11 @@ fn execute_timings_global_flame(
 
     if args.json {
         let message = empty_timings_message(&collected, body.is_empty());
+        let mut data = serde_json::json!({ "collapsed": body });
+        if !body.is_empty() {
+            data["unique_stacks"] = serde_json::json!(unique_stacks);
+            data["total_weight_ms"] = serde_json::json!(total_weight_ms);
+        }
         let envelope = serde_json::json!({
             "schemaVersion": 1,
             "totalRepos": collected.total_repos,
@@ -864,7 +884,7 @@ fn execute_timings_global_flame(
             "timingsAbsent": collected.timings_absent,
             "warnings": collected.warnings,
             "message": message,
-            "data": { "collapsed": body },
+            "data": data,
         });
         println!(
             "{}",

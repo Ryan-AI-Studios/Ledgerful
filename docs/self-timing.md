@@ -28,10 +28,10 @@ enough, per inner span:
 | `ts_utc` | UTC timestamp |
 | `run_id` | Links outer + inner rows for one invocation |
 | `argv_hash` | Hash of *canonicalized* command shape (subcommand + sorted flag **names**; values stripped) |
-| `notes` | JSON `{"shape":"<argv_shape>"}` on **new** outer rows (flag names only). Historical rows stay NULL. |
+| `notes` | Outer: JSON `{"shape":"<argv_shape>"}` on **new** rows (flag names only). Inner (0364+): JSON `{"span_id":"{run_id}:{hex}"}` so `--flame` / coverage can walk `parent_span_id` without a schema migration. Historical inner `notes` stay NULL and cannot be a parent. |
 | `repo_size_bytes` | Usually `NULL`. Filled only when **`index`** reports size opportunistically as `SUM(file_size)` from already-indexed `project_files` rows — **never** a dedicated walk, and **`scan` does not set it** (no free byte total during scan). File counts alone are not written here. |
 | `ledger_tx_id` | Optional association to a ledger transaction **only** when the host command calls `set_current_ledger_tx_id` (explicit API). Schema contract: `NULL` unless the command intentionally produced or bound a tx. There is **no** automatic `pending_hook_tx` sidecar attribution. Best-effort; never fails the host command. |
-| `span_name` / `parent_span_id` | Engine-internal span names from existing `#[instrument]` / `info_span!` hooks. Inner `parent_span_id` is **run-scoped** (`{run_id}:{tracing_span_id}`) so concurrent runs never collide; outer rows keep `parent_span_id = NULL`. |
+| `span_name` / `parent_span_id` | Engine-internal span names from `ledgerful*` tracing targets (`TimingLayer` ignores tokio/rayon/subscriber internals). Inner `parent_span_id` is **run-scoped** (`{run_id}:{tracing_span_id}`) so concurrent runs never collide; outer rows keep `parent_span_id = NULL`. The capture filter does **not** retro-clean already-stored rows (historical `wrap_child` / `resume_threads` / `wait` stay until they age out; do not prune the operator DB for this). |
 
 ## What is never recorded
 
@@ -90,10 +90,16 @@ a timed invocation. Capture deliberately no-ops when the command name is
 
 ## Span names
 
-Span names are **engine-internal** labels from existing instrumentation
-(e.g. `tantivy_index`, `run_tests`). They are stable per `#[instrument]` and
-must not embed user data (paths, queries). High-cardinality names are a bug;
-`doctor` will warn.
+Span names are **engine-internal** labels. `search` records a closed set:
+`auto_index`, `fts_rebuild`, `semantic_query`, and `lexical_query`
+(`lexical_query` is the Tantivy retrieve path — bm25, hybrid, and regex
+fallthrough). Names must not embed user data (paths, queries).
+High-cardinality names are a bug; `doctor` will warn.
+
+`--inner` groups by `(command, span_name)` and prints coverage
+`inner / outer (uninstrumented)` using wall-clock sums. Nested children
+are not added again into `inner`. `--flame` folds identical Brendan Gregg
+collapsed stacks; the trailing integer is **exclusive milliseconds**.
 
 Inner span ids and `parent_span_id` values are **run-scoped**
 (`{run_id}:{tracing_span_id}`) so concurrent CLI processes never collide when

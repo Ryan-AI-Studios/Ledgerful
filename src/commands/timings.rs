@@ -8,13 +8,13 @@ use crate::output::table::build_premium_table;
 use crate::output::table::format_timing_millis;
 use crate::state::storage::StorageManager;
 use crate::state::storage::timings::{
-    TimingQuery, count_timings, explain_command, explain_report_json, is_self_timing_enabled,
-    prune_timings, query_timings, set_self_timing_enabled, summarize_outer, table_exists,
+    CommandTimingCoverage, InnerSpanAgg, TimingQuery, aggregate_inner_spans, count_timings,
+    explain_command, explain_report_json, fold_flame_stacks, is_self_timing_enabled, prune_timings,
+    query_timings, set_self_timing_enabled, summarize_outer, table_exists,
 };
 use miette::{IntoDiagnostic, Result};
 use owo_colors::{OwoColorize, Stream, Style};
 use serde::Serialize;
-use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 /// Arguments for the expanded `timings` command surface.
@@ -210,62 +210,35 @@ fn execute_inner(conn: &rusqlite::Connection, args: &TimingsArgs) -> Result<()> 
         conn,
         &TimingQuery {
             outer_only: false,
-            inner_only: true,
+            inner_only: false,
             command: args.command.clone(),
             days: Some(days),
-            limit: args.top.map(|t| t.saturating_mul(50)).or(Some(500)),
+            limit: None,
         },
     )?;
 
-    // Aggregate by span_name: count + total + max.
-    let mut agg: BTreeMap<String, (u64, i64, i64)> = BTreeMap::new();
-    for r in &rows {
-        let name = r
-            .span_name
-            .clone()
-            .unwrap_or_else(|| "<unnamed>".to_string());
-        let entry = agg.entry(name).or_insert((0, 0, 0));
-        entry.0 += 1;
-        entry.1 += r.duration_ms;
-        entry.2 = entry.2.max(r.duration_ms);
-    }
+    let (aggs, coverage) = aggregate_inner_spans(&rows, args.top);
+    let payload = inner_json_payload(&aggs, &coverage);
 
-    #[derive(Serialize)]
-    struct InnerAgg {
-        span_name: String,
-        samples: u64,
-        total_ms: i64,
-        max_ms: i64,
-    }
-
-    let mut aggs: Vec<InnerAgg> = agg
-        .into_iter()
-        .map(|(span_name, (samples, total_ms, max_ms))| InnerAgg {
-            span_name,
-            samples,
-            total_ms,
-            max_ms,
-        })
-        .collect();
-    aggs.sort_by(|a, b| {
-        b.total_ms
-            .cmp(&a.total_ms)
-            .then_with(|| a.span_name.cmp(&b.span_name))
-    });
-    if let Some(top) = args.top {
-        aggs.truncate(top as usize);
+    if let Some(ref path) = args.export {
+        let json = serde_json::to_string_pretty(&payload).into_diagnostic()?;
+        std::fs::write(path, json).into_diagnostic()?;
+        if !args.json {
+            println!("Exported inner-span aggregates to {}.", path.display());
+        }
     }
 
     if args.json {
         println!(
             "{}",
-            serde_json::to_string_pretty(&envelope(&aggs)).into_diagnostic()?
+            serde_json::to_string_pretty(&payload).into_diagnostic()?
         );
         return Ok(());
     }
 
     if aggs.is_empty() {
         println!("No inner-span timing rows in the last {days} day(s).");
+        print_coverage_footer(&coverage);
         return Ok(());
     }
 
@@ -275,17 +248,47 @@ fn execute_inner(conn: &rusqlite::Connection, args: &TimingsArgs) -> Result<()> 
         "Inner spans"
             .if_supports_color(Stream::Stdout, |s| s.style(Style::new().bold().underline()))
     );
-    let mut table = build_premium_table(["Span", "Samples", "Total ms", "Max ms"]);
+    let mut table = build_premium_table(["Command", "Span", "Samples", "Total", "Max"]);
     for a in &aggs {
         table.add_row(vec![
+            a.command.clone(),
             a.span_name.clone(),
             a.samples.to_string(),
-            a.total_ms.to_string(),
-            a.max_ms.to_string(),
+            format_timing_millis(a.total_ms),
+            format_timing_millis(a.max_ms),
         ]);
     }
     println!("{table}");
+    print_coverage_footer(&coverage);
     Ok(())
+}
+
+fn inner_json_payload(
+    aggs: &[InnerSpanAgg],
+    coverage: &[CommandTimingCoverage],
+) -> serde_json::Value {
+    let mut value = serde_json::json!({
+        "schemaVersion": 1,
+        "data": aggs,
+    });
+    if !coverage.is_empty()
+        && let Ok(coverage_value) = serde_json::to_value(coverage)
+    {
+        value["coverage"] = coverage_value;
+    }
+    value
+}
+
+fn print_coverage_footer(coverage: &[CommandTimingCoverage]) {
+    for row in coverage {
+        println!(
+            "'{}': {} inner / {} outer ({} uninstrumented).",
+            row.command,
+            format_timing_millis(row.inner_ms),
+            format_timing_millis(row.outer_ms),
+            format_timing_millis(row.uninstrumented_ms)
+        );
+    }
 }
 
 fn execute_flame(conn: &rusqlite::Connection, args: &TimingsArgs) -> Result<()> {
@@ -297,24 +300,12 @@ fn execute_flame(conn: &rusqlite::Connection, args: &TimingsArgs) -> Result<()> 
             inner_only: false,
             command: args.command.clone(),
             days: Some(days),
-            limit: Some(5000),
+            limit: None,
         },
     )?;
 
-    // Group by run_id; build collapsed stacks: command;span1;span2 count
-    // For v1 we emit `command;span_name duration_ms` per inner row (and
-    // `command duration_ms` for outer), which speedscope accepts as collapsed stacks.
-    let mut lines: Vec<String> = Vec::new();
-    for r in &rows {
-        if let Some(ref span) = r.span_name {
-            lines.push(format!("{};{} {}", r.command, span, r.duration_ms.max(1)));
-        } else {
-            lines.push(format!("{} {}", r.command, r.duration_ms.max(1)));
-        }
-    }
-    lines.sort();
-
-    let body = lines.join("\n");
+    let fold = fold_flame_stacks(&rows, None);
+    let body = fold.collapsed;
     if let Some(ref path) = args.export {
         std::fs::write(path, &body).into_diagnostic()?;
         if !args.json {
@@ -324,14 +315,23 @@ fn execute_flame(conn: &rusqlite::Connection, args: &TimingsArgs) -> Result<()> 
     }
 
     if args.json {
+        let mut data = serde_json::json!({ "collapsed": body });
+        if !body.is_empty() {
+            data["unique_stacks"] = serde_json::json!(fold.unique_stacks);
+            data["total_weight_ms"] = serde_json::json!(fold.total_weight_ms);
+        }
         println!(
             "{}",
-            serde_json::to_string_pretty(&envelope(serde_json::json!({ "collapsed": body })))
-                .into_diagnostic()?
+            serde_json::to_string_pretty(&envelope(data)).into_diagnostic()?
         );
-    } else {
-        println!("{body}");
+        return Ok(());
     }
+
+    if body.is_empty() {
+        println!("No timing rows in the last {days} day(s).");
+        return Ok(());
+    }
+    println!("{body}");
     Ok(())
 }
 
@@ -546,6 +546,85 @@ mod tests {
             body.lines().any(|l| l.contains("verify;run_tests")),
             "inner collapsed stack missing: {body}"
         );
+    }
+
+    #[test]
+    fn inner_json_groups_by_command_and_exports() {
+        let mut conn = setup();
+        let rows = vec![
+            TimingRow {
+                run_id: "r1".into(),
+                ts_utc: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                command: "search".into(),
+                duration_ms: 100,
+                exit_code: 0,
+                repo_size_bytes: None,
+                argv_hash: None,
+                ledger_tx_id: None,
+                parent_span_id: None,
+                span_name: None,
+                notes: None,
+            },
+            TimingRow {
+                run_id: "r1".into(),
+                ts_utc: chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
+                command: "search".into(),
+                duration_ms: 40,
+                exit_code: 0,
+                repo_size_bytes: None,
+                argv_hash: None,
+                ledger_tx_id: None,
+                parent_span_id: None,
+                span_name: Some("lexical_query".into()),
+                notes: Some(r#"{"span_id":"r1:aa"}"#.into()),
+            },
+        ];
+        insert_timing_batch(&mut conn, &rows).unwrap();
+        let tmp = tempfile::tempdir().unwrap();
+        let export = tmp.path().join("inner.json");
+        let args = TimingsArgs {
+            global: false,
+            json: true,
+            top: None,
+            days: Some(3650),
+            export: Some(export.clone()),
+            inner: true,
+            command: Some("search".into()),
+            flame: false,
+            explain: None,
+            prune: false,
+            older_than: None,
+            opt_in: false,
+            opt_out: false,
+        };
+        execute_inner(&conn, &args).unwrap();
+        let body = std::fs::read_to_string(&export).unwrap();
+        let json: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(json["schemaVersion"], 1);
+        assert_eq!(json["data"][0]["command"], "search");
+        assert_eq!(json["data"][0]["span_name"], "lexical_query");
+        assert_eq!(json["coverage"][0]["uninstrumented_ms"], 60);
+    }
+
+    #[test]
+    fn empty_flame_prints_copy_not_blank() {
+        let conn = setup();
+        let args = TimingsArgs {
+            global: false,
+            json: false,
+            top: None,
+            days: Some(30),
+            export: None,
+            inner: false,
+            command: Some("missing".into()),
+            flame: true,
+            explain: None,
+            prune: false,
+            older_than: None,
+            opt_in: false,
+            opt_out: false,
+        };
+        execute_flame(&conn, &args).unwrap();
     }
 
     #[test]
