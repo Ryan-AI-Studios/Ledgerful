@@ -90,6 +90,9 @@ pub struct ConfidenceScorer<'a> {
     pub(super) precomputed_tested_symbols: Option<HashSet<i64>>,
     pub(super) precomputed_symbol_ids: Option<HashMap<(String, String, String), i64>>,
     pub(super) precomputed_git_activity: Option<GitActivityIndex>,
+    /// Bare names with Ambiguous/unresolved METHOD_CALL / TRAIT_DISPATCH /
+    /// DYNAMIC edges. `None` until first lock-4 lookup.
+    pub(super) unresolved_dispatch_names: std::cell::RefCell<Option<HashSet<String>>>,
 }
 
 impl<'a> ConfidenceScorer<'a> {
@@ -118,6 +121,7 @@ impl<'a> ConfidenceScorer<'a> {
             precomputed_tested_symbols: None,
             precomputed_symbol_ids: None,
             precomputed_git_activity: None,
+            unresolved_dispatch_names: std::cell::RefCell::new(None),
         }
     }
 
@@ -257,6 +261,9 @@ mod scoring;
 pub struct DeadCodeExplanation {
     pub file: String,
     pub symbols: Vec<DeadCodeSymbolExplanation>,
+    /// False when the file is missing from the index (distinct from
+    /// "indexed but no findings above threshold").
+    pub indexed: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -329,6 +336,7 @@ pub fn compute_dead_code_explanation(
     DeadCodeExplanation {
         file: file_path.to_string(),
         symbols,
+        indexed: true,
     }
 }
 
@@ -1195,6 +1203,7 @@ mod tests {
 
         let explanation = scorer.explain_file(Path::new("src/missing.rs")).unwrap();
         assert!(explanation.symbols.is_empty());
+        assert!(!explanation.indexed);
         assert_eq!(explanation.file, "src/missing.rs");
 
         // R1: no full-repo caches should be built for a missing file either.
@@ -1555,6 +1564,166 @@ mod tests {
         }
         let none_blend = scorer.blend(None, 1.0, None);
         assert!((none_blend - (1.0 / 3.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn unresolved_trait_dispatch_is_unknown_without_precompute() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        seed_rs_edge_and_mapping(conn);
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('src/lib.rs', 'Rust', 'hlib', 80, 'OK', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let lib_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'Bar.analyze', 'analyze', 'Function', 'INTERNAL', '2026-01-01')",
+            [lib_id],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'Bar.unused_name', 'unused_name', 'Function', 'INTERNAL', '2026-01-01')",
+            [lib_id],
+        )
+        .unwrap();
+        let entry_id: i64 = conn
+            .query_row(
+                "SELECT id FROM project_symbols WHERE symbol_name = 'entry_main'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let entry_file: i64 = conn
+            .query_row(
+                "SELECT file_id FROM project_symbols WHERE symbol_name = 'entry_main'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO structural_edges (caller_symbol_id, caller_file_id, callee_symbol_id, callee_file_id, unresolved_callee, call_kind, resolution_status) VALUES (?1, ?2, NULL, NULL, 'analyze', 'METHOD_CALL', 'AMBIGUOUS')",
+            [entry_id, entry_file],
+        )
+        .unwrap();
+        let config = default_config();
+        let scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
+        let analyze =
+            make_symbol_with_kind("analyze", SymbolKind::Function, vec![("impl_trait", "Foo")]);
+        assert_eq!(
+            scorer
+                .reachability_score(&analyze, Path::new("src/lib.rs"))
+                .unwrap(),
+            None
+        );
+        let finding = scorer
+            .score_symbol(&analyze, Path::new("src/lib.rs"))
+            .unwrap();
+        if let Some(f) = finding {
+            assert!(!f.factors.iter().any(|fac| matches!(
+                fac,
+                crate::impact::packet::ConfidenceFactor::UnreachableFromEntrypoints
+            )));
+        }
+        let unused_name = make_symbol_with_kind(
+            "unused_name",
+            SymbolKind::Function,
+            vec![("impl_trait", "Foo")],
+        );
+        assert_eq!(
+            scorer
+                .reachability_score(&unused_name, Path::new("src/lib.rs"))
+                .unwrap(),
+            Some(1.0)
+        );
+        let inherent = make_symbol_with_kind("analyze", SymbolKind::Function, Vec::new());
+        assert_eq!(
+            scorer
+                .reachability_score(&inherent, Path::new("src/lib.rs"))
+                .unwrap(),
+            Some(1.0)
+        );
+    }
+
+    #[test]
+    fn unresolved_trait_dispatch_is_unknown_on_precompute_cache_miss() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        seed_rs_edge_and_mapping(conn);
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('src/lib.rs', 'Rust', 'hlib', 80, 'OK', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let lib_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'Bar.analyze', 'analyze', 'Function', 'INTERNAL', '2026-01-01')",
+            [lib_id],
+        )
+        .unwrap();
+        let entry_id: i64 = conn
+            .query_row(
+                "SELECT id FROM project_symbols WHERE symbol_name = 'entry_main'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let entry_file: i64 = conn
+            .query_row(
+                "SELECT file_id FROM project_symbols WHERE symbol_name = 'entry_main'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        conn.execute(
+            "INSERT INTO structural_edges (caller_symbol_id, caller_file_id, callee_symbol_id, callee_file_id, unresolved_callee, call_kind, resolution_status) VALUES (?1, ?2, NULL, NULL, 'analyze', 'METHOD_CALL', 'AMBIGUOUS')",
+            [entry_id, entry_file],
+        )
+        .unwrap();
+        let config = default_config();
+        let mut scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
+        scorer.precomputed_reachable_symbols = Some(HashSet::new());
+        let analyze =
+            make_symbol_with_kind("analyze", SymbolKind::Function, vec![("impl_trait", "Foo")]);
+        assert_eq!(
+            scorer
+                .reachability_score(&analyze, Path::new("src/lib.rs"))
+                .unwrap(),
+            None
+        );
+    }
+
+    #[test]
+    fn unresolved_trait_dispatch_query_err_keeps_unreachable() {
+        let (storage, _cozo) = in_memory_storage_with_cozo();
+        let conn = storage.get_connection();
+        seed_rs_edge_and_mapping(conn);
+        conn.execute(
+            "INSERT INTO project_files (file_path, language, content_hash, file_size, parse_status, last_indexed_at) VALUES ('src/lib.rs', 'Rust', 'hlib', 80, 'OK', '2026-01-01')",
+            [],
+        )
+        .unwrap();
+        let lib_id = conn.last_insert_rowid();
+        conn.execute(
+            "INSERT INTO project_symbols (file_id, qualified_name, symbol_name, symbol_kind, entrypoint_kind, last_indexed_at) VALUES (?1, 'Bar.analyze', 'analyze', 'Function', 'INTERNAL', '2026-01-01')",
+            [lib_id],
+        )
+        .unwrap();
+        let config = default_config();
+        let mut scorer = ConfidenceScorer::new(None, &storage, &config, Path::new("."), false);
+        scorer.precomputed_reachable_symbols = Some(HashSet::new());
+        *scorer.entrypoints_present.borrow_mut() = Some(true);
+        *scorer.extension_has_edges.borrow_mut() = Some(["rs".to_string()].into_iter().collect());
+        conn.execute("DROP TABLE structural_edges", []).unwrap();
+        let analyze =
+            make_symbol_with_kind("analyze", SymbolKind::Function, vec![("impl_trait", "Foo")]);
+        assert_eq!(
+            scorer
+                .reachability_score(&analyze, Path::new("src/lib.rs"))
+                .unwrap(),
+            Some(1.0),
+            "lock-4 query Err must keep unreachable, not unknown"
+        );
     }
 
     #[test]

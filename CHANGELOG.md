@@ -6,6 +6,13 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ## [Unreleased]
 
+### Fixed
+
+- **Dead-code trait dispatch (0363):** Trait-impl
+  Methods with Ambiguous/unresolved method-call
+  edges are unknown reachability, not 97% dead.
+  0314 kinds and 0149 envelope unchanged.
+
 ### Changed
 
 - **Config readout provenance (0362):** `config verify` human unscoped

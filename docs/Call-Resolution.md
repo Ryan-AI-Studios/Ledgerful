@@ -324,3 +324,6 @@ when a local `mod fs` exists elsewhere in the crate.
 dead-code evidence, and structural coupling only consume non-null callees. Making
 resolution more precise therefore **moves** those outputs (more or fewer edges
 with a concrete callee). That is intentional and is called out in `CHANGELOG.md`.
+The dead-code scorer also inspects NULL Ambiguous method-call rows as unknown
+reachability for labeled trait-impl callables; it does not treat those rows as
+resolved callees.

@@ -190,7 +190,7 @@ pub fn execute_dead_code_with_prompt(
             );
         }
         let explanation = scorer.explain_file(target)?;
-        if explanation.symbols.is_empty() {
+        if !explanation.indexed {
             println!(
                 "\nFile '{}' not found in the knowledge graph. Run `ledgerful index --incremental` if it was added recently.",
                 file_path

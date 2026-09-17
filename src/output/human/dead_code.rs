@@ -12,8 +12,13 @@ pub const DEAD_CODE_EMPTY_STATE: &str = "No findings above threshold (heuristic 
 /// Human-only scope line (not part of the frozen heuristic note).
 pub const DEAD_CODE_SCOPE_LINE: &str = "Only Function/Method symbols are scored.";
 
+/// Human-only 0363 line (not part of the frozen heuristic note).
+pub const DEAD_CODE_DISPATCH_SCOPE_LINE: &str =
+    "Trait-impl methods with unresolved dispatch are not scored as unreachable.";
+
 pub fn print_dead_code_scope_line() {
     println!("  {DEAD_CODE_SCOPE_LINE}");
+    println!("  {DEAD_CODE_DISPATCH_SCOPE_LINE}");
 }
 
 pub fn print_dead_code_omit_footer(test_paths: usize, vendor_paths: usize) {

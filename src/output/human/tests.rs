@@ -872,6 +872,8 @@ fn dead_code_honesty_strings_present() {
     assert!(DEAD_CODE_HONESTY_FOOTER.contains("not proof of dead code"));
     assert!(DEAD_CODE_EMPTY_STATE.contains("heuristic analysis"));
     assert!(!DEAD_CODE_EMPTY_STATE.contains("No dead code found"));
+    assert!(DEAD_CODE_SCOPE_LINE.contains("Function/Method"));
+    assert!(DEAD_CODE_DISPATCH_SCOPE_LINE.contains("unresolved dispatch"));
 }
 
 fn dead_code_finding(
