@@ -239,6 +239,9 @@ pub fn extract_symbols(content: &str) -> Result<Option<Vec<Symbol>>> {
                     "function_signature_item" => qualify_trait_method(node, content, &name),
                     "function_item" => {
                         if let Some(qn) = qualify_impl_method(node, content, &name) {
+                            if let Some(trait_name) = impl_trait_base_name(node, content) {
+                                metadata.insert("impl_trait".to_string(), trait_name);
+                            }
                             Some(qn)
                         } else if let Some(qn) = qualify_trait_method(node, content, &name) {
                             kind = SymbolKind::Method;
@@ -427,27 +430,61 @@ fn qualify_trait_method(node: Node<'_>, content: &str, method_name: &str) -> Opt
 /// Codex 0088 P2: walking past an intervening `function_item` mislabeled
 /// `impl Foo { fn bar() { fn helper() {} } }` as `Foo.helper`.
 fn qualify_impl_method(node: Node<'_>, content: &str, method_name: &str) -> Option<String> {
+    let impl_item = enclosing_direct_impl_item(node)?;
+    let type_node = impl_item.child_by_field_name("type")?;
+    let type_name = first_type_identifier(type_node, content)?;
+    Some(format!("{type_name}.{method_name}"))
+}
+
+/// Same ancestor walk as [`qualify_impl_method`]: only a *direct* impl method
+/// (not a nested local `fn`) yields `Some`.
+fn enclosing_direct_impl_item<'tree>(node: Node<'tree>) -> Option<Node<'tree>> {
     let mut current = node.parent();
     while let Some(n) = current {
         if n.kind() == "impl_item" {
-            let type_node = n.child_by_field_name("type")?;
-            let type_name = first_type_identifier(type_node, content)?;
-            return Some(format!("{type_name}.{method_name}"));
+            return Some(n);
         }
         // Nested local `fn` inside a method (or free function) body: stop.
-        // Parent chain for `helper` is block → function_item(method) → … →
-        // impl_item; without this guard we would emit `TypeName.helper`.
         if matches!(n.kind(), "function_item" | "function_signature_item") {
             return None;
         }
-        // Stop at item containers so we do not climb into an outer impl for a
-        // free function nested via macros or other odd structures.
         if matches!(n.kind(), "source_file" | "mod_item" | "trait_item") {
             return None;
         }
         current = n.parent();
     }
     None
+}
+
+/// Unqualified trait ident on `impl Trait for Type` methods (`Display`, not
+/// `std::fmt::Display`). Inherent impls, trait declarations, nested locals,
+/// and negative `impl !Trait` return `None`.
+fn impl_trait_base_name(node: Node<'_>, content: &str) -> Option<String> {
+    let impl_item = enclosing_direct_impl_item(node)?;
+    if impl_item_is_negative(impl_item) {
+        return None;
+    }
+    let trait_node = impl_item.child_by_field_name("trait")?;
+    trait_base_identifier(trait_node, content)
+}
+
+fn impl_item_is_negative(impl_item: Node<'_>) -> bool {
+    let mut c = impl_item.walk();
+    impl_item.children(&mut c).any(|ch| ch.kind() == "!")
+}
+
+fn trait_base_identifier(node: Node<'_>, content: &str) -> Option<String> {
+    match node.kind() {
+        "type_identifier" => node_text_owned(node, content),
+        "scoped_type_identifier" => node
+            .child_by_field_name("name")
+            .and_then(|n| node_text_owned(n, content))
+            .or_else(|| first_type_identifier(node, content)),
+        "generic_type" => node
+            .child_by_field_name("type")
+            .and_then(|n| trait_base_identifier(n, content)),
+        _ => first_type_identifier(node, content),
+    }
 }
 
 /// First `type_identifier` under a type node (handles plain and generic types).
@@ -909,12 +946,77 @@ mod tests {
             .find(|s| s.name == "fmt")
             .expect("fmt method");
         assert_eq!(fmt.qualified_name.as_deref(), Some("Foo.fmt"));
+        assert_eq!(fmt.kind, SymbolKind::Function);
+        assert_eq!(
+            fmt.metadata.get("impl_trait").map(String::as_str),
+            Some("Display")
+        );
+        assert!(!foo_new.metadata.contains_key("impl_trait"));
         // Free functions stay unqualified.
         let free = symbols
             .iter()
             .find(|s| s.name == "free_new")
             .expect("free_new");
         assert_eq!(free.qualified_name, None);
+        assert!(!free.metadata.contains_key("impl_trait"));
+    }
+
+    #[test]
+    fn impl_trait_metadata_plain_scoped_generic_nested_and_negative() {
+        let content = r#"
+            struct Bar;
+            trait Foo { fn analyze(&self); }
+            impl Foo for Bar {
+                fn analyze(&self) {}
+            }
+            impl std::fmt::Display for Bar {
+                fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { Ok(()) }
+            }
+            impl From<u8> for Bar {
+                fn from(v: u8) -> Self { let _ = v; Bar }
+            }
+            impl Bar {
+                fn inherent(&self) {
+                    fn helper() {}
+                    helper();
+                }
+            }
+            trait Baz { fn unused(&self); }
+            impl !Baz for Bar {}
+            trait Q { fn name(&self); }
+        "#;
+        let symbols = extract_symbols(content).unwrap().unwrap();
+        let analyze = symbols
+            .iter()
+            .find(|s| s.name == "analyze" && s.qualified_name.as_deref() == Some("Bar.analyze"))
+            .expect("Bar.analyze");
+        assert_eq!(analyze.kind, SymbolKind::Function);
+        assert_eq!(
+            analyze.metadata.get("impl_trait").map(String::as_str),
+            Some("Foo")
+        );
+        let fmt = symbols.iter().find(|s| s.name == "fmt").expect("fmt");
+        assert_eq!(
+            fmt.metadata.get("impl_trait").map(String::as_str),
+            Some("Display")
+        );
+        let from = symbols.iter().find(|s| s.name == "from").expect("from");
+        assert_eq!(
+            from.metadata.get("impl_trait").map(String::as_str),
+            Some("From")
+        );
+        let inherent = symbols
+            .iter()
+            .find(|s| s.name == "inherent")
+            .expect("inherent");
+        assert!(!inherent.metadata.contains_key("impl_trait"));
+        let helper = symbols.iter().find(|s| s.name == "helper").expect("helper");
+        assert!(!helper.metadata.contains_key("impl_trait"));
+        let decl = symbols
+            .iter()
+            .find(|s| s.name == "name" && s.qualified_name.as_deref() == Some("Q.name"))
+            .expect("trait decl name");
+        assert!(!decl.metadata.contains_key("impl_trait"));
     }
 
     /// Codex R2 P3: trait default methods (`function_item` inside trait) get

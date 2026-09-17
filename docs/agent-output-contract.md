@@ -896,7 +896,7 @@ SUCCESS lines, and stale-index banners are off under `--json`.
 | `truncated` | bool | **Honest overfetch:** `scan_repo(limit + 1)` then `truncated = len > limit`; display cap is `limit` |
 | `findingCount` | number | `findings.len()` after cap |
 | `findings` | array | Sorted confidence desc; reuses `DeadCodeFinding` Serialize |
-| `findings[].factors` | **mixed shape** | Unit variants serialize as **camelCase strings** (`"noTestCoverage"`, `"unreachableFromEntrypoints"`); `GitInactive` is an object `{"gitInactive":{"daysSinceLastCommit":N}}`. **Do not** flatten to string-only |
+| `findings[].factors` | **mixed shape** | Unit variants serialize as **camelCase strings** (`"noTestCoverage"`, `"unreachableFromEntrypoints"`); `GitInactive` is an object `{"gitInactive":{"daysSinceLastCommit":N}}`. **Do not** flatten to string-only. **0363:** labeled trait-impl callables omit `unreachableFromEntrypoints` when dispatch is Ambiguous/unresolved (unknown reachability). No new finding keys |
 | `heuristicNote` | string | Always present; findings are heuristic, not proof |
 
 **Empty results:** `findings: []`, `findingCount: 0`, exit **0**.

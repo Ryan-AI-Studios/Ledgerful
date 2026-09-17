@@ -38,7 +38,7 @@ impl<'a> ConfidenceScorer<'a> {
             if cache.contains(&symbol_id) {
                 return Ok(Some(0.0));
             }
-            return Ok(Some(1.0));
+            return self.unreachable_or_unresolved_dispatch(symbol);
         }
 
         let reachable = match self.cozo {
@@ -48,12 +48,64 @@ impl<'a> ConfidenceScorer<'a> {
 
         match reachable {
             Ok(true) => Ok(Some(0.0)),
-            Ok(false) => Ok(Some(1.0)),
+            Ok(false) => self.unreachable_or_unresolved_dispatch(symbol),
             Err(e) => {
                 warn!("Reachability query failed for {}: {}", symbol.name, e);
                 Ok(None)
             }
         }
+    }
+
+    /// Lock 4: Ambiguous/unresolved trait-impl dispatch is unknown, not dead.
+    /// Query `Err` keeps unreachable (do not convert a broken lookup into unknown).
+    fn unreachable_or_unresolved_dispatch(&self, symbol: &Symbol) -> Result<Option<f64>> {
+        match self.has_unresolved_trait_dispatch(symbol) {
+            Ok(true) => Ok(None),
+            Ok(false) => Ok(Some(1.0)),
+            Err(e) => {
+                warn!(
+                    "Unresolved trait-dispatch lookup failed for {}: {}",
+                    symbol.name, e
+                );
+                Ok(Some(1.0))
+            }
+        }
+    }
+
+    pub(super) fn has_unresolved_trait_dispatch(&self, symbol: &Symbol) -> Result<bool> {
+        if !symbol.metadata.contains_key("impl_trait") {
+            return Ok(false);
+        }
+        {
+            let cache = self.unresolved_dispatch_names.borrow();
+            if let Some(names) = cache.as_ref() {
+                return Ok(names.contains(&symbol.name));
+            }
+        }
+        let loaded = self.load_unresolved_dispatch_names()?;
+        let hit = loaded.contains(&symbol.name);
+        *self.unresolved_dispatch_names.borrow_mut() = Some(loaded);
+        Ok(hit)
+    }
+
+    fn load_unresolved_dispatch_names(&self) -> Result<HashSet<String>> {
+        let conn = self.storage.get_connection();
+        let mut stmt = conn
+            .prepare(
+                "SELECT DISTINCT unresolved_callee FROM structural_edges \
+                 WHERE unresolved_callee IS NOT NULL \
+                   AND resolution_status IN ('AMBIGUOUS', 'UNRESOLVED', 'CAPPED') \
+                   AND call_kind IN ('METHOD_CALL', 'TRAIT_DISPATCH', 'DYNAMIC')",
+            )
+            .into_diagnostic()?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .into_diagnostic()?;
+        let mut names = HashSet::new();
+        for row in rows {
+            names.insert(row.into_diagnostic()?);
+        }
+        Ok(names)
     }
 
     fn reachability_via_cozo(&self, symbol: &Symbol, cozo: &CozoStorage) -> Result<bool> {
@@ -864,6 +916,28 @@ impl<'a> ConfidenceScorer<'a> {
     // ------------------------------------------------------------------
     // Symbol resolution helpers
     // ------------------------------------------------------------------
+
+    pub(super) fn project_file_indexed(&self, stored_path: &str) -> Result<bool> {
+        let conn = self.storage.get_connection();
+        let count: i64 = if cfg!(target_os = "windows") {
+            conn.query_row(
+                "SELECT COUNT(*) FROM project_files \
+                 WHERE LOWER(file_path) = LOWER(?1) AND parse_status != 'DELETED'",
+                [stored_path],
+                |row| row.get(0),
+            )
+            .into_diagnostic()?
+        } else {
+            conn.query_row(
+                "SELECT COUNT(*) FROM project_files \
+                 WHERE file_path = ?1 AND parse_status != 'DELETED'",
+                [stored_path],
+                |row| row.get(0),
+            )
+            .into_diagnostic()?
+        };
+        Ok(count > 0)
+    }
 
     pub(super) fn get_symbols_for_file(&self, file_path: &Path) -> Result<FileSymbols> {
         let original_input = file_path.to_string_lossy().to_string();

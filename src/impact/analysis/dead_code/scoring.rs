@@ -148,7 +148,11 @@ impl<'a> ConfidenceScorer<'a> {
         self.precompute_for_file_with_symbols(&resolved)?;
         let findings = self.score_resolved_symbols_inner(&resolved, false)?;
         let file_str = file_path.display().to_string();
-        Ok(crate::impact::analysis::dead_code::compute_dead_code_explanation(&file_str, &findings))
+        let mut explanation =
+            crate::impact::analysis::dead_code::compute_dead_code_explanation(&file_str, &findings);
+        explanation.indexed =
+            !resolved.symbols.is_empty() || self.project_file_indexed(&resolved.stored_path)?;
+        Ok(explanation)
     }
 
     /// Full-repo scan (used by the standalone `dead-code` command).

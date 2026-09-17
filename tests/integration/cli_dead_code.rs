@@ -1,6 +1,7 @@
 use crate::common::{DirGuard, git_add_and_commit, run_cli, setup_git_repo};
 use ledgerful::commands::dead_code::execute_dead_code;
 use ledgerful::commands::init::execute_init;
+use serial_test::serial;
 use std::fs;
 use tempfile::tempdir;
 
@@ -388,4 +389,180 @@ fn seed_dead_code_fixture(symbol_count: usize) {
     .unwrap();
 
     storage.shutdown().unwrap();
+}
+
+/// 0363: dyn trait-impl `analyze` is not Unreachable; unused free fn still is;
+/// unused trait-impl `name` stays Unreachable when this fixture has no `.name()` calls.
+#[test]
+#[serial(cwd)]
+fn dead_code_trait_impl_analyze_not_unreachable_unused_stays() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let _guard = DirGuard::new(root);
+    execute_init(false, false).unwrap();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("src").join("main.rs"),
+        r#"
+trait P {
+    fn analyze(&self);
+    fn name(&self);
+}
+struct T;
+impl P for T {
+    fn analyze(&self) {}
+    fn name(&self) {}
+}
+fn run(p: &dyn P) {
+    p.analyze();
+}
+fn unused() {}
+fn main() {
+    run(&T);
+}
+"#,
+    )
+    .unwrap();
+    git_add_and_commit(root, "fixture");
+
+    let (stdout, stderr, code) = run_cli(root, &["index", "--incremental"]);
+    assert_eq!(
+        code, 0,
+        "index --incremental failed stdout={stdout} stderr={stderr}"
+    );
+
+    let (stdout, stderr, code) = run_cli(
+        root,
+        &["dead-code", "--json", "--threshold", "0", "--limit", "50"],
+    );
+    assert_eq!(code, 0, "dead-code --json failed stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim())
+        .unwrap_or_else(|e| panic!("json parse: {e}; stdout={stdout}"));
+    assert_eq!(v["schemaVersion"], 1);
+    let findings = v["findings"].as_array().expect("findings");
+
+    fn factors_of<'a>(
+        findings: &'a [serde_json::Value],
+        name: &str,
+    ) -> Option<&'a Vec<serde_json::Value>> {
+        findings
+            .iter()
+            .find(|f| f["symbolName"] == name)
+            .and_then(|f| f["factors"].as_array())
+    }
+
+    let analyze_rows: Vec<&serde_json::Value> = findings
+        .iter()
+        .filter(|f| f["symbolName"] == "analyze")
+        .collect();
+    assert!(
+        !analyze_rows.is_empty(),
+        "expected analyze rows at threshold 0; findings={findings:?}"
+    );
+    let impl_analyze_omits_unreachable = analyze_rows.iter().any(|f| {
+        !f["factors"].as_array().is_some_and(|factors| {
+            factors
+                .iter()
+                .any(|x| x.as_str() == Some("unreachableFromEntrypoints"))
+        })
+    });
+    assert!(
+        impl_analyze_omits_unreachable,
+        "impl analyze (impl_trait) must omit Unreachable; rows={analyze_rows:?}"
+    );
+
+    let unused_factors = factors_of(findings, "unused")
+        .unwrap_or_else(|| panic!("unused must be listed at threshold 0; findings={findings:?}"));
+    assert!(
+        unused_factors
+            .iter()
+            .any(|x| x.as_str() == Some("unreachableFromEntrypoints")),
+        "unused must stay Unreachable: {unused_factors:?}"
+    );
+
+    let name_factors = factors_of(findings, "name")
+        .unwrap_or_else(|| panic!("name must stay listed in this fixture; findings={findings:?}"));
+    assert!(
+        name_factors
+            .iter()
+            .any(|x| x.as_str() == Some("unreachableFromEntrypoints")),
+        "unused trait-impl name must stay Unreachable: {name_factors:?}"
+    );
+
+    let (expl, eerr, ecode) = run_cli(root, &["dead-code", "--explain", "src/main.rs"]);
+    assert_eq!(ecode, 0, "explain failed stderr={eerr}");
+    assert!(
+        expl.contains("Only Function/Method symbols are scored."),
+        "0314 scope line missing: {expl}"
+    );
+    assert!(
+        expl.contains("Trait-impl methods with unresolved dispatch are not scored as unreachable."),
+        "0363 scope line missing: {expl}"
+    );
+    assert!(
+        !expl.contains("File 'src/main.rs' not found"),
+        "indexed file must not use not-found copy: {expl}"
+    );
+}
+
+/// 0363 / agy O-02: indexed file whose callables all drop below threshold.
+#[test]
+#[serial(cwd)]
+fn dead_code_explain_indexed_empty_findings_copy() {
+    let tmp = tempdir().unwrap();
+    let root = tmp.path();
+    setup_git_repo(root);
+    fs::write(root.join("dummy.txt"), "content").unwrap();
+    git_add_and_commit(root, "initial");
+
+    let _guard = DirGuard::new(root);
+    execute_init(false, false).unwrap();
+    fs::create_dir_all(root.join("src")).unwrap();
+    fs::write(
+        root.join("src").join("main.rs"),
+        r#"
+trait P { fn analyze(&self); }
+struct T;
+impl P for T {
+    fn analyze(&self) {}
+}
+fn run(p: &dyn P) { p.analyze(); }
+fn main() { run(&T); }
+"#,
+    )
+    .unwrap();
+    git_add_and_commit(root, "analyze-only");
+
+    let (stdout, stderr, code) = run_cli(root, &["index", "--incremental"]);
+    assert_eq!(
+        code, 0,
+        "index --incremental failed stdout={stdout} stderr={stderr}"
+    );
+
+    let (expl, eerr, ecode) = run_cli(root, &["dead-code", "--explain", "src/main.rs"]);
+    assert_eq!(ecode, 0, "explain failed stderr={eerr}");
+    assert!(
+        expl.contains("No findings for 'src/main.rs' above threshold"),
+        "empty indexed explain copy missing: {expl}"
+    );
+    assert!(
+        expl.contains("Heuristic evidence — not proof of dead code"),
+        "honesty footer missing: {expl}"
+    );
+    assert!(
+        expl.contains("Only Function/Method symbols are scored."),
+        "0314 scope line missing: {expl}"
+    );
+    assert!(
+        expl.contains("Trait-impl methods with unresolved dispatch are not scored as unreachable."),
+        "0363 scope line missing: {expl}"
+    );
+    assert!(
+        !expl.contains("not found in the knowledge graph"),
+        "must not use not-found copy: {expl}"
+    );
 }
