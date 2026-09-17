@@ -540,10 +540,15 @@ fn cursor_json_lag_reasons() {
     assert_eq!(v["lag"]["reason"], "hlcNotWallClock");
     assert_eq!(v["lastExtractHlc"], "hlc-a");
     assert_eq!(v["lastApplyHlc"], "hlc-b");
+    assert_eq!(v["watermarkCompare"], "incomparable");
+    assert_eq!(v["lag"]["status"], "unknown");
 
     let (human, _, hcode) = run_cli(tmp.path(), &["sync", "cursor"]);
     assert_eq!(hcode, 0);
     assert!(human.contains("Last Extract HLC: hlc-a"));
+    assert!(human.contains("Hybrid Logical Clock"));
+    assert!(!human.contains("Extract is ahead of Apply."));
+    assert!(!human.contains("Trusted peers"));
 }
 
 #[test]
@@ -607,4 +612,300 @@ fn log_json_states() {
         let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
         assert_eq!(v["logState"], "unreadable");
     }
+}
+
+#[test]
+#[cfg(feature = "sync")]
+#[serial_test::serial(env)]
+fn cursor_json_watermark_compare_parseable_and_human() {
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+    let _guard = DirGuard::from_utf8(root);
+
+    ledgerful::commands::init::execute_init(false, false).unwrap();
+    let (stdout, _, code) = run_cli(tmp.path(), &["sync", "cursor", "--json"]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert!(v.get("watermarkCompare").is_none());
+
+    let _id = init_device(root);
+    let layout = ledgerful::state::layout::Layout::new(root);
+    let storage = StorageManager::init_with_layout(&layout).unwrap();
+    storage
+        .get_connection()
+        .execute(
+            "UPDATE sync_state SET last_extract_hlc = ?1, last_apply_hlc = ?2 WHERE id = 1",
+            ["1700000000001-0000-n", "1700000000000-0000-n"],
+        )
+        .unwrap();
+    storage.shutdown().unwrap();
+
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["sync", "cursor", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["watermarkCompare"], "extractAhead");
+    assert_eq!(v["lag"]["status"], "unknown");
+    let (human, _, hcode) = run_cli(tmp.path(), &["sync", "cursor"]);
+    assert_eq!(hcode, 0);
+    assert!(human.contains("Extract is ahead of Apply."));
+}
+
+#[test]
+#[cfg(feature = "sync")]
+#[serial_test::serial(env)]
+fn log_events_failed_filter_and_disabled_run_writes_nothing() {
+    use ledgerful::config::load::load_config;
+    use ledgerful::sync::event_log::{
+        EVENT_EXTRACT, EVENT_QUARANTINE, SyncLogEvent, append_sync_event,
+    };
+
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+    let _guard = DirGuard::from_utf8(root);
+    let _secret = TempEnv::set("LEDGERFUL_SYNC_SECRET", TEST_SECRET);
+    let _id = init_device(root);
+
+    let layout = ledgerful::state::layout::Layout::new(root);
+    let config = load_config(&layout).unwrap();
+    assert!(!config.sync.enabled);
+    ledgerful::sync::run(
+        &config,
+        layout.state_dir.as_std_path(),
+        TEST_SECRET.as_bytes(),
+    )
+    .unwrap();
+    let log_path = layout.state_dir.join("sync").join("sync.log");
+    assert!(
+        !log_path.exists(),
+        "disabled sync::run must not create sync.log"
+    );
+
+    let (stdout, _, code) = run_cli(tmp.path(), &["sync", "log", "--json"]);
+    assert_eq!(code, 0);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["logState"], "noLog");
+
+    append_sync_event(
+        layout.state_dir.as_std_path(),
+        &SyncLogEvent::new(EVENT_EXTRACT, true).with_bundle("one.lfbundle"),
+    )
+    .unwrap();
+    append_sync_event(
+        layout.state_dir.as_std_path(),
+        &SyncLogEvent::new(EVENT_QUARANTINE, false).with_bundle("peer/bad.lfbundle"),
+    )
+    .unwrap();
+
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["sync", "log", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["logState"], "ok");
+    assert_eq!(v["lineCount"], 2);
+    assert_eq!(v["events"].as_array().unwrap().len(), 2);
+    assert!(v.get("failed").is_none());
+
+    let (stdout, stderr, code) = run_cli(tmp.path(), &["sync", "log", "--failed", "--json"]);
+    assert_eq!(code, 0, "stderr={stderr}");
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["failed"], true);
+    assert_eq!(v["lineCount"], 2);
+    assert_eq!(v["events"].as_array().unwrap().len(), 1);
+    assert_eq!(v["events"][0]["event"], "quarantine");
+    assert_eq!(v["events"][0]["ok"], false);
+
+    let (human, _, hcode) = run_cli(tmp.path(), &["sync", "log", "--failed"]);
+    assert_eq!(hcode, 0);
+    assert!(human.contains("quarantine"));
+    assert!(!human.contains("one.lfbundle"));
+}
+
+#[test]
+#[cfg(feature = "sync")]
+#[serial_test::serial(env)]
+fn verify_json_verdicts_signed_tampered_missing() {
+    use ed25519_dalek::{Signer, SigningKey};
+    use ledgerful::sync::bundle::{Bundle, Manifest};
+    use ledgerful::sync::hlc::HLC;
+    use std::io::Read;
+
+    let tmp = tempdir().unwrap();
+    let root = Utf8Path::from_path(tmp.path()).unwrap();
+    setup_git_repo(tmp.path());
+    let _guard = DirGuard::from_utf8(root);
+    let _secret = TempEnv::set("LEDGERFUL_SYNC_SECRET", TEST_SECRET);
+    let device_id = init_device(root);
+
+    let key_bytes = fs::read(root.join(".ledgerful/sync/device.key")).unwrap();
+    let sign_key = SigningKey::from_bytes(&key_bytes.as_slice().try_into().unwrap());
+    let mut manifest = Manifest {
+        version: 1,
+        device_id: device_id.clone(),
+        bundle_hlc: HLC {
+            physical_ms: 1_700_000_000_000,
+            logical: 0,
+            node_id: device_id.clone(),
+        },
+        manifest_sha256: String::new(),
+        entry_count: 0,
+        entries: vec![],
+        tombstones: vec![],
+    };
+    let (zip, _) = Bundle::build(&mut manifest, &sign_key).unwrap();
+    let enc = Bundle::encrypt(&zip, TEST_SECRET.as_bytes()).unwrap();
+    let ok_path = tmp.path().join("ok.lfbundle");
+    fs::write(&ok_path, &enc).unwrap();
+
+    let (stdout, stderr, code) = run_cli(
+        tmp.path(),
+        &["sync", "verify", ok_path.to_str().unwrap(), "--json"],
+    );
+    assert_eq!(code, 0, "stderr={stderr}");
+    assert!(!stdout.contains("Bundle Verification Success"));
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["schemaVersion"], 1);
+    assert_eq!(v["ok"], true);
+    assert_eq!(v["verdict"], "ok");
+    assert_eq!(v["deviceId"], device_id);
+    assert_eq!(v["entryCount"], 0);
+
+    let (human, _, hcode) = run_cli(tmp.path(), &["sync", "verify", ok_path.to_str().unwrap()]);
+    assert_eq!(hcode, 0);
+    assert!(human.contains("Bundle Verification Success"));
+    assert!(human.contains("Signature:      Valid (Ed25519)"));
+
+    let mut flipped = enc.clone();
+    let mid = flipped.len() / 2;
+    flipped[mid] ^= 0x01;
+    let bad_path = tmp.path().join("aead.lfbundle");
+    fs::write(&bad_path, &flipped).unwrap();
+    let (stdout, _, code) = run_cli(
+        tmp.path(),
+        &["sync", "verify", bad_path.to_str().unwrap(), "--json"],
+    );
+    assert_eq!(code, 1);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["ok"], false);
+    assert_eq!(v["verdict"], "decryptFailed");
+
+    let sig_tampered = rewrite_zip_member(&zip, "device.sig", &[0u8; 64]);
+    let enc_sig = Bundle::encrypt(&sig_tampered, TEST_SECRET.as_bytes()).unwrap();
+    let sig_path = tmp.path().join("sig.lfbundle");
+    fs::write(&sig_path, &enc_sig).unwrap();
+    let (stdout, _, code) = run_cli(
+        tmp.path(),
+        &["sync", "verify", sig_path.to_str().unwrap(), "--json"],
+    );
+    assert_eq!(code, 1);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["verdict"], "signatureFailed");
+    assert_eq!(v["ok"], false);
+
+    let mut archive = zip::ZipArchive::new(std::io::Cursor::new(zip.clone())).unwrap();
+    let mut manifest_json = Vec::new();
+    archive
+        .by_name("manifest.json")
+        .unwrap()
+        .read_to_end(&mut manifest_json)
+        .unwrap();
+    let mut val: serde_json::Value = serde_json::from_slice(&manifest_json).unwrap();
+    val["manifest_sha256"] = serde_json::json!("00".repeat(32));
+    let new_manifest = serde_json::to_vec(&val).unwrap();
+    let new_sig = sign_key.sign(&new_manifest).to_bytes();
+    let mut integrity_zip = rewrite_zip_member(&zip, "manifest.json", &new_manifest);
+    integrity_zip = rewrite_zip_member(&integrity_zip, "device.sig", &new_sig);
+    let enc_int = Bundle::encrypt(&integrity_zip, TEST_SECRET.as_bytes()).unwrap();
+    let int_path = tmp.path().join("int.lfbundle");
+    fs::write(&int_path, &enc_int).unwrap();
+    let (stdout, _, code) = run_cli(
+        tmp.path(),
+        &["sync", "verify", int_path.to_str().unwrap(), "--json"],
+    );
+    assert_eq!(code, 1);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["verdict"], "integrityFailed");
+
+    let foreign = SigningKey::generate(&mut rand::rng());
+    let foreign_id = "device-foreign1";
+    let mut foreign_manifest = Manifest {
+        version: 1,
+        device_id: foreign_id.to_string(),
+        bundle_hlc: HLC {
+            physical_ms: 1_700_000_000_000,
+            logical: 0,
+            node_id: foreign_id.to_string(),
+        },
+        manifest_sha256: String::new(),
+        entry_count: 0,
+        entries: vec![],
+        tombstones: vec![],
+    };
+    let (fzip, _) = Bundle::build(&mut foreign_manifest, &foreign).unwrap();
+    let fenc = Bundle::encrypt(&fzip, TEST_SECRET.as_bytes()).unwrap();
+    let fpath = tmp.path().join("foreign.lfbundle");
+    fs::write(&fpath, &fenc).unwrap();
+    let (stdout, _, code) = run_cli(
+        tmp.path(),
+        &["sync", "verify", fpath.to_str().unwrap(), "--json"],
+    );
+    assert_eq!(code, 1);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["verdict"], "unknownDevice");
+    assert!(
+        v["message"].as_str().unwrap_or("").contains(foreign_id),
+        "unknownDevice message must name device: {}",
+        v["message"]
+    );
+
+    let missing = tmp.path().join("no-such.lfbundle");
+    let (stdout, _, code) = run_cli(
+        tmp.path(),
+        &["sync", "verify", missing.to_str().unwrap(), "--json"],
+    );
+    assert_eq!(code, 1);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["verdict"], "missingFile");
+    assert_eq!(v["ok"], false);
+
+    drop(_secret);
+    let _gone = TempEnv::remove("LEDGERFUL_SYNC_SECRET");
+    let (stdout, _, code) = run_cli(
+        tmp.path(),
+        &["sync", "verify", ok_path.to_str().unwrap(), "--json"],
+    );
+    assert_eq!(code, 1);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).unwrap();
+    assert_eq!(v["verdict"], "missingSecret");
+    assert!(
+        v["message"]
+            .as_str()
+            .unwrap_or("")
+            .contains("LEDGERFUL_SYNC_SECRET")
+    );
+}
+
+#[cfg(feature = "sync")]
+fn rewrite_zip_member(zip_bytes: &[u8], name: &str, new_bytes: &[u8]) -> Vec<u8> {
+    use std::io::{Read, Write};
+    let mut src = zip::ZipArchive::new(std::io::Cursor::new(zip_bytes.to_vec())).unwrap();
+    let mut out = Vec::new();
+    {
+        let mut writer = zip::ZipWriter::new(std::io::Cursor::new(&mut out));
+        let options = zip::write::SimpleFileOptions::default();
+        for i in 0..src.len() {
+            let mut file = src.by_index(i).unwrap();
+            let file_name = file.name().to_string();
+            let mut buf = Vec::new();
+            file.read_to_end(&mut buf).unwrap();
+            writer.start_file(&file_name, options).unwrap();
+            if file_name == name {
+                writer.write_all(new_bytes).unwrap();
+            } else {
+                writer.write_all(&buf).unwrap();
+            }
+        }
+        writer.finish().unwrap();
+    }
+    out
 }

@@ -132,6 +132,8 @@ fn machine_mode_selected_for_json_flags() {
         assert!(parse(&["sync", "cursor", "--json"]).is_machine_output());
         assert!(!parse(&["sync", "log"]).is_machine_output());
         assert!(parse(&["sync", "log", "--json"]).is_machine_output());
+        assert!(!parse(&["sync", "verify", "x.lfbundle"]).is_machine_output());
+        assert!(parse(&["sync", "verify", "x.lfbundle", "--json"]).is_machine_output());
     }
     assert!(!parse(&["federate"]).is_machine_output());
     assert!(!parse(&["federate", "status"]).is_machine_output());

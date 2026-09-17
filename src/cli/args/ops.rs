@@ -235,6 +235,9 @@ pub enum SyncSubcommands {
     Verify {
         /// Path to the bundle file
         path: String,
+        /// Emit pure camelCase verify JSON on stdout (`schemaVersion: 1`)
+        #[arg(long)]
+        json: bool,
     },
     /// Manage sync cursors [Available]
     Cursor {
@@ -253,6 +256,9 @@ pub enum SyncSubcommands {
         /// Emit pure camelCase log JSON on stdout (`schemaVersion: 1`)
         #[arg(long)]
         json: bool,
+        /// Show only failed parsed events (`ok: false`); applied before `--tail`
+        #[arg(long)]
+        failed: bool,
     },
 }
 

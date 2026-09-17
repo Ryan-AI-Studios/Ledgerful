@@ -15,6 +15,8 @@ pub mod bundle;
 #[cfg(feature = "sync")]
 pub mod crypto;
 #[cfg(feature = "sync")]
+pub mod event_log;
+#[cfg(feature = "sync")]
 pub mod extract;
 #[cfg(feature = "sync")]
 pub mod peers;
@@ -27,6 +29,10 @@ use crate::config::model::Config;
 use crate::sync::bundle::Bundle;
 #[cfg(feature = "sync")]
 use crate::sync::error::SyncError;
+#[cfg(feature = "sync")]
+use crate::sync::event_log::{
+    EVENT_APPLY, EVENT_ERROR, EVENT_EXTRACT, EVENT_QUARANTINE, SyncLogEvent, try_append_sync_event,
+};
 #[cfg(feature = "sync")]
 use crate::sync::transport::SyncTarget;
 #[cfg(feature = "sync")]
@@ -53,6 +59,17 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
 
     if !config.sync.enabled {
         return Ok(());
+    }
+
+    fn log_ev(state_dir: &Path, event: &str, ok: bool, bundle: Option<&str>, detail: Option<&str>) {
+        let mut ev = SyncLogEvent::new(event, ok);
+        if let Some(b) = bundle {
+            ev = ev.with_bundle(b);
+        }
+        if let Some(d) = detail {
+            ev = ev.with_detail(d);
+        }
+        try_append_sync_event(state_dir, &ev);
     }
 
     let sync_dir = state_dir.join("sync");
@@ -125,12 +142,23 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
                 .map_err(|e| miette::miette!("Failed to commit extract export state: {}", e))?;
 
             println!("Uploaded bundle: {}", filename);
+            log_ev(
+                state_dir,
+                EVENT_EXTRACT,
+                true,
+                Some(filename.as_str()),
+                None,
+            );
             exported = 1;
         }
         Err(SyncError::NoNewEntries) => {
             println!("No new entries to extract.");
+            log_ev(state_dir, EVENT_EXTRACT, true, None, None);
         }
-        Err(e) => return Err(e).into_diagnostic(),
+        Err(e) => {
+            log_ev(state_dir, EVENT_ERROR, false, None, Some(&e.to_string()));
+            return Err(e).into_diagnostic();
+        }
     }
 
     // 2. Apply remote peer bundles
@@ -164,6 +192,13 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
                     "Failed to get {}: {}. Skipping (not counted as quarantined).",
                     label, e
                 );
+                log_ev(
+                    state_dir,
+                    EVENT_ERROR,
+                    false,
+                    Some(label.as_str()),
+                    Some(&e.to_string()),
+                );
                 continue;
             }
         };
@@ -173,11 +208,27 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
             Err(e) => {
                 eprintln!("Failed to decrypt {}: {}. Quarantining.", label, e);
                 match transport.move_to_quarantine(&id) {
-                    Ok(()) => quarantined += 1,
+                    Ok(()) => {
+                        quarantined += 1;
+                        log_ev(
+                            state_dir,
+                            EVENT_QUARANTINE,
+                            false,
+                            Some(label.as_str()),
+                            Some(&e.to_string()),
+                        );
+                    }
                     Err(move_err) => {
                         eprintln!(
                             "Warning: failed to move {} to quarantine after decrypt error: {}. Bundle may be retried (not counted quarantined).",
                             label, move_err
+                        );
+                        log_ev(
+                            state_dir,
+                            EVENT_ERROR,
+                            false,
+                            Some(label.as_str()),
+                            Some(&format!("decrypt failed; not quarantined: {move_err}")),
                         );
                     }
                 }
@@ -190,11 +241,27 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
             Err(e) => {
                 eprintln!("Failed to parse {}: {}. Quarantining.", label, e);
                 match transport.move_to_quarantine(&id) {
-                    Ok(()) => quarantined += 1,
+                    Ok(()) => {
+                        quarantined += 1;
+                        log_ev(
+                            state_dir,
+                            EVENT_QUARANTINE,
+                            false,
+                            Some(label.as_str()),
+                            Some(&e.to_string()),
+                        );
+                    }
                     Err(move_err) => {
                         eprintln!(
                             "Warning: failed to move {} to quarantine after parse error: {}. Bundle may be retried (not counted quarantined).",
                             label, move_err
+                        );
+                        log_ev(
+                            state_dir,
+                            EVENT_ERROR,
+                            false,
+                            Some(label.as_str()),
+                            Some(&format!("parse failed; not quarantined: {move_err}")),
                         );
                     }
                 }
@@ -212,11 +279,27 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
                 config.sync.max_clock_drift_seconds
             );
             match transport.move_to_quarantine(&id) {
-                Ok(()) => quarantined += 1,
+                Ok(()) => {
+                    quarantined += 1;
+                    log_ev(
+                        state_dir,
+                        EVENT_QUARANTINE,
+                        false,
+                        Some(label.as_str()),
+                        Some("clock drift"),
+                    );
+                }
                 Err(move_err) => {
                     eprintln!(
                         "Warning: failed to move {} to quarantine after clock-drift reject: {}. Bundle may be retried (not counted quarantined).",
                         label, move_err
+                    );
+                    log_ev(
+                        state_dir,
+                        EVENT_ERROR,
+                        false,
+                        Some(label.as_str()),
+                        Some(&format!("clock drift; not quarantined: {move_err}")),
                     );
                 }
             }
@@ -232,21 +315,45 @@ pub fn run(config: &Config, state_dir: &Path, team_secret: &[u8]) -> miette::Res
                 imported += report.inserted;
                 updated += report.updated;
                 skipped += report.skipped;
+                log_ev(state_dir, EVENT_APPLY, true, Some(label.as_str()), None);
                 if let Err(move_err) = transport.move_to_processed(&id) {
                     eprintln!(
                         "Warning: applied {} but failed to move to processed: {}. Bundle may be re-applied (idempotent).",
                         label, move_err
+                    );
+                    log_ev(
+                        state_dir,
+                        EVENT_ERROR,
+                        false,
+                        Some(label.as_str()),
+                        Some(&format!("applied but not moved to processed: {move_err}")),
                     );
                 }
             }
             Err(e) => {
                 eprintln!("Failed to apply {}: {}. Quarantining.", label, e);
                 match transport.move_to_quarantine(&id) {
-                    Ok(()) => quarantined += 1,
+                    Ok(()) => {
+                        quarantined += 1;
+                        log_ev(
+                            state_dir,
+                            EVENT_QUARANTINE,
+                            false,
+                            Some(label.as_str()),
+                            Some(&e.to_string()),
+                        );
+                    }
                     Err(move_err) => {
                         eprintln!(
                             "Warning: failed to move {} to quarantine after apply error: {}. Bundle may be retried (not counted quarantined).",
                             label, move_err
+                        );
+                        log_ev(
+                            state_dir,
+                            EVENT_ERROR,
+                            false,
+                            Some(label.as_str()),
+                            Some(&format!("apply failed; not quarantined: {move_err}")),
                         );
                     }
                 }
