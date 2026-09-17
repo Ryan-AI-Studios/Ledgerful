@@ -84,7 +84,8 @@ pub struct DoctorRunOpts {
 /// `full` / `quiet` are ignored for JSON content (schema v1 full findings).
 ///
 /// `--apply-hook-refresh` rewrites only known Ledgerful marker-bounded product
-/// templates (0121). Cannot be combined with `--json`.
+/// templates (0121). `--json` without `--dry-run` is rejected; `--json --dry-run`
+/// is the isolated `hookRefreshPreview` envelope.
 ///
 /// `--fix` pins keys / acks phantom / bumps `min_sig_version` when LOCAL rows
 /// are already ≥2. Never runs `ledger re-sign --all`. Requires `--yes` or
@@ -103,9 +104,9 @@ pub fn execute_doctor(opts: DoctorRunOpts) -> Result<()> {
         yes,
     } = opts;
 
-    if json && apply_hook_refresh {
+    if json && apply_hook_refresh && !dry_run {
         return Err(miette::miette!(
-            "doctor --json cannot be combined with --apply-hook-refresh"
+            "doctor --json cannot be combined with --apply-hook-refresh (use --dry-run for hookRefreshPreview)"
         ));
     }
     if fix && !yes && !dry_run {
@@ -116,6 +117,16 @@ pub fn execute_doctor(opts: DoctorRunOpts) -> Result<()> {
     let current_dir = env::current_dir().into_diagnostic()?;
     let layout = crate::commands::helpers::get_layout_or_cwd_if_not_git()?;
 
+    if apply_hook_refresh && dry_run {
+        let root = layout.root.as_path();
+        let refresh = crate::commands::hook_template::refresh_product_templates_at(root, true)?;
+        if json {
+            crate::commands::hook_template::print_hook_refresh_preview_json(&refresh)?;
+        } else {
+            crate::commands::hook_template::print_hook_refresh_preview(&refresh);
+        }
+        return Ok(());
+    }
     if apply_hook_refresh {
         let root = layout.root.as_path();
         let refresh = crate::commands::hook_template::refresh_product_templates_at(root, dry_run)?;

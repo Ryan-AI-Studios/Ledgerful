@@ -542,8 +542,16 @@ fn doctor_fix_clap_matrix() {
         Cli::try_parse_from(["ledgerful", "doctor", "--json", "--apply-hook-refresh"]);
     assert!(
         json_refresh.is_ok(),
-        "--json + --apply-hook-refresh still parses; execute_doctor rejects"
+        "--json + --apply-hook-refresh still parses; execute_doctor rejects without --dry-run"
     );
+    Cli::try_parse_from([
+        "ledgerful",
+        "doctor",
+        "--json",
+        "--apply-hook-refresh",
+        "--dry-run",
+    ])
+    .expect("--json + --apply-hook-refresh --dry-run parses for hookRefreshPreview");
     let cli = Cli::try_parse_from(["ledgerful", "doctor", "--fix", "--yes"]).expect("--fix --yes");
     match cli.command {
         Commands::Doctor(DoctorArgs {

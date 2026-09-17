@@ -33,6 +33,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Hook refresh preview contract (0373):**
+  `doctor --apply-hook-refresh --dry-run` is an
+  isolated no-write preview (path + block id,
+  no health catalog, no state create).
+  `--json --dry-run` emits one pretty
+  `schemaVersion` 1 `kind: hookRefreshPreview`
+  (`executed: false`). `--json --apply-hook-refresh`
+  without `--dry-run` stays rejected.
+
 - **Ledger GC preview selections (0372):**
   `ledger gc --stale --orphans --dry-run`
   prints every requested class (empty

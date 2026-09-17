@@ -40,6 +40,10 @@ Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/ch
 
 Human preview only (`Gc` is not machine; no `--json`). Prints a labeled count for every requested class (`--stale` and/or `--orphans`) even when the first class is empty. Both flags use the same TTL PENDING selector (`started_at` older than `--ttl-hours`, default 72; days via `div_ceil(24)`). `--orphans` is **not** a git-commit scan. Protected sidecars (0074 `promote_failed` / `HEAD-matching orphan`) are listed, not candidates. Footer `Dry-run completed. No transactions were modified.` is unconditional. Dry-run always exits 0; write-path refuse `Err` is unchanged. Combined `--force` unions+dedupes before rollback. Never run without `--dry-run` on an operator repo.
 
+## `ledgerful doctor --apply-hook-refresh --dry-run`
+
+Isolated no-write preview (human path + block id; `--json` is `kind: hookRefreshPreview`). Always `executed: false` + `dryRun: true`. No health catalog, no `ensure_state_dir`, no `doctor-results.json` rewrite. `--json` without `--dry-run` stays rejected. Write-path apply (no `--dry-run`) still prints via `print_refresh_report` and continues into doctor. Third-party refuse tokens stay 0121. Never run without `--dry-run` on an operator repo.
+
 ## `ledgerful index --repair-metadata --dry-run --json`
 
 schemaVersion 1 `kind: indexRepairPreview`. Always `executed: false` + `dryRun: true`. Age-only camelCase `assessment` (omit `emptyDiagnostics`; `staleFiles` / `unindexedFiles` are zeros, not drift). Locked sorted `proposed[]` (`force full index`, `replace metadata if successful`). Pretty JSON. Preview never writes. Human `--dry-run` copy unchanged. Executed `--yes` repair unchanged. Not `kind: indexCheck`. `--json` without `--dry-run` on repair is still silent (not this contract).

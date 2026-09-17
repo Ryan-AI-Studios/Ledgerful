@@ -99,7 +99,8 @@ ledgerful update --repair-hooks --dry-run
 Notes:
 
 - Default `doctor` never writes. Apply requires `--apply-hook-refresh`.
-- `doctor --json --apply-hook-refresh` is rejected (apply is human-only).
+- `doctor --apply-hook-refresh --dry-run` is an isolated no-write preview (path + block id; no health catalog; no `.ledgerful` create). `--json --dry-run` emits `kind: hookRefreshPreview`.
+- `doctor --json --apply-hook-refresh` without `--dry-run` is rejected (write-path apply is human-only).
 - Husky / lefthook / pre-commit managed hooks are **refused** — paste the
   product snippet from init templates / this section; do not rewrite manager files.
 - Customised marker blocks that no longer match a known product body are
