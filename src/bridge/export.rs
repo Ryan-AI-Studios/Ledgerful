@@ -303,9 +303,9 @@ where
                 );
                 for row in datasets.iter().filter(|d| d.requested) {
                     let detail = row
-                        .source
+                        .empty_reason
                         .as_deref()
-                        .or(row.empty_reason.as_deref())
+                        .or(row.source.as_deref())
                         .unwrap_or("-");
                     println!("Dataset: {} {} ({})", row.name, row.count, detail);
                 }
