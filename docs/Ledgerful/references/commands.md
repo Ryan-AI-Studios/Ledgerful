@@ -33,6 +33,7 @@ Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/ch
 | `ledgerful ledger adr export [-o PATH] [--days N]` | Writes MADR files (default dest `docs/adr`). `- **Status**` is lifecycle (`proposed`..`superseded`); `- **Change type**` is `ChangeType` Display (`CREATE`..`DELETE`). No `--json`. Always pass `--output` to a tempfile on EXEC. |
 | `ledgerful ledger export-provenance [--limit N] [--offset N]` | Pretty **bare array** of committed entries, oldest first. `--limit`/`--offset` page that array; truncation is one stderr `truncated:` line. Not a `schemaVersion` wrap. |
 | `ledgerful export head [--out PATH] [--stdout]` | Thin `ChainHead` checkpoint. `--stdout` / `-o -` is exact JSON bytes (0182). File-mode SUCCESS is a checkpoint write, not a verification. |
+| `ledgerful export evidence [--profile soc2] [--out PATH] [--force] [--control ID]` | Writes a SOC2 zip (no `--json`). Default dest `ledgerful-soc2-evidence.zip` (demo: `ledgerful-DEMO-evidence.zip`). `gateModeDisclosure.chainContinuityStatus` `verified:` requires a gated walk plus a real stored signed head. Always pass `--out` to a tempfile on EXEC. |
 
 ## `ledgerful web status` / `usage status` / `daemon`
 
