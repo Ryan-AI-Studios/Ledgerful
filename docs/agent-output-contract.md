@@ -54,6 +54,7 @@ contract and follows `LEDGERFUL_TABLE_STYLE`. Purity inventory unchanged
 | `bridge export --json` / `--stdout` / `-o -` | yes (0367) | yes (exit 0) | Hidden CLI. **Not** `kind: bridgeExport`. Body is one BridgeRecord **0.3** Snapshot. Additive camelCase `payload.datasets[]` (always `impact` plus requested `--hotspots`/`--ledger`/`--madr`). `--json` with no `--out` implies stdout (no default `.ledgerful` write). `--json --out <path>` writes the file and leaves stdout empty. `-o -` is stdout. `--stdout` + `--out <path>` errors. `--madr` row is `notWired`. Compact one-line is NDJSON-compatible; pretty `--json` is not importable as NDJSON lines. CLI-only; no MCP. |
 | `verify --json` | yes | yes* | plan-execution payload; see rejected combos |
 | `index --check --json` | yes | yes (0149) | schemaVersion 1 + `kind: "indexCheck"` camelCase DTO (0207); Info suppressed under json; Error still on stderr |
+| `index --repair-metadata --dry-run --json` | yes (0371) | yes (exit 0) | schemaVersion 1 object `kind: "indexRepairPreview"`. Always `executed: false` + `dryRun: true`. Omit `ok`. Nested age-only camelCase `assessment` (always `state` / `source` / `indexedFiles` / `staleFiles` / `unindexedFiles`; omit-empty `emptyReason` / `lastIndexedAt` / `daysSinceIndexed` / `samplePaths` / `warnings`). **Omit `emptyDiagnostics`.** `staleFiles` / `unindexedFiles` are age-only zeros — not a content-drift verdict. Locked sorted `proposed[]`: `force full index`, `replace metadata if successful`. Pretty JSON + one trailing newline. Preview never writes (no shadow / no metadata mutation). Not `kind: indexCheck`. Human `--dry-run` copy unchanged. Executed `--yes` repair unchanged. CLI-only; no MCP. |
 | `index --semantic --json` | yes (0161) | yes | One final JSON object (`schemaVersion`, `mode`, `reason`, counts, `upToDate`); zero human mid-run lines on stdout |
 | `index --json` (main / `--auto-scip` / `--scip`) | yes | yes* | Merged index stats object; top-level **`scip`** (0157/0166): `status`, `edges_added`/`edges_updated`, `definitions_mapped`/`definitions_seen`, `files_skipped`, skip/recovery tallies (`edges_skipped_enclosing_disagreement`, `edges_recovered_nest_prefer`, `edges_skipped_unmapped`, `edges_skipped_invalid_occ_range`, `edges_skipped_duplicate`, `definitions_skipped_invalid_range`, `invalid_enclosing_fallback`), `references_seen`, optional `message`. On Success skip/recovery fields are always present (incl. 0). WARN summary for disagreement/invalid-range is **stderr** only (O(1)); not part of the JSON payload |
 | `dead-code --json` | yes (0149) | yes | schemaVersion 1 envelope; see rejected combos |
@@ -1015,6 +1016,50 @@ check path still emits status before `process::exit`.
 
 `assessment.state` already carries Fresh/Stale — do not require stderr Info
 for machine consumers. **Ban:** `FreshPopulated` with top-level `staleFiles > 0`.
+
+---
+
+## `index --repair-metadata --dry-run --json` schema (0371)
+
+CLI DTO at the print site. Domain `IndexFreshnessAssessment` stays snake
+internally. This is **not** `kind: indexCheck`. Assessment is the **age-only**
+freshness result (no content-drift walk). Pretty JSON (`to_string_pretty`)
+plus one trailing newline.
+
+```json
+{
+  "schemaVersion": 1,
+  "kind": "indexRepairPreview",
+  "executed": false,
+  "dryRun": true,
+  "assessment": {
+    "state": "FreshPopulated",
+    "source": "RepositoryMetadata",
+    "indexedFiles": 1,
+    "staleFiles": 0,
+    "unindexedFiles": 0,
+    "lastIndexedAt": "2026-09-17T12:00:00Z",
+    "daysSinceIndexed": 0
+  },
+  "proposed": [
+    "force full index",
+    "replace metadata if successful"
+  ]
+}
+```
+
+| Field | Rules |
+|---|---|
+| `schemaVersion` | number **1** |
+| `kind` | always **`"indexRepairPreview"`** — not `indexCheck` |
+| `executed` | always **false** on this path (mirrors `verifyDryRun`) |
+| `dryRun` | always **true** on this path (mirrors federate export preview) |
+| `ok` | **omit** |
+| `assessment` | Age-only. Always `state`, `source`, `indexedFiles`, `staleFiles`, `unindexedFiles`. Omit-empty: `emptyReason`, `lastIndexedAt`, `daysSinceIndexed`, `samplePaths`, `warnings`. **Omit `emptyDiagnostics`.** `staleFiles` / `unindexedFiles` are hard-coded **0** and are not a drift verdict. PascalCase enum values. |
+| `proposed` | **sorted** string array; locked tokens `force full index` and `replace metadata if successful` |
+
+Executed `--repair-metadata` (including `--yes` and `--json` without `--dry-run`)
+does not emit this envelope.
 
 ---
 

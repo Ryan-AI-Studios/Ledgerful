@@ -36,6 +36,10 @@ Optional: `ledgerful session --json` — one-shot briefing (git/ledger/doctor/ch
 | `ledgerful export evidence [--profile soc2] [--out PATH] [--force] [--control ID]` | Writes a SOC2 zip (no `--json`). Default dest `ledgerful-soc2-evidence.zip` (demo: `ledgerful-DEMO-evidence.zip`). `gateModeDisclosure.chainContinuityStatus` `verified:` requires a gated walk plus a real stored signed head. Always pass `--out` to a tempfile on EXEC. |
 | `ledgerful viz [--output PATH] [--limit N] [--depth N] [--entity ID] [--view graph\|services]` | Writes a standalone HTML file (no `--json`). Default dest `reports/graph.html` or `reports/services.html`. Always pass `--output` to a tempfile on EXEC. Both views inline vis-network 10.1.2 (no CDN). Graph stdout/`#evidence`: `source: Cozo nodes/edges`, `limit:`, `truncated:`, `communities:`, `asset:`. Services gated: `source: declared overlay; inference gated` (optional `persisted N not shown`); enabled: `source: persisted service_roots`. |
 
+## `ledgerful index --repair-metadata --dry-run --json`
+
+schemaVersion 1 `kind: indexRepairPreview`. Always `executed: false` + `dryRun: true`. Age-only camelCase `assessment` (omit `emptyDiagnostics`; `staleFiles` / `unindexedFiles` are zeros, not drift). Locked sorted `proposed[]` (`force full index`, `replace metadata if successful`). Pretty JSON. Preview never writes. Human `--dry-run` copy unchanged. Executed `--yes` repair unchanged. Not `kind: indexCheck`. `--json` without `--dry-run` on repair is still silent (not this contract).
+
 ## `ledgerful web status` / `usage status` / `daemon`
 
 `web status --json` (0328) is schemaVersion 1 PID-state evidence (`running` / `stalePid` / `reusedPid` / `noPidFile`) plus always-on `next`. Read-only: does not start, stop, or delete the PID file. Bare `web` still requires a subcommand.
