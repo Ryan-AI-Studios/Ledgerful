@@ -46,7 +46,7 @@ pub enum IntentCommands {
 
 #[derive(Subcommand, Debug)]
 pub enum AdrSubcommands {
-    /// Export MADR files from ledger history
+    /// Export MADR files with lifecycle Status and a separate Change type
     Export {
         /// Output path for ADR files
         #[arg(short, long, alias = "output-dir", default_value = "docs/adr")]

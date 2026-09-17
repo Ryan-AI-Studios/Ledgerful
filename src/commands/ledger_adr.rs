@@ -6,6 +6,7 @@ use std::fs;
 use crate::cli::AdrSubcommands;
 use crate::commands::helpers::{get_layout, load_ledger_config};
 use crate::ledger::adr::{generate_madr_content, slugify_summary};
+use crate::ledger::db::LedgerDb;
 use crate::ledger::transaction::TransactionManager;
 use crate::ledger::types::{AdrMetadataUpdate, AdrStatus};
 use crate::output::json;
@@ -102,17 +103,32 @@ fn execute_export(
 
     let out_dir = output_dir.unwrap_or_else(|| layout.root.join("docs/adr"));
 
+    let db = LedgerDb::new(manager.get_connection());
+    let mut prepared = Vec::with_capacity(entries.len());
+    for entry in entries {
+        let lifecycle = match db.get_adr_metadata(&entry.tx_id) {
+            Ok(Some(metadata)) => metadata.status,
+            Ok(None) => AdrStatus::Proposed,
+            Err(e) => {
+                return Err(miette::miette!(
+                    "Failed to read ADR metadata for {}: {e}",
+                    entry.tx_id
+                ));
+            }
+        };
+        prepared.push((entry, lifecycle));
+    }
+
     if !out_dir.exists() {
         fs::create_dir_all(&out_dir).into_diagnostic()?;
     }
 
     let mut count = 0;
-    for entry in entries {
+    for (entry, lifecycle) in prepared {
         let slug = slugify_summary(&entry.summary);
         let filename = format!("{:04}-{}.md", entry.id, slug);
         let file_path = out_dir.join(filename);
-
-        let content = generate_madr_content(&entry);
+        let content = generate_madr_content(&entry, lifecycle);
         fs::write(&file_path, content).into_diagnostic()?;
         count += 1;
     }

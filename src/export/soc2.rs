@@ -29,7 +29,7 @@ use crate::export::control_mapping::{
 use crate::ledger::adr::{generate_madr_content, slugify_summary};
 use crate::ledger::crypto::get_or_create_keys;
 use crate::ledger::db::LedgerDb;
-use crate::ledger::types::ChainHead;
+use crate::ledger::types::{AdrStatus, ChainHead};
 use crate::state::layout::Layout;
 use crate::state::storage::StorageManager;
 use ed25519_dalek::Signer;
@@ -164,6 +164,20 @@ pub fn generate_soc2_export_with_options(
         let adrs = db
             .get_adr_entries(None)
             .map_err(|e| miette!("Failed to read ADR entries: {e}"))?;
+        let mut paired = Vec::with_capacity(adrs.len());
+        for adr in adrs {
+            let lifecycle = match db.get_adr_metadata(&adr.tx_id) {
+                Ok(Some(metadata)) => metadata.status,
+                Ok(None) => AdrStatus::Proposed,
+                Err(e) => {
+                    return Err(miette!(
+                        "Failed to read ADR metadata for {}: {e}",
+                        adr.tx_id
+                    ));
+                }
+            };
+            paired.push((adr, lifecycle));
+        }
 
         let head = match conn
             .query_row(
@@ -191,7 +205,7 @@ pub fn generate_soc2_export_with_options(
         // no singleton chain_head row exists, so legacy or bypass-inserted data
         // still carries a rollback ceiling in chain_head.json.
         let head = head.or_else(|| synthesize_chain_head(&entries));
-        (entries, vrows, adrs, head)
+        (entries, vrows, paired, head)
     } else {
         (Vec::new(), Vec::new(), Vec::new(), None)
     };
@@ -212,7 +226,7 @@ pub fn generate_soc2_export_with_options(
 
     // ADRs: one markdown file per ADR ledger entry, placed under `adr/`.
     // Filenames mirror `src/commands/ledger_adr.rs:107-110`.
-    for adr in &adr_entries {
+    for (adr, lifecycle) in &adr_entries {
         // `slugify_summary` can return an empty string when the summary is
         // all non-alphanumeric characters (every char becomes `-` and is then
         // filtered out), which would yield a filename like `adr/0001-.md`.
@@ -225,7 +239,7 @@ pub fn generate_soc2_export_with_options(
             slug.as_str()
         };
         let filename = format!("adr/{:04}-{}.md", adr.id, slug);
-        let content = generate_madr_content(adr);
+        let content = generate_madr_content(adr, *lifecycle);
         let (entry, mf) = ZipEntry::new(filename, content.into_bytes());
         zip_entries.push(entry);
         manifest_files.push(mf);

@@ -1,4 +1,14 @@
-use crate::ledger::types::LedgerEntry;
+use crate::ledger::types::{AdrStatus, LedgerEntry};
+
+fn lifecycle_status_token(lifecycle: AdrStatus) -> &'static str {
+    match lifecycle {
+        AdrStatus::Proposed => "proposed",
+        AdrStatus::Accepted => "accepted",
+        AdrStatus::Rejected => "rejected",
+        AdrStatus::Deprecated => "deprecated",
+        AdrStatus::Superseded => "superseded",
+    }
+}
 
 pub fn slugify_summary(summary: &str) -> String {
     summary
@@ -12,15 +22,14 @@ pub fn slugify_summary(summary: &str) -> String {
         .join("-")
 }
 
-pub fn generate_madr_content(entry: &LedgerEntry) -> String {
+pub fn generate_madr_content(entry: &LedgerEntry, lifecycle: AdrStatus) -> String {
     let mut content = format!("# {}. {}\n\n", entry.id, entry.summary);
 
     content.push_str(&format!(
         "- **Status**: {}\n",
-        serde_json::to_string(&entry.change_type)
-            .unwrap_or_default()
-            .trim_matches('"')
+        lifecycle_status_token(lifecycle)
     ));
+    content.push_str(&format!("- **Change type**: {}\n", entry.change_type));
     content.push_str(&format!("- **Category**: {:?}\n", entry.category));
     content.push_str(&format!(
         "- **Breaking**: {}\n",
@@ -54,6 +63,7 @@ pub fn generate_madr_content(entry: &LedgerEntry) -> String {
 }
 
 #[cfg(test)]
+#[allow(non_snake_case)]
 mod tests {
     use super::*;
     use crate::ledger::types::*;
@@ -100,9 +110,15 @@ mod tests {
             sig_version: 1,
         };
 
-        let content = generate_madr_content(&entry);
+        let content = generate_madr_content(&entry, AdrStatus::Proposed);
         assert!(content.contains("# 1. Standardize error handling"));
-        assert!(content.contains("- **Status**: MODIFY"));
+        assert!(content.contains("- **Status**: proposed"));
+        assert!(content.contains("- **Change type**: MODIFY"));
+        let status_idx = content.find("- **Status**: proposed").expect("status line");
+        let change_idx = content
+            .find("- **Change type**: MODIFY")
+            .expect("change type line");
+        assert!(status_idx < change_idx);
         assert!(content.contains("- **Category**: Architecture"));
         assert!(content.contains("- **Breaking**: yes"));
         assert!(content.contains("Entity: `src/lib.rs`"));
@@ -113,5 +129,54 @@ mod tests {
         assert!(content.contains("All modules now use thiserror."));
         assert!(content.contains("Status: Verified"));
         assert!(content.contains("Basis: Tests"));
+    }
+
+    #[rstest::rstest]
+    #[case(AdrStatus::Proposed, "proposed")]
+    #[case(AdrStatus::Accepted, "accepted")]
+    #[case(AdrStatus::Rejected, "rejected")]
+    #[case(AdrStatus::Deprecated, "deprecated")]
+    #[case(AdrStatus::Superseded, "superseded")]
+    fn generate_madr_content__lifecycle_token__matches_serde(
+        #[case] lifecycle: AdrStatus,
+        #[case] token: &str,
+    ) {
+        let serialized = serde_json::to_string(&lifecycle).expect("serialize AdrStatus");
+        assert_eq!(serialized.trim_matches('"'), token);
+        let entry = LedgerEntry {
+            id: 1,
+            tx_id: "tx-123".to_string(),
+            category: Category::Architecture,
+            entry_type: EntryType::Architecture,
+            entity: "src/lib.rs".to_string(),
+            entity_normalized: "src/lib.rs".to_string(),
+            change_type: ChangeType::Modify,
+            summary: "token check".to_string(),
+            reason: "table".to_string(),
+            is_breaking: false,
+            committed_at: "2023-10-27T10:00:00Z".to_string(),
+            verification_status: None,
+            verification_basis: None,
+            outcome_notes: None,
+            origin: "LOCAL".to_string(),
+            trace_id: None,
+            signature: None,
+            public_key: None,
+            risk: None,
+            related_tickets: None,
+            author: "Test User".to_string(),
+            observed: None,
+            prev_hash: None,
+            sig_version: 1,
+        };
+        let content = generate_madr_content(&entry, lifecycle);
+        assert!(content.contains(&format!("- **Status**: {token}\n")));
+        assert!(content.contains("- **Change type**: MODIFY\n"));
+        assert!(!content.contains(&format!("- **Change type**: {token}")));
+        let status_idx = content.find("- **Status**:").expect("status line present");
+        let change_idx = content
+            .find("- **Change type**:")
+            .expect("change type line present");
+        assert!(status_idx < change_idx);
     }
 }
