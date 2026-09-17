@@ -33,6 +33,15 @@ to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
 ### Fixed
 
+- **Index repair preview JSON (0371):**
+  `index --repair-metadata --dry-run --json`
+  emits one pretty `schemaVersion` 1
+  `kind: indexRepairPreview` plan
+  (`executed: false`, locked `proposed[]`).
+  Preview does not write. Human `--dry-run`
+  copy and executed `--yes` repair stay
+  unchanged.
+
 - **Standalone graph visualization (0370):**
   `viz` and `viz --view services` write offline HTML
   with pinned vis-network 10.1.2 (no unpkg). Graph
