@@ -40,6 +40,14 @@ fn test_bridge_query_disabled_prints_hint() {
         stdout.contains("Status: disabled"),
         "0366: human disabled stdout Status: disabled, got: {stdout}"
     );
+    assert!(
+        !stdout.contains(stderr.trim()),
+        "0366: stdout must not reprint the stderr enable hint: {stdout}"
+    );
+    assert!(
+        stdout.contains("Next: set bridge.enabled = true"),
+        "0366: human disabled stdout Next line, got: {stdout}"
+    );
 }
 
 #[test]

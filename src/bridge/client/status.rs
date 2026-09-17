@@ -440,9 +440,7 @@ fn finish(json: bool, query: &str, outcome: QueryOutcome) -> Result<()> {
         QueryStatus::Disabled => {
             eprintln!("{}", BRIDGE_ENABLE_HINT);
             println!("Status: disabled");
-            if let Some(next) = &outcome.next {
-                println!("{next}");
-            }
+            println!("Next: set bridge.enabled = true or LEDGERFUL_BRIDGE=1");
             Ok(())
         }
         QueryStatus::Empty => {
